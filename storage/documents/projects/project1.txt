@@ -1,0 +1,11 @@
+This is a test file in the projects subdirectory.
+
+Project: File Transfer UI
+Status: In Development
+Features:
+- Modern file browser interface
+- Breadcrumb navigation
+- File and folder operations
+- Drag and drop uploads
+
+This file is used to test the nested directory navigation functionality.
