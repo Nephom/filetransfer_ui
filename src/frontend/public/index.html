@@ -71,10 +71,12 @@
             border-bottom: 1px solid transparent;
             cursor: pointer;
             font-size: 13px;
+            color: #333333;
         }
 
         .file-item:hover {
             background: #e3f2fd;
+            color: #1976d2;
         }
 
         .file-item.selected {
@@ -98,6 +100,7 @@
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            color: inherit;
         }
 
         .status-bar {
@@ -208,6 +211,121 @@
 
         .modal-button.primary:hover {
             background: #1976d2;
+        }
+
+        /* Theme System */
+        .theme-selector {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-right: 16px;
+        }
+
+        .theme-button {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid #ccc;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .theme-button:hover {
+            transform: scale(1.1);
+            border-color: #666;
+        }
+
+        .theme-button.active {
+            border-color: #333;
+            box-shadow: 0 0 0 2px rgba(0,0,0,0.2);
+        }
+
+        /* Theme Variations */
+        .theme-default {
+            background: #f0f0f0;
+        }
+
+        .theme-dark {
+            background: #2d3748;
+            color: #e2e8f0;
+        }
+
+        .theme-dark .explorer-window {
+            background: #4a5568;
+            border-color: #2d3748;
+            color: #e2e8f0;
+        }
+
+        .theme-dark .toolbar {
+            background: #2d3748;
+            border-color: #1a202c;
+        }
+
+        .theme-dark .toolbar-button {
+            background: #4a5568;
+            border-color: #2d3748;
+            color: #e2e8f0;
+        }
+
+        .theme-dark .toolbar-button:hover {
+            background: #718096;
+        }
+
+        .theme-dark .address-bar {
+            background: #4a5568;
+            border-color: #2d3748;
+            color: #e2e8f0;
+        }
+
+        .theme-dark .file-item {
+            color: #e2e8f0;
+        }
+
+        .theme-dark .file-item:hover {
+            background: #718096;
+            color: #ffffff;
+        }
+
+        .theme-dark .status-bar {
+            background: #2d3748;
+            border-color: #1a202c;
+            color: #a0aec0;
+        }
+
+        .theme-blue {
+            background: #ebf8ff;
+        }
+
+        .theme-blue .explorer-window {
+            background: #bee3f8;
+            border-color: #90cdf4;
+        }
+
+        .theme-blue .toolbar {
+            background: #90cdf4;
+            border-color: #63b3ed;
+        }
+
+        .theme-blue .file-item {
+            color: #1a365d;
+        }
+
+        .theme-green {
+            background: #f0fff4;
+        }
+
+        .theme-green .explorer-window {
+            background: #c6f6d5;
+            border-color: #9ae6b4;
+        }
+
+        .theme-green .toolbar {
+            background: #9ae6b4;
+            border-color: #68d391;
+        }
+
+        .theme-green .file-item {
+            color: #1a202c;
         }
     </style>
 </head>

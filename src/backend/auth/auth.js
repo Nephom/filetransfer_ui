@@ -38,11 +38,23 @@ class Auth {
     // In a real app, this would check against a database
     const config = ConfigManager.getAll();
 
-    if (username === config.username && password === config.password) {
-      return {
-        id: 1,
-        username: username
-      };
+    if (username === config.username) {
+      let isValidPassword = false;
+
+      // Check if password is hashed
+      if (config.passwordHashed === 'true') {
+        isValidPassword = await this.comparePassword(password, config.password);
+      } else {
+        // Backward compatibility with plain text passwords
+        isValidPassword = password === config.password;
+      }
+
+      if (isValidPassword) {
+        return {
+          id: 1,
+          username: username
+        };
+      }
     }
 
     throw new Error('Invalid credentials');
