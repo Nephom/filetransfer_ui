@@ -34,51 +34,54 @@ const LoginForm = ({ onLogin }) => {
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center">
-            <div className="glass-effect rounded-lg p-8 w-full max-w-md fade-in">
-                <h2 className="text-2xl font-bold text-center mb-6 text-blue-400">
-                    🚀 File Transfer UI
-                </h2>
-                
+        <div className="min-h-screen flex items-center justify-center bg-gray-100">
+            <div className="explorer-window rounded-lg p-8 w-full max-w-md">
+                <div className="text-center mb-6">
+                    <div style={{fontSize: '48px', marginBottom: '16px'}}>📁</div>
+                    <h2 className="text-xl font-semibold text-gray-800">
+                        File Explorer Login
+                    </h2>
+                </div>
+
                 {error && (
-                    <div className="bg-red-500 bg-opacity-20 border border-red-500 text-red-200 px-4 py-2 rounded mb-4">
+                    <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4">
                         {error}
                     </div>
                 )}
-                
+
                 <form onSubmit={handleSubmit}>
                     <div className="mb-4">
-                        <label className="block text-sm font-medium mb-2">Username</label>
+                        <label className="block text-sm font-medium mb-2 text-gray-700">Username</label>
                         <input
                             type="text"
                             value={credentials.username}
                             onChange={(e) => setCredentials({...credentials, username: e.target.value})}
-                            className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+                            className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:border-blue-500"
                             required
                         />
                     </div>
-                    
+
                     <div className="mb-6">
-                        <label className="block text-sm font-medium mb-2">Password</label>
+                        <label className="block text-sm font-medium mb-2 text-gray-700">Password</label>
                         <input
                             type="password"
                             value={credentials.password}
                             onChange={(e) => setCredentials({...credentials, password: e.target.value})}
-                            className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded focus:outline-none focus:border-blue-500"
+                            className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:border-blue-500"
                             required
                         />
                     </div>
-                    
+
                     <button
                         type="submit"
                         disabled={loading}
-                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium py-2 px-4 rounded neon-glow transition-all"
+                        className="w-full bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white font-medium py-2 px-4 rounded transition-colors"
                     >
                         {loading ? 'Logging in...' : 'Login'}
                     </button>
                 </form>
-                
-                <div className="mt-4 text-center text-sm text-gray-400">
+
+                <div className="mt-4 text-center text-sm text-gray-500">
                     Default: admin / password
                 </div>
             </div>
@@ -175,18 +178,25 @@ const FileBrowser = ({ token, user }) => {
 
     const getFileIcon = (item) => {
         if (!item.name.includes('.')) {
-            // Directory
-            return '📁';
+            // Directory - use Windows-style folder icon
+            return '📂';
         }
 
-        // File - determine type by extension
+        // File - determine type by extension (Windows-style)
         const ext = item.name.split('.').pop().toLowerCase();
         switch (ext) {
-            case 'txt': case 'md': return '📄';
-            case 'json': case 'js': case 'html': case 'css': return '📝';
-            case 'jpg': case 'jpeg': case 'png': case 'gif': return '🖼️';
+            case 'txt': case 'log': case 'md': return '📄';
+            case 'doc': case 'docx': return '📘';
+            case 'xls': case 'xlsx': return '📗';
+            case 'ppt': case 'pptx': return '📙';
             case 'pdf': return '📕';
-            case 'zip': case 'rar': return '📦';
+            case 'jpg': case 'jpeg': case 'png': case 'gif': case 'bmp': case 'ico': return '🖼️';
+            case 'mp4': case 'avi': case 'mov': case 'wmv': return '🎬';
+            case 'mp3': case 'wav': case 'wma': return '🎵';
+            case 'zip': case 'rar': case 'tar': case 'gz': return '📦';
+            case 'exe': case 'msi': return '⚙️';
+            case 'js': case 'html': case 'css': case 'json': return '💻';
+            case 'py': case 'java': case 'cpp': case 'c': return '👨‍💻';
             default: return '📄';
         }
     };
@@ -309,220 +319,190 @@ const FileBrowser = ({ token, user }) => {
 
 
 
-    if (loading) {
-        return (
-            <div className="flex items-center justify-center min-h-screen">
-                <div className="text-center">
-                    <div className="loading-spinner mx-auto mb-4"></div>
-                    <p className="text-blue-400">Loading files...</p>
-                </div>
-            </div>
-        );
-    }
-
     return (
         <div
-            className={`min-h-screen p-6 transition-all duration-300 ${
-                dragOver ? 'bg-blue-900 bg-opacity-20' : ''
-            }`}
+            className="min-h-screen bg-gray-100"
             onDragEnter={handleDragEnter}
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
         >
-            <div className="max-w-7xl mx-auto">
-                {/* Header */}
-                <div className="glass-effect rounded-lg p-4 mb-6 flex justify-between items-center">
-                    <div>
-                        <h1 className="text-2xl font-bold text-blue-400">
-                            🗂️ File Manager
-                        </h1>
-                        <p className="text-sm text-gray-400 mt-1">
-                            Welcome, {user?.username || 'User'}!
-                        </p>
+            <div className="h-screen flex flex-col">
+                {/* Title Bar */}
+                <div className="bg-white border-b border-gray-300 px-4 py-2 flex justify-between items-center">
+                    <div className="flex items-center">
+                        <span className="text-sm font-medium">📁 File Explorer</span>
                     </div>
+                    <div className="flex items-center space-x-2">
+                        <span className="text-sm text-gray-600">Welcome, {user?.username}</span>
+                        <button
+                            onClick={handleLogout}
+                            className="text-sm px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
+                        >
+                            Logout
+                        </button>
+                    </div>
+                </div>
+
+                {/* Toolbar */}
+                <div className="toolbar">
                     <button
-                        onClick={handleLogout}
-                        className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded transition-colors"
+                        onClick={handleBackClick}
+                        disabled={!currentPath}
+                        className="toolbar-button"
+                        title="Back"
                     >
-                        Logout
+                        ← Back
                     </button>
-                </div>
+                    <button
+                        onClick={() => fetchFiles(currentPath)}
+                        className="toolbar-button"
+                        title="Refresh"
+                    >
+                        🔄 Refresh
+                    </button>
+                    <button
+                        onClick={() => setShowNewFolderDialog(true)}
+                        className="toolbar-button"
+                        title="New Folder"
+                    >
+                        📁 New Folder
+                    </button>
+                    <button
+                        onClick={handleUploadClick}
+                        disabled={uploading}
+                        className="toolbar-button"
+                        title="Upload Files"
+                    >
+                        {uploading ? '⏳ Uploading...' : '📤 Upload'}
+                    </button>
 
-                {/* Navigation Bar */}
-                <div className="glass-effect rounded-lg p-4 mb-6">
-                    <div className="flex items-center justify-between">
-                        {/* Breadcrumbs */}
-                        <div className="flex items-center space-x-2 text-sm">
-                            {getBreadcrumbs().map((crumb, index) => (
-                                <React.Fragment key={index}>
-                                    <button
-                                        onClick={() => fetchFiles(crumb.path)}
-                                        className={`px-2 py-1 rounded transition-colors ${
-                                            crumb.path === currentPath
-                                                ? 'bg-blue-600 text-white'
-                                                : 'text-blue-400 hover:bg-blue-600 hover:bg-opacity-20'
-                                        }`}
-                                    >
-                                        {crumb.name}
-                                    </button>
-                                    {index < getBreadcrumbs().length - 1 && (
-                                        <span className="text-gray-400">→</span>
-                                    )}
-                                </React.Fragment>
-                            ))}
-                        </div>
-
-                        {/* Navigation Buttons */}
-                        <div className="flex space-x-2">
-                            <button
-                                onClick={handleBackClick}
-                                disabled={!currentPath}
-                                className="px-3 py-1 bg-gray-600 hover:bg-gray-500 disabled:bg-gray-800 disabled:text-gray-500 text-white rounded transition-colors"
-                            >
-                                ← Back
-                            </button>
-                            <button
-                                onClick={() => fetchFiles(currentPath)}
-                                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors"
-                            >
-                                🔄 Refresh
-                            </button>
-                        </div>
+                    {/* Address Bar */}
+                    <div className="address-bar">
+                        {getBreadcrumbs().map((crumb, index) => (
+                            <span key={index}>
+                                <button
+                                    onClick={() => fetchFiles(crumb.path)}
+                                    className="text-blue-600 hover:underline"
+                                >
+                                    {crumb.name}
+                                </button>
+                                {index < getBreadcrumbs().length - 1 && <span className="mx-1">›</span>}
+                            </span>
+                        ))}
                     </div>
                 </div>
-
-                {error && (
-                    <div className="bg-red-500 bg-opacity-20 border border-red-500 text-red-200 px-4 py-2 rounded mb-4">
-                        {error}
-                    </div>
-                )}
 
                 {/* File List */}
-                <div className="glass-effect rounded-lg p-6">
-                    <div className="flex justify-between items-center mb-4">
-                        <h2 className="text-lg font-semibold text-blue-300">
-                            Files & Folders
-                        </h2>
-                        <div className="text-sm text-gray-400">
-                            {files.length} items
+                <div className="file-list flex-1 overflow-auto">
+                    {loading ? (
+                        <div className="flex items-center justify-center h-full">
+                            <div className="text-center">
+                                <div className="loading-spinner mx-auto mb-2"></div>
+                                <p className="text-sm text-gray-600">Loading files...</p>
+                            </div>
                         </div>
-                    </div>
-
-                    {files.length === 0 ? (
-                        <div className="text-center py-12 text-gray-400">
-                            <div className="text-6xl mb-4">📁</div>
-                            <p className="text-lg">This directory is empty</p>
-                            <p className="text-sm mt-2">No files or folders found</p>
+                    ) : error ? (
+                        <div className="flex items-center justify-center h-full">
+                            <div className="text-center text-red-600">
+                                <p>❌ {error}</p>
+                            </div>
+                        </div>
+                    ) : files.length === 0 ? (
+                        <div className="flex items-center justify-center h-full">
+                            <div className="text-center text-gray-500">
+                                <p>📁 This folder is empty</p>
+                            </div>
                         </div>
                     ) : (
-                        <div className="space-y-2">
-                            {files.map((item, index) => (
-                                <div
-                                    key={index}
-                                    onClick={() => handleItemClick(item)}
-                                    className="flex items-center p-4 bg-gray-800 bg-opacity-30 rounded-lg hover:bg-opacity-50 transition-all cursor-pointer group"
-                                >
-                                    <div className="text-3xl mr-4">
-                                        {getFileIcon(item)}
-                                    </div>
-                                    <div className="flex-1 min-w-0">
-                                        <div className="font-medium text-white group-hover:text-blue-300 transition-colors">
-                                            {item.name}
-                                        </div>
-                                        <div className="text-sm text-gray-400 truncate">
-                                            {item.path}
-                                        </div>
-                                    </div>
-                                    <div className="text-gray-400 group-hover:text-gray-300">
-                                        {item.name.includes('.') ? '📄' : '📁→'}
-                                    </div>
+                        files.map((item, index) => (
+                            <div
+                                key={index}
+                                onClick={() => handleItemClick(item)}
+                                className="file-item"
+                            >
+                                <div className="file-icon">
+                                    {getFileIcon(item)}
                                 </div>
-                            ))}
-                        </div>
+                                <div className="file-name">
+                                    {item.name}
+                                </div>
+                            </div>
+                        ))
                     )}
                 </div>
 
-                {/* Action Bar */}
-                <div className="glass-effect rounded-lg p-4 mt-6">
-                    <div className="flex justify-between items-center">
-                        <div className="flex space-x-2">
+                {/* Status Bar */}
+                <div className="status-bar">
+                    {files.length} items | Current: /{currentPath || 'storage'}
+                </div>
+            </div>
+
+            {/* Drag and Drop Overlay */}
+            {dragOver && (
+                <div className="drag-overlay">
+                    <div className="drag-message">
+                        <div style={{fontSize: '48px', marginBottom: '16px'}}>📤</div>
+                        <h2 style={{fontSize: '18px', fontWeight: '600', marginBottom: '8px'}}>Drop files here</h2>
+                        <p style={{color: '#666', fontSize: '14px'}}>Release to upload files to current folder</p>
+                    </div>
+                </div>
+            )}
+
+            {/* Upload Progress */}
+            {uploading && (
+                <div style={{
+                    position: 'fixed',
+                    bottom: '16px',
+                    right: '16px',
+                    background: 'white',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    zIndex: 100
+                }}>
+                    <div className="loading-spinner"></div>
+                    <span style={{fontSize: '14px'}}>Uploading files...</span>
+                </div>
+            )}
+
+            {/* New Folder Dialog */}
+            {showNewFolderDialog && (
+                <div className="modal-overlay">
+                    <div className="modal">
+                        <div className="modal-header">Create New Folder</div>
+                        <input
+                            type="text"
+                            value={newFolderName}
+                            onChange={(e) => setNewFolderName(e.target.value)}
+                            placeholder="Enter folder name"
+                            className="modal-input"
+                            onKeyPress={(e) => e.key === 'Enter' && handleNewFolder()}
+                            autoFocus
+                        />
+                        <div className="modal-buttons">
                             <button
-                                onClick={() => setShowNewFolderDialog(true)}
-                                className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded transition-colors"
+                                onClick={() => {
+                                    setShowNewFolderDialog(false);
+                                    setNewFolderName('');
+                                }}
+                                className="modal-button"
                             >
-                                📁 New Folder
+                                Cancel
                             </button>
                             <button
-                                onClick={handleUploadClick}
-                                disabled={uploading}
-                                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:cursor-not-allowed text-white rounded transition-colors"
+                                onClick={handleNewFolder}
+                                className="modal-button primary"
                             >
-                                {uploading ? '⏳ Uploading...' : '📤 Upload Files'}
+                                Create
                             </button>
-                        </div>
-                        <div className="text-sm text-gray-400">
-                            Current: /{currentPath || 'storage'}
                         </div>
                     </div>
                 </div>
-
-                {/* Drag and Drop Overlay */}
-                {dragOver && (
-                    <div className="fixed inset-0 bg-blue-600 bg-opacity-30 flex items-center justify-center z-50 pointer-events-none">
-                        <div className="glass-effect rounded-lg p-8 text-center">
-                            <div className="text-6xl mb-4">📤</div>
-                            <h2 className="text-2xl font-bold text-blue-300 mb-2">Drop Files Here</h2>
-                            <p className="text-gray-300">Release to upload files to current directory</p>
-                        </div>
-                    </div>
-                )}
-
-                {/* Upload Progress */}
-                {uploading && (
-                    <div className="fixed bottom-4 right-4 glass-effect rounded-lg p-4 z-40">
-                        <div className="flex items-center space-x-3">
-                            <div className="loading-spinner"></div>
-                            <span className="text-blue-300">Uploading files...</span>
-                        </div>
-                    </div>
-                )}
-
-                {/* New Folder Dialog */}
-                {showNewFolderDialog && (
-                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                        <div className="glass-effect rounded-lg p-6 w-full max-w-md">
-                            <h3 className="text-lg font-semibold text-blue-300 mb-4">Create New Folder</h3>
-                            <input
-                                type="text"
-                                value={newFolderName}
-                                onChange={(e) => setNewFolderName(e.target.value)}
-                                placeholder="Enter folder name"
-                                className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded focus:outline-none focus:border-blue-500 mb-4"
-                                onKeyPress={(e) => e.key === 'Enter' && handleNewFolder()}
-                                autoFocus
-                            />
-                            <div className="flex space-x-3">
-                                <button
-                                    onClick={handleNewFolder}
-                                    className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2 px-4 rounded transition-colors"
-                                >
-                                    Create
-                                </button>
-                                <button
-                                    onClick={() => {
-                                        setShowNewFolderDialog(false);
-                                        setNewFolderName('');
-                                    }}
-                                    className="flex-1 bg-gray-600 hover:bg-gray-500 text-white py-2 px-4 rounded transition-colors"
-                                >
-                                    Cancel
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
-            </div>
+            )}
         </div>
     );
 };
