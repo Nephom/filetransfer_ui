@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Transfer UI - Futuristic File Manager</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📁</text></svg>">
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
         body {
@@ -341,10 +342,62 @@
         </div>
     </div>
     
-    <!-- React and other dependencies -->
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- React and other dependencies (Local copies for better security and reliability) -->
+    <script crossorigin src="/lib/react.development.js" onerror="loadReactFromCDN()"></script>
+    <script crossorigin src="/lib/react-dom.development.js" onerror="loadReactDOMFromCDN()"></script>
+    <script src="/lib/babel.min.js" onerror="loadBabelFromCDN()"></script>
+
+    <!-- CDN Fallback Script -->
+    <script>
+        let reactLoaded = false;
+        let reactDOMLoaded = false;
+        let babelLoaded = false;
+
+        function loadReactFromCDN() {
+            if (!reactLoaded) {
+                console.warn('Loading React from CDN fallback...');
+                const script = document.createElement('script');
+                script.crossOrigin = 'anonymous';
+                script.src = 'https://unpkg.com/react@18.3.1/umd/react.development.js';
+                script.onload = () => { reactLoaded = true; };
+                document.head.appendChild(script);
+            }
+        }
+
+        function loadReactDOMFromCDN() {
+            if (!reactDOMLoaded) {
+                console.warn('Loading ReactDOM from CDN fallback...');
+                const script = document.createElement('script');
+                script.crossOrigin = 'anonymous';
+                script.src = 'https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js';
+                script.onload = () => { reactDOMLoaded = true; };
+                document.head.appendChild(script);
+            }
+        }
+
+        function loadBabelFromCDN() {
+            if (!babelLoaded) {
+                console.warn('Loading Babel from CDN fallback...');
+                const script = document.createElement('script');
+                script.src = 'https://unpkg.com/@babel/standalone@7.25.9/babel.min.js';
+                script.onload = () => { babelLoaded = true; };
+                document.head.appendChild(script);
+            }
+        }
+
+        // Check if libraries loaded successfully
+        window.addEventListener('load', () => {
+            if (typeof React === 'undefined') {
+                console.error('React failed to load from local files and CDN');
+            }
+            if (typeof ReactDOM === 'undefined') {
+                console.error('ReactDOM failed to load from local files and CDN');
+            }
+            if (typeof Babel === 'undefined') {
+                console.error('Babel failed to load from local files and CDN');
+            }
+        });
+    </script>
     
     <!-- Main App Script -->
     <script type="text/babel" src="/app.js"></script>
