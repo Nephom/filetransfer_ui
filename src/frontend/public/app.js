@@ -98,6 +98,8 @@ const FileBrowser = ({ token, user }) => {
     const [showNewFolderDialog, setShowNewFolderDialog] = useState(false);
     const [newFolderName, setNewFolderName] = useState('');
     const [uploading, setUploading] = useState(false);
+    const [dragOver, setDragOver] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
 
     const fetchFiles = async (path = '') => {
         setLoading(true);
@@ -272,88 +274,40 @@ const FileBrowser = ({ token, user }) => {
         input.click();
     };
 
-    const handleNewFolder = async () => {
-        if (!newFolderName.trim()) {
-            alert('Please enter a folder name');
-            return;
-        }
+    // Drag and Drop handlers
+    const handleDragEnter = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(true);
+    };
 
-        try {
-            const response = await fetch('/api/folders', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({
-                    folderName: newFolderName.trim(),
-                    currentPath: currentPath
-                })
-            });
-
-            const result = await response.json();
-
-            if (response.ok) {
-                setNewFolderName('');
-                setShowNewFolderDialog(false);
-                // Refresh the current directory
-                fetchFiles(currentPath);
-            } else {
-                alert(result.error || 'Failed to create folder');
-            }
-        } catch (error) {
-            console.error('Create folder error:', error);
-            alert('Failed to create folder');
+    const handleDragLeave = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Only set dragOver to false if we're leaving the main container
+        if (!e.currentTarget.contains(e.relatedTarget)) {
+            setDragOver(false);
         }
     };
 
-    const handleFileUpload = async (files) => {
-        if (!files || files.length === 0) return;
+    const handleDragOver = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(true);
+    };
 
-        setUploading(true);
-        const formData = new FormData();
+    const handleDrop = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setDragOver(false);
 
-        // Add all files to FormData
-        Array.from(files).forEach(file => {
-            formData.append('files', file);
-        });
-
-        // Add current path
-        formData.append('currentPath', currentPath);
-
-        try {
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                },
-                body: formData
-            });
-
-            const result = await response.json();
-
-            if (response.ok) {
-                alert(result.message || 'Files uploaded successfully');
-                // Refresh the current directory
-                fetchFiles(currentPath);
-            } else {
-                alert(result.error || 'Failed to upload files');
-            }
-        } catch (error) {
-            console.error('Upload error:', error);
-            alert('Failed to upload files');
-        } finally {
-            setUploading(false);
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length > 0) {
+            handleFileUpload(files);
         }
     };
 
-    const handleUploadClick = () => {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.multiple = true;
-        input.onchange = (e) => handleFileUpload(e.target.files);
-        input.click();
-    };
+
 
     if (loading) {
         return (
@@ -367,7 +321,15 @@ const FileBrowser = ({ token, user }) => {
     }
 
     return (
-        <div className="min-h-screen p-6">
+        <div
+            className={`min-h-screen p-6 transition-all duration-300 ${
+                dragOver ? 'bg-blue-900 bg-opacity-20' : ''
+            }`}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+        >
             <div className="max-w-7xl mx-auto">
                 {/* Header */}
                 <div className="glass-effect rounded-lg p-4 mb-6 flex justify-between items-center">
@@ -485,11 +447,18 @@ const FileBrowser = ({ token, user }) => {
                 <div className="glass-effect rounded-lg p-4 mt-6">
                     <div className="flex justify-between items-center">
                         <div className="flex space-x-2">
-                            <button className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded transition-colors">
+                            <button
+                                onClick={() => setShowNewFolderDialog(true)}
+                                className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded transition-colors"
+                            >
                                 📁 New Folder
                             </button>
-                            <button className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors">
-                                📤 Upload Files
+                            <button
+                                onClick={handleUploadClick}
+                                disabled={uploading}
+                                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-800 disabled:cursor-not-allowed text-white rounded transition-colors"
+                            >
+                                {uploading ? '⏳ Uploading...' : '📤 Upload Files'}
                             </button>
                         </div>
                         <div className="text-sm text-gray-400">
@@ -497,6 +466,62 @@ const FileBrowser = ({ token, user }) => {
                         </div>
                     </div>
                 </div>
+
+                {/* Drag and Drop Overlay */}
+                {dragOver && (
+                    <div className="fixed inset-0 bg-blue-600 bg-opacity-30 flex items-center justify-center z-50 pointer-events-none">
+                        <div className="glass-effect rounded-lg p-8 text-center">
+                            <div className="text-6xl mb-4">📤</div>
+                            <h2 className="text-2xl font-bold text-blue-300 mb-2">Drop Files Here</h2>
+                            <p className="text-gray-300">Release to upload files to current directory</p>
+                        </div>
+                    </div>
+                )}
+
+                {/* Upload Progress */}
+                {uploading && (
+                    <div className="fixed bottom-4 right-4 glass-effect rounded-lg p-4 z-40">
+                        <div className="flex items-center space-x-3">
+                            <div className="loading-spinner"></div>
+                            <span className="text-blue-300">Uploading files...</span>
+                        </div>
+                    </div>
+                )}
+
+                {/* New Folder Dialog */}
+                {showNewFolderDialog && (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                        <div className="glass-effect rounded-lg p-6 w-full max-w-md">
+                            <h3 className="text-lg font-semibold text-blue-300 mb-4">Create New Folder</h3>
+                            <input
+                                type="text"
+                                value={newFolderName}
+                                onChange={(e) => setNewFolderName(e.target.value)}
+                                placeholder="Enter folder name"
+                                className="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded focus:outline-none focus:border-blue-500 mb-4"
+                                onKeyPress={(e) => e.key === 'Enter' && handleNewFolder()}
+                                autoFocus
+                            />
+                            <div className="flex space-x-3">
+                                <button
+                                    onClick={handleNewFolder}
+                                    className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-2 px-4 rounded transition-colors"
+                                >
+                                    Create
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setShowNewFolderDialog(false);
+                                        setNewFolderName('');
+                                    }}
+                                    className="flex-1 bg-gray-600 hover:bg-gray-500 text-white py-2 px-4 rounded transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
