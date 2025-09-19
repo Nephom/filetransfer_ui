@@ -7,41 +7,207 @@
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <style>
         body {
-            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #f0f0f0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
         }
-        
-        .glass-effect {
-            background: rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
+
+        .explorer-window {
+            background: white;
+            border: 1px solid #d1d5db;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
         }
-        
-        .neon-glow {
-            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+
+        .toolbar {
+            background: #f8f9fa;
+            border-bottom: 1px solid #e5e7eb;
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
-        
+
+        .toolbar-button {
+            background: #ffffff;
+            border: 1px solid #d1d5db;
+            padding: 6px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .toolbar-button:hover {
+            background: #f3f4f6;
+            border-color: #9ca3af;
+        }
+
+        .toolbar-button:active {
+            background: #e5e7eb;
+        }
+
+        .address-bar {
+            background: white;
+            border: 1px solid #d1d5db;
+            padding: 6px 8px;
+            flex: 1;
+            margin: 0 8px;
+            font-size: 13px;
+            border-radius: 3px;
+        }
+
+        .file-list {
+            background: white;
+            min-height: 400px;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            padding: 4px 12px;
+            border-bottom: 1px solid transparent;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .file-item:hover {
+            background: #e3f2fd;
+        }
+
+        .file-item.selected {
+            background: #2196f3;
+            color: white;
+        }
+
+        .file-icon {
+            width: 16px;
+            height: 16px;
+            margin-right: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+
+        .file-name {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .status-bar {
+            background: #f8f9fa;
+            border-top: 1px solid #e5e7eb;
+            padding: 4px 12px;
+            font-size: 12px;
+            color: #6b7280;
+        }
+
         .loading-spinner {
-            border: 3px solid rgba(59, 130, 246, 0.3);
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #2196f3;
             border-radius: 50%;
-            border-top: 3px solid #3b82f6;
-            width: 40px;
-            height: 40px;
+            width: 16px;
+            height: 16px;
             animation: spin 1s linear infinite;
+            display: inline-block;
         }
-        
+
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        
-        .fade-in {
-            animation: fadeIn 0.5s ease-in;
+
+        .drag-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(33, 150, 243, 0.1);
+            border: 3px dashed #2196f3;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            pointer-events: none;
         }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
+
+        .drag-message {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            text-align: center;
+        }
+
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            min-width: 300px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .modal-header {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+
+        .modal-input {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+
+        .modal-button {
+            padding: 8px 16px;
+            border: 1px solid #d1d5db;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .modal-button.primary {
+            background: #2196f3;
+            color: white;
+            border-color: #2196f3;
+        }
+
+        .modal-button:hover {
+            background: #f3f4f6;
+        }
+
+        .modal-button.primary:hover {
+            background: #1976d2;
         }
     </style>
 </head>

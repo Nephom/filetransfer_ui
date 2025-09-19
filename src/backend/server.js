@@ -221,39 +221,49 @@ app.post('/api/files/move', authenticate, async (req, res) => {
 app.post('/api/upload', authenticate, (req, res) => {
   const storagePath = configManager.get('fileSystem.basePath') || './storage';
 
-  // Configure multer for file uploads
-  const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      const uploadPath = req.body.currentPath
-        ? `${storagePath}/${req.body.currentPath}`
-        : storagePath;
-      cb(null, uploadPath);
-    },
-    filename: (req, file, cb) => {
-      // Use original filename
-      cb(null, file.originalname);
-    }
-  });
+  // First, parse the form to get currentPath
+  const upload = multer().array('files');
 
-  const upload = multer({
-    storage: storage,
-    limits: {
-      fileSize: 100 * 1024 * 1024 // 100MB limit
-    }
-  }).array('files');
-
-  upload(req, res, (err) => {
+  upload(req, res, async (err) => {
     if (err) {
       console.error('Upload error:', err);
       return res.status(500).json({ error: err.message });
     }
 
-    console.log('Files uploaded:', req.files?.map(f => f.filename));
-    res.json({
-      success: true,
-      message: `${req.files?.length || 0} file(s) uploaded successfully`,
-      files: req.files?.map(f => ({ name: f.filename, size: f.size }))
-    });
+    try {
+      const currentPath = req.body.currentPath || '';
+      const uploadPath = currentPath
+        ? `${storagePath}/${currentPath}`
+        : storagePath;
+
+      console.log('Upload path:', uploadPath);
+      console.log('Current path from request:', currentPath);
+
+      // Ensure upload directory exists
+      const fs = require('fs').promises;
+      await fs.mkdir(uploadPath, { recursive: true });
+
+      // Save each file to the correct location
+      const savedFiles = [];
+      for (const file of req.files || []) {
+        const filePath = `${uploadPath}/${file.originalname}`;
+        await fs.writeFile(filePath, file.buffer);
+        savedFiles.push({ name: file.originalname, size: file.size });
+      }
+
+      console.log('Files uploaded to:', uploadPath);
+      console.log('Files saved:', savedFiles.map(f => f.name));
+
+      res.json({
+        success: true,
+        message: `${savedFiles.length} file(s) uploaded successfully to ${currentPath || 'root'}`,
+        files: savedFiles,
+        uploadPath: currentPath
+      });
+    } catch (error) {
+      console.error('File save error:', error);
+      res.status(500).json({ error: error.message });
+    }
   });
 });
 
