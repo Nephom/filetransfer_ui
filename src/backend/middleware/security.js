@@ -36,23 +36,39 @@ const fileLimiter = rateLimit({
   }
 });
 
-// Security headers middleware
+// Security headers middleware with development/production modes
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
 const securityHeaders = helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"], // Allow inline styles for themes
+      scriptSrc: [
+        "'self'",
+        "'unsafe-inline'", // Allow inline scripts for React components
+        "'unsafe-eval'" // Required for Babel JSX transformation
+      ].concat(isDevelopment ? [
+        // In development, allow CDN fallbacks
+        "https://unpkg.com",
+        "https://cdn.jsdelivr.net"
+      ] : []),
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: ["'self'"],
-      fontSrc: ["'self'"],
+      fontSrc: ["'self'", "https:", "data:"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
       frameSrc: ["'none'"],
+      childSrc: ["'none'"],
+      workerSrc: ["'none'"],
+      manifestSrc: ["'self'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      upgradeInsecureRequests: isDevelopment ? null : []
     },
   },
   crossOriginEmbedderPolicy: false,
-  hsts: {
+  hsts: isDevelopment ? false : {
     maxAge: 31536000,
     includeSubDomains: true,
     preload: true
