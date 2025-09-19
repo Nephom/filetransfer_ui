@@ -3,11 +3,22 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const multer = require('multer');
+const bcrypt = require('bcrypt');
+const fs = require('fs').promises;
 const ConfigManager = require('./config');
 const { FileSystem } = require('./file-system');
 const AuthManager = require('./auth');
 const { transferManager } = require('./transfer');
 const { authenticate, setJwtSecret } = require('./middleware/auth');
+const {
+  authLimiter,
+  fileLimiter,
+  securityHeaders,
+  requestLogger,
+  validateInput,
+  fileUploadSecurity,
+  securityManager
+} = require('./middleware/security');
 
 // Initialize configuration
 const configManager = new ConfigManager();
@@ -19,9 +30,55 @@ const app = express();
 let authManager;
 let fileSystem;
 
-// Middleware
+// Security checks and recommendations on startup
+async function performSecurityChecks() {
+  console.log('\n🔒 SECURITY CHECKS');
+  console.log('='.repeat(50));
+
+  // Check config file permissions
+  const configPath = './src/config.ini';
+  const isSecure = await securityManager.validateConfigSecurity(configPath);
+
+  if (!isSecure) {
+    console.log('⚠️  Config file has insecure permissions');
+  } else {
+    console.log('✅ Config file permissions are secure');
+  }
+
+  // Get security recommendations
+  const recommendations = securityManager.getSecurityRecommendations();
+
+  if (recommendations.length > 0) {
+    console.log('\n📋 SECURITY RECOMMENDATIONS:');
+    recommendations.forEach((rec, index) => {
+      console.log(`${index + 1}. [${rec.level}] ${rec.message}`);
+      console.log(`   Action: ${rec.action}\n`);
+    });
+  } else {
+    console.log('✅ All security recommendations are implemented');
+  }
+
+  // Log security configuration
+  console.log('🛡️  SECURITY FEATURES ENABLED:');
+  console.log('   ✅ Rate limiting (auth: 5/15min, files: 50/min)');
+  console.log('   ✅ Security headers (HSTS, CSP, etc.)');
+  console.log('   ✅ Input validation and sanitization');
+  console.log('   ✅ File upload security checks');
+  console.log('   ✅ Request logging and monitoring');
+  console.log('   ✅ Password hashing with bcrypt');
+  console.log('   ✅ JWT token authentication');
+
+  console.log('='.repeat(50));
+}
+
+// Security middleware
+app.use(securityHeaders);
+app.use(requestLogger);
+app.use(validateInput);
+
+// Basic middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '../frontend/public')));
 
 // Routes
@@ -40,7 +97,7 @@ app.post('/auth/register', async (req, res) => {
   }
 });
 
-app.post('/auth/login', async (req, res) => {
+app.post('/auth/login', authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -76,6 +133,173 @@ app.post('/auth/login', async (req, res) => {
     }
   } catch (error) {
     res.status(401).json({ error: error.message });
+  }
+});
+
+// Change password endpoint
+app.post('/auth/change-password', authLimiter, authenticate, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+
+    // Get current credentials from config
+    const configUsername = configManager.get('auth.username');
+    const configPassword = configManager.get('auth.password');
+
+    // Verify current password
+    if (currentPassword !== configPassword) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash the new password
+    const saltRounds = 12;
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update config file
+    const configPath = './src/config.ini';
+    let configContent = await fs.readFile(configPath, 'utf8');
+
+    // Replace password line
+    configContent = configContent.replace(
+      /^password=.*$/m,
+      `password=${hashedPassword}`
+    );
+
+    // Add hash indicator if not present
+    if (!configContent.includes('passwordHashed=true')) {
+      configContent += '\npasswordHashed=true';
+    } else {
+      configContent = configContent.replace(
+        /^passwordHashed=.*$/m,
+        'passwordHashed=true'
+      );
+    }
+
+    await fs.writeFile(configPath, configContent);
+
+    // Reload configuration
+    await configManager.load();
+
+    console.log('Password changed successfully for user:', req.user.username);
+
+    res.json({
+      success: true,
+      message: 'Password changed successfully. Please login again with your new password.'
+    });
+  } catch (error) {
+    console.error('Password change error:', error);
+    res.status(500).json({ error: 'Failed to change password' });
+  }
+});
+
+// Forgot password endpoint (generates temporary reset token)
+app.post('/auth/forgot-password', authLimiter, async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username) {
+      return res.status(400).json({ error: 'Username is required' });
+    }
+
+    const configUsername = configManager.get('auth.username');
+
+    if (username !== configUsername) {
+      // Don't reveal if username exists or not
+      return res.json({
+        success: true,
+        message: 'If the username exists, a reset token has been generated. Check the server console.'
+      });
+    }
+
+    // Generate a temporary reset token (valid for 15 minutes)
+    const resetToken = require('crypto').randomBytes(32).toString('hex');
+    const resetExpiry = Date.now() + 15 * 60 * 1000; // 15 minutes
+
+    // Store reset token temporarily (in production, use database)
+    global.resetTokens = global.resetTokens || {};
+    global.resetTokens[username] = {
+      token: resetToken,
+      expiry: resetExpiry
+    };
+
+    console.log('='.repeat(60));
+    console.log('🔐 PASSWORD RESET REQUEST');
+    console.log('='.repeat(60));
+    console.log(`Username: ${username}`);
+    console.log(`Reset Token: ${resetToken}`);
+    console.log(`Valid until: ${new Date(resetExpiry).toLocaleString()}`);
+    console.log('Use this token to reset your password within 15 minutes.');
+    console.log('='.repeat(60));
+
+    res.json({
+      success: true,
+      message: 'Reset token generated. Check the server console for the token.'
+    });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: 'Failed to process forgot password request' });
+  }
+});
+
+// Reset password with token
+app.post('/auth/reset-password', authLimiter, async (req, res) => {
+  try {
+    const { username, resetToken, newPassword } = req.body;
+
+    if (!username || !resetToken || !newPassword) {
+      return res.status(400).json({ error: 'Username, reset token, and new password are required' });
+    }
+
+    // Check if reset token exists and is valid
+    const storedToken = global.resetTokens?.[username];
+    if (!storedToken || storedToken.token !== resetToken || Date.now() > storedToken.expiry) {
+      return res.status(401).json({ error: 'Invalid or expired reset token' });
+    }
+
+    // Hash the new password
+    const saltRounds = 12;
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update config file
+    const configPath = './src/config.ini';
+    let configContent = await fs.readFile(configPath, 'utf8');
+
+    // Replace password line
+    configContent = configContent.replace(
+      /^password=.*$/m,
+      `password=${hashedPassword}`
+    );
+
+    // Add hash indicator
+    if (!configContent.includes('passwordHashed=true')) {
+      configContent += '\npasswordHashed=true';
+    } else {
+      configContent = configContent.replace(
+        /^passwordHashed=.*$/m,
+        'passwordHashed=true'
+      );
+    }
+
+    await fs.writeFile(configPath, configContent);
+
+    // Clear the used reset token
+    delete global.resetTokens[username];
+
+    // Reload configuration
+    await configManager.load();
+
+    console.log('Password reset successfully for user:', username);
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully. Please login with your new password.'
+    });
+  } catch (error) {
+    console.error('Password reset error:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 
@@ -218,7 +442,7 @@ app.post('/api/files/move', authenticate, async (req, res) => {
 });
 
 // File upload endpoint
-app.post('/api/upload', authenticate, (req, res) => {
+app.post('/api/upload', fileLimiter, authenticate, fileUploadSecurity, (req, res) => {
   const storagePath = configManager.get('fileSystem.basePath') || './storage';
 
   // First, parse the form to get currentPath
@@ -305,8 +529,13 @@ async function startServer() {
     console.log('- Username:', configManager.get('auth.username'));
     console.log('- Storage Path:', configManager.get('fileSystem.basePath'));
 
-    app.listen(port, () => {
+    app.listen(port, async () => {
       console.log(`File Transfer API listening at http://localhost:${port}`);
+
+      // Perform security checks
+      await performSecurityChecks();
+
+      console.log('\n🚀 Server is ready and secure!');
     });
   } catch (error) {
     console.error('Failed to start server:', error);

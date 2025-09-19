@@ -5,6 +5,9 @@ const LoginForm = ({ onLogin }) => {
     const [credentials, setCredentials] = useState({ username: '', password: '' });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
+    const [showForgotPassword, setShowForgotPassword] = useState(false);
+    const [showResetPassword, setShowResetPassword] = useState(false);
+    const [resetForm, setResetForm] = useState({ username: '', resetToken: '', newPassword: '', confirmPassword: '' });
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -25,6 +28,73 @@ const LoginForm = ({ onLogin }) => {
                 onLogin(data.user, data.token);
             } else {
                 setError(data.error || 'Login failed');
+            }
+        } catch (err) {
+            setError('Connection error');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleForgotPassword = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setError('');
+
+        try {
+            const response = await fetch('/auth/forgot-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: resetForm.username })
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                alert(result.message);
+                setShowForgotPassword(false);
+                setShowResetPassword(true);
+            } else {
+                setError(result.error || 'Failed to process request');
+            }
+        } catch (err) {
+            setError('Connection error');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleResetPassword = async (e) => {
+        e.preventDefault();
+
+        if (resetForm.newPassword !== resetForm.confirmPassword) {
+            setError('Passwords do not match');
+            return;
+        }
+
+        setLoading(true);
+        setError('');
+
+        try {
+            const response = await fetch('/auth/reset-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: resetForm.username,
+                    resetToken: resetForm.resetToken,
+                    newPassword: resetForm.newPassword
+                })
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                alert(result.message);
+                setShowResetPassword(false);
+                setShowForgotPassword(false);
+                setResetForm({ username: '', resetToken: '', newPassword: '', confirmPassword: '' });
+            } else {
+                setError(result.error || 'Failed to reset password');
             }
         } catch (err) {
             setError('Connection error');
@@ -81,9 +151,114 @@ const LoginForm = ({ onLogin }) => {
                     </button>
                 </form>
 
-                <div className="mt-4 text-center text-sm text-gray-500">
+                <div className="mt-4 text-center">
+                    <button
+                        type="button"
+                        onClick={() => setShowForgotPassword(true)}
+                        className="text-sm text-blue-500 hover:text-blue-600 underline"
+                    >
+                        Forgot Password?
+                    </button>
+                </div>
+
+                <div className="mt-2 text-center text-sm text-gray-500">
                     Default: admin / password
                 </div>
+
+                {/* Forgot Password Dialog */}
+                {showForgotPassword && (
+                    <div className="modal-overlay">
+                        <div className="modal">
+                            <div className="modal-header">Forgot Password</div>
+                            <p className="text-sm text-gray-600 mb-4">
+                                Enter your username to receive a reset token in the server console.
+                            </p>
+                            <form onSubmit={handleForgotPassword}>
+                                <input
+                                    type="text"
+                                    value={resetForm.username}
+                                    onChange={(e) => setResetForm({...resetForm, username: e.target.value})}
+                                    placeholder="Enter username"
+                                    className="modal-input"
+                                    required
+                                />
+                                <div className="modal-buttons">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowForgotPassword(false)}
+                                        className="modal-button"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={loading}
+                                        className="modal-button primary"
+                                    >
+                                        {loading ? 'Processing...' : 'Get Reset Token'}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
+
+                {/* Reset Password Dialog */}
+                {showResetPassword && (
+                    <div className="modal-overlay">
+                        <div className="modal">
+                            <div className="modal-header">Reset Password</div>
+                            <p className="text-sm text-gray-600 mb-4">
+                                Enter the reset token from the server console and your new password.
+                            </p>
+                            <form onSubmit={handleResetPassword}>
+                                <input
+                                    type="text"
+                                    value={resetForm.resetToken}
+                                    onChange={(e) => setResetForm({...resetForm, resetToken: e.target.value})}
+                                    placeholder="Reset token from server console"
+                                    className="modal-input"
+                                    required
+                                />
+                                <input
+                                    type="password"
+                                    value={resetForm.newPassword}
+                                    onChange={(e) => setResetForm({...resetForm, newPassword: e.target.value})}
+                                    placeholder="New password"
+                                    className="modal-input"
+                                    required
+                                />
+                                <input
+                                    type="password"
+                                    value={resetForm.confirmPassword}
+                                    onChange={(e) => setResetForm({...resetForm, confirmPassword: e.target.value})}
+                                    placeholder="Confirm new password"
+                                    className="modal-input"
+                                    required
+                                />
+                                <div className="modal-buttons">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setShowResetPassword(false);
+                                            setShowForgotPassword(false);
+                                        }}
+                                        className="modal-button"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={loading}
+                                        className="modal-button primary"
+                                    >
+                                        {loading ? 'Resetting...' : 'Reset Password'}
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -103,6 +278,9 @@ const FileBrowser = ({ token, user }) => {
     const [uploading, setUploading] = useState(false);
     const [dragOver, setDragOver] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
+    const [currentTheme, setCurrentTheme] = useState(localStorage.getItem('theme') || 'default');
+    const [showPasswordDialog, setShowPasswordDialog] = useState(false);
+    const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
 
     const fetchFiles = async (path = '') => {
         setLoading(true);
@@ -317,6 +495,51 @@ const FileBrowser = ({ token, user }) => {
         }
     };
 
+    const handleThemeChange = (theme) => {
+        setCurrentTheme(theme);
+        localStorage.setItem('theme', theme);
+        document.body.className = `theme-${theme}`;
+    };
+
+    const handlePasswordChange = async () => {
+        if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+            alert('New passwords do not match');
+            return;
+        }
+
+        try {
+            const response = await fetch('/auth/change-password', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    currentPassword: passwordForm.currentPassword,
+                    newPassword: passwordForm.newPassword
+                })
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                alert('Password changed successfully');
+                setShowPasswordDialog(false);
+                setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+            } else {
+                alert(result.error || 'Failed to change password');
+            }
+        } catch (error) {
+            console.error('Password change error:', error);
+            alert('Failed to change password');
+        }
+    };
+
+    // Apply theme on component mount
+    React.useEffect(() => {
+        document.body.className = `theme-${currentTheme}`;
+    }, [currentTheme]);
+
 
 
     return (
@@ -335,6 +558,42 @@ const FileBrowser = ({ token, user }) => {
                     </div>
                     <div className="flex items-center space-x-2">
                         <span className="text-sm text-gray-600">Welcome, {user?.username}</span>
+
+                        {/* Theme Selector */}
+                        <div className="theme-selector">
+                            <span className="text-xs text-gray-500">Theme:</span>
+                            <button
+                                onClick={() => handleThemeChange('default')}
+                                className={`theme-button ${currentTheme === 'default' ? 'active' : ''}`}
+                                style={{background: '#f0f0f0'}}
+                                title="Default Theme"
+                            ></button>
+                            <button
+                                onClick={() => handleThemeChange('dark')}
+                                className={`theme-button ${currentTheme === 'dark' ? 'active' : ''}`}
+                                style={{background: '#2d3748'}}
+                                title="Dark Theme"
+                            ></button>
+                            <button
+                                onClick={() => handleThemeChange('blue')}
+                                className={`theme-button ${currentTheme === 'blue' ? 'active' : ''}`}
+                                style={{background: '#3182ce'}}
+                                title="Blue Theme"
+                            ></button>
+                            <button
+                                onClick={() => handleThemeChange('green')}
+                                className={`theme-button ${currentTheme === 'green' ? 'active' : ''}`}
+                                style={{background: '#38a169'}}
+                                title="Green Theme"
+                            ></button>
+                        </div>
+
+                        <button
+                            onClick={() => setShowPasswordDialog(true)}
+                            className="text-sm px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
+                        >
+                            Change Password
+                        </button>
                         <button
                             onClick={handleLogout}
                             className="text-sm px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
@@ -498,6 +757,54 @@ const FileBrowser = ({ token, user }) => {
                                 className="modal-button primary"
                             >
                                 Create
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Change Password Dialog */}
+            {showPasswordDialog && (
+                <div className="modal-overlay">
+                    <div className="modal">
+                        <div className="modal-header">Change Password</div>
+                        <input
+                            type="password"
+                            value={passwordForm.currentPassword}
+                            onChange={(e) => setPasswordForm({...passwordForm, currentPassword: e.target.value})}
+                            placeholder="Current password"
+                            className="modal-input"
+                        />
+                        <input
+                            type="password"
+                            value={passwordForm.newPassword}
+                            onChange={(e) => setPasswordForm({...passwordForm, newPassword: e.target.value})}
+                            placeholder="New password"
+                            className="modal-input"
+                        />
+                        <input
+                            type="password"
+                            value={passwordForm.confirmPassword}
+                            onChange={(e) => setPasswordForm({...passwordForm, confirmPassword: e.target.value})}
+                            placeholder="Confirm new password"
+                            className="modal-input"
+                            onKeyPress={(e) => e.key === 'Enter' && handlePasswordChange()}
+                        />
+                        <div className="modal-buttons">
+                            <button
+                                onClick={() => {
+                                    setShowPasswordDialog(false);
+                                    setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+                                }}
+                                className="modal-button"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handlePasswordChange}
+                                className="modal-button primary"
+                            >
+                                Change Password
                             </button>
                         </div>
                     </div>
