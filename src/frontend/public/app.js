@@ -1,886 +1,1315 @@
-const { useState, useEffect } = React;
+// File Transfer UI - Simple Application
+console.log('App: Starting...');
 
-// Authentication Component
-const LoginForm = ({ onLogin }) => {
-    const [credentials, setCredentials] = useState({ username: '', password: '' });
-    const [loading, setLoading] = useState(false);
-    const [error, setError] = useState('');
-    const [showForgotPassword, setShowForgotPassword] = useState(false);
-    const [showResetPassword, setShowResetPassword] = useState(false);
-    const [resetForm, setResetForm] = useState({ username: '', resetToken: '', newPassword: '', confirmPassword: '' });
-
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setLoading(true);
-        setError('');
-
-        try {
-            const response = await fetch('/auth/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(credentials)
-            });
-
-            const data = await response.json();
-            
-            if (response.ok) {
-                localStorage.setItem('token', data.token);
-                onLogin(data.user, data.token);
-            } else {
-                setError(data.error || 'Login failed');
-            }
-        } catch (err) {
-            setError('Connection error');
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleForgotPassword = async (e) => {
-        e.preventDefault();
-        setLoading(true);
-        setError('');
-
-        try {
-            const response = await fetch('/auth/forgot-password', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: resetForm.username })
-            });
-
-            const result = await response.json();
-
-            if (response.ok) {
-                alert(result.message);
-                setShowForgotPassword(false);
-                setShowResetPassword(true);
-            } else {
-                setError(result.error || 'Failed to process request');
-            }
-        } catch (err) {
-            setError('Connection error');
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleResetPassword = async (e) => {
-        e.preventDefault();
-
-        if (resetForm.newPassword !== resetForm.confirmPassword) {
-            setError('Passwords do not match');
-            return;
-        }
-
-        setLoading(true);
-        setError('');
-
-        try {
-            const response = await fetch('/auth/reset-password', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    username: resetForm.username,
-                    resetToken: resetForm.resetToken,
-                    newPassword: resetForm.newPassword
-                })
-            });
-
-            const result = await response.json();
-
-            if (response.ok) {
-                alert(result.message);
-                setShowResetPassword(false);
-                setShowForgotPassword(false);
-                setResetForm({ username: '', resetToken: '', newPassword: '', confirmPassword: '' });
-            } else {
-                setError(result.error || 'Failed to reset password');
-            }
-        } catch (err) {
-            setError('Connection error');
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-100">
-            <div className="explorer-window rounded-lg p-8 w-full max-w-md">
-                <div className="text-center mb-6">
-                    <div style={{fontSize: '48px', marginBottom: '16px'}}>📁</div>
-                    <h2 className="text-xl font-semibold text-gray-800">
-                        File Explorer Login
-                    </h2>
-                </div>
-
-                {error && (
-                    <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4">
-                        {error}
-                    </div>
-                )}
-
-                <form onSubmit={handleSubmit}>
-                    <div className="mb-4">
-                        <label className="block text-sm font-medium mb-2 text-gray-700">Username</label>
-                        <input
-                            type="text"
-                            value={credentials.username}
-                            onChange={(e) => setCredentials({...credentials, username: e.target.value})}
-                            className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:border-blue-500"
-                            required
-                        />
-                    </div>
-
-                    <div className="mb-6">
-                        <label className="block text-sm font-medium mb-2 text-gray-700">Password</label>
-                        <input
-                            type="password"
-                            value={credentials.password}
-                            onChange={(e) => setCredentials({...credentials, password: e.target.value})}
-                            className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:border-blue-500"
-                            required
-                        />
-                    </div>
-
-                    <button
-                        type="submit"
-                        disabled={loading}
-                        className="w-full bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white font-medium py-2 px-4 rounded transition-colors"
-                    >
-                        {loading ? 'Logging in...' : 'Login'}
-                    </button>
-                </form>
-
-                <div className="mt-4 text-center">
-                    <button
-                        type="button"
-                        onClick={() => setShowForgotPassword(true)}
-                        className="text-sm text-blue-500 hover:text-blue-600 underline"
-                    >
-                        Forgot Password?
-                    </button>
-                </div>
-
-                <div className="mt-2 text-center text-sm text-gray-500">
-                    Default: admin / password
-                </div>
-
-                {/* Forgot Password Dialog */}
-                {showForgotPassword && (
-                    <div className="modal-overlay">
-                        <div className="modal">
-                            <div className="modal-header">Forgot Password</div>
-                            <p className="text-sm text-gray-600 mb-4">
-                                Enter your username to receive a reset token in the server console.
-                            </p>
-                            <form onSubmit={handleForgotPassword}>
-                                <input
-                                    type="text"
-                                    value={resetForm.username}
-                                    onChange={(e) => setResetForm({...resetForm, username: e.target.value})}
-                                    placeholder="Enter username"
-                                    className="modal-input"
-                                    required
-                                />
-                                <div className="modal-buttons">
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowForgotPassword(false)}
-                                        className="modal-button"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        type="submit"
-                                        disabled={loading}
-                                        className="modal-button primary"
-                                    >
-                                        {loading ? 'Processing...' : 'Get Reset Token'}
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                )}
-
-                {/* Reset Password Dialog */}
-                {showResetPassword && (
-                    <div className="modal-overlay">
-                        <div className="modal">
-                            <div className="modal-header">Reset Password</div>
-                            <p className="text-sm text-gray-600 mb-4">
-                                Enter the reset token from the server console and your new password.
-                            </p>
-                            <form onSubmit={handleResetPassword}>
-                                <input
-                                    type="text"
-                                    value={resetForm.resetToken}
-                                    onChange={(e) => setResetForm({...resetForm, resetToken: e.target.value})}
-                                    placeholder="Reset token from server console"
-                                    className="modal-input"
-                                    required
-                                />
-                                <input
-                                    type="password"
-                                    value={resetForm.newPassword}
-                                    onChange={(e) => setResetForm({...resetForm, newPassword: e.target.value})}
-                                    placeholder="New password"
-                                    className="modal-input"
-                                    required
-                                />
-                                <input
-                                    type="password"
-                                    value={resetForm.confirmPassword}
-                                    onChange={(e) => setResetForm({...resetForm, confirmPassword: e.target.value})}
-                                    placeholder="Confirm new password"
-                                    className="modal-input"
-                                    required
-                                />
-                                <div className="modal-buttons">
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setShowResetPassword(false);
-                                            setShowForgotPassword(false);
-                                        }}
-                                        className="modal-button"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        type="submit"
-                                        disabled={loading}
-                                        className="modal-button primary"
-                                    >
-                                        {loading ? 'Resetting...' : 'Reset Password'}
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                )}
+// Check dependencies
+if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
+    console.error('App: React dependencies missing');
+    document.getElementById('root').innerHTML = `
+        <div style="
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        ">
+            <div style="
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(20px);
+                border-radius: 20px;
+                padding: 40px;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+            ">
+                <h2 style="margin: 0 0 16px 0; color: #ef4444;">❌ Dependencies Missing</h2>
+                <p style="margin: 0; opacity: 0.8;">React or ReactDOM failed to load.</p>
             </div>
         </div>
-    );
-};
+    `;
+} else {
+    console.log('App: Dependencies OK');
+    
+    // Login Form Component
+    const LoginForm = ({ onLogin }) => {
+        const [credentials, setCredentials] = React.useState({ username: '', password: '' });
+        const [loading, setLoading] = React.useState(false);
+        const [error, setError] = React.useState('');
 
-// File Browser Component
-const FileBrowser = ({ token, user }) => {
-    const [files, setFiles] = useState([]);
-    const [currentPath, setCurrentPath] = useState('');
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
-    const [selectedItems, setSelectedItems] = useState([]);
-    const [showContextMenu, setShowContextMenu] = useState(false);
-    const [contextMenuPos, setContextMenuPos] = useState({ x: 0, y: 0 });
-    const [showNewFolderDialog, setShowNewFolderDialog] = useState(false);
-    const [newFolderName, setNewFolderName] = useState('');
-    const [uploading, setUploading] = useState(false);
-    const [dragOver, setDragOver] = useState(false);
-    const [uploadProgress, setUploadProgress] = useState(0);
-    const [currentTheme, setCurrentTheme] = useState(localStorage.getItem('theme') || 'default');
-    const [showPasswordDialog, setShowPasswordDialog] = useState(false);
-    const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+        const handleSubmit = async (e) => {
+            e.preventDefault();
+            setLoading(true);
+            setError('');
 
-    const fetchFiles = async (path = '') => {
-        setLoading(true);
-        setError('');
-        try {
-            const apiPath = path ? `/api/files/${path}` : '/api/files';
-            console.log('Fetching files from:', apiPath);
+            try {
+                const response = await fetch('/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(credentials)
+                });
 
-            const response = await fetch(apiPath, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-
-            if (response.ok) {
                 const data = await response.json();
-                console.log('Files received:', data);
-                setFiles(data);
-                setCurrentPath(path);
-            } else {
-                const errorData = await response.json();
-                setError(errorData.error || 'Failed to load files');
+                
+                if (response.ok) {
+                    localStorage.setItem('token', data.token);
+                    onLogin(data.user, data.token);
+                } else {
+                    setError(data.error || 'Login failed');
+                }
+            } catch (err) {
+                setError('Connection error');
+            } finally {
+                setLoading(false);
             }
-        } catch (err) {
-            console.error('Fetch error:', err);
-            setError('Connection error');
-        } finally {
-            setLoading(false);
-        }
-    };
+        };
 
-    useEffect(() => {
-        fetchFiles(currentPath);
-    }, [token]);
-
-    const handleLogout = () => {
-        localStorage.removeItem('token');
-        window.location.reload();
-    };
-
-    const handleItemClick = (item) => {
-        if (item.name.includes('.')) {
-            // It's a file - could implement file preview/download here
-            console.log('File clicked:', item.name);
-        } else {
-            // It's a directory - navigate into it
-            const newPath = currentPath ? `${currentPath}/${item.name}` : item.name;
-            fetchFiles(newPath);
-        }
-    };
-
-    const handleBackClick = () => {
-        if (currentPath) {
-            const pathParts = currentPath.split('/');
-            pathParts.pop();
-            const newPath = pathParts.join('/');
-            fetchFiles(newPath);
-        }
-    };
-
-    const getBreadcrumbs = () => {
-        if (!currentPath) return [{ name: 'Storage', path: '' }];
-
-        const parts = currentPath.split('/');
-        const breadcrumbs = [{ name: 'Storage', path: '' }];
-
-        let currentBreadcrumbPath = '';
-        parts.forEach(part => {
-            currentBreadcrumbPath = currentBreadcrumbPath ? `${currentBreadcrumbPath}/${part}` : part;
-            breadcrumbs.push({ name: part, path: currentBreadcrumbPath });
-        });
-
-        return breadcrumbs;
-    };
-
-    const getFileIcon = (item) => {
-        if (!item.name.includes('.')) {
-            // Directory - use Windows-style folder icon
-            return '📂';
-        }
-
-        // File - determine type by extension (Windows-style)
-        const ext = item.name.split('.').pop().toLowerCase();
-        switch (ext) {
-            case 'txt': case 'log': case 'md': return '📄';
-            case 'doc': case 'docx': return '📘';
-            case 'xls': case 'xlsx': return '📗';
-            case 'ppt': case 'pptx': return '📙';
-            case 'pdf': return '📕';
-            case 'jpg': case 'jpeg': case 'png': case 'gif': case 'bmp': case 'ico': return '🖼️';
-            case 'mp4': case 'avi': case 'mov': case 'wmv': return '🎬';
-            case 'mp3': case 'wav': case 'wma': return '🎵';
-            case 'zip': case 'rar': case 'tar': case 'gz': return '📦';
-            case 'exe': case 'msi': return '⚙️';
-            case 'js': case 'html': case 'css': case 'json': return '💻';
-            case 'py': case 'java': case 'cpp': case 'c': return '👨‍💻';
-            default: return '📄';
-        }
-    };
-
-    const handleNewFolder = async () => {
-        if (!newFolderName.trim()) {
-            alert('Please enter a folder name');
-            return;
-        }
-
-        try {
-            const response = await fetch('/api/folders', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({
-                    folderName: newFolderName.trim(),
-                    currentPath: currentPath
-                })
-            });
-
-            const result = await response.json();
-
-            if (response.ok) {
-                setNewFolderName('');
-                setShowNewFolderDialog(false);
-                // Refresh the current directory
-                fetchFiles(currentPath);
-            } else {
-                alert(result.error || 'Failed to create folder');
+        return React.createElement('div', {
+            style: {
+                minHeight: '100vh',
+                background: 'linear-gradient(135deg, #2c3e50 0%, #34495e 25%, #5dade2 50%, #85c1e9 75%, #aed6f1 100%)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
             }
-        } catch (error) {
-            console.error('Create folder error:', error);
-            alert('Failed to create folder');
-        }
-    };
-
-    const handleFileUpload = async (files) => {
-        if (!files || files.length === 0) return;
-
-        setUploading(true);
-        const formData = new FormData();
-
-        // Add all files to FormData
-        Array.from(files).forEach(file => {
-            formData.append('files', file);
-        });
-
-        // Add current path
-        formData.append('currentPath', currentPath);
-
-        try {
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                },
-                body: formData
-            });
-
-            const result = await response.json();
-
-            if (response.ok) {
-                alert(result.message || 'Files uploaded successfully');
-                // Refresh the current directory
-                fetchFiles(currentPath);
-            } else {
-                alert(result.error || 'Failed to upload files');
+        }, React.createElement('div', {
+            style: {
+                background: 'rgba(255, 255, 255, 0.1)',
+                backdropFilter: 'blur(20px)',
+                borderRadius: '24px',
+                padding: '40px',
+                width: '100%',
+                maxWidth: '420px',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)'
             }
-        } catch (error) {
-            console.error('Upload error:', error);
-            alert('Failed to upload files');
-        } finally {
-            setUploading(false);
-        }
-    };
+        }, [
+            // Header
+            React.createElement('div', {
+                key: 'header',
+                style: { textAlign: 'center', marginBottom: '32px' }
+            }, [
+                React.createElement('div', {
+                    key: 'icon',
+                    style: {
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '80px',
+                        height: '80px',
+                        background: 'linear-gradient(135deg, #5dade2, #85c1e9)',
+                        borderRadius: '50%',
+                        marginBottom: '16px',
+                        boxShadow: '0 10px 25px rgba(0, 0, 0, 0.2)',
+                        fontSize: '32px'
+                    }
+                }, '📁'),
+                React.createElement('h2', {
+                    key: 'title',
+                    style: {
+                        color: 'white',
+                        margin: 0,
+                        fontSize: '28px',
+                        fontWeight: 'bold',
+                        marginBottom: '8px'
+                    }
+                }, 'File Transfer UI'),
+                React.createElement('p', {
+                    key: 'subtitle',
+                    style: {
+                        color: 'rgba(255, 255, 255, 0.8)',
+                        margin: 0,
+                        fontSize: '16px'
+                    }
+                }, 'Futuristic File Management System')
+            ]),
 
-    const handleUploadClick = () => {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.multiple = true;
-        input.onchange = (e) => handleFileUpload(e.target.files);
-        input.click();
-    };
-
-    // Drag and Drop handlers
-    const handleDragEnter = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setDragOver(true);
-    };
-
-    const handleDragLeave = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        // Only set dragOver to false if we're leaving the main container
-        if (!e.currentTarget.contains(e.relatedTarget)) {
-            setDragOver(false);
-        }
-    };
-
-    const handleDragOver = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setDragOver(true);
-    };
-
-    const handleDrop = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setDragOver(false);
-
-        const files = Array.from(e.dataTransfer.files);
-        if (files.length > 0) {
-            handleFileUpload(files);
-        }
-    };
-
-    const handleThemeChange = (theme) => {
-        setCurrentTheme(theme);
-        localStorage.setItem('theme', theme);
-        document.body.className = `theme-${theme}`;
-    };
-
-    const handlePasswordChange = async () => {
-        if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-            alert('New passwords do not match');
-            return;
-        }
-
-        try {
-            const response = await fetch('/auth/change-password', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({
-                    currentPassword: passwordForm.currentPassword,
-                    newPassword: passwordForm.newPassword
-                })
-            });
-
-            const result = await response.json();
-
-            if (response.ok) {
-                alert('Password changed successfully');
-                setShowPasswordDialog(false);
-                setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
-            } else {
-                alert(result.error || 'Failed to change password');
-            }
-        } catch (error) {
-            console.error('Password change error:', error);
-            alert('Failed to change password');
-        }
-    };
-
-    // Apply theme on component mount
-    React.useEffect(() => {
-        document.body.className = `theme-${currentTheme}`;
-    }, [currentTheme]);
-
-
-
-    return (
-        <div
-            className="min-h-screen bg-gray-100"
-            onDragEnter={handleDragEnter}
-            onDragLeave={handleDragLeave}
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}
-        >
-            <div className="h-screen flex flex-col">
-                {/* Title Bar */}
-                <div className="bg-white border-b border-gray-300 px-4 py-2 flex justify-between items-center">
-                    <div className="flex items-center">
-                        <span className="text-sm font-medium">📁 File Explorer</span>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                        <span className="text-sm text-gray-600">Welcome, {user?.username}</span>
-
-                        {/* Theme Selector */}
-                        <div className="theme-selector">
-                            <span className="text-xs text-gray-500">Theme:</span>
-                            <button
-                                onClick={() => handleThemeChange('default')}
-                                className={`theme-button ${currentTheme === 'default' ? 'active' : ''}`}
-                                style={{background: '#f0f0f0'}}
-                                title="Default Theme"
-                            ></button>
-                            <button
-                                onClick={() => handleThemeChange('dark')}
-                                className={`theme-button ${currentTheme === 'dark' ? 'active' : ''}`}
-                                style={{background: '#2d3748'}}
-                                title="Dark Theme"
-                            ></button>
-                            <button
-                                onClick={() => handleThemeChange('blue')}
-                                className={`theme-button ${currentTheme === 'blue' ? 'active' : ''}`}
-                                style={{background: '#3182ce'}}
-                                title="Blue Theme"
-                            ></button>
-                            <button
-                                onClick={() => handleThemeChange('green')}
-                                className={`theme-button ${currentTheme === 'green' ? 'active' : ''}`}
-                                style={{background: '#38a169'}}
-                                title="Green Theme"
-                            ></button>
-                        </div>
-
-                        <button
-                            onClick={() => setShowPasswordDialog(true)}
-                            className="text-sm px-3 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
-                        >
-                            Change Password
-                        </button>
-                        <button
-                            onClick={handleLogout}
-                            className="text-sm px-3 py-1 bg-red-500 text-white rounded hover:bg-red-600"
-                        >
-                            Logout
-                        </button>
-                    </div>
-                </div>
-
-                {/* Toolbar */}
-                <div className="toolbar">
-                    <button
-                        onClick={handleBackClick}
-                        disabled={!currentPath}
-                        className="toolbar-button"
-                        title="Back"
-                    >
-                        ← Back
-                    </button>
-                    <button
-                        onClick={() => fetchFiles(currentPath)}
-                        className="toolbar-button"
-                        title="Refresh"
-                    >
-                        🔄 Refresh
-                    </button>
-                    <button
-                        onClick={() => setShowNewFolderDialog(true)}
-                        className="toolbar-button"
-                        title="New Folder"
-                    >
-                        📁 New Folder
-                    </button>
-                    <button
-                        onClick={handleUploadClick}
-                        disabled={uploading}
-                        className="toolbar-button"
-                        title="Upload Files"
-                    >
-                        {uploading ? '⏳ Uploading...' : '📤 Upload'}
-                    </button>
-
-                    {/* Address Bar */}
-                    <div className="address-bar">
-                        {getBreadcrumbs().map((crumb, index) => (
-                            <span key={index}>
-                                <button
-                                    onClick={() => fetchFiles(crumb.path)}
-                                    className="text-blue-600 hover:underline"
-                                >
-                                    {crumb.name}
-                                </button>
-                                {index < getBreadcrumbs().length - 1 && <span className="mx-1">›</span>}
-                            </span>
-                        ))}
-                    </div>
-                </div>
-
-                {/* File List */}
-                <div className="file-list flex-1 overflow-auto">
-                    {loading ? (
-                        <div className="flex items-center justify-center h-full">
-                            <div className="text-center">
-                                <div className="loading-spinner mx-auto mb-2"></div>
-                                <p className="text-sm text-gray-600">Loading files...</p>
-                            </div>
-                        </div>
-                    ) : error ? (
-                        <div className="flex items-center justify-center h-full">
-                            <div className="text-center text-red-600">
-                                <p>❌ {error}</p>
-                            </div>
-                        </div>
-                    ) : files.length === 0 ? (
-                        <div className="flex items-center justify-center h-full">
-                            <div className="text-center text-gray-500">
-                                <p>📁 This folder is empty</p>
-                            </div>
-                        </div>
-                    ) : (
-                        files.map((item, index) => (
-                            <div
-                                key={index}
-                                onClick={() => handleItemClick(item)}
-                                className="file-item"
-                            >
-                                <div className="file-icon">
-                                    {getFileIcon(item)}
-                                </div>
-                                <div className="file-name">
-                                    {item.name}
-                                </div>
-                            </div>
-                        ))
-                    )}
-                </div>
-
-                {/* Status Bar */}
-                <div className="status-bar">
-                    {files.length} items | Current: /{currentPath || 'storage'}
-                </div>
-            </div>
-
-            {/* Drag and Drop Overlay */}
-            {dragOver && (
-                <div className="drag-overlay">
-                    <div className="drag-message">
-                        <div style={{fontSize: '48px', marginBottom: '16px'}}>📤</div>
-                        <h2 style={{fontSize: '18px', fontWeight: '600', marginBottom: '8px'}}>Drop files here</h2>
-                        <p style={{color: '#666', fontSize: '14px'}}>Release to upload files to current folder</p>
-                    </div>
-                </div>
-            )}
-
-            {/* Upload Progress */}
-            {uploading && (
-                <div style={{
-                    position: 'fixed',
-                    bottom: '16px',
-                    right: '16px',
-                    background: 'white',
+            // Error message
+            error && React.createElement('div', {
+                key: 'error',
+                style: {
+                    background: 'rgba(239, 68, 68, 0.2)',
+                    border: '1px solid rgba(239, 68, 68, 0.5)',
+                    color: 'white',
                     padding: '12px 16px',
-                    borderRadius: '8px',
-                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                    borderRadius: '12px',
+                    marginBottom: '24px',
+                    backdropFilter: 'blur(10px)',
                     display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    zIndex: 100
-                }}>
-                    <div className="loading-spinner"></div>
-                    <span style={{fontSize: '14px'}}>Uploading files...</span>
-                </div>
-            )}
+                    alignItems: 'center'
+                }
+            }, [
+                React.createElement('span', {
+                    key: 'icon',
+                    style: { marginRight: '8px' }
+                }, '⚠️'),
+                React.createElement('span', { key: 'text' }, error)
+            ]),
 
-            {/* New Folder Dialog */}
-            {showNewFolderDialog && (
-                <div className="modal-overlay">
-                    <div className="modal">
-                        <div className="modal-header">Create New Folder</div>
-                        <input
-                            type="text"
-                            value={newFolderName}
-                            onChange={(e) => setNewFolderName(e.target.value)}
-                            placeholder="Enter folder name"
-                            className="modal-input"
-                            onKeyPress={(e) => e.key === 'Enter' && handleNewFolder()}
-                            autoFocus
-                        />
-                        <div className="modal-buttons">
-                            <button
-                                onClick={() => {
-                                    setShowNewFolderDialog(false);
-                                    setNewFolderName('');
-                                }}
-                                className="modal-button"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={handleNewFolder}
-                                className="modal-button primary"
-                            >
-                                Create
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            // Form
+            React.createElement('form', {
+                key: 'form',
+                onSubmit: handleSubmit
+            }, [
+                // Username field
+                React.createElement('div', {
+                    key: 'username',
+                    style: { marginBottom: '24px' }
+                }, [
+                    React.createElement('label', {
+                        key: 'label',
+                        style: {
+                            display: 'block',
+                            color: 'rgba(255, 255, 255, 0.9)',
+                            marginBottom: '8px',
+                            fontSize: '14px',
+                            fontWeight: '500'
+                        }
+                    }, 'Username'),
+                    React.createElement('input', {
+                        key: 'input',
+                        type: 'text',
+                        value: credentials.username,
+                        onChange: (e) => setCredentials({...credentials, username: e.target.value}),
+                        style: {
+                            width: '100%',
+                            padding: '16px',
+                            background: 'rgba(255, 255, 255, 0.1)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '12px',
+                            color: 'white',
+                            fontSize: '16px',
+                            boxSizing: 'border-box',
+                            backdropFilter: 'blur(10px)',
+                            transition: 'all 0.3s ease',
+                            outline: 'none'
+                        },
+                        placeholder: 'Enter your username',
+                        required: true
+                    })
+                ]),
 
-            {/* Change Password Dialog */}
-            {showPasswordDialog && (
-                <div className="modal-overlay">
-                    <div className="modal">
-                        <div className="modal-header">Change Password</div>
-                        <input
-                            type="password"
-                            value={passwordForm.currentPassword}
-                            onChange={(e) => setPasswordForm({...passwordForm, currentPassword: e.target.value})}
-                            placeholder="Current password"
-                            className="modal-input"
-                        />
-                        <input
-                            type="password"
-                            value={passwordForm.newPassword}
-                            onChange={(e) => setPasswordForm({...passwordForm, newPassword: e.target.value})}
-                            placeholder="New password"
-                            className="modal-input"
-                        />
-                        <input
-                            type="password"
-                            value={passwordForm.confirmPassword}
-                            onChange={(e) => setPasswordForm({...passwordForm, confirmPassword: e.target.value})}
-                            placeholder="Confirm new password"
-                            className="modal-input"
-                            onKeyPress={(e) => e.key === 'Enter' && handlePasswordChange()}
-                        />
-                        <div className="modal-buttons">
-                            <button
-                                onClick={() => {
-                                    setShowPasswordDialog(false);
-                                    setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
-                                }}
-                                className="modal-button"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={handlePasswordChange}
-                                className="modal-button primary"
-                            >
-                                Change Password
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-};
+                // Password field
+                React.createElement('div', {
+                    key: 'password',
+                    style: { marginBottom: '32px' }
+                }, [
+                    React.createElement('label', {
+                        key: 'label',
+                        style: {
+                            display: 'block',
+                            color: 'rgba(255, 255, 255, 0.9)',
+                            marginBottom: '8px',
+                            fontSize: '14px',
+                            fontWeight: '500'
+                        }
+                    }, 'Password'),
+                    React.createElement('input', {
+                        key: 'input',
+                        type: 'password',
+                        value: credentials.password,
+                        onChange: (e) => setCredentials({...credentials, password: e.target.value}),
+                        style: {
+                            width: '100%',
+                            padding: '16px',
+                            background: 'rgba(255, 255, 255, 0.1)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '12px',
+                            color: 'white',
+                            fontSize: '16px',
+                            boxSizing: 'border-box',
+                            backdropFilter: 'blur(10px)',
+                            transition: 'all 0.3s ease',
+                            outline: 'none'
+                        },
+                        placeholder: 'Enter your password',
+                        required: true
+                    })
+                ]),
 
-// Main App Component
-const App = () => {
-    const [user, setUser] = useState(null);
-    const [token, setToken] = useState(localStorage.getItem('token'));
-    const [isLoading, setIsLoading] = useState(true);
+                // Submit button
+                React.createElement('button', {
+                    key: 'submit',
+                    type: 'submit',
+                    disabled: loading,
+                    style: {
+                        width: '100%',
+                        background: loading ? 'rgba(93, 173, 226, 0.5)' : 'linear-gradient(135deg, #5dade2, #85c1e9)',
+                        border: 'none',
+                        borderRadius: '12px',
+                        color: 'white',
+                        fontSize: '16px',
+                        fontWeight: '600',
+                        padding: '16px',
+                        cursor: loading ? 'not-allowed' : 'pointer',
+                        transition: 'all 0.3s ease',
+                        boxShadow: '0 4px 15px rgba(0, 0, 0, 0.2)',
+                        outline: 'none'
+                    }
+                }, loading ? 'Logging in...' : '🚀 Login')
+            ]),
 
-    useEffect(() => {
-        const initializeAuth = async () => {
-            const storedToken = localStorage.getItem('token');
+            // Info
+            React.createElement('div', {
+                key: 'info',
+                style: {
+                    textAlign: 'center',
+                    marginTop: '24px',
+                    background: 'rgba(59, 130, 246, 0.2)',
+                    border: '1px solid rgba(59, 130, 246, 0.3)',
+                    borderRadius: '12px',
+                    padding: '16px',
+                    backdropFilter: 'blur(10px)'
+                }
+            }, React.createElement('p', {
+                style: {
+                    color: 'rgba(255, 255, 255, 0.9)',
+                    margin: 0,
+                    fontSize: '14px'
+                }
+            }, 'Default: admin / password'))
+        ]));
+    };
 
-            if (storedToken) {
-                try {
-                    // Verify token is still valid by making a test API call
-                    const response = await fetch('/api/files/', {
-                        headers: { 'Authorization': `Bearer ${storedToken}` }
+    // File Browser Component
+    const FileBrowser = ({ token, user }) => {
+        const [files, setFiles] = React.useState([]);
+        const [loading, setLoading] = React.useState(true);
+        const [error, setError] = React.useState('');
+        const [currentPath, setCurrentPath] = React.useState('');
+        const [selectedFiles, setSelectedFiles] = React.useState([]);
+        const [viewMode, setViewMode] = React.useState('grid');
+        const [searchQuery, setSearchQuery] = React.useState('');
+        const [showUploadModal, setShowUploadModal] = React.useState(false);
+        const [uploadProgress, setUploadProgress] = React.useState({});
+        const [pathHistory, setPathHistory] = React.useState([]);
+
+        React.useEffect(() => {
+            fetchFiles();
+        }, [currentPath]);
+
+        const fetchFiles = async () => {
+            setLoading(true);
+            setError('');
+            try {
+                const url = currentPath ? `/api/files?path=${encodeURIComponent(currentPath)}` : '/api/files';
+                const response = await fetch(url, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    setFiles(data);
+                } else {
+                    setError('Failed to load files');
+                }
+            } catch (error) {
+                setError('Connection error');
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        const navigateToFolder = (folderPath, folderName) => {
+            setPathHistory([...pathHistory, { path: currentPath, name: currentPath || 'Root' }]);
+            setCurrentPath(folderPath);
+            setSelectedFiles([]);
+        };
+
+        const navigateBack = () => {
+            if (pathHistory.length > 0) {
+                const previous = pathHistory[pathHistory.length - 1];
+                setCurrentPath(previous.path);
+                setPathHistory(pathHistory.slice(0, -1));
+                setSelectedFiles([]);
+            }
+        };
+
+        const toggleFileSelection = (file) => {
+            const isSelected = selectedFiles.some(f => f.path === file.path);
+            if (isSelected) {
+                setSelectedFiles(selectedFiles.filter(f => f.path !== file.path));
+            } else {
+                setSelectedFiles([...selectedFiles, file]);
+            }
+        };
+
+        const selectAllFiles = () => {
+            if (selectedFiles.length === files.length) {
+                setSelectedFiles([]);
+            } else {
+                setSelectedFiles([...files]);
+            }
+        };
+
+        const deleteSelectedFiles = async () => {
+            if (selectedFiles.length === 0) return;
+
+            const confirmMessage = selectedFiles.length === 1
+                ? `Are you sure you want to delete "${selectedFiles[0].name}"?`
+                : `Are you sure you want to delete ${selectedFiles.length} selected files?`;
+
+            if (!confirm(confirmMessage)) return;
+
+            try {
+                for (const file of selectedFiles) {
+                    const filePath = currentPath ? `${currentPath}/${file.name}` : file.name;
+                    const response = await fetch(`/api/files/${encodeURIComponent(filePath)}`, {
+                        method: 'DELETE',
+                        headers: { 'Authorization': `Bearer ${token}` }
                     });
 
-                    if (response.ok) {
-                        // Token is valid, set user info
-                        console.log('Token verified successfully');
-                        setUser({ id: 1, username: 'admin', role: 'admin' });
-                        setToken(storedToken);
-                    } else {
-                        // Token is invalid
-                        console.log('Token verification failed:', response.status);
+                    if (!response.ok) {
+                        throw new Error(`Failed to delete ${file.name}`);
+                    }
+                }
+
+                setSelectedFiles([]);
+                fetchFiles();
+            } catch (error) {
+                setError(`Delete failed: ${error.message}`);
+            }
+        };
+
+        const downloadFile = async (file) => {
+            try {
+                // For now, show a message that download will be implemented
+                alert(`Download functionality for "${file.name}" will be implemented. For now, you can access files directly through the file system.`);
+            } catch (error) {
+                setError(`Download failed: ${error.message}`);
+            }
+        };
+
+        const createNewFolder = async () => {
+            const folderName = prompt('Enter folder name:');
+            if (!folderName) return;
+
+            try {
+                const response = await fetch('/api/folders', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        folderName: folderName,
+                        currentPath: currentPath
+                    })
+                });
+
+                if (response.ok) {
+                    fetchFiles();
+                } else {
+                    throw new Error('Failed to create folder');
+                }
+            } catch (error) {
+                setError(`Create folder failed: ${error.message}`);
+            }
+        };
+
+        const handleFileUpload = async (files) => {
+            const formData = new FormData();
+
+            for (let i = 0; i < files.length; i++) {
+                formData.append('files', files[i]);
+            }
+
+            if (currentPath) {
+                formData.append('currentPath', currentPath);
+            }
+
+            try {
+                const response = await fetch('/api/upload', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    body: formData
+                });
+
+                if (response.ok) {
+                    setShowUploadModal(false);
+                    fetchFiles();
+                } else {
+                    throw new Error('Upload failed');
+                }
+            } catch (error) {
+                setError(`Upload failed: ${error.message}`);
+            }
+        };
+
+        const handleDragOver = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        };
+
+        const handleDrop = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length > 0) {
+                handleFileUpload(files);
+            }
+        };
+
+        const filteredFiles = files.filter(file =>
+            file.name.toLowerCase().includes(searchQuery.toLowerCase())
+        );
+
+        const getFileIcon = (file) => {
+            if (file.isDirectory) return '📂'; // Folder
+
+            const fileName = file.name;
+            if (!fileName.includes('.')) return '📄'; // File without extension
+
+            const ext = fileName.split('.').pop().toLowerCase();
+            const iconMap = {
+                'pdf': '📄',
+                'doc': '📝', 'docx': '📝',
+                'xls': '📊', 'xlsx': '📊',
+                'ppt': '📊', 'pptx': '📊',
+                'txt': '📄',
+                'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️',
+                'mp4': '🎬', 'avi': '🎬', 'mov': '🎬',
+                'mp3': '🎵', 'wav': '🎵',
+                'zip': '📦', 'rar': '📦', '7z': '📦',
+                'js': '⚡', 'html': '🌐', 'css': '🎨',
+                'py': '🐍', 'java': '☕', 'cpp': '⚙️'
+            };
+
+            return iconMap[ext] || '📄';
+        };
+
+        const handleLogout = () => {
+            localStorage.removeItem('token');
+            window.location.reload();
+        };
+
+        if (loading) {
+            return React.createElement('div', {
+                style: {
+                    minHeight: '100vh',
+                    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'white'
+                }
+            }, React.createElement('div', {
+                style: {
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    backdropFilter: 'blur(20px)',
+                    borderRadius: '20px',
+                    padding: '40px',
+                    textAlign: 'center',
+                    border: '1px solid rgba(255, 255, 255, 0.2)'
+                }
+            }, [
+                React.createElement('div', {
+                    key: 'spinner',
+                    style: {
+                        width: '40px',
+                        height: '40px',
+                        border: '3px solid rgba(255, 255, 255, 0.3)',
+                        borderTop: '3px solid white',
+                        borderRadius: '50%',
+                        animation: 'spin 1s linear infinite',
+                        margin: '0 auto 20px'
+                    }
+                }),
+                React.createElement('p', {
+                    key: 'text',
+                    style: { margin: 0, fontSize: '18px' }
+                }, 'Loading files...')
+            ]));
+        }
+
+        // Create file items
+        const fileItems = files.map((file, index) => {
+            return React.createElement('div', {
+                key: index,
+                style: {
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    backdropFilter: 'blur(10px)',
+                    borderRadius: '12px',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    padding: '16px',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px'
+                }
+            }, [
+                React.createElement('div', {
+                    key: 'icon',
+                    style: { fontSize: '32px' }
+                }, file.name.includes('.') ? '📄' : '📂'),
+                React.createElement('div', {
+                    key: 'info',
+                    style: { flex: 1, minWidth: 0 }
+                }, [
+                    React.createElement('p', {
+                        key: 'name',
+                        style: {
+                            color: 'white',
+                            margin: 0,
+                            fontSize: '16px',
+                            fontWeight: '500',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                        }
+                    }, file.name),
+                    React.createElement('p', {
+                        key: 'type',
+                        style: {
+                            color: 'rgba(255, 255, 255, 0.7)',
+                            margin: 0,
+                            fontSize: '12px',
+                            marginTop: '4px'
+                        }
+                    }, file.name.includes('.') ? 'File' : 'Folder')
+                ])
+            ]);
+        });
+
+        return React.createElement('div', {
+            style: {
+                minHeight: '100vh',
+                background: 'linear-gradient(135deg, #2c3e50 0%, #34495e 25%, #5dade2 50%, #85c1e9 75%, #aed6f1 100%)',
+                color: 'white',
+                fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+            },
+            onDragOver: handleDragOver,
+            onDrop: handleDrop
+        }, [
+            // Header
+            React.createElement('div', {
+                key: 'header',
+                style: {
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    backdropFilter: 'blur(20px)',
+                    borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
+                    padding: '16px 24px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                }
+            }, [
+                React.createElement('div', {
+                    key: 'logo',
+                    style: { display: 'flex', alignItems: 'center', gap: '12px' }
+                }, [
+                    React.createElement('div', {
+                        key: 'icon',
+                        style: {
+                            width: '40px',
+                            height: '40px',
+                            background: 'linear-gradient(135deg, #5dade2, #85c1e9)',
+                            borderRadius: '50%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '20px'
+                        }
+                    }, '📁'),
+                    React.createElement('div', { key: 'text' }, [
+                        React.createElement('h1', {
+                            key: 'title',
+                            style: { margin: 0, fontSize: '20px', fontWeight: 'bold' }
+                        }, 'File Transfer UI'),
+                        React.createElement('p', {
+                            key: 'subtitle',
+                            style: { margin: 0, fontSize: '12px', opacity: 0.8 }
+                        }, 'Futuristic File Management')
+                    ])
+                ]),
+                React.createElement('div', {
+                    key: 'user',
+                    style: { display: 'flex', alignItems: 'center', gap: '16px' }
+                }, [
+                    React.createElement('span', {
+                        key: 'welcome',
+                        style: { fontSize: '14px' }
+                    }, `Welcome, ${user?.username}`),
+                    React.createElement('button', {
+                        key: 'logout',
+                        onClick: handleLogout,
+                        style: {
+                            background: 'rgba(239, 68, 68, 0.2)',
+                            border: '1px solid rgba(239, 68, 68, 0.5)',
+                            borderRadius: '8px',
+                            color: 'white',
+                            padding: '8px 16px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            outline: 'none'
+                        }
+                    }, '🚪 Logout')
+                ])
+            ]),
+
+            // Navigation Bar
+            React.createElement('div', {
+                key: 'navbar',
+                style: {
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                    padding: '12px 24px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '16px'
+                }
+            }, [
+                // Back button
+                React.createElement('button', {
+                    key: 'back',
+                    onClick: navigateBack,
+                    disabled: pathHistory.length === 0,
+                    style: {
+                        background: pathHistory.length === 0 ? 'rgba(255, 255, 255, 0.1)' : 'rgba(59, 130, 246, 0.2)',
+                        border: '1px solid rgba(255, 255, 255, 0.2)',
+                        borderRadius: '8px',
+                        color: pathHistory.length === 0 ? 'rgba(255, 255, 255, 0.5)' : 'white',
+                        padding: '8px 12px',
+                        cursor: pathHistory.length === 0 ? 'not-allowed' : 'pointer',
+                        fontSize: '14px',
+                        outline: 'none'
+                    }
+                }, '← Back'),
+
+                // Path breadcrumb
+                React.createElement('div', {
+                    key: 'breadcrumb',
+                    style: {
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        fontSize: '14px',
+                        color: 'rgba(255, 255, 255, 0.8)'
+                    }
+                }, [
+                    React.createElement('span', { key: 'home' }, '🏠'),
+                    React.createElement('span', { key: 'path' }, currentPath || 'Root')
+                ])
+            ]),
+
+            // Toolbar
+            React.createElement('div', {
+                key: 'toolbar',
+                style: {
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                    padding: '16px 24px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '16px'
+                }
+            }, [
+                // Left side - Action buttons
+                React.createElement('div', {
+                    key: 'actions',
+                    style: { display: 'flex', alignItems: 'center', gap: '12px' }
+                }, [
+                    React.createElement('button', {
+                        key: 'upload',
+                        onClick: () => setShowUploadModal(true),
+                        style: {
+                            background: 'linear-gradient(135deg, #52c41a, #389e0d)',
+                            border: 'none',
+                            borderRadius: '8px',
+                            color: 'white',
+                            padding: '10px 16px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: '500',
+                            outline: 'none',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px'
+                        }
+                    }, ['📤', ' Upload']),
+
+                    React.createElement('button', {
+                        key: 'newfolder',
+                        onClick: createNewFolder,
+                        style: {
+                            background: 'rgba(93, 173, 226, 0.2)',
+                            border: '1px solid rgba(93, 173, 226, 0.5)',
+                            borderRadius: '8px',
+                            color: 'white',
+                            padding: '10px 16px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            outline: 'none',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px'
+                        }
+                    }, ['📁', ' New Folder']),
+
+                    selectedFiles.length > 0 && React.createElement('button', {
+                        key: 'delete',
+                        onClick: deleteSelectedFiles,
+                        style: {
+                            background: 'rgba(239, 68, 68, 0.2)',
+                            border: '1px solid rgba(239, 68, 68, 0.5)',
+                            borderRadius: '8px',
+                            color: 'white',
+                            padding: '10px 16px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            outline: 'none',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px'
+                        }
+                    }, ['🗑️', ` Delete (${selectedFiles.length})`])
+                ]),
+
+                // Right side - View controls and search
+                React.createElement('div', {
+                    key: 'controls',
+                    style: { display: 'flex', alignItems: 'center', gap: '12px' }
+                }, [
+                    // Search box
+                    React.createElement('div', {
+                        key: 'search',
+                        style: { position: 'relative' }
+                    }, [
+                        React.createElement('input', {
+                            key: 'input',
+                            type: 'text',
+                            placeholder: 'Search files...',
+                            value: searchQuery,
+                            onChange: (e) => setSearchQuery(e.target.value),
+                            style: {
+                                background: 'rgba(255, 255, 255, 0.1)',
+                                border: '1px solid rgba(255, 255, 255, 0.2)',
+                                borderRadius: '8px',
+                                color: 'white',
+                                padding: '8px 12px 8px 36px',
+                                fontSize: '14px',
+                                outline: 'none',
+                                width: '200px'
+                            }
+                        }),
+                        React.createElement('div', {
+                            key: 'icon',
+                            style: {
+                                position: 'absolute',
+                                left: '12px',
+                                top: '50%',
+                                transform: 'translateY(-50%)',
+                                color: 'rgba(255, 255, 255, 0.6)',
+                                fontSize: '14px'
+                            }
+                        }, '🔍')
+                    ]),
+
+                    // View mode toggle
+                    React.createElement('div', {
+                        key: 'viewmode',
+                        style: { display: 'flex', background: 'rgba(255, 255, 255, 0.1)', borderRadius: '8px', padding: '2px' }
+                    }, [
+                        React.createElement('button', {
+                            key: 'grid',
+                            onClick: () => setViewMode('grid'),
+                            style: {
+                                background: viewMode === 'grid' ? 'rgba(59, 130, 246, 0.5)' : 'transparent',
+                                border: 'none',
+                                borderRadius: '6px',
+                                color: 'white',
+                                padding: '6px 10px',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                outline: 'none'
+                            }
+                        }, '⊞'),
+                        React.createElement('button', {
+                            key: 'list',
+                            onClick: () => setViewMode('list'),
+                            style: {
+                                background: viewMode === 'list' ? 'rgba(59, 130, 246, 0.5)' : 'transparent',
+                                border: 'none',
+                                borderRadius: '6px',
+                                color: 'white',
+                                padding: '6px 10px',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                outline: 'none'
+                            }
+                        }, '☰')
+                    ])
+                ])
+            ]),
+
+            // Main content
+            React.createElement('div', {
+                key: 'main',
+                style: { padding: '24px' }
+            }, React.createElement('div', {
+                style: {
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    backdropFilter: 'blur(20px)',
+                    borderRadius: '20px',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+                    overflow: 'hidden'
+                }
+            }, [
+                // File list header
+                React.createElement('div', {
+                    key: 'listheader',
+                    style: {
+                        padding: '20px 24px',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center'
+                    }
+                }, [
+                    React.createElement('h2', {
+                        key: 'title',
+                        style: { color: 'white', margin: 0, fontSize: '20px', fontWeight: '600' }
+                    }, `Files (${filteredFiles.length}${filteredFiles.length !== files.length ? ` of ${files.length}` : ''})`),
+
+                    files.length > 0 && React.createElement('div', {
+                        key: 'selectall',
+                        style: { display: 'flex', alignItems: 'center', gap: '8px' }
+                    }, [
+                        React.createElement('input', {
+                            key: 'checkbox',
+                            type: 'checkbox',
+                            checked: selectedFiles.length === files.length && files.length > 0,
+                            onChange: selectAllFiles,
+                            style: { cursor: 'pointer' }
+                        }),
+                        React.createElement('span', {
+                            key: 'label',
+                            style: { fontSize: '14px', color: 'rgba(255, 255, 255, 0.8)' }
+                        }, 'Select All')
+                    ])
+                ]),
+
+                React.createElement('div', {
+                    key: 'content',
+                    style: { padding: '24px' }
+                }, error ? React.createElement('div', {
+                    style: {
+                        textAlign: 'center',
+                        padding: '40px',
+                        color: '#ef4444'
+                    }
+                }, [
+                    React.createElement('div', {
+                        key: 'error-icon',
+                        style: { fontSize: '48px', marginBottom: '16px' }
+                    }, '❌'),
+                    React.createElement('p', {
+                        key: 'error-text',
+                        style: { margin: 0, fontSize: '16px' }
+                    }, error)
+                ]) : filteredFiles.length === 0 ? React.createElement('div', {
+                    style: {
+                        textAlign: 'center',
+                        padding: '60px',
+                        color: 'rgba(255, 255, 255, 0.8)'
+                    }
+                }, [
+                    React.createElement('div', {
+                        key: 'empty-icon',
+                        style: { fontSize: '64px', marginBottom: '16px' }
+                    }, searchQuery ? '🔍' : '📁'),
+                    React.createElement('p', {
+                        key: 'empty-text',
+                        style: { margin: 0, fontSize: '18px' }
+                    }, searchQuery ? `No files found matching "${searchQuery}"` : 'This folder is empty'),
+                    searchQuery && React.createElement('button', {
+                        key: 'clear',
+                        onClick: () => setSearchQuery(''),
+                        style: {
+                            background: 'rgba(59, 130, 246, 0.2)',
+                            border: '1px solid rgba(59, 130, 246, 0.5)',
+                            borderRadius: '8px',
+                            color: 'white',
+                            padding: '8px 16px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            outline: 'none',
+                            marginTop: '16px'
+                        }
+                    }, 'Clear Search')
+                ]) : React.createElement('div', {
+                    style: viewMode === 'grid' ? {
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                        gap: '16px'
+                    } : {
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px'
+                    }
+                }, filteredFiles.map((file, index) => {
+                    const isSelected = selectedFiles.some(f => f.path === file.path);
+                    const isFolder = file.isDirectory;
+
+                    return React.createElement('div', {
+                        key: index,
+                        style: {
+                            background: isSelected ? 'rgba(59, 130, 246, 0.3)' : 'rgba(255, 255, 255, 0.1)',
+                            backdropFilter: 'blur(10px)',
+                            borderRadius: '12px',
+                            border: isSelected ? '2px solid rgba(59, 130, 246, 0.8)' : '1px solid rgba(255, 255, 255, 0.2)',
+                            padding: '16px',
+                            cursor: 'pointer',
+                            transition: 'all 0.3s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            position: 'relative'
+                        },
+                        onClick: (e) => {
+                            if (e.ctrlKey || e.metaKey) {
+                                toggleFileSelection(file);
+                            } else if (isFolder) {
+                                navigateToFolder(file.path, file.name);
+                            } else {
+                                setSelectedFiles([file]);
+                            }
+                        },
+                        onDoubleClick: () => {
+                            if (!isFolder) {
+                                downloadFile(file);
+                            }
+                        }
+                    }, [
+                        // Selection checkbox
+                        React.createElement('input', {
+                            key: 'checkbox',
+                            type: 'checkbox',
+                            checked: isSelected,
+                            onChange: (e) => {
+                                e.stopPropagation();
+                                toggleFileSelection(file);
+                            },
+                            style: { cursor: 'pointer' }
+                        }),
+
+                        // File icon
+                        React.createElement('div', {
+                            key: 'icon',
+                            style: { fontSize: viewMode === 'grid' ? '32px' : '24px' }
+                        }, getFileIcon(file)),
+
+                        // File info
+                        React.createElement('div', {
+                            key: 'info',
+                            style: { flex: 1, minWidth: 0 }
+                        }, [
+                            React.createElement('p', {
+                                key: 'name',
+                                style: {
+                                    color: 'white',
+                                    margin: 0,
+                                    fontSize: viewMode === 'grid' ? '16px' : '14px',
+                                    fontWeight: '500',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                }
+                            }, file.name),
+                            React.createElement('p', {
+                                key: 'details',
+                                style: {
+                                    color: 'rgba(255, 255, 255, 0.7)',
+                                    margin: 0,
+                                    fontSize: '12px',
+                                    marginTop: '4px'
+                                }
+                            }, isFolder ? 'Folder' : `File${file.size ? ` • ${(file.size / 1024).toFixed(1)} KB` : ''}`)
+                        ]),
+
+                        // Action buttons
+                        !isFolder && React.createElement('div', {
+                            key: 'actions',
+                            style: { display: 'flex', gap: '8px' }
+                        }, [
+                            React.createElement('button', {
+                                key: 'download',
+                                onClick: (e) => {
+                                    e.stopPropagation();
+                                    downloadFile(file);
+                                },
+                                style: {
+                                    background: 'rgba(34, 197, 94, 0.2)',
+                                    border: '1px solid rgba(34, 197, 94, 0.5)',
+                                    borderRadius: '6px',
+                                    color: 'white',
+                                    padding: '4px 8px',
+                                    cursor: 'pointer',
+                                    fontSize: '12px',
+                                    outline: 'none'
+                                }
+                            }, '⬇️')
+                        ])
+                    ]);
+                })))
+            ])),
+
+            // Upload Modal
+            showUploadModal && React.createElement('div', {
+                key: 'uploadmodal',
+                style: {
+                    position: 'fixed',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(0, 0, 0, 0.8)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 1000
+                },
+                onClick: (e) => {
+                    if (e.target === e.currentTarget) {
+                        setShowUploadModal(false);
+                    }
+                }
+            }, React.createElement('div', {
+                style: {
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    backdropFilter: 'blur(20px)',
+                    borderRadius: '20px',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    padding: '40px',
+                    width: '90%',
+                    maxWidth: '500px',
+                    color: 'white'
+                }
+            }, [
+                React.createElement('h3', {
+                    key: 'title',
+                    style: { margin: '0 0 24px 0', fontSize: '24px', fontWeight: 'bold' }
+                }, 'Upload Files'),
+
+                React.createElement('div', {
+                    key: 'dropzone',
+                    style: {
+                        border: '2px dashed rgba(255, 255, 255, 0.3)',
+                        borderRadius: '12px',
+                        padding: '40px',
+                        textAlign: 'center',
+                        marginBottom: '24px',
+                        background: 'rgba(255, 255, 255, 0.05)'
+                    },
+                    onDragOver: handleDragOver,
+                    onDrop: (e) => {
+                        handleDrop(e);
+                        setShowUploadModal(false);
+                    }
+                }, [
+                    React.createElement('div', {
+                        key: 'icon',
+                        style: { fontSize: '48px', marginBottom: '16px' }
+                    }, '📤'),
+                    React.createElement('p', {
+                        key: 'text',
+                        style: { margin: '0 0 16px 0', fontSize: '18px' }
+                    }, 'Drag and drop files here'),
+                    React.createElement('p', {
+                        key: 'or',
+                        style: { margin: '0 0 16px 0', color: 'rgba(255, 255, 255, 0.7)' }
+                    }, 'or'),
+                    React.createElement('input', {
+                        key: 'fileinput',
+                        type: 'file',
+                        multiple: true,
+                        onChange: (e) => {
+                            if (e.target.files.length > 0) {
+                                handleFileUpload(e.target.files);
+                            }
+                        },
+                        style: { display: 'none' },
+                        id: 'fileInput'
+                    }),
+                    React.createElement('label', {
+                        key: 'label',
+                        htmlFor: 'fileInput',
+                        style: {
+                            background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+                            border: 'none',
+                            borderRadius: '8px',
+                            color: 'white',
+                            padding: '12px 24px',
+                            cursor: 'pointer',
+                            fontSize: '16px',
+                            fontWeight: '500',
+                            display: 'inline-block'
+                        }
+                    }, 'Choose Files')
+                ]),
+
+                React.createElement('div', {
+                    key: 'actions',
+                    style: { display: 'flex', justifyContent: 'flex-end', gap: '12px' }
+                }, [
+                    React.createElement('button', {
+                        key: 'cancel',
+                        onClick: () => setShowUploadModal(false),
+                        style: {
+                            background: 'rgba(255, 255, 255, 0.1)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '8px',
+                            color: 'white',
+                            padding: '10px 20px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            outline: 'none'
+                        }
+                    }, 'Cancel')
+                ])
+            ]))
+        ]);
+    };
+
+    // Main App Component
+    const App = () => {
+        const [user, setUser] = React.useState(null);
+        const [token, setToken] = React.useState(localStorage.getItem('token'));
+        const [isLoading, setIsLoading] = React.useState(true);
+
+        React.useEffect(() => {
+            const initializeAuth = async () => {
+                const storedToken = localStorage.getItem('token');
+
+                if (storedToken) {
+                    try {
+                        const response = await fetch('/api/files/', {
+                            headers: { 'Authorization': `Bearer ${storedToken}` }
+                        });
+
+                        if (response.ok) {
+                            setUser({ id: 1, username: 'admin', role: 'admin' });
+                            setToken(storedToken);
+                        } else {
+                            localStorage.removeItem('token');
+                            setToken(null);
+                            setUser(null);
+                        }
+                    } catch (error) {
                         localStorage.removeItem('token');
                         setToken(null);
                         setUser(null);
                     }
-                } catch (error) {
-                    // Network error
-                    console.error('Token verification error:', error);
-                    localStorage.removeItem('token');
-                    setToken(null);
-                    setUser(null);
                 }
-            }
 
-            setIsLoading(false);
+                setIsLoading(false);
+            };
+
+            initializeAuth();
+        }, []);
+
+        const handleLogin = (userData, userToken) => {
+            setUser(userData);
+            setToken(userToken);
+            localStorage.setItem('token', userToken);
         };
 
-        initializeAuth();
-    }, []);
+        if (isLoading) {
+            return React.createElement('div', {
+                style: {
+                    minHeight: '100vh',
+                    background: 'linear-gradient(135deg, #2c3e50 0%, #34495e 25%, #5dade2 50%, #85c1e9 75%, #aed6f1 100%)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                }
+            }, React.createElement('div', {
+                style: {
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    backdropFilter: 'blur(20px)',
+                    borderRadius: '20px',
+                    padding: '40px',
+                    textAlign: 'center',
+                    border: '1px solid rgba(255, 255, 255, 0.2)'
+                }
+            }, [
+                React.createElement('div', {
+                    key: 'spinner',
+                    style: {
+                        width: '60px',
+                        height: '60px',
+                        border: '4px solid rgba(255, 255, 255, 0.3)',
+                        borderTop: '4px solid white',
+                        borderRadius: '50%',
+                        animation: 'spin 1s linear infinite',
+                        margin: '0 auto 20px'
+                    }
+                }),
+                React.createElement('p', {
+                    key: 'text',
+                    style: { color: 'white', margin: 0, fontSize: '18px' }
+                }, 'Initializing futuristic file manager...')
+            ]));
+        }
 
-    const handleLogin = (userData, userToken) => {
-        setUser(userData);
-        setToken(userToken);
-        localStorage.setItem('token', userToken);
+        if (!token || !user) {
+            return React.createElement(LoginForm, { onLogin: handleLogin });
+        }
+
+        return React.createElement(FileBrowser, { token: token, user: user });
     };
 
-    if (isLoading) {
-        return (
-            <div className="flex items-center justify-center min-h-screen">
-                <div className="text-center">
-                    <div className="loading-spinner mx-auto mb-4"></div>
-                    <p className="text-blue-400">Initializing...</p>
+    // Add CSS animations
+    const style = document.createElement('style');
+    style.textContent = `
+        @keyframes pulse {
+            0%, 100% { opacity: 0.3; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.05); }
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        ::placeholder {
+            color: rgba(255, 255, 255, 0.6);
+        }
+    `;
+    document.head.appendChild(style);
+
+    // Render the app
+    try {
+        console.log('App: Rendering...');
+        ReactDOM.render(React.createElement(App), document.getElementById('root'));
+        console.log('App: Rendered successfully!');
+    } catch (error) {
+        console.error('App: Render failed:', error);
+        document.getElementById('root').innerHTML = `
+            <div style="
+                min-height: 100vh;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: white;
+                text-align: center;
+                padding: 20px;
+            ">
+                <div style="
+                    background: rgba(255, 255, 255, 0.1);
+                    backdrop-filter: blur(20px);
+                    border-radius: 20px;
+                    padding: 40px;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                ">
+                    <h2 style="margin: 0 0 16px 0; color: #ef4444;">❌ Render Failed</h2>
+                    <p style="margin: 0; opacity: 0.8;">Error: ${error.message}</p>
                 </div>
             </div>
-        );
+        `;
     }
-
-    if (!token || !user) {
-        return <LoginForm onLogin={handleLogin} />;
-    }
-
-    return <FileBrowser token={token} user={user} />;
-};
-
-// Render the app
-ReactDOM.render(<App />, document.getElementById('root'));
+}

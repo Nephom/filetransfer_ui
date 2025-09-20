@@ -146,10 +146,31 @@ class LocalFileSystem {
     const fs = require('fs').promises;
     try {
       const items = await fs.readdir(path);
-      return items.map(item => ({
-        name: item,
-        path: `${path}/${item}`
-      }));
+      const itemsWithStats = await Promise.all(
+        items.map(async (item) => {
+          const itemPath = `${path}/${item}`;
+          try {
+            const stats = await fs.stat(itemPath);
+            return {
+              name: item,
+              path: itemPath,
+              isDirectory: stats.isDirectory(),
+              size: stats.size,
+              modified: stats.mtime.toISOString()
+            };
+          } catch (error) {
+            // If we can't get stats, assume it's a file
+            return {
+              name: item,
+              path: itemPath,
+              isDirectory: false,
+              size: 0,
+              modified: new Date().toISOString()
+            };
+          }
+        })
+      );
+      return itemsWithStats;
     } catch (error) {
       throw new Error(`Failed to list directory ${path}: ${error.message}`);
     }
@@ -202,6 +223,73 @@ class LocalFileSystem {
       };
     } catch (error) {
       throw new Error(`Failed to get stats for ${path}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Rename/move a file or directory
+   * @param {string} oldPath - Current path
+   * @param {string} newPath - New path
+   * @returns {Promise<void>}
+   */
+  async rename(oldPath, newPath) {
+    const fs = require('fs').promises;
+    try {
+      await fs.rename(oldPath, newPath);
+    } catch (error) {
+      throw new Error(`Failed to rename ${oldPath} to ${newPath}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Copy a file or directory
+   * @param {string} sourcePath - Source path
+   * @param {string} destinationPath - Destination path
+   * @returns {Promise<void>}
+   */
+  async copy(sourcePath, destinationPath) {
+    const fs = require('fs').promises;
+    const path = require('path');
+
+    try {
+      const stats = await fs.stat(sourcePath);
+
+      if (stats.isDirectory()) {
+        // Copy directory recursively
+        await fs.mkdir(destinationPath, { recursive: true });
+        const items = await fs.readdir(sourcePath);
+
+        for (const item of items) {
+          const srcPath = path.join(sourcePath, item);
+          const destPath = path.join(destinationPath, item);
+          await this.copy(srcPath, destPath);
+        }
+      } else {
+        // Copy file
+        await fs.copyFile(sourcePath, destinationPath);
+      }
+    } catch (error) {
+      throw new Error(`Failed to copy ${sourcePath} to ${destinationPath}: ${error.message}`);
+    }
+  }
+
+  /**
+   * Move a file or directory
+   * @param {string} sourcePath - Source path
+   * @param {string} destinationPath - Destination path
+   * @returns {Promise<void>}
+   */
+  async move(sourcePath, destinationPath) {
+    try {
+      await this.rename(sourcePath, destinationPath);
+    } catch (error) {
+      // If rename fails (e.g., across different filesystems), try copy + delete
+      try {
+        await this.copy(sourcePath, destinationPath);
+        await this.delete(sourcePath);
+      } catch (copyError) {
+        throw new Error(`Failed to move ${sourcePath} to ${destinationPath}: ${error.message}`);
+      }
     }
   }
 }
