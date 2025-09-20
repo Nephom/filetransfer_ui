@@ -5,20 +5,13 @@ const path = require('path');
 const multer = require('multer');
 const bcrypt = require('bcrypt');
 const fs = require('fs').promises;
+const os = require('os');
 const ConfigManager = require('./config');
 const { FileSystem } = require('./file-system');
 const AuthManager = require('./auth');
 const { transferManager } = require('./transfer');
 const { authenticate, setJwtSecret } = require('./middleware/auth');
-const {
-  authLimiter,
-  fileLimiter,
-  securityHeaders,
-  requestLogger,
-  validateInput,
-  fileUploadSecurity,
-  securityManager
-} = require('./middleware/security');
+const { initializeSecurity } = require('./middleware/security');
 
 // Initialize configuration
 const configManager = new ConfigManager();
@@ -29,52 +22,79 @@ const app = express();
 // These will be initialized after config is loaded
 let authManager;
 let fileSystem;
+let securityMiddleware;
 
 // Security checks and recommendations on startup
-async function performSecurityChecks() {
-  console.log('\n🔒 SECURITY CHECKS');
+async function performSecurityChecks(config) {
+  console.log('\n🔒 SECURITY CONFIGURATION');
   console.log('='.repeat(50));
+
+  // Always enabled security features
+  console.log('🛡️  ALWAYS ENABLED (Core Security):');
+  console.log('   ✅ JWT token authentication');
+  console.log('   ✅ Password hashing with bcrypt');
+  console.log('   ✅ HTTPS data transmission (when configured)');
+
+  // Configurable security features
+  console.log('\n⚙️  CONFIGURABLE SECURITY FEATURES:');
+  const features = [
+    { key: 'enableRateLimit', name: 'Rate limiting (auth: 5/15min, files: 50/min)' },
+    { key: 'enableSecurityHeaders', name: 'Security headers (HSTS, CSP, etc.)' },
+    { key: 'enableInputValidation', name: 'Input validation and sanitization' },
+    { key: 'enableFileUploadSecurity', name: 'File upload security checks' },
+    { key: 'enableRequestLogging', name: 'Request logging and monitoring' },
+    { key: 'enableCSP', name: 'Content Security Policy' }
+  ];
+
+  features.forEach(feature => {
+    const enabled = config.get(`security.${feature.key}`) === true;
+    const status = enabled ? '✅' : '❌';
+    console.log(`   ${status} ${feature.name}`);
+  });
 
   // Check config file permissions
   const configPath = './src/config.ini';
+  const { securityManager } = require('./middleware/security');
   const isSecure = await securityManager.validateConfigSecurity(configPath);
 
+  console.log('\n📁 CONFIG FILE SECURITY:');
   if (!isSecure) {
-    console.log('⚠️  Config file has insecure permissions');
+    console.log('   ⚠️  Config file has permissive permissions');
+    console.log('   💡 Consider running: chmod 600 ./src/config.ini');
   } else {
-    console.log('✅ Config file permissions are secure');
+    console.log('   ✅ Config file permissions are secure');
   }
 
-  // Get security recommendations
-  const recommendations = securityManager.getSecurityRecommendations();
-
-  if (recommendations.length > 0) {
-    console.log('\n📋 SECURITY RECOMMENDATIONS:');
-    recommendations.forEach((rec, index) => {
-      console.log(`${index + 1}. [${rec.level}] ${rec.message}`);
-      console.log(`   Action: ${rec.action}\n`);
-    });
-  } else {
-    console.log('✅ All security recommendations are implemented');
-  }
-
-  // Log security configuration
-  console.log('🛡️  SECURITY FEATURES ENABLED:');
-  console.log('   ✅ Rate limiting (auth: 5/15min, files: 50/min)');
-  console.log('   ✅ Security headers (HSTS, CSP, etc.)');
-  console.log('   ✅ Input validation and sanitization');
-  console.log('   ✅ File upload security checks');
-  console.log('   ✅ Request logging and monitoring');
-  console.log('   ✅ Password hashing with bcrypt');
-  console.log('   ✅ JWT token authentication');
+  console.log('\n💡 SECURITY NOTE:');
+  console.log('   Most security features are disabled by default for ease of use.');
+  console.log('   Enable them in config.ini for production environments.');
+  console.log('   Authentication and data transmission security are always enabled.');
 
   console.log('='.repeat(50));
 }
 
-// Security middleware
-app.use(securityHeaders);
-app.use(requestLogger);
-app.use(validateInput);
+// Get all available IP addresses
+function getNetworkInterfaces() {
+  const interfaces = os.networkInterfaces();
+  const addresses = [];
+
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      // Skip internal and non-IPv4 addresses
+      if (iface.family === 'IPv4' && !iface.internal) {
+        addresses.push({
+          name: name,
+          address: iface.address,
+          netmask: iface.netmask
+        });
+      }
+    }
+  }
+
+  return addresses;
+}
+
+// Security middleware will be initialized after config is loaded
 
 // Basic middleware
 app.use(cors());
@@ -97,7 +117,14 @@ app.post('/auth/register', async (req, res) => {
   }
 });
 
-app.post('/auth/login', authLimiter, async (req, res) => {
+app.post('/auth/login', (req, res, next) => {
+  // Apply auth limiter if security middleware is initialized
+  if (securityMiddleware && securityMiddleware.authLimiter) {
+    securityMiddleware.authLimiter(req, res, next);
+  } else {
+    next();
+  }
+}, async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -137,7 +164,14 @@ app.post('/auth/login', authLimiter, async (req, res) => {
 });
 
 // Change password endpoint
-app.post('/auth/change-password', authLimiter, authenticate, async (req, res) => {
+app.post('/auth/change-password', (req, res, next) => {
+  // Apply auth limiter if security middleware is initialized
+  if (securityMiddleware && securityMiddleware.authLimiter) {
+    securityMiddleware.authLimiter(req, res, next);
+  } else {
+    next();
+  }
+}, authenticate, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
@@ -196,7 +230,14 @@ app.post('/auth/change-password', authLimiter, authenticate, async (req, res) =>
 });
 
 // Forgot password endpoint (generates temporary reset token)
-app.post('/auth/forgot-password', authLimiter, async (req, res) => {
+app.post('/auth/forgot-password', (req, res, next) => {
+  // Apply auth limiter if security middleware is initialized
+  if (securityMiddleware && securityMiddleware.authLimiter) {
+    securityMiddleware.authLimiter(req, res, next);
+  } else {
+    next();
+  }
+}, async (req, res) => {
   try {
     const { username } = req.body;
 
@@ -245,7 +286,14 @@ app.post('/auth/forgot-password', authLimiter, async (req, res) => {
 });
 
 // Reset password with token
-app.post('/auth/reset-password', authLimiter, async (req, res) => {
+app.post('/auth/reset-password', (req, res, next) => {
+  // Apply auth limiter if security middleware is initialized
+  if (securityMiddleware && securityMiddleware.authLimiter) {
+    securityMiddleware.authLimiter(req, res, next);
+  } else {
+    next();
+  }
+}, async (req, res) => {
   try {
     const { username, resetToken, newPassword } = req.body;
 
@@ -306,7 +354,7 @@ app.post('/auth/reset-password', authLimiter, async (req, res) => {
 // File system routes (authenticated)
 app.get('/api/files/*', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.basePath') || './storage';
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const requestPath = req.params[0] || '';
 
     // Construct full path
@@ -324,7 +372,7 @@ app.get('/api/files/*', authenticate, async (req, res) => {
 // Handle root files API call
 app.get('/api/files', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.basePath') || './storage';
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
 
     console.log('Listing files in root storage:', storagePath);
     const files = await fileSystem.list(storagePath);
@@ -337,7 +385,7 @@ app.get('/api/files', authenticate, async (req, res) => {
 
 app.get('/api/files/content/:path*', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.basePath') || './storage';
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
     const fullPath = `${storagePath}/${requestPath}`;
 
@@ -350,7 +398,7 @@ app.get('/api/files/content/:path*', authenticate, async (req, res) => {
 
 app.post('/api/files', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.basePath') || './storage';
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { path, content } = req.body;
     const fullPath = `${storagePath}/${path}`;
 
@@ -364,7 +412,7 @@ app.post('/api/files', authenticate, async (req, res) => {
 // Create new folder
 app.post('/api/folders', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.basePath') || './storage';
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { folderName, currentPath } = req.body;
 
     if (!folderName || !folderName.trim()) {
@@ -387,7 +435,7 @@ app.post('/api/folders', authenticate, async (req, res) => {
 // Legacy endpoint for backward compatibility
 app.post('/api/files/directory', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.basePath') || './storage';
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { path } = req.body;
     const fullPath = `${storagePath}/${path}`;
 
@@ -400,7 +448,7 @@ app.post('/api/files/directory', authenticate, async (req, res) => {
 
 app.delete('/api/files/:path*', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.basePath') || './storage';
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
     const fullPath = `${storagePath}/${requestPath}`;
 
@@ -441,9 +489,147 @@ app.post('/api/files/move', authenticate, async (req, res) => {
   }
 });
 
+// Create new file
+app.post('/api/files/create', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const { fileName, currentPath, content = '' } = req.body;
+
+    if (!fileName || !fileName.trim()) {
+      return res.status(400).json({ error: 'File name is required' });
+    }
+
+    const fullPath = currentPath
+      ? `${storagePath}/${currentPath}/${fileName.trim()}`
+      : `${storagePath}/${fileName.trim()}`;
+
+    console.log('Creating file:', fullPath);
+    await fileSystem.write(fullPath, content);
+    res.json({ success: true, message: 'File created successfully' });
+  } catch (error) {
+    console.error('File creation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Rename file or folder
+app.put('/api/files/rename', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const { oldName, newName, currentPath } = req.body;
+
+    if (!oldName || !newName) {
+      return res.status(400).json({ error: 'Both old and new names are required' });
+    }
+
+    const oldPath = currentPath
+      ? `${storagePath}/${currentPath}/${oldName}`
+      : `${storagePath}/${oldName}`;
+
+    const newPath = currentPath
+      ? `${storagePath}/${currentPath}/${newName}`
+      : `${storagePath}/${newName}`;
+
+    console.log('Renaming:', oldPath, 'to', newPath);
+    await fileSystem.rename(oldPath, newPath);
+    res.json({ success: true, message: 'Item renamed successfully' });
+  } catch (error) {
+    console.error('Rename error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete files or folders
+app.delete('/api/files/delete', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const { items, currentPath } = req.body;
+
+    if (!items || !Array.isArray(items)) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    const deletedItems = [];
+    for (const item of items) {
+      const fullPath = currentPath
+        ? `${storagePath}/${currentPath}/${item.name}`
+        : `${storagePath}/${item.name}`;
+
+      console.log('Deleting:', fullPath);
+      await fileSystem.delete(fullPath);
+      deletedItems.push(item.name);
+    }
+
+    res.json({
+      success: true,
+      message: `${deletedItems.length} item(s) deleted successfully`,
+      deletedItems
+    });
+  } catch (error) {
+    console.error('Delete error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Paste (copy or move) files
+app.post('/api/files/paste', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const { items, operation, targetPath } = req.body;
+
+    if (!items || !Array.isArray(items) || !operation) {
+      return res.status(400).json({ error: 'Items array and operation are required' });
+    }
+
+    const processedItems = [];
+    for (const item of items) {
+      const sourcePath = item.sourcePath || (item.currentPath
+        ? `${storagePath}/${item.currentPath}/${item.name}`
+        : `${storagePath}/${item.name}`);
+
+      const targetFullPath = targetPath
+        ? `${storagePath}/${targetPath}/${item.name}`
+        : `${storagePath}/${item.name}`;
+
+      console.log(`${operation === 'copy' ? 'Copying' : 'Moving'}:`, sourcePath, 'to', targetFullPath);
+
+      if (operation === 'copy') {
+        await fileSystem.copy(sourcePath, targetFullPath);
+      } else if (operation === 'cut') {
+        await fileSystem.move(sourcePath, targetFullPath);
+      }
+
+      processedItems.push(item.name);
+    }
+
+    res.json({
+      success: true,
+      message: `${processedItems.length} item(s) ${operation === 'copy' ? 'copied' : 'moved'} successfully`,
+      processedItems
+    });
+  } catch (error) {
+    console.error('Paste error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // File upload endpoint
-app.post('/api/upload', fileLimiter, authenticate, fileUploadSecurity, (req, res) => {
-  const storagePath = configManager.get('fileSystem.basePath') || './storage';
+app.post('/api/upload', (req, res, next) => {
+  // Apply file limiter if security middleware is initialized
+  if (securityMiddleware && securityMiddleware.fileLimiter) {
+    securityMiddleware.fileLimiter(req, res, next);
+  } else {
+    next();
+  }
+}, authenticate, (req, res, next) => {
+  // Apply file upload security if security middleware is initialized
+  if (securityMiddleware && securityMiddleware.fileUploadSecurity) {
+    securityMiddleware.fileUploadSecurity(req, res, next);
+  } else {
+    next();
+  }
+}, (req, res) => {
+  const storagePath = configManager.get('fileSystem.storagePath') || './storage';
 
   // First, parse the form to get currentPath
   const upload = multer().array('files');
@@ -504,11 +690,80 @@ app.get('/api/progress/:transferId', authenticate, (req, res) => {
   }
 });
 
+// Settings API endpoints
+app.get('/api/settings', authenticate, async (req, res) => {
+  try {
+    const settings = {
+      enableRateLimit: configManager.get('security.enableRateLimit') === true,
+      enableSecurityHeaders: configManager.get('security.enableSecurityHeaders') === true,
+      enableInputValidation: configManager.get('security.enableInputValidation') === true,
+      enableFileUploadSecurity: configManager.get('security.enableFileUploadSecurity') === true,
+      enableRequestLogging: configManager.get('security.enableRequestLogging') === true,
+      enableCSP: configManager.get('security.enableCSP') === true
+    };
+
+    res.json(settings);
+  } catch (error) {
+    console.error('Settings fetch error:', error);
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
+});
+
+app.put('/api/settings', authenticate, async (req, res) => {
+  try {
+    const {
+      enableRateLimit,
+      enableSecurityHeaders,
+      enableInputValidation,
+      enableFileUploadSecurity,
+      enableRequestLogging,
+      enableCSP
+    } = req.body;
+
+    // Update configuration
+    configManager.set('security.enableRateLimit', enableRateLimit === true);
+    configManager.set('security.enableSecurityHeaders', enableSecurityHeaders === true);
+    configManager.set('security.enableInputValidation', enableInputValidation === true);
+    configManager.set('security.enableFileUploadSecurity', enableFileUploadSecurity === true);
+    configManager.set('security.enableRequestLogging', enableRequestLogging === true);
+    configManager.set('security.enableCSP', enableCSP === true);
+
+    // Save configuration to file
+    await configManager.save();
+
+    console.log('Security settings updated by user:', req.user?.username);
+    console.log('New settings:', {
+      enableRateLimit,
+      enableSecurityHeaders,
+      enableInputValidation,
+      enableFileUploadSecurity,
+      enableRequestLogging,
+      enableCSP
+    });
+
+    res.json({
+      success: true,
+      message: 'Settings saved successfully. Server restart may be required for some changes to take effect.'
+    });
+  } catch (error) {
+    console.error('Settings save error:', error);
+    res.status(500).json({ error: 'Failed to save settings' });
+  }
+});
+
 // Start server with configuration
 async function startServer() {
   try {
     // Load configuration first
     await configManager.load();
+
+    // Initialize security middleware with configuration
+    securityMiddleware = initializeSecurity(configManager);
+
+    // Apply security middleware
+    app.use(securityMiddleware.securityHeaders);
+    app.use(securityMiddleware.requestLogger);
+    app.use(securityMiddleware.validateInput);
 
     // Initialize components after config is loaded
     const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
@@ -524,18 +779,38 @@ async function startServer() {
 
     const port = configManager.get('server.port') || 3000;
 
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+
     console.log('Configuration loaded:');
     console.log('- Port:', port);
     console.log('- Username:', configManager.get('auth.username'));
-    console.log('- Storage Path:', configManager.get('fileSystem.basePath'));
+    console.log('- Storage Path:', storagePath);
 
     app.listen(port, async () => {
-      console.log(`File Transfer API listening at http://localhost:${port}`);
+      console.log(`\n🌐 File Transfer API is now running!`);
+      console.log('='.repeat(50));
+
+      // Show all available access URLs
+      const networkInterfaces = getNetworkInterfaces();
+      console.log('📡 Available access URLs:');
+      console.log(`   🏠 Local:     http://localhost:${port}`);
+      console.log(`   🏠 Local:     http://127.0.0.1:${port}`);
+
+      if (networkInterfaces.length > 0) {
+        networkInterfaces.forEach(iface => {
+          console.log(`   🌍 Network:   http://${iface.address}:${port} (${iface.name})`);
+        });
+      } else {
+        console.log('   ⚠️  No external network interfaces found');
+      }
+
+      console.log('\n💡 Access the application from any device on your network!');
+      console.log('='.repeat(50));
 
       // Perform security checks
-      await performSecurityChecks();
+      await performSecurityChecks(configManager);
 
-      console.log('\n🚀 Server is ready and secure!');
+      console.log('\n🚀 Server is ready!');
     });
   } catch (error) {
     console.error('Failed to start server:', error);

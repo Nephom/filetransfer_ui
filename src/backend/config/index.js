@@ -287,6 +287,41 @@ class ConfigManager {
   getConfig() {
     return this.config;
   }
+
+  /**
+   * Save current configuration to file
+   * @returns {Promise<void>}
+   */
+  async save() {
+    try {
+      const configFile = this.options.configFile || './src/config.ini';
+
+      if (configFile.endsWith('.ini')) {
+        // Convert config object to INI format
+        let iniContent = '';
+
+        for (const [section, values] of Object.entries(this.config)) {
+          if (typeof values === 'object' && values !== null) {
+            iniContent += `[${section}]\n`;
+            for (const [key, value] of Object.entries(values)) {
+              iniContent += `${key}=${value}\n`;
+            }
+            iniContent += '\n';
+          }
+        }
+
+        await fs.writeFile(configFile, iniContent.trim(), 'utf8');
+      } else {
+        // Save as JSON
+        await fs.writeFile(configFile, JSON.stringify(this.config, null, 2), 'utf8');
+      }
+
+      console.log('Configuration saved to', configFile);
+    } catch (error) {
+      console.error('Error saving configuration:', error);
+      throw new Error('Failed to save configuration');
+    }
+  }
 }
 
 module.exports = ConfigManager;
