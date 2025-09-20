@@ -23,6 +23,12 @@ LOCAL_DEV_NOTES.md
 dev-notes.md
 local-notes.md
 
+# Runtime files
+server.pid
+server.log
+*.log
+logs/
+
 # Node.js
 node_modules/
 npm-debug.log*
