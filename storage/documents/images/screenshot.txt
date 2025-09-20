@@ -1,8 +1,0 @@
-This is a placeholder file in the images directory.
-
-In a real scenario, this would be an image file like:
-- screenshot.png
-- photo.jpg
-- diagram.svg
-
-This file helps test the multi-level directory navigation.
