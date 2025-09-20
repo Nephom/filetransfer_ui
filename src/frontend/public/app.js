@@ -292,7 +292,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             setLoading(true);
             setError('');
             try {
-                const url = currentPath ? `/api/files?path=${encodeURIComponent(currentPath)}` : '/api/files';
+                const url = currentPath ? `/api/files/${encodeURIComponent(currentPath)}` : '/api/files';
                 const response = await fetch(url, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
@@ -311,7 +311,13 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
 
         const navigateToFolder = (folderPath, folderName) => {
             setPathHistory([...pathHistory, { path: currentPath, name: currentPath || 'Root' }]);
-            setCurrentPath(folderPath);
+
+            // Convert full path to relative path
+            // Remove ./storage/ prefix to get relative path
+            const relativePath = folderPath.replace(/^\.\/storage\/?/, '');
+            const newPath = currentPath ? `${currentPath}/${folderName}` : folderName;
+
+            setCurrentPath(newPath);
             setSelectedFiles([]);
         };
 
