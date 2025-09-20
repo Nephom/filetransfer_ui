@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Transfer UI - Futuristic File Manager</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📁</text></svg>">
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <!-- Removed Tailwind CSS to avoid conflicts -->
     <style>
         body {
             background: #f0f0f0;
@@ -125,6 +125,22 @@
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
+        }
+
+        /* Animation delays for background elements */
+        .animation-delay-2000 {
+            animation-delay: 2s;
+        }
+
+        .animation-delay-4000 {
+            animation-delay: 4s;
+        }
+
+        /* Futuristic login styles */
+        .login-container {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(147, 51, 234, 0.1) 100%);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
         }
 
         .drag-overlay {
@@ -332,74 +348,90 @@
 </head>
 <body class="min-h-screen text-white">
     <div id="root">
-        <!-- Loading screen -->
-        <div class="flex items-center justify-center min-h-screen">
-            <div class="text-center">
-                <div class="loading-spinner mx-auto mb-4"></div>
-                <h2 class="text-xl font-semibold text-blue-400">Loading File Transfer UI...</h2>
-                <p class="text-gray-400 mt-2">Initializing futuristic file manager</p>
+        <!-- Enhanced Loading screen -->
+        <div style="
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            position: relative;
+            overflow: hidden;
+        ">
+            <!-- Animated background elements -->
+            <div style="
+                position: absolute;
+                top: -160px;
+                right: -160px;
+                width: 320px;
+                height: 320px;
+                background: rgba(147, 51, 234, 0.3);
+                border-radius: 50%;
+                filter: blur(40px);
+                animation: pulse 4s ease-in-out infinite;
+            "></div>
+            <div style="
+                position: absolute;
+                bottom: -160px;
+                left: -160px;
+                width: 320px;
+                height: 320px;
+                background: rgba(59, 130, 246, 0.3);
+                border-radius: 50%;
+                filter: blur(40px);
+                animation: pulse 4s ease-in-out infinite 2s;
+            "></div>
+
+            <div style="
+                position: relative;
+                z-index: 10;
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(20px);
+                border-radius: 20px;
+                padding: 40px;
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                text-align: center;
+                box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            ">
+                <div style="
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 60px;
+                    height: 60px;
+                    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+                    border-radius: 50%;
+                    margin-bottom: 20px;
+                    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+                ">
+                    <span style="font-size: 24px;">📁</span>
+                </div>
+                <div style="
+                    width: 40px;
+                    height: 40px;
+                    border: 3px solid rgba(255, 255, 255, 0.3);
+                    border-top: 3px solid white;
+                    border-radius: 50%;
+                    animation: spin 1s linear infinite;
+                    margin: 0 auto 20px;
+                "></div>
+                <div id="loading-text">
+                    <p style="margin: 0; font-size: 18px;">Loading File Transfer UI...</p>
+                </div>
             </div>
         </div>
     </div>
     
-    <!-- React and other dependencies (Local copies for better security and reliability) -->
-    <script crossorigin src="/lib/react.development.js" onerror="loadReactFromCDN()"></script>
-    <script crossorigin src="/lib/react-dom.development.js" onerror="loadReactDOMFromCDN()"></script>
-    <script src="/lib/babel.min.js" onerror="loadBabelFromCDN()"></script>
+    <!-- React and other dependencies -->
+    <script crossorigin src="/lib/react.development.js"></script>
+    <script crossorigin src="/lib/react-dom.development.js"></script>
+    <script src="/lib/babel.min.js"></script>
 
-    <!-- CDN Fallback Script -->
-    <script>
-        let reactLoaded = false;
-        let reactDOMLoaded = false;
-        let babelLoaded = false;
+    <!-- Main Application -->
+    <script src="/app.js"></script>
 
-        function loadReactFromCDN() {
-            if (!reactLoaded) {
-                console.warn('Loading React from CDN fallback...');
-                const script = document.createElement('script');
-                script.crossOrigin = 'anonymous';
-                script.src = 'https://unpkg.com/react@18.3.1/umd/react.development.js';
-                script.onload = () => { reactLoaded = true; };
-                document.head.appendChild(script);
-            }
-        }
 
-        function loadReactDOMFromCDN() {
-            if (!reactDOMLoaded) {
-                console.warn('Loading ReactDOM from CDN fallback...');
-                const script = document.createElement('script');
-                script.crossOrigin = 'anonymous';
-                script.src = 'https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js';
-                script.onload = () => { reactDOMLoaded = true; };
-                document.head.appendChild(script);
-            }
-        }
-
-        function loadBabelFromCDN() {
-            if (!babelLoaded) {
-                console.warn('Loading Babel from CDN fallback...');
-                const script = document.createElement('script');
-                script.src = 'https://unpkg.com/@babel/standalone@7.25.9/babel.min.js';
-                script.onload = () => { babelLoaded = true; };
-                document.head.appendChild(script);
-            }
-        }
-
-        // Check if libraries loaded successfully
-        window.addEventListener('load', () => {
-            if (typeof React === 'undefined') {
-                console.error('React failed to load from local files and CDN');
-            }
-            if (typeof ReactDOM === 'undefined') {
-                console.error('ReactDOM failed to load from local files and CDN');
-            }
-            if (typeof Babel === 'undefined') {
-                console.error('Babel failed to load from local files and CDN');
-            }
-        });
-    </script>
-    
-    <!-- Main App Script -->
-    <script type="text/babel" src="/app.js"></script>
 </body>
 </html>
