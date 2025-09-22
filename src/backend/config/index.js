@@ -16,7 +16,7 @@ class ConfigManager {
       // File system configuration
       fileSystem: {
         type: 'local',
-        basePath: './files',
+        storagePath: './storage',
         maxFileSize: 1024 * 1024 * 100 // 100MB default
       },
 
@@ -123,7 +123,7 @@ class ConfigManager {
           config.server.port = parsedValue;
         } else if (key === 'storagePath') {
           config.fileSystem = config.fileSystem || {};
-          config.fileSystem.basePath = parsedValue;
+          config.fileSystem.storagePath = parsedValue;
         } else if (key === 'username' || key === 'password') {
           config.auth = config.auth || {};
           config.auth[key] = parsedValue;
@@ -144,9 +144,9 @@ class ConfigManager {
     const env = {};
 
     // File system config
-    if (process.env.FILESYSTEM_BASE_PATH) {
+    if (process.env.FILESYSTEM_STORAGE_PATH) {
       env.fileSystem = env.fileSystem || {};
-      env.fileSystem.basePath = process.env.FILESYSTEM_BASE_PATH;
+      env.fileSystem.storagePath = process.env.FILESYSTEM_STORAGE_PATH;
     }
 
     if (process.env.MAX_FILE_SIZE) {
@@ -223,12 +223,12 @@ class ConfigManager {
       throw new Error('chunkSize must be positive');
     }
 
-    // Validate file system base path exists
+    // Validate file system storage path exists
     try {
-      await fs.access(this.config.fileSystem.basePath);
+      await fs.access(this.config.fileSystem.storagePath);
     } catch (error) {
-      // If base path doesn't exist, create it
-      await fs.mkdir(this.config.fileSystem.basePath, { recursive: true });
+      // If storage path doesn't exist, create it
+      await fs.mkdir(this.config.fileSystem.storagePath, { recursive: true });
     }
   }
 
