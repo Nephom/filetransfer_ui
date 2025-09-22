@@ -372,7 +372,7 @@ app.get('/api/files/*', authenticate, async (req, res) => {
 // Handle root files API call
 app.get('/api/files', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const storagePath = configManager.get('fileSystem.storagePath');
 
     console.log('Listing files in root storage:', storagePath);
     const files = await fileSystem.list(storagePath);
@@ -488,6 +488,115 @@ app.post('/api/files/move', authenticate, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Download file endpoint
+app.get('/api/files/download/:path*', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
+    const fullPath = `${storagePath}/${requestPath}`;
+
+    console.log('Downloading file:', fullPath);
+
+    // Check if file exists
+    const exists = await fileSystem.exists(fullPath);
+    if (!exists) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Get file stats to check if it's a file (not directory)
+    const fs = require('fs').promises;
+    const stats = await fs.stat(fullPath);
+    if (stats.isDirectory()) {
+      return res.status(400).json({ error: 'Cannot download a directory' });
+    }
+
+    // Set appropriate headers for file download
+    const path = require('path');
+    const fileName = path.basename(fullPath);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+
+    // Stream the file
+    const fileStream = require('fs').createReadStream(fullPath);
+    fileStream.pipe(res);
+
+    fileStream.on('error', (error) => {
+      console.error('File stream error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to download file' });
+      }
+    });
+
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Search files recursively
+app.get('/api/files/search', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const { query, path: searchPath } = req.query;
+
+    if (!query) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    const searchInPath = searchPath ? `${storagePath}/${searchPath}` : storagePath;
+    console.log('Searching for:', query, 'in:', searchInPath);
+
+    const searchResults = await searchFilesRecursively(searchInPath, query, storagePath);
+    res.json(searchResults);
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Helper function to search files recursively
+async function searchFilesRecursively(searchPath, query, basePath) {
+  const fs = require('fs').promises;
+  const path = require('path');
+  const results = [];
+
+  async function searchDirectory(dirPath) {
+    try {
+      const items = await fs.readdir(dirPath);
+
+      for (const item of items) {
+        const itemPath = path.join(dirPath, item);
+        const stats = await fs.stat(itemPath);
+
+        // Check if item name matches search query
+        if (item.toLowerCase().includes(query.toLowerCase())) {
+          // Calculate relative path from storage base
+          const relativePath = path.relative(basePath, itemPath);
+
+          results.push({
+            name: item,
+            path: relativePath,
+            isDirectory: stats.isDirectory(),
+            size: stats.size,
+            modified: stats.mtime.toISOString(),
+            fullPath: itemPath
+          });
+        }
+
+        // If it's a directory, search recursively
+        if (stats.isDirectory()) {
+          await searchDirectory(itemPath);
+        }
+      }
+    } catch (error) {
+      console.error('Error searching directory:', dirPath, error);
+    }
+  }
+
+  await searchDirectory(searchPath);
+  return results;
+}
 
 // Create new file
 app.post('/api/files/create', authenticate, async (req, res) => {
