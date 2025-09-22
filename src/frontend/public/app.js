@@ -615,12 +615,20 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
 
 
         const handleCopy = () => {
-            setClipboard({ items: contextMenu.selectedFiles, operation: 'copy' });
+            const itemsWithPath = contextMenu.selectedFiles.map(file => ({
+                ...file,
+                currentPath: currentPath
+            }));
+            setClipboard({ items: itemsWithPath, operation: 'copy' });
             closeContextMenu();
         };
 
         const handleCut = () => {
-            setClipboard({ items: contextMenu.selectedFiles, operation: 'cut' });
+            const itemsWithPath = contextMenu.selectedFiles.map(file => ({
+                ...file,
+                currentPath: currentPath
+            }));
+            setClipboard({ items: itemsWithPath, operation: 'cut' });
             closeContextMenu();
         };
 
