@@ -15,7 +15,22 @@ NC='\033[0m' # No Color
 # 配置
 PID_FILE="server.pid"
 LOG_FILE="server.log"
-PORT=3000
+CONFIG_FILE="src/config.ini"
+
+# 從配置文件讀取端口
+get_config_value() {
+    local key=$1
+    local config_file=$2
+    if [ -f "$config_file" ]; then
+        grep "^$key=" "$config_file" 2>/dev/null | cut -d'=' -f2 | tr -d ' \r\n'
+    fi
+}
+
+# 讀取端口配置，如果讀取失敗則使用默認值
+PORT=$(get_config_value "port" "$CONFIG_FILE")
+if [ -z "$PORT" ]; then
+    PORT=3000
+fi
 
 echo -e "${CYAN}🛑 File Transfer UI - 停止服務${NC}"
 echo -e "${CYAN}================================${NC}"

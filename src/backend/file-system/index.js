@@ -87,6 +87,36 @@ class FileSystem {
   async stat(path) {
     return await this.backend.stat(path);
   }
+
+  /**
+   * Rename a file or directory
+   * @param {string} oldPath - Current path
+   * @param {string} newPath - New path
+   * @returns {Promise<void>}
+   */
+  async rename(oldPath, newPath) {
+    return await this.backend.rename(oldPath, newPath);
+  }
+
+  /**
+   * Copy a file or directory
+   * @param {string} sourcePath - Source path
+   * @param {string} destinationPath - Destination path
+   * @returns {Promise<void>}
+   */
+  async copy(sourcePath, destinationPath) {
+    return await this.backend.copy(sourcePath, destinationPath);
+  }
+
+  /**
+   * Move a file or directory
+   * @param {string} sourcePath - Source path
+   * @param {string} destinationPath - Destination path
+   * @returns {Promise<void>}
+   */
+  async move(sourcePath, destinationPath) {
+    return await this.backend.move(sourcePath, destinationPath);
+  }
 }
 
 /**
