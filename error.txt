@@ -1,0 +1,55 @@
+Download the React DevTools for a better development experience: https://reactjs.org/link/react-devtools react-dom.development.js:29905:19
+App: Starting... app.js:2:9
+App: Dependencies OK app.js:31:13
+App: Rendering... app.js:1608:17
+Warning: ReactDOM.render is no longer supported in React 18. Use createRoot instead. Until you switch to the new API, your app will behave as if it's running React 17. Learn more: https://reactjs.org/link/switch-to-createroot react-dom.development.js:73:32
+    React 3
+    <anonymous> http://localhost:3000/app.js:1609
+App: Rendered successfully! app.js:1610:17
+Warning: React has detected a change in the order of Hooks called by FileBrowser. This will lead to bugs and errors if not fixed. For more information, read the Rules of Hooks: https://reactjs.org/link/rules-of-hooks
+
+   Previous render            Next render
+   ------------------------------------------------------
+1. useState                   useState
+2. useState                   useState
+3. useState                   useState
+4. useState                   useState
+5. useState                   useState
+6. useState                   useState
+7. useState                   useState
+8. useState                   useState
+9. useState                   useState
+10. useState                  useState
+11. useState                  useState
+12. useState                  useState
+13. useState                  useState
+14. useState                  useState
+15. useEffect                 useEffect
+16. useEffect                 useEffect
+17. undefined                 useEffect
+   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+FileBrowser@http://localhost:3000/app.js:275:25
+App@http://localhost:3000/app.js:1503:39 react-dom.development.js:73:32
+Uncaught Error: Rendered more hooks than during the previous render.
+    React 5
+    FileBrowser http://localhost:3000/app.js:762
+    React 15
+    fetchFiles http://localhost:3000/app.js:312
+react-dom.development.js:15698:15
+The above error occurred in the <FileBrowser> component:
+
+FileBrowser@http://localhost:3000/app.js:275:25
+App@http://localhost:3000/app.js:1503:39
+
+Consider adding an error boundary to your tree to customize error handling behavior.
+Visit https://reactjs.org/link/error-boundaries to learn more about error boundaries. react-dom.development.js:18714:17
+Uncaught (in promise) Error: Rendered more hooks than during the previous render.
+    React 5
+    FileBrowser http://localhost:3000/app.js:762
+    React 12
+    fetchFiles http://localhost:3000/app.js:312
+react-dom.development.js:15698:15
+Source Map 錯誤: request failed with status 404
+資源網址: http://localhost:3000/lib/babel.min.js
+Source Map 網址: babel.min.js.map

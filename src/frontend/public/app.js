@@ -283,10 +283,35 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
         const [showUploadModal, setShowUploadModal] = React.useState(false);
         const [uploadProgress, setUploadProgress] = React.useState({});
         const [pathHistory, setPathHistory] = React.useState([]);
+        const [contextMenu, setContextMenu] = React.useState(null);
+        const [clipboard, setClipboard] = React.useState({ items: [], operation: null });
+        const [searchResults, setSearchResults] = React.useState([]);
+        const [isSearching, setIsSearching] = React.useState(false);
 
         React.useEffect(() => {
             fetchFiles();
         }, [currentPath]);
+
+        // Debounced search effect
+        React.useEffect(() => {
+            const timeoutId = setTimeout(() => {
+                performSearch(searchQuery);
+            }, 300);
+
+            return () => clearTimeout(timeoutId);
+        }, [searchQuery, currentPath]);
+
+        // Add global click handler to close context menu
+        React.useEffect(() => {
+            const handleGlobalClick = () => {
+                if (contextMenu) {
+                    closeContextMenu();
+                }
+            };
+
+            document.addEventListener('click', handleGlobalClick);
+            return () => document.removeEventListener('click', handleGlobalClick);
+        }, [contextMenu]);
 
         const fetchFiles = async () => {
             setLoading(true);
@@ -307,6 +332,40 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             } finally {
                 setLoading(false);
             }
+        };
+
+        // Search function
+        const performSearch = async (query) => {
+            if (!query.trim()) {
+                setSearchResults([]);
+                setIsSearching(false);
+                return;
+            }
+
+            setIsSearching(true);
+            try {
+                const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}&path=${encodeURIComponent(currentPath)}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (response.ok) {
+                    const results = await response.json();
+                    setSearchResults(results);
+                } else {
+                    setError('Search failed');
+                    setSearchResults([]);
+                }
+            } catch (error) {
+                console.error('Search error:', error);
+                setError(`Search failed: ${error.message}`);
+                setSearchResults([]);
+            } finally {
+                setIsSearching(false);
+            }
+        };
+
+        const closeContextMenu = () => {
+            setContextMenu(null);
         };
 
         const navigateToFolder = (folderPath, folderName) => {
@@ -378,9 +437,41 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
 
         const downloadFile = async (file) => {
             try {
-                // For now, show a message that download will be implemented
-                alert(`Download functionality for "${file.name}" will be implemented. For now, you can access files directly through the file system.`);
+                // Construct the file path relative to storage
+                const filePath = currentPath ? `${currentPath}/${file.name}` : file.name;
+
+                // Create download URL
+                const downloadUrl = `/api/files/download/${encodeURIComponent(filePath)}`;
+
+                // Create a temporary link element and trigger download
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = file.name;
+
+                // Add authorization header by fetching the file first
+                const response = await fetch(downloadUrl, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Download failed: ${response.statusText}`);
+                }
+
+                // Create blob from response and download
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                link.href = url;
+
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                // Clean up the blob URL
+                window.URL.revokeObjectURL(url);
+
+                console.log(`Downloaded: ${file.name}`);
             } catch (error) {
+                console.error('Download error:', error);
                 setError(`Download failed: ${error.message}`);
             }
         };
@@ -456,9 +547,12 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             }
         };
 
-        const filteredFiles = files.filter(file =>
-            file.name.toLowerCase().includes(searchQuery.toLowerCase())
-        );
+
+
+
+
+        // Use search results if searching, otherwise use current directory files
+        const filteredFiles = searchQuery.trim() ? searchResults : files;
 
         const getFileIcon = (file) => {
             if (file.isDirectory) return '📂'; // Folder
@@ -482,6 +576,110 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             };
 
             return iconMap[ext] || '📄';
+        };
+
+        // Context menu functions
+        const handleContextMenu = (e, file) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            // If the file is not selected, select it
+            if (!selectedFiles.some(f => f.name === file.name)) {
+                setSelectedFiles([file]);
+            }
+
+            setContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                file: file,
+                selectedFiles: selectedFiles.some(f => f.name === file.name) ? selectedFiles : [file]
+            });
+        };
+
+
+
+        const handleCopy = () => {
+            setClipboard({ items: contextMenu.selectedFiles, operation: 'copy' });
+            closeContextMenu();
+        };
+
+        const handleCut = () => {
+            setClipboard({ items: contextMenu.selectedFiles, operation: 'cut' });
+            closeContextMenu();
+        };
+
+        const handlePaste = async () => {
+            if (!clipboard.items.length) return;
+
+            try {
+                const response = await fetch('/api/files/paste', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        items: clipboard.items,
+                        operation: clipboard.operation,
+                        targetPath: currentPath
+                    })
+                });
+
+                if (response.ok) {
+                    fetchFiles();
+                    if (clipboard.operation === 'cut') {
+                        setClipboard({ items: [], operation: null });
+                    }
+                } else {
+                    const data = await response.json();
+                    setError(data.error || 'Paste operation failed');
+                }
+            } catch (error) {
+                setError(`Paste failed: ${error.message}`);
+            }
+            closeContextMenu();
+        };
+
+        const handleRename = () => {
+            const file = contextMenu.file;
+            const newName = prompt('Enter new name:', file.name);
+            if (newName && newName !== file.name) {
+                renameFile(file, newName);
+            }
+            closeContextMenu();
+        };
+
+        const handleDeleteFromContext = () => {
+            if (confirm(`Are you sure you want to delete ${contextMenu.selectedFiles.length} item(s)?`)) {
+                deleteFiles(contextMenu.selectedFiles);
+            }
+            closeContextMenu();
+        };
+
+        const renameFile = async (file, newName) => {
+            try {
+                const response = await fetch('/api/files/rename', {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({
+                        oldName: file.name,
+                        newName: newName,
+                        currentPath: currentPath
+                    })
+                });
+
+                if (response.ok) {
+                    fetchFiles();
+                } else {
+                    const data = await response.json();
+                    setError(data.error || 'Rename failed');
+                }
+            } catch (error) {
+                setError(`Rename failed: ${error.message}`);
+            }
         };
 
         const handleLogout = () => {
@@ -577,6 +775,8 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                 ])
             ]);
         });
+
+
 
         return React.createElement('div', {
             style: {
@@ -986,6 +1186,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                                 setSelectedFiles([file]);
                             }
                         },
+                        onContextMenu: (e) => handleContextMenu(e, file),
                         onDoubleClick: () => {
                             if (!isFolder) {
                                 downloadFile(file);
@@ -1178,7 +1379,130 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                         }
                     }, 'Cancel')
                 ])
-            ]))
+            ])),
+
+            // Context Menu
+            contextMenu && React.createElement('div', {
+                key: 'context-menu',
+                style: {
+                    position: 'fixed',
+                    left: contextMenu.x,
+                    top: contextMenu.y,
+                    background: 'rgba(0, 0, 0, 0.9)',
+                    backdropFilter: 'blur(20px)',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    boxShadow: '0 10px 25px rgba(0, 0, 0, 0.3)',
+                    zIndex: 1000,
+                    minWidth: '180px',
+                    overflow: 'hidden'
+                },
+                onClick: (e) => e.stopPropagation()
+            }, [
+                React.createElement('div', {
+                    key: 'copy',
+                    onClick: handleCopy,
+                    style: {
+                        padding: '12px 16px',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: 'white',
+                        fontSize: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                    },
+                    onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
+                    onMouseLeave: (e) => e.target.style.background = 'transparent'
+                }, ['📋', ' Copy']),
+
+                React.createElement('div', {
+                    key: 'cut',
+                    onClick: handleCut,
+                    style: {
+                        padding: '12px 16px',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: 'white',
+                        fontSize: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                    },
+                    onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
+                    onMouseLeave: (e) => e.target.style.background = 'transparent'
+                }, ['✂️', ' Cut']),
+
+                clipboard.items.length > 0 && React.createElement('div', {
+                    key: 'paste',
+                    onClick: handlePaste,
+                    style: {
+                        padding: '12px 16px',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: 'white',
+                        fontSize: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                    },
+                    onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
+                    onMouseLeave: (e) => e.target.style.background = 'transparent'
+                }, ['📋', ' Paste']),
+
+                React.createElement('div', {
+                    key: 'rename',
+                    onClick: handleRename,
+                    style: {
+                        padding: '12px 16px',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: 'white',
+                        fontSize: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                    },
+                    onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
+                    onMouseLeave: (e) => e.target.style.background = 'transparent'
+                }, ['✏️', ' Rename']),
+
+                !contextMenu.file.isDirectory && React.createElement('div', {
+                    key: 'download',
+                    onClick: () => {
+                        downloadFile(contextMenu.file);
+                        closeContextMenu();
+                    },
+                    style: {
+                        padding: '12px 16px',
+                        cursor: 'pointer',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                        color: 'white',
+                        fontSize: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                    },
+                    onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
+                    onMouseLeave: (e) => e.target.style.background = 'transparent'
+                }, ['⬇️', ' Download']),
+
+                React.createElement('div', {
+                    key: 'delete',
+                    onClick: handleDeleteFromContext,
+                    style: {
+                        padding: '12px 16px',
+                        cursor: 'pointer',
+                        color: '#ef4444',
+                        fontSize: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                    },
+                    onMouseEnter: (e) => e.target.style.background = 'rgba(239, 68, 68, 0.1)',
+                    onMouseLeave: (e) => e.target.style.background = 'transparent'
+                }, ['🗑️', ' Delete'])
+            ])
         ]);
     };
 
