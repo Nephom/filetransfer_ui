@@ -339,12 +339,14 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             if (!query.trim()) {
                 setSearchResults([]);
                 setIsSearching(false);
+                setError(''); // Clear any previous search errors
                 return;
             }
 
             setIsSearching(true);
+            setError(''); // Clear any previous errors when starting new search
             try {
-                const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}&path=${encodeURIComponent(currentPath)}`, {
+                const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}&path=`, {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
 
@@ -366,6 +368,20 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
 
         const closeContextMenu = () => {
             setContextMenu(null);
+        };
+
+        // Handle context menu on empty area
+        const handleEmptyAreaContextMenu = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            setContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                file: null,
+                selectedFiles: [],
+                isEmptyArea: true
+            });
         };
 
         const navigateToFolder = (folderPath, folderName) => {
@@ -1157,7 +1173,8 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                         display: 'flex',
                         flexDirection: 'column',
                         gap: '8px'
-                    }
+                    },
+                    onContextMenu: handleEmptyAreaContextMenu
                 }, filteredFiles.map((file, index) => {
                     const isSelected = selectedFiles.some(f => f.path === file.path);
                     const isFolder = file.isDirectory;
@@ -1399,7 +1416,8 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                 },
                 onClick: (e) => e.stopPropagation()
             }, [
-                React.createElement('div', {
+                // Show copy/cut options only if not empty area
+                !contextMenu.isEmptyArea && React.createElement('div', {
                     key: 'copy',
                     onClick: handleCopy,
                     style: {
@@ -1416,7 +1434,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     onMouseLeave: (e) => e.target.style.background = 'transparent'
                 }, ['📋', ' Copy']),
 
-                React.createElement('div', {
+                !contextMenu.isEmptyArea && React.createElement('div', {
                     key: 'cut',
                     onClick: handleCut,
                     style: {
@@ -1450,7 +1468,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     onMouseLeave: (e) => e.target.style.background = 'transparent'
                 }, ['📋', ' Paste']),
 
-                React.createElement('div', {
+                !contextMenu.isEmptyArea && React.createElement('div', {
                     key: 'rename',
                     onClick: handleRename,
                     style: {
@@ -1467,7 +1485,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     onMouseLeave: (e) => e.target.style.background = 'transparent'
                 }, ['✏️', ' Rename']),
 
-                !contextMenu.file.isDirectory && React.createElement('div', {
+                !contextMenu.isEmptyArea && !contextMenu.file?.isDirectory && React.createElement('div', {
                     key: 'download',
                     onClick: () => {
                         downloadFile(contextMenu.file);
@@ -1487,7 +1505,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     onMouseLeave: (e) => e.target.style.background = 'transparent'
                 }, ['⬇️', ' Download']),
 
-                React.createElement('div', {
+                !contextMenu.isEmptyArea && React.createElement('div', {
                     key: 'delete',
                     onClick: handleDeleteFromContext,
                     style: {
