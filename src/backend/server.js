@@ -8,6 +8,7 @@ const fs = require('fs').promises;
 const os = require('os');
 const ConfigManager = require('./config');
 const { FileSystem } = require('./file-system');
+const EnhancedFileSystem = require('./file-system/enhanced');
 const AuthManager = require('./auth');
 const { transferManager } = require('./transfer');
 const { authenticate, setJwtSecret } = require('./middleware/auth');
@@ -351,6 +352,25 @@ app.post('/auth/reset-password', (req, res, next) => {
   }
 });
 
+// Search files using cache (must be before wildcard route)
+app.get('/api/files/search', authenticate, async (req, res) => {
+  try {
+    const { query } = req.query;
+
+    if (!query) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    console.log('Searching for:', query, 'using cache');
+
+    const searchResults = await fileSystem.searchFiles(query);
+    res.json(searchResults);
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // File system routes (authenticated)
 app.get('/api/files/*', authenticate, async (req, res) => {
   try {
@@ -534,69 +554,19 @@ app.get('/api/files/download/:path*', authenticate, async (req, res) => {
   }
 });
 
-// Search files recursively
-app.get('/api/files/search', authenticate, async (req, res) => {
+
+
+// Cache refresh endpoint (for manual cache updates)
+app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { query, path: searchPath } = req.query;
-
-    if (!query) {
-      return res.status(400).json({ error: 'Search query is required' });
-    }
-
-    const searchInPath = searchPath ? `${storagePath}/${searchPath}` : storagePath;
-    console.log('Searching for:', query, 'in:', searchInPath);
-
-    const searchResults = await searchFilesRecursively(searchInPath, query, storagePath);
-    res.json(searchResults);
+    console.log('Refreshing file system cache...');
+    await fileSystem.refreshCache();
+    res.json({ success: true, message: 'Cache refreshed successfully' });
   } catch (error) {
-    console.error('Search error:', error);
+    console.error('Cache refresh error:', error);
     res.status(500).json({ error: error.message });
   }
 });
-
-// Helper function to search files recursively
-async function searchFilesRecursively(searchPath, query, basePath) {
-  const fs = require('fs').promises;
-  const path = require('path');
-  const results = [];
-
-  async function searchDirectory(dirPath) {
-    try {
-      const items = await fs.readdir(dirPath);
-
-      for (const item of items) {
-        const itemPath = path.join(dirPath, item);
-        const stats = await fs.stat(itemPath);
-
-        // Check if item name matches search query
-        if (item.toLowerCase().includes(query.toLowerCase())) {
-          // Calculate relative path from storage base
-          const relativePath = path.relative(basePath, itemPath);
-
-          results.push({
-            name: item,
-            path: relativePath,
-            isDirectory: stats.isDirectory(),
-            size: stats.size,
-            modified: stats.mtime.toISOString(),
-            fullPath: itemPath
-          });
-        }
-
-        // If it's a directory, search recursively
-        if (stats.isDirectory()) {
-          await searchDirectory(itemPath);
-        }
-      }
-    } catch (error) {
-      console.error('Error searching directory:', dirPath, error);
-    }
-  }
-
-  await searchDirectory(searchPath);
-  return results;
-}
 
 // Create new file
 app.post('/api/files/create', authenticate, async (req, res) => {
@@ -884,11 +854,13 @@ async function startServer() {
     // Set JWT secret for middleware
     setJwtSecret(jwtSecret);
 
-    fileSystem = new FileSystem();
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+
+    // Initialize enhanced file system with cache
+    fileSystem = new EnhancedFileSystem(storagePath);
+    await fileSystem.initialize();
 
     const port = configManager.get('server.port') || 3000;
-
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
 
     console.log('Configuration loaded:');
     console.log('- Port:', port);
@@ -923,6 +895,33 @@ async function startServer() {
     });
   } catch (error) {
     console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// Graceful shutdown handling
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Received SIGINT, shutting down gracefully...');
+  await gracefulShutdown();
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
+  await gracefulShutdown();
+});
+
+async function gracefulShutdown() {
+  try {
+    console.log('Closing file system cache...');
+    if (fileSystem && fileSystem.close) {
+      await fileSystem.close();
+    }
+    console.log('✅ File system cache closed');
+
+    console.log('🚀 Server shutdown complete');
+    process.exit(0);
+  } catch (error) {
+    console.error('Error during shutdown:', error);
     process.exit(1);
   }
 }
