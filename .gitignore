@@ -1,6 +1,10 @@
 # System files
 .DS_Store
 CLAUDE.md
+AGENTS.md
+COMMANDS.md
+CACHE_IMPROVEMENTS.md
+MIGRATION_GUIDE.md
 
 # Claude AI assistant files
 .claude/

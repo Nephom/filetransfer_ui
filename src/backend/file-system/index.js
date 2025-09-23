@@ -3,6 +3,10 @@
  * Provides a unified interface for file operations across different storage backends
  */
 
+const EnhancedMemoryFileSystem = require('./enhanced-memory');
+
+const EnhancedMemoryFileSystem = require('./enhanced-memory');
+
 class FileSystem {
   /**
    * Initialize the file system abstraction
@@ -10,7 +14,6 @@ class FileSystem {
    */
   constructor(options = {}) {
     this.options = options;
-    this.backend = this._initializeBackend();
   }
 
   /**
@@ -324,4 +327,4 @@ class LocalFileSystem {
   }
 }
 
-module.exports = { FileSystem, LocalFileSystem };
+module.exports = { FileSystem, LocalFileSystem, EnhancedMemoryFileSystem };
