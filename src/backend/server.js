@@ -7,8 +7,7 @@ const bcrypt = require('bcrypt');
 const fs = require('fs').promises;
 const os = require('os');
 const ConfigManager = require('./config');
-const { FileSystem } = require('./file-system');
-const EnhancedFileSystem = require('./file-system/enhanced');
+const { EnhancedMemoryFileSystem } = require('./file-system');
 const AuthManager = require('./auth');
 const { transferManager } = require('./transfer');
 const { authenticate, setJwtSecret } = require('./middleware/auth');
@@ -361,13 +360,26 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    console.log('Searching for:', query, 'using cache');
+    console.log('Searching for:', query, 'using in-memory cache');
 
-    const searchResults = await fileSystem.searchFiles(query);
+    // Add timeout for search operations
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Search timeout')), 15000);
+    });
+
+    const searchResults = await Promise.race([
+      fileSystem.searchFiles(query),
+      timeoutPromise
+    ]);
+
     res.json(searchResults);
   } catch (error) {
     console.error('Search error:', error);
-    res.status(500).json({ error: error.message });
+    if (error.message === 'Search timeout') {
+      res.status(408).json({ error: 'Search timeout - try a more specific query' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
@@ -381,11 +393,25 @@ app.get('/api/files/*', authenticate, async (req, res) => {
     const fullPath = requestPath ? `${storagePath}/${requestPath}` : storagePath;
 
     console.log('Listing files in:', fullPath);
-    const files = await fileSystem.list(fullPath);
+
+    // Add timeout to prevent hanging requests
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Request timeout')), 30000);
+    });
+
+    const files = await Promise.race([
+      fileSystem.list(fullPath),
+      timeoutPromise
+    ]);
+
     res.json(files);
   } catch (error) {
     console.error('File listing error:', error);
-    res.status(500).json({ error: error.message });
+    if (error.message === 'Request timeout') {
+      res.status(408).json({ error: 'Request timeout - file system may be busy' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
@@ -395,11 +421,25 @@ app.get('/api/files', authenticate, async (req, res) => {
     const storagePath = configManager.get('fileSystem.storagePath');
 
     console.log('Listing files in root storage:', storagePath);
-    const files = await fileSystem.list(storagePath);
+
+    // Add timeout to prevent hanging requests
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Request timeout')), 30000);
+    });
+
+    const files = await Promise.race([
+      fileSystem.list(storagePath),
+      timeoutPromise
+    ]);
+
     res.json(files);
   } catch (error) {
     console.error('File listing error:', error);
-    res.status(500).json({ error: error.message });
+    if (error.message === 'Request timeout') {
+      res.status(408).json({ error: 'Request timeout - file system may be busy' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
@@ -564,6 +604,17 @@ app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
     res.json({ success: true, message: 'Cache refreshed successfully' });
   } catch (error) {
     console.error('Cache refresh error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Cache statistics endpoint
+app.get('/api/files/cache-stats', authenticate, async (req, res) => {
+  try {
+    const stats = await fileSystem.getCacheInfo ? await fileSystem.getCacheInfo() : { message: 'Cache stats not available' };
+    res.json(stats);
+  } catch (error) {
+    console.error('Cache stats error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -856,8 +907,8 @@ async function startServer() {
 
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
 
-    // Initialize enhanced file system with cache
-    fileSystem = new EnhancedFileSystem(storagePath);
+    // Initialize enhanced file system with in-memory cache
+    fileSystem = new EnhancedMemoryFileSystem(storagePath);
     await fileSystem.initialize();
 
     const port = configManager.get('server.port') || 3000;
@@ -866,6 +917,15 @@ async function startServer() {
     console.log('- Port:', port);
     console.log('- Username:', configManager.get('auth.username'));
     console.log('- Storage Path:', storagePath);
+
+    // Log cache information
+    const cacheInfo = await fileSystem.getCacheInfo();
+    console.log('- Cache Status:', cacheInfo.initialized ? 'Active' : 'Inactive');
+    if (cacheInfo.initialized) {
+      console.log(`- Cached Files: ${cacheInfo.totalFiles}`);
+      console.log(`- Cached Directories: ${cacheInfo.totalDirectories}`);
+      console.log(`- File Watcher: ${cacheInfo.isWatching ? 'Active' : 'Inactive'}`);
+    }
 
     app.listen(port, async () => {
       console.log(`\n🌐 File Transfer API is now running!`);
