@@ -3,121 +3,7 @@
  * Provides a unified interface for file operations across different storage backends
  */
 
-class FileSystem {
-  /**
-   * Initialize the file system abstraction
-   * @param {Object} options - Configuration options
-   */
-  constructor(options = {}) {
-    this.options = options;
-    this.backend = this._initializeBackend();
-  }
-
-  /**
-   * Initialize the appropriate backend based on configuration
-   * @private
-   */
-  _initializeBackend() {
-    // For now, we'll default to local file system
-    // In a real implementation, this would support multiple backends
-    return new LocalFileSystem();
-  }
-
-  /**
-   * Read a file from the file system
-   * @param {string} path - Path to the file
-   * @returns {Promise<Buffer|string>} File content
-   */
-  async read(path) {
-    return await this.backend.read(path);
-  }
-
-  /**
-   * Write content to a file
-   * @param {string} path - Path to the file
-   * @param {Buffer|string} content - Content to write
-   * @param {Object} options - Write options
-   * @returns {Promise<void>}
-   */
-  async write(path, content, options = {}) {
-    return await this.backend.write(path, content, options);
-  }
-
-  /**
-   * Delete a file or directory
-   * @param {string} path - Path to delete
-   * @returns {Promise<void>}
-   */
-  async delete(path) {
-    return await this.backend.delete(path);
-  }
-
-  /**
-   * List contents of a directory
-   * @param {string} path - Path to directory
-   * @returns {Promise<Array>} List of items in directory
-   */
-  async list(path) {
-    return await this.backend.list(path);
-  }
-
-  /**
-   * Create a directory
-   * @param {string} path - Path to create
-   * @returns {Promise<void>}
-   */
-  async mkdir(path) {
-    return await this.backend.mkdir(path);
-  }
-
-  /**
-   * Check if a file or directory exists
-   * @param {string} path - Path to check
-   * @returns {Promise<boolean>} True if exists
-   */
-  async exists(path) {
-    return await this.backend.exists(path);
-  }
-
-  /**
-   * Get file metadata
-   * @param {string} path - Path to file
-   * @returns {Promise<Object>} File metadata
-   */
-  async stat(path) {
-    return await this.backend.stat(path);
-  }
-
-  /**
-   * Rename a file or directory
-   * @param {string} oldPath - Current path
-   * @param {string} newPath - New path
-   * @returns {Promise<void>}
-   */
-  async rename(oldPath, newPath) {
-    return await this.backend.rename(oldPath, newPath);
-  }
-
-  /**
-   * Copy a file or directory
-   * @param {string} sourcePath - Source path
-   * @param {string} destinationPath - Destination path
-   * @returns {Promise<void>}
-   */
-  async copy(sourcePath, destinationPath) {
-    return await this.backend.copy(sourcePath, destinationPath);
-  }
-
-  /**
-   * Move a file or directory
-   * @param {string} sourcePath - Source path
-   * @param {string} destinationPath - Destination path
-   * @returns {Promise<void>}
-   */
-  async move(sourcePath, destinationPath) {
-    return await this.backend.move(sourcePath, destinationPath);
-  }
-}
+// First, define the base classes.
 
 /**
  * Local File System Implementation
@@ -324,4 +210,131 @@ class LocalFileSystem {
   }
 }
 
-module.exports = { FileSystem, LocalFileSystem };
+class FileSystem {
+  /**
+   * Initialize the file system abstraction
+   * @param {Object} options - Configuration options
+   */
+  constructor(options = {}) {
+    this.options = options;
+    this.backend = this._initializeBackend();
+  }
+
+  /**
+   * Initialize the appropriate backend based on configuration
+   * @private
+   */
+  _initializeBackend() {
+    // For now, we'll default to local file system
+    // In a real implementation, this would support multiple backends
+    return new LocalFileSystem();
+  }
+
+  /**
+   * Read a file from the file system
+   * @param {string} path - Path to the file
+   * @returns {Promise<Buffer|string>} File content
+   */
+  async read(path) {
+    return await this.backend.read(path);
+  }
+
+  /**
+   * Write content to a file
+   * @param {string} path - Path to the file
+   * @param {Buffer|string} content - Content to write
+   * @param {Object} options - Write options
+   * @returns {Promise<void>}
+   */
+  async write(path, content, options = {}) {
+    return await this.backend.write(path, content, options);
+  }
+
+  /**
+   * Delete a file or directory
+   * @param {string} path - Path to delete
+   * @returns {Promise<void>}
+   */
+  async delete(path) {
+    return await this.backend.delete(path);
+  }
+
+  /**
+   * List contents of a directory
+   * @param {string} path - Path to directory
+   * @returns {Promise<Array>} List of items in directory
+   */
+  async list(path) {
+    return await this.backend.list(path);
+  }
+
+  /**
+   * Create a directory
+   * @param {string} path - Path to create
+   * @returns {Promise<void>}
+   */
+  async mkdir(path) {
+    return await this.backend.mkdir(path);
+  }
+
+  /**
+   * Check if a file or directory exists
+   * @param {string} path - Path to check
+   * @returns {Promise<boolean>} True if exists
+   */
+  async exists(path) {
+    return await this.backend.exists(path);
+  }
+
+  /**
+   * Get file metadata
+   * @param {string} path - Path to file
+   * @returns {Promise<Object>} File metadata
+   */
+  async stat(path) {
+    return await this.backend.stat(path);
+  }
+
+  /**
+   * Rename a file or directory
+   * @param {string} oldPath - Current path
+   * @param {string} newPath - New path
+   * @returns {Promise<void>}
+   */
+  async rename(oldPath, newPath) {
+    return await this.backend.rename(oldPath, newPath);
+  }
+
+  /**
+   * Copy a file or directory
+   * @param {string} sourcePath - Source path
+   * @param {string} destinationPath - Destination path
+   * @returns {Promise<void>}
+   */
+  async copy(sourcePath, destinationPath) {
+    return await this.backend.copy(sourcePath, destinationPath);
+  }
+
+  /**
+   * Move a file or directory
+   * @param {string} sourcePath - Source path
+   * @param {string} destinationPath - Destination path
+   * @returns {Promise<void>}
+   */
+  async move(sourcePath, destinationPath) {
+    return await this.backend.move(sourcePath, destinationPath);
+  }
+}
+
+// Export the base classes so they are available for other modules.
+module.exports = {
+  FileSystem,
+  LocalFileSystem,
+};
+
+// Now, require the module that depends on the base classes.
+// This breaks the circular dependency loop.
+const EnhancedMemoryFileSystem = require('./enhanced-memory');
+
+// Add the newly required module to the exports.
+module.exports.EnhancedMemoryFileSystem = EnhancedMemoryFileSystem;
