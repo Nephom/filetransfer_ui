@@ -9,7 +9,8 @@ class ConfigManager {
       port: 3000,
       storagePath: './storage',
       username: 'admin',
-      password: 'password'
+      password: 'password',
+      redisUrl: 'redis://localhost:6379'
     };
     this.config = this.loadConfig();
   }
