@@ -443,11 +443,11 @@ app.get('/api/files', authenticate, async (req, res) => {
   }
 });
 
-app.get('/api/files/content/:path*', authenticate, async (req, res) => {
+app.get('/api/files/content/*', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
-    const fullPath = `${storagePath}/${requestPath}`;
+    const requestPath = req.params[0] || '';
+    const fullPath = path.join(storagePath, requestPath);
 
     const content = await fileSystem.read(fullPath);
     res.json({ content: content.toString() });
@@ -506,11 +506,11 @@ app.post('/api/files/directory', authenticate, async (req, res) => {
   }
 });
 
-app.delete('/api/files/:path*', authenticate, async (req, res) => {
+app.delete('/api/files/*', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
-    const fullPath = `${storagePath}/${requestPath}`;
+    const requestPath = req.params[0] || '';
+    const fullPath = path.join(storagePath, requestPath);
 
     await fileSystem.delete(fullPath);
     res.json({ success: true });
@@ -550,11 +550,11 @@ app.post('/api/files/move', authenticate, async (req, res) => {
 });
 
 // Download file endpoint
-app.get('/api/files/download/:path*', authenticate, async (req, res) => {
+app.get('/api/files/download/*', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
-    const fullPath = `${storagePath}/${requestPath}`;
+    const requestPath = req.params[0] || '';
+    const fullPath = path.join(storagePath, requestPath);
 
     console.log('Downloading file:', fullPath);
 
