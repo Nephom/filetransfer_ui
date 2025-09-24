@@ -909,7 +909,7 @@ async function startServer() {
 
     // Initialize enhanced file system with in-memory cache
     fileSystem = new EnhancedMemoryFileSystem(storagePath);
-    await fileSystem.initialize();
+    fileSystem.initialize();
 
     const port = configManager.get('server.port') || 3000;
 
