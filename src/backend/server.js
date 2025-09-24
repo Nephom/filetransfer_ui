@@ -550,11 +550,21 @@ app.post('/api/files/move', authenticate, async (req, res) => {
 });
 
 // Download file endpoint
-app.get('/api/files/download/:path*', authenticate, async (req, res) => {
-  try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
-    const fullPath = `${storagePath}/${requestPath}`;
+    const relativePath = req.params.path ? req.params.path + (req.params[0] || '') : '';
+
+    // --- Secure Path Resolution ---
+    // 1. Resolve the absolute path of the storage root.
+    const storageRoot = path.resolve(storagePath);
+
+    // 2. Safely join the root and the requested relative path.
+    const fullPath = path.join(storageRoot, relativePath);
+
+    // 3. Security Check: Ensure the final path is still within the storage root.
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    }
+    // --- End of Secure Path Resolution ---
 
     console.log('Downloading file:', fullPath);
 
