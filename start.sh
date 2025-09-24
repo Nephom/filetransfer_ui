@@ -46,6 +46,13 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
+echo -e "${BLUE}🔧 正在檢查並安裝節點模組...${NC}"
+npm install
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ 錯誤：節點模組安裝失敗。${NC}"
+    exit 1
+fi
+
 # 檢查服務器文件是否存在
 if [ ! -f "$SERVER_FILE" ]; then
     echo -e "${RED}❌ 錯誤：找不到服務器文件 $SERVER_FILE${NC}"
