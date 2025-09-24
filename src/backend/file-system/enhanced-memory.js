@@ -66,23 +66,23 @@ class EnhancedMemoryFileSystem extends FileSystem {
     }
 
     try {
-      const normalizedRelativePath = path.relative(this.storagePath, fullPath);
+      const relativePath = path.relative(this.storagePath, dirPath);
       const normalizedRelativePath = relativePath === '.' ? '' : relativePath;
-      
+
       // Try to get from cache first
       const cachedFiles = await this.cache.getFilesInDirectory(normalizedRelativePath);
-      
-      if (cachedFiles.length > 0) {
+
+      if (cachedFiles && cachedFiles.length > 0) {
         return cachedFiles;
       }
-      
+
       // Fallback to filesystem if cache is empty or directory not found
       console.log(`Cache miss for directory: ${normalizedRelativePath}, falling back to filesystem`);
       const files = await super.list(dirPath);
-      
-      // Update cache with new files (this will be handled by the watcher)
+
+      // The watcher should handle updating the cache.
       return files;
-      
+
     } catch (error) {
       console.error('Error listing files:', error);
       // Fallback to regular filesystem operation
