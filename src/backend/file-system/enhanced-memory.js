@@ -51,9 +51,9 @@ class EnhancedMemoryFileSystem extends FileSystem {
    */
   async searchFiles(query) {
     if (!this.initialized) {
-      await this.initialize();
+      // Return empty array if cache is not ready.
+      return [];
     }
-    
     return await this.cache.searchFiles(query);
   }
 
@@ -61,33 +61,25 @@ class EnhancedMemoryFileSystem extends FileSystem {
    * List files in directory using cache when possible
    */
   async list(dirPath) {
-    if (!this.initialized) {
-      await this.initialize();
-    }
+    // If cache is ready, try to use it.
+    if (this.initialized) {
+      try {
+        const relativePath = path.relative(this.storagePath, dirPath);
+        const normalizedRelativePath = relativePath === '.' ? '' : relativePath;
+        const cachedFiles = await this.cache.getFilesInDirectory(normalizedRelativePath);
 
-    try {
-      const relativePath = path.relative(this.storagePath, dirPath);
-      const normalizedRelativePath = relativePath === '.' ? '' : relativePath;
-
-      // Try to get from cache first
-      const cachedFiles = await this.cache.getFilesInDirectory(normalizedRelativePath);
-
-      if (cachedFiles && cachedFiles.length > 0) {
-        return cachedFiles;
+        // If cache has the directory, return it.
+        if (cachedFiles && cachedFiles.length > 0) {
+          return cachedFiles;
+        }
+      } catch (error) {
+        console.error('Cache list error:', error);
+        // Fallthrough to filesystem if cache fails
       }
-
-      // Fallback to filesystem if cache is empty or directory not found
-      console.log(`Cache miss for directory: ${normalizedRelativePath}, falling back to filesystem`);
-      const files = await super.list(dirPath);
-
-      // The watcher should handle updating the cache.
-      return files;
-
-    } catch (error) {
-      console.error('Error listing files:', error);
-      // Fallback to regular filesystem operation
-      return await super.list(dirPath);
     }
+
+    // Fallback to filesystem if cache is not ready or directory not in cache.
+    return await super.list(dirPath);
   }
 
   /**
