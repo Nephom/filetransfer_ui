@@ -550,6 +550,8 @@ app.post('/api/files/move', authenticate, async (req, res) => {
 });
 
 // Download file endpoint
+app.get('/api/files/download/:path*', authenticate, async (req, res) => {
+  try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const relativePath = req.params.path ? req.params.path + (req.params[0] || '') : '';
 
