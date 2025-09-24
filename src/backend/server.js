@@ -383,172 +383,6 @@ app.get('/api/files/search', authenticate, async (req, res) => {
   }
 });
 
-// File system routes (authenticated)
-app.get('/api/files/*', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params[0] || '';
-
-    // Construct full path
-    const fullPath = requestPath ? `${storagePath}/${requestPath}` : storagePath;
-
-    console.log('Listing files in:', fullPath);
-
-    // Add timeout to prevent hanging requests
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Request timeout')), 30000);
-    });
-
-    const files = await Promise.race([
-      fileSystem.list(fullPath),
-      timeoutPromise
-    ]);
-
-    res.json(files);
-  } catch (error) {
-    console.error('File listing error:', error);
-    if (error.message === 'Request timeout') {
-      res.status(408).json({ error: 'Request timeout - file system may be busy' });
-    } else {
-      res.status(500).json({ error: error.message });
-    }
-  }
-});
-
-// Handle root files API call
-app.get('/api/files', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath');
-
-    console.log('Listing files in root storage:', storagePath);
-
-    // Add timeout to prevent hanging requests
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Request timeout')), 30000);
-    });
-
-    const files = await Promise.race([
-      fileSystem.list(storagePath),
-      timeoutPromise
-    ]);
-
-    res.json(files);
-  } catch (error) {
-    console.error('File listing error:', error);
-    if (error.message === 'Request timeout') {
-      res.status(408).json({ error: 'Request timeout - file system may be busy' });
-    } else {
-      res.status(500).json({ error: error.message });
-    }
-  }
-});
-
-app.get('/api/files/content/:path*', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
-    const fullPath = `${storagePath}/${requestPath}`;
-
-    const content = await fileSystem.read(fullPath);
-    res.json({ content: content.toString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/files', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { path, content } = req.body;
-    const fullPath = `${storagePath}/${path}`;
-
-    await fileSystem.write(fullPath, content);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Create new folder
-app.post('/api/folders', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { folderName, currentPath } = req.body;
-
-    if (!folderName || !folderName.trim()) {
-      return res.status(400).json({ error: 'Folder name is required' });
-    }
-
-    const fullPath = currentPath
-      ? `${storagePath}/${currentPath}/${folderName.trim()}`
-      : `${storagePath}/${folderName.trim()}`;
-
-    console.log('Creating folder:', fullPath);
-    await fileSystem.mkdir(fullPath);
-    res.json({ success: true, message: 'Folder created successfully' });
-  } catch (error) {
-    console.error('Folder creation error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Legacy endpoint for backward compatibility
-app.post('/api/files/directory', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { path } = req.body;
-    const fullPath = `${storagePath}/${path}`;
-
-    await fileSystem.mkdir(fullPath);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.delete('/api/files/:path*', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
-    const fullPath = `${storagePath}/${requestPath}`;
-
-    await fileSystem.delete(fullPath);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.put('/api/files/rename', authenticate, async (req, res) => {
-  try {
-    const { oldPath, newPath } = req.body;
-    await fileSystem.rename(oldPath, newPath);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/files/copy', authenticate, async (req, res) => {
-  try {
-    const { sourcePath, destinationPath } = req.body;
-    await fileSystem.copy(sourcePath, destinationPath);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/files/move', authenticate, async (req, res) => {
-  try {
-    const { sourcePath, destinationPath } = req.body;
-    await fileSystem.move(sourcePath, destinationPath);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Download file endpoint
 app.get('/api/files/download/:path*', authenticate, async (req, res) => {
   try {
@@ -603,6 +437,38 @@ app.get('/api/files/download/:path*', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Download error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// File system routes (authenticated)
+app.get('/api/files/*', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const requestPath = req.params[0] || '';
+
+    // Construct full path
+    const fullPath = requestPath ? `${storagePath}/${requestPath}` : storagePath;
+
+    console.log('Listing files in:', fullPath);
+
+    // Add timeout to prevent hanging requests
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Request timeout')), 30000);
+    });
+
+    const files = await Promise.race([
+      fileSystem.list(fullPath),
+      timeoutPromise
+    ]);
+
+    res.json(files);
+  } catch (error) {
+    console.error('File listing error:', error);
+    if (error.message === 'Request timeout') {
+      res.status(408).json({ error: 'Request timeout - file system may be busy' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
