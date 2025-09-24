@@ -3,7 +3,7 @@
  * Provides a unified interface for file operations across different storage backends
  */
 
-const EnhancedMemoryFileSystem = require('./enhanced-memory');
+// First, define the base classes.
 
 /**
  * Local File System Implementation
@@ -326,4 +326,15 @@ class FileSystem {
   }
 }
 
-module.exports = { FileSystem, LocalFileSystem, EnhancedMemoryFileSystem };
+// Export the base classes so they are available for other modules.
+module.exports = {
+  FileSystem,
+  LocalFileSystem,
+};
+
+// Now, require the module that depends on the base classes.
+// This breaks the circular dependency loop.
+const EnhancedMemoryFileSystem = require('./enhanced-memory');
+
+// Add the newly required module to the exports.
+module.exports.EnhancedMemoryFileSystem = EnhancedMemoryFileSystem;
