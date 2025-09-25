@@ -1,9 +1,11 @@
 /**
  * Enhanced File System Manager with Cache Integration
- * Combines file system operations with SQLite cache for better performance
+ * DEPRECATED: This file uses old SQLite cache - use memory-cache.js instead
+ * TODO: Remove this file after confirming all references are updated
  */
 
 const { FileSystem } = require('./index');
+// DEPRECATED: Using old SQLite cache
 const FileSystemCache = require('./cache');
 const path = require('path');
 const fs = require('fs').promises;
