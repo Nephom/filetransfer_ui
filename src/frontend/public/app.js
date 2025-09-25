@@ -469,6 +469,12 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
 
+                if (response.status === 409) {
+                    const data = await response.json();
+                    alert(data.error);
+                    return;
+                }
+
                 if (!response.ok) {
                     throw new Error(`Download failed: ${response.statusText}`);
                 }
@@ -519,11 +525,50 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             }
         };
 
-        const handleFileUpload = async (files) => {
-            const formData = new FormData();
+        const handleRefresh = async () => {
+            setLoading(true);
+            setError('');
+            try {
+                const response = await fetch('/api/files/refresh-cache', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (response.ok) {
+                    await fetchFiles();
+                } else {
+                    setError('Failed to refresh cache');
+                }
+            } catch (error) {
+                setError('Connection error during refresh');
+            } finally {
+                setLoading(false);
+            }
+        };
 
-            for (let i = 0; i < files.length; i++) {
-                formData.append('files', files[i]);
+        const handleFileUpload = async (uploadingFiles) => {
+            const existingFiles = files;
+            const filesToUpload = [];
+
+            for (let i = 0; i < uploadingFiles.length; i++) {
+                const file = uploadingFiles[i];
+                const isExisting = existingFiles.some(existingFile => existingFile.name === file.name);
+
+                if (isExisting) {
+                    if (window.confirm(`File "${file.name}" already exists. Do you want to overwrite it?`)) {
+                        filesToUpload.push(file);
+                    }
+                } else {
+                    filesToUpload.push(file);
+                }
+            }
+
+            if (filesToUpload.length === 0) {
+                return;
+            }
+
+            const formData = new FormData();
+            for (let i = 0; i < filesToUpload.length; i++) {
+                formData.append('files', filesToUpload[i]);
             }
 
             if (currentPath) {
@@ -980,6 +1025,23 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                         }
                     }, ['📁', ' New Folder']),
 
+                    React.createElement('button', {
+                        key: 'refresh',
+                        onClick: handleRefresh,
+                        style: {
+                            background: 'rgba(255, 165, 0, 0.2)',
+                            border: '1px solid rgba(255, 165, 0, 0.5)',
+                            borderRadius: '8px',
+                            color: 'white',
+                            padding: '10px 16px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            outline: 'none',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px'
+                        }
+                    }, ['🔄', ' Refresh']),
                     selectedFiles.length > 0 && React.createElement('button', {
                         key: 'delete',
                         onClick: deleteSelectedFiles,

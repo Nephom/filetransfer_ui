@@ -47,6 +47,16 @@ class EnhancedMemoryFileSystem extends FileSystem {
   }
 
   /**
+   * Get information for a single file from cache
+   */
+  async getFileInfo(filePath) {
+    if (!this.initialized) {
+      return null;
+    }
+    return await this.cache.getFileInfo(filePath);
+  }
+
+  /**
    * Search files using in-memory cache (very fast)
    */
   async searchFiles(query) {
