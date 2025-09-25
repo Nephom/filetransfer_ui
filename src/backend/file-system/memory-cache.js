@@ -66,7 +66,14 @@ class RedisFileSystemCache extends EventEmitter {
     }
 
     this.watcher = chokidar.watch(this.storagePath, {
-      ignored: /(^|[\/\\])\..*/, // ignore dotfiles
+      ignored: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/*.log',
+        '**/temp/**',
+        '**/dist/**',
+        /(^|[\/\\])\../, // Ignore dotfiles and dot-directories
+      ],
       persistent: true,
       ignoreInitial: true,
       followSymlinks: false,
