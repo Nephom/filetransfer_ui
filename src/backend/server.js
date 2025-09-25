@@ -383,18 +383,93 @@ app.get('/api/files/search', authenticate, async (req, res) => {
   }
 });
 
-// File system routes (authenticated)
+// IMPORTANT: Specific routes must come before the general '/api/files/*' wildcard route.
+
+// Get file content
+app.get('/api/files/content/*', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const requestPath = req.params[0] || '';
+
+    const storageRoot = path.resolve(storagePath);
+    const fullPath = path.join(storageRoot, requestPath);
+
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    }
+
+    const content = await fileSystem.read(fullPath);
+    res.json({ content: content.toString() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Download file endpoint
+app.get('/api/files/download/*', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const requestPath = req.params[0] || '';
+
+    const storageRoot = path.resolve(storagePath);
+    const fullPath = path.join(storageRoot, requestPath);
+
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    }
+
+    console.log('Downloading file:', fullPath);
+
+    const exists = await fileSystem.exists(fullPath);
+    if (!exists) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    const stats = await fs.stat(fullPath);
+    if (stats.isDirectory()) {
+      return res.status(400).json({ error: 'Cannot download a directory' });
+    }
+
+    // Check for modifications
+    const cachedInfo = await fileSystem.getFileInfo(fullPath);
+    if (cachedInfo && new Date(cachedInfo.modified).getTime() !== stats.mtime.getTime()) {
+      return res.status(409).json({ error: 'The file has been modified. Please refresh the file list.' });
+    }
+
+    const fileName = path.basename(fullPath);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Type', 'application/octet-stream');
+
+    const fileStream = require('fs').createReadStream(fullPath);
+    fileStream.pipe(res);
+
+    fileStream.on('error', (error) => {
+      console.error('File stream error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to download file' });
+      }
+    });
+  } catch (error) {
+    console.error('Download error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// List files in a directory (or root)
 app.get('/api/files/*', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const requestPath = req.params[0] || '';
 
-    // Construct full path
-    const fullPath = requestPath ? `${storagePath}/${requestPath}` : storagePath;
+    const storageRoot = path.resolve(storagePath);
+    const fullPath = path.join(storageRoot, requestPath);
+
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    }
 
     console.log('Listing files in:', fullPath);
 
-    // Add timeout to prevent hanging requests
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
     });
@@ -419,16 +494,16 @@ app.get('/api/files/*', authenticate, async (req, res) => {
 app.get('/api/files', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath');
+    const storageRoot = path.resolve(storagePath);
 
-    console.log('Listing files in root storage:', storagePath);
+    console.log('Listing files in root storage:', storageRoot);
 
-    // Add timeout to prevent hanging requests
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
     });
 
     const files = await Promise.race([
-      fileSystem.list(storagePath),
+      fileSystem.list(storageRoot),
       timeoutPromise
     ]);
 
@@ -443,24 +518,17 @@ app.get('/api/files', authenticate, async (req, res) => {
   }
 });
 
-app.get('/api/files/content/:path*', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
-    const fullPath = `${storagePath}/${requestPath}`;
-
-    const content = await fileSystem.read(fullPath);
-    res.json({ content: content.toString() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
+// Create/write file
 app.post('/api/files', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { path, content } = req.body;
-    const fullPath = `${storagePath}/${path}`;
+    const { path: requestPath, content } = req.body;
+
+    const storageRoot = path.resolve(storagePath);
+    const fullPath = path.join(storageRoot, requestPath);
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    }
 
     await fileSystem.write(fullPath, content);
     res.json({ success: true });
@@ -479,9 +547,13 @@ app.post('/api/folders', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Folder name is required' });
     }
 
-    const fullPath = currentPath
-      ? `${storagePath}/${currentPath}/${folderName.trim()}`
-      : `${storagePath}/${folderName.trim()}`;
+    const relativePath = currentPath ? path.join(currentPath, folderName.trim()) : folderName.trim();
+    
+    const storageRoot = path.resolve(storagePath);
+    const fullPath = path.join(storageRoot, relativePath);
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    }
 
     console.log('Creating folder:', fullPath);
     await fileSystem.mkdir(fullPath);
@@ -496,8 +568,13 @@ app.post('/api/folders', authenticate, async (req, res) => {
 app.post('/api/files/directory', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { path } = req.body;
-    const fullPath = `${storagePath}/${path}`;
+    const { path: requestPath } = req.body;
+
+    const storageRoot = path.resolve(storagePath);
+    const fullPath = path.join(storageRoot, requestPath);
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    }
 
     await fileSystem.mkdir(fullPath);
     res.json({ success: true });
@@ -506,11 +583,17 @@ app.post('/api/files/directory', authenticate, async (req, res) => {
   }
 });
 
-app.delete('/api/files/:path*', authenticate, async (req, res) => {
+// Delete file or folder
+app.delete('/api/files/*', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
-    const fullPath = `${storagePath}/${requestPath}`;
+    const requestPath = req.params[0] || '';
+    
+    const storageRoot = path.resolve(storagePath);
+    const fullPath = path.join(storageRoot, requestPath);
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    }
 
     await fileSystem.delete(fullPath);
     res.json({ success: true });
@@ -548,53 +631,6 @@ app.post('/api/files/move', authenticate, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-// Download file endpoint
-app.get('/api/files/download/:path*', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params.path ? req.params.path + (req.params[0] || '') : '';
-    const fullPath = `${storagePath}/${requestPath}`;
-
-    console.log('Downloading file:', fullPath);
-
-    // Check if file exists
-    const exists = await fileSystem.exists(fullPath);
-    if (!exists) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-
-    // Get file stats to check if it's a file (not directory)
-    const fs = require('fs').promises;
-    const stats = await fs.stat(fullPath);
-    if (stats.isDirectory()) {
-      return res.status(400).json({ error: 'Cannot download a directory' });
-    }
-
-    // Set appropriate headers for file download
-    const path = require('path');
-    const fileName = path.basename(fullPath);
-    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-    res.setHeader('Content-Type', 'application/octet-stream');
-
-    // Stream the file
-    const fileStream = require('fs').createReadStream(fullPath);
-    fileStream.pipe(res);
-
-    fileStream.on('error', (error) => {
-      console.error('File stream error:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed to download file' });
-      }
-    });
-
-  } catch (error) {
-    console.error('Download error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-
 
 // Cache refresh endpoint (for manual cache updates)
 app.post('/api/files/refresh-cache', authenticate, async (req, res) => {

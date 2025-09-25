@@ -50,7 +50,7 @@ class RedisFileSystemCache extends EventEmitter {
     await this.scanDirectory(this.storagePath);
 
     // 3. Start watching for changes
-    this.startWatching();
+    // this.startWatching();
 
     this.initialized = true;
     const keys = await this.redisClient.keys('*');
@@ -66,7 +66,14 @@ class RedisFileSystemCache extends EventEmitter {
     }
 
     this.watcher = chokidar.watch(this.storagePath, {
-      ignored: /(^|[\/\\])\..*/, // ignore dotfiles
+      ignored: [
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/*.log',
+        '**/temp/**',
+        '**/dist/**',
+        /(^|[\/\\])\../, // Ignore dotfiles and dot-directories
+      ],
       persistent: true,
       ignoreInitial: true,
       followSymlinks: false,
@@ -192,6 +199,7 @@ class RedisFileSystemCache extends EventEmitter {
    * Search files by name across the entire cache
    */
   async searchFiles(query) {
+    if (!this.initialized) await this.initialize();
     const results = [];
     const lowerQuery = query.toLowerCase();
     
@@ -225,6 +233,7 @@ class RedisFileSystemCache extends EventEmitter {
    * Get files in a specific directory
    */
   async getFilesInDirectory(dirPath = '.') {
+    if (!this.initialized) await this.initialize();
     const results = [];
     const items = await this.redisClient.hGetAll(dirKey(dirPath));
 
@@ -248,9 +257,27 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
+   * Get information for a single file
+   */
+  async getFileInfo(filePath) {
+    if (!this.initialized) await this.initialize();
+    const relativePath = path.relative(this.storagePath, filePath);
+    const parentDir = path.dirname(relativePath);
+    const itemName = path.basename(filePath);
+
+    const fileInfoString = await this.redisClient.hGet(dirKey(parentDir), itemName);
+    if (!fileInfoString) {
+      return null;
+    }
+
+    return JSON.parse(fileInfoString);
+  }
+
+  /**
    * Get cache statistics
    */
   async getStats() {
+    if (!this.initialized) await this.initialize();
     const keys = await this.redisClient.keys('dir:*');
     let totalFiles = 0;
     for (const key of keys) {
