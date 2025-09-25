@@ -383,6 +383,7 @@ app.get('/api/files/search', authenticate, async (req, res) => {
   }
 });
 
+<<<<<<< HEAD
 // File system routes (authenticated)
 app.get('/api/files/*', authenticate, async (req, res) => {
   try {
@@ -457,27 +458,26 @@ app.get('/api/files/content/*', authenticate, async (req, res) => {
 });
 
 app.post('/api/files', authenticate, async (req, res) => {
+=======
+// Download file endpoint
+app.get('/api/files/download/:path*', authenticate, async (req, res) => {
+>>>>>>> d1e5e31488de9b183a890bc78811ffe9a383b17f
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { path, content } = req.body;
-    const fullPath = `${storagePath}/${path}`;
+    const relativePath = req.params.path ? req.params.path + (req.params[0] || '') : '';
 
-    await fileSystem.write(fullPath, content);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+    // --- Secure Path Resolution ---
+    // 1. Resolve the absolute path of the storage root.
+    const storageRoot = path.resolve(storagePath);
 
-// Create new folder
-app.post('/api/folders', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { folderName, currentPath } = req.body;
+    // 2. Safely join the root and the requested relative path.
+    const fullPath = path.join(storageRoot, relativePath);
 
-    if (!folderName || !folderName.trim()) {
-      return res.status(400).json({ error: 'Folder name is required' });
+    // 3. Security Check: Ensure the final path is still within the storage root.
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
     }
+<<<<<<< HEAD
 
     const fullPath = currentPath
       ? `${storagePath}/${currentPath}/${folderName.trim()}`
@@ -555,6 +555,9 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const requestPath = req.params[0] || '';
     const fullPath = path.join(storagePath, requestPath);
+=======
+    // --- End of Secure Path Resolution ---
+>>>>>>> d1e5e31488de9b183a890bc78811ffe9a383b17f
 
     console.log('Downloading file:', fullPath);
 
@@ -591,6 +594,38 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Download error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// File system routes (authenticated)
+app.get('/api/files/*', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const requestPath = req.params[0] || '';
+
+    // Construct full path
+    const fullPath = requestPath ? `${storagePath}/${requestPath}` : storagePath;
+
+    console.log('Listing files in:', fullPath);
+
+    // Add timeout to prevent hanging requests
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Request timeout')), 30000);
+    });
+
+    const files = await Promise.race([
+      fileSystem.list(fullPath),
+      timeoutPromise
+    ]);
+
+    res.json(files);
+  } catch (error) {
+    console.error('File listing error:', error);
+    if (error.message === 'Request timeout') {
+      res.status(408).json({ error: 'Request timeout - file system may be busy' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
