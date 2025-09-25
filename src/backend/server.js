@@ -430,6 +430,12 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Cannot download a directory' });
     }
 
+    // Check for modifications
+    const cachedInfo = await fileSystem.getFileInfo(fullPath);
+    if (cachedInfo && new Date(cachedInfo.modified).getTime() !== stats.mtime.getTime()) {
+      return res.status(409).json({ error: 'The file has been modified. Please refresh the file list.' });
+    }
+
     const fileName = path.basename(fullPath);
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.setHeader('Content-Type', 'application/octet-stream');

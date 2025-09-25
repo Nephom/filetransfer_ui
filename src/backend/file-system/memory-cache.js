@@ -50,7 +50,7 @@ class RedisFileSystemCache extends EventEmitter {
     await this.scanDirectory(this.storagePath);
 
     // 3. Start watching for changes
-    this.startWatching();
+    // this.startWatching();
 
     this.initialized = true;
     const keys = await this.redisClient.keys('*');
@@ -252,6 +252,22 @@ class RedisFileSystemCache extends EventEmitter {
     });
 
     return results;
+  }
+
+  /**
+   * Get information for a single file
+   */
+  async getFileInfo(filePath) {
+    const relativePath = path.relative(this.storagePath, filePath);
+    const parentDir = path.dirname(relativePath);
+    const itemName = path.basename(filePath);
+
+    const fileInfoString = await this.redisClient.hGet(dirKey(parentDir), itemName);
+    if (!fileInfoString) {
+      return null;
+    }
+
+    return JSON.parse(fileInfoString);
   }
 
   /**
