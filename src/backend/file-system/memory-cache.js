@@ -197,36 +197,55 @@ class RedisFileSystemCache extends EventEmitter {
 
   /**
    * Search files by name across the entire cache
+   * PERFORMANCE FIX: Use SCAN instead of KEYS for better scalability
    */
-  async searchFiles(query) {
+  async searchFiles(query, options = {}) {
     if (!this.initialized) await this.initialize();
     const results = [];
     const lowerQuery = query.toLowerCase();
+    const maxResults = options.limit || 1000; // Prevent memory overflow
+    let totalProcessed = 0;
     
-    const keys = await this.redisClient.keys('dir:*');
-    for (const key of keys) {
-      const items = await this.redisClient.hGetAll(key);
-      for (const itemName in items) {
-        if (itemName.toLowerCase().includes(lowerQuery)) {
-          const fileInfo = JSON.parse(items[itemName]);
-          const relativePath = key.substring(4); // remove 'dir:'
-          results.push({
-            name: fileInfo.name,
-            path: path.join(relativePath, fileInfo.name),
-            isDirectory: fileInfo.isDirectory,
-            size: fileInfo.size,
-            modified: fileInfo.modified,
-          });
+    // Use SCAN instead of KEYS to avoid blocking Redis
+    let cursor = 0;
+    do {
+      const reply = await this.redisClient.scan(cursor, {
+        MATCH: 'dir:*',
+        COUNT: 100 // Process in chunks
+      });
+      cursor = reply.cursor;
+      
+      for (const key of reply.keys) {
+        if (results.length >= maxResults) break;
+        
+        const items = await this.redisClient.hGetAll(key);
+        for (const itemName in items) {
+          if (results.length >= maxResults) break;
+          
+          if (itemName.toLowerCase().includes(lowerQuery)) {
+            const fileInfo = JSON.parse(items[itemName]);
+            const relativePath = key.substring(4); // remove 'dir:'
+            results.push({
+              name: fileInfo.name,
+              path: path.join(relativePath, fileInfo.name),
+              isDirectory: fileInfo.isDirectory,
+              size: fileInfo.size,
+              modified: fileInfo.modified,
+            });
+          }
         }
+        totalProcessed++;
       }
-    }
+    } while (cursor !== 0 && results.length < maxResults);
+    
+    console.log(`Search processed ${totalProcessed} directories, found ${results.length} results`);
     
     results.sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) return b.isDirectory - a.isDirectory;
       return a.name.localeCompare(b.name);
     });
     
-    return results;
+    return results.slice(0, maxResults);
   }
 
   /**

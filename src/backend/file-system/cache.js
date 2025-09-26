@@ -1,6 +1,7 @@
 /**
- * File System Cache Manager
- * Uses SQLite to cache file system structure for fast search and operations
+ * DEPRECATED: File System Cache Manager using SQLite
+ * DEPRECATED: This file is no longer used - replaced by memory-cache.js (Redis)
+ * TODO: Remove this file after confirming no dependencies
  */
 
 const sqlite3 = require('sqlite3').verbose();

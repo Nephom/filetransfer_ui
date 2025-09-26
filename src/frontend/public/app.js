@@ -614,6 +614,13 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
 
         // Use search results if searching, otherwise use current directory files
         const filteredFiles = searchQuery.trim() ? searchResults : files;
+        
+        // Debug logging for search
+        if (searchQuery.trim() && searchResults.length === 0 && !isSearching) {
+            console.log('Search query:', searchQuery);
+            console.log('Search results:', searchResults);
+            console.log('Is searching:', isSearching);
+        }
 
         const getFileIcon = (file) => {
             if (file.isDirectory) return '📂'; // Folder
@@ -795,8 +802,8 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             ]));
         }
 
-        // Create file items
-        const fileItems = files.map((file, index) => {
+        // Create file items for filtered files (search results or current directory)
+        const renderFileItem = (file, index) => {
             return React.createElement('div', {
                 key: index,
                 style: {
@@ -843,7 +850,9 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     }, file.name.includes('.') ? 'File' : 'Folder')
                 ])
             ]);
-        });
+        };
+        
+        const fileItems = filteredFiles.map((file, index) => renderFileItem(file, index));
 
 
 
