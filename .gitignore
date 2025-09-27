@@ -5,6 +5,8 @@ AGENTS.md
 COMMANDS.md
 CACHE_IMPROVEMENTS.md
 MIGRATION_GUIDE.md
+Phase*.md
+task*.md
 
 # Claude AI assistant files
 .claude/
