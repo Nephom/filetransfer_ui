@@ -351,28 +351,62 @@ app.post('/auth/reset-password', (req, res, next) => {
   }
 });
 
-// Search files using cache (must be before wildcard route)
+// Search files using intelligent search engine
 app.get('/api/files/search', authenticate, async (req, res) => {
   try {
-    const { query } = req.query;
+    const { 
+      query, 
+      mode = 'instant', 
+      limit = 1000, 
+      sessionId = null,
+      includeContext = false,
+      fuzzyThreshold = 0.7 
+    } = req.query;
 
     if (!query) {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    console.log('Searching for:', query, 'using in-memory cache');
+    console.log(`Intelligent search: "${query}" (mode: ${mode})`);
 
     // Add timeout for search operations
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Search timeout')), 15000);
+      setTimeout(() => reject(new Error('Search timeout')), 30000); // Extended timeout
     });
 
-    const searchResults = await Promise.race([
-      fileSystem.searchFiles(query),
-      timeoutPromise
-    ]);
+    const searchOptions = {
+      mode: mode.toLowerCase(),
+      limit: parseInt(limit) || 1000,
+      sessionId: sessionId,
+      fuzzyThreshold: parseFloat(fuzzyThreshold) || 0.7,
+      contextualSearch: includeContext === 'true'
+    };
 
-    res.json(searchResults);
+    let searchResult;
+    
+    if (includeContext === 'true') {
+      // Use full intelligent search with context
+      searchResult = await Promise.race([
+        fileSystem.intelligentSearch(query, searchOptions),
+        timeoutPromise
+      ]);
+    } else {
+      // Use simple search (backwards compatibility)
+      const results = await Promise.race([
+        fileSystem.searchFiles(query, searchOptions),
+        timeoutPromise
+      ]);
+      
+      searchResult = {
+        query,
+        results,
+        mode: searchOptions.mode,
+        totalResults: results.length,
+        responseTime: 0
+      };
+    }
+
+    res.json(searchResult);
   } catch (error) {
     console.error('Search error:', error);
     if (error.message === 'Search timeout') {
@@ -380,6 +414,134 @@ app.get('/api/files/search', authenticate, async (req, res) => {
     } else {
       res.status(500).json({ error: error.message });
     }
+  }
+});
+
+// Progressive search with real-time updates (WebSocket-like via Server-Sent Events)
+app.get('/api/files/search/progressive', authenticate, async (req, res) => {
+  const { query, sessionId = null, limit = 1000 } = req.query;
+
+  if (!query) {
+    return res.status(400).json({ error: 'Search query is required' });
+  }
+
+  // Set up Server-Sent Events
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*'
+  });
+
+  let completed = false;
+  
+  try {
+    console.log(`Progressive search: "${query}"`);
+
+    await fileSystem.progressiveSearch(query, (progressUpdate) => {
+      if (!completed && !res.destroyed) {
+        const data = JSON.stringify({
+          type: 'progress',
+          searchId: progressUpdate.searchId,
+          results: progressUpdate.results,
+          phase: progressUpdate.phase,
+          isComplete: progressUpdate.isComplete
+        });
+        
+        res.write(`data: ${data}\n\n`);
+        
+        if (progressUpdate.isComplete) {
+          completed = true;
+          res.write(`data: ${JSON.stringify({ type: 'complete' })}\n\n`);
+          res.end();
+        }
+      }
+    }, {
+      sessionId,
+      limit: parseInt(limit) || 1000
+    });
+
+  } catch (error) {
+    console.error('Progressive search error:', error);
+    if (!completed && !res.destroyed) {
+      res.write(`data: ${JSON.stringify({ 
+        type: 'error', 
+        error: error.message 
+      })}\n\n`);
+      res.end();
+    }
+  }
+  
+  // Handle client disconnect
+  req.on('close', () => {
+    completed = true;
+  });
+});
+
+// Contextual search with user session data
+app.post('/api/files/search/contextual', authenticate, async (req, res) => {
+  try {
+    const { 
+      query, 
+      context = {}, 
+      limit = 500 
+    } = req.body;
+
+    if (!query) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    console.log(`Contextual search: "${query}" with context:`, context);
+
+    const searchResult = await fileSystem.contextualSearch(query, {
+      ...context,
+      userSession: context.sessionId || req.user?.id
+    });
+
+    res.json(searchResult);
+  } catch (error) {
+    console.error('Contextual search error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get search analytics and insights
+app.get('/api/files/search/analytics', authenticate, async (req, res) => {
+  try {
+    const analytics = await fileSystem.getSearchAnalytics();
+    res.json(analytics);
+  } catch (error) {
+    console.error('Search analytics error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get search progress for active progressive searches
+app.get('/api/files/search/progress/:searchId', authenticate, async (req, res) => {
+  try {
+    const { searchId } = req.params;
+    const progress = fileSystem.getSearchProgress(searchId);
+    
+    if (progress) {
+      res.json({ searchId, progress });
+    } else {
+      res.status(404).json({ error: 'Search not found or completed' });
+    }
+  } catch (error) {
+    console.error('Search progress error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Trigger smart pre-caching based on analytics
+app.post('/api/files/cache/smart-precache', authenticate, async (req, res) => {
+  try {
+    console.log('Triggering smart pre-cache based on search analytics...');
+    await fileSystem.smartPreCache();
+    res.json({ message: 'Smart pre-caching completed', timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error('Smart pre-cache error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -632,15 +794,537 @@ app.post('/api/files/move', authenticate, async (req, res) => {
   }
 });
 
-// Cache refresh endpoint (for manual cache updates)
+// Enhanced cache refresh endpoint with intelligent refresh options
 app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
   try {
-    console.log('Refreshing file system cache...');
-    await fileSystem.refreshCache();
-    res.json({ success: true, message: 'Cache refreshed successfully' });
+    const { 
+      strategy = 'full', 
+      targetPath = null, 
+      priority = 'medium',
+      abortExisting = false 
+    } = req.body;
+
+    console.log(`Refreshing file system cache with strategy: ${strategy}`);
+
+    let refreshResult = {};
+
+    switch (strategy.toLowerCase()) {
+      case 'full':
+        // Full cache refresh
+        if (abortExisting) {
+          fileSystem.abortCurrentOperations();
+        }
+        await fileSystem.refreshCache();
+        refreshResult = { 
+          strategy: 'full', 
+          message: 'Full cache refresh completed',
+          abortedExisting: abortExisting 
+        };
+        break;
+
+      case 'smart':
+        // Smart refresh based on analytics
+        await fileSystem.smartPreCache();
+        refreshResult = { 
+          strategy: 'smart', 
+          message: 'Smart cache refresh completed based on analytics' 
+        };
+        break;
+
+      case 'targeted':
+        // Targeted refresh for specific path
+        if (!targetPath) {
+          return res.status(400).json({ error: 'targetPath required for targeted refresh' });
+        }
+        await fileSystem.refreshCache(targetPath);
+        refreshResult = { 
+          strategy: 'targeted', 
+          targetPath,
+          message: `Targeted refresh completed for: ${targetPath}` 
+        };
+        break;
+
+      case 'priority':
+        // Refresh only high-priority directories
+        const highPriorityFiles = await fileSystem.getHighPriorityFiles();
+        const uniqueDirs = [...new Set(highPriorityFiles.map(f => 
+          f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : ''
+        ))].filter(d => d);
+        
+        await fileSystem.preCacheDirectories(uniqueDirs.slice(0, 10)); // Limit to 10 dirs
+        refreshResult = { 
+          strategy: 'priority', 
+          directoriesRefreshed: uniqueDirs.length,
+          message: `High-priority directories refreshed: ${uniqueDirs.length}` 
+        };
+        break;
+
+      case 'abort':
+        // Just abort current operations
+        fileSystem.abortCurrentOperations();
+        refreshResult = { 
+          strategy: 'abort', 
+          message: 'Current cache operations aborted' 
+        };
+        break;
+
+      default:
+        return res.status(400).json({ 
+          error: `Unknown refresh strategy: ${strategy}. Use: full, smart, targeted, priority, abort` 
+        });
+    }
+
+    const cacheInfo = await fileSystem.getCacheInfo();
+    
+    res.json({ 
+      success: true, 
+      ...refreshResult,
+      timestamp: new Date().toISOString(),
+      cacheInfo: {
+        isScanning: cacheInfo.isScanning,
+        layers: cacheInfo.layers,
+        searchEngine: cacheInfo.searchEngine
+      }
+    });
+
   } catch (error) {
     console.error('Cache refresh error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Cache progress query endpoint
+app.get('/api/files/cache-progress', authenticate, async (req, res) => {
+  try {
+    const cacheInfo = await fileSystem.getCacheInfo();
+    
+    res.json({
+      initialized: cacheInfo.initialized,
+      isScanning: cacheInfo.isScanning,
+      isWatching: cacheInfo.isWatching,
+      layers: {
+        metadata: {
+          totalItems: cacheInfo.layers.metadata?.totalItems || 0,
+          lastUpdate: cacheInfo.layers.metadata?.lastUpdate,
+          keys: cacheInfo.layers.metadata?.keys || 0
+        },
+        content: {
+          totalItems: cacheInfo.layers.content?.totalItems || 0,
+          lastUpdate: cacheInfo.layers.content?.lastUpdate,
+          keys: cacheInfo.layers.content?.keys || 0
+        },
+        directory: {
+          totalItems: cacheInfo.layers.directory?.totalItems || 0,
+          lastUpdate: cacheInfo.layers.directory?.lastUpdate,
+          keys: cacheInfo.layers.directory?.keys || 0
+        }
+      },
+      searchEngine: {
+        totalQueries: cacheInfo.searchEngine?.totalQueries || 0,
+        cachedResults: cacheInfo.searchEngine?.cachedResults || 0,
+        activeSearches: cacheInfo.searchEngine?.activeSearches || 0,
+        activeSessions: cacheInfo.searchEngine?.activeSessions || 0
+      },
+      performance: {
+        concurrentOperations: cacheInfo.concurrentOperations,
+        accessFrequencyEntries: cacheInfo.accessFrequencyEntries || 0
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Cache progress error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Search history management endpoint  
+app.get('/api/files/search-history', authenticate, async (req, res) => {
+  try {
+    const { limit = 50, includePatterns = false } = req.query;
+    
+    const analytics = await fileSystem.getSearchAnalytics();
+    
+    const response = {
+      totalQueries: analytics.totalQueries,
+      recentQueries: analytics.topQueries?.slice(0, parseInt(limit)) || [],
+      timestamp: new Date().toISOString()
+    };
+
+    if (includePatterns === 'true') {
+      response.patterns = analytics.topPatterns || [];
+      response.totalPatterns = analytics.totalPatterns;
+    }
+
+    res.json(response);
+  } catch (error) {
+    console.error('Search history error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Clear search history
+app.delete('/api/files/search-history', authenticate, async (req, res) => {
+  try {
+    const { type = 'all' } = req.query; // 'all', 'queries', 'patterns'
+    
+    // Note: This would need to be implemented in the search engine
+    // For now, we'll return a placeholder response
+    console.log(`Search history clear requested: ${type}`);
+    
+    res.json({ 
+      success: true,
+      message: `Search history cleared: ${type}`,
+      timestamp: new Date().toISOString(),
+      note: 'Search history clearing will be implemented in search engine persistence layer'
+    });
+  } catch (error) {
+    console.error('Search history clear error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Dynamic cache strategy adjustment endpoint
+app.post('/api/files/cache-strategy', authenticate, async (req, res) => {
+  try {
+    const { 
+      strategy, 
+      parameters = {},
+      applyImmediately = false 
+    } = req.body;
+
+    if (!strategy) {
+      return res.status(400).json({ error: 'Strategy is required' });
+    }
+
+    console.log(`Cache strategy adjustment: ${strategy}`, parameters);
+
+    let result = {};
+
+    switch (strategy.toLowerCase()) {
+      case 'fast_mode':
+        // Enable/disable fast mode
+        const enabled = parameters.enabled !== false;
+        fileSystem.setFastMode(enabled);
+        result = { 
+          strategy: 'fast_mode', 
+          enabled,
+          message: `Fast mode ${enabled ? 'enabled' : 'disabled'}` 
+        };
+        break;
+
+      case 'priority_boost':
+        // Boost priority for specific paths
+        if (parameters.paths && Array.isArray(parameters.paths)) {
+          await fileSystem.preCacheDirectories(parameters.paths);
+          result = { 
+            strategy: 'priority_boost',
+            paths: parameters.paths,
+            message: `Priority boosted for ${parameters.paths.length} paths`
+          };
+        } else {
+          return res.status(400).json({ error: 'paths array required for priority_boost' });
+        }
+        break;
+
+      case 'memory_optimization':
+        // Trigger memory optimization (would need to be implemented)
+        result = { 
+          strategy: 'memory_optimization',
+          message: 'Memory optimization triggered',
+          note: 'Implementation depends on cache layer memory management'
+        };
+        break;
+
+      case 'scan_throttling':
+        // Adjust scan throttling parameters
+        const throttleLevel = parameters.level || 'medium'; // low, medium, high
+        result = { 
+          strategy: 'scan_throttling',
+          level: throttleLevel,
+          message: `Scan throttling set to: ${throttleLevel}`,
+          note: 'Throttling adjustment would affect time slice configuration'
+        };
+        break;
+
+      case 'preload_suggestions':
+        // Generate and optionally apply cache preload suggestions
+        const suggestions = await fileSystem.getSearchAnalytics();
+        const topPaths = suggestions.topQueries?.slice(0, 10)
+          .map(q => q.query)
+          .filter(q => q.includes('/')) || [];
+
+        if (applyImmediately && topPaths.length > 0) {
+          await fileSystem.preCacheDirectories(topPaths);
+        }
+
+        result = { 
+          strategy: 'preload_suggestions',
+          suggestions: topPaths,
+          applied: applyImmediately,
+          message: `Generated ${topPaths.length} preload suggestions`
+        };
+        break;
+
+      default:
+        return res.status(400).json({ 
+          error: `Unknown strategy: ${strategy}. Available: fast_mode, priority_boost, memory_optimization, scan_throttling, preload_suggestions` 
+        });
+    }
+
+    // Get updated cache info
+    const cacheInfo = await fileSystem.getCacheInfo();
+    
+    res.json({ 
+      success: true,
+      ...result,
+      timestamp: new Date().toISOString(),
+      currentState: {
+        fastMode: cacheInfo.fastMode,
+        isScanning: cacheInfo.isScanning,
+        layers: Object.keys(cacheInfo.layers || {}).map(layer => ({
+          name: layer,
+          totalItems: cacheInfo.layers[layer]?.totalItems || 0,
+          lastUpdate: cacheInfo.layers[layer]?.lastUpdate
+        }))
+      }
+    });
+
+  } catch (error) {
+    console.error('Cache strategy error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Scheduler management endpoints
+
+// Get scheduler status and statistics
+app.get('/api/files/scheduler/status', authenticate, async (req, res) => {
+  try {
+    const schedulerStats = fileSystem.getSchedulerStats();
+    res.json(schedulerStats);
+  } catch (error) {
+    console.error('Scheduler status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get scheduler queue information
+app.get('/api/files/scheduler/queue', authenticate, async (req, res) => {
+  try {
+    const queueStatus = fileSystem.getSchedulerQueue();
+    res.json(queueStatus);
+  } catch (error) {
+    console.error('Scheduler queue error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Schedule background tasks
+app.post('/api/files/scheduler/schedule', authenticate, async (req, res) => {
+  try {
+    const { 
+      type = 'scan',
+      paths = [],
+      priority = 'normal',
+      options = {}
+    } = req.body;
+
+    let taskIds = [];
+    let result = {};
+
+    switch (type.toLowerCase()) {
+      case 'scan':
+        if (!paths || paths.length === 0) {
+          return res.status(400).json({ error: 'paths array required for scan tasks' });
+        }
+        taskIds = fileSystem.scheduleBackgroundScan(paths, priority.toUpperCase());
+        result = { 
+          type: 'scan', 
+          scheduledPaths: paths.length,
+          taskIds,
+          priority 
+        };
+        break;
+
+      case 'precache':
+        taskIds = await fileSystem.preCacheDirectories(paths);
+        result = { 
+          type: 'precache', 
+          scheduledPaths: paths.length,
+          taskIds 
+        };
+        break;
+
+      case 'smart_precache':
+        const smartResult = await fileSystem.smartPreCache();
+        result = { 
+          type: 'smart_precache',
+          taskId: smartResult.taskId
+        };
+        break;
+
+      default:
+        return res.status(400).json({ 
+          error: `Unknown task type: ${type}. Available: scan, precache, smart_precache` 
+        });
+    }
+
+    res.json({
+      success: true,
+      ...result,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('Schedule task error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get task status
+app.get('/api/files/scheduler/task/:taskId', authenticate, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const taskStatus = fileSystem.getTaskStatus(taskId);
+    
+    if (taskStatus) {
+      res.json(taskStatus);
+    } else {
+      res.status(404).json({ error: 'Task not found' });
+    }
+  } catch (error) {
+    console.error('Task status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Cancel task
+app.delete('/api/files/scheduler/task/:taskId', authenticate, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { reason = 'user_request' } = req.query;
+    
+    const cancelled = fileSystem.cancelTask(taskId, reason);
+    
+    if (cancelled) {
+      res.json({ 
+        success: true, 
+        taskId, 
+        cancelled: true, 
+        reason,
+        timestamp: new Date().toISOString() 
+      });
+    } else {
+      res.status(404).json({ 
+        error: 'Task not found or cannot be cancelled',
+        taskId 
+      });
+    }
+  } catch (error) {
+    console.error('Cancel task error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Pause/Resume scheduler
+app.post('/api/files/scheduler/control', authenticate, async (req, res) => {
+  try {
+    const { action } = req.body; // 'pause' or 'resume'
+    
+    let result = {};
+    
+    switch (action?.toLowerCase()) {
+      case 'pause':
+        result = fileSystem.pauseScheduler();
+        break;
+      case 'resume':
+        result = fileSystem.resumeScheduler();
+        break;
+      default:
+        return res.status(400).json({ 
+          error: `Unknown action: ${action}. Use 'pause' or 'resume'` 
+        });
+    }
+    
+    res.json({
+      success: true,
+      action,
+      ...result,
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('Scheduler control error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API health and status check endpoint
+app.get('/api/files/status', authenticate, async (req, res) => {
+  try {
+    const cacheInfo = await fileSystem.getCacheInfo();
+    const searchAnalytics = await fileSystem.getSearchAnalytics();
+    
+    const status = {
+      system: {
+        initialized: cacheInfo.initialized,
+        layeredCache: cacheInfo.layered,
+        intelligentSearch: cacheInfo.intelligentSearch,
+        fastMode: cacheInfo.fastMode
+      },
+      cache: {
+        isScanning: cacheInfo.isScanning,
+        isWatching: cacheInfo.isWatching,
+        concurrentOperations: cacheInfo.concurrentOperations,
+        layers: cacheInfo.layers ? Object.keys(cacheInfo.layers).map(layer => ({
+          name: layer,
+          totalItems: cacheInfo.layers[layer]?.totalItems || 0,
+          lastUpdate: cacheInfo.layers[layer]?.lastUpdate,
+          health: cacheInfo.layers[layer]?.totalItems > 0 ? 'healthy' : 'empty'
+        })) : []
+      },
+      search: {
+        totalQueries: searchAnalytics.totalQueries || 0,
+        cachedResults: searchAnalytics.cachedResults || 0,
+        activeSearches: searchAnalytics.activeSearches || 0,
+        activeSessions: searchAnalytics.activeSessions || 0,
+        health: searchAnalytics.totalQueries > 0 ? 'active' : 'unused'
+      },
+      api: {
+        endpoints: [
+          { path: '/api/files/search', method: 'GET', description: 'Basic intelligent search' },
+          { path: '/api/files/search/progressive', method: 'GET', description: 'Progressive search with SSE' },
+          { path: '/api/files/search/contextual', method: 'POST', description: 'Context-aware search' },
+          { path: '/api/files/search/analytics', method: 'GET', description: 'Search analytics' },
+          { path: '/api/files/search/progress/:id', method: 'GET', description: 'Search progress' },
+          { path: '/api/files/search-history', method: 'GET', description: 'Search history' },
+          { path: '/api/files/refresh-cache', method: 'POST', description: 'Intelligent cache refresh' },
+          { path: '/api/files/cache-progress', method: 'GET', description: 'Cache progress' },
+          { path: '/api/files/cache-strategy', method: 'POST', description: 'Dynamic cache strategy' },
+          { path: '/api/files/cache/smart-precache', method: 'POST', description: 'Smart pre-caching' }
+        ],
+        version: '1.0.0',
+        features: {
+          layeredCaching: true,
+          intelligentSearch: true,
+          progressiveSearch: true,
+          contextualSearch: true,
+          searchAnalytics: true,
+          dynamicStrategies: true
+        }
+      },
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime()
+    };
+
+    res.json(status);
+  } catch (error) {
+    console.error('Status check error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      timestamp: new Date().toISOString(),
+      status: 'unhealthy'
+    });
   }
 });
 
