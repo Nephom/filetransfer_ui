@@ -273,10 +273,22 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
 
     // File Browser Component
     const FileBrowser = ({ token, user }) => {
-        const [files, setFiles] = React.useState([]);
-        const [loading, setLoading] = React.useState(true);
-        const [error, setError] = React.useState('');
-        const [currentPath, setCurrentPath] = React.useState('');
+        const {
+            files,
+            currentPath,
+            isLoading,
+            error,
+            fetchFiles,
+            setCurrentPath,
+            searchResults,
+            isSearching,
+            performSearch,
+            deleteFiles,
+            renameFile,
+            createNewFolder: contextCreateNewFolder
+        } = React.useContext(window.AppContext);
+
+        // Local state that remains in the component
         const [selectedFiles, setSelectedFiles] = React.useState([]);
         const [viewMode, setViewMode] = React.useState('grid');
         const [searchQuery, setSearchQuery] = React.useState('');
@@ -285,21 +297,21 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
         const [pathHistory, setPathHistory] = React.useState([]);
         const [contextMenu, setContextMenu] = React.useState(null);
         const [clipboard, setClipboard] = React.useState({ items: [], operation: null });
-        const [searchResults, setSearchResults] = React.useState([]);
-        const [isSearching, setIsSearching] = React.useState(false);
+        const [progressiveSearchResults, setProgressiveSearchResults] = React.useState([]);
 
         React.useEffect(() => {
-            fetchFiles();
-        }, [currentPath]);
+            // Use the fetchFiles from context, passing the token
+            fetchFiles(currentPath, token);
+        }, [currentPath, token]);
 
         // Debounced search effect
         React.useEffect(() => {
             const timeoutId = setTimeout(() => {
-                performSearch(searchQuery);
+                performSearch(searchQuery, token);
             }, 300);
 
             return () => clearTimeout(timeoutId);
-        }, [searchQuery, currentPath]);
+        }, [searchQuery, currentPath, token]);
 
         // Add global click handler to close context menu
         React.useEffect(() => {
@@ -312,59 +324,6 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             document.addEventListener('click', handleGlobalClick);
             return () => document.removeEventListener('click', handleGlobalClick);
         }, [contextMenu]);
-
-        const fetchFiles = async () => {
-            setLoading(true);
-            setError('');
-            try {
-                const url = currentPath ? `/api/files/${encodeURIComponent(currentPath)}` : '/api/files';
-                const response = await fetch(url, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (response.ok) {
-                    const data = await response.json();
-                    setFiles(data);
-                } else {
-                    setError('Failed to load files');
-                }
-            } catch (error) {
-                setError('Connection error');
-            } finally {
-                setLoading(false);
-            }
-        };
-
-        // Search function
-        const performSearch = async (query) => {
-            if (!query.trim()) {
-                setSearchResults([]);
-                setIsSearching(false);
-                setError(''); // Clear any previous search errors
-                return;
-            }
-
-            setIsSearching(true);
-            setError(''); // Clear any previous errors when starting new search
-            try {
-                const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}&path=`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-
-                if (response.ok) {
-                    const results = await response.json();
-                    setSearchResults(results);
-                } else {
-                    setError('Search failed');
-                    setSearchResults([]);
-                }
-            } catch (error) {
-                console.error('Search error:', error);
-                setError(`Search failed: ${error.message}`);
-                setSearchResults([]);
-            } finally {
-                setIsSearching(false);
-            }
-        };
 
         const closeContextMenu = () => {
             setContextMenu(null);
@@ -429,25 +388,11 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                 ? `Are you sure you want to delete "${selectedFiles[0].name}"?`
                 : `Are you sure you want to delete ${selectedFiles.length} selected files?`;
 
-            if (!confirm(confirmMessage)) return;
-
-            try {
-                for (const file of selectedFiles) {
-                    const filePath = currentPath ? `${currentPath}/${file.name}` : file.name;
-                    const response = await fetch(`/api/files/${encodeURIComponent(filePath)}`, {
-                        method: 'DELETE',
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
-
-                    if (!response.ok) {
-                        throw new Error(`Failed to delete ${file.name}`);
-                    }
-                }
-
-                setSelectedFiles([]);
-                fetchFiles();
-            } catch (error) {
-                setError(`Delete failed: ${error.message}`);
+            if (window.confirm(confirmMessage)) {
+                // The API call is now in the context.
+                // The context will handle errors and refresh the file list.
+                await deleteFiles(selectedFiles, currentPath, token);
+                setSelectedFiles([]); // Clear selection after deletion
             }
         };
 
@@ -494,55 +439,14 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                 console.log(`Downloaded: ${file.name}`);
             } catch (error) {
                 console.error('Download error:', error);
-                setError(`Download failed: ${error.message}`);
+                alert(`Download failed: ${error.message}`);
             }
         };
 
         const createNewFolder = async () => {
             const folderName = prompt('Enter folder name:');
             if (!folderName) return;
-
-            try {
-                const response = await fetch('/api/folders', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        folderName: folderName,
-                        currentPath: currentPath
-                    })
-                });
-
-                if (response.ok) {
-                    fetchFiles();
-                } else {
-                    throw new Error('Failed to create folder');
-                }
-            } catch (error) {
-                setError(`Create folder failed: ${error.message}`);
-            }
-        };
-
-        const handleRefresh = async () => {
-            setLoading(true);
-            setError('');
-            try {
-                const response = await fetch('/api/files/refresh-cache', {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (response.ok) {
-                    await fetchFiles();
-                } else {
-                    setError('Failed to refresh cache');
-                }
-            } catch (error) {
-                setError('Connection error during refresh');
-            } finally {
-                setLoading(false);
-            }
+            await contextCreateNewFolder(folderName, currentPath, token);
         };
 
         const handleFileUpload = async (uploadingFiles) => {
@@ -584,12 +488,12 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
 
                 if (response.ok) {
                     setShowUploadModal(false);
-                    fetchFiles();
+                    fetchFiles(currentPath, token);
                 } else {
                     throw new Error('Upload failed');
                 }
             } catch (error) {
-                setError(`Upload failed: ${error.message}`);
+                alert(`Upload failed: ${error.message}`);
             }
         };
 
@@ -612,8 +516,10 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
 
 
 
-        // Use search results if searching, otherwise use current directory files
-        const filteredFiles = searchQuery.trim() ? searchResults : files;
+        // Use progressive search results if searching, otherwise use current directory files or context search results
+        const filteredFiles = searchQuery.trim() ? 
+            (progressiveSearchResults.length > 0 ? progressiveSearchResults : searchResults) : 
+            files;
         
         // Debug logging for search
         if (searchQuery.trim() && searchResults.length === 0 && !isSearching) {
@@ -702,16 +608,16 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                 });
 
                 if (response.ok) {
-                    fetchFiles();
+                    fetchFiles(currentPath, token);
                     if (clipboard.operation === 'cut') {
                         setClipboard({ items: [], operation: null });
                     }
                 } else {
                     const data = await response.json();
-                    setError(data.error || 'Paste operation failed');
+                    alert(data.error || 'Paste operation failed');
                 }
             } catch (error) {
-                setError(`Paste failed: ${error.message}`);
+                alert(`Paste failed: ${error.message}`);
             }
             closeContextMenu();
         };
@@ -720,42 +626,16 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             const file = contextMenu.file;
             const newName = prompt('Enter new name:', file.name);
             if (newName && newName !== file.name) {
-                renameFile(file, newName);
+                renameFile(file, newName, currentPath, token);
             }
             closeContextMenu();
         };
 
         const handleDeleteFromContext = () => {
             if (confirm(`Are you sure you want to delete ${contextMenu.selectedFiles.length} item(s)?`)) {
-                deleteFiles(contextMenu.selectedFiles);
+                deleteFiles(contextMenu.selectedFiles, currentPath, token);
             }
             closeContextMenu();
-        };
-
-        const renameFile = async (file, newName) => {
-            try {
-                const response = await fetch('/api/files/rename', {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    },
-                    body: JSON.stringify({
-                        oldName: file.name,
-                        newName: newName,
-                        currentPath: currentPath
-                    })
-                });
-
-                if (response.ok) {
-                    fetchFiles();
-                } else {
-                    const data = await response.json();
-                    setError(data.error || 'Rename failed');
-                }
-            } catch (error) {
-                setError(`Rename failed: ${error.message}`);
-            }
         };
 
         const handleLogout = () => {
@@ -1034,23 +914,12 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                         }
                     }, ['📁', ' New Folder']),
 
-                    React.createElement('button', {
-                        key: 'refresh',
-                        onClick: handleRefresh,
-                        style: {
-                            background: 'rgba(255, 165, 0, 0.2)',
-                            border: '1px solid rgba(255, 165, 0, 0.5)',
-                            borderRadius: '8px',
-                            color: 'white',
-                            padding: '10px 16px',
-                            cursor: 'pointer',
-                            fontSize: '14px',
-                            outline: 'none',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px'
-                        }
-                    }, ['🔄', ' Refresh']),
+                    React.createElement(window.RefreshControl, {
+                        key: 'refresh-control',
+                        token: token,
+                        currentPath: currentPath,
+                        onRefreshComplete: () => fetchFiles(currentPath, token)
+                    }),
                     selectedFiles.length > 0 && React.createElement('button', {
                         key: 'delete',
                         onClick: deleteSelectedFiles,
@@ -1146,6 +1015,15 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     ])
                 ])
             ]),
+
+            // Search Progress Component
+            React.createElement(window.SearchProgress, {
+                key: 'search-progress',
+                token: token,
+                searchQuery: searchQuery,
+                onSearchResults: (results) => setProgressiveSearchResults(results),
+                onSearchCancel: () => setProgressiveSearchResults([])
+            }),
 
             // Main content
             React.createElement('div', {
@@ -1711,7 +1589,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
     // Render the app
     try {
         console.log('App: Rendering...');
-        ReactDOM.render(React.createElement(App), document.getElementById('root'));
+        ReactDOM.render(React.createElement(window.AppProvider, null, React.createElement(App)), document.getElementById('root'));
         console.log('App: Rendered successfully!');
     } catch (error) {
         console.error('App: Render failed:', error);

@@ -6,6 +6,7 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const { transferManager } = require('../transfer');
 const { FileSystem } = require('../file-system');
 
@@ -187,34 +188,53 @@ class UploadAPI {
         });
       }
 
+      const finalPath = path.join('./uploads', req.file.filename);
+
       // Create transfer record
       const transferId = transferManager.startTransfer({
         source: req.file.path,
-        destination: req.body.destination || `./uploads/${req.file.filename}`,
+        destination: finalPath,
         totalSize: req.file.size
       });
 
-      // Simulate progress updates (in real implementation, this would happen during file write)
-      let progress = 0;
-      const interval = setInterval(() => {
-        progress += 10;
-        if (progress >= 100) {
-          clearInterval(interval);
+      const sourceStream = fs.createReadStream(req.file.path);
+      const destinationStream = fs.createWriteStream(finalPath);
+
+      let bytesCopied = 0;
+
+      sourceStream.on('data', (chunk) => {
+        bytesCopied += chunk.length;
+        transferManager.updateProgress(transferId, bytesCopied);
+      });
+
+      sourceStream.on('error', (error) => {
+        transferManager.failTransfer(transferId, error.message);
+        // Clean up destination file
+        fs.unlink(finalPath, () => {});
+        if (!res.headersSent) {
+          res.status(500).json({
+            error: 'Upload failed during file copy',
+            message: error.message
+          });
         }
+      });
 
-        // Update progress
-        transferManager.updateProgress(transferId, Math.min(progress * req.file.size / 100, req.file.size));
-      }, 200);
+      destinationStream.on('error', (error) => {
+        transferManager.failTransfer(transferId, error.message);
+        if (!res.headersSent) {
+          res.status(500).json({
+            error: 'Upload failed during file write',
+            message: error.message
+          });
+        }
+      });
 
-      // Simulate completion
-      setTimeout(async () => {
-        clearInterval(interval);
+      destinationStream.on('finish', () => {
+        // The original temp file should be removed
+        fs.unlink(req.file.path, (err) => {
+            if (err) console.error("Failed to delete temp file:", req.file.path, err);
+        });
 
-        // Move file to final destination
-        const finalPath = path.join('./uploads', req.file.filename);
-        await this.fileSystem.move(req.file.path, finalPath);
-
-        // Update transfer as complete
         transferManager.completeTransfer(transferId, {
           result: 'success',
           file: {
@@ -224,23 +244,29 @@ class UploadAPI {
           }
         });
 
-        // Send response when done
-        res.json({
-          success: true,
-          transferId,
-          message: 'File uploaded successfully with progress tracking',
-          file: {
-            name: req.file.filename,
-            path: finalPath,
-            size: req.file.size
-          }
-        });
-      }, 2000);
-    } catch (error) {
-      res.status(500).json({
-        error: 'Upload failed',
-        message: error.message
+        if (!res.headersSent) {
+          res.json({
+            success: true,
+            transferId,
+            message: 'File uploaded successfully with progress tracking',
+            file: {
+              name: req.file.filename,
+              path: finalPath,
+              size: req.file.size
+            }
+          });
+        }
       });
+
+      sourceStream.pipe(destinationStream);
+
+    } catch (error) {
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: 'Upload failed',
+          message: error.message
+        });
+      }
     }
   }
 
