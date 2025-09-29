@@ -11,53 +11,93 @@ class FileOperations {
   /**
    * Initialize file operations manager
    * @param {FileSystem} fileSystem - Instance of FileSystem
+   * @param {Object} systemLogger - System logger instance
    */
-  constructor(fileSystem) {
+  constructor(fileSystem, systemLogger = null) {
     this.fileSystem = fileSystem || new FileSystem();
+    this.systemLogger = systemLogger;
+  }
+
+  /**
+   * Log file operation result
+   */
+  logOperation(operation, user, filePath, result, metadata = {}) {
+    if (this.systemLogger) {
+      this.systemLogger.logFileOperation(operation, user, filePath, result, metadata);
+    }
   }
 
   /**
    * Rename a file or directory
    * @param {string} oldPath - Current path of the file/directory
    * @param {string} newPath - New path for the file/directory
+   * @param {string} user - User performing the operation
    * @returns {Promise<Object>} Operation result
    */
-  async rename(oldPath, newPath) {
+  async rename(oldPath, newPath, user = 'system') {
+    const startTime = Date.now();
+    
     try {
       // Validate paths
       if (!oldPath || !newPath) {
-        throw new Error('Both oldPath and newPath are required');
+        const error = new Error('Both oldPath and newPath are required');
+        this.logOperation('rename', user, oldPath, { success: false, error: error.message });
+        throw error;
       }
 
       // Check if source exists
       const exists = await this.fileSystem.exists(oldPath);
       if (!exists) {
-        throw new Error(`Source path does not exist: ${oldPath}`);
+        const error = new Error(`Source path does not exist: ${oldPath}`);
+        this.logOperation('rename', user, oldPath, { success: false, error: error.message });
+        throw error;
       }
 
       // Check if destination already exists
       const destExists = await this.fileSystem.exists(newPath);
       if (destExists) {
-        throw new Error(`Destination already exists: ${newPath}`);
+        const error = new Error(`Destination already exists: ${newPath}`);
+        this.logOperation('rename', user, oldPath, { success: false, error: error.message, targetPath: newPath });
+        throw error;
       }
 
       // Perform rename operation
       await this.fileSystem.move(oldPath, newPath);
-
-      return {
+      
+      const duration = Date.now() - startTime;
+      const result = {
         success: true,
         operation: 'rename',
         oldPath,
         newPath
       };
+      
+      // Log successful operation
+      this.logOperation('rename', user, oldPath, result, { 
+        targetPath: newPath,
+        duration
+      });
+      
+      return result;
     } catch (error) {
-      return {
+      const duration = Date.now() - startTime;
+      const result = {
         success: false,
         error: error.message,
         operation: 'rename',
         oldPath,
         newPath
       };
+      
+      // Log failed operation if not already logged
+      if (!error.message.includes('required') && !error.message.includes('does not exist') && !error.message.includes('already exists')) {
+        this.logOperation('rename', user, oldPath, result, { 
+          targetPath: newPath,
+          duration
+        });
+      }
+      
+      return result;
     }
   }
 

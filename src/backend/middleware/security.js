@@ -2,9 +2,11 @@
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const SecurityManager = require('../security/security');
+const SystemLogger = require('../logging/system-logger');
 
 // Configuration manager will be injected
 let configManager = null;
+let systemLogger = null;
 
 const securityManager = new SecurityManager();
 
@@ -18,11 +20,18 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req, res) => {
-    securityManager.logSecurityEvent('RATE_LIMIT_EXCEEDED', {
-      ip: req.ip,
-      userAgent: req.get('User-Agent'),
-      endpoint: req.path
-    });
+    if (systemLogger) {
+      systemLogger.logSecurityEvent('RATE_LIMIT_EXCEEDED', {
+        endpoint: req.path,
+        limit: 'auth'
+      }, req);
+    } else {
+      securityManager.logSecurityEvent('RATE_LIMIT_EXCEEDED', {
+        ip: req.ip,
+        userAgent: req.get('User-Agent'),
+        endpoint: req.path
+      });
+    }
     
     res.status(429).json({
       error: 'Too many authentication attempts, please try again later.'
@@ -100,10 +109,16 @@ const createSecurityHeaders = (config) => {
 
 // Configurable request logging middleware
 const createRequestLogger = (config) => {
-  const enableLogging = config?.get('security.enableRequestLogging') === true;
+  const enableLogging = config?.get('security.enableRequestLogging') === true ||
+                       config?.get('logging.enableDetailedLogging') === true;
 
   if (!enableLogging) {
     return (req, res, next) => next(); // No-op middleware
+  }
+
+  // Use SystemLogger if available, fallback to console logging
+  if (systemLogger) {
+    return systemLogger.createRequestMiddleware();
   }
 
   return (req, res, next) => {
@@ -177,21 +192,28 @@ const createInputValidator = (config) => {
     // Check all request data
     const allData = { ...req.query, ...req.body, ...req.params };
 
-    for (const [key, value] of Object.entries(allData)) {
-      if (checkValue(value)) {
-        securityManager.logSecurityEvent('SUSPICIOUS_INPUT', {
-          ip: req.ip,
-          userAgent: req.get('User-Agent'),
-          endpoint: req.path,
-          suspiciousField: key,
-          suspiciousValue: value
-        });
+      for (const [key, value] of Object.entries(allData)) {
+        if (checkValue(value)) {
+          if (systemLogger) {
+            systemLogger.logSecurityEvent('SUSPICIOUS_INPUT', {
+              suspiciousField: key,
+              suspiciousValue: value
+            }, req);
+          } else {
+            securityManager.logSecurityEvent('SUSPICIOUS_INPUT', {
+              ip: req.ip,
+              userAgent: req.get('User-Agent'),
+              endpoint: req.path,
+              suspiciousField: key,
+              suspiciousValue: value
+            });
+          }
 
-        return res.status(400).json({
-          error: 'Invalid input detected'
-        });
+          return res.status(400).json({
+            error: 'Invalid input detected'
+          });
+        }
       }
-    }
 
     next();
   };
@@ -216,12 +238,19 @@ const createFileUploadSecurity = (config) => {
         const ext = require('path').extname(file.originalname).toLowerCase();
 
         if (dangerousExtensions.includes(ext)) {
-          securityManager.logSecurityEvent('DANGEROUS_FILE_UPLOAD', {
-            ip: req.ip,
-            userAgent: req.get('User-Agent'),
-            filename: file.originalname,
-            extension: ext
-          });
+          if (systemLogger) {
+            systemLogger.logSecurityEvent('DANGEROUS_FILE_UPLOAD', {
+              filename: file.originalname,
+              extension: ext
+            }, req);
+          } else {
+            securityManager.logSecurityEvent('DANGEROUS_FILE_UPLOAD', {
+              ip: req.ip,
+              userAgent: req.get('User-Agent'),
+              filename: file.originalname,
+              extension: ext
+            });
+          }
 
           return res.status(400).json({
             error: `File type ${ext} is not allowed for security reasons`
@@ -261,6 +290,9 @@ const createRateLimiters = (config) => {
 
 // Initialize security middleware with configuration
 const initializeSecurity = (config) => {
+  configManager = config;
+  systemLogger = new SystemLogger(config);
+  
   const rateLimiters = createRateLimiters(config);
 
   return {
@@ -270,7 +302,8 @@ const initializeSecurity = (config) => {
     requestLogger: createRequestLogger(config),
     validateInput: createInputValidator(config),
     fileUploadSecurity: createFileUploadSecurity(config),
-    securityManager
+    securityManager,
+    systemLogger // Export systemLogger for use in other modules
   };
 };
 

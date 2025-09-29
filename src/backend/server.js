@@ -23,6 +23,7 @@ const app = express();
 let authManager;
 let fileSystem;
 let securityMiddleware;
+let systemLogger;
 
 // Security checks and recommendations on startup
 async function performSecurityChecks(config) {
@@ -134,6 +135,11 @@ app.post('/auth/login', (req, res, next) => {
 
     // Simple authentication against config file
     if (username === configUsername && password === configPassword) {
+      // Log successful authentication
+      if (systemLogger) {
+        systemLogger.logAuth('login', username, true, {}, req);
+      }
+      
       // Generate JWT token
       const jwt = require('jsonwebtoken');
       const token = jwt.sign(
@@ -156,6 +162,11 @@ app.post('/auth/login', (req, res, next) => {
         }
       });
     } else {
+      // Log failed authentication
+      if (systemLogger) {
+        systemLogger.logAuth('login', username, false, { reason: 'Invalid credentials' }, req);
+      }
+      
       res.status(401).json({ error: 'Invalid credentials' });
     }
   } catch (error) {
@@ -353,6 +364,9 @@ app.post('/auth/reset-password', (req, res, next) => {
 
 // Search files using intelligent search engine
 app.get('/api/files/search', authenticate, async (req, res) => {
+  const startTime = Date.now();
+  const user = req.user?.username || 'unknown';
+  
   try {
     const { 
       query, 
@@ -364,6 +378,13 @@ app.get('/api/files/search', authenticate, async (req, res) => {
     } = req.query;
 
     if (!query) {
+      // Log invalid search attempt
+      if (systemLogger) {
+        systemLogger.logFileOperation('search', user, '', {
+          success: false,
+          error: 'No query provided'
+        });
+      }
       return res.status(400).json({ error: 'Search query is required' });
     }
 
@@ -406,9 +427,43 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       };
     }
 
+    const duration = Date.now() - startTime;
+    
+    // Log successful search
+    if (systemLogger) {
+      systemLogger.logFileOperation('search', user, query, {
+        success: true,
+        resultCount: searchResult.totalResults || searchResult.results?.length || 0
+      }, { 
+        mode,
+        duration,
+        limit,
+        includeContext
+      });
+      
+      systemLogger.logPerformance('file_search', duration, {
+        query,
+        mode,
+        resultCount: searchResult.totalResults || searchResult.results?.length || 0
+      });
+    }
+
     res.json(searchResult);
   } catch (error) {
     console.error('Search error:', error);
+    
+    // Log search error
+    const duration = Date.now() - startTime;
+    if (systemLogger) {
+      systemLogger.logFileOperation('search', user, req.query.query || '', {
+        success: false,
+        error: error.message
+      }, { 
+        mode: req.query.mode || 'instant',
+        duration
+      });
+    }
+    
     if (error.message === 'Search timeout') {
       res.status(408).json({ error: 'Search timeout - try a more specific query' });
     } else {
@@ -569,14 +624,24 @@ app.get('/api/files/content/*', authenticate, async (req, res) => {
 
 // Download file endpoint
 app.get('/api/files/download/*', authenticate, async (req, res) => {
+  const startTime = Date.now();
+  const user = req.user?.username || 'unknown';
+  const requestPath = req.params[0] || '';
+  
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params[0] || '';
 
     const storageRoot = path.resolve(storagePath);
     const fullPath = path.join(storageRoot, requestPath);
 
     if (!fullPath.startsWith(storageRoot)) {
+      // Log security violation
+      if (systemLogger) {
+        systemLogger.logSecurityEvent('PATH_TRAVERSAL_ATTEMPT', {
+          requestedPath: requestPath,
+          resolvedPath: fullPath
+        }, req);
+      }
       return res.status(403).json({ error: 'Forbidden: Access denied.' });
     }
 
@@ -584,17 +649,38 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
 
     const exists = await fileSystem.exists(fullPath);
     if (!exists) {
+      // Log failed download attempt
+      if (systemLogger) {
+        systemLogger.logFileOperation('download', user, requestPath, {
+          success: false,
+          error: 'File not found'
+        });
+      }
       return res.status(404).json({ error: 'File not found' });
     }
 
     const stats = await fs.stat(fullPath);
     if (stats.isDirectory()) {
+      // Log invalid download attempt
+      if (systemLogger) {
+        systemLogger.logFileOperation('download', user, requestPath, {
+          success: false,
+          error: 'Cannot download directory'
+        });
+      }
       return res.status(400).json({ error: 'Cannot download a directory' });
     }
 
     // Check for modifications
     const cachedInfo = await fileSystem.getFileInfo(fullPath);
     if (cachedInfo && new Date(cachedInfo.modified).getTime() !== stats.mtime.getTime()) {
+      // Log file modification conflict
+      if (systemLogger) {
+        systemLogger.logFileOperation('download', user, requestPath, {
+          success: false,
+          error: 'File modified since cache'
+        }, { fileSize: stats.size });
+      }
       return res.status(409).json({ error: 'The file has been modified. Please refresh the file list.' });
     }
 
@@ -607,12 +693,44 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
 
     fileStream.on('error', (error) => {
       console.error('File stream error:', error);
+      // Log stream error
+      if (systemLogger) {
+        systemLogger.logFileOperation('download', user, requestPath, {
+          success: false,
+          error: 'Stream error: ' + error.message,
+          fileSize: stats.size
+        });
+      }
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to download file' });
       }
     });
+    
+    fileStream.on('end', () => {
+      // Log successful download
+      const duration = Date.now() - startTime;
+      if (systemLogger) {
+        systemLogger.logFileOperation('download', user, requestPath, {
+          success: true,
+          fileSize: stats.size
+        }, { duration });
+        
+        systemLogger.logPerformance('file_download', duration, {
+          fileSize: stats.size,
+          fileName
+        });
+      }
+    });
+    
   } catch (error) {
     console.error('Download error:', error);
+    // Log download error
+    if (systemLogger) {
+      systemLogger.logFileOperation('download', user, requestPath, {
+        success: false,
+        error: error.message
+      });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -1495,6 +1613,9 @@ app.post('/api/upload', (req, res, next) => {
       const uploadPath = currentPath
         ? `${storagePath}/${currentPath}`
         : storagePath;
+      
+      const startTime = Date.now();
+      const user = req.user?.username || 'unknown';
 
       console.log('Upload path:', uploadPath);
       console.log('Current path from request:', currentPath);
@@ -1505,14 +1626,54 @@ app.post('/api/upload', (req, res, next) => {
 
       // Save each file to the correct location
       const savedFiles = [];
+      let totalSize = 0;
+      
       for (const file of req.files || []) {
         const filePath = `${uploadPath}/${file.originalname}`;
-        await fs.writeFile(filePath, file.buffer);
-        savedFiles.push({ name: file.originalname, size: file.size });
+        const fullPath = currentPath ? `${currentPath}/${file.originalname}` : file.originalname;
+        
+        try {
+          await fs.writeFile(filePath, file.buffer);
+          savedFiles.push({ name: file.originalname, size: file.size });
+          totalSize += file.size;
+          
+          // Log each successful file upload
+          if (systemLogger) {
+            systemLogger.logFileOperation('upload', user, fullPath, {
+              success: true,
+              fileSize: file.size
+            }, { 
+              destinationPath: uploadPath,
+              mimeType: file.mimetype 
+            });
+          }
+        } catch (fileError) {
+          // Log failed file upload
+          if (systemLogger) {
+            systemLogger.logFileOperation('upload', user, fullPath, {
+              success: false,
+              error: fileError.message,
+              fileSize: file.size
+            }, { 
+              destinationPath: uploadPath 
+            });
+          }
+          throw fileError;
+        }
       }
 
+      const duration = Date.now() - startTime;
       console.log('Files uploaded to:', uploadPath);
       console.log('Files saved:', savedFiles.map(f => f.name));
+      
+      // Log overall upload operation
+      if (systemLogger) {
+        systemLogger.logPerformance('batch_upload', duration, {
+          fileCount: savedFiles.length,
+          totalSize,
+          destinationPath: currentPath || 'root'
+        });
+      }
 
       res.json({
         success: true,
@@ -1522,6 +1683,16 @@ app.post('/api/upload', (req, res, next) => {
       });
     } catch (error) {
       console.error('File save error:', error);
+      
+      // Log upload error
+      if (systemLogger) {
+        const user = req.user?.username || 'unknown';
+        systemLogger.logFileOperation('upload', user, req.body.currentPath || 'root', {
+          success: false,
+          error: error.message
+        });
+      }
+      
       res.status(500).json({ error: error.message });
     }
   });
@@ -1609,6 +1780,9 @@ async function startServer() {
 
     // Initialize security middleware with configuration
     securityMiddleware = initializeSecurity(configManager);
+    
+    // Get systemLogger from security middleware
+    systemLogger = securityMiddleware.systemLogger;
 
     // Apply security middleware
     app.use(securityMiddleware.securityHeaders);
