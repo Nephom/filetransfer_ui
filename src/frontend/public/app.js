@@ -643,7 +643,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             window.location.reload();
         };
 
-        if (loading) {
+        if (isLoading) {
             return React.createElement('div', {
                 style: {
                     minHeight: '100vh',
@@ -1589,7 +1589,8 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
     // Render the app
     try {
         console.log('App: Rendering...');
-        ReactDOM.render(React.createElement(window.AppProvider, null, React.createElement(App)), document.getElementById('root'));
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(window.AppProvider, null, React.createElement(App)));
         console.log('App: Rendered successfully!');
     } catch (error) {
         console.error('App: Render failed:', error);
