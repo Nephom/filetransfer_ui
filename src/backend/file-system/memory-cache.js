@@ -105,10 +105,20 @@ class RedisFileSystemCache extends EventEmitter {
       for (const item of items) {
         const itemPath = path.join(dirPath, item);
         try {
-          const lstat = await fs.lstat(itemPath);
-          if (lstat.isSymbolicLink()) continue;
+          const stats = await fs.lstat(itemPath);
 
-          const stats = await fs.stat(itemPath);
+          // Skip symbolic links to avoid loops and other issues
+          if (stats.isSymbolicLink()) {
+              continue;
+          }
+
+          // Skip if not a file or directory (e.g., sockets, block devices)
+          if (!stats.isFile() && !stats.isDirectory()) {
+              console.warn(`Skipping ${itemPath}: Not a file or directory.`);
+              continue;
+          }
+
+          // Check for read access before proceeding
           await fs.access(itemPath, fsSync.constants.R_OK);
 
           const fileInfo = {
@@ -126,7 +136,9 @@ class RedisFileSystemCache extends EventEmitter {
             await this.scanDirectory(itemPath);
           }
         } catch (statError) {
-          console.warn(`Skipping ${itemPath}:`, statError.message);
+            if (statError.code !== 'EACCES') { // EACCES is expected for read-only, so we don't log it as a warning
+                console.warn(`Skipping ${itemPath}:`, statError.message);
+            }
         }
       }
     } catch (error) {
