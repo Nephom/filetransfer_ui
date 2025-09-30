@@ -133,8 +133,29 @@ class SystemLogger {
     
     console.log(`${color}${icon} [${level.toUpperCase()}] ${category.toUpperCase()}${reset}: ${logString}`);
 
-    // TODO: In production, also write to log files
-    // this.writeToFile(logEntry);
+    // Write to log file
+    this.writeToFile(logString);
+  }
+
+  /**
+   * Asynchronously writes a log string to the system log file.
+   * Ensures the log directory exists before writing.
+   */
+  async writeToFile(logString) {
+    try {
+      // Correctly resolve the project's root directory to place the 'logs' folder.
+      const logDir = path.join(__dirname, '..', '..', '..', 'logs');
+      const logFile = path.join(logDir, 'system.log');
+
+      // Ensure log directory exists. The { recursive: true } option prevents errors if the directory already exists.
+      await fs.mkdir(logDir, { recursive: true });
+
+      // Append the JSON log string to the file, followed by a newline for better readability.
+      await fs.appendFile(logFile, logString + '\n', 'utf8');
+    } catch (error) {
+      // If logging to the file fails for any reason (e.g., permissions), log this critical error to the console.
+      console.error('CRITICAL: Failed to write to log file:', error);
+    }
   }
 
   /**
