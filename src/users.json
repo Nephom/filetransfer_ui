@@ -1,0 +1,18 @@
+{
+  "lastUpdated": "2025-09-30T09:26:38.226Z",
+  "users": [
+    {
+      "id": 1,
+      "username": "admin",
+      "password": "$2b$12$53Kwn05O.9P.5t8kqVVxte4I7qwLsto5veHjqh197v1EVP8hEgpi6",
+      "role": "admin",
+      "active": true,
+      "created": "2025-09-30T09:26:38.226Z",
+      "lastLogin": null,
+      "email": "admin@localhost",
+      "permissions": [
+        "all"
+      ]
+    }
+  ]
+}
