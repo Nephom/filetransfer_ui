@@ -16,7 +16,7 @@ class AuthManager {
   constructor(options = {}) {
     this.options = options;
     this.usersFile = options.usersFile || './data/users.json';
-    this.jwtSecret = options.jwtSecret || process.env.JWT_SECRET || 'default-secret-key';
+    this.jwtSecret = options.jwtSecret || process.env.JWT_SECRET;
     this.sessionTimeout = options.sessionTimeout || 3600; // 1 hour
   }
 

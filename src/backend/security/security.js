@@ -59,18 +59,23 @@ class SecurityManager {
     return crypto.randomBytes(length).toString('hex');
   }
 
-  // Hash sensitive data with salt
-  hashWithSalt(data, salt = null) {
-    if (!salt) {
-      salt = crypto.randomBytes(16).toString('hex');
-    }
-    
-    const hash = crypto.pbkdf2Sync(data, salt, 10000, 64, 'sha512').toString('hex');
-    
-    return {
-      hash,
-      salt
-    };
+  // Hash sensitive data with salt (asynchronously)
+  async hashWithSalt(data, salt = null) {
+    return new Promise((resolve, reject) => {
+      if (!salt) {
+        salt = crypto.randomBytes(16).toString('hex');
+      }
+      
+      crypto.pbkdf2(data, salt, 10000, 64, 'sha512', (err, derivedKey) => {
+        if (err) {
+          return reject(err);
+        }
+        resolve({
+          hash: derivedKey.toString('hex'),
+          salt
+        });
+      });
+    });
   }
 
   // Verify hashed data

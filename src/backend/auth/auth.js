@@ -5,7 +5,7 @@ const ConfigManager = require('../config/config');
 
 class Auth {
   constructor() {
-    this.secret = process.env.JWT_SECRET || 'filetransfer-secret-key';
+    this.secret = process.env.JWT_SECRET;
   }
 
   async hashPassword(password) {
@@ -41,12 +41,11 @@ class Auth {
     if (username === config.username) {
       let isValidPassword = false;
 
-      // Check if password is hashed
       if (config.passwordHashed === 'true') {
         isValidPassword = await this.comparePassword(password, config.password);
       } else {
-        // Backward compatibility with plain text passwords
-        isValidPassword = password === config.password;
+        // If password is not hashed, it is considered invalid for security reasons.
+        isValidPassword = false;
       }
 
       if (isValidPassword) {

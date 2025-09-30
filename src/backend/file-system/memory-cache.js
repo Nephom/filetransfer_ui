@@ -9,7 +9,7 @@ const path = require('path');
 const chokidar = require('chokidar');
 const { createClient } = require('redis');
 const { EventEmitter } = require('events');
-const config = require('../config/config');
+const configManager = require('../config');
 
 // Helper to create a Redis key for a directory
 const dirKey = (relativePath) => `dir:${relativePath}`;
@@ -33,7 +33,7 @@ class RedisFileSystemCache extends EventEmitter {
 
     // 1. Connect to Redis
     try {
-      const redisUrl = config.get('redisUrl');
+      const redisUrl = configManager.get('redisUrl');
       this.redisClient = createClient({ url: redisUrl });
       this.redisClient.on('error', (err) => console.error('Redis Client Error', err));
       await this.redisClient.connect();

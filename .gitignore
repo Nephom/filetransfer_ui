@@ -5,6 +5,14 @@ AGENTS.md
 COMMANDS.md
 CACHE_IMPROVEMENTS.md
 MIGRATION_GUIDE.md
+.api_token
+
+# Issue Files
+issue*
+
+# GEMINI
+.gemini/
+.gemini/**
 
 # Claude AI assistant files
 .claude/

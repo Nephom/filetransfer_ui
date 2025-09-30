@@ -3,7 +3,7 @@
  * Uses in-memory cache with real-time file watching for optimal performance
  */
 
-const { FileSystem } = require('./index');
+const { FileSystem } = require('./base');
 const MemoryFileSystemCache = require('./memory-cache');
 const path = require('path');
 const fs = require('fs').promises;
