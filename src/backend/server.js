@@ -9,12 +9,16 @@ const os = require('os');
 const ConfigManager = require('./config');
 const { EnhancedMemoryFileSystem } = require('./file-system');
 const AuthManager = require('./auth');
+const UserManager = require('./auth/user-manager');
 const { transferManager } = require('./transfer');
 const { authenticate, setJwtSecret, requireAdmin } = require('./middleware/auth');
 const { initializeSecurity } = require('./middleware/security');
 
 // Initialize configuration
 const configManager = new ConfigManager();
+
+// Initialize user manager
+const userManager = new UserManager();
 
 // Initialize app
 const app = express();
@@ -129,24 +133,26 @@ app.post('/auth/login', (req, res, next) => {
   try {
     const { username, password } = req.body;
 
-    // Get credentials from config
-    const configUsername = configManager.get('auth.username');
-    const configPassword = configManager.get('auth.password');
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' });
+    }
 
-    // Simple authentication against config file
-    if (username === configUsername && password === configPassword) {
+    // Authenticate user with UserManager
+    const user = await userManager.authenticateUser(username, password);
+    
+    if (user) {
       // Log successful authentication
       if (systemLogger) {
-        systemLogger.logAuth('login', username, true, {}, req);
+        systemLogger.logAuth('login', username, true, { role: user.role }, req);
       }
       
       // Generate JWT token
       const jwt = require('jsonwebtoken');
       const token = jwt.sign(
         {
-          id: 1,
-          username: username,
-          role: 'admin'
+          id: user.id,
+          username: user.username,
+          role: user.role
         },
         configManager.get('security.jwtSecret') || 'file-transfer-secret-key',
         { expiresIn: '24h' }
@@ -156,9 +162,12 @@ app.post('/auth/login', (req, res, next) => {
         success: true,
         token,
         user: {
-          id: 1,
-          username: username,
-          role: 'admin'
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          email: user.email,
+          permissions: user.permissions,
+          lastLogin: user.lastLogin
         }
       });
     } else {
@@ -170,7 +179,8 @@ app.post('/auth/login', (req, res, next) => {
       res.status(401).json({ error: 'Invalid credentials' });
     }
   } catch (error) {
-    res.status(401).json({ error: error.message });
+    console.error('Login error:', error);
+    res.status(401).json({ error: 'Authentication failed' });
   }
 });
 
@@ -1794,19 +1804,14 @@ app.put('/api/settings', requireAdmin, async (req, res) => {
 // Admin User Management Endpoints
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
-    // For now, return the configured admin user and future users
-    // In a real system, this would query a database
-    const users = [
-      {
-        id: 1,
-        username: configManager.get('auth.username') || 'admin',
-        role: 'admin',
-        created: new Date().toISOString(),
-        active: true
-      }
-    ];
-
-    res.json({ users });
+    const users = await userManager.getAllUsers();
+    const stats = await userManager.getUserStats();
+    
+    res.json({ 
+      users,
+      stats,
+      success: true 
+    });
   } catch (error) {
     console.error('Failed to fetch users:', error);
     res.status(500).json({ error: 'Failed to fetch users' });
@@ -1815,48 +1820,50 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/users', requireAdmin, async (req, res) => {
   try {
-    const { username, password, role = 'user' } = req.body;
+    const { username, password, email, role = 'user', permissions } = req.body;
     
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    // For now, just validate the input and return success
-    // In a real system, this would create the user in a database
-    res.json({
+    const newUser = await userManager.createUser({
+      username,
+      password,
+      email,
+      role,
+      permissions
+    });
+
+    console.log(`User '${username}' created by admin:`, req.user?.username);
+    
+    res.status(201).json({
       success: true,
-      message: `User '${username}' would be created with role '${role}' (mock implementation)`,
-      user: {
-        username,
-        role,
-        created: new Date().toISOString(),
-        active: true
-      }
+      message: `User '${username}' created successfully`,
+      user: newUser
     });
   } catch (error) {
     console.error('Failed to create user:', error);
-    res.status(500).json({ error: 'Failed to create user' });
+    res.status(400).json({ error: error.message });
   }
 });
 
 app.put('/api/admin/users/:username', requireAdmin, async (req, res) => {
   try {
     const { username } = req.params;
-    const { active, role } = req.body;
+    const updates = req.body;
+    
+    const updatedUser = await userManager.updateUser(username, updates);
+    
+    console.log(`User '${username}' updated by admin:`, req.user?.username);
     
     res.json({
       success: true,
-      message: `User '${username}' updated (mock implementation)`,
-      user: {
-        username,
-        role: role || 'user',
-        active: active !== undefined ? active : true,
-        updated: new Date().toISOString()
-      }
+      message: `User '${username}' updated successfully`,
+      user: updatedUser
     });
   } catch (error) {
     console.error('Failed to update user:', error);
-    res.status(500).json({ error: 'Failed to update user' });
+    res.status(400).json({ error: error.message });
   }
 });
 
@@ -1864,17 +1871,56 @@ app.delete('/api/admin/users/:username', requireAdmin, async (req, res) => {
   try {
     const { username } = req.params;
     
-    if (username === 'admin') {
-      return res.status(400).json({ error: 'Cannot delete the admin user' });
-    }
+    const result = await userManager.deleteUser(username);
+    
+    console.log(`User '${username}' deleted by admin:`, req.user?.username);
     
     res.json({
       success: true,
-      message: `User '${username}' deleted (mock implementation)`
+      message: result.message
     });
   } catch (error) {
     console.error('Failed to delete user:', error);
-    res.status(500).json({ error: 'Failed to delete user' });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/users/:username/change-password', requireAdmin, async (req, res) => {
+  try {
+    const { username } = req.params;
+    const { newPassword } = req.body;
+    
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+
+    await userManager.updateUser(username, { password: newPassword });
+    
+    console.log(`Password changed for user '${username}' by admin:`, req.user?.username);
+    
+    res.json({
+      success: true,
+      message: `Password changed for user '${username}'`
+    });
+  } catch (error) {
+    console.error('Failed to change password:', error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/admin/users/:username', requireAdmin, async (req, res) => {
+  try {
+    const { username } = req.params;
+    const user = await userManager.getUser(username);
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json({ user, success: true });
+  } catch (error) {
+    console.error('Failed to fetch user:', error);
+    res.status(500).json({ error: 'Failed to fetch user' });
   }
 });
 
@@ -1883,29 +1929,38 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
     // Return current configuration (sanitized - no passwords)
     const config = {
       server: {
-        port: configManager.get('server.port')
+        port: configManager.get('server.port') || 3000,
+        host: configManager.get('server.host') || 'localhost'
       },
       fileSystem: {
-        storagePath: configManager.get('fileSystem.storagePath')
+        storagePath: configManager.get('fileSystem.storagePath') || './storage',
+        maxFileSize: configManager.get('fileSystem.maxFileSize') || (100 * 1024 * 1024), // 100MB
       },
       security: {
-        enableRateLimit: configManager.get('security.enableRateLimit'),
-        enableSecurityHeaders: configManager.get('security.enableSecurityHeaders'),
-        enableInputValidation: configManager.get('security.enableInputValidation'),
-        enableFileUploadSecurity: configManager.get('security.enableFileUploadSecurity'),
-        enableRequestLogging: configManager.get('security.enableRequestLogging'),
-        enableCSP: configManager.get('security.enableCSP')
+        enableRateLimit: configManager.get('security.enableRateLimit') === true,
+        enableSecurityHeaders: configManager.get('security.enableSecurityHeaders') === true,
+        enableInputValidation: configManager.get('security.enableInputValidation') === true,
+        enableFileUploadSecurity: configManager.get('security.enableFileUploadSecurity') === true,
+        enableRequestLogging: configManager.get('security.enableRequestLogging') === true,
+        enableCSP: configManager.get('security.enableCSP') === true
       },
       logging: {
-        enableDetailedLogging: configManager.get('logging.enableDetailedLogging'),
-        logLevel: configManager.get('logging.logLevel'),
-        logFileOperations: configManager.get('logging.logFileOperations'),
-        logSecurityEvents: configManager.get('logging.logSecurityEvents'),
-        logPerformanceMetrics: configManager.get('logging.logPerformanceMetrics')
+        enableDetailedLogging: configManager.get('logging.enableDetailedLogging') === true,
+        logLevel: configManager.get('logging.logLevel') || 'info',
+        logFileOperations: configManager.get('logging.logFileOperations') === true,
+        logSecurityEvents: configManager.get('logging.logSecurityEvents') === true,
+        logPerformanceMetrics: configManager.get('logging.logPerformanceMetrics') === true,
+        includeUserAgent: configManager.get('logging.includeUserAgent') === true,
+        includeRealIP: configManager.get('logging.includeRealIP') === true
+      },
+      auth: {
+        username: configManager.get('auth.username') || 'admin',
+        // Never return password
+        jwtSecret: configManager.get('security.jwtSecret') ? '[SET]' : '[DEFAULT]'
       }
     };
 
-    res.json(config);
+    res.json({ config, success: true });
   } catch (error) {
     console.error('Failed to fetch config:', error);
     res.status(500).json({ error: 'Failed to fetch configuration' });
@@ -1914,41 +1969,188 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
 
 app.put('/api/admin/config', requireAdmin, async (req, res) => {
   try {
-    const { server, fileSystem, security, logging } = req.body;
+    const { server, fileSystem, security, logging, auth } = req.body;
+    const updatedFields = [];
     
-    // Update configuration sections
+    // Validate and update server settings
     if (server) {
-      if (server.port) configManager.set('server.port', server.port);
+      if (server.port) {
+        const port = parseInt(server.port);
+        if (port < 1 || port > 65535) {
+          return res.status(400).json({ error: 'Port must be between 1 and 65535' });
+        }
+        configManager.set('server.port', port);
+        updatedFields.push('server.port');
+      }
+      if (server.host) {
+        configManager.set('server.host', server.host);
+        updatedFields.push('server.host');
+      }
     }
     
+    // Validate and update file system settings
     if (fileSystem) {
-      if (fileSystem.storagePath) configManager.set('fileSystem.storagePath', fileSystem.storagePath);
+      if (fileSystem.storagePath) {
+        // Basic path validation
+        if (fileSystem.storagePath.includes('..')) {
+          return res.status(400).json({ error: 'Storage path cannot contain ".."' });
+        }
+        configManager.set('fileSystem.storagePath', fileSystem.storagePath);
+        updatedFields.push('fileSystem.storagePath');
+      }
+      if (fileSystem.maxFileSize) {
+        const maxSize = parseInt(fileSystem.maxFileSize);
+        if (maxSize < 1024) { // Minimum 1KB
+          return res.status(400).json({ error: 'Max file size must be at least 1KB' });
+        }
+        configManager.set('fileSystem.maxFileSize', maxSize);
+        updatedFields.push('fileSystem.maxFileSize');
+      }
     }
     
+    // Update security settings
     if (security) {
       Object.keys(security).forEach(key => {
-        configManager.set(`security.${key}`, security[key]);
+        configManager.set(`security.${key}`, Boolean(security[key]));
+        updatedFields.push(`security.${key}`);
       });
     }
     
+    // Update logging settings
     if (logging) {
       Object.keys(logging).forEach(key => {
-        configManager.set(`logging.${key}`, logging[key]);
+        if (key === 'logLevel') {
+          const validLevels = ['error', 'warn', 'info', 'debug'];
+          if (!validLevels.includes(logging[key])) {
+            return res.status(400).json({ 
+              error: `Invalid log level. Must be one of: ${validLevels.join(', ')}` 
+            });
+          }
+          configManager.set(`logging.${key}`, logging[key]);
+        } else {
+          configManager.set(`logging.${key}`, Boolean(logging[key]));
+        }
+        updatedFields.push(`logging.${key}`);
       });
+    }
+    
+    // Update auth settings (careful with these)
+    if (auth) {
+      if (auth.username && auth.username !== configManager.get('auth.username')) {
+        if (auth.username.length < 3) {
+          return res.status(400).json({ error: 'Username must be at least 3 characters long' });
+        }
+        configManager.set('auth.username', auth.username);
+        updatedFields.push('auth.username');
+      }
+      if (auth.jwtSecret) {
+        if (auth.jwtSecret.length < 32) {
+          return res.status(400).json({ error: 'JWT secret must be at least 32 characters long' });
+        }
+        configManager.set('security.jwtSecret', auth.jwtSecret);
+        updatedFields.push('security.jwtSecret');
+      }
     }
     
     // Save configuration to file
     await configManager.save();
     
-    console.log('Configuration updated by admin:', req.user?.username);
+    console.log(`Configuration updated by admin: ${req.user?.username}`);
+    console.log('Updated fields:', updatedFields);
+    
+    // Determine restart requirements
+    const needsRestart = updatedFields.some(field => 
+      field.startsWith('server.') || 
+      field === 'security.jwtSecret' ||
+      field === 'fileSystem.storagePath'
+    );
     
     res.json({
       success: true,
-      message: 'Configuration updated successfully. Server restart may be required for some changes.'
+      message: needsRestart 
+        ? 'Configuration updated successfully. Server restart required for some changes to take effect.'
+        : 'Configuration updated successfully.',
+      updatedFields,
+      needsRestart
     });
   } catch (error) {
     console.error('Failed to update config:', error);
     res.status(500).json({ error: 'Failed to update configuration' });
+  }
+});
+
+app.post('/api/admin/config/backup', requireAdmin, async (req, res) => {
+  try {
+    const backup = {
+      timestamp: new Date().toISOString(),
+      config: configManager.getAll(),
+      createdBy: req.user?.username
+    };
+    
+    // Remove sensitive data from backup
+    delete backup.config.password;
+    delete backup.config.jwtSecret;
+    
+    const backupName = `config-backup-${new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-')}.json`;
+    
+    res.setHeader('Content-Disposition', `attachment; filename="${backupName}"`);
+    res.setHeader('Content-Type', 'application/json');
+    res.json(backup);
+  } catch (error) {
+    console.error('Failed to create config backup:', error);
+    res.status(500).json({ error: 'Failed to create configuration backup' });
+  }
+});
+
+app.post('/api/admin/config/reset', requireAdmin, async (req, res) => {
+  try {
+    const { section } = req.body;
+    
+    if (!section) {
+      return res.status(400).json({ error: 'Configuration section is required' });
+    }
+    
+    // Reset specific section to defaults
+    const defaultConfigs = {
+      security: {
+        'security.enableRateLimit': false,
+        'security.enableSecurityHeaders': false,
+        'security.enableInputValidation': false,
+        'security.enableFileUploadSecurity': false,
+        'security.enableRequestLogging': true,
+        'security.enableCSP': false
+      },
+      logging: {
+        'logging.enableDetailedLogging': true,
+        'logging.logLevel': 'info',
+        'logging.logFileOperations': true,
+        'logging.logSecurityEvents': true,
+        'logging.logPerformanceMetrics': true,
+        'logging.includeUserAgent': true,
+        'logging.includeRealIP': true
+      }
+    };
+    
+    if (!defaultConfigs[section]) {
+      return res.status(400).json({ error: 'Invalid configuration section' });
+    }
+    
+    // Apply defaults
+    Object.entries(defaultConfigs[section]).forEach(([key, value]) => {
+      configManager.set(key, value);
+    });
+    
+    await configManager.save();
+    
+    console.log(`Configuration section '${section}' reset to defaults by admin:`, req.user?.username);
+    
+    res.json({
+      success: true,
+      message: `Configuration section '${section}' reset to default values`
+    });
+  } catch (error) {
+    console.error('Failed to reset config section:', error);
+    res.status(500).json({ error: 'Failed to reset configuration section' });
   }
 });
 
@@ -1975,6 +2177,9 @@ async function startServer() {
     authManager = new AuthManager({
       jwtSecret: jwtSecret
     });
+
+    // Initialize user manager
+    await userManager.initialize();
 
     // Set JWT secret for middleware
     setJwtSecret(jwtSecret);
