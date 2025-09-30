@@ -1,5 +1,5 @@
 // File List Component
-const FileList = ({ files, searchQuery, onClearSearch, getFileIcon, error }) => {
+const FileList = ({ files, searchQuery, onClearSearch, getFileIcon, error, onFileClick }) => {
     return (
         <div style={{ padding: '24px' }}>
             {error ? (
@@ -62,6 +62,7 @@ const FileList = ({ files, searchQuery, onClearSearch, getFileIcon, error }) => 
                             key={index}
                             file={file}
                             icon={getFileIcon(file)}
+                            onFileClick={onFileClick}
                         />
                     ))}
                 </div>
@@ -71,9 +72,10 @@ const FileList = ({ files, searchQuery, onClearSearch, getFileIcon, error }) => 
 };
 
 // File Item Component
-const FileItem = ({ file, icon }) => {
+const FileItem = ({ file, icon, onFileClick }) => {
     return (
         <div
+            onClick={() => onFileClick(file)}
             style={{
                 background: 'rgba(255, 255, 255, 0.1)',
                 backdropFilter: 'blur(10px)',
@@ -117,7 +119,7 @@ const FileItem = ({ file, icon }) => {
                         fontSize: '12px',
                         marginTop: '4px'
                     }}>
-                        {file.name.includes('.') ? 'File' : 'Folder'}
+                        {file.isDirectory ? 'Folder' : 'File'}
                     </p>
                 </div>
             </div>

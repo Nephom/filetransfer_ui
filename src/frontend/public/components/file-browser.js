@@ -7,10 +7,11 @@ const FileBrowser = ({ token, user }) => {
     const [showSettingsModal, setShowSettingsModal] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [filteredFiles, setFilteredFiles] = useState([]);
+    const [currentPath, setCurrentPath] = useState('.');
 
     useEffect(() => {
-        fetchFiles();
-    }, []);
+        fetchFiles(currentPath);
+    }, [currentPath]);
 
     useEffect(() => {
         if (searchQuery.trim() === '') {
@@ -23,11 +24,11 @@ const FileBrowser = ({ token, user }) => {
         }
     }, [files, searchQuery]);
 
-    const fetchFiles = async () => {
+    const fetchFiles = async (path) => {
         setLoading(true);
         setError('');
         try {
-            const response = await fetch('/api/files', {
+            const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (response.ok) {
@@ -44,13 +45,19 @@ const FileBrowser = ({ token, user }) => {
         }
     };
 
+    const handleFileClick = (file) => {
+        if (file.isDirectory) {
+            setCurrentPath(file.path);
+        }
+    };
+
     const handleLogout = () => {
         localStorage.removeItem('token');
         window.location.reload();
     };
 
     const getFileIcon = (item) => {
-        if (!item.name.includes('.')) {
+        if (item.isDirectory) {
             return '📂';
         }
         const ext = item.name.split('.').pop().toLowerCase();
@@ -343,6 +350,7 @@ const FileBrowser = ({ token, user }) => {
                         onClearSearch={() => setSearchQuery('')}
                         getFileIcon={getFileIcon}
                         error={error}
+                        onFileClick={handleFileClick}
                     />
                 </div>
             </div>

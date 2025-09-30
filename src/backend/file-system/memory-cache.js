@@ -102,45 +102,33 @@ class RedisFileSystemCache extends EventEmitter {
       const items = await fs.readdir(dirPath);
       const relativePath = path.relative(this.storagePath, dirPath) || '.';
 
-      for (const item of items) {
+      const directoryContents = await Promise.all(items.map(async (item) => {
         const itemPath = path.join(dirPath, item);
+        let stats;
         try {
-          const stats = await fs.lstat(itemPath);
-
-          // Skip symbolic links to avoid loops and other issues
-          if (stats.isSymbolicLink()) {
-              continue;
-          }
-
-          // Skip if not a file or directory (e.g., sockets, block devices)
-          if (!stats.isFile() && !stats.isDirectory()) {
-              console.warn(`Skipping ${itemPath}: Not a file or directory.`);
-              continue;
-          }
-
-          // Check for read access before proceeding
-          await fs.access(itemPath, fsSync.constants.R_OK);
+          stats = await fs.lstat(itemPath);
+        } catch (e) {
+          // If stat fails, treat as a simple file
+          return { name: item, isDirectory: false };
+        }
+        
+        // Skip symbolic links and other special file types
+        if (!stats.isFile() && !stats.isDirectory()) {
+          return null;
+        }
 
           const fileInfo = {
             name: item,
             isDirectory: stats.isDirectory(),
-            size: stats.size,
-            modified: stats.mtime.toISOString(),
-            created: stats.birthtime.toISOString(),
+            path: path.join(dirPath, item),
           };
+      }));
 
-          // Add to Redis Hash for the parent directory
-          await this.redisClient.hSet(dirKey(relativePath), item, JSON.stringify(fileInfo));
+      const validContents = directoryContents.filter(Boolean);
 
-          if (stats.isDirectory()) {
-            await this.scanDirectory(itemPath);
-          }
-        } catch (statError) {
-            if (statError.code !== 'EACCES') { // EACCES is expected for read-only, so we don't log it as a warning
-                console.warn(`Skipping ${itemPath}:`, statError.message);
-            }
-        }
-      }
+      // Store the simplified array as a JSON string
+      await this.redisClient.set(dirKey(relativePath), JSON.stringify(validContents));
+
     } catch (error) {
       console.error(`Error scanning directory ${dirPath}:`, error.message);
     }
@@ -218,7 +206,6 @@ class RedisFileSystemCache extends EventEmitter {
     const maxResults = options.limit || 1000; // Prevent memory overflow
     let totalProcessed = 0;
     
-    // Use SCAN instead of KEYS to avoid blocking Redis
     let cursor = 0;
     do {
       const reply = await this.redisClient.scan(cursor, {
@@ -230,19 +217,18 @@ class RedisFileSystemCache extends EventEmitter {
       for (const key of reply.keys) {
         if (results.length >= maxResults) break;
         
-        const items = await this.redisClient.hGetAll(key);
-        for (const itemName in items) {
+        const itemsJSON = await this.redisClient.get(key);
+        if (!itemsJSON) continue;
+
+        const items = JSON.parse(itemsJSON);
+        for (const fileInfo of items) {
           if (results.length >= maxResults) break;
           
-          if (itemName.toLowerCase().includes(lowerQuery)) {
-            const fileInfo = JSON.parse(items[itemName]);
+          if (fileInfo.name.toLowerCase().includes(lowerQuery)) {
             const relativePath = key.substring(4); // remove 'dir:'
             results.push({
-              name: fileInfo.name,
+              ...fileInfo,
               path: path.join(relativePath, fileInfo.name),
-              isDirectory: fileInfo.isDirectory,
-              size: fileInfo.size,
-              modified: fileInfo.modified,
             });
           }
         }
@@ -265,26 +251,33 @@ class RedisFileSystemCache extends EventEmitter {
    */
   async getFilesInDirectory(dirPath = '.') {
     if (!this.initialized) await this.initialize();
-    const results = [];
-    const items = await this.redisClient.hGetAll(dirKey(dirPath));
+    
+    const key = dirKey(dirPath);
+    const result = await this.redisClient.get(key);
 
-    for (const itemName in items) {
-      const fileInfo = JSON.parse(items[itemName]);
-      results.push({
-        name: fileInfo.name,
-        path: path.join(dirPath, fileInfo.name),
-        isDirectory: fileInfo.isDirectory,
-        size: fileInfo.size,
-        modified: fileInfo.modified,
-      });
+    if (!result) {
+      // If cache is empty for this dir, scan it now
+      console.log(`Cache miss for ${dirPath}, scanning now.`);
+      const fullPath = path.resolve(this.storagePath, dirPath);
+      await this.scanDirectory(fullPath);
+      const freshResult = await this.redisClient.get(key);
+      return freshResult ? JSON.parse(freshResult) : [];
     }
 
-    results.sort((a, b) => {
+    const items = JSON.parse(result);
+
+    // The frontend expects a path property, let's add it.
+    const itemsWithPath = items.map(item => ({
+      ...item,
+      path: path.join(dirPath, item.name)
+    }));
+
+    itemsWithPath.sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) return b.isDirectory - a.isDirectory;
       return a.name.localeCompare(b.name);
     });
 
-    return results;
+    return itemsWithPath;
   }
 
   /**
@@ -304,6 +297,11 @@ class RedisFileSystemCache extends EventEmitter {
     return JSON.parse(fileInfoString);
   }
 
+  async exists(filePath) {
+    const fileInfo = await this.getFileInfo(filePath);
+    return fileInfo !== null;
+  }
+
   /**
    * Get cache statistics
    */
@@ -312,7 +310,10 @@ class RedisFileSystemCache extends EventEmitter {
     const keys = await this.redisClient.keys('dir:*');
     let totalFiles = 0;
     for (const key of keys) {
-        totalFiles += await this.redisClient.hLen(key);
+        const value = await this.redisClient.get(key);
+        if (value) {
+            totalFiles += JSON.parse(value).length;
+        }
     }
     return {
       totalFiles: totalFiles,
@@ -320,6 +321,17 @@ class RedisFileSystemCache extends EventEmitter {
       isWatching: this.watcher !== null,
     };
   }
+
+  /**
+   * Refresh a single directory in the cache
+   */
+  async refreshDirectory(dirPath) {
+    const fullPath = path.resolve(this.storagePath, dirPath);
+    console.log(`Refreshing cache for directory: ${fullPath}`);
+    await this.scanDirectory(fullPath);
+    this.emit('change', { operation: 'refresh', path: dirPath });
+  }
+
 
   /**
    * Close the cache and disconnect from Redis

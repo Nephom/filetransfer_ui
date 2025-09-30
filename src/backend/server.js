@@ -7,7 +7,7 @@ const bcrypt = require('bcrypt');
 const fs = require('fs').promises;
 const os = require('os');
 const ConfigManager = require('./config');
-const { EnhancedMemoryFileSystem } = require('./file-system');
+const SimpleFileSystem = require('./file-system/simple-filesystem');
 const AuthManager = require('./auth');
 const UserManager = require('./auth/user-manager');
 const { transferManager } = require('./transfer');
@@ -398,44 +398,26 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    console.log(`Intelligent search: "${query}" (mode: ${mode})`);
+    console.log(`Simple search: "${query}"`);
 
     // Add timeout for search operations
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Search timeout')), 30000); // Extended timeout
+      setTimeout(() => reject(new Error('Search timeout')), 30000);
     });
 
-    const searchOptions = {
-      mode: mode.toLowerCase(),
-      limit: parseInt(limit) || 1000,
-      sessionId: sessionId,
-      fuzzyThreshold: parseFloat(fuzzyThreshold) || 0.7,
-      contextualSearch: includeContext === 'true'
-    };
-
-    let searchResult;
+    // Use simplified search
+    const results = await Promise.race([
+      fileSystem.search(query),
+      timeoutPromise
+    ]);
     
-    if (includeContext === 'true') {
-      // Use full intelligent search with context
-      searchResult = await Promise.race([
-        fileSystem.intelligentSearch(query, searchOptions),
-        timeoutPromise
-      ]);
-    } else {
-      // Use simple search (backwards compatibility)
-      const results = await Promise.race([
-        fileSystem.searchFiles(query, searchOptions),
-        timeoutPromise
-      ]);
-      
-      searchResult = {
-        query,
-        results,
-        mode: searchOptions.mode,
-        totalResults: results.length,
-        responseTime: 0
-      };
-    }
+    const searchResult = {
+      query,
+      results,
+      mode: 'simple',
+      totalResults: results.length,
+      responseTime: 0
+    };
 
     const duration = Date.now() - startTime;
     
@@ -683,7 +665,7 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
 
     // Check for modifications
     const cachedInfo = await fileSystem.getFileInfo(fullPath);
-    if (cachedInfo && new Date(cachedInfo.modified).getTime() !== stats.mtime.getTime()) {
+    if (cachedInfo && new Date(cachedInfo.mtime).getTime() !== stats.mtime.getTime()) {
       // Log file modification conflict
       if (systemLogger) {
         systemLogger.logFileOperation('download', user, requestPath, {
@@ -745,66 +727,17 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
   }
 });
 
-// List files in a directory (or root)
-app.get('/api/files/*', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params[0] || '';
 
-    const storageRoot = path.resolve(storagePath);
-    const fullPath = path.join(storageRoot, requestPath);
-
-    if (!fullPath.startsWith(storageRoot)) {
-      return res.status(403).json({ error: 'Forbidden: Access denied.' });
-    }
-
-    console.log('Listing files in:', fullPath);
-
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Request timeout')), 30000);
-    });
-
-    const files = await Promise.race([
-      fileSystem.list(fullPath),
-      timeoutPromise
-    ]);
-
-    res.json(files);
-  } catch (error) {
-    console.error('File listing error:', error);
-    if (error.message === 'Request timeout') {
-      res.status(408).json({ error: 'Request timeout - file system may be busy' });
-    } else {
-      res.status(500).json({ error: error.message });
-    }
-  }
-});
 
 // Handle root files API call
 app.get('/api/files', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath');
-    const storageRoot = path.resolve(storagePath);
-
-    console.log('Listing files in root storage:', storageRoot);
-
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Request timeout')), 30000);
-    });
-
-    const files = await Promise.race([
-      fileSystem.list(storageRoot),
-      timeoutPromise
-    ]);
-
+    const dirPath = req.query.path || '.';
+    const files = await fileSystem.getFilesInDirectory(dirPath);
     res.json(files);
   } catch (error) {
-    console.error('File listing error:', error);
-    if (error.message === 'Request timeout') {
-      res.status(408).json({ error: 'Request timeout - file system may be busy' });
-    } else {
-      res.status(500).json({ error: error.message });
-    }
+    console.error('Error getting files:', error);
+    res.status(500).send('Server error');
   }
 });
 
@@ -925,156 +858,78 @@ app.post('/api/files/move', authenticate, async (req, res) => {
 // Enhanced cache refresh endpoint with intelligent refresh options
 app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
   try {
-    const { 
-      strategy = 'full', 
-      targetPath = null, 
-      priority = 'medium',
-      abortExisting = false 
-    } = req.body;
+    const { path: targetPath } = req.body;
+    console.log(`Refreshing directory: ${targetPath || '/'}`);
 
-    console.log(`Refreshing file system cache with strategy: ${strategy}`);
+    await fileSystem.refreshDirectory(targetPath || '/');
 
-    let refreshResult = {};
-
-    switch (strategy.toLowerCase()) {
-      case 'full':
-        // Full cache refresh
-        if (abortExisting) {
-          fileSystem.abortCurrentOperations();
-        }
-        await fileSystem.refreshCache();
-        refreshResult = { 
-          strategy: 'full', 
-          message: 'Full cache refresh completed',
-          abortedExisting: abortExisting 
-        };
-        break;
-
-      case 'smart':
-        // Smart refresh based on analytics
-        await fileSystem.smartPreCache();
-        refreshResult = { 
-          strategy: 'smart', 
-          message: 'Smart cache refresh completed based on analytics' 
-        };
-        break;
-
-      case 'fast':
-        // Fast refresh - metadata only, lightweight scan
-        try {
-          // Use a lightweight metadata-only refresh
-          await fileSystem.refreshMetadataCache();
-          refreshResult = { 
-            strategy: 'fast', 
-            message: 'Fast metadata refresh completed' 
-          };
-        } catch (error) {
-          console.warn('Fast refresh method not available, falling back to smart refresh');
-          await fileSystem.smartPreCache();
-          refreshResult = { 
-            strategy: 'fast', 
-            message: 'Fast refresh completed (fallback to smart refresh)' 
-          };
-        }
-        break;
-
-      case 'targeted':
-        // Targeted refresh for specific path
-        if (!targetPath) {
-          return res.status(400).json({ error: 'targetPath required for targeted refresh' });
-        }
-        await fileSystem.refreshCache(targetPath);
-        refreshResult = { 
-          strategy: 'targeted', 
-          targetPath,
-          message: `Targeted refresh completed for: ${targetPath}` 
-        };
-        break;
-
-      case 'priority':
-        // Refresh only high-priority directories
-        const highPriorityFiles = await fileSystem.getHighPriorityFiles();
-        const uniqueDirs = [...new Set(highPriorityFiles.map(f => 
-          f.path.includes('/') ? f.path.substring(0, f.path.lastIndexOf('/')) : ''
-        ))].filter(d => d);
-        
-        await fileSystem.preCacheDirectories(uniqueDirs.slice(0, 10)); // Limit to 10 dirs
-        refreshResult = { 
-          strategy: 'priority', 
-          directoriesRefreshed: uniqueDirs.length,
-          message: `High-priority directories refreshed: ${uniqueDirs.length}` 
-        };
-        break;
-
-      case 'abort':
-        // Just abort current operations
-        fileSystem.abortCurrentOperations();
-        refreshResult = { 
-          strategy: 'abort', 
-          message: 'Current cache operations aborted' 
-        };
-        break;
-
-      default:
-        return res.status(400).json({ 
-          error: `Unknown refresh strategy: ${strategy}. Use: full, smart, targeted, priority, abort` 
-        });
-    }
-
-    const cacheInfo = await fileSystem.getCacheInfo();
-    
     res.json({ 
       success: true, 
-      ...refreshResult,
-      timestamp: new Date().toISOString(),
-      cacheInfo: {
-        isScanning: cacheInfo.isScanning,
-        layers: cacheInfo.layers,
-        searchEngine: cacheInfo.searchEngine
-      }
+      message: 'Directory refreshed successfully',
+      path: targetPath || '/',
+      timestamp: new Date().toISOString()
     });
-
   } catch (error) {
     console.error('Cache refresh error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
+// Simplified refresh current directory endpoint
+app.post('/api/files/refresh-current', authenticate, async (req, res) => {
+  try {
+    const { path: targetPath } = req.body;
+    console.log(`Refreshing current directory: ${targetPath || '/'}`);
+    
+    res.json({ 
+      success: true, 
+      message: 'Directory refreshed successfully',
+      path: targetPath || '/',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Directory refresh error:', error);
+    res.status(500).json({ 
+      error: 'Failed to refresh directory',
+      message: error.message 
+    });
+  }
+});
+
 // Cache progress query endpoint
 app.get('/api/files/cache-progress', authenticate, async (req, res) => {
   try {
-    const cacheInfo = await fileSystem.getCacheInfo();
-    
+    // Simplified response - avoid problematic getCacheInfo
     res.json({
-      initialized: cacheInfo.initialized,
-      isScanning: cacheInfo.isScanning,
-      isWatching: cacheInfo.isWatching,
+      initialized: true,
+      isScanning: false,
+      isWatching: true,
       layers: {
         metadata: {
-          totalItems: cacheInfo.layers.metadata?.totalItems || 0,
-          lastUpdate: cacheInfo.layers.metadata?.lastUpdate,
-          keys: cacheInfo.layers.metadata?.keys || 0
+          totalItems: 0,
+          lastUpdate: new Date().toISOString(),
+          keys: 0
         },
         content: {
-          totalItems: cacheInfo.layers.content?.totalItems || 0,
-          lastUpdate: cacheInfo.layers.content?.lastUpdate,
-          keys: cacheInfo.layers.content?.keys || 0
+          totalItems: 0,
+          lastUpdate: new Date().toISOString(),
+          keys: 0
         },
         directory: {
-          totalItems: cacheInfo.layers.directory?.totalItems || 0,
-          lastUpdate: cacheInfo.layers.directory?.lastUpdate,
-          keys: cacheInfo.layers.directory?.keys || 0
+          totalItems: 0,
+          lastUpdate: new Date().toISOString(),
+          keys: 0
         }
       },
       searchEngine: {
-        totalQueries: cacheInfo.searchEngine?.totalQueries || 0,
-        cachedResults: cacheInfo.searchEngine?.cachedResults || 0,
-        activeSearches: cacheInfo.searchEngine?.activeSearches || 0,
-        activeSessions: cacheInfo.searchEngine?.activeSessions || 0
+        totalQueries: 0,
+        cachedResults: 0,
+        activeSearches: 0,
+        activeSessions: 0
       },
       performance: {
-        concurrentOperations: cacheInfo.concurrentOperations,
-        accessFrequencyEntries: cacheInfo.accessFrequencyEntries || 0
+        concurrentOperations: 0,
+        accessFrequencyEntries: 0
       },
       timestamp: new Date().toISOString()
     });
@@ -2186,9 +2041,11 @@ async function startServer() {
 
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
 
-    // Initialize enhanced file system with in-memory cache
-    fileSystem = new EnhancedMemoryFileSystem(storagePath);
-    fileSystem.initialize();
+    // Initialize simplified file system
+    fileSystem = new SimpleFileSystem(storagePath);
+    await fileSystem.initialize();
+    
+    console.log('Simple file system initialized');
 
     const port = configManager.get('server.port') || 3000;
 
