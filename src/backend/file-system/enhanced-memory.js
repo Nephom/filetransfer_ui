@@ -328,6 +328,40 @@ class EnhancedMemoryFileSystem extends FileSystem {
   }
 
   /**
+   * Fast metadata-only refresh (lightweight refresh that only updates metadata)
+   */
+  async refreshMetadataCache(targetPath = null) {
+    if (!this.initialized) {
+      await this.initialize();
+      return;
+    }
+    
+    console.log('Fast metadata refresh requested...');
+    
+    if (targetPath) {
+      // Fast refresh for specific path - only metadata
+      const taskId = this.scheduler.scheduleTask(
+        TASK_TYPE.METADATA_SCAN,
+        { path: targetPath, metadataOnly: true },
+        TASK_PRIORITY.MEDIUM,
+        { cancelable: true }
+      );
+      console.log(`Scheduled fast metadata refresh for: ${targetPath} (Task: ${taskId})`);
+      return { taskId, targetPath, metadataOnly: true };
+    } else {
+      // Fast metadata refresh - lightweight scan without content indexing
+      try {
+        await this.cache.scanMetadataOnly(this.storagePath);
+        console.log('Fast metadata refresh completed');
+        return { metadataOnly: true, completed: true };
+      } catch (error) {
+        console.warn('Fast metadata refresh failed, falling back to regular refresh:', error);
+        return await this.refreshCache();
+      }
+    }
+  }
+
+  /**
    * Abort current cache operations (scanning, etc.)
    */
   abortCurrentOperations() {

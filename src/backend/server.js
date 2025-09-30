@@ -10,7 +10,7 @@ const ConfigManager = require('./config');
 const { EnhancedMemoryFileSystem } = require('./file-system');
 const AuthManager = require('./auth');
 const { transferManager } = require('./transfer');
-const { authenticate, setJwtSecret } = require('./middleware/auth');
+const { authenticate, setJwtSecret, requireAdmin } = require('./middleware/auth');
 const { initializeSecurity } = require('./middleware/security');
 
 // Initialize configuration
@@ -949,6 +949,25 @@ app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
         };
         break;
 
+      case 'fast':
+        // Fast refresh - metadata only, lightweight scan
+        try {
+          // Use a lightweight metadata-only refresh
+          await fileSystem.refreshMetadataCache();
+          refreshResult = { 
+            strategy: 'fast', 
+            message: 'Fast metadata refresh completed' 
+          };
+        } catch (error) {
+          console.warn('Fast refresh method not available, falling back to smart refresh');
+          await fileSystem.smartPreCache();
+          refreshResult = { 
+            strategy: 'fast', 
+            message: 'Fast refresh completed (fallback to smart refresh)' 
+          };
+        }
+        break;
+
       case 'targeted':
         // Targeted refresh for specific path
         if (!targetPath) {
@@ -1712,7 +1731,7 @@ app.get('/api/progress/:transferId', authenticate, (req, res) => {
 });
 
 // Settings API endpoints
-app.get('/api/settings', authenticate, async (req, res) => {
+app.get('/api/settings', requireAdmin, async (req, res) => {
   try {
     const settings = {
       enableRateLimit: configManager.get('security.enableRateLimit') === true,
@@ -1730,7 +1749,7 @@ app.get('/api/settings', authenticate, async (req, res) => {
   }
 });
 
-app.put('/api/settings', authenticate, async (req, res) => {
+app.put('/api/settings', requireAdmin, async (req, res) => {
   try {
     const {
       enableRateLimit,
@@ -1769,6 +1788,167 @@ app.put('/api/settings', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Settings save error:', error);
     res.status(500).json({ error: 'Failed to save settings' });
+  }
+});
+
+// Admin User Management Endpoints
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    // For now, return the configured admin user and future users
+    // In a real system, this would query a database
+    const users = [
+      {
+        id: 1,
+        username: configManager.get('auth.username') || 'admin',
+        role: 'admin',
+        created: new Date().toISOString(),
+        active: true
+      }
+    ];
+
+    res.json({ users });
+  } catch (error) {
+    console.error('Failed to fetch users:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+app.post('/api/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const { username, password, role = 'user' } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' });
+    }
+
+    // For now, just validate the input and return success
+    // In a real system, this would create the user in a database
+    res.json({
+      success: true,
+      message: `User '${username}' would be created with role '${role}' (mock implementation)`,
+      user: {
+        username,
+        role,
+        created: new Date().toISOString(),
+        active: true
+      }
+    });
+  } catch (error) {
+    console.error('Failed to create user:', error);
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+app.put('/api/admin/users/:username', requireAdmin, async (req, res) => {
+  try {
+    const { username } = req.params;
+    const { active, role } = req.body;
+    
+    res.json({
+      success: true,
+      message: `User '${username}' updated (mock implementation)`,
+      user: {
+        username,
+        role: role || 'user',
+        active: active !== undefined ? active : true,
+        updated: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    console.error('Failed to update user:', error);
+    res.status(500).json({ error: 'Failed to update user' });
+  }
+});
+
+app.delete('/api/admin/users/:username', requireAdmin, async (req, res) => {
+  try {
+    const { username } = req.params;
+    
+    if (username === 'admin') {
+      return res.status(400).json({ error: 'Cannot delete the admin user' });
+    }
+    
+    res.json({
+      success: true,
+      message: `User '${username}' deleted (mock implementation)`
+    });
+  } catch (error) {
+    console.error('Failed to delete user:', error);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
+});
+
+app.get('/api/admin/config', requireAdmin, async (req, res) => {
+  try {
+    // Return current configuration (sanitized - no passwords)
+    const config = {
+      server: {
+        port: configManager.get('server.port')
+      },
+      fileSystem: {
+        storagePath: configManager.get('fileSystem.storagePath')
+      },
+      security: {
+        enableRateLimit: configManager.get('security.enableRateLimit'),
+        enableSecurityHeaders: configManager.get('security.enableSecurityHeaders'),
+        enableInputValidation: configManager.get('security.enableInputValidation'),
+        enableFileUploadSecurity: configManager.get('security.enableFileUploadSecurity'),
+        enableRequestLogging: configManager.get('security.enableRequestLogging'),
+        enableCSP: configManager.get('security.enableCSP')
+      },
+      logging: {
+        enableDetailedLogging: configManager.get('logging.enableDetailedLogging'),
+        logLevel: configManager.get('logging.logLevel'),
+        logFileOperations: configManager.get('logging.logFileOperations'),
+        logSecurityEvents: configManager.get('logging.logSecurityEvents'),
+        logPerformanceMetrics: configManager.get('logging.logPerformanceMetrics')
+      }
+    };
+
+    res.json(config);
+  } catch (error) {
+    console.error('Failed to fetch config:', error);
+    res.status(500).json({ error: 'Failed to fetch configuration' });
+  }
+});
+
+app.put('/api/admin/config', requireAdmin, async (req, res) => {
+  try {
+    const { server, fileSystem, security, logging } = req.body;
+    
+    // Update configuration sections
+    if (server) {
+      if (server.port) configManager.set('server.port', server.port);
+    }
+    
+    if (fileSystem) {
+      if (fileSystem.storagePath) configManager.set('fileSystem.storagePath', fileSystem.storagePath);
+    }
+    
+    if (security) {
+      Object.keys(security).forEach(key => {
+        configManager.set(`security.${key}`, security[key]);
+      });
+    }
+    
+    if (logging) {
+      Object.keys(logging).forEach(key => {
+        configManager.set(`logging.${key}`, logging[key]);
+      });
+    }
+    
+    // Save configuration to file
+    await configManager.save();
+    
+    console.log('Configuration updated by admin:', req.user?.username);
+    
+    res.json({
+      success: true,
+      message: 'Configuration updated successfully. Server restart may be required for some changes.'
+    });
+  } catch (error) {
+    console.error('Failed to update config:', error);
+    res.status(500).json({ error: 'Failed to update configuration' });
   }
 });
 

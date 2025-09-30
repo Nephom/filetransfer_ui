@@ -125,4 +125,18 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-module.exports = { AuthMiddleware, authenticate, setJwtSecret };
+// Admin-only middleware
+const requireAdmin = async (req, res, next) => {
+  // First authenticate
+  await authenticate(req, res, () => {
+    // Then check if user is admin
+    if (!req.user || req.user.role !== 'admin') {
+      return res.status(403).json({
+        error: 'Admin access required'
+      });
+    }
+    next();
+  });
+};
+
+module.exports = { AuthMiddleware, authenticate, setJwtSecret, requireAdmin };

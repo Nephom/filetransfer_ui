@@ -83,6 +83,12 @@ const AppProvider = ({ children }) => {
                               throw new Error(`Failed to delete ${file.name}`);
                           }
                         }
+                        
+                        // Successful deletion - emit event to notify parent components to clear selections
+                        window.dispatchEvent(new CustomEvent('filesDeleted', { 
+                          detail: { deletedFiles: filesToDelete } 
+                        }));
+                        
                       } catch (err) {
                         setError(err.message || 'An error occurred during deletion.');
                       } finally {

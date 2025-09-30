@@ -172,6 +172,47 @@ class LayeredFileSystemCache extends EventEmitter {
   }
 
   /**
+   * Fast metadata-only scan (for fast refresh strategy)
+   * Only runs Phase 1 (metadata) without content or directory structure
+   */
+  async scanMetadataOnly(targetPath = null) {
+    const scanPath = targetPath || this.storagePath;
+    console.log(`Starting fast metadata-only scan for: ${scanPath}`);
+    
+    if (this.isScanning) {
+      console.log('Another scan is in progress, aborting it first');
+      this.abortScanning();
+      // Wait a bit for the abort to take effect
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    this.isScanning = true;
+    this.scanAbortController = new AbortController();
+
+    try {
+      // Only run Phase 1: Fast metadata scan
+      console.log('Fast metadata scan started...');
+      const startTime = Date.now();
+      await this.scanMetadataLayer();
+      const scanTime = Date.now() - startTime;
+      console.log(`Fast metadata scan completed in ${scanTime}ms`);
+      
+      return {
+        success: true,
+        scanTime,
+        metadataOnly: true,
+        scanPath
+      };
+    } catch (error) {
+      console.error('Fast metadata scan failed:', error);
+      throw error;
+    } finally {
+      this.isScanning = false;
+      this.scanAbortController = null;
+    }
+  }
+
+  /**
    * Fast metadata layer scan - only basic file/directory existence
    */
   async scanMetadataLayer() {

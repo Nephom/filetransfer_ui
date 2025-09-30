@@ -61,6 +61,21 @@ class LocalFileSystem {
   async list(path) {
     const fs = require('fs').promises;
     try {
+      // Check if directory exists first
+      try {
+        const pathStats = await fs.stat(path);
+        if (!pathStats.isDirectory()) {
+          throw new Error(`Path ${path} is not a directory`);
+        }
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          // Directory doesn't exist, return empty array instead of throwing error
+          console.warn(`Directory ${path} does not exist, returning empty list`);
+          return [];
+        }
+        throw error;
+      }
+
       const items = await fs.readdir(path);
       const itemsWithStats = await Promise.all(
         items.map(async (item) => {

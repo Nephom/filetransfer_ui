@@ -298,11 +298,28 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
         const [contextMenu, setContextMenu] = React.useState(null);
         const [clipboard, setClipboard] = React.useState({ items: [], operation: null });
         const [progressiveSearchResults, setProgressiveSearchResults] = React.useState([]);
+        const [showAdminPanel, setShowAdminPanel] = React.useState(false);
 
         React.useEffect(() => {
             // Use the fetchFiles from context, passing the token
             fetchFiles(currentPath, token);
         }, [currentPath, token]);
+
+        // Listen for delete events to clear selections
+        React.useEffect(() => {
+            const handleFilesDeleted = (event) => {
+                const { deletedFiles } = event.detail;
+                // Clear selections after successful deletion
+                setSelectedFiles(prevSelected => 
+                    prevSelected.filter(selected => 
+                        !deletedFiles.some(deleted => deleted.path === selected.path)
+                    )
+                );
+            };
+
+            window.addEventListener('filesDeleted', handleFilesDeleted);
+            return () => window.removeEventListener('filesDeleted', handleFilesDeleted);
+        }, []);
 
         // Debounced search effect
         React.useEffect(() => {
@@ -389,10 +406,20 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                 : `Are you sure you want to delete ${selectedFiles.length} selected files?`;
 
             if (window.confirm(confirmMessage)) {
-                // The API call is now in the context.
-                // The context will handle errors and refresh the file list.
-                await deleteFiles(selectedFiles, currentPath, token);
-                setSelectedFiles([]); // Clear selection after deletion
+                // Store files to delete before clearing selection
+                const filesToDelete = [...selectedFiles];
+                // Clear selection immediately to prevent UI issues
+                setSelectedFiles([]);
+                
+                try {
+                    // The API call is now in the context.
+                    // The context will handle errors and refresh the file list.
+                    await deleteFiles(filesToDelete, currentPath, token);
+                } catch (error) {
+                    // If deletion fails, restore the selection
+                    setSelectedFiles(filesToDelete);
+                    console.error('Delete failed:', error);
+                }
             }
         };
 
@@ -1012,7 +1039,28 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                                 outline: 'none'
                             }
                         }, '☰')
-                    ])
+                    ]),
+
+                    // Admin button (only for admin users)
+                    user?.role === 'admin' && React.createElement('button', {
+                        key: 'admin',
+                        onClick: () => setShowAdminPanel(true),
+                        title: 'Admin Panel',
+                        style: {
+                            background: 'rgba(147, 51, 234, 0.2)',
+                            border: '1px solid rgba(147, 51, 234, 0.5)',
+                            borderRadius: '8px',
+                            color: 'white',
+                            padding: '8px 12px',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            outline: 'none',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            fontWeight: '500'
+                        }
+                    }, ['⚙️', ' Admin'])
                 ])
             ]),
 
@@ -1477,7 +1525,14 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     onMouseEnter: (e) => e.target.style.background = 'rgba(239, 68, 68, 0.1)',
                     onMouseLeave: (e) => e.target.style.background = 'transparent'
                 }, ['🗑️', ' Delete'])
-            ])
+            ]),
+
+            // Admin Panel Modal (only for admin users)
+            showAdminPanel && React.createElement(window.AdminPanel || SettingsModal, {
+                key: 'admin-panel',
+                onClose: () => setShowAdminPanel(false),
+                token: token
+            })
         ]);
     };
 
