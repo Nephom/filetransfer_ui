@@ -349,9 +349,41 @@
             height: 20px;
             cursor: pointer;
         }
+
+        .logout-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(239, 68, 68, 0.3);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(239, 68, 68, 0.5);
+            border-radius: 10px;
+            padding: 12px 24px;
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            z-index: 1001;
+            cursor: pointer;
+        }
+
+        .logout-btn:hover {
+            background: rgba(239, 68, 68, 0.5);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
     </style>
 </head>
 <body>
+    <button class="logout-btn" onclick="logout()">
+        <span>🚪</span>
+        <span>Logout</span>
+    </button>
+
     <div class="admin-container">
         <div class="admin-header">
             <h1>📋 Admin Panel</h1>
@@ -989,6 +1021,14 @@
 
         function downloadLogs() {
             window.open('/server.log', '_blank');
+        }
+
+        // Logout function
+        function logout() {
+            if (confirm('Are you sure you want to logout?')) {
+                localStorage.removeItem('token');
+                window.location.href = '/';
+            }
         }
 
         // Get token from localStorage
