@@ -7,6 +7,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
+const configManager = require('../config');
 
 class UserManager {
   constructor() {
@@ -254,6 +255,47 @@ class UserManager {
       throw new Error('User manager not initialized');
     }
 
+    const configUsername = configManager.get('auth.username');
+
+    // If authenticating the admin user, use config.ini as the source of truth.
+    if (username === configUsername) {
+        const configPassword = configManager.get('auth.password');
+        const passwordHashed = configManager.get('passwordHashed');
+
+        let isValid = false;
+        if (passwordHashed === true) {
+            isValid = await bcrypt.compare(password, configPassword);
+        } else {
+            isValid = (password === configPassword);
+        }
+
+        if (isValid) {
+            // Password is valid according to config.ini.
+            const user = this.users.get(username) || {
+                id: 1,
+                username: configUsername,
+                role: 'admin',
+                active: true,
+                email: 'admin@localhost',
+                permissions: ['all']
+            };
+
+            if (!user.active) return null;
+
+            // Update last login and save
+            user.lastLogin = new Date().toISOString();
+            this.users.set(username, user);
+            await this.saveUsers();
+
+            const { password: _, ...userResponse } = user;
+            return userResponse;
+        } else {
+            // If password for config admin is incorrect, fail immediately.
+            return null;
+        }
+    }
+
+    // For any other user, use the standard users.json logic.
     const user = this.users.get(username);
     if (!user || !user.active) {
       return null;

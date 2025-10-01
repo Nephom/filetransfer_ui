@@ -6,14 +6,15 @@ const multer = require('multer');
 const bcrypt = require('bcrypt');
 const fs = require('fs').promises;
 const os = require('os');
-const configManager = require('./config/index.js');
+const configManager = require('./config');
 const { EnhancedMemoryFileSystem } = require('./file-system');
 const AuthManager = require('./auth');
 const UserManager = require('./auth/user-manager');
 const UploadAPI = require('./api/upload.js');
 const { transferManager } = require('./transfer');
-const { authenticate, setJwtSecret } = require('./middleware/auth');
+const { authenticate, setJwtSecret, requireAdmin } = require('./middleware/auth');
 const { initializeSecurity } = require('./middleware/security');
+const { createLogger, systemLogger } = require('./utils/logger');
 
 
 
@@ -27,6 +28,7 @@ const app = express();
 let authManager;
 let fileSystem;
 let securityMiddleware;
+let isCacheReady = false;
 
 // Security checks and recommendations on startup
 async function performSecurityChecks(config) {
@@ -110,6 +112,10 @@ const uploadApi = new UploadAPI();
 app.use('/api', uploadApi.getRouter());
 
 // Routes
+app.get('/admin', authenticate, (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/public/admin.html'));
+});
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/public/index.html'));
 });
@@ -379,7 +385,47 @@ app.post('/auth/reset-password', (req, res, next) => {
 });
 
 // Search files using cache (must be before wildcard route)
+// POST endpoint for JSON request body
+app.post('/api/files/search', authenticate, async (req, res) => {
+  if (!isCacheReady) {
+    return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
+  }
+  try {
+    // Check both body and query for compatibility
+    const query = req.body.query || req.query.query;
+
+    if (!query) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    console.log('Searching for:', query, 'using in-memory cache');
+
+    // Add timeout for search operations
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Search timeout')), 15000);
+    });
+
+    const searchResults = await Promise.race([
+      fileSystem.searchFiles(query),
+      timeoutPromise
+    ]);
+
+    res.json(searchResults);
+  } catch (error) {
+    console.error('Search error:', error);
+    if (error.message === 'Search timeout') {
+      res.status(408).json({ error: 'Search timeout - try a more specific query' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// GET endpoint for query parameters (legacy frontend support)
 app.get('/api/files/search', authenticate, async (req, res) => {
+  if (!isCacheReady) {
+    return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
+  }
   try {
     const { query } = req.query;
 
@@ -387,7 +433,7 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    console.log('Searching for:', query, 'using in-memory cache');
+    console.log('Searching for:', query, 'using in-memory cache (GET request)');
 
     // Add timeout for search operations
     const timeoutPromise = new Promise((_, reject) => {
@@ -484,6 +530,9 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
 
 // List files in a directory (or root)
 app.get('/api/files/*', authenticate, async (req, res) => {
+  if (!isCacheReady) {
+    return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
+  }
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const requestPath = req.params[0] || '';
@@ -519,6 +568,9 @@ app.get('/api/files/*', authenticate, async (req, res) => {
 
 // Handle root files API call
 app.get('/api/files', authenticate, async (req, res) => {
+  if (!isCacheReady) {
+    return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
+  }
   try {
     const storagePath = configManager.get('fileSystem.storagePath');
     const storageRoot = path.resolve(storagePath);
@@ -584,6 +636,12 @@ app.post('/api/folders', authenticate, async (req, res) => {
 
     console.log('Creating folder:', fullPath);
     await fileSystem.mkdir(fullPath);
+
+    // HYBRID CACHE: Update cache immediately after API operation
+    if (fileSystem.cache) {
+      await fileSystem.cache.addOrUpdatePath(fullPath);
+    }
+
     res.json({ success: true, message: 'Folder created successfully' });
   } catch (error) {
     console.error('Folder creation error:', error);
@@ -662,9 +720,25 @@ app.post('/api/files/move', authenticate, async (req, res) => {
 // Cache refresh endpoint (for manual cache updates)
 app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
   try {
-    console.log('Refreshing file system cache...');
-    await fileSystem.refreshCache();
-    res.json({ success: true, message: 'Cache refreshed successfully' });
+    const { directoryPath } = req.body; // Allow partial refresh
+
+    if (directoryPath) {
+      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+      const fullPath = path.join(path.resolve(storagePath), directoryPath);
+      console.log(`Refreshing cache for directory: ${fullPath}...`);
+      // This will re-scan and overwrite the specific directory hash in Redis.
+      // Note: This won't detect deletions within the directory, a full refresh is needed for that.
+      if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+        await fileSystem.cache.scanDirectory(fullPath);
+      }
+      res.json({ success: true, message: `Cache for ${directoryPath} refreshed.` });
+    } else {
+      console.log('Refreshing entire file system cache...');
+      if (fileSystem.cache && fileSystem.cache.refreshCache) {
+        await fileSystem.cache.refreshCache();
+      }
+      res.json({ success: true, message: 'Entire cache refreshed successfully' });
+    }
   } catch (error) {
     console.error('Cache refresh error:', error);
     res.status(500).json({ error: error.message });
@@ -698,6 +772,12 @@ app.post('/api/files/create', authenticate, async (req, res) => {
 
     console.log('Creating file:', fullPath);
     await fileSystem.write(fullPath, content);
+
+    // HYBRID CACHE: Update cache immediately after API operation
+    if (fileSystem.cache) {
+      await fileSystem.cache.addOrUpdatePath(fullPath);
+    }
+
     res.json({ success: true, message: 'File created successfully' });
   } catch (error) {
     console.error('File creation error:', error);
@@ -725,6 +805,16 @@ app.put('/api/files/rename', authenticate, async (req, res) => {
 
     console.log('Renaming:', oldPath, 'to', newPath);
     await fileSystem.rename(oldPath, newPath);
+
+    // HYBRID CACHE: Update cache immediately after API operation
+    if (fileSystem.cache) {
+      // Try removing old path as both file and directory
+      await fileSystem.cache.removeFileFromCache(oldPath);
+      await fileSystem.cache.removeDirectoryFromCache(oldPath);
+      // Add the new path
+      await fileSystem.cache.addOrUpdatePath(newPath);
+    }
+
     res.json({ success: true, message: 'Item renamed successfully' });
   } catch (error) {
     console.error('Rename error:', error);
@@ -750,6 +840,14 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
 
       console.log('Deleting:', fullPath);
       await fileSystem.delete(fullPath);
+
+      // HYBRID CACHE: Update cache immediately after API operation
+      if (fileSystem.cache) {
+        // Try removing as both file and directory to ensure it's gone
+        await fileSystem.cache.removeFileFromCache(fullPath);
+        await fileSystem.cache.removeDirectoryFromCache(fullPath);
+      }
+
       deletedItems.push(item.name);
     }
 
@@ -790,6 +888,16 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
         await fileSystem.copy(sourcePath, targetFullPath);
       } else if (operation === 'cut') {
         await fileSystem.move(sourcePath, targetFullPath);
+      }
+
+      // HYBRID CACHE: Update cache immediately after API operation
+      if (fileSystem.cache) {
+        if (operation === 'cut') {
+            // For a move, treat it like a rename: remove old, add new
+            await fileSystem.cache.removeFileFromCache(sourcePath);
+            await fileSystem.cache.removeDirectoryFromCache(sourcePath);
+        }
+        await fileSystem.cache.addOrUpdatePath(targetFullPath);
       }
 
       processedItems.push(item.name);
@@ -882,8 +990,6 @@ app.put('/api/settings', authenticate, async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
-=======
 // Admin User Management Endpoints
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   try {
@@ -1172,6 +1278,7 @@ app.post('/api/admin/config/backup', requireAdmin, async (req, res) => {
     
     // Remove sensitive data from backup
     delete backup.config.password;
+    delete backup.config.passwordHashed;
     delete backup.config.jwtSecret;
     
     const backupName = `config-backup-${new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-')}.json`;
@@ -1237,7 +1344,25 @@ app.post('/api/admin/config/reset', requireAdmin, async (req, res) => {
   }
 });
 
->>>>>>> 7418473 (Implement comprehensive User Management and Configuration Editing features)
+// Clear file cache endpoint
+app.post('/api/admin/cache/clear', requireAdmin, async (req, res) => {
+  try {
+    // Clear the in-memory cache
+    await fileSystem.clearCache();
+    
+    console.log(`Cache cleared by admin: ${req.user?.username}`);
+    
+    res.json({
+      success: true,
+      message: 'File cache cleared successfully'
+    });
+  } catch (error) {
+    console.error('Failed to clear cache:', error);
+    res.status(500).json({ error: 'Failed to clear cache' });
+  }
+});
+
+
 // Start server with configuration
 async function startServer() {
   try {
@@ -1269,7 +1394,23 @@ async function startServer() {
 
     // Initialize enhanced file system with in-memory cache
     fileSystem = new EnhancedMemoryFileSystem(storagePath);
-    fileSystem.initialize();
+    console.log('Initializing file system cache in the background...');
+    fileSystem.initialize().then(() => {
+      isCacheReady = true;
+      console.log('✅ File system cache is ready.');
+    }).catch(error => {
+      console.error('‼️ Failed to initialize file system cache:', error);
+      // The server will continue to run, but search and file listing might not work correctly.
+    });
+
+    // Start periodic cache refresh for external changes (e.g., every 10 minutes)
+    const cacheRefreshInterval = 10 * 60 * 1000;
+    setInterval(() => {
+      if (fileSystem && fileSystem.cache && fileSystem.cache.refreshCache) {
+        console.log('Performing scheduled full cache refresh to sync external changes...');
+        fileSystem.cache.refreshCache();
+      }
+    }, cacheRefreshInterval);
 
     const port = configManager.get('server.port') || 3000;
 
