@@ -1,47 +1,153 @@
-// Main application entry point
-// This file replaces the original large app.js with modular imports
+// File Transfer Application - Main App
+// This file contains the App component definition and initialization logic
+console.log('Loading File Transfer App...');
 
-// First, let's ensure we have React available
-const React = window.React;
-const ReactDOM = window.ReactDOM;
+// Main App Component Definition
+const App = () => {
+    const [user, setUser] = React.useState(null);
+    const [token, setToken] = React.useState(localStorage.getItem('token'));
 
-// Import our components by executing their definitions
-// Since we used CommonJS exports, we'll access them differently in browser
+    const handleLogin = (userData, userToken) => {
+        setUser(userData);
+        setToken(userToken);
+        localStorage.setItem('token', userToken);
+    };
 
-// The components are included as separate files now
-// LoginForm, FileBrowser, and App are defined in their respective files
-
-// For browser usage, we'll reference the components defined in the global scope
-// or access them from the window object where we stored them
-
-// Initialize the app when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    const rootElement = document.getElementById('root');
-    if (rootElement && window.ReactDOM && window.React && window.FileTransferApp?.App) {
-        try {
-            const App = window.FileTransferApp.App;
-            const appElement = React.createElement(App, {});
-            ReactDOM.render(appElement, rootElement);
-        } catch (error) {
-            console.error('Error initializing app:', error);
-            const loadingTextElement = document.getElementById('loading-text');
-            if (loadingTextElement) {
-                loadingTextElement.innerHTML = `
-                    <p style="color: #ef4444; margin: 0; font-size: 18px;">
-                        Error loading application: ${error.message}
-                    </p>
-                `;
-            }
+    // Check token validity on mount
+    React.useEffect(() => {
+        if (token && !user) {
+            // Verify token with server
+            fetch('/auth/verify', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Token invalid');
+                }
+                return response.json();
+            })
+            .then(data => {
+                setUser(data.user);
+            })
+            .catch(() => {
+                // Token is invalid, remove it
+                localStorage.removeItem('token');
+                setToken(null);
+            });
         }
-    } else {
-        console.error('Required components not available');
+    }, [token, user]);
+
+    if (!token || !user) {
+        return React.createElement(LoginForm, { onLogin: handleLogin });
+    }
+
+    return React.createElement(FileBrowser, { token: token, user: user });
+};
+
+// Make App component available globally
+if (!window.FileTransferApp) {
+    window.FileTransferApp = {};
+}
+window.FileTransferApp.App = App;
+
+// Add CSS animations
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes pulse {
+        0%, 100% { opacity: 0.3; transform: scale(1); }
+        50% { opacity: 0.5; transform: scale(1.05); }
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    ::placeholder {
+        color: rgba(255, 255, 255, 0.6);
+    }
+`;
+document.head.appendChild(style);
+
+// Application initialization
+const initializeApp = () => {
+    console.log('Initializing File Transfer App...');
+    
+    const rootElement = document.getElementById('root');
+    
+    if (!rootElement) {
+        console.error('Root element not found');
+        return;
+    }
+
+    if (!window.React || !window.ReactDOM) {
+        console.error('React dependencies not available');
         const loadingTextElement = document.getElementById('loading-text');
         if (loadingTextElement) {
             loadingTextElement.innerHTML = `
                 <p style="color: #ef4444; margin: 0; font-size: 18px;">
-                    Failed to load required components
+                    React libraries not loaded
+                </p>
+            `;
+        }
+        return;
+    }
+
+    // Check if components are available
+    if (typeof LoginForm === 'undefined') {
+        console.error('LoginForm component not available');
+        const loadingTextElement = document.getElementById('loading-text');
+        if (loadingTextElement) {
+            loadingTextElement.innerHTML = `
+                <p style="color: #ef4444; margin: 0; font-size: 18px;">
+                    LoginForm component not loaded
+                </p>
+            `;
+        }
+        return;
+    }
+
+    if (typeof FileBrowser === 'undefined') {
+        console.error('FileBrowser component not available');
+        const loadingTextElement = document.getElementById('loading-text');
+        if (loadingTextElement) {
+            loadingTextElement.innerHTML = `
+                <p style="color: #ef4444; margin: 0; font-size: 18px;">
+                    FileBrowser component not loaded
+                </p>
+            `;
+        }
+        return;
+    }
+
+    try {
+        const appElement = React.createElement(App, {});
+        // Use createRoot for React 18+ compatibility
+        if (ReactDOM.createRoot) {
+            const root = ReactDOM.createRoot(rootElement);
+            root.render(appElement);
+        } else {
+            // Fallback for older React versions
+            ReactDOM.render(appElement, rootElement);
+        }
+        console.log('✅ App initialized successfully');
+    } catch (error) {
+        console.error('❌ Error initializing app:', error);
+        const loadingTextElement = document.getElementById('loading-text');
+        if (loadingTextElement) {
+            loadingTextElement.innerHTML = `
+                <p style="color: #ef4444; margin: 0; font-size: 18px;">
+                    Error loading application: ${error.message}
                 </p>
             `;
         }
     }
-});
+};
+
+// Initialize when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeApp);
+} else {
+    // DOM is already loaded
+    initializeApp();
+}
+
+console.log('App script loaded');

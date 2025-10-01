@@ -6,6 +6,7 @@ const multer = require('multer');
 const bcrypt = require('bcrypt');
 const fs = require('fs').promises;
 const os = require('os');
+const archiver = require('archiver');
 const configManager = require('./config');
 const { EnhancedMemoryFileSystem } = require('./file-system');
 const AuthManager = require('./auth');
@@ -493,20 +494,9 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
 
     console.log('Downloading file:', fullPath);
 
-    const exists = await fileSystem.exists(fullPath);
-    if (!exists) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-
     const stats = await fs.stat(fullPath);
     if (stats.isDirectory()) {
-      return res.status(400).json({ error: 'Cannot download a directory' });
-    }
-
-    // Check for modifications
-    const cachedInfo = await fileSystem.getFileInfo(fullPath);
-    if (cachedInfo && new Date(cachedInfo.modified).getTime() !== stats.mtime.getTime()) {
-      return res.status(409).json({ error: 'The file has been modified. Please refresh the file list.' });
+      return res.status(400).json({ error: 'This endpoint only supports file downloads. For directory downloads, please use the archive functionality.' });
     }
 
     const fileName = path.basename(fullPath);
@@ -524,6 +514,10 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error('Download error:', error);
+    // Catch file not found errors from fs.stat
+    if (error.code === 'ENOENT') {
+      return res.status(404).json({ error: 'File not found' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -572,21 +566,51 @@ app.get('/api/files', authenticate, async (req, res) => {
     return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
   }
   try {
+    const { path: requestPath } = req.query;
     const storagePath = configManager.get('fileSystem.storagePath');
     const storageRoot = path.resolve(storagePath);
+    
+    // Determine the target path
+    let targetPath = storageRoot;
+    if (requestPath && requestPath.trim() !== '') {
+      targetPath = path.resolve(storageRoot, requestPath);
+      // Security check: ensure the path is within storage root
+      if (!targetPath.startsWith(storageRoot)) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
 
-    console.log('Listing files in root storage:', storageRoot);
+    console.log('Listing files in:', targetPath);
 
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
     });
 
-    const files = await Promise.race([
-      fileSystem.list(storageRoot),
+    const rawFiles = await Promise.race([
+      fileSystem.list(targetPath),
       timeoutPromise
     ]);
 
-    res.json(files);
+    // Transform the file data to match frontend expectations
+    const transformedFiles = rawFiles.map(file => {
+      const relativePath = path.relative(storageRoot, file.path);
+      return {
+        ...file,
+        name: path.basename(file.path),
+        path: relativePath || file.path,
+        isDirectory: file.isDirectory === 'true' || file.isDirectory === true,
+        size: parseInt(file.size) || 0,
+        modified: parseInt(file.modified) || 0
+      };
+    });
+
+    // Return in the format expected by FileBrowser
+    const currentPath = path.relative(storageRoot, targetPath) || '';
+    res.json({
+      files: transformedFiles,
+      currentPath: currentPath,
+      success: true
+    });
   } catch (error) {
     console.error('File listing error:', error);
     if (error.message === 'Request timeout') {
@@ -859,6 +883,83 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Delete error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Archive endpoint - create zip of multiple files/folders
+app.post('/api/archive', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const { items, currentPath } = req.body;
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    console.log('Creating archive for items:', items);
+    console.log('Current path:', currentPath);
+
+    // Set response headers for zip download
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', 'attachment; filename="archive.zip"');
+
+    // Create archiver instance
+    const archive = archiver('zip', {
+      zlib: { level: 9 } // Maximum compression
+    });
+
+    // Pipe archive to response
+    archive.pipe(res);
+
+    // Handle archiver warnings and errors
+    archive.on('warning', (err) => {
+      if (err.code === 'ENOENT') {
+        console.warn('Archive warning:', err);
+      } else {
+        throw err;
+      }
+    });
+
+    archive.on('error', (err) => {
+      console.error('Archive error:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to create archive' });
+      }
+    });
+
+    // Add each item to the archive
+    for (const item of items) {
+      const itemPath = currentPath
+        ? path.join(storagePath, currentPath, item.name)
+        : path.join(storagePath, item.name);
+
+      console.log('Adding to archive:', itemPath);
+
+      try {
+        const stats = await fs.stat(itemPath);
+
+        if (stats.isDirectory()) {
+          // Add directory recursively
+          archive.directory(itemPath, item.name);
+        } else {
+          // Add single file
+          archive.file(itemPath, { name: item.name });
+        }
+      } catch (err) {
+        console.error(`Failed to add ${item.name} to archive:`, err);
+        // Continue with other items
+      }
+    }
+
+    // Finalize the archive
+    await archive.finalize();
+    console.log('Archive created successfully');
+
+  } catch (error) {
+    console.error('Archive creation error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
