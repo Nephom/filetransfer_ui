@@ -4,7 +4,7 @@
  */
 
 const { FileSystem } = require('./base');
-const RedisFileSystemCache = require('./memory-cache');
+const MemoryFileSystemCache = require('./memory-cache');
 const path = require('path');
 const fs = require('fs').promises;
 
@@ -12,7 +12,7 @@ class EnhancedMemoryFileSystem extends FileSystem {
   constructor(storagePath) {
     super();
     this.storagePath = path.resolve(storagePath);
-    this.cache = new RedisFileSystemCache(storagePath);
+    this.cache = new MemoryFileSystemCache(storagePath);
     this.initialized = false;
     this.operationQueue = [];
     this.isProcessingQueue = false;
@@ -71,13 +71,12 @@ class EnhancedMemoryFileSystem extends FileSystem {
    * List files in directory using cache when possible
    */
   async list(dirPath) {
-    // Ensure dirPath is an absolute path for proper cache lookup
-    const absoluteDirPath = path.resolve(dirPath);
-    
     // If cache is ready, try to use it.
     if (this.initialized) {
       try {
-        const cachedFiles = await this.cache.getFilesInDirectory(absoluteDirPath);
+        const relativePath = path.relative(this.storagePath, dirPath);
+        const normalizedRelativePath = relativePath === '.' ? '' : relativePath;
+        const cachedFiles = await this.cache.getFilesInDirectory(normalizedRelativePath);
 
         // If cache has the directory, return it.
         if (cachedFiles && cachedFiles.length > 0) {
@@ -90,7 +89,7 @@ class EnhancedMemoryFileSystem extends FileSystem {
     }
 
     // Fallback to filesystem if cache is not ready or directory not in cache.
-    return await super.list(absoluteDirPath);
+    return await super.list(dirPath);
   }
 
   /**
@@ -264,20 +263,6 @@ class EnhancedMemoryFileSystem extends FileSystem {
   /**
    * Close cache and cleanup
    */
-  /**
-   * Clear all cache data
-   */
-  async clearCache() {
-    if (!this.initialized) {
-      await this.initialize();
-      return;
-    }
-    
-    console.log("Clearing file system cache...");
-    await this.cache.clearCache();
-    console.log("Cache cleared successfully");
-  }
-
   async close() {
     if (this.cache) {
       await this.cache.close();

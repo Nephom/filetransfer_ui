@@ -578,7 +578,11 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
             try {
                 const response = await fetch('/api/upload', {
                     method: 'POST',
-                    headers: { 'Authorization': `Bearer ${token}` },
+                    // Don't set Content-Type header manually when using FormData
+                    // Multer needs to parse the multipart data itself
+                    headers: { 
+                        'Authorization': `Bearer ${token}`
+                    },
                     body: formData
                 });
 
@@ -586,7 +590,8 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     setShowUploadModal(false);
                     fetchFiles();
                 } else {
-                    throw new Error('Upload failed');
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Upload failed');
                 }
             } catch (error) {
                 setError(`Upload failed: ${error.message}`);
@@ -615,6 +620,9 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
         // Use search results if searching, otherwise use current directory files
         const filteredFiles = searchQuery.trim() ? searchResults : files;
         
+        // Filter out invalid files in the UI
+        const validFilteredFiles = filteredFiles.filter(file => file && file.name);
+        
         // Debug logging for search
         if (searchQuery.trim() && searchResults.length === 0 && !isSearching) {
             console.log('Search query:', searchQuery);
@@ -623,10 +631,10 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
         }
 
         const getFileIcon = (file) => {
-            if (file.isDirectory) return '📂'; // Folder
+            if (file?.isDirectory) return '📂'; // Folder
 
-            const fileName = file.name;
-            if (!fileName.includes('.')) return '📄'; // File without extension
+            const fileName = file?.name || '';
+            if (!fileName || typeof fileName !== 'string' || !fileName.includes('.')) return '📄'; // File without extension
 
             const ext = fileName.split('.').pop().toLowerCase();
             const iconMap = {
@@ -804,6 +812,10 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
 
         // Create file items for filtered files (search results or current directory)
         const renderFileItem = (file, index) => {
+            // Check if file and file.name exist and are valid
+            const fileName = file?.name || '';
+            const hasExtension = fileName && typeof fileName === 'string' && fileName.includes('.');
+            
             return React.createElement('div', {
                 key: index,
                 style: {
@@ -822,7 +834,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                 React.createElement('div', {
                     key: 'icon',
                     style: { fontSize: '32px' }
-                }, file.name.includes('.') ? '📄' : '📂'),
+                }, hasExtension ? '📄' : '📂'),
                 React.createElement('div', {
                     key: 'info',
                     style: { flex: 1, minWidth: 0 }
@@ -838,7 +850,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap'
                         }
-                    }, file.name),
+                    }, fileName),
                     React.createElement('p', {
                         key: 'type',
                         style: {
@@ -847,7 +859,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                             fontSize: '12px',
                             marginTop: '4px'
                         }
-                    }, file.name.includes('.') ? 'File' : 'Folder')
+                    }, hasExtension ? 'File' : 'Folder')
                 ])
             ]);
         };
@@ -1175,7 +1187,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                     React.createElement('h2', {
                         key: 'title',
                         style: { color: 'white', margin: 0, fontSize: '20px', fontWeight: '600' }
-                    }, `Files (${filteredFiles.length}${filteredFiles.length !== files.length ? ` of ${files.length}` : ''})`),
+                    }, `Files (${validFilteredFiles.length}${validFilteredFiles.length !== files.filter(f => f && f.name).length ? ` of ${files.filter(f => f && f.name).length}` : ''})`),
 
                     files.length > 0 && React.createElement('div', {
                         key: 'selectall',
@@ -1184,7 +1196,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                         React.createElement('input', {
                             key: 'checkbox',
                             type: 'checkbox',
-                            checked: selectedFiles.length === files.length && files.length > 0,
+                            checked: selectedFiles.length === files.filter(f => f && f.name).length && files.filter(f => f && f.name).length > 0,
                             onChange: selectAllFiles,
                             style: { cursor: 'pointer' }
                         }),
@@ -1213,7 +1225,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                         key: 'error-text',
                         style: { margin: 0, fontSize: '16px' }
                     }, error)
-                ]) : filteredFiles.length === 0 ? React.createElement('div', {
+                ]) : validFilteredFiles.length === 0 ? React.createElement('div', {
                     style: {
                         textAlign: 'center',
                         padding: '60px',
@@ -1254,7 +1266,7 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
                         gap: '8px'
                     },
                     onContextMenu: handleEmptyAreaContextMenu
-                }, filteredFiles.map((file, index) => {
+                }, validFilteredFiles.map((file, index) => {
                     const isSelected = selectedFiles.some(f => f.path === file.path);
                     const isFolder = file.isDirectory;
 
@@ -1711,32 +1723,41 @@ if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
     // Render the app
     try {
         console.log('App: Rendering...');
-        ReactDOM.render(React.createElement(App), document.getElementById('root'));
+        const rootElement = document.getElementById('root');
+        if (rootElement) {
+            const root = ReactDOM.createRoot(rootElement);
+            root.render(React.createElement(App));
+        } else {
+            console.error('App: Root element not found');
+        }
         console.log('App: Rendered successfully!');
     } catch (error) {
         console.error('App: Render failed:', error);
-        document.getElementById('root').innerHTML = `
-            <div style="
-                min-height: 100vh;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                color: white;
-                text-align: center;
-                padding: 20px;
-            ">
+        const rootElement = document.getElementById('root');
+        if (rootElement) {
+            rootElement.innerHTML = `
                 <div style="
-                    background: rgba(255, 255, 255, 0.1);
-                    backdrop-filter: blur(20px);
-                    border-radius: 20px;
-                    padding: 40px;
-                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    min-height: 100vh;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    color: white;
+                    text-align: center;
+                    padding: 20px;
                 ">
-                    <h2 style="margin: 0 0 16px 0; color: #ef4444;">❌ Render Failed</h2>
-                    <p style="margin: 0; opacity: 0.8;">Error: ${error.message}</p>
+                    <div style="
+                        background: rgba(255, 255, 255, 0.1);
+                        backdrop-filter: blur(20px);
+                        border-radius: 20px;
+                        padding: 40px;
+                        border: 1px solid rgba(255, 255, 255, 0.2);
+                    ">
+                        <h2 style="margin: 0 0 16px 0; color: #ef4444;">❌ Render Failed</h2>
+                        <p style="margin: 0; opacity: 0.8;">Error: ${error.message}</p>
+                    </div>
                 </div>
-            </div>
-        `;
+            `;
+        }
     }
 }

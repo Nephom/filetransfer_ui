@@ -9,6 +9,30 @@ const SettingsModal = ({ onClose, token }) => {
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
     const [activeTab, setActiveTab] = useState('security');
+    const [userRole, setUserRole] = useState(null);
+
+    // Check user role on mount
+    useEffect(() => {
+        const checkUserRole = async () => {
+            try {
+                // Attempt to fetch user info to determine role
+                const response = await fetch('/api/admin/users', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                
+                if (response.ok) {
+                    setUserRole('admin');
+                } else if (response.status === 403) {
+                    setUserRole('user');
+                }
+            } catch (err) {
+                // If we can't determine the role, default to user
+                setUserRole('user');
+            }
+        };
+        
+        checkUserRole();
+    }, [token]);
     const [showCreateUser, setShowCreateUser] = useState(false);
     const [editingUser, setEditingUser] = useState(null);
     const [configSection, setConfigSection] = useState('server');
@@ -287,8 +311,8 @@ const SettingsModal = ({ onClose, token }) => {
 
                 <div style={{ display: 'flex', padding: '0 24px', borderBottom: '1px solid rgba(255, 255, 255, 0.2)' }}>
                     <TabButton label="Security" tabName="security" />
-                    <TabButton label="User Management" tabName="users" />
-                    <TabButton label="Configuration" tabName="config" />
+                    {userRole === 'admin' && <TabButton label="User Management" tabName="users" />}
+                    {userRole === 'admin' && <TabButton label="Configuration" tabName="config" />}
                 </div>
 
                 <div style={{ flex: 1, overflow: 'auto', padding: '24px' }}>
@@ -354,7 +378,7 @@ const SettingsModal = ({ onClose, token }) => {
                                 </div>
                             )}
 
-                            {activeTab === 'users' && (
+                            {activeTab === 'users' && userRole === 'admin' && (
                                 <div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                                         <h3 style={{ color: 'white', marginTop: 0, marginBottom: 0 }}>User Management</h3>
@@ -397,7 +421,7 @@ const SettingsModal = ({ onClose, token }) => {
                                 </div>
                             )}
 
-                            {activeTab === 'config' && (
+                            {activeTab === 'config' && userRole === 'admin' && (
                                 <div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
                                         <h3 style={{ color: 'white', marginTop: 0, marginBottom: 0 }}>Configuration</h3>
@@ -425,6 +449,26 @@ const SettingsModal = ({ onClose, token }) => {
                                             </div>
                                         )) : <div style={{ color: 'rgba(255, 255, 255, 0.7)', textAlign: 'center', padding: '40px' }}>No configuration for this section.</div>}
                                     </div>
+                                </div>
+                            )}
+
+                            {activeTab === 'users' && userRole !== 'admin' && (
+                                <div style={{ textAlign: 'center', padding: '40px' }}>
+                                    <div style={{ fontSize: '48px', marginBottom: '16px' }}>🚫</div>
+                                    <h3 style={{ color: 'white', margin: '0 0 16px 0' }}>Access Denied</h3>
+                                    <p style={{ color: 'rgba(255, 255, 255, 0.8)', margin: 0 }}>
+                                        You don't have permission to access user management.
+                                    </p>
+                                </div>
+                            )}
+
+                            {activeTab === 'config' && userRole !== 'admin' && (
+                                <div style={{ textAlign: 'center', padding: '40px' }}>
+                                    <div style={{ fontSize: '48px', marginBottom: '16px' }}>🚫</div>
+                                    <h3 style={{ color: 'white', margin: '0 0 16px 0' }}>Access Denied</h3>
+                                    <p style={{ color: 'rgba(255, 255, 255, 0.8)', margin: 0 }}>
+                                        You don't have permission to access configuration settings.
+                                    </p>
                                 </div>
                             )}
                         </div>

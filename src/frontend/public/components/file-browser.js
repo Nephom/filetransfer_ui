@@ -7,21 +7,21 @@ const FileBrowser = ({ token, user }) => {
     const [showSettingsModal, setShowSettingsModal] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [filteredFiles, setFilteredFiles] = useState([]);
+    const [searchResults, setSearchResults] = useState([]);
+    const [isSearching, setIsSearching] = useState(false);
 
     useEffect(() => {
         fetchFiles();
     }, []);
 
     useEffect(() => {
-        if (searchQuery.trim() === '') {
+        // Only show search results when actively searching, otherwise show all files
+        if (isSearching && searchResults.length >= 0) {
+            setFilteredFiles(searchResults);
+        } else if (!isSearching) {
             setFilteredFiles(files);
-        } else {
-            const filtered = files.filter(file => 
-                file.name.toLowerCase().includes(searchQuery.toLowerCase())
-            );
-            setFilteredFiles(filtered);
         }
-    }, [files, searchQuery]);
+    }, [files, searchResults, isSearching]);
 
     const fetchFiles = async () => {
         setLoading(true);
@@ -47,6 +47,51 @@ const FileBrowser = ({ token, user }) => {
     const handleLogout = () => {
         localStorage.removeItem('token');
         window.location.reload();
+    };
+
+    const handleSearch = async () => {
+        if (!searchQuery.trim()) {
+            // Clear search results and show all files
+            setIsSearching(false);
+            setSearchResults([]);
+            return;
+        }
+
+        setIsSearching(true);
+        setError('');
+
+        try {
+            const response = await fetch('/api/files/search', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ query: searchQuery.trim() })
+            });
+
+            if (response.ok) {
+                const results = await response.json();
+                setSearchResults(results);
+            } else {
+                const errorData = await response.json();
+                setError(errorData.error || 'Search failed');
+                setSearchResults([]);
+            }
+        } catch (error) {
+            console.error('Search error:', error);
+            setError('Connection error during search');
+            setSearchResults([]);
+        } finally {
+            setIsSearching(false);
+        }
+    };
+
+    const handleClearSearch = () => {
+        setSearchQuery('');
+        setIsSearching(false);
+        setSearchResults([]);
+        setFilteredFiles(files);
     };
 
     const getFileIcon = (item) => {
@@ -277,62 +322,107 @@ const FileBrowser = ({ token, user }) => {
                         </h2>
                         
                         {/* Search */}
-                        <div style={{ position: 'relative' }}>
-                            <input
-                                type="text"
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                                placeholder="Search files..."
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ position: 'relative' }}>
+                                <input
+                                    type="text"
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    onKeyPress={(e) => {
+                                        if (e.key === 'Enter') {
+                                            handleSearch();
+                                        }
+                                    }}
+                                    placeholder="Search files..."
+                                    style={{
+                                        width: '250px',
+                                        padding: '12px 16px 12px 40px',
+                                        background: 'rgba(255, 255, 255, 0.1)',
+                                        border: '1px solid rgba(255, 255, 255, 0.2)',
+                                        borderRadius: '12px',
+                                        color: 'white',
+                                        fontSize: '14px',
+                                        backdropFilter: 'blur(10px)',
+                                        outline: 'none',
+                                        transition: 'all 0.3s ease'
+                                    }}
+                                    onFocus={(e) => {
+                                        e.target.style.borderColor = 'rgba(59, 130, 246, 0.8)';
+                                        e.target.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)';
+                                    }}
+                                    onBlur={(e) => {
+                                        e.target.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                                        e.target.style.boxShadow = 'none';
+                                    }}
+                                />
+                                <div style={{
+                                    position: 'absolute',
+                                    left: '12px',
+                                    top: '50%',
+                                    transform: 'translateY(-50%)',
+                                    color: 'rgba(255, 255, 255, 0.6)',
+                                    fontSize: '16px'
+                                }}>
+                                    🔍
+                                </div>
+                                {searchQuery && (
+                                    <button
+                                        onClick={() => setSearchQuery('')}
+                                        style={{
+                                            position: 'absolute',
+                                            right: '12px',
+                                            top: '50%',
+                                            transform: 'translateY(-50%)',
+                                            background: 'none',
+                                            border: 'none',
+                                            color: 'rgba(255, 255, 255, 0.6)',
+                                            cursor: 'pointer',
+                                            fontSize: '16px',
+                                            outline: 'none'
+                                        }}
+                                    >
+                                        ✕
+                                    </button>
+                                )}
+                            </div>
+                            <button
+                                onClick={handleSearch}
+                                disabled={!searchQuery.trim() || isSearching}
                                 style={{
-                                    width: '300px',
-                                    padding: '12px 16px 12px 40px',
-                                    background: 'rgba(255, 255, 255, 0.1)',
+                                    padding: '12px 16px',
+                                    background: searchQuery.trim() && !isSearching ? 'linear-gradient(135deg, #3b82f6, #8b5cf6)' : 'rgba(255, 255, 255, 0.1)',
                                     border: '1px solid rgba(255, 255, 255, 0.2)',
                                     borderRadius: '12px',
                                     color: 'white',
+                                    cursor: searchQuery.trim() && !isSearching ? 'pointer' : 'not-allowed',
                                     fontSize: '14px',
                                     backdropFilter: 'blur(10px)',
                                     outline: 'none',
-                                    transition: 'all 0.3s ease'
+                                    transition: 'all 0.3s ease',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '6px'
                                 }}
-                                onFocus={(e) => {
-                                    e.target.style.borderColor = 'rgba(59, 130, 246, 0.8)';
-                                    e.target.style.boxShadow = '0 0 0 3px rgba(59, 130, 246, 0.1)';
-                                }}
-                                onBlur={(e) => {
-                                    e.target.style.borderColor = 'rgba(255, 255, 255, 0.2)';
-                                    e.target.style.boxShadow = 'none';
-                                }}
-                            />
-                            <div style={{
-                                position: 'absolute',
-                                left: '12px',
-                                top: '50%',
-                                transform: 'translateY(-50%)',
-                                color: 'rgba(255, 255, 255, 0.6)',
-                                fontSize: '16px'
-                            }}>
-                                🔍
-                            </div>
-                            {searchQuery && (
-                                <button
-                                    onClick={() => setSearchQuery('')}
-                                    style={{
-                                        position: 'absolute',
-                                        right: '12px',
-                                        top: '50%',
-                                        transform: 'translateY(-50%)',
-                                        background: 'none',
-                                        border: 'none',
-                                        color: 'rgba(255, 255, 255, 0.6)',
-                                        cursor: 'pointer',
-                                        fontSize: '16px',
-                                        outline: 'none'
-                                    }}
-                                >
-                                    ✕
-                                </button>
-                            )}
+                            >
+                                {isSearching ? (
+                                    <>
+                                        <div style={{
+                                            width: '16px',
+                                            height: '16px',
+                                            border: '2px solid rgba(255, 255, 255, 0.3)',
+                                            borderTop: '2px solid white',
+                                            borderRadius: '50%',
+                                            animation: 'spin 1s linear infinite'
+                                        }}></div>
+                                        Searching...
+                                    </>
+                                ) : (
+                                    <>
+                                        <span>🔍</span>
+                                        Search
+                                    </>
+                                )}
+                            </button>
                         </div>
                     </div>
 
@@ -340,7 +430,7 @@ const FileBrowser = ({ token, user }) => {
                     <FileList 
                         files={filteredFiles}
                         searchQuery={searchQuery}
-                        onClearSearch={() => setSearchQuery('')}
+                        onClearSearch={handleClearSearch}
                         getFileIcon={getFileIcon}
                         error={error}
                     />

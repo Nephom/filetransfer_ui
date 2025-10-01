@@ -22,11 +22,26 @@ class UploadAPI {
    * @private
    */
   _setupMiddleware() {
+    const fs = require('fs');
+    const path = require('path');
+    
+    // Ensure temp upload directory exists
+    const tempDir = './temp';
+    const uploadsDir = './temp/uploads';
+    
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+    
     // Configure multer for file uploads
     const storage = multer.diskStorage({
       destination: (req, file, cb) => {
         // Use a temporary directory for uploads
-        cb(null, './temp/uploads');
+        cb(null, uploadsDir);
       },
       filename: (req, file, cb) => {
         // Generate unique filename
@@ -52,12 +67,26 @@ class UploadAPI {
    * @private
    */
   _setupRoutes() {
-    // Single file upload endpoint
-    this.router.post('/upload', this.upload.single('file'), (req, res) => {
+    // Main upload endpoint that handles files field (used by frontend)
+    this.router.post('/upload', this.upload.array('files', 10), (req, res) => {
+      if (req.files && req.files.length === 1) {
+        // Handle single file as single upload
+        this._handleSingleUploadFromFilesField(req, res);
+      } else if (req.files && req.files.length > 1) {
+        // Handle multiple files
+        this._handleMultipleUpload(req, res);
+      } else {
+        // No files uploaded
+        res.status(400).json({ error: 'No files uploaded' });
+      }
+    });
+
+    // Alternative endpoint for single file upload with 'file' field
+    this.router.post('/upload/single', this.upload.single('file'), (req, res) => {
       this._handleSingleUpload(req, res);
     });
 
-    // Multiple file upload endpoint
+    // Alternative endpoint for multiple file upload with 'files' field
     this.router.post('/upload/multiple', this.upload.array('files', 10), (req, res) => {
       this._handleMultipleUpload(req, res);
     });
@@ -80,22 +109,51 @@ class UploadAPI {
         });
       }
 
+      // Get currentPath from request body to determine destination directory
+      const currentPath = req.body.currentPath || '';
+      const configManager = require('../config');
+      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+      
+      // Build final path in storage directory
+      let finalDir;
+      if (currentPath) {
+        // Join storage path with currentPath, ensuring no directory traversal
+        finalDir = path.join(storagePath, currentPath);
+      } else {
+        finalDir = storagePath;
+      }
+      
+      // Ensure the destination path is within the storage directory
+      const normalizedFinalDir = path.resolve(finalDir);
+      const normalizedStoragePath = path.resolve(storagePath);
+      
+      if (!normalizedFinalDir.startsWith(normalizedStoragePath)) {
+        return res.status(403).json({
+          error: 'Forbidden: Access denied.'
+        });
+      }
+      
+      // Create directory if it doesn't exist
+      await this.fileSystem.mkdir(normalizedFinalDir);
+      
+      // Final file path
+      const finalPath = path.join(normalizedFinalDir, path.basename(req.file.originalname));
+
       // Create transfer record
       const transferId = transferManager.startTransfer({
         source: req.file.path,
-        destination: req.body.destination || `./uploads/${req.file.filename}`,
+        destination: finalPath,
         totalSize: req.file.size
       });
 
-      // Move file to final destination
-      const finalPath = path.join('./uploads', req.file.filename);
+      // Move file to final destination in storage
       await this.fileSystem.move(req.file.path, finalPath);
 
       // Update transfer as complete
       transferManager.completeTransfer(transferId, {
         result: 'success',
         file: {
-          name: req.file.filename,
+          name: path.basename(req.file.originalname),
           path: finalPath,
           size: req.file.size
         }
@@ -106,7 +164,7 @@ class UploadAPI {
         transferId,
         message: 'File uploaded successfully',
         file: {
-          name: req.file.filename,
+          name: path.basename(req.file.originalname),
           path: finalPath,
           size: req.file.size
         }
@@ -131,32 +189,61 @@ class UploadAPI {
         });
       }
 
+      // Get currentPath from request body to determine destination directory
+      const currentPath = req.body.currentPath || '';
+      const configManager = require('../config');
+      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+      
+      // Build final path in storage directory
+      let finalDir;
+      if (currentPath) {
+        // Join storage path with currentPath, ensuring no directory traversal
+        finalDir = path.join(storagePath, currentPath);
+      } else {
+        finalDir = storagePath;
+      }
+      
+      // Ensure the destination path is within the storage directory
+      const normalizedFinalDir = path.resolve(finalDir);
+      const normalizedStoragePath = path.resolve(storagePath);
+      
+      if (!normalizedFinalDir.startsWith(normalizedStoragePath)) {
+        return res.status(403).json({
+          error: 'Forbidden: Access denied.'
+        });
+      }
+      
+      // Create directory if it doesn't exist
+      await this.fileSystem.mkdir(normalizedFinalDir);
+      
       const results = [];
 
       for (const file of req.files) {
+        // Final file path
+        const finalPath = path.join(normalizedFinalDir, path.basename(file.originalname));
+        
         // Create transfer record
         const transferId = transferManager.startTransfer({
           source: file.path,
-          destination: `./uploads/${file.filename}`,
+          destination: finalPath,
           totalSize: file.size
         });
 
-        // Move file to final destination
-        const finalPath = path.join('./uploads', file.filename);
+        // Move file to final destination in storage
         await this.fileSystem.move(file.path, finalPath);
 
         // Update transfer as complete
         transferManager.completeTransfer(transferId, {
           result: 'success',
           file: {
-            name: file.filename,
+            name: path.basename(file.originalname),
             path: finalPath,
             size: file.size
           }
         });
 
         results.push({
-          name: file.filename,
+          name: path.basename(file.originalname),
           path: finalPath,
           size: file.size
         });
@@ -187,10 +274,40 @@ class UploadAPI {
         });
       }
 
+      // Get currentPath from request body to determine destination directory
+      const currentPath = req.body.currentPath || '';
+      const configManager = require('../config');
+      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+      
+      // Build final path in storage directory
+      let finalDir;
+      if (currentPath) {
+        // Join storage path with currentPath, ensuring no directory traversal
+        finalDir = path.join(storagePath, currentPath);
+      } else {
+        finalDir = storagePath;
+      }
+      
+      // Ensure the destination path is within the storage directory
+      const normalizedFinalDir = path.resolve(finalDir);
+      const normalizedStoragePath = path.resolve(storagePath);
+      
+      if (!normalizedFinalDir.startsWith(normalizedStoragePath)) {
+        return res.status(403).json({
+          error: 'Forbidden: Access denied.'
+        });
+      }
+      
+      // Create directory if it doesn't exist
+      await this.fileSystem.mkdir(normalizedFinalDir);
+      
+      // Final file path
+      const finalPath = path.join(normalizedFinalDir, path.basename(req.file.originalname));
+
       // Create transfer record
       const transferId = transferManager.startTransfer({
         source: req.file.path,
-        destination: req.body.destination || `./uploads/${req.file.filename}`,
+        destination: finalPath,
         totalSize: req.file.size
       });
 
@@ -210,15 +327,14 @@ class UploadAPI {
       setTimeout(async () => {
         clearInterval(interval);
 
-        // Move file to final destination
-        const finalPath = path.join('./uploads', req.file.filename);
+        // Move file to final destination in storage
         await this.fileSystem.move(req.file.path, finalPath);
 
         // Update transfer as complete
         transferManager.completeTransfer(transferId, {
           result: 'success',
           file: {
-            name: req.file.filename,
+            name: path.basename(req.file.originalname),
             path: finalPath,
             size: req.file.size
           }
@@ -230,12 +346,95 @@ class UploadAPI {
           transferId,
           message: 'File uploaded successfully with progress tracking',
           file: {
-            name: req.file.filename,
+            name: path.basename(req.file.originalname),
             path: finalPath,
             size: req.file.size
           }
         });
       }, 2000);
+    } catch (error) {
+      res.status(500).json({
+        error: 'Upload failed',
+        message: error.message
+      });
+    }
+  }
+
+  /**
+   * Handle single file upload from 'files' field (for compatibility with frontend)
+   * @private
+   */
+  async _handleSingleUploadFromFilesField(req, res) {
+    try {
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({
+          error: 'No file uploaded'
+        });
+      }
+
+      // Use the first file from the files array
+      const file = req.files[0];
+      
+      // Get currentPath from request body to determine destination directory
+      const currentPath = req.body.currentPath || '';
+      const configManager = require('../config');
+      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+      
+      // Build final path in storage directory
+      let finalDir;
+      if (currentPath) {
+        // Join storage path with currentPath, ensuring no directory traversal
+        finalDir = path.join(storagePath, currentPath);
+      } else {
+        finalDir = storagePath;
+      }
+      
+      // Ensure the destination path is within the storage directory
+      const normalizedFinalDir = path.resolve(finalDir);
+      const normalizedStoragePath = path.resolve(storagePath);
+      
+      if (!normalizedFinalDir.startsWith(normalizedStoragePath)) {
+        return res.status(403).json({
+          error: 'Forbidden: Access denied.'
+        });
+      }
+      
+      // Create directory if it doesn't exist
+      await this.fileSystem.mkdir(normalizedFinalDir);
+      
+      // Final file path
+      const finalPath = path.join(normalizedFinalDir, path.basename(file.originalname));
+
+      // Create transfer record
+      const transferId = transferManager.startTransfer({
+        source: file.path,
+        destination: finalPath,
+        totalSize: file.size
+      });
+
+      // Move file to final destination in storage
+      await this.fileSystem.move(file.path, finalPath);
+
+      // Update transfer as complete
+      transferManager.completeTransfer(transferId, {
+        result: 'success',
+        file: {
+          name: path.basename(file.originalname),
+          path: finalPath,
+          size: file.size
+        }
+      });
+
+      res.json({
+        success: true,
+        transferId,
+        message: 'File uploaded successfully',
+        file: {
+          name: path.basename(file.originalname),
+          path: finalPath,
+          size: file.size
+        }
+      });
     } catch (error) {
       res.status(500).json({
         error: 'Upload failed',

@@ -1,14 +1,27 @@
 {
-  "lastUpdated": "2025-09-30T09:26:38.226Z",
+  "lastUpdated": "2025-10-01T05:59:45.339Z",
   "users": [
     {
       "id": 1,
-      "username": "admin",
+      "username": "root",
       "password": "$2b$12$53Kwn05O.9P.5t8kqVVxte4I7qwLsto5veHjqh197v1EVP8hEgpi6",
       "role": "admin",
       "active": true,
       "created": "2025-09-30T09:26:38.226Z",
-      "lastLogin": null,
+      "lastLogin": "2025-10-01T03:56:27.712Z",
+      "email": "admin@localhost",
+      "permissions": [
+        "all"
+      ]
+    },
+    {
+      "id": 1,
+      "username": "admin",
+      "password": "$2b$12$pvPjSC4w4djbGiBt5il3wuMmQAJja7k5a9GnMqZMJw//TCWkyh0q6",
+      "role": "admin",
+      "active": true,
+      "created": "2025-10-01T04:05:07.055Z",
+      "lastLogin": "2025-10-01T05:59:45.338Z",
       "email": "admin@localhost",
       "permissions": [
         "all"
