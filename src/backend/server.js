@@ -149,13 +149,12 @@ app.post('/auth/login', (req, res, next) => {
 
     // Authenticate user with UserManager
     const user = await userManager.authenticateUser(username, password);
-    
+
     if (user) {
       // Log successful authentication
-      if (systemLogger) {
-        systemLogger.logAuth('login', username, true, { role: user.role }, req);
-      }
-      
+      systemLogger.logAuth('login', username, true, { role: user.role }, req);
+      systemLogger.logSessionStart(username, req);
+
       // Generate JWT token
       const jwt = require('jsonwebtoken');
       const token = jwt.sign(
@@ -181,6 +180,8 @@ app.post('/auth/login', (req, res, next) => {
         }
       });
     } else {
+      // Log failed authentication
+      systemLogger.logAuth('login', username, false, null, req);
       res.status(401).json({ error: 'Invalid credentials' });
     }
   } catch (error) {
@@ -489,13 +490,13 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
     const fullPath = path.join(storageRoot, requestPath);
 
     if (!fullPath.startsWith(storageRoot)) {
+      systemLogger.logSecurity('path_traversal_attempt', { path: requestPath }, req);
       return res.status(403).json({ error: 'Forbidden: Access denied.' });
     }
 
-    console.log('Downloading file:', fullPath);
-
     const stats = await fs.stat(fullPath);
     if (stats.isDirectory()) {
+      systemLogger.logFileOperation('download', requestPath, false, req, { error: 'Attempted to download directory' });
       return res.status(400).json({ error: 'This endpoint only supports file downloads. For directory downloads, please use the archive functionality.' });
     }
 
@@ -507,17 +508,22 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
     fileStream.pipe(res);
 
     fileStream.on('error', (error) => {
-      console.error('File stream error:', error);
+      systemLogger.logFileOperation('download', requestPath, false, req, { error: error.message });
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to download file' });
       }
     });
+
+    fileStream.on('close', () => {
+      systemLogger.logFileOperation('download', requestPath, true, req, { size: stats.size });
+    });
   } catch (error) {
-    console.error('Download error:', error);
     // Catch file not found errors from fs.stat
     if (error.code === 'ENOENT') {
+      systemLogger.logFileOperation('download', req.params[0], false, req, { error: 'File not found' });
       return res.status(404).json({ error: 'File not found' });
     }
+    systemLogger.logFileOperation('download', req.params[0], false, req, { error: error.message });
     res.status(500).json({ error: error.message });
   }
 });
@@ -651,24 +657,31 @@ app.post('/api/folders', authenticate, async (req, res) => {
     }
 
     const relativePath = currentPath ? path.join(currentPath, folderName.trim()) : folderName.trim();
-    
+
     const storageRoot = path.resolve(storagePath);
     const fullPath = path.join(storageRoot, relativePath);
     if (!fullPath.startsWith(storageRoot)) {
+      systemLogger.logSecurity('path_traversal_attempt', { path: relativePath }, req);
       return res.status(403).json({ error: 'Forbidden: Access denied.' });
     }
 
-    console.log('Creating folder:', fullPath);
     await fileSystem.mkdir(fullPath);
 
-    // HYBRID CACHE: Update cache immediately after API operation
-    if (fileSystem.cache) {
-      await fileSystem.cache.addOrUpdatePath(fullPath);
+    // Force cache refresh for the parent directory
+    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+      try {
+        const parentPath = currentPath ? path.join(storageRoot, currentPath) : storageRoot;
+        await fileSystem.cache.scanDirectory(parentPath);
+        systemLogger.logCacheOperation('refresh_after_mkdir', { path: currentPath || '/' }, req);
+      } catch (cacheError) {
+        console.error('Cache refresh error (non-fatal):', cacheError.message);
+      }
     }
 
+    systemLogger.logFileOperation('mkdir', relativePath, true, req, { folderName });
     res.json({ success: true, message: 'Folder created successfully' });
   } catch (error) {
-    console.error('Folder creation error:', error);
+    systemLogger.logFileOperation('mkdir', req.body.currentPath || '/', false, req, { error: error.message, folderName: req.body.folderName });
     res.status(500).json({ error: error.message });
   }
 });
@@ -794,7 +807,6 @@ app.post('/api/files/create', authenticate, async (req, res) => {
       ? `${storagePath}/${currentPath}/${fileName.trim()}`
       : `${storagePath}/${fileName.trim()}`;
 
-    console.log('Creating file:', fullPath);
     await fileSystem.write(fullPath, content);
 
     // HYBRID CACHE: Update cache immediately after API operation
@@ -802,9 +814,10 @@ app.post('/api/files/create', authenticate, async (req, res) => {
       await fileSystem.cache.addOrUpdatePath(fullPath);
     }
 
+    systemLogger.logFileOperation('create', path.join(currentPath || '', fileName.trim()), true, req, { fileName, size: content.length });
     res.json({ success: true, message: 'File created successfully' });
   } catch (error) {
-    console.error('File creation error:', error);
+    systemLogger.logFileOperation('create', path.join(req.body.currentPath || '', req.body.fileName), false, req, { error: error.message });
     res.status(500).json({ error: error.message });
   }
 });
@@ -819,29 +832,29 @@ app.put('/api/files/rename', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Both old and new names are required' });
     }
 
+    const path = require('path');
     const oldPath = currentPath
-      ? `${storagePath}/${currentPath}/${oldName}`
-      : `${storagePath}/${oldName}`;
+      ? path.join(storagePath, currentPath, oldName)
+      : path.join(storagePath, oldName);
 
     const newPath = currentPath
-      ? `${storagePath}/${currentPath}/${newName}`
-      : `${storagePath}/${newName}`;
+      ? path.join(storagePath, currentPath, newName)
+      : path.join(storagePath, newName);
 
-    console.log('Renaming:', oldPath, 'to', newPath);
+    // Perform rename
     await fileSystem.rename(oldPath, newPath);
 
-    // HYBRID CACHE: Update cache immediately after API operation
-    if (fileSystem.cache) {
-      // Try removing old path as both file and directory
-      await fileSystem.cache.removeFileFromCache(oldPath);
-      await fileSystem.cache.removeDirectoryFromCache(oldPath);
-      // Add the new path
-      await fileSystem.cache.addOrUpdatePath(newPath);
+    // Force cache refresh for the parent directory
+    if (fileSystem.cache && fileSystem.cache.refreshCache) {
+      const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
+      await fileSystem.cache.scanDirectory(parentPath);
+      systemLogger.logCacheOperation('refresh_after_rename', { path: currentPath || '/' }, req);
     }
 
+    systemLogger.logFileOperation('rename', path.join(currentPath || '', oldName), true, req, { newName, oldName });
     res.json({ success: true, message: 'Item renamed successfully' });
   } catch (error) {
-    console.error('Rename error:', error);
+    systemLogger.logFileOperation('rename', path.join(req.body.currentPath || '', req.body.oldName), false, req, { error: error.message });
     res.status(500).json({ error: error.message });
   }
 });
@@ -856,23 +869,28 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Items array is required' });
     }
 
+    const path = require('path');
     const deletedItems = [];
+
     for (const item of items) {
       const fullPath = currentPath
-        ? `${storagePath}/${currentPath}/${item.name}`
-        : `${storagePath}/${item.name}`;
+        ? path.join(storagePath, currentPath, item.name)
+        : path.join(storagePath, item.name);
 
-      console.log('Deleting:', fullPath);
       await fileSystem.delete(fullPath);
-
-      // HYBRID CACHE: Update cache immediately after API operation
-      if (fileSystem.cache) {
-        // Try removing as both file and directory to ensure it's gone
-        await fileSystem.cache.removeFileFromCache(fullPath);
-        await fileSystem.cache.removeDirectoryFromCache(fullPath);
-      }
-
       deletedItems.push(item.name);
+      systemLogger.logFileOperation('delete', path.join(currentPath || '', item.name), true, req, { type: item.isDirectory ? 'directory' : 'file' });
+    }
+
+    // Force cache refresh for the parent directory
+    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+      try {
+        const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
+        await fileSystem.cache.scanDirectory(parentPath);
+        systemLogger.logCacheOperation('refresh_after_delete', { path: currentPath || '/' }, req);
+      } catch (cacheError) {
+        console.error('Cache refresh error (non-fatal):', cacheError.message);
+      }
     }
 
     res.json({
@@ -881,7 +899,7 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
       deletedItems
     });
   } catch (error) {
-    console.error('Delete error:', error);
+    systemLogger.logFileOperation('delete', currentPath || '/', false, req, { error: error.message, items: items.map(i => i.name) });
     res.status(500).json({ error: error.message });
   }
 });
@@ -953,10 +971,10 @@ app.post('/api/archive', authenticate, async (req, res) => {
 
     // Finalize the archive
     await archive.finalize();
-    console.log('Archive created successfully');
+    systemLogger.logFileOperation('archive', currentPath || '/', true, req, { itemCount: items.length, items: items.map(i => i.name) });
 
   } catch (error) {
-    console.error('Archive creation error:', error);
+    systemLogger.logFileOperation('archive', req.body.currentPath || '/', false, req, { error: error.message });
     if (!res.headersSent) {
       res.status(500).json({ error: error.message });
     }
@@ -973,35 +991,50 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Items array and operation are required' });
     }
 
+    const path = require('path');
     const processedItems = [];
+
     for (const item of items) {
       const sourcePath = item.sourcePath || (item.currentPath
-        ? `${storagePath}/${item.currentPath}/${item.name}`
-        : `${storagePath}/${item.name}`);
+        ? path.join(storagePath, item.currentPath, item.name)
+        : path.join(storagePath, item.name));
 
       const targetFullPath = targetPath
-        ? `${storagePath}/${targetPath}/${item.name}`
-        : `${storagePath}/${item.name}`;
-
-      console.log(`${operation === 'copy' ? 'Copying' : 'Moving'}:`, sourcePath, 'to', targetFullPath);
+        ? path.join(storagePath, targetPath, item.name)
+        : path.join(storagePath, item.name);
 
       if (operation === 'copy') {
         await fileSystem.copy(sourcePath, targetFullPath);
+        systemLogger.logFileOperation('copy', path.join(targetPath || '', item.name), true, req, { source: sourcePath, target: targetFullPath });
       } else if (operation === 'cut') {
         await fileSystem.move(sourcePath, targetFullPath);
-      }
-
-      // HYBRID CACHE: Update cache immediately after API operation
-      if (fileSystem.cache) {
-        if (operation === 'cut') {
-            // For a move, treat it like a rename: remove old, add new
-            await fileSystem.cache.removeFileFromCache(sourcePath);
-            await fileSystem.cache.removeDirectoryFromCache(sourcePath);
-        }
-        await fileSystem.cache.addOrUpdatePath(targetFullPath);
+        systemLogger.logFileOperation('move', path.join(targetPath || '', item.name), true, req, { source: sourcePath, target: targetFullPath });
       }
 
       processedItems.push(item.name);
+    }
+
+    // Force cache refresh for both source and target directories
+    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+      try {
+        // Refresh target directory
+        const targetDir = targetPath ? path.join(storagePath, targetPath) : storagePath;
+        await fileSystem.cache.scanDirectory(targetDir);
+        systemLogger.logCacheOperation('refresh_after_paste', { targetPath: targetPath || '/', operation }, req);
+
+        // For move operations, also refresh source directory
+        if (operation === 'cut' && items.length > 0) {
+          const firstItem = items[0];
+          if (firstItem.sourcePath) {
+            const sourceDir = path.dirname(firstItem.sourcePath);
+            if (sourceDir !== targetDir) {
+              await fileSystem.cache.scanDirectory(sourceDir);
+            }
+          }
+        }
+      } catch (cacheError) {
+        console.error('Cache refresh error (non-fatal):', cacheError.message);
+      }
     }
 
     res.json({
@@ -1010,7 +1043,7 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
       processedItems
     });
   } catch (error) {
-    console.error('Paste error:', error);
+    systemLogger.logFileOperation(operation === 'copy' ? 'copy' : 'move', targetPath || '/', false, req, { error: error.message, items: items.map(i => i.name) });
     res.status(500).json({ error: error.message });
   }
 });
@@ -1495,12 +1528,12 @@ async function startServer() {
 
     // Initialize enhanced file system with in-memory cache
     fileSystem = new EnhancedMemoryFileSystem(storagePath);
-    console.log('Initializing file system cache in the background...');
+    systemLogger.logSystem('INFO', 'Initializing file system cache in the background...');
     fileSystem.initialize().then(() => {
       isCacheReady = true;
-      console.log('✅ File system cache is ready.');
+      systemLogger.logSystem('INFO', '✅ File system cache is ready.');
     }).catch(error => {
-      console.error('‼️ Failed to initialize file system cache:', error);
+      systemLogger.logSystem('ERROR', `Failed to initialize file system cache: ${error.message}`);
       // The server will continue to run, but search and file listing might not work correctly.
     });
 
@@ -1508,7 +1541,7 @@ async function startServer() {
     const cacheRefreshInterval = 10 * 60 * 1000;
     setInterval(() => {
       if (fileSystem && fileSystem.cache && fileSystem.cache.refreshCache) {
-        console.log('Performing scheduled full cache refresh to sync external changes...');
+        systemLogger.logSystem('INFO', 'Performing scheduled full cache refresh to sync external changes...');
         fileSystem.cache.refreshCache();
       }
     }, cacheRefreshInterval);
@@ -1554,8 +1587,16 @@ async function startServer() {
       await performSecurityChecks(configManager);
 
       console.log('\n🚀 Server is ready!');
+
+      // Log server startup
+      const accessUrls = [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
+      networkInterfaces.forEach(iface => {
+        accessUrls.push(`http://${iface.address}:${port}`);
+      });
+      systemLogger.logSystem('INFO', `Server started successfully on port ${port}. Access URLs: ${accessUrls.join(', ')}`);
     });
   } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to start server: ${error.message}`);
     console.error('Failed to start server:', error);
     process.exit(1);
   }
@@ -1574,15 +1615,18 @@ process.on('SIGTERM', async () => {
 
 async function gracefulShutdown() {
   try {
+    systemLogger.logSystem('INFO', 'Starting graceful shutdown...');
     console.log('Closing file system cache...');
     if (fileSystem && fileSystem.close) {
       await fileSystem.close();
     }
     console.log('✅ File system cache closed');
 
+    systemLogger.logSystem('INFO', 'Server shutdown completed successfully');
     console.log('🚀 Server shutdown complete');
     process.exit(0);
   } catch (error) {
+    systemLogger.logSystem('ERROR', `Error during shutdown: ${error.message}`);
     console.error('Error during shutdown:', error);
     process.exit(1);
   }
