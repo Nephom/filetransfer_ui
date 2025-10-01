@@ -121,6 +121,24 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/public/index.html'));
 });
 
+// Server log endpoint (for admin panel)
+app.get('/server.log', requireAdmin, async (req, res) => {
+  try {
+    const logPath = path.join(__dirname, '../../server.log');
+    const logExists = await fs.access(logPath).then(() => true).catch(() => false);
+
+    if (!logExists) {
+      return res.status(404).send('Log file not found');
+    }
+
+    res.setHeader('Content-Type', 'text/plain');
+    res.sendFile(logPath);
+  } catch (error) {
+    console.error('Error serving log file:', error);
+    res.status(500).send('Error reading log file');
+  }
+});
+
 // Authentication routes
 app.post('/auth/register', async (req, res) => {
   try {

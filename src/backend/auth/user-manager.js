@@ -23,18 +23,26 @@ class UserManager {
   async initialize() {
     try {
       await this.loadUsers();
-      
-      // Ensure admin user exists
-      if (!this.users.has('admin')) {
-        await this.createDefaultAdmin();
+
+      // Remove admin user from users.json if it exists (admin should only be in config.ini)
+      if (this.users.has('admin')) {
+        console.log('Removing admin user from users.json (admin is managed by config.ini)');
+        this.users.delete('admin');
+        await this.saveUsers();
       }
-      
+
+      // Also remove 'root' user if it exists (redundant admin account)
+      if (this.users.has('root')) {
+        console.log('Removing root user from users.json (use admin from config.ini instead)');
+        this.users.delete('root');
+        await this.saveUsers();
+      }
+
       this.initialized = true;
-      console.log(`User manager initialized with ${this.users.size} users`);
+      const configUsername = configManager.get('auth.username') || 'admin';
+      console.log(`User manager initialized with ${this.users.size} users (excluding config admin: ${configUsername})`);
     } catch (error) {
       console.error('Failed to initialize user manager:', error);
-      // Create default admin as fallback
-      await this.createDefaultAdmin();
       this.initialized = true;
     }
   }
@@ -79,25 +87,12 @@ class UserManager {
   }
 
   /**
-   * Create default admin user
+   * Create default admin user (DEPRECATED - admin is now in config.ini)
+   * This method is kept for backward compatibility but does nothing
    */
   async createDefaultAdmin() {
-    const hashedPassword = await bcrypt.hash('password', this.saltRounds);
-    const adminUser = {
-      id: 1,
-      username: 'admin',
-      password: hashedPassword,
-      role: 'admin',
-      active: true,
-      created: new Date().toISOString(),
-      lastLogin: null,
-      email: 'admin@localhost',
-      permissions: ['all']
-    };
-    
-    this.users.set('admin', adminUser);
-    await this.saveUsers();
-    console.log('Default admin user created');
+    console.log('Note: Admin user is managed by config.ini, not users.json');
+    // Do nothing - admin is managed through config.ini
   }
 
   /**
@@ -112,24 +107,35 @@ class UserManager {
     if (!username || username.length < 3) {
       throw new Error('Username must be at least 3 characters long');
     }
-    
+
     if (!password || password.length < 6) {
       throw new Error('Password must be at least 6 characters long');
     }
-    
+
+    // Prevent creating admin or config username
+    const configUsername = configManager.get('auth.username') || 'admin';
+    if (username === configUsername || username === 'admin' || username === 'root') {
+      throw new Error(`Cannot create user '${username}' - this username is reserved for system admin (managed in config.ini)`);
+    }
+
     if (this.users.has(username)) {
       throw new Error(`User '${username}' already exists`);
     }
 
     // Hash password
     const hashedPassword = await bcrypt.hash(password, this.saltRounds);
-    
+
     // Generate unique ID
     const id = this.users.size + 1;
-    
+
     // Set default permissions based on role
+    // Note: Only 'user' role is allowed for users.json accounts
+    if (role === 'admin') {
+      throw new Error('Cannot create admin users through this interface. Admin is managed in config.ini');
+    }
+
     if (permissions.length === 0) {
-      permissions = role === 'admin' ? ['all'] : ['read', 'upload'];
+      permissions = ['read', 'upload', 'delete'];
     }
 
     const newUser = {
@@ -137,7 +143,7 @@ class UserManager {
       username,
       password: hashedPassword,
       email: email || `${username}@localhost`,
-      role,
+      role: 'user', // Force role to be 'user'
       permissions,
       active: true,
       created: new Date().toISOString(),
@@ -160,14 +166,20 @@ class UserManager {
       throw new Error('User manager not initialized');
     }
 
+    // Prevent updating admin user (managed in config.ini)
+    const configUsername = configManager.get('auth.username') || 'admin';
+    if (username === configUsername || username === 'admin') {
+      throw new Error('Cannot update admin user through this interface. Admin is managed in config.ini');
+    }
+
     const user = this.users.get(username);
     if (!user) {
       throw new Error(`User '${username}' not found`);
     }
 
-    // Prevent admin from being disabled
-    if (username === 'admin' && updates.active === false) {
-      throw new Error('Cannot disable the admin user');
+    // Prevent role escalation to admin
+    if (updates.role === 'admin') {
+      throw new Error('Cannot change user role to admin. Admin is managed in config.ini');
     }
 
     // Handle password change
@@ -182,6 +194,7 @@ class UserManager {
     const updatedUser = {
       ...user,
       ...updates,
+      role: 'user', // Ensure role stays as 'user'
       updated: new Date().toISOString()
     };
 
@@ -201,8 +214,10 @@ class UserManager {
       throw new Error('User manager not initialized');
     }
 
-    if (username === 'admin') {
-      throw new Error('Cannot delete the admin user');
+    // Prevent deleting admin user (managed in config.ini)
+    const configUsername = configManager.get('auth.username') || 'admin';
+    if (username === configUsername || username === 'admin' || username === 'root') {
+      throw new Error('Cannot delete admin user. Admin is managed in config.ini');
     }
 
     const user = this.users.get(username);
@@ -218,16 +233,37 @@ class UserManager {
 
   /**
    * Get all users (without passwords)
+   * Includes the config admin user from config.ini
    */
   async getAllUsers() {
     if (!this.initialized) {
       throw new Error('User manager not initialized');
     }
 
-    return Array.from(this.users.values()).map(user => {
-      const { password, ...userResponse } = user;
-      return userResponse;
-    });
+    // Get users from users.json (excluding any admin entries)
+    const regularUsers = Array.from(this.users.values())
+      .filter(user => user.username !== 'admin' && user.username !== 'root')
+      .map(user => {
+        const { password, ...userResponse } = user;
+        return userResponse;
+      });
+
+    // Add the config admin user
+    const configUsername = configManager.get('auth.username') || 'admin';
+    const configAdmin = {
+      id: 0,
+      username: configUsername,
+      email: `${configUsername}@localhost`,
+      role: 'admin',
+      permissions: ['all'],
+      active: true,
+      created: 'System Default',
+      lastLogin: null,
+      isConfigUser: true // Flag to indicate this is from config.ini
+    };
+
+    // Return config admin first, then regular users
+    return [configAdmin, ...regularUsers];
   }
 
   /**
@@ -271,24 +307,19 @@ class UserManager {
 
         if (isValid) {
             // Password is valid according to config.ini.
-            const user = this.users.get(username) || {
-                id: 1,
+            // Return admin user WITHOUT saving to users.json
+            const user = {
+                id: 0,
                 username: configUsername,
                 role: 'admin',
                 active: true,
-                email: 'admin@localhost',
-                permissions: ['all']
+                email: `${configUsername}@localhost`,
+                permissions: ['all'],
+                lastLogin: new Date().toISOString(),
+                isConfigUser: true
             };
 
-            if (!user.active) return null;
-
-            // Update last login and save
-            user.lastLogin = new Date().toISOString();
-            this.users.set(username, user);
-            await this.saveUsers();
-
-            const { password: _, ...userResponse } = user;
-            return userResponse;
+            return user;
         } else {
             // If password for config admin is incorrect, fail immediately.
             return null;
