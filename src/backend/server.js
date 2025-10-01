@@ -482,6 +482,45 @@ app.get('/api/files/search', authenticate, async (req, res) => {
 
 // IMPORTANT: Specific routes must come before the general '/api/files/*' wildcard route.
 
+// Cache statistics endpoint
+app.get('/api/files/cache-stats', authenticate, async (req, res) => {
+  try {
+    const stats = await fileSystem.getCacheInfo ? await fileSystem.getCacheInfo() : { message: 'Cache stats not available' };
+    res.json(stats);
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Cache stats error: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Cache refresh endpoint (for manual cache updates)
+app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
+  try {
+    const { directoryPath } = req.body; // Allow partial refresh
+
+    if (directoryPath) {
+      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+      const fullPath = path.join(path.resolve(storagePath), directoryPath);
+      systemLogger.logCacheOperation('refresh_directory', { path: fullPath }, req);
+      // This will re-scan and overwrite the specific directory hash in Redis.
+      // Note: This won't detect deletions within the directory, a full refresh is needed for that.
+      if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+        await fileSystem.cache.scanDirectory(fullPath);
+      }
+      res.json({ success: true, message: `Cache for ${directoryPath} refreshed.` });
+    } else {
+      systemLogger.logCacheOperation('refresh_full', {}, req);
+      if (fileSystem.cache && fileSystem.cache.refreshCache) {
+        await fileSystem.cache.refreshCache();
+      }
+      res.json({ success: true, message: 'Entire cache refreshed successfully' });
+    }
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Cache refresh error: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get file content
 app.get('/api/files/content/*', authenticate, async (req, res) => {
   try {
@@ -776,45 +815,6 @@ app.post('/api/files/move', authenticate, async (req, res) => {
     await fileSystem.move(sourcePath, destinationPath);
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Cache refresh endpoint (for manual cache updates)
-app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
-  try {
-    const { directoryPath } = req.body; // Allow partial refresh
-
-    if (directoryPath) {
-      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-      const fullPath = path.join(path.resolve(storagePath), directoryPath);
-      systemLogger.logCacheOperation('refresh_directory', { path: fullPath }, req);
-      // This will re-scan and overwrite the specific directory hash in Redis.
-      // Note: This won't detect deletions within the directory, a full refresh is needed for that.
-      if (fileSystem.cache && fileSystem.cache.scanDirectory) {
-        await fileSystem.cache.scanDirectory(fullPath);
-      }
-      res.json({ success: true, message: `Cache for ${directoryPath} refreshed.` });
-    } else {
-      systemLogger.logCacheOperation('refresh_full', {}, req);
-      if (fileSystem.cache && fileSystem.cache.refreshCache) {
-        await fileSystem.cache.refreshCache();
-      }
-      res.json({ success: true, message: 'Entire cache refreshed successfully' });
-    }
-  } catch (error) {
-    systemLogger.logSystem('ERROR', `Cache refresh error: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Cache statistics endpoint
-app.get('/api/files/cache-stats', authenticate, async (req, res) => {
-  try {
-    const stats = await fileSystem.getCacheInfo ? await fileSystem.getCacheInfo() : { message: 'Cache stats not available' };
-    res.json(stats);
-  } catch (error) {
-    systemLogger.logSystem('ERROR', `Cache stats error: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
