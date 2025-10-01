@@ -95,7 +95,14 @@ class RedisFileSystemCache extends EventEmitter {
         persistent: true,
         ignoreInitial: true,
         awaitWriteFinish: true,
-        depth: 10 // Limit depth to prevent performance issues
+        depth: 10, // Limit depth to prevent performance issues
+        ignored: [
+          '**/node_modules/**',
+          '**/.git/**',
+          '**/.Trash-1000/**',
+          '**/vm/**',
+          '**/.nfs*',
+        ]
       });
 
       this.watcher
@@ -103,7 +110,14 @@ class RedisFileSystemCache extends EventEmitter {
         .on('change', (filePath) => this.handleFileChange('change', filePath))
         .on('unlink', (filePath) => this.handleFileChange('unlink', filePath))
         .on('addDir', (dirPath) => this.handleDirectoryChange('add', dirPath))
-        .on('unlinkDir', (dirPath) => this.handleDirectoryChange('unlink', dirPath));
+        .on('unlinkDir', (dirPath) => this.handleDirectoryChange('unlink', dirPath))
+        .on('error', (error) => {
+          if (error.code === 'EACCES') {
+            console.warn(`Skipping path due to permission error: ${error.path}`);
+          } else {
+            console.error('File watcher error:', error);
+          }
+        });
 
       console.log('File watcher started for:', this.storagePath);
     } catch (error) {
@@ -188,7 +202,12 @@ class RedisFileSystemCache extends EventEmitter {
       const parentDir = path.dirname(filePath);
       await this.updateDirectoryCache(parentDir);
     } catch (error) {
-      console.error('Failed to update file hash:', error);
+      if (error.code === 'EACCES') {
+        // Skip files we can't access
+        console.warn(`Skipping file hash update for ${error.path} due to permission error.`);
+      } else {
+        console.error('Failed to update file hash:', error);
+      }
     }
   }
 
@@ -243,7 +262,12 @@ class RedisFileSystemCache extends EventEmitter {
       });
       this.directoryCache.set(absoluteDirPath, dirContents);
     } catch (error) {
-      console.error('Failed to update directory cache:', error);
+      if (error.code === 'EACCES') {
+        // Skip directories we can't access
+        console.warn(`Skipping directory cache update for ${error.path} due to permission error.`);
+      } else {
+        console.error('Failed to update directory cache:', error);
+      }
     }
   }
 
@@ -355,7 +379,11 @@ class RedisFileSystemCache extends EventEmitter {
           
           console.log('Completed scan for:', currentDir);
         } catch (error) {
-          console.error('Error scanning directory:', currentDir, error);
+          if (error.code === 'EACCES') {
+            console.warn(`Skipping directory scan for ${currentDir} due to permission error.`);
+          } else {
+            console.error('Error scanning directory:', currentDir, error);
+          }
         }
       }
       
