@@ -134,7 +134,7 @@ app.get('/server.log', requireAdmin, async (req, res) => {
     res.setHeader('Content-Type', 'text/plain');
     res.sendFile(logPath);
   } catch (error) {
-    console.error('Error serving log file:', error);
+    systemLogger.logSystem('ERROR', `Error serving log file: ${error.message}`);
     res.status(500).send('Error reading log file');
   }
 });
@@ -203,7 +203,7 @@ app.post('/auth/login', (req, res, next) => {
       res.status(401).json({ error: 'Invalid credentials' });
     }
   } catch (error) {
-    console.error('Login error:', error);
+    systemLogger.logSystem('ERROR', `Login error: ${error.message}`);
     res.status(401).json({ error: 'Authentication failed' });
   }
 });
@@ -262,14 +262,14 @@ app.post('/auth/change-password', (req, res, next) => {
     // Reload configuration
     await configManager.load();
 
-    console.log('Password changed successfully for user:', req.user.username);
+    systemLogger.logSystem('INFO', `Password changed successfully for user: ${req.user.username}`);
 
     res.json({
       success: true,
       message: 'Password changed successfully. Please login again with your new password.'
     });
   } catch (error) {
-    console.error('Password change error:', error);
+    systemLogger.logSystem('ERROR', `Password change error: ${error.message}`);
     res.status(500).json({ error: 'Failed to change password' });
   }
 });
@@ -312,6 +312,10 @@ app.post('/auth/forgot-password', (req, res, next) => {
 
     await redisClient.set(redisKey, resetToken, { EX: expirySeconds });
 
+    // Log to server.log
+    systemLogger.logSystem('INFO', `Password reset request for user: ${username}, Token: ${resetToken}, Valid for: 15 minutes`);
+
+    // Also display in console for immediate visibility
     console.log('='.repeat(60));
     console.log('🔐 PASSWORD RESET REQUEST');
     console.log('='.repeat(60));
@@ -326,7 +330,7 @@ app.post('/auth/forgot-password', (req, res, next) => {
       message: 'Reset token generated. Check the server console for the token.'
     });
   } catch (error) {
-    console.error('Forgot password error:', error);
+    systemLogger.logSystem('ERROR', `Forgot password error: ${error.message}`);
     res.status(500).json({ error: 'Failed to process forgot password request' });
   }
 });
@@ -392,14 +396,14 @@ app.post('/auth/reset-password', (req, res, next) => {
     // Reload configuration
     await configManager.load();
 
-    console.log('Password reset successfully for user:', username);
+    systemLogger.logSystem('INFO', `Password reset successfully for user: ${username}`);
 
     res.json({
       success: true,
       message: 'Password reset successfully. Please login with your new password.'
     });
   } catch (error) {
-    console.error('Password reset error:', error);
+    systemLogger.logSystem('ERROR', `Password reset error: ${error.message}`);
     res.status(500).json({ error: 'Failed to reset password' });
   }
 });
@@ -418,8 +422,6 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    console.log('Searching for:', query, 'using in-memory cache');
-
     // Add timeout for search operations
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Search timeout')), 15000);
@@ -430,12 +432,14 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       timeoutPromise
     ]);
 
+    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.length });
     res.json(searchResults);
   } catch (error) {
-    console.error('Search error:', error);
     if (error.message === 'Search timeout') {
+      systemLogger.logAPI('search', req.body.query || req.query.query, false, req, { error: 'Search timeout' });
       res.status(408).json({ error: 'Search timeout - try a more specific query' });
     } else {
+      systemLogger.logAPI('search', req.body.query || req.query.query, false, req, { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }
@@ -453,8 +457,6 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    console.log('Searching for:', query, 'using in-memory cache (GET request)');
-
     // Add timeout for search operations
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Search timeout')), 15000);
@@ -465,12 +467,14 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       timeoutPromise
     ]);
 
+    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.length });
     res.json(searchResults);
   } catch (error) {
-    console.error('Search error:', error);
     if (error.message === 'Search timeout') {
+      systemLogger.logAPI('search', req.query.query, false, req, { error: 'Search timeout' });
       res.status(408).json({ error: 'Search timeout - try a more specific query' });
     } else {
+      systemLogger.logAPI('search', req.query.query, false, req, { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }
@@ -559,10 +563,9 @@ app.get('/api/files/*', authenticate, async (req, res) => {
     const fullPath = path.join(storageRoot, requestPath);
 
     if (!fullPath.startsWith(storageRoot)) {
+      systemLogger.logSecurity('path_traversal_attempt', { path: requestPath }, req);
       return res.status(403).json({ error: 'Forbidden: Access denied.' });
     }
-
-    console.log('Listing files in:', fullPath);
 
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
@@ -573,12 +576,14 @@ app.get('/api/files/*', authenticate, async (req, res) => {
       timeoutPromise
     ]);
 
+    systemLogger.logAPI('list', requestPath, true, req, { fileCount: files.length });
     res.json(files);
   } catch (error) {
-    console.error('File listing error:', error);
     if (error.message === 'Request timeout') {
+      systemLogger.logAPI('list', req.params[0] || '/', false, req, { error: 'Request timeout' });
       res.status(408).json({ error: 'Request timeout - file system may be busy' });
     } else {
+      systemLogger.logAPI('list', req.params[0] || '/', false, req, { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }
@@ -600,11 +605,10 @@ app.get('/api/files', authenticate, async (req, res) => {
       targetPath = path.resolve(storageRoot, requestPath);
       // Security check: ensure the path is within storage root
       if (!targetPath.startsWith(storageRoot)) {
+        systemLogger.logSecurity('path_traversal_attempt', { path: requestPath }, req);
         return res.status(403).json({ error: 'Access denied' });
       }
     }
-
-    console.log('Listing files in:', targetPath);
 
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
@@ -630,16 +634,20 @@ app.get('/api/files', authenticate, async (req, res) => {
 
     // Return in the format expected by FileBrowser
     const currentPath = path.relative(storageRoot, targetPath) || '';
+
+    systemLogger.logAPI('list', requestPath || '/', true, req, { fileCount: transformedFiles.length });
+
     res.json({
       files: transformedFiles,
       currentPath: currentPath,
       success: true
     });
   } catch (error) {
-    console.error('File listing error:', error);
     if (error.message === 'Request timeout') {
+      systemLogger.logAPI('list', req.query.path || '/', false, req, { error: 'Request timeout' });
       res.status(408).json({ error: 'Request timeout - file system may be busy' });
     } else {
+      systemLogger.logAPI('list', req.query.path || '/', false, req, { error: error.message });
       res.status(500).json({ error: error.message });
     }
   }
@@ -692,7 +700,7 @@ app.post('/api/folders', authenticate, async (req, res) => {
         await fileSystem.cache.scanDirectory(parentPath);
         systemLogger.logCacheOperation('refresh_after_mkdir', { path: currentPath || '/' }, req);
       } catch (cacheError) {
-        console.error('Cache refresh error (non-fatal):', cacheError.message);
+        // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
       }
     }
 
@@ -907,7 +915,7 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
         await fileSystem.cache.scanDirectory(parentPath);
         systemLogger.logCacheOperation('refresh_after_delete', { path: currentPath || '/' }, req);
       } catch (cacheError) {
-        console.error('Cache refresh error (non-fatal):', cacheError.message);
+        // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
       }
     }
 
@@ -1051,7 +1059,7 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
           }
         }
       } catch (cacheError) {
-        console.error('Cache refresh error (non-fatal):', cacheError.message);
+        // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
       }
     }
 
@@ -1095,7 +1103,7 @@ app.get('/api/settings', authenticate, async (req, res) => {
 
     res.json(settings);
   } catch (error) {
-    console.error('Settings fetch error:', error);
+    systemLogger.logSystem('ERROR', `Settings fetch error: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch settings' });
   }
 });
@@ -1122,22 +1130,21 @@ app.put('/api/settings', authenticate, async (req, res) => {
     // Save configuration to file
     await configManager.save();
 
-    console.log('Security settings updated by user:', req.user?.username);
-    console.log('New settings:', {
+    systemLogger.logSystem('INFO', `Security settings updated by user: ${req.user?.username}, Settings: ${JSON.stringify({
       enableRateLimit,
       enableSecurityHeaders,
       enableInputValidation,
       enableFileUploadSecurity,
       enableRequestLogging,
       enableCSP
-    });
+    })}`);
 
     res.json({
       success: true,
       message: 'Settings saved successfully. Server restart may be required for some changes to take effect.'
     });
   } catch (error) {
-    console.error('Settings save error:', error);
+    systemLogger.logSystem('ERROR', `Settings save error: ${error.message}`);
     res.status(500).json({ error: 'Failed to save settings' });
   }
 });
@@ -1154,7 +1161,7 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
       success: true 
     });
   } catch (error) {
-    console.error('Failed to fetch users:', error);
+    systemLogger.logSystem('ERROR', `Failed to fetch users: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch users' });
   }
 });
@@ -1175,15 +1182,15 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
       permissions
     });
 
-    console.log(`User '${username}' created by admin:`, req.user?.username);
-    
+    systemLogger.logSystem('INFO', `User '${username}' created by admin: ${req.user?.username}`);
+
     res.status(201).json({
       success: true,
       message: `User '${username}' created successfully`,
       user: newUser
     });
   } catch (error) {
-    console.error('Failed to create user:', error);
+    systemLogger.logSystem('ERROR', `Failed to create user: ${error.message}`);
     res.status(400).json({ error: error.message });
   }
 });
@@ -1194,16 +1201,16 @@ app.put('/api/admin/users/:username', requireAdmin, async (req, res) => {
     const updates = req.body;
     
     const updatedUser = await userManager.updateUser(username, updates);
-    
-    console.log(`User '${username}' updated by admin:`, req.user?.username);
-    
+
+    systemLogger.logSystem('INFO', `User '${username}' updated by admin: ${req.user?.username}`);
+
     res.json({
       success: true,
       message: `User '${username}' updated successfully`,
       user: updatedUser
     });
   } catch (error) {
-    console.error('Failed to update user:', error);
+    systemLogger.logSystem('ERROR', `Failed to update user: ${error.message}`);
     res.status(400).json({ error: error.message });
   }
 });
@@ -1213,15 +1220,15 @@ app.delete('/api/admin/users/:username', requireAdmin, async (req, res) => {
     const { username } = req.params;
     
     const result = await userManager.deleteUser(username);
-    
-    console.log(`User '${username}' deleted by admin:`, req.user?.username);
-    
+
+    systemLogger.logSystem('INFO', `User '${username}' deleted by admin: ${req.user?.username}`);
+
     res.json({
       success: true,
       message: result.message
     });
   } catch (error) {
-    console.error('Failed to delete user:', error);
+    systemLogger.logSystem('ERROR', `Failed to delete user: ${error.message}`);
     res.status(400).json({ error: error.message });
   }
 });
@@ -1236,15 +1243,15 @@ app.post('/api/admin/users/:username/change-password', requireAdmin, async (req,
     }
 
     await userManager.updateUser(username, { password: newPassword });
-    
-    console.log(`Password changed for user '${username}' by admin:`, req.user?.username);
-    
+
+    systemLogger.logSystem('INFO', `Password changed for user '${username}' by admin: ${req.user?.username}`);
+
     res.json({
       success: true,
       message: `Password changed for user '${username}'`
     });
   } catch (error) {
-    console.error('Failed to change password:', error);
+    systemLogger.logSystem('ERROR', `Failed to change password: ${error.message}`);
     res.status(400).json({ error: error.message });
   }
 });
@@ -1260,7 +1267,7 @@ app.get('/api/admin/users/:username', requireAdmin, async (req, res) => {
     
     res.json({ user, success: true });
   } catch (error) {
-    console.error('Failed to fetch user:', error);
+    systemLogger.logSystem('ERROR', `Failed to fetch user: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch user' });
   }
 });
@@ -1303,7 +1310,7 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
 
     res.json({ config, success: true });
   } catch (error) {
-    console.error('Failed to fetch config:', error);
+    systemLogger.logSystem('ERROR', `Failed to fetch config: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch configuration' });
   }
 });
@@ -1395,27 +1402,26 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
     
     // Save configuration to file
     await configManager.save();
-    
-    console.log(`Configuration updated by admin: ${req.user?.username}`);
-    console.log('Updated fields:', updatedFields);
-    
+
+    systemLogger.logSystem('INFO', `Configuration updated by admin: ${req.user?.username}, Updated fields: ${JSON.stringify(updatedFields)}`);
+
     // Determine restart requirements
-    const needsRestart = updatedFields.some(field => 
-      field.startsWith('server.') || 
+    const needsRestart = updatedFields.some(field =>
+      field.startsWith('server.') ||
       field === 'security.jwtSecret' ||
       field === 'fileSystem.storagePath'
     );
-    
+
     res.json({
       success: true,
-      message: needsRestart 
+      message: needsRestart
         ? 'Configuration updated successfully. Server restart required for some changes to take effect.'
         : 'Configuration updated successfully.',
       updatedFields,
       needsRestart
     });
   } catch (error) {
-    console.error('Failed to update config:', error);
+    systemLogger.logSystem('ERROR', `Failed to update config: ${error.message}`);
     res.status(500).json({ error: 'Failed to update configuration' });
   }
 });
@@ -1439,7 +1445,7 @@ app.post('/api/admin/config/backup', requireAdmin, async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.json(backup);
   } catch (error) {
-    console.error('Failed to create config backup:', error);
+    systemLogger.logSystem('ERROR', `Failed to create config backup: ${error.message}`);
     res.status(500).json({ error: 'Failed to create configuration backup' });
   }
 });
@@ -1483,15 +1489,15 @@ app.post('/api/admin/config/reset', requireAdmin, async (req, res) => {
     });
     
     await configManager.save();
-    
-    console.log(`Configuration section '${section}' reset to defaults by admin:`, req.user?.username);
-    
+
+    systemLogger.logSystem('INFO', `Configuration section '${section}' reset to defaults by admin: ${req.user?.username}`);
+
     res.json({
       success: true,
       message: `Configuration section '${section}' reset to default values`
     });
   } catch (error) {
-    console.error('Failed to reset config section:', error);
+    systemLogger.logSystem('ERROR', `Failed to reset config section: ${error.message}`);
     res.status(500).json({ error: 'Failed to reset configuration section' });
   }
 });
@@ -1501,15 +1507,15 @@ app.post('/api/admin/cache/clear', requireAdmin, async (req, res) => {
   try {
     // Clear the in-memory cache
     await fileSystem.clearCache();
-    
-    console.log(`Cache cleared by admin: ${req.user?.username}`);
-    
+
+    systemLogger.logSystem('INFO', `Cache cleared by admin: ${req.user?.username}`);
+
     res.json({
       success: true,
       message: 'File cache cleared successfully'
     });
   } catch (error) {
-    console.error('Failed to clear cache:', error);
+    systemLogger.logSystem('ERROR', `Failed to clear cache: ${error.message}`);
     res.status(500).json({ error: 'Failed to clear cache' });
   }
 });
