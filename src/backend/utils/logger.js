@@ -1,14 +1,17 @@
 const fs = require('fs').promises;
 const path = require('path');
 
-// Create logs directory if it doesn't exist
+// Create logs directory if it doesn't exist (for IP-specific logs)
 const logsDir = path.join(__dirname, '../../../logs');
 fs.mkdir(logsDir, { recursive: true }).catch(console.error);
+
+// Server log is in root directory (used by start.sh/status.sh/stop.sh)
+const serverLogFile = path.join(__dirname, '../../../server.log');
 
 class SystemLogger {
   constructor() {
     this.logsDir = logsDir;
-    this.serverLogFile = path.join(this.logsDir, 'server.log');
+    this.serverLogFile = serverLogFile;
   }
 
   // Get client IPv4 address from request
