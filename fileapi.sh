@@ -183,10 +183,56 @@ cmd_download() {
         -o "$output" \
         "$HOST/api/files/download/$file_path"
     
-    if [[ -f "$output" ]]; then
+    if [[ -f "$output" && $(stat -f%z "$output") -gt 0 ]]; then
         log_success "File downloaded to: $output"
     else
         log_error "Download failed!"
+        rm -f "$output" # Clean up empty file
+        exit 1
+    fi
+}
+
+cmd_archive() {
+    local output_file="$1"
+    shift
+    local current_path="$1"
+    shift
+    local items=("$@")
+
+    if [[ -z "$output_file" || -z "$current_path" || ${#items[@]} -eq 0 ]]; then
+        log_error "Usage: $0 archive <output_file.zip> <current_path> <item1> [item2] ..."
+        exit 1
+    fi
+
+    log_info "Creating archive $output_file from items in $current_path..."
+
+    local json_items="["
+    for item in "${items[@]}"; do
+        json_items+="{\"name\":\"$item\"},"
+    done
+    json_items="${json_items%,}" # Remove trailing comma
+    json_items+="]"
+
+    local data="{\"items\":$json_items,\"currentPath\":\"$current_path\"}"
+
+    local token=$(get_token)
+    if [[ -z "$token" ]]; then
+        log_error "Not authenticated. Please login first."
+        exit 1
+    fi
+
+    curl -s -X POST \
+        -H "Authorization: Bearer $token" \
+        -H "Content-Type: application/json" \
+        -d "$data" \
+        -o "$output_file" \
+        "$HOST/api/archive"
+
+    if [[ -f "$output_file" && $(stat -f%z "$output_file") -gt 0 ]]; then
+        log_success "Archive created: $output_file"
+    else
+        log_error "Archive creation failed!"
+        rm -f "$output_file" # Clean up empty file
         exit 1
     fi
 }
@@ -215,16 +261,7 @@ cmd_delete() {
     
     log_info "Deleting: $file_path"
     
-    local dirname=$(dirname "$file_path")
-    local basename=$(basename "$file_path")
-    
-    if [[ "$dirname" == "." ]]; then
-        dirname=""
-    fi
-    
-    local data="{\"items\":[{\"name\":\"$basename\"}],\"currentPath\":\"$dirname\"}"
-    
-    local response=$(api_request "DELETE" "/api/files/delete" "$data")
+    local response=$(api_request "DELETE" "/api/files/$file_path")
     
     if echo "$response" | grep -q '"success":true'; then
         log_success "File deleted successfully!"
@@ -454,6 +491,7 @@ Authentication:
 File Management:
   upload <file> [target_path]   Upload a file
   download <path> [output]      Download a file
+  archive <out.zip> <path> ...items  Create a zip archive of multiple items
   list [path]                   List files in directory
   delete <path>                 Delete file or directory
   mkdir <name> [path]           Create directory
@@ -476,6 +514,7 @@ Examples:
   $0 login admin password123
   $0 upload ./file.zip documents/
   $0 download documents/file.zip ./downloaded.zip
+  $0 archive my_archive.zip . file1.txt dir1
   $0 search "*.pdf"
   $0 cache-refresh smart
 
@@ -510,7 +549,10 @@ main() {
             ;; 
         "download")
             cmd_download "$@"
-            ;; 
+            ;;
+        "archive")
+            cmd_archive "$@"
+            ;;
         "list")
             cmd_list "$@"
             ;; 

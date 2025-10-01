@@ -1,3 +1,8 @@
+// Make LoginForm component available globally (must be before the component definition)
+if (!window.FileTransferApp) {
+    window.FileTransferApp = {};
+}
+
 const LoginForm = ({ onLogin }) => {
     const [credentials, setCredentials] = React.useState({ username: '', password: '' });
     const [loading, setLoading] = React.useState(false);
@@ -64,31 +69,34 @@ const LoginForm = ({ onLogin }) => {
         style: {
             width: '100%',
             height: '100vh',
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            background: 'linear-gradient(135deg, #2c3e50 0%, #34495e 25%, #5d6d7e 50%, #85929e 75%, #aeb6bf 100%)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             fontFamily: 'Arial, sans-serif'
         }
-    }, [
+    }, 
         React.createElement('div', {
+            key: 'login-container',
             style: {
-                background: 'rgba(255, 255, 255, 0.1)',
-                backdropFilter: 'blur(10px)',
+                background: 'rgba(52, 73, 94, 0.3)',
+                backdropFilter: 'blur(15px)',
                 borderRadius: '16px',
                 padding: '40px',
                 width: '400px',
-                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.1)',
-                border: '1px solid rgba(255, 255, 255, 0.2)'
+                boxShadow: '0 12px 40px rgba(0, 0, 0, 0.2)',
+                border: '1px solid rgba(173, 181, 189, 0.3)'
             }
         }, [
             React.createElement('div', {
+                key: 'header-section',
                 style: { 
                     textAlign: 'center', 
                     marginBottom: '30px' 
                 }
             }, [
                 React.createElement('h1', {
+                    key: 'title',
                     style: { 
                         color: 'white', 
                         margin: 0, 
@@ -96,6 +104,7 @@ const LoginForm = ({ onLogin }) => {
                     }
                 }, 'File Transfer'),
                 React.createElement('p', {
+                    key: 'subtitle',
                     style: { 
                         color: 'rgba(255, 255, 255, 0.8)', 
                         margin: '10px 0 0 0' 
@@ -104,10 +113,12 @@ const LoginForm = ({ onLogin }) => {
             ]),
 
             showForgotPassword ? React.createElement('form', {
+                key: 'forgot-password-form',
                 onSubmit: handleForgotPassword,
                 style: { display: 'flex', flexDirection: 'column', gap: '16px' }
             }, [
                 error && React.createElement('div', {
+                    key: 'error-message',
                     style: { 
                         color: '#ef4444', 
                         textAlign: 'center',
@@ -118,6 +129,7 @@ const LoginForm = ({ onLogin }) => {
                 }, error),
                 
                 React.createElement('input', {
+                    key: 'username-input',
                     type: 'text',
                     placeholder: 'Username',
                     value: forgotPasswordUsername,
@@ -134,6 +146,7 @@ const LoginForm = ({ onLogin }) => {
                 }),
                 
                 React.createElement('button', {
+                    key: 'submit-button',
                     type: 'submit',
                     disabled: forgotPasswordLoading,
                     style: {
@@ -149,6 +162,7 @@ const LoginForm = ({ onLogin }) => {
                 }, forgotPasswordLoading ? 'Sending...' : 'Send Reset Link'),
                 
                 forgotPasswordSuccess && React.createElement('div', {
+                    key: 'success-message',
                     style: { 
                         color: '#10b981', 
                         textAlign: 'center',
@@ -159,6 +173,7 @@ const LoginForm = ({ onLogin }) => {
                 }, forgotPasswordSuccess),
                 
                 React.createElement('button', {
+                    key: 'back-button',
                     type: 'button',
                     onClick: () => {
                         setShowForgotPassword(false);
@@ -175,10 +190,12 @@ const LoginForm = ({ onLogin }) => {
                     }
                 }, 'Back to Login')
             ]) : React.createElement('form', {
+                key: 'login-form',
                 onSubmit: handleSubmit,
                 style: { display: 'flex', flexDirection: 'column', gap: '16px' }
             }, [
                 error && React.createElement('div', {
+                    key: 'error-message',
                     style: { 
                         color: '#ef4444', 
                         textAlign: 'center',
@@ -189,6 +206,7 @@ const LoginForm = ({ onLogin }) => {
                 }, error),
                 
                 React.createElement('input', {
+                    key: 'username-input',
                     type: 'text',
                     placeholder: 'Username',
                     value: credentials.username,
@@ -205,6 +223,7 @@ const LoginForm = ({ onLogin }) => {
                 }),
                 
                 React.createElement('input', {
+                    key: 'password-input',
                     type: 'password',
                     placeholder: 'Password',
                     value: credentials.password,
@@ -221,6 +240,7 @@ const LoginForm = ({ onLogin }) => {
                 }),
                 
                 React.createElement('button', {
+                    key: 'login-button',
                     type: 'submit',
                     disabled: loading,
                     style: {
@@ -236,12 +256,14 @@ const LoginForm = ({ onLogin }) => {
                 }, loading ? 'Logging in...' : 'Login'),
                 
                 React.createElement('div', {
+                    key: 'forgot-password-wrapper',
                     style: { 
                         display: 'flex', 
                         justifyContent: 'center' 
                     }
-                }, [
+                }, 
                     React.createElement('button', {
+                        key: 'forgot-password-button',
                         type: 'button',
                         onClick: () => setShowForgotPassword(true),
                         style: {
@@ -252,11 +274,17 @@ const LoginForm = ({ onLogin }) => {
                             fontSize: '14px'
                         }
                     }, 'Forgot Password?')
-                ])
+                )
             ])
         ])
-    ]);
+    );
 };
+
+// Make LoginForm component available globally
+if (!window.FileTransferApp) {
+    window.FileTransferApp = {};
+}
+window.FileTransferApp.LoginForm = LoginForm;
 
 // Export for use in main app
 if (typeof module !== 'undefined' && module.exports) {

@@ -8,21 +8,22 @@
     <!-- Removed Tailwind CSS to avoid conflicts -->
     <style>
         body {
-            background: #f0f0f0;
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 25%, #5d6d7e 50%, #85929e 75%, #aeb6bf 100%);
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             margin: 0;
             padding: 0;
+            min-height: 100vh;
         }
 
         .explorer-window {
-            background: white;
-            border: 1px solid #d1d5db;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 25%, #dee2e6 50%, #ced4da 75%, #adb5bd 100%);
+            border: 1px solid #6c757d;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
         }
 
         .toolbar {
-            background: linear-gradient(to bottom, #e9e9e9, #d6d6d6);
-            border-bottom: 1px solid #c0c0c0;
+            background: linear-gradient(135deg, #495057 0%, #6c757d 50%, #868e96 100%);
+            border-bottom: 1px solid #495057;
             padding: 8px 12px;
             display: flex;
             align-items: center;
@@ -30,10 +31,10 @@
         }
 
         .toolbar-button {
-            background: linear-gradient(to bottom, #f0f0f0, #e0e0e0);
-            border: 1px solid #a0a0a0;
-            border-top: 1px solid #fff;
-            border-left: 1px solid #fff;
+            background: linear-gradient(135deg, #e9ecef 0%, #ced4da 50%, #adb5bd 100%);
+            border: 1px solid #6c757d;
+            border-top: 1px solid #f8f9fa;
+            border-left: 1px solid #f8f9fa;
             padding: 6px 12px;
             border-radius: 3px;
             cursor: pointer;
@@ -41,11 +42,13 @@
             display: flex;
             align-items: center;
             gap: 4px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            color: #212529;
         }
 
         .toolbar-button:hover {
-            background: linear-gradient(to bottom, #f8f8f8, #e8e8e8);
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 50%, #ced4da 100%);
+            box-shadow: 0 3px 6px rgba(0,0,0,0.15);
         }
 
         .toolbar-button:active {
@@ -57,20 +60,21 @@
         }
 
         .address-bar {
-            background: white;
-            border: 1px solid #a0a0a0;
-            border-top: 1px solid #fff;
-            border-left: 1px solid #fff;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border: 1px solid #6c757d;
+            border-top: 1px solid #adb5bd;
+            border-left: 1px solid #adb5bd;
             padding: 6px 8px;
             flex: 1;
             margin: 0 8px;
             font-size: 13px;
             border-radius: 3px;
             box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
+            color: #212529;
         }
 
         .file-list {
-            background: white;
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
             min-height: 400px;
         }
 
@@ -85,12 +89,12 @@
         }
 
         .file-item:hover {
-            background: #e3f2fd;
-            color: #1976d2;
+            background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
+            color: #ffffff;
         }
 
         .file-item.selected {
-            background: #2196f3;
+            background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
             color: white;
         }
 
@@ -114,16 +118,16 @@
         }
 
         .status-bar {
-            background: linear-gradient(to bottom, #e9e9e9, #d6d6d6);
-            border-top: 1px solid #c0c0c0;
+            background: linear-gradient(135deg, #495057 0%, #6c757d 50%, #868e96 100%);
+            border-top: 1px solid #495057;
             padding: 4px 12px;
             font-size: 12px;
-            color: #6b7280;
+            color: #f8f9fa;
         }
 
         .loading-spinner {
-            border: 2px solid #f3f3f3;
-            border-top: 2px solid #2196f3;
+            border: 2px solid rgba(248, 249, 250, 0.3);
+            border-top: 2px solid #17a2b8;
             border-radius: 50%;
             width: 16px;
             height: 16px;
@@ -374,7 +378,7 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 25%, #5d6d7e 50%, #85929e 75%, #aeb6bf 100%);
             color: white;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             position: relative;
@@ -387,7 +391,7 @@
                 right: -160px;
                 width: 320px;
                 height: 320px;
-                background: rgba(147, 51, 234, 0.3);
+                background: rgba(93, 109, 126, 0.3);
                 border-radius: 50%;
                 filter: blur(40px);
                 animation: pulse 4s ease-in-out infinite;
@@ -398,7 +402,7 @@
                 left: -160px;
                 width: 320px;
                 height: 320px;
-                background: rgba(59, 130, 246, 0.3);
+                background: rgba(133, 146, 158, 0.3);
                 border-radius: 50%;
                 filter: blur(40px);
                 animation: pulse 4s ease-in-out infinite 2s;
@@ -421,7 +425,7 @@
                     justify-content: center;
                     width: 60px;
                     height: 60px;
-                    background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+                    background: linear-gradient(135deg, #5d6d7e, #85929e);
                     border-radius: 50%;
                     margin-bottom: 20px;
                     box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
@@ -453,9 +457,8 @@
     <!-- Component Scripts - Load in dependency order -->
     <script src="/components/LoginForm.js"></script>
     <script src="/components/FileBrowser.js"></script>
-    <script src="/App.js"></script>
     
-    <!-- Main Application Entry Point -->
+    <!-- Main Application (includes App component and initialization) -->
     <script src="/app.js"></script>
 
 
