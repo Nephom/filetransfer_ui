@@ -27,6 +27,37 @@ const UserDropdown = ({ user, onSettings, onLogout, onClose }) => {
                 </p>
             </div>
             <button
+                onClick={() => {
+                    // Open admin panel in new window
+                    window.open('/admin', '_blank');
+                    onClose();
+                }}
+                style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '12px 16px',
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'white',
+                    cursor: 'pointer',
+                    transition: 'background 0.3s ease',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    fontSize: '14px',
+                    outline: 'none'
+                }}
+                onMouseEnter={(e) => {
+                    e.target.style.background = 'rgba(255, 255, 255, 0.1)';
+                }}
+                onMouseLeave={(e) => {
+                    e.target.style.background = 'transparent';
+                }}
+            >
+                <span>📋</span>
+                <span>Admin Panel</span>
+            </button>
+            <button
                 onClick={onSettings}
                 style={{
                     width: '100%',

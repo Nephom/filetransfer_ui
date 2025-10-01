@@ -1,316 +1,441 @@
-/**
- * Redis-based File System Cache with Real-time Watching
- * This implementation uses Redis to store file system metadata, allowing for greater scalability.
- */
-
-const fs = require('fs').promises;
-const fsSync = require('fs');
-const path = require('path');
-const chokidar = require('chokidar');
+const EventEmitter = require('events');
 const { createClient } = require('redis');
-const { EventEmitter } = require('events');
-const configManager = require('../config');
+const path = require('path');
+const fs = require('fs').promises;
+const crypto = require('crypto');
+const chokidar = require('chokidar');
 
-// Helper to create a Redis key for a directory
-const dirKey = (relativePath) => `dir:${relativePath}`;
-
+/**
+ * Redis-based file system cache with file watching
+ */
 class RedisFileSystemCache extends EventEmitter {
-  constructor(storagePath) {
+  constructor(storagePath = './storage', redisOptions = {}) {
     super();
-    this.storagePath = path.resolve(storagePath);
+    this.storagePath = storagePath;
+    this.redisOptions = {
+      host: redisOptions.host || 'localhost',
+      port: redisOptions.port || 6379,
+      ...redisOptions
+    };
     this.redisClient = null;
     this.watcher = null;
     this.initialized = false;
+    this.fileHashes = new Map();
+    this.directoryCache = new Map();
+    this.scanQueue = [];
+    this.isScanning = false;
   }
 
   /**
-   * Initialize the Redis client, connect, and start watching
+   * Initialize the cache and connect to Redis
    */
   async initialize() {
-    if (this.initialized) return;
-
-    console.log('Initializing Redis file system cache...');
-
-    // 1. Connect to Redis
     try {
-      const redisUrl = configManager.get('redisUrl');
-      this.redisClient = createClient({ url: redisUrl });
-      this.redisClient.on('error', (err) => console.error('Redis Client Error', err));
+      console.log('Initializing Redis file system cache...');
+      
+      // Connect to Redis
+      this.redisClient = createClient(this.redisOptions);
+      
+      this.redisClient.on('error', (err) => {
+        console.error('Redis Client Error:', err);
+      });
+      
+      this.redisClient.on('connect', () => {
+        console.log('Connected to Redis');
+      });
+      
       await this.redisClient.connect();
-      console.log('Connected to Redis successfully.');
+      
+      // Initialize file hashes
+      await this.loadFileHashes();
+      
+      // Start file watcher to monitor changes
+      await this.startFileWatcher();
+      
+      this.initialized = true;
+      console.log('Redis file system cache initialized successfully');
+      
+      return true;
     } catch (error) {
-      console.error('Failed to connect to Redis:', error);
-      // If Redis connection fails, we cannot proceed.
-      throw new Error('Redis connection failed. Cache cannot be initialized.');
+      console.error('Failed to initialize Redis cache:', error);
+      return false;
     }
-
-    // 2. Initial scan and cache population
-    console.log('Starting initial file system scan...');
-    await this.redisClient.flushDb(); // Clear old cache before starting
-    await this.scanDirectory(this.storagePath);
-
-    // 3. Start watching for changes
-    // this.startWatching();
-
-    this.initialized = true;
-    const keys = await this.redisClient.keys('*');
-    console.log(`Cache initialized with ${keys.length} directory keys in Redis.`);
   }
 
   /**
-   * Start watching the file system for changes
+   * Load file hashes from Redis
    */
-  startWatching() {
-    if (this.watcher) {
-      this.watcher.close();
-    }
-
-    this.watcher = chokidar.watch(this.storagePath, {
-      ignored: [
-        '**/node_modules/**',
-        '**/.git/**',
-        '**/*.log',
-        '**/temp/**',
-        '**/dist/**',
-        /(^|[\/\\])\../, // Ignore dotfiles and dot-directories
-      ],
-      persistent: true,
-      ignoreInitial: true,
-      followSymlinks: false,
-      awaitWriteFinish: {
-        stabilityThreshold: 200,
-        pollInterval: 100
+  async loadFileHashes() {
+    try {
+      // Get all file entries from Redis
+      const keys = await this.redisClient.keys('file:*');
+      
+      for (const key of keys) {
+        const fileData = await this.redisClient.hGetAll(key);
+        if (fileData && fileData.path && fileData.hash) {
+          this.fileHashes.set(fileData.path, {
+            hash: fileData.hash,
+            modified: fileData.modified
+          });
+        }
       }
-    });
-
-    this.watcher
-      .on('add', (filePath) => this.updateFileInCache(filePath))
-      .on('change', (filePath) => this.updateFileInCache(filePath))
-      .on('unlink', (filePath) => this.removeFileFromCache(filePath))
-      .on('addDir', (dirPath) => this.updateFileInCache(dirPath))
-      .on('unlinkDir', (dirPath) => this.removeDirectoryFromCache(dirPath))
-      .on('error', (error) => console.error('Watcher error:', error));
-
-    console.log('File system watcher started');
+      
+      console.log(`Loaded ${this.fileHashes.size} file hashes from Redis`);
+    } catch (error) {
+      console.error('Failed to load file hashes:', error);
+    }
   }
 
   /**
-   * Scan directory recursively and build cache in Redis
+   * Start file watcher to monitor changes
+   */
+  async startFileWatcher() {
+    try {
+      this.watcher = chokidar.watch(this.storagePath, {
+        persistent: true,
+        ignoreInitial: true,
+        awaitWriteFinish: true,
+        depth: 10 // Limit depth to prevent performance issues
+      });
+
+      this.watcher
+        .on('add', (filePath) => this.handleFileChange('add', filePath))
+        .on('change', (filePath) => this.handleFileChange('change', filePath))
+        .on('unlink', (filePath) => this.handleFileChange('unlink', filePath))
+        .on('addDir', (dirPath) => this.handleDirectoryChange('add', dirPath))
+        .on('unlinkDir', (dirPath) => this.handleDirectoryChange('unlink', dirPath));
+
+      console.log('File watcher started for:', this.storagePath);
+    } catch (error) {
+      console.error('Failed to start file watcher:', error);
+    }
+  }
+
+  /**
+   * Handle file change events
+   */
+  async handleFileChange(event, filePath) {
+    try {
+      const relativePath = path.relative(this.storagePath, filePath);
+      
+      switch (event) {
+        case 'add':
+        case 'change':
+          await this.updateFileHash(filePath);
+          break;
+        case 'unlink':
+          await this.removeFileFromCache(filePath);
+          break;
+      }
+
+      console.log(`File ${event}:`, relativePath);
+      this.emit('fileChange', { event, path: relativePath, fullPath: filePath });
+    } catch (error) {
+      console.error('Error handling file change:', error);
+    }
+  }
+
+  /**
+   * Handle directory change events
+   */
+  async handleDirectoryChange(event, dirPath) {
+    try {
+      const relativePath = path.relative(this.storagePath, dirPath);
+      
+      switch (event) {
+        case 'add':
+          await this.updateDirectoryCache(dirPath);
+          break;
+        case 'unlink':
+          await this.removeDirectoryFromCache(dirPath);
+          break;
+      }
+
+      console.log(`Directory ${event}:`, relativePath);
+      this.emit('directoryChange', { event, path: relativePath, fullPath: dirPath });
+    } catch (error) {
+      console.error('Error handling directory change:', error);
+    }
+  }
+
+  /**
+   * Update file hash in cache
+   */
+  async updateFileHash(filePath) {
+    try {
+      const stat = await fs.stat(filePath);
+      const content = await fs.readFile(filePath);
+      const hash = crypto.createHash('md5').update(content).digest('hex');
+      
+      const fileKey = `file:${filePath}`;
+      const fileData = {
+        path: filePath,
+        hash: hash,
+        size: stat.size,
+        modified: stat.mtime.getTime(),
+        isDirectory: false
+      };
+
+      // Convert all values to strings for Redis
+      const redisFileData = {};
+      for (const [key, value] of Object.entries(fileData)) {
+        redisFileData[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      }
+      await this.redisClient.hSet(fileKey, redisFileData);
+      this.fileHashes.set(filePath, { hash, modified: stat.mtime.getTime() });
+      
+      // Update parent directory cache
+      const parentDir = path.dirname(filePath);
+      await this.updateDirectoryCache(parentDir);
+    } catch (error) {
+      console.error('Failed to update file hash:', error);
+    }
+  }
+
+  /**
+   * Update directory cache
+   */
+  async updateDirectoryCache(dirPath) {
+    try {
+      // Ensure the directory path is absolute before using
+      const absoluteDirPath = path.resolve(dirPath);
+      const files = await fs.readdir(absoluteDirPath);
+      const dirContents = [];
+
+      for (const fileName of files) {
+        const fullPath = path.join(absoluteDirPath, fileName);
+        const fileKey = `file:${fullPath}`;
+        const fileData = await this.redisClient.hGetAll(fileKey);
+
+        if (Object.keys(fileData).length > 0) {
+          dirContents.push(fileData);
+        } else {
+          // Create entry for file not yet in cache
+          try {
+            const stat = await fs.stat(fullPath);
+            const relativePath = path.relative(this.storagePath, fullPath);
+            const hash = stat.isDirectory() ? 'directory' : crypto.createHash('md5').update(relativePath).digest('hex');
+            
+            const newFileData = {
+              path: fullPath,
+              hash: hash,
+              size: stat.size || 0,
+              modified: stat.mtime.getTime(),
+              isDirectory: stat.isDirectory()
+            };
+
+            // Convert all values to strings for Redis
+            const redisNewFileData = {};
+            for (const [key, value] of Object.entries(newFileData)) {
+              redisNewFileData[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
+            }
+            await this.redisClient.hSet(fileKey, redisNewFileData);
+            dirContents.push(newFileData);
+          } catch (err) {
+            console.error('Error processing file in directory:', fullPath, err);
+          }
+        }
+      }
+
+      const dirKey = `dir:${absoluteDirPath}`;
+      await this.redisClient.hSet(dirKey, { 
+        contents: typeof dirContents === 'object' ? JSON.stringify(dirContents) : String(dirContents) 
+      });
+      this.directoryCache.set(absoluteDirPath, dirContents);
+    } catch (error) {
+      console.error('Failed to update directory cache:', error);
+    }
+  }
+
+  /**
+   * Get directory contents from cache
+   */
+  async getDirectoryContents(dirPath) {
+    try {
+      // Ensure the directory path is absolute before using
+      const absoluteDirPath = path.resolve(dirPath);
+      const dirKey = `dir:${absoluteDirPath}`;
+      const dirData = await this.redisClient.hGetAll(dirKey);
+
+      if (Object.keys(dirData).length > 0) {
+        const contents = JSON.parse(dirData.contents || '[]');
+        return contents;
+      }
+
+      // If not in cache, scan the directory and cache it
+      await this.scanDirectory(absoluteDirPath);
+      const cachedContents = this.directoryCache.get(absoluteDirPath);
+      return cachedContents || [];
+    } catch (error) {
+      console.error('Failed to get directory contents:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Remove file from cache
+   */
+  async removeFileFromCache(filePath) {
+    try {
+      // Ensure the file path is absolute before using
+      const absoluteFilePath = path.resolve(filePath);
+      const fileKey = `file:${absoluteFilePath}`;
+      await this.redisClient.del(fileKey);
+      this.fileHashes.delete(absoluteFilePath);
+
+      // Update parent directory cache
+      const parentDir = path.dirname(absoluteFilePath);
+      await this.updateDirectoryCache(parentDir);
+    } catch (error) {
+      console.error('Failed to remove file from cache:', error);
+    }
+  }
+
+  /**
+   * Remove directory from cache
+   */
+  async removeDirectoryFromCache(dirPath) {
+    try {
+      // Ensure the directory path is absolute before using
+      const absoluteDirPath = path.resolve(dirPath);
+      // Remove all files in the directory recursively
+      const dirKey = `dir:${absoluteDirPath}`;
+      await this.redisClient.del(dirKey);
+      this.directoryCache.delete(absoluteDirPath);
+
+      // Remove individual file entries under this directory
+      const fileKeys = await this.redisClient.keys(`file:${absoluteDirPath}/*`);
+      if (fileKeys.length > 0) {
+        await this.redisClient.del(fileKeys);
+      }
+    } catch (error) {
+      console.error('Failed to remove directory from cache:', error);
+    }
+  }
+
+  /**
+   * Scan and cache a directory
    */
   async scanDirectory(dirPath) {
     try {
-      const items = await fs.readdir(dirPath);
-      const relativePath = path.relative(this.storagePath, dirPath) || '.';
-
-      for (const item of items) {
-        const itemPath = path.join(dirPath, item);
-        try {
-          const lstat = await fs.lstat(itemPath);
-          if (lstat.isSymbolicLink()) continue;
-
-          const stats = await fs.stat(itemPath);
-          await fs.access(itemPath, fsSync.constants.R_OK);
-
-          const fileInfo = {
-            name: item,
-            isDirectory: stats.isDirectory(),
-            size: stats.size,
-            modified: stats.mtime.toISOString(),
-            created: stats.birthtime.toISOString(),
-          };
-
-          // Add to Redis Hash for the parent directory
-          await this.redisClient.hSet(dirKey(relativePath), item, JSON.stringify(fileInfo));
-
-          if (stats.isDirectory()) {
-            await this.scanDirectory(itemPath);
-          }
-        } catch (statError) {
-          console.warn(`Skipping ${itemPath}:`, statError.message);
-        }
-      }
-    } catch (error) {
-      console.error(`Error scanning directory ${dirPath}:`, error.message);
-    }
-  }
-
-  /**
-   * Add or update a file/directory in the Redis cache
-   */
-  async updateFileInCache(filePath) {
-    try {
-      const relativePath = path.relative(this.storagePath, filePath);
-      const parentDir = path.dirname(relativePath);
-      const itemName = path.basename(filePath);
-
-      const lstat = await fs.lstat(filePath);
-      if (lstat.isSymbolicLink()) return;
-
-      const stats = await fs.stat(filePath);
-      await fs.access(filePath, fsSync.constants.R_OK);
-
-      const fileInfo = {
-        name: itemName,
-        isDirectory: stats.isDirectory(),
-        size: stats.size,
-        modified: stats.mtime.toISOString(),
-        created: stats.birthtime.toISOString(),
-      };
-
-      await this.redisClient.hSet(dirKey(parentDir), itemName, JSON.stringify(fileInfo));
-      this.emit('change', { operation: 'change', path: relativePath });
-    } catch (error) {
-      // If file is gone before we can stat it, it will be handled by the remove event
-      if (error.code !== 'ENOENT') {
-        console.warn(`Error updating file in cache ${filePath}:`, error.message);
-      }
-    }
-  }
-
-  /**
-   * Remove a file from the Redis cache
-   */
-  async removeFileFromCache(filePath) {
-    const relativePath = path.relative(this.storagePath, filePath);
-    const parentDir = path.dirname(relativePath);
-    const itemName = path.basename(filePath);
-
-    await this.redisClient.hDel(dirKey(parentDir), itemName);
-    this.emit('change', { operation: 'remove', path: relativePath });
-  }
-
-  /**
-   * Remove a directory and all its contents from the Redis cache
-   */
-  async removeDirectoryFromCache(dirPath) {
-    const relativePath = path.relative(this.storagePath, dirPath);
-    const parentDir = path.dirname(relativePath);
-    const itemName = path.basename(dirPath);
-
-    // Delete the key for the directory itself
-    await this.redisClient.del(dirKey(relativePath));
-    // Delete the entry from its parent
-    await this.redisClient.hDel(dirKey(parentDir), itemName);
-    
-    this.emit('change', { operation: 'removeDir', path: relativePath });
-  }
-
-  /**
-   * Search files by name across the entire cache
-   * PERFORMANCE FIX: Use SCAN instead of KEYS for better scalability
-   */
-  async searchFiles(query, options = {}) {
-    if (!this.initialized) await this.initialize();
-    const results = [];
-    const lowerQuery = query.toLowerCase();
-    const maxResults = options.limit || 1000; // Prevent memory overflow
-    let totalProcessed = 0;
-    
-    // Use SCAN instead of KEYS to avoid blocking Redis
-    let cursor = 0;
-    do {
-      const reply = await this.redisClient.scan(cursor, {
-        MATCH: 'dir:*',
-        COUNT: 100 // Process in chunks
-      });
-      cursor = reply.cursor;
+      // Ensure the directory path is absolute before scanning
+      const absoluteDirPath = path.resolve(dirPath);
+      console.log('Scanning directory:', absoluteDirPath);
       
-      for (const key of reply.keys) {
-        if (results.length >= maxResults) break;
-        
-        const items = await this.redisClient.hGetAll(key);
-        for (const itemName in items) {
-          if (results.length >= maxResults) break;
-          
-          if (itemName.toLowerCase().includes(lowerQuery)) {
-            const fileInfo = JSON.parse(items[itemName]);
-            const relativePath = key.substring(4); // remove 'dir:'
-            results.push({
-              name: fileInfo.name,
-              path: path.join(relativePath, fileInfo.name),
-              isDirectory: fileInfo.isDirectory,
-              size: fileInfo.size,
-              modified: fileInfo.modified,
-            });
-          }
-        }
-        totalProcessed++;
+      // Add to scan queue to prevent concurrent scans
+      this.scanQueue.push(absoluteDirPath);
+      if (this.isScanning) {
+        return; // Already scanning, this will be processed in the queue
       }
-    } while (cursor !== 0 && results.length < maxResults);
-    
-    console.log(`Search processed ${totalProcessed} directories, found ${results.length} results`);
-    
-    results.sort((a, b) => {
-      if (a.isDirectory !== b.isDirectory) return b.isDirectory - a.isDirectory;
-      return a.name.localeCompare(b.name);
-    });
-    
-    return results.slice(0, maxResults);
-  }
-
-  /**
-   * Get files in a specific directory
-   */
-  async getFilesInDirectory(dirPath = '.') {
-    if (!this.initialized) await this.initialize();
-    const results = [];
-    const items = await this.redisClient.hGetAll(dirKey(dirPath));
-
-    for (const itemName in items) {
-      const fileInfo = JSON.parse(items[itemName]);
-      results.push({
-        name: fileInfo.name,
-        path: path.join(dirPath, fileInfo.name),
-        isDirectory: fileInfo.isDirectory,
-        size: fileInfo.size,
-        modified: fileInfo.modified,
-      });
+      
+      this.isScanning = true;
+      
+      while (this.scanQueue.length > 0) {
+        const currentDir = this.scanQueue.shift();
+        
+        try {
+          const items = await fs.readdir(currentDir, { withFileTypes: true });
+          const scanPromises = [];
+          
+          for (const item of items) {
+            const fullPath = path.join(currentDir, item.name);
+            
+            if (item.isDirectory()) {
+              // Add subdirectory to scan queue
+              this.scanQueue.push(fullPath);
+              // For directories, update directory cache instead of file hash
+              scanPromises.push(this.updateDirectoryCache(fullPath));
+            } else {
+              scanPromises.push(this.updateFileHash(fullPath));
+            }
+          }
+          
+          await Promise.all(scanPromises);
+          await this.updateDirectoryCache(currentDir);
+          
+          console.log('Completed scan for:', currentDir);
+        } catch (error) {
+          console.error('Error scanning directory:', currentDir, error);
+        }
+      }
+      
+      this.isScanning = false;
+    } catch (error) {
+      console.error('Failed to scan directory:', error);
     }
-
-    results.sort((a, b) => {
-      if (a.isDirectory !== b.isDirectory) return b.isDirectory - a.isDirectory;
-      return a.name.localeCompare(b.name);
-    });
-
-    return results;
   }
 
   /**
-   * Get information for a single file
+   * Refresh the entire cache
    */
-  async getFileInfo(filePath) {
-    if (!this.initialized) await this.initialize();
-    const relativePath = path.relative(this.storagePath, filePath);
-    const parentDir = path.dirname(relativePath);
-    const itemName = path.basename(filePath);
-
-    const fileInfoString = await this.redisClient.hGet(dirKey(parentDir), itemName);
-    if (!fileInfoString) {
-      return null;
+  async refreshCache() {
+    try {
+      console.log('Refreshing entire file system cache...');
+      
+      // Clear existing cache
+      await this.clearCache();
+      
+      // Re-scan root directory, ensuring it's absolute
+      await this.scanDirectory(path.resolve(this.storagePath));
+      
+      console.log('Cache refresh completed');
+    } catch (error) {
+      console.error('Failed to refresh cache:', error);
     }
-
-    return JSON.parse(fileInfoString);
   }
 
   /**
-   * Get cache statistics
+   * Add or update a path in the cache
    */
-  async getStats() {
-    if (!this.initialized) await this.initialize();
-    const keys = await this.redisClient.keys('dir:*');
-    let totalFiles = 0;
-    for (const key of keys) {
-        totalFiles += await this.redisClient.hLen(key);
+  async addOrUpdatePath(fullPath) {
+    try {
+      // Ensure the path is absolute before using
+      const absolutePath = path.resolve(fullPath);
+      const stat = await fs.stat(absolutePath);
+      
+      if (stat.isDirectory()) {
+        await this.updateDirectoryCache(absolutePath);
+      } else {
+        await this.updateFileHash(absolutePath);
+      }
+    } catch (error) {
+      console.error('Failed to add/update path:', error);
     }
-    return {
-      totalFiles: totalFiles,
-      totalDirectories: keys.length,
-      isWatching: this.watcher !== null,
-    };
   }
 
   /**
-   * Close the cache and disconnect from Redis
+   * Get cache information
+   */
+  async getCacheInfo() {
+    try {
+      const totalFiles = this.fileHashes.size;
+      const totalDirectories = this.directoryCache.size;
+      
+      // Get Redis info
+      const dbSize = await this.redisClient.dbSize();
+      
+      return {
+        initialized: this.initialized,
+        totalFiles,
+        totalDirectories,
+        redisDbSize: dbSize,
+        isWatching: !!this.watcher
+      };
+    } catch (error) {
+      console.error('Failed to get cache info:', error);
+      return {
+        initialized: this.initialized,
+        totalFiles: 0,
+        totalDirectories: 0,
+        redisDbSize: 0,
+        isWatching: !!this.watcher,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Close the cache and disconnect from Redis.
    */
   async close() {
     if (this.watcher) {
@@ -323,6 +448,87 @@ class RedisFileSystemCache extends EventEmitter {
     }
     this.initialized = false;
     console.log('Redis cache closed');
+  }
+
+  /**
+   * Clear all cache data
+   */
+  async clearCache() {
+    if (!this.redisClient || !this.redisClient.isReady) {
+      console.error('Cannot clear cache: Redis client is not connected.');
+      return;
+    }
+    console.log('Clearing file system cache...');
+    await this.redisClient.flushDb();
+    console.log('Cache cleared successfully.');
+    this.emit('clear');
+  }
+
+  /**
+   * Get files in a directory from cache
+   */
+  async getFilesInDirectory(dirPath) {
+    try {
+      // Ensure the directory path is absolute before using
+      const absoluteDirPath = path.resolve(dirPath);
+      const dirKey = `dir:${absoluteDirPath}`;
+      const dirData = await this.redisClient.hGetAll(dirKey);
+
+      if (Object.keys(dirData).length > 0) {
+        const contents = JSON.parse(dirData.contents || '[]');
+        return contents;
+      }
+
+      // If not in cache, scan the directory and cache it
+      await this.scanDirectory(absoluteDirPath);
+      const cachedContents = this.directoryCache.get(absoluteDirPath);
+      return cachedContents || [];
+    } catch (error) {
+      console.error('Failed to get files in directory:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Search files in the cache
+   */
+  async searchFiles(query) {
+    try {
+      const keys = await this.redisClient.keys('file:*');
+      const results = [];
+      
+      for (const key of keys) {
+        const fileData = await this.redisClient.hGetAll(key);
+        if (fileData && fileData.path && fileData.path.toLowerCase().includes(query.toLowerCase())) {
+          // Parse JSON values if needed
+          if (fileData.size && typeof fileData.size === 'string') {
+            fileData.size = parseInt(fileData.size);
+          }
+          if (fileData.modified && typeof fileData.modified === 'string') {
+            fileData.modified = parseInt(fileData.modified);
+          }
+          if (fileData.isDirectory && typeof fileData.isDirectory === 'string') {
+            fileData.isDirectory = fileData.isDirectory === 'true';
+          }
+          // If any field is JSON string, parse it
+          for (const [field, value] of Object.entries(fileData)) {
+            if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
+              try {
+                fileData[field] = JSON.parse(value);
+              } catch (e) {
+                // Keep as is if not valid JSON
+              }
+            }
+          }
+          results.push(fileData);
+        }
+      }
+      
+      return results;
+    } catch (error) {
+      console.error('Failed to search files:', error);
+      return [];
+    }
   }
 }
 
