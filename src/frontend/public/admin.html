@@ -188,14 +188,139 @@
                 width: 95%;
                 padding: 15px;
             }
-            
+
             .panel-grid {
                 grid-template-columns: 1fr;
             }
-            
+
             .action-buttons {
                 grid-template-columns: 1fr;
             }
+        }
+
+        /* Modal Styles */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(8px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            pointer-events: all;
+        }
+
+        .modal-content {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(30px);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            padding: 30px;
+            width: 90%;
+            max-width: 900px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+            transform: scale(0.9);
+            transition: transform 0.3s ease;
+        }
+
+        .modal-overlay.active .modal-content {
+            transform: scale(1);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.8rem;
+        }
+
+        .modal-close {
+            background: rgba(239, 68, 68, 0.3);
+            border: 1px solid rgba(239, 68, 68, 0.5);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .modal-close:hover {
+            background: rgba(239, 68, 68, 0.5);
+        }
+
+        .user-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        .user-table th,
+        .user-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .user-table th {
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .user-table tr:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .log-viewer {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            padding: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            max-height: 500px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 0.85rem;
+            margin-left: 5px;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
         }
     </style>
 </head>
@@ -267,6 +392,66 @@
                 </select>
             </div>
             <button class="btn" onclick="performAction()">Execute Action</button>
+        </div>
+    </div>
+
+    <!-- User Management Modal -->
+    <div id="userManagementModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>👥 User Management</h2>
+                <button class="modal-close" onclick="closeModal('userManagementModal')">✕ Close</button>
+            </div>
+            <div class="btn-group">
+                <button class="btn" onclick="showAddUserForm()">➕ Add New User</button>
+                <button class="btn" onclick="loadUsers()">🔄 Refresh</button>
+            </div>
+            <div id="addUserForm" style="display: none; margin-top: 20px;">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Username:</label>
+                        <input type="text" id="newUsername" class="form-control" placeholder="Enter username">
+                    </div>
+                    <div class="form-group">
+                        <label>Email:</label>
+                        <input type="email" id="newEmail" class="form-control" placeholder="Enter email">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Password:</label>
+                    <input type="password" id="newPassword" class="form-control" placeholder="Enter password (min 6 characters)">
+                </div>
+                <div class="form-group">
+                    <p style="font-size: 0.9rem; opacity: 0.7; margin: 0;">
+                        ℹ️ New users will be created with 'User' role and standard permissions (read, upload, delete).
+                        Admin accounts are managed in config.ini only.
+                    </p>
+                </div>
+                <div class="btn-group">
+                    <button class="btn" onclick="createUser()">✓ Create User</button>
+                    <button class="btn danger" onclick="hideAddUserForm()">✕ Cancel</button>
+                </div>
+            </div>
+            <div id="usersList">
+                <p style="text-align: center; margin-top: 40px; opacity: 0.7;">Loading users...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Viewer Modal -->
+    <div id="logViewerModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📋 Server Logs</h2>
+                <button class="modal-close" onclick="closeModal('logViewerModal')">✕ Close</button>
+            </div>
+            <div class="btn-group">
+                <button class="btn" onclick="refreshLogs()">🔄 Refresh</button>
+                <button class="btn" onclick="downloadLogs()">⬇️ Download</button>
+            </div>
+            <div id="logContent" class="log-viewer" style="margin-top: 20px;">
+                Loading logs...
+            </div>
         </div>
     </div>
 
@@ -366,9 +551,8 @@
                         });
                         break;
                     case 'logs':
-                        alert('Viewing logs would open in a new window');
-                        // In a real implementation: fetch and display logs
-                        break;
+                        openLogViewer();
+                        return;
                 }
                 
                 if (response && response.ok) {
@@ -382,13 +566,217 @@
             }
         }
 
-        // Placeholder functions for modal windows
-        function openConfigModal() {
-            alert('Configuration management would open in a modal');
+        // Modal management functions
+        function openModal(modalId) {
+            document.getElementById(modalId).classList.add('active');
         }
 
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+
+        // User Management Modal Functions
         function openUserManagement() {
-            alert('User management would open in a modal');
+            openModal('userManagementModal');
+            loadUsers();
+        }
+
+        function showAddUserForm() {
+            document.getElementById('addUserForm').style.display = 'block';
+        }
+
+        function hideAddUserForm() {
+            document.getElementById('addUserForm').style.display = 'none';
+            document.getElementById('newUsername').value = '';
+            document.getElementById('newEmail').value = '';
+            document.getElementById('newPassword').value = '';
+        }
+
+        async function loadUsers() {
+            try {
+                const response = await fetch('/api/admin/users', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load users');
+                }
+
+                const data = await response.json();
+                displayUsers(data.users || []);
+            } catch (error) {
+                console.error('Error loading users:', error);
+                document.getElementById('usersList').innerHTML = '<p style="color: #ef4444; text-align: center;">Failed to load users</p>';
+            }
+        }
+
+        function displayUsers(users) {
+            const usersList = document.getElementById('usersList');
+            if (users.length === 0) {
+                usersList.innerHTML = '<p style="text-align: center; opacity: 0.7;">No users found</p>';
+                return;
+            }
+
+            let html = '<table class="user-table"><thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Source</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+
+            users.forEach(user => {
+                const lastLogin = user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never';
+                const isConfigUser = user.isConfigUser || user.created === 'System Default';
+                const source = isConfigUser ? '<span style="background: rgba(147, 51, 234, 0.3); padding: 4px 8px; border-radius: 4px; font-size: 0.85rem;">config.ini</span>' : '<span style="background: rgba(59, 130, 246, 0.3); padding: 4px 8px; border-radius: 4px; font-size: 0.85rem;">users.json</span>';
+                const roleColor = user.role === 'admin' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(34, 197, 94, 0.3)';
+
+                html += `
+                    <tr>
+                        <td>${user.username}</td>
+                        <td>${user.email || 'N/A'}</td>
+                        <td><span style="background: ${roleColor}; padding: 4px 8px; border-radius: 4px;">${user.role}</span></td>
+                        <td>${source}</td>
+                        <td>${lastLogin}</td>
+                        <td>
+                            ${isConfigUser
+                                ? '<span style="opacity: 0.5; font-size: 0.85rem;">🔒 System User</span>'
+                                : `<button class="btn btn-small" onclick="editUser('${user.username}')">✏️ Edit</button>
+                                   <button class="btn btn-small danger" onclick="deleteUser('${user.username}')">🗑️ Delete</button>`
+                            }
+                        </td>
+                    </tr>
+                `;
+            });
+
+            html += '</tbody></table>';
+            usersList.innerHTML = html;
+        }
+
+        async function createUser() {
+            const username = document.getElementById('newUsername').value.trim();
+            const email = document.getElementById('newEmail').value.trim();
+            const password = document.getElementById('newPassword').value;
+
+            if (!username || !password) {
+                alert('Username and password are required');
+                return;
+            }
+
+            if (username.length < 3) {
+                alert('Username must be at least 3 characters long');
+                return;
+            }
+
+            if (password.length < 6) {
+                alert('Password must be at least 6 characters long');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/users', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username,
+                        email,
+                        password,
+                        role: 'user' // Always create as user role
+                    })
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to create user');
+                }
+
+                alert('User created successfully!');
+                hideAddUserForm();
+                loadUsers();
+            } catch (error) {
+                console.error('Error creating user:', error);
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        async function deleteUser(username) {
+            if (!confirm(`Are you sure you want to delete user "${username}"?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/users/${username}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to delete user');
+                }
+
+                alert('User deleted successfully!');
+                loadUsers();
+            } catch (error) {
+                console.error('Error deleting user:', error);
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        function editUser(username) {
+            alert(`Edit functionality for user "${username}" would be implemented here`);
+            // In a real implementation: show edit form with user data
+        }
+
+        // Log Viewer Modal Functions
+        function openLogViewer() {
+            openModal('logViewerModal');
+            loadLogs();
+        }
+
+        async function loadLogs() {
+            const logContent = document.getElementById('logContent');
+            logContent.textContent = 'Loading logs...';
+
+            try {
+                // Fetch the server log file
+                const response = await fetch('/server.log', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load logs');
+                }
+
+                const logs = await response.text();
+
+                // Display last 100 lines
+                const lines = logs.split('\n');
+                const lastLines = lines.slice(-100).join('\n');
+
+                logContent.textContent = lastLines || 'No logs available';
+
+                // Auto-scroll to bottom
+                logContent.scrollTop = logContent.scrollHeight;
+            } catch (error) {
+                console.error('Error loading logs:', error);
+                logContent.textContent = `Error loading logs: ${error.message}`;
+            }
+        }
+
+        function refreshLogs() {
+            loadLogs();
+        }
+
+        function downloadLogs() {
+            window.open('/server.log', '_blank');
+        }
+
+        // Placeholder functions for other modals
+        function openConfigModal() {
+            alert('Configuration management would open in a modal');
         }
 
         function viewSystemStats() {

@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2025-10-01T12:40:17.947Z",
+  "lastUpdated": "2025-10-01T13:00:06.467Z",
   "users": [
     {
       "id": 1,
@@ -21,7 +21,7 @@
       "role": "admin",
       "active": true,
       "created": "2025-10-01T04:05:07.055Z",
-      "lastLogin": "2025-10-01T12:40:17.947Z",
+      "lastLogin": "2025-10-01T13:00:06.467Z",
       "email": "admin@localhost",
       "permissions": [
         "all"
