@@ -1,3 +1,8 @@
+// Make FileBrowser component available globally (must be before the component definition)
+if (!window.FileTransferApp) {
+    window.FileTransferApp = {};
+}
+
 const FileBrowser = ({ token, user }) => {
     const [files, setFiles] = React.useState([]);
     const [loading, setLoading] = React.useState(true);
@@ -9,25 +14,31 @@ const FileBrowser = ({ token, user }) => {
     const [showUploadModal, setShowUploadModal] = React.useState(false);
     const [uploadingFiles, setUploadingFiles] = React.useState([]);
     const [clipboard, setClipboard] = React.useState({ items: [], action: null });
-    const [showChangePasswordModal, setShowChangePasswordModal] = React.useState(false);
-    const [contextMenu, setContextMenu] = React.useState(null);
+    const [showNewFolderModal, setShowNewFolderModal] = React.useState(false);
     const [newFolderName, setNewFolderName] = React.useState('');
+    const [showUserDropdown, setShowUserDropdown] = React.useState(false);
+    const [showChangePasswordModal, setShowChangePasswordModal] = React.useState(false);
+    const [isDragging, setIsDragging] = React.useState(false);
+
+    React.useEffect(() => {
+        fetchFiles();
+    }, []);
 
     // Timeout ID for debouncing search
     const timeoutId = setTimeout(() => {}, 0);
     clearTimeout(timeoutId);
 
-    // Handle clicks outside context menu
+    // Handle clicks outside context menu and dropdown
     const handleGlobalClick = () => {
-        if (contextMenu) {
-            setContextMenu(null);
+        if (showUserDropdown) {
+            setShowUserDropdown(false);
         }
     };
 
     React.useEffect(() => {
         document.addEventListener('click', handleGlobalClick);
         return () => document.removeEventListener('click', handleGlobalClick);
-    }, []);
+    }, [showUserDropdown]);
 
     const fetchFiles = async (path = currentPath) => {
         try {
@@ -78,20 +89,7 @@ const FileBrowser = ({ token, user }) => {
         }
     };
 
-    const closeContextMenu = () => {
-        setContextMenu(null);
-    };
 
-    const handleEmptyAreaContextMenu = (e) => {
-        e.preventDefault();
-        setContextMenu({
-            x: e.clientX,
-            y: e.clientY,
-            isEmptyArea: true,
-            file: null,
-            selectedFiles: selectedFiles
-        });
-    };
 
     const navigateToFolder = (folderPath, folderName) => {
         setCurrentPath(folderPath);
@@ -161,7 +159,7 @@ const FileBrowser = ({ token, user }) => {
 
     const downloadFile = async (file) => {
         try {
-            const response = await fetch(`/api/download?path=${encodeURIComponent(file.path)}`, {
+            const response = await fetch(`/api/files/download/${encodeURIComponent(file.path)}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             
@@ -181,6 +179,50 @@ const FileBrowser = ({ token, user }) => {
             }
         } catch (err) {
             setError('Download failed');
+        }
+    };
+
+    const handleDownload = () => {
+        if (selectedFiles.length === 1 && !selectedFiles[0].isDirectory) {
+            downloadFile(selectedFiles[0]);
+        } else if (selectedFiles.length > 0) {
+            downloadArchive(selectedFiles);
+        }
+    };
+
+    const downloadArchive = async (files) => {
+        try {
+            const response = await fetch('/api/archive', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    items: files.map(f => ({
+                        name: f.name,
+                        isDirectory: f.isDirectory
+                    })),
+                    currentPath: currentPath
+                })
+            });
+
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'archive.zip';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            } else {
+                const data = await response.json();
+                setError(data.error || 'Archive download failed');
+            }
+        } catch (err) {
+            setError('Archive download failed');
         }
     };
 
@@ -206,7 +248,7 @@ const FileBrowser = ({ token, user }) => {
             if (response.ok) {
                 fetchFiles();
                 setNewFolderName('');
-                setShowChangePasswordModal(false); // Use this to close the new folder modal
+                setShowNewFolderModal(false);
             } else {
                 const data = await response.json();
                 setError(data.error || 'Failed to create folder');
@@ -250,12 +292,31 @@ const FileBrowser = ({ token, user }) => {
         }
     };
 
+    const handleDragEnter = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(true);
+    };
+
     const handleDragOver = (e) => {
         e.preventDefault();
+        e.stopPropagation();
+    };
+
+    const handleDragLeave = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Only set isDragging to false if we're leaving the content area itself
+        // Check if the related target is outside the content area
+        if (e.currentTarget === e.target) {
+            setIsDragging(false);
+        }
     };
 
     const handleDrop = (e) => {
         e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(false);
         const droppedFiles = Array.from(e.dataTransfer.files);
         if (droppedFiles.length > 0) {
             setUploadingFiles(droppedFiles);
@@ -289,122 +350,9 @@ const FileBrowser = ({ token, user }) => {
         return iconMap[ext] || '📄';
     };
 
-    const handleContextMenu = (e, file) => {
-        e.preventDefault();
-        setContextMenu({
-            x: e.clientX,
-            y: e.clientY,
-            isEmptyArea: false,
-            file: file,
-            selectedFiles: selectedFiles
-        });
-    };
 
-    const handleCopy = () => {
-        setClipboard({
-            items: contextMenu.selectedFiles,
-            action: 'copy'
-        });
-        closeContextMenu();
-    };
 
-    const handleCut = () => {
-        setClipboard({
-            items: contextMenu.selectedFiles,
-            action: 'cut'
-        });
-        closeContextMenu();
-    };
 
-    const handlePaste = async () => {
-        if (clipboard.items.length === 0) return;
-
-        try {
-            const response = await fetch('/api/paste', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({
-                    items: clipboard.items,
-                    destinationPath: currentPath,
-                    action: clipboard.action
-                })
-            });
-
-            if (response.ok) {
-                fetchFiles();
-                setClipboard({ items: [], action: null });
-            } else {
-                const data = await response.json();
-                setError(data.error || 'Paste failed');
-            }
-        } catch (err) {
-            setError('Paste failed');
-        }
-        closeContextMenu();
-    };
-
-    const handleRename = () => {
-        // Context menu will have the single file to rename
-        const fileToRename = contextMenu.file;
-        if (!fileToRename) {
-            closeContextMenu();
-            return;
-        }
-        
-        const newName = prompt('Enter new name:', fileToRename.name);
-        if (newName && newName !== fileToRename.name) {
-            renameFile(fileToRename, newName);
-        }
-        closeContextMenu();
-    };
-
-    const handleDeleteFromContext = () => {
-        if (contextMenu.isEmptyArea) {
-            if (selectedFiles.length > 0) {
-                // Delete selected files
-                deleteSelectedFiles();
-            }
-        } else {
-            // Delete single file
-            if (contextMenu.file) {
-                // Create a temporary selectedFiles array with just this file
-                const originalSelectedFiles = [contextMenu.file];
-                const itemsToDelete = originalSelectedFiles.map(file => ({
-                    name: file.name,
-                    isDirectory: file.isDirectory
-                }));
-                
-                fetch('/api/delete', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    },
-                    body: JSON.stringify({
-                        items: itemsToDelete,
-                        path: currentPath
-                    })
-                })
-                .then(response => {
-                    if (response.ok) {
-                        fetchFiles();
-                        setSelectedFiles([]);
-                    } else {
-                        return response.json().then(data => {
-                            throw new Error(data.error || 'Failed to delete file');
-                        });
-                    }
-                })
-                .catch(err => {
-                    setError(err.message);
-                });
-            }
-        }
-        closeContextMenu();
-    };
 
     const renameFile = async (file, newName) => {
         try {
@@ -432,10 +380,30 @@ const FileBrowser = ({ token, user }) => {
         }
     };
 
-    const handleChangePassword = async () => {
-        // Implementation for changing password would go here
-        // This is part of the change password modal functionality
-        closeContextMenu();
+    const handleChangePassword = async (oldPassword, newPassword) => {
+        try {
+            const response = await fetch('/auth/change-password', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    oldPassword: oldPassword,
+                    newPassword: newPassword
+                })
+            });
+
+            if (response.ok) {
+                setShowChangePasswordModal(false);
+                // You could show a success message here
+            } else {
+                const data = await response.json();
+                setError(data.error || 'Failed to change password');
+            }
+        } catch (err) {
+            setError('Connection error');
+        }
     };
 
     const handleLogout = () => {
@@ -469,25 +437,41 @@ const FileBrowser = ({ token, user }) => {
                     setSelectedFiles([file]);
                 }
             },
-            onContextMenu: (e) => handleContextMenu(e, file),
+
             onDoubleClick: () => {
                 if (isFolder) {
                     navigateToFolder(file.path, file.name);
                 } else {
-                    downloadFile(file);
+                    // Temporarily disable double-click download as per user request to fix an error.
+                    // A new download implementation is planned.
+                    alert('下載功能正在更新中。請暫時使用右鍵選單中的下載選項。');
                 }
             }
         }, [
+            React.createElement('input', {
+                key: `checkbox-${file.path || file.name}-${index}`,
+                type: 'checkbox',
+                checked: isSelected,
+                onChange: () => toggleFileSelection(file),
+                style: {
+                    cursor: 'pointer',
+                    margin: 0
+                },
+                onClick: (e) => e.stopPropagation() // Prevent checkbox click from triggering parent div click
+            }),
             React.createElement('span', {
+                key: 'file-icon',
                 style: { fontSize: '24px' }
             }, getFileIcon(file)),
             React.createElement('div', {
+                key: 'file-info-container',
                 style: { 
                     flex: 1, 
                     minWidth: 0 
                 }
             }, [
                 React.createElement('div', {
+                    key: 'file-name',
                     style: { 
                         color: 'white', 
                         fontWeight: '500',
@@ -497,6 +481,7 @@ const FileBrowser = ({ token, user }) => {
                     }
                 }, file.name),
                 React.createElement('div', {
+                    key: 'file-details',
                     style: { 
                         fontSize: '12px', 
                         color: 'rgba(255, 255, 255, 0.6)',
@@ -514,7 +499,7 @@ const FileBrowser = ({ token, user }) => {
     return React.createElement('div', {
         style: {
             height: '100vh',
-            background: 'linear-gradient(135deg, #1e3a8a, #0f172a)',
+            background: 'linear-gradient(135deg, #2c3e50 0%, #34495e 25%, #5d6d7e 50%, #85929e 75%, #aeb6bf 100%)',
             color: 'white',
             fontFamily: 'Arial, sans-serif',
             display: 'flex',
@@ -526,21 +511,23 @@ const FileBrowser = ({ token, user }) => {
             key: 'navbar',
             style: {
                 padding: '16px',
-                background: 'rgba(0, 0, 0, 0.2)',
+                background: 'rgba(44, 62, 80, 0.8)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                borderBottom: '1px solid rgba(255, 255, 255, 0.1)'
+                borderBottom: '1px solid rgba(173, 181, 189, 0.2)'
             }
         }, [
             React.createElement('div', {
+                key: 'navbar-left', // Add key for sibling element in array
                 style: { display: 'flex', alignItems: 'center', gap: '16px' }
             }, [
                 React.createElement('button', {
+                    key: 'back-button',
                     onClick: navigateBack,
                     disabled: !currentPath,
                     style: {
-                        background: 'rgba(255, 255, 255, 0.1)',
+                        background: 'rgba(173, 181, 189, 0.2)',
                         border: 'none',
                         borderRadius: '6px',
                         padding: '8px 12px',
@@ -550,9 +537,10 @@ const FileBrowser = ({ token, user }) => {
                     }
                 }, '← Back'),
                 React.createElement('div', {
+                    key: 'current-path',
                     style: {
                         fontSize: '14px',
-                        color: 'rgba(255, 255, 255, 0.8)',
+                        color: 'rgba(248, 249, 250, 0.9)',
                         maxWidth: '300px',
                         whiteSpace: 'nowrap',
                         overflow: 'hidden',
@@ -561,26 +549,138 @@ const FileBrowser = ({ token, user }) => {
                 }, currentPath || '/'),
             ]),
             React.createElement('div', {
+                key: 'navbar-right', // Add key for sibling element in array
                 style: { display: 'flex', alignItems: 'center', gap: '12px' }
             }, [
                 React.createElement('span', {
+                    key: 'username',
                     style: { 
                         fontSize: '14px', 
                         color: 'rgba(255, 255, 255, 0.8)' 
                     }
                 }, `Hello, ${user?.username || 'User'}`),
-                React.createElement('button', {
-                    onClick: handleLogout,
-                    style: {
-                        background: 'rgba(239, 68, 68, 0.2)',
-                        border: '1px solid rgba(239, 68, 68, 0.5)',
-                        borderRadius: '6px',
-                        padding: '8px 12px',
-                        color: '#ef4444',
-                        cursor: 'pointer',
-                        fontSize: '14px'
-                    }
-                }, 'Logout')
+                React.createElement('div', {
+                    key: 'user-dropdown-container',
+                    style: { position: 'relative' }
+                }, [
+                    React.createElement('button', {
+                        key: 'user-dropdown-toggle',
+                        onClick: (e) => {
+                            e.stopPropagation();
+                            setShowUserDropdown(!showUserDropdown);
+                        },
+                        style: {
+                            background: 'rgba(59, 130, 246, 0.2)',
+                            border: '1px solid rgba(59, 130, 246, 0.5)',
+                            borderRadius: '6px',
+                            padding: '8px 12px',
+                            color: '#3b82f6',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px'
+                        }
+                    }, [
+                        React.createElement('span', { key: 'username-text' }, user?.username || 'User'),
+                        React.createElement('span', { key: 'dropdown-arrow' }, ' ▼')
+                    ]),
+                    showUserDropdown && React.createElement('div', {
+                        key: 'user-dropdown-menu',
+                        style: {
+                            position: 'absolute',
+                            top: '100%',
+                            right: 0,
+                            marginTop: '4px',
+                            background: 'rgba(0, 0, 0, 0.9)',
+                            backdropFilter: 'blur(20px)',
+                            borderRadius: '8px',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            boxShadow: '0 10px 25px rgba(0, 0, 0, 0.3)',
+                            zIndex: 1000,
+                            minWidth: '180px',
+                            overflow: 'hidden'
+                        }
+                    }, [
+                        React.createElement('button', {
+                            key: 'change-password-option',
+                            onClick: () => {
+                                setShowUserDropdown(false);
+                                setShowChangePasswordModal(true);
+                            },
+                            style: {
+                                width: '100%',
+                                padding: '12px 16px',
+                                background: 'transparent',
+                                border: 'none',
+                                color: 'white',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                textAlign: 'left',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                borderBottom: '1px solid rgba(255, 255, 255, 0.1)'
+                            },
+                            onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
+                            onMouseLeave: (e) => e.target.style.background = 'transparent'
+                        }, [
+                            React.createElement('span', { key: 'password-icon' }, '🔐'),
+                            React.createElement('span', { key: 'password-text' }, ' Change Password')
+                        ]),
+                        user?.username === 'admin' && React.createElement('button', {
+                            key: 'admin-panel-option',
+                            onClick: () => {
+                                setShowUserDropdown(false);
+                                window.location.href = '/admin.html';
+                            },
+                            style: {
+                                width: '100%',
+                                padding: '12px 16px',
+                                background: 'transparent',
+                                border: 'none',
+                                color: 'white',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                textAlign: 'left',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                borderBottom: '1px solid rgba(255, 255, 255, 0.1)'
+                            },
+                            onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
+                            onMouseLeave: (e) => e.target.style.background = 'transparent'
+                        }, [
+                            React.createElement('span', { key: 'admin-icon' }, '⚙️'),
+                            React.createElement('span', { key: 'admin-text' }, ' Admin Panel')
+                        ]),
+                        React.createElement('button', {
+                            key: 'logout-option',
+                            onClick: () => {
+                                setShowUserDropdown(false);
+                                handleLogout();
+                            },
+                            style: {
+                                width: '100%',
+                                padding: '12px 16px',
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#ef4444',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                textAlign: 'left',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px'
+                            },
+                            onMouseEnter: (e) => e.target.style.background = 'rgba(239, 68, 68, 0.1)',
+                            onMouseLeave: (e) => e.target.style.background = 'transparent'
+                        }, [
+                            React.createElement('span', { key: 'logout-icon' }, '🚪'),
+                            React.createElement('span', { key: 'logout-text' }, ' Logout')
+                        ])
+                    ])
+                ])
             ])
         ]),
 
@@ -589,16 +689,18 @@ const FileBrowser = ({ token, user }) => {
             key: 'toolbar',
             style: {
                 padding: '16px',
-                background: 'rgba(0, 0, 0, 0.1)',
+                background: 'rgba(52, 73, 94, 0.6)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '12px',
-                borderBottom: '1px solid rgba(255, 255, 255, 0.1)'
+                borderBottom: '1px solid rgba(173, 181, 189, 0.2)'
             }
         }, [
             React.createElement('input', {
+                key: 'search-input',
                 type: 'text',
                 placeholder: 'Search files...',
+                title: 'Search files and folders',
                 value: searchQuery,
                 onChange: (e) => {
                     setSearchQuery(e.target.value);
@@ -617,6 +719,8 @@ const FileBrowser = ({ token, user }) => {
                 }
             }),
             React.createElement('button', {
+                key: 'view-mode-button',
+                title: 'Toggle view mode',
                 onClick: () => setViewMode(viewMode === 'grid' ? 'list' : 'grid'),
                 style: {
                     background: 'rgba(255, 255, 255, 0.1)',
@@ -631,6 +735,8 @@ const FileBrowser = ({ token, user }) => {
                 }
             }, viewMode === 'grid' ? '📊' : '📝'),
             React.createElement('button', {
+                key: 'refresh-button',
+                title: 'Refresh',
                 onClick: handleRefresh,
                 style: {
                     background: 'rgba(255, 255, 255, 0.1)',
@@ -645,6 +751,7 @@ const FileBrowser = ({ token, user }) => {
                 }
             }, '🔄'),
             React.createElement('button', {
+                key: 'upload-button',
                 onClick: () => setShowUploadModal(true),
                 style: {
                     background: 'linear-gradient(135deg, #10b981, #059669)',
@@ -658,11 +765,15 @@ const FileBrowser = ({ token, user }) => {
                     alignItems: 'center',
                     gap: '6px'
                 }
-            }, ['📤', ' Upload']),
+            }, [
+                React.createElement('span', { key: 'upload-icon' }, '📤'),
+                React.createElement('span', { key: 'upload-text' }, ' Upload')
+            ]),
             React.createElement('button', {
+                key: 'new-folder-button',
                 onClick: () => {
                     setNewFolderName('');
-                    setShowChangePasswordModal(true); // Repurposed for new folder
+                    setShowNewFolderModal(true);
                 },
                 style: {
                     background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
@@ -676,7 +787,10 @@ const FileBrowser = ({ token, user }) => {
                     alignItems: 'center',
                     gap: '6px'
                 }
-            }, ['📁', ' New Folder']),
+            }, [
+                React.createElement('span', { key: 'folder-icon' }, '📁'),
+                React.createElement('span', { key: 'folder-text' }, ' New Folder')
+            ]),
             selectedFiles.length > 0 && React.createElement('button', {
                 onClick: deleteSelectedFiles,
                 key: 'delete-selected',
@@ -692,7 +806,31 @@ const FileBrowser = ({ token, user }) => {
                     alignItems: 'center',
                     gap: '6px'
                 }
-            }, ['🗑️', ` Delete (${selectedFiles.length})`]),
+            }, [
+                React.createElement('span', { key: 'delete-icon' }, '🗑️'),
+                React.createElement('span', { key: 'delete-text' }, ` Delete (${selectedFiles.length})`)
+            ]),
+
+            selectedFiles.length > 0 && React.createElement('button', {
+                onClick: handleDownload,
+                key: 'download-selected',
+                style: {
+                    background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '10px 16px',
+                    color: 'white',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                }
+            }, [
+                React.createElement('span', { key: 'download-icon' }, '⬇️'),
+                React.createElement('span', { key: 'download-text' }, ` Download (${selectedFiles.length})`)
+            ]),
+
             clipboard.items.length > 0 && React.createElement('button', {
                 onClick: handlePaste,
                 key: 'paste',
@@ -708,7 +846,10 @@ const FileBrowser = ({ token, user }) => {
                     alignItems: 'center',
                     gap: '6px'
                 }
-            }, ['📋', ` Paste (${clipboard.items.length})`])
+            }, [
+                React.createElement('span', { key: 'paste-icon' }, '📋'),
+                React.createElement('span', { key: 'paste-text' }, ` Paste (${clipboard.items.length})`)
+            ])
         ]),
 
         // File Browser Content
@@ -720,13 +861,56 @@ const FileBrowser = ({ token, user }) => {
                 overflow: 'auto',
                 position: 'relative'
             },
+            onDragEnter: handleDragEnter,
             onDragOver: handleDragOver,
-            onDrop: handleDrop,
-            onContextMenu: handleEmptyAreaContextMenu
+            onDragLeave: handleDragLeave,
+            onDrop: handleDrop
         }, [
-            // Show upload area if drag and drop
-            // Additional UI elements can be placed here
-            
+            // Show upload area overlay when dragging
+            isDragging && React.createElement('div', {
+                key: 'drag-overlay',
+                style: {
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'rgba(59, 130, 246, 0.2)',
+                    border: '3px dashed #3b82f6',
+                    borderRadius: '12px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 999,
+                    pointerEvents: 'none'
+                }
+            }, [
+                React.createElement('div', {
+                    key: 'drag-text',
+                    style: {
+                        textAlign: 'center',
+                        padding: '40px'
+                    }
+                }, [
+                    React.createElement('div', {
+                        key: 'drag-icon',
+                        style: {
+                            fontSize: '64px',
+                            marginBottom: '16px'
+                        }
+                    }, '📤'),
+                    React.createElement('p', {
+                        key: 'drag-message',
+                        style: {
+                            fontSize: '24px',
+                            fontWeight: 'bold',
+                            color: '#3b82f6',
+                            margin: 0
+                        }
+                    }, 'Drop files here to upload')
+                ])
+            ]),
+
             error ? React.createElement('div', {
                 key: 'error',
                 style: {
@@ -796,58 +980,158 @@ const FileBrowser = ({ token, user }) => {
                 left: 0,
                 right: 0,
                 bottom: 0,
-                background: 'rgba(0, 0, 0, 0.8)',
+                background: 'rgba(0, 0, 0, 0.7)',
+                backdropFilter: 'blur(8px)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 zIndex: 1000
+            },
+            onClick: (e) => {
+                if (e.target === e.currentTarget) {
+                    setShowUploadModal(false);
+                    setUploadingFiles([]);
+                }
             }
         }, [
             React.createElement('div', {
                 style: {
-                    background: 'rgba(30, 30, 30, 0.9)',
-                    borderRadius: '12px',
+                    background: 'rgba(30, 40, 50, 0.95)',
+                    backdropFilter: 'blur(20px)',
+                    borderRadius: '16px',
                     padding: '32px',
-                    width: '500px',
+                    width: '560px',
                     maxWidth: '90%',
-                    boxShadow: '0 20px 25px rgba(0, 0, 0, 0.5)'
+                    boxShadow: '0 25px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)'
                 }
             }, [
                 React.createElement('h2', {
-                    style: { 
-                        color: 'white', 
-                        margin: '0 0 24px 0',
-                        fontSize: '22px',
+                    style: {
+                        color: 'white',
+                        margin: '0 0 8px 0',
+                        fontSize: '24px',
+                        fontWeight: '600',
                         textAlign: 'center'
                     }
-                }, 'Upload Files'),
-                
+                }, '📤 Upload Files'),
+
+                React.createElement('p', {
+                    style: {
+                        color: 'rgba(255, 255, 255, 0.6)',
+                        margin: '0 0 24px 0',
+                        fontSize: '14px',
+                        textAlign: 'center'
+                    }
+                }, `Uploading to: ${currentPath || '/'}`),
+
                 React.createElement('div', {
                     style: {
                         marginBottom: '24px'
+                    },
+                    onDragEnter: (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                    },
+                    onDragOver: (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.currentTarget.style.borderColor = '#3b82f6';
+                        e.currentTarget.style.background = 'rgba(59, 130, 246, 0.1)';
+                    },
+                    onDragLeave: (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.4)';
+                        e.currentTarget.style.background = 'rgba(59, 130, 246, 0.05)';
+                    },
+                    onDrop: (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.currentTarget.style.borderColor = 'rgba(59, 130, 246, 0.4)';
+                        e.currentTarget.style.background = 'rgba(59, 130, 246, 0.05)';
+                        const files = Array.from(e.dataTransfer.files);
+                        if (files.length > 0) {
+                            setUploadingFiles(files);
+                        }
                     }
                 }, [
-                    React.createElement('p', {
+                    React.createElement('div', {
                         style: {
-                            color: 'rgba(255, 255, 255, 0.8)',
-                            margin: '0 0 12px 0',
-                            fontSize: '16px'
+                            padding: '40px 20px',
+                            border: '2px dashed rgba(59, 130, 246, 0.4)',
+                            borderRadius: '12px',
+                            background: 'rgba(59, 130, 246, 0.05)',
+                            textAlign: 'center',
+                            transition: 'all 0.3s ease',
+                            cursor: 'pointer'
+                        },
+                        onClick: () => {
+                            document.getElementById('file-input-upload').click();
                         }
-                    }, `Current folder: ${currentPath || '/'}`),
-                    
+                    }, [
+                        React.createElement('div', {
+                            key: 'upload-icon',
+                            style: {
+                                fontSize: '48px',
+                                marginBottom: '16px'
+                            }
+                        }, '📁'),
+                        React.createElement('p', {
+                            key: 'upload-text-1',
+                            style: {
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                fontSize: '16px',
+                                fontWeight: '500',
+                                margin: '0 0 8px 0'
+                            }
+                        }, 'Drag and drop files here'),
+                        React.createElement('p', {
+                            key: 'upload-text-2',
+                            style: {
+                                color: 'rgba(255, 255, 255, 0.5)',
+                                fontSize: '14px',
+                                margin: '0 0 16px 0'
+                            }
+                        }, 'or'),
+                        React.createElement('button', {
+                            key: 'browse-button',
+                            type: 'button',
+                            onClick: (e) => {
+                                e.stopPropagation();
+                                document.getElementById('file-input-upload').click();
+                            },
+                            style: {
+                                padding: '10px 24px',
+                                background: 'rgba(59, 130, 246, 0.2)',
+                                border: '1px solid rgba(59, 130, 246, 0.5)',
+                                borderRadius: '8px',
+                                color: '#60a5fa',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                fontWeight: '500',
+                                transition: 'all 0.2s ease'
+                            },
+                            onMouseEnter: (e) => {
+                                e.target.style.background = 'rgba(59, 130, 246, 0.3)';
+                                e.target.style.borderColor = '#3b82f6';
+                            },
+                            onMouseLeave: (e) => {
+                                e.target.style.background = 'rgba(59, 130, 246, 0.2)';
+                                e.target.style.borderColor = 'rgba(59, 130, 246, 0.5)';
+                            }
+                        }, 'Browse Files')
+                    ]),
+
                     React.createElement('input', {
+                        id: 'file-input-upload',
                         type: 'file',
                         multiple: true,
                         onChange: (e) => {
                             setUploadingFiles(Array.from(e.target.files));
                         },
                         style: {
-                            width: '100%',
-                            padding: '12px',
-                            border: '2px dashed rgba(255, 255, 255, 0.3)',
-                            borderRadius: '8px',
-                            background: 'rgba(255, 255, 255, 0.05)',
-                            color: 'white'
+                            display: 'none'
                         }
                     })
                 ]),
@@ -856,39 +1140,71 @@ const FileBrowser = ({ token, user }) => {
                     style: {
                         marginBottom: '24px',
                         maxHeight: '200px',
-                        overflowY: 'auto'
+                        overflowY: 'auto',
+                        padding: '16px',
+                        background: 'rgba(0, 0, 0, 0.2)',
+                        borderRadius: '12px',
+                        border: '1px solid rgba(255, 255, 255, 0.1)'
                     }
                 }, [
                     React.createElement('h3', {
-                        style: { 
-                            color: 'white', 
+                        style: {
+                            color: 'white',
                             margin: '0 0 12px 0',
-                            fontSize: '16px'
+                            fontSize: '16px',
+                            fontWeight: '600',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px'
                         }
-                    }, `Files to upload (${uploadingFiles.length}):`),
-                    
+                    }, [
+                        React.createElement('span', { key: 'check-icon' }, '✓'),
+                        React.createElement('span', { key: 'files-count' }, `${uploadingFiles.length} file(s) selected`)
+                    ]),
+
                     React.createElement('ul', {
                         style: {
                             listStyle: 'none',
                             padding: 0,
                             margin: 0
                         }
-                    }, uploadingFiles.map((file, index) => 
+                    }, uploadingFiles.map((file, index) =>
                         React.createElement('li', {
                             key: index,
                             style: {
-                                padding: '8px',
-                                background: 'rgba(255, 255, 255, 0.1)',
-                                borderRadius: '4px',
-                                marginBottom: '4px',
+                                padding: '10px 12px',
+                                background: 'rgba(59, 130, 246, 0.1)',
+                                border: '1px solid rgba(59, 130, 246, 0.2)',
+                                borderRadius: '8px',
+                                marginBottom: '6px',
                                 fontSize: '14px',
-                                color: 'rgba(255, 255, 255, 0.9)'
+                                color: 'rgba(255, 255, 255, 0.95)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '10px',
+                                transition: 'all 0.2s ease'
                             }
                         }, [
                             React.createElement('span', {
-                                style: { display: 'inline-block', width: '24px' }
+                                key: 'file-icon',
+                                style: { fontSize: '18px' }
                             }, '📄'),
-                            file.name
+                            React.createElement('span', {
+                                key: 'file-name',
+                                style: {
+                                    flex: 1,
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis'
+                                }
+                            }, file.name),
+                            React.createElement('span', {
+                                key: 'file-size',
+                                style: {
+                                    fontSize: '12px',
+                                    color: 'rgba(255, 255, 255, 0.5)'
+                                }
+                            }, `${(file.size / 1024).toFixed(1)} KB`)
                         ])
                     ))
                 ]),
@@ -900,38 +1216,75 @@ const FileBrowser = ({ token, user }) => {
                     }
                 }, [
                     React.createElement('button', {
-                        onClick: () => setShowUploadModal(false),
+                        onClick: () => {
+                            setShowUploadModal(false);
+                            setUploadingFiles([]);
+                        },
                         style: {
                             flex: 1,
-                            padding: '12px',
-                            background: 'rgba(255, 255, 255, 0.1)',
+                            padding: '14px',
+                            background: 'rgba(255, 255, 255, 0.08)',
+                            backdropFilter: 'blur(10px)',
                             border: '1px solid rgba(255, 255, 255, 0.2)',
-                            borderRadius: '8px',
-                            color: 'white',
+                            borderRadius: '10px',
+                            color: 'rgba(255, 255, 255, 0.9)',
                             cursor: 'pointer',
-                            fontSize: '14px'
+                            fontSize: '15px',
+                            fontWeight: '500',
+                            transition: 'all 0.2s ease'
+                        },
+                        onMouseEnter: (e) => {
+                            e.target.style.background = 'rgba(255, 255, 255, 0.15)';
+                            e.target.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+                        },
+                        onMouseLeave: (e) => {
+                            e.target.style.background = 'rgba(255, 255, 255, 0.08)';
+                            e.target.style.borderColor = 'rgba(255, 255, 255, 0.2)';
                         }
                     }, 'Cancel'),
-                    
+
                     React.createElement('button', {
                         onClick: () => handleFileUpload(uploadingFiles),
+                        disabled: uploadingFiles.length === 0,
                         style: {
                             flex: 1,
-                            padding: '12px',
-                            background: 'linear-gradient(135deg, #10b981, #059669)',
+                            padding: '14px',
+                            background: uploadingFiles.length === 0
+                                ? 'rgba(100, 100, 100, 0.3)'
+                                : 'linear-gradient(135deg, #10b981, #059669)',
                             border: 'none',
-                            borderRadius: '8px',
+                            borderRadius: '10px',
                             color: 'white',
-                            cursor: 'pointer',
-                            fontSize: '14px'
+                            cursor: uploadingFiles.length === 0 ? 'not-allowed' : 'pointer',
+                            fontSize: '15px',
+                            fontWeight: '600',
+                            boxShadow: uploadingFiles.length === 0
+                                ? 'none'
+                                : '0 4px 12px rgba(16, 185, 129, 0.3)',
+                            transition: 'all 0.2s ease',
+                            opacity: uploadingFiles.length === 0 ? 0.5 : 1
+                        },
+                        onMouseEnter: (e) => {
+                            if (uploadingFiles.length > 0) {
+                                e.target.style.transform = 'translateY(-2px)';
+                                e.target.style.boxShadow = '0 6px 20px rgba(16, 185, 129, 0.4)';
+                            }
+                        },
+                        onMouseLeave: (e) => {
+                            if (uploadingFiles.length > 0) {
+                                e.target.style.transform = 'translateY(0)';
+                                e.target.style.boxShadow = '0 4px 12px rgba(16, 185, 129, 0.3)';
+                            }
                         }
-                    }, `Upload (${uploadingFiles.length})`)
+                    }, uploadingFiles.length === 0
+                        ? 'Upload'
+                        : `Upload ${uploadingFiles.length} file${uploadingFiles.length > 1 ? 's' : ''}`)
                 ])
             ])
         ]),
 
-        // New Folder Modal (using change password modal)
-        showChangePasswordModal && !newFolderName && React.createElement('div', {
+        // New Folder Modal
+        showNewFolderModal && React.createElement('div', {
             key: 'new-folder-modal',
             style: {
                 position: 'fixed',
@@ -1007,7 +1360,7 @@ const FileBrowser = ({ token, user }) => {
                 }, [
                     React.createElement('button', {
                         onClick: () => {
-                            setShowChangePasswordModal(false);
+                            setShowNewFolderModal(false);
                             setNewFolderName('');
                             setError('');
                         },
@@ -1040,131 +1393,174 @@ const FileBrowser = ({ token, user }) => {
             ])
         ]),
 
-        // Context Menu
-        contextMenu && React.createElement('div', {
-            key: 'context-menu',
+        // Change Password Modal
+        showChangePasswordModal && React.createElement('div', {
+            key: 'change-password-modal',
             style: {
                 position: 'fixed',
-                left: contextMenu.x,
-                top: contextMenu.y,
-                background: 'rgba(0, 0, 0, 0.9)',
-                backdropFilter: 'blur(20px)',
-                borderRadius: '8px',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
-                boxShadow: '0 10px 25px rgba(0, 0, 0, 0.3)',
-                zIndex: 1000,
-                minWidth: '180px',
-                overflow: 'hidden'
-            },
-            onClick: (e) => e.stopPropagation()
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(0, 0, 0, 0.8)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1000
+            }
         }, [
-            // Show copy/cut options only if not empty area
-            !contextMenu.isEmptyArea && React.createElement('div', {
-                key: 'copy',
-                onClick: handleCopy,
+            React.createElement('div', {
                 style: {
-                    padding: '12px 16px',
-                    cursor: 'pointer',
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-                    color: 'white',
-                    fontSize: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                },
-                onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
-                onMouseLeave: (e) => e.target.style.background = 'transparent'
-            }, ['📋', ' Copy']),
+                    background: 'rgba(30, 30, 30, 0.9)',
+                    borderRadius: '12px',
+                    padding: '32px',
+                    width: '400px',
+                    maxWidth: '90%',
+                    boxShadow: '0 20px 25px rgba(0, 0, 0, 0.5)'
+                }
+            }, [
+                React.createElement('h2', {
+                    style: { 
+                        color: 'white', 
+                        margin: '0 0 24px 0',
+                        fontSize: '22px',
+                        textAlign: 'center'
+                    }
+                }, 'Change Password'),
+                
+                React.createElement('form', {
+                    onSubmit: (e) => {
+                        e.preventDefault();
+                        const formData = new FormData(e.target);
+                        const oldPassword = formData.get('oldPassword');
+                        const newPassword = formData.get('newPassword');
+                        const confirmPassword = formData.get('confirmPassword');
+                        
+                        if (newPassword !== confirmPassword) {
+                            setError('Passwords do not match');
+                            return;
+                        }
+                        
+                        handleChangePassword(oldPassword, newPassword);
+                    },
+                    style: { display: 'flex', flexDirection: 'column', gap: '16px' }
+                }, [
+                    React.createElement('input', {
+                        key: 'old-password',
+                        name: 'oldPassword',
+                        type: 'password',
+                        placeholder: 'Current password',
+                        required: true,
+                        style: {
+                            width: '100%',
+                            padding: '14px',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '8px',
+                            background: 'rgba(255, 255, 255, 0.05)',
+                            color: 'white',
+                            fontSize: '16px'
+                        }
+                    }),
+                    
+                    React.createElement('input', {
+                        key: 'new-password',
+                        name: 'newPassword',
+                        type: 'password',
+                        placeholder: 'New password',
+                        required: true,
+                        style: {
+                            width: '100%',
+                            padding: '14px',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '8px',
+                            background: 'rgba(255, 255, 255, 0.05)',
+                            color: 'white',
+                            fontSize: '16px'
+                        }
+                    }),
+                    
+                    React.createElement('input', {
+                        key: 'confirm-password',
+                        name: 'confirmPassword',
+                        type: 'password',
+                        placeholder: 'Confirm new password',
+                        required: true,
+                        style: {
+                            width: '100%',
+                            padding: '14px',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '8px',
+                            background: 'rgba(255, 255, 255, 0.05)',
+                            color: 'white',
+                            fontSize: '16px'
+                        }
+                    }),
+                    
+                    error && React.createElement('div', {
+                        key: 'password-error',
+                        style: { 
+                            color: '#ef4444', 
+                            textAlign: 'center',
+                            padding: '12px',
+                            background: 'rgba(239, 68, 68, 0.1)',
+                            borderRadius: '8px'
+                        }
+                    }, error),
+                    
+                    React.createElement('div', {
+                        key: 'password-buttons',
+                        style: {
+                            display: 'flex',
+                            gap: '12px'
+                        }
+                    }, [
+                        React.createElement('button', {
+                            key: 'cancel-password',
+                            type: 'button',
+                            onClick: () => {
+                                setShowChangePasswordModal(false);
+                                setError('');
+                            },
+                            style: {
+                                flex: 1,
+                                padding: '12px',
+                                background: 'rgba(255, 255, 255, 0.1)',
+                                border: '1px solid rgba(255, 255, 255, 0.2)',
+                                borderRadius: '8px',
+                                color: 'white',
+                                cursor: 'pointer',
+                                fontSize: '14px'
+                            }
+                        }, 'Cancel'),
+                        
+                        React.createElement('button', {
+                            key: 'save-password',
+                            type: 'submit',
+                            style: {
+                                flex: 1,
+                                padding: '12px',
+                                background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+                                border: 'none',
+                                borderRadius: '8px',
+                                color: 'white',
+                                cursor: 'pointer',
+                                fontSize: '14px'
+                            }
+                        }, 'Change Password')
+                    ])
+                ])
+            ])
+        ]),
 
-            !contextMenu.isEmptyArea && React.createElement('div', {
-                key: 'cut',
-                onClick: handleCut,
-                style: {
-                    padding: '12px 16px',
-                    cursor: 'pointer',
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-                    color: 'white',
-                    fontSize: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                },
-                onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
-                onMouseLeave: (e) => e.target.style.background = 'transparent'
-            }, ['✂️', ' Cut']),
 
-            clipboard.items.length > 0 && React.createElement('div', {
-                key: 'paste',
-                onClick: handlePaste,
-                style: {
-                    padding: '12px 16px',
-                    cursor: 'pointer',
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-                    color: 'white',
-                    fontSize: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                },
-                onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
-                onMouseLeave: (e) => e.target.style.background = 'transparent'
-            }, ['📋', ' Paste']),
-
-            !contextMenu.isEmptyArea && React.createElement('div', {
-                key: 'rename',
-                onClick: handleRename,
-                style: {
-                    padding: '12px 16px',
-                    cursor: 'pointer',
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-                    color: 'white',
-                    fontSize: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                },
-                onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
-                onMouseLeave: (e) => e.target.style.background = 'transparent'
-            }, ['✏️', ' Rename']),
-
-            !contextMenu.isEmptyArea && contextMenu.file && !contextMenu.file.isDirectory && React.createElement('div', {
-                key: 'download',
-                onClick: () => {
-                    downloadFile(contextMenu.file);
-                    closeContextMenu();
-                },
-                style: {
-                    padding: '12px 16px',
-                    cursor: 'pointer',
-                    borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-                    color: 'white',
-                    fontSize: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                },
-                onMouseEnter: (e) => e.target.style.background = 'rgba(255, 255, 255, 0.1)',
-                onMouseLeave: (e) => e.target.style.background = 'transparent'
-            }, ['⬇️', ' Download']),
-
-            !contextMenu.isEmptyArea && React.createElement('div', {
-                key: 'delete',
-                onClick: handleDeleteFromContext,
-                style: {
-                    padding: '12px 16px',
-                    cursor: 'pointer',
-                    color: '#ef4444',
-                    fontSize: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px'
-                },
-                onMouseEnter: (e) => e.target.style.background = 'rgba(239, 68, 68, 0.1)',
-                onMouseLeave: (e) => e.target.style.background = 'transparent'
-            }, ['🗑️', ' Delete'])
-        ])
     ]);
 };
+
+// Make FileBrowser component available globally  
+if (!window.FileTransferApp) {
+    window.FileTransferApp = {};
+}
+window.FileTransferApp.FileBrowser = FileBrowser;
 
 // Export for use in main app
 if (typeof module !== 'undefined' && module.exports) {
