@@ -296,10 +296,10 @@ class UserManager {
     // If authenticating the admin user, use config.ini as the source of truth.
     if (username === configUsername) {
         const configPassword = configManager.get('auth.password');
-        const passwordHashed = configManager.get('passwordHashed');
+        const passwordHashed = configManager.get('auth.passwordHashed');
 
         let isValid = false;
-        if (passwordHashed === true) {
+        if (passwordHashed === true || passwordHashed === 'true') {
             isValid = await bcrypt.compare(password, configPassword);
         } else {
             isValid = (password === configPassword);

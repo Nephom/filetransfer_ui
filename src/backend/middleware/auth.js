@@ -125,7 +125,29 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-const requireAdmin = (req, res, next) => {
+const requireAdmin = async (req, res, next) => {
+  // First, ensure user is authenticated
+  if (!req.user) {
+    // Try to authenticate first
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({
+          error: 'Authorization header missing or invalid'
+        });
+      }
+
+      const token = authHeader.substring(7);
+      const decoded = jwt.verify(token, jwtSecret);
+      req.user = decoded;
+    } catch (error) {
+      return res.status(401).json({
+        error: 'Invalid or expired token'
+      });
+    }
+  }
+
+  // Now check if user is admin
   if (req.user && req.user.role === 'admin') {
     next();
   } else {

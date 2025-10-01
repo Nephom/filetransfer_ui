@@ -322,6 +322,33 @@
             grid-template-columns: 1fr 1fr;
             gap: 15px;
         }
+
+        .config-section {
+            margin-bottom: 25px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .config-section h3 {
+            margin-bottom: 15px;
+            font-size: 1.2rem;
+            color: #fbbf24;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -337,16 +364,16 @@
                 <div class="label">Total Users</div>
             </div>
             <div class="stat-card">
-                <div class="number" id="activeSessions">0</div>
-                <div class="label">Active Sessions</div>
-            </div>
-            <div class="stat-card">
                 <div class="number" id="totalFiles">0</div>
                 <div class="label">Total Files</div>
             </div>
             <div class="stat-card">
-                <div class="number" id="storageUsed">0 MB</div>
-                <div class="label">Storage Used</div>
+                <div class="number" id="cacheStatus">Loading...</div>
+                <div class="label">Cache Status</div>
+            </div>
+            <div class="stat-card">
+                <div class="number" id="serverPort">9400</div>
+                <div class="label">Server Port</div>
             </div>
         </div>
 
@@ -356,42 +383,49 @@
                 <p>Modify system-wide settings and parameters</p>
                 <button class="btn" onclick="openConfigModal()">Manage Configuration</button>
             </div>
-            
+
             <div class="control-card">
                 <h3>🔄 System Operations</h3>
                 <p>Perform system maintenance tasks</p>
                 <div class="action-buttons">
                     <button class="btn" onclick="refreshCache()">Refresh Cache</button>
-                    <button class="btn danger" onclick="restartService()">Restart Service</button>
+                    <button class="btn danger" onclick="clearCache()">Clear Cache</button>
                 </div>
             </div>
-            
+
             <div class="control-card">
                 <h3>👥 User Management</h3>
                 <p>Create, modify, or manage user accounts</p>
                 <button class="btn" onclick="openUserManagement()">Manage Users</button>
             </div>
-            
-            <div class="control-card">
-                <h3>📊 System Monitoring</h3>
-                <p>View system performance and metrics</p>
-                <button class="btn" onclick="viewSystemStats()">View Statistics</button>
-            </div>
         </div>
 
         <div class="glass-panel">
-            <h2>⚙️ Quick Actions</h2>
+            <h2>⚡ Quick Actions</h2>
             <div class="form-group">
                 <label for="adminAction">Select Action:</label>
                 <select id="adminAction" class="form-control">
                     <option value="">Choose an action...</option>
                     <option value="backup">Create Configuration Backup</option>
-                    <option value="reset">Reset Configuration</option>
+                    <option value="reset">Reset Configuration Section</option>
                     <option value="clearCache">Clear File Cache</option>
                     <option value="logs">View System Logs</option>
                 </select>
             </div>
             <button class="btn" onclick="performAction()">Execute Action</button>
+        </div>
+    </div>
+
+    <!-- Configuration Modal -->
+    <div id="configModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚙️ System Configuration</h2>
+                <button class="modal-close" onclick="closeModal('configModal')">✕ Close</button>
+            </div>
+            <div id="configContent">
+                <p style="text-align: center; margin-top: 40px; opacity: 0.7;">Loading configuration...</p>
+            </div>
         </div>
     </div>
 
@@ -459,11 +493,34 @@
         // Fetch initial stats
         async function fetchStats() {
             try {
-                // In a real implementation, this would call API endpoints
-                document.getElementById('totalUsers').textContent = '1';
-                document.getElementById('activeSessions').textContent = '0';
-                document.getElementById('totalFiles').textContent = '0';
-                document.getElementById('storageUsed').textContent = '0 MB';
+                // Fetch users
+                const usersResponse = await fetch('/api/admin/users', {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                });
+                if (usersResponse.ok) {
+                    const usersData = await usersResponse.json();
+                    document.getElementById('totalUsers').textContent = usersData.users?.length || 0;
+                }
+
+                // Fetch cache stats
+                const cacheResponse = await fetch('/api/files/cache-stats', {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                });
+                if (cacheResponse.ok) {
+                    const cacheData = await cacheResponse.json();
+                    const status = cacheData.initialized ? 'Active' : 'Inactive';
+                    document.getElementById('cacheStatus').textContent = status;
+                    document.getElementById('totalFiles').textContent = cacheData.totalFiles || 0;
+                }
+
+                // Fetch config
+                const configResponse = await fetch('/api/admin/config', {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                });
+                if (configResponse.ok) {
+                    const configData = await configResponse.json();
+                    document.getElementById('serverPort').textContent = configData.config?.server?.port || 9400;
+                }
             } catch (error) {
                 console.error('Error fetching stats:', error);
             }
@@ -479,13 +536,15 @@
                             'Authorization': `Bearer ${localStorage.getItem('token')}`,
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({ directoryPath: '.' })
+                        body: JSON.stringify({})
                     });
-                    
+
                     if (response.ok) {
                         alert('Cache refreshed successfully!');
+                        fetchStats();
                     } else {
-                        alert('Failed to refresh cache');
+                        const data = await response.json();
+                        alert(`Failed to refresh cache: ${data.error || 'Unknown error'}`);
                     }
                 } catch (error) {
                     console.error('Error refreshing cache:', error);
@@ -494,10 +553,27 @@
             }
         }
 
-        async function restartService() {
-            if (confirm('Are you sure you want to restart the service? This will temporarily disconnect all users.')) {
-                alert('Service restart functionality would be implemented here');
-                // In a real implementation: call API to restart service
+        async function clearCache() {
+            if (confirm('Are you sure you want to clear the file cache? This will remove all cached file data.')) {
+                try {
+                    const response = await fetch('/api/admin/cache/clear', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('token')}`
+                        }
+                    });
+
+                    if (response.ok) {
+                        alert('Cache cleared successfully!');
+                        fetchStats();
+                    } else {
+                        const data = await response.json();
+                        alert(`Failed to clear cache: ${data.error || 'Unknown error'}`);
+                    }
+                } catch (error) {
+                    console.error('Error clearing cache:', error);
+                    alert('Error clearing cache');
+                }
             }
         }
 
@@ -510,7 +586,7 @@
 
             try {
                 let response;
-                
+
                 switch(action) {
                     case 'backup':
                         response = await fetch('/api/admin/config/backup', {
@@ -525,44 +601,50 @@
                             const url = window.URL.createObjectURL(blob);
                             const a = document.createElement('a');
                             a.href = url;
-                            a.download = response.headers.get('content-disposition').split('filename=')[1].replace(/"/g, '');
+                            const contentDisposition = response.headers.get('content-disposition');
+                            const filename = contentDisposition ? contentDisposition.split('filename=')[1].replace(/"/g, '') : 'config-backup.json';
+                            a.download = filename;
                             a.click();
                             window.URL.revokeObjectURL(url);
+                            alert('Configuration backup downloaded successfully!');
+                        } else {
+                            const data = await response.json();
+                            alert(`Backup failed: ${data.error || 'Unknown error'}`);
                         }
-                        break;
+                        return;
                     case 'reset':
-                        if (confirm('Are you sure you want to reset the configuration? This cannot be undone.')) {
+                        const section = prompt('Enter section to reset (server, fileSystem, security, auth, or "all" for everything):');
+                        if (!section) return;
+                        if (confirm(`Are you sure you want to reset the "${section}" configuration section? This cannot be undone.`)) {
                             response = await fetch('/api/admin/config/reset', {
                                 method: 'POST',
                                 headers: {
                                     'Authorization': `Bearer ${localStorage.getItem('token')}`,
                                     'Content-Type': 'application/json'
                                 },
-                                body: JSON.stringify({ section: 'all' })
+                                body: JSON.stringify({ section })
                             });
                         }
                         break;
                     case 'clearCache':
-                        response = await fetch('/api/admin/cache/clear', {
-                            method: 'POST',
-                            headers: {
-                                'Authorization': `Bearer ${localStorage.getItem('token')}`
-                            }
-                        });
-                        break;
+                        await clearCache();
+                        return;
                     case 'logs':
                         openLogViewer();
                         return;
                 }
-                
+
                 if (response && response.ok) {
-                    alert(`${action.charAt(0).toUpperCase() + action.slice(1)} action completed successfully!`);
-                } else {
-                    alert(`${action.charAt(0).toUpperCase() + action.slice(1)} action failed`);
+                    const data = await response.json();
+                    alert(data.message || `${action} action completed successfully!`);
+                    fetchStats();
+                } else if (response) {
+                    const data = await response.json();
+                    alert(`${action} action failed: ${data.error || 'Unknown error'}`);
                 }
             } catch (error) {
                 console.error(`Error performing ${action}:`, error);
-                alert(`Error performing ${action}`);
+                alert(`Error performing ${action}: ${error.message}`);
             }
         }
 
@@ -573,6 +655,145 @@
 
         function closeModal(modalId) {
             document.getElementById(modalId).classList.remove('active');
+        }
+
+        // Configuration Modal Functions
+        async function openConfigModal() {
+            openModal('configModal');
+            await loadConfig();
+        }
+
+        async function loadConfig() {
+            const configContent = document.getElementById('configContent');
+            configContent.innerHTML = '<p style="text-align: center; margin-top: 40px; opacity: 0.7;">Loading configuration...</p>';
+
+            try {
+                const response = await fetch('/api/admin/config', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load configuration');
+                }
+
+                const data = await response.json();
+                displayConfig(data.config);
+            } catch (error) {
+                console.error('Error loading config:', error);
+                configContent.innerHTML = '<p style="color: #ef4444; text-align: center;">Failed to load configuration</p>';
+            }
+        }
+
+        function displayConfig(config) {
+            const configContent = document.getElementById('configContent');
+
+            let html = '<form id="configForm">';
+
+            // Server section
+            html += '<div class="config-section"><h3>🖥️ Server Configuration</h3>';
+            html += `<div class="form-group">
+                <label>Port:</label>
+                <input type="number" name="server.port" class="form-control" value="${config.server?.port || 9400}">
+            </div></div>`;
+
+            // File System section
+            html += '<div class="config-section"><h3>📁 File System Configuration</h3>';
+            html += `<div class="form-group">
+                <label>Storage Path:</label>
+                <input type="text" name="fileSystem.storagePath" class="form-control" value="${config.fileSystem?.storagePath || './storage'}">
+                <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">Relative or absolute path to file storage directory</p>
+            </div></div>`;
+
+            // Security section
+            html += '<div class="config-section"><h3>🔒 Security Configuration</h3>';
+            const securityOptions = [
+                { key: 'enableRateLimit', label: 'Enable Rate Limiting' },
+                { key: 'enableSecurityHeaders', label: 'Enable Security Headers' },
+                { key: 'enableInputValidation', label: 'Enable Input Validation' },
+                { key: 'enableFileUploadSecurity', label: 'Enable File Upload Security' },
+                { key: 'enableRequestLogging', label: 'Enable Request Logging' },
+                { key: 'enableCSP', label: 'Enable Content Security Policy' }
+            ];
+
+            securityOptions.forEach(opt => {
+                const checked = config.security?.[opt.key] === true ? 'checked' : '';
+                html += `<div class="checkbox-group">
+                    <input type="checkbox" name="security.${opt.key}" id="${opt.key}" ${checked}>
+                    <label for="${opt.key}" style="margin: 0; cursor: pointer;">${opt.label}</label>
+                </div>`;
+            });
+
+            html += `<div class="form-group" style="margin-top: 15px;">
+                <label>JWT Secret:</label>
+                <input type="text" name="security.jwtSecret" class="form-control" value="${config.security?.jwtSecret || ''}" placeholder="Leave empty for default">
+                <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">⚠️ Changing this will invalidate all existing tokens</p>
+            </div></div>`;
+
+            html += '</form>';
+
+            html += '<div class="btn-group">';
+            html += '<button class="btn" onclick="saveConfig()">💾 Save Configuration</button>';
+            html += '<button class="btn danger" onclick="closeModal(\'configModal\')">✕ Cancel</button>';
+            html += '</div>';
+
+            configContent.innerHTML = html;
+        }
+
+        async function saveConfig() {
+            if (!confirm('Are you sure you want to save these configuration changes? Some changes may require a server restart.')) {
+                return;
+            }
+
+            try {
+                const form = document.getElementById('configForm');
+                const formData = new FormData(form);
+
+                const config = {
+                    server: {},
+                    fileSystem: {},
+                    security: {}
+                };
+
+                // Process form data
+                for (let [key, value] of formData.entries()) {
+                    const [section, field] = key.split('.');
+                    if (section && field) {
+                        // Handle checkboxes
+                        const input = form.querySelector(`[name="${key}"]`);
+                        if (input && input.type === 'checkbox') {
+                            config[section][field] = input.checked;
+                        } else if (input && input.type === 'number') {
+                            config[section][field] = parseInt(value);
+                        } else {
+                            config[section][field] = value;
+                        }
+                    }
+                }
+
+                const response = await fetch('/api/admin/config', {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(config)
+                });
+
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to save configuration');
+                }
+
+                const result = await response.json();
+                alert(result.message || 'Configuration saved successfully!');
+                closeModal('configModal');
+                fetchStats();
+            } catch (error) {
+                console.error('Error saving config:', error);
+                alert(`Error: ${error.message}`);
+            }
         }
 
         // User Management Modal Functions
@@ -637,8 +858,7 @@
                         <td>
                             ${isConfigUser
                                 ? '<span style="opacity: 0.5; font-size: 0.85rem;">🔒 System User</span>'
-                                : `<button class="btn btn-small" onclick="editUser('${user.username}')">✏️ Edit</button>
-                                   <button class="btn btn-small danger" onclick="deleteUser('${user.username}')">🗑️ Delete</button>`
+                                : `<button class="btn btn-small danger" onclick="deleteUser('${user.username}')">🗑️ Delete</button>`
                             }
                         </td>
                     </tr>
@@ -680,7 +900,7 @@
                         username,
                         email,
                         password,
-                        role: 'user' // Always create as user role
+                        role: 'user'
                     })
                 });
 
@@ -692,6 +912,7 @@
                 alert('User created successfully!');
                 hideAddUserForm();
                 loadUsers();
+                fetchStats();
             } catch (error) {
                 console.error('Error creating user:', error);
                 alert(`Error: ${error.message}`);
@@ -712,20 +933,17 @@
                 });
 
                 if (!response.ok) {
-                    throw new Error('Failed to delete user');
+                    const data = await response.json();
+                    throw new Error(data.error || 'Failed to delete user');
                 }
 
                 alert('User deleted successfully!');
                 loadUsers();
+                fetchStats();
             } catch (error) {
                 console.error('Error deleting user:', error);
                 alert(`Error: ${error.message}`);
             }
-        }
-
-        function editUser(username) {
-            alert(`Edit functionality for user "${username}" would be implemented here`);
-            // In a real implementation: show edit form with user data
         }
 
         // Log Viewer Modal Functions
@@ -739,7 +957,6 @@
             logContent.textContent = 'Loading logs...';
 
             try {
-                // Fetch the server log file
                 const response = await fetch('/server.log', {
                     headers: {
                         'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -774,21 +991,12 @@
             window.open('/server.log', '_blank');
         }
 
-        // Placeholder functions for other modals
-        function openConfigModal() {
-            alert('Configuration management would open in a modal');
-        }
-
-        function viewSystemStats() {
-            alert('System statistics would display in a modal');
-        }
-
-        // Get token from localStorage (using same approach as main app)
+        // Get token from localStorage
         function getToken() {
             return localStorage.getItem('token');
         }
 
-        // Check if user is authenticated
+        // Check if user is authenticated and is admin
         function checkAuth() {
             const token = getToken();
             if (!token) {
@@ -796,6 +1004,21 @@
                 window.location.href = '/';
                 return false;
             }
+
+            // Decode JWT to check role
+            try {
+                const payload = JSON.parse(atob(token.split('.')[1]));
+                if (payload.role !== 'admin') {
+                    alert('Access denied: Admin privileges required');
+                    window.location.href = '/';
+                    return false;
+                }
+            } catch (e) {
+                alert('Invalid token');
+                window.location.href = '/';
+                return false;
+            }
+
             return true;
         }
 

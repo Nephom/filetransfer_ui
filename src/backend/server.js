@@ -788,7 +788,7 @@ app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
     if (directoryPath) {
       const storagePath = configManager.get('fileSystem.storagePath') || './storage';
       const fullPath = path.join(path.resolve(storagePath), directoryPath);
-      console.log(`Refreshing cache for directory: ${fullPath}...`);
+      systemLogger.logCacheOperation('refresh_directory', { path: fullPath }, req);
       // This will re-scan and overwrite the specific directory hash in Redis.
       // Note: This won't detect deletions within the directory, a full refresh is needed for that.
       if (fileSystem.cache && fileSystem.cache.scanDirectory) {
@@ -796,14 +796,14 @@ app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
       }
       res.json({ success: true, message: `Cache for ${directoryPath} refreshed.` });
     } else {
-      console.log('Refreshing entire file system cache...');
+      systemLogger.logCacheOperation('refresh_full', {}, req);
       if (fileSystem.cache && fileSystem.cache.refreshCache) {
         await fileSystem.cache.refreshCache();
       }
       res.json({ success: true, message: 'Entire cache refreshed successfully' });
     }
   } catch (error) {
-    console.error('Cache refresh error:', error);
+    systemLogger.logSystem('ERROR', `Cache refresh error: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
@@ -814,7 +814,7 @@ app.get('/api/files/cache-stats', authenticate, async (req, res) => {
     const stats = await fileSystem.getCacheInfo ? await fileSystem.getCacheInfo() : { message: 'Cache stats not available' };
     res.json(stats);
   } catch (error) {
-    console.error('Cache stats error:', error);
+    systemLogger.logSystem('ERROR', `Cache stats error: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });
@@ -940,8 +940,7 @@ app.post('/api/archive', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Items array is required' });
     }
 
-    console.log('Creating archive for items:', items);
-    console.log('Current path:', currentPath);
+    systemLogger.logFileOperation('archive', currentPath || '/', true, req, { itemCount: items.length, items: items.map(i => i.name) });
 
     // Set response headers for zip download
     res.setHeader('Content-Type', 'application/zip');
@@ -958,14 +957,14 @@ app.post('/api/archive', authenticate, async (req, res) => {
     // Handle archiver warnings and errors
     archive.on('warning', (err) => {
       if (err.code === 'ENOENT') {
-        console.warn('Archive warning:', err);
+        systemLogger.logSystem('WARN', `Archive warning: ${err.message}`);
       } else {
         throw err;
       }
     });
 
     archive.on('error', (err) => {
-      console.error('Archive error:', err);
+      systemLogger.logSystem('ERROR', `Archive error: ${err.message}`);
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to create archive' });
       }
@@ -976,8 +975,6 @@ app.post('/api/archive', authenticate, async (req, res) => {
       const itemPath = currentPath
         ? path.join(storagePath, currentPath, item.name)
         : path.join(storagePath, item.name);
-
-      console.log('Adding to archive:', itemPath);
 
       try {
         const stats = await fs.stat(itemPath);
@@ -990,14 +987,13 @@ app.post('/api/archive', authenticate, async (req, res) => {
           archive.file(itemPath, { name: item.name });
         }
       } catch (err) {
-        console.error(`Failed to add ${item.name} to archive:`, err);
+        systemLogger.logSystem('ERROR', `Failed to add ${item.name} to archive: ${err.message}`);
         // Continue with other items
       }
     }
 
     // Finalize the archive
     await archive.finalize();
-    systemLogger.logFileOperation('archive', currentPath || '/', true, req, { itemCount: items.length, items: items.map(i => i.name) });
 
   } catch (error) {
     systemLogger.logFileOperation('archive', req.body.currentPath || '/', false, req, { error: error.message });
@@ -1621,7 +1617,6 @@ async function startServer() {
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to start server: ${error.message}`);
-    console.error('Failed to start server:', error);
     process.exit(1);
   }
 }
@@ -1651,7 +1646,6 @@ async function gracefulShutdown() {
     process.exit(0);
   } catch (error) {
     systemLogger.logSystem('ERROR', `Error during shutdown: ${error.message}`);
-    console.error('Error during shutdown:', error);
     process.exit(1);
   }
 }
