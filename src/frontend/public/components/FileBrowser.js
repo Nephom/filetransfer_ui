@@ -19,6 +19,10 @@ const FileBrowser = ({ token, user }) => {
     const [showUserDropdown, setShowUserDropdown] = React.useState(false);
     const [showChangePasswordModal, setShowChangePasswordModal] = React.useState(false);
     const [isDragging, setIsDragging] = React.useState(false);
+    const [showActionsDropdown, setShowActionsDropdown] = React.useState(false);
+    const [showRenameModal, setShowRenameModal] = React.useState(false);
+    const [renameTarget, setRenameTarget] = React.useState(null);
+    const [newName, setNewName] = React.useState('');
 
     React.useEffect(() => {
         fetchFiles();
@@ -33,12 +37,15 @@ const FileBrowser = ({ token, user }) => {
         if (showUserDropdown) {
             setShowUserDropdown(false);
         }
+        if (showActionsDropdown) {
+            setShowActionsDropdown(false);
+        }
     };
 
     React.useEffect(() => {
         document.addEventListener('click', handleGlobalClick);
         return () => document.removeEventListener('click', handleGlobalClick);
-    }, [showUserDropdown]);
+    }, [showUserDropdown, showActionsDropdown]);
 
     const fetchFiles = async (path = currentPath) => {
         try {
@@ -94,6 +101,7 @@ const FileBrowser = ({ token, user }) => {
     const navigateToFolder = (folderPath, folderName) => {
         setCurrentPath(folderPath);
         setSelectedFiles([]);
+        setError(''); // Clear any errors
         fetchFiles(folderPath);
     };
 
@@ -102,6 +110,7 @@ const FileBrowser = ({ token, user }) => {
             const parentPath = currentPath.split('/').slice(0, -1).join('/');
             setCurrentPath(parentPath);
             setSelectedFiles([]);
+            setError(''); // Clear any errors
             fetchFiles(parentPath);
         }
     };
@@ -409,6 +418,150 @@ const FileBrowser = ({ token, user }) => {
     const handleLogout = () => {
         localStorage.removeItem('token');
         window.location.reload();
+    };
+
+    // Copy selected files to clipboard
+    const handleCopy = () => {
+        if (selectedFiles.length === 0) {
+            setError('Please select files to copy');
+            return;
+        }
+        // Create a new array to avoid reference issues
+        const copiedItems = selectedFiles.map(f => ({
+            name: f.name,
+            path: f.path,
+            isDirectory: f.isDirectory,
+            size: f.size
+        }));
+        setClipboard({ items: copiedItems, action: 'copy' });
+        setShowActionsDropdown(false);
+        console.log('Copied to clipboard:', copiedItems.length, 'items');
+    };
+
+    // Cut selected files to clipboard
+    const handleCut = () => {
+        if (selectedFiles.length === 0) {
+            setError('Please select files to move');
+            return;
+        }
+        // Create a new array to avoid reference issues
+        const cutItems = selectedFiles.map(f => ({
+            name: f.name,
+            path: f.path,
+            isDirectory: f.isDirectory,
+            size: f.size
+        }));
+        setClipboard({ items: cutItems, action: 'cut' });
+        setShowActionsDropdown(false);
+        console.log('Cut to clipboard:', cutItems.length, 'items');
+    };
+
+    // Paste files from clipboard
+    const handlePaste = async () => {
+        if (clipboard.items.length === 0) {
+            setError('No items in clipboard');
+            return;
+        }
+
+        console.log('Pasting items:', clipboard.items);
+        console.log('Paste operation:', clipboard.action);
+
+        try {
+            const storagePath = './storage';
+            const response = await fetch('/api/files/paste', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    items: clipboard.items.map(f => {
+                        // Construct full source path
+                        const fullSourcePath = f.path.startsWith(storagePath)
+                            ? f.path
+                            : `${storagePath}/${f.path}`;
+
+                        return {
+                            name: f.name,
+                            sourcePath: fullSourcePath,
+                            isDirectory: f.isDirectory
+                        };
+                    }),
+                    operation: clipboard.action,
+                    targetPath: currentPath
+                })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                console.log('Paste successful:', data.message);
+
+                // Always clear clipboard after successful paste (both copy and cut)
+                // For copy operations, user needs to explicitly copy again if they want to paste again
+                setClipboard({ items: [], action: null });
+
+                // Refresh file list
+                await fetchFiles();
+
+                setShowActionsDropdown(false);
+                setError('');
+            } else {
+                const data = await response.json();
+                setError(data.error || 'Paste operation failed');
+            }
+        } catch (err) {
+            console.error('Paste error:', err);
+            setError('Paste operation failed');
+        }
+    };
+
+    // Open rename modal
+    const handleRenameClick = () => {
+        if (selectedFiles.length !== 1) {
+            setError('Please select exactly one file to rename');
+            return;
+        }
+        setRenameTarget(selectedFiles[0]);
+        setNewName(selectedFiles[0].name);
+        setShowRenameModal(true);
+        setShowActionsDropdown(false);
+    };
+
+    // Execute rename
+    const executeRename = async () => {
+        if (!newName.trim() || !renameTarget) {
+            setError('New name cannot be empty');
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/files/rename', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    oldName: renameTarget.name,
+                    newName: newName.trim(),
+                    currentPath: currentPath
+                })
+            });
+
+            if (response.ok) {
+                fetchFiles();
+                setShowRenameModal(false);
+                setRenameTarget(null);
+                setNewName('');
+                setSelectedFiles([]);
+                setError('');
+            } else {
+                const data = await response.json();
+                setError(data.error || 'Rename failed');
+            }
+        } catch (err) {
+            setError('Rename failed');
+        }
     };
 
     const renderFileItem = (file, index) => {
@@ -769,27 +922,299 @@ const FileBrowser = ({ token, user }) => {
                 React.createElement('span', { key: 'upload-icon' }, '📤'),
                 React.createElement('span', { key: 'upload-text' }, ' Upload')
             ]),
-            React.createElement('button', {
-                key: 'new-folder-button',
-                onClick: () => {
-                    setNewFolderName('');
-                    setShowNewFolderModal(true);
-                },
-                style: {
-                    background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
-                    border: 'none',
-                    borderRadius: '8px',
-                    padding: '10px 16px',
-                    color: 'white',
-                    cursor: 'pointer',
-                    fontSize: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px'
-                }
+            React.createElement('div', {
+                key: 'actions-dropdown-container',
+                style: { position: 'relative' }
             }, [
-                React.createElement('span', { key: 'folder-icon' }, '📁'),
-                React.createElement('span', { key: 'folder-text' }, ' New Folder')
+                React.createElement('button', {
+                    key: 'actions-dropdown-toggle',
+                    onClick: (e) => {
+                        e.stopPropagation();
+                        setShowActionsDropdown(!showActionsDropdown);
+                    },
+                    style: {
+                        background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
+                        border: 'none',
+                        borderRadius: '8px',
+                        padding: '10px 16px',
+                        color: 'white',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        transition: 'all 0.3s ease'
+                    }
+                }, [
+                    React.createElement('span', { key: 'actions-icon' }, '⚡'),
+                    React.createElement('span', { key: 'actions-text' }, 'Actions'),
+                    React.createElement('span', {
+                        key: 'dropdown-arrow',
+                        style: {
+                            transition: 'transform 0.3s ease',
+                            transform: showActionsDropdown ? 'rotate(180deg)' : 'rotate(0deg)'
+                        }
+                    }, ' ▼')
+                ]),
+                showActionsDropdown && React.createElement('div', {
+                    key: 'actions-dropdown-menu',
+                    style: {
+                        position: 'absolute',
+                        top: '100%',
+                        right: 0,
+                        marginTop: '8px',
+                        background: 'rgba(20, 20, 30, 0.98)',
+                        backdropFilter: 'blur(20px)',
+                        borderRadius: '12px',
+                        border: '1px solid rgba(139, 92, 246, 0.3)',
+                        boxShadow: '0 10px 40px rgba(0, 0, 0, 0.5), 0 0 20px rgba(139, 92, 246, 0.2)',
+                        zIndex: 1000,
+                        minWidth: '220px',
+                        overflow: 'hidden',
+                        animation: 'slideDown 0.3s ease-out'
+                    }
+                }, [
+                    React.createElement('style', {
+                        key: 'dropdown-animation'
+                    }, `
+                        @keyframes slideDown {
+                            from {
+                                opacity: 0;
+                                transform: translateY(-10px) scale(0.95);
+                            }
+                            to {
+                                opacity: 1;
+                                transform: translateY(0) scale(1);
+                            }
+                        }
+                    `),
+                    React.createElement('div', {
+                        key: 'dropdown-header',
+                        style: {
+                            padding: '12px 16px',
+                            borderBottom: '1px solid rgba(139, 92, 246, 0.2)',
+                            fontSize: '12px',
+                            fontWeight: '600',
+                            color: 'rgba(255, 255, 255, 0.5)',
+                            textTransform: 'uppercase',
+                            letterSpacing: '1px'
+                        }
+                    }, 'File Operations'),
+                    React.createElement('button', {
+                        key: 'new-folder-option',
+                        onClick: () => {
+                            setNewFolderName('');
+                            setShowNewFolderModal(true);
+                            setShowActionsDropdown(false);
+                        },
+                        style: {
+                            width: '100%',
+                            padding: '14px 16px',
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            textAlign: 'left',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            transition: 'all 0.2s ease',
+                            borderBottom: '1px solid rgba(255, 255, 255, 0.05)'
+                        },
+                        onMouseEnter: (e) => {
+                            e.target.style.background = 'rgba(139, 92, 246, 0.2)';
+                            e.target.style.paddingLeft = '20px';
+                        },
+                        onMouseLeave: (e) => {
+                            e.target.style.background = 'transparent';
+                            e.target.style.paddingLeft = '16px';
+                        }
+                    }, [
+                        React.createElement('span', { key: 'folder-icon', style: { fontSize: '18px' } }, '📁'),
+                        React.createElement('span', { key: 'folder-text' }, 'New Folder')
+                    ]),
+                    React.createElement('button', {
+                        key: 'copy-option',
+                        onClick: handleCopy,
+                        disabled: selectedFiles.length === 0,
+                        style: {
+                            width: '100%',
+                            padding: '14px 16px',
+                            background: 'transparent',
+                            border: 'none',
+                            color: selectedFiles.length === 0 ? 'rgba(255, 255, 255, 0.3)' : 'white',
+                            cursor: selectedFiles.length === 0 ? 'not-allowed' : 'pointer',
+                            fontSize: '14px',
+                            textAlign: 'left',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            transition: 'all 0.2s ease',
+                            borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+                            opacity: selectedFiles.length === 0 ? 0.5 : 1
+                        },
+                        onMouseEnter: (e) => {
+                            if (selectedFiles.length > 0) {
+                                e.target.style.background = 'rgba(59, 130, 246, 0.2)';
+                                e.target.style.paddingLeft = '20px';
+                            }
+                        },
+                        onMouseLeave: (e) => {
+                            e.target.style.background = 'transparent';
+                            e.target.style.paddingLeft = '16px';
+                        }
+                    }, [
+                        React.createElement('span', { key: 'copy-icon', style: { fontSize: '18px' } }, '📋'),
+                        React.createElement('div', { key: 'copy-content', style: { flex: 1 } }, [
+                            React.createElement('div', { key: 'copy-text' }, 'Copy'),
+                            selectedFiles.length > 0 && React.createElement('div', {
+                                key: 'copy-count',
+                                style: {
+                                    fontSize: '11px',
+                                    color: 'rgba(255, 255, 255, 0.5)',
+                                    marginTop: '2px'
+                                }
+                            }, `${selectedFiles.length} item(s) selected`)
+                        ])
+                    ]),
+                    React.createElement('button', {
+                        key: 'cut-option',
+                        onClick: handleCut,
+                        disabled: selectedFiles.length === 0,
+                        style: {
+                            width: '100%',
+                            padding: '14px 16px',
+                            background: 'transparent',
+                            border: 'none',
+                            color: selectedFiles.length === 0 ? 'rgba(255, 255, 255, 0.3)' : 'white',
+                            cursor: selectedFiles.length === 0 ? 'not-allowed' : 'pointer',
+                            fontSize: '14px',
+                            textAlign: 'left',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            transition: 'all 0.2s ease',
+                            borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+                            opacity: selectedFiles.length === 0 ? 0.5 : 1
+                        },
+                        onMouseEnter: (e) => {
+                            if (selectedFiles.length > 0) {
+                                e.target.style.background = 'rgba(251, 146, 60, 0.2)';
+                                e.target.style.paddingLeft = '20px';
+                            }
+                        },
+                        onMouseLeave: (e) => {
+                            e.target.style.background = 'transparent';
+                            e.target.style.paddingLeft = '16px';
+                        }
+                    }, [
+                        React.createElement('span', { key: 'cut-icon', style: { fontSize: '18px' } }, '✂️'),
+                        React.createElement('div', { key: 'cut-content', style: { flex: 1 } }, [
+                            React.createElement('div', { key: 'cut-text' }, 'Move (Cut)'),
+                            selectedFiles.length > 0 && React.createElement('div', {
+                                key: 'cut-count',
+                                style: {
+                                    fontSize: '11px',
+                                    color: 'rgba(255, 255, 255, 0.5)',
+                                    marginTop: '2px'
+                                }
+                            }, `${selectedFiles.length} item(s) selected`)
+                        ])
+                    ]),
+                    React.createElement('button', {
+                        key: 'paste-option',
+                        onClick: handlePaste,
+                        disabled: clipboard.items.length === 0,
+                        style: {
+                            width: '100%',
+                            padding: '14px 16px',
+                            background: 'transparent',
+                            border: 'none',
+                            color: clipboard.items.length === 0 ? 'rgba(255, 255, 255, 0.3)' : 'white',
+                            cursor: clipboard.items.length === 0 ? 'not-allowed' : 'pointer',
+                            fontSize: '14px',
+                            textAlign: 'left',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            transition: 'all 0.2s ease',
+                            borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
+                            opacity: clipboard.items.length === 0 ? 0.5 : 1
+                        },
+                        onMouseEnter: (e) => {
+                            if (clipboard.items.length > 0) {
+                                e.target.style.background = 'rgba(34, 197, 94, 0.2)';
+                                e.target.style.paddingLeft = '20px';
+                            }
+                        },
+                        onMouseLeave: (e) => {
+                            e.target.style.background = 'transparent';
+                            e.target.style.paddingLeft = '16px';
+                        }
+                    }, [
+                        React.createElement('span', { key: 'paste-icon', style: { fontSize: '18px' } }, '📌'),
+                        React.createElement('div', { key: 'paste-content', style: { flex: 1 } }, [
+                            React.createElement('div', { key: 'paste-text' }, 'Paste'),
+                            React.createElement('div', {
+                                key: 'paste-info',
+                                style: {
+                                    fontSize: '11px',
+                                    color: 'rgba(255, 255, 255, 0.5)',
+                                    marginTop: '2px'
+                                }
+                            }, clipboard.items.length > 0
+                                ? `${clipboard.items.length} item(s) • ${clipboard.action === 'copy' ? 'Copy' : 'Move'}`
+                                : 'Clipboard empty')
+                        ])
+                    ]),
+                    React.createElement('button', {
+                        key: 'rename-option',
+                        onClick: handleRenameClick,
+                        disabled: selectedFiles.length !== 1,
+                        style: {
+                            width: '100%',
+                            padding: '14px 16px',
+                            background: 'transparent',
+                            border: 'none',
+                            color: selectedFiles.length !== 1 ? 'rgba(255, 255, 255, 0.3)' : 'white',
+                            cursor: selectedFiles.length !== 1 ? 'not-allowed' : 'pointer',
+                            fontSize: '14px',
+                            textAlign: 'left',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            transition: 'all 0.2s ease',
+                            opacity: selectedFiles.length !== 1 ? 0.5 : 1
+                        },
+                        onMouseEnter: (e) => {
+                            if (selectedFiles.length === 1) {
+                                e.target.style.background = 'rgba(168, 85, 247, 0.2)';
+                                e.target.style.paddingLeft = '20px';
+                            }
+                        },
+                        onMouseLeave: (e) => {
+                            e.target.style.background = 'transparent';
+                            e.target.style.paddingLeft = '16px';
+                        }
+                    }, [
+                        React.createElement('span', { key: 'rename-icon', style: { fontSize: '18px' } }, '✏️'),
+                        React.createElement('div', { key: 'rename-content', style: { flex: 1 } }, [
+                            React.createElement('div', { key: 'rename-text' }, 'Rename'),
+                            selectedFiles.length === 1 && React.createElement('div', {
+                                key: 'rename-file',
+                                style: {
+                                    fontSize: '11px',
+                                    color: 'rgba(255, 255, 255, 0.5)',
+                                    marginTop: '2px',
+                                    whiteSpace: 'nowrap',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis'
+                                }
+                            }, selectedFiles[0].name)
+                        ])
+                    ])
+                ])
             ]),
             selectedFiles.length > 0 && React.createElement('button', {
                 onClick: deleteSelectedFiles,
@@ -831,25 +1256,6 @@ const FileBrowser = ({ token, user }) => {
                 React.createElement('span', { key: 'download-text' }, ` Download (${selectedFiles.length})`)
             ]),
 
-            clipboard.items.length > 0 && React.createElement('button', {
-                onClick: handlePaste,
-                key: 'paste',
-                style: {
-                    background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
-                    border: 'none',
-                    borderRadius: '8px',
-                    padding: '10px 16px',
-                    color: 'white',
-                    cursor: 'pointer',
-                    fontSize: '14px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px'
-                }
-            }, [
-                React.createElement('span', { key: 'paste-icon' }, '📋'),
-                React.createElement('span', { key: 'paste-text' }, ` Paste (${clipboard.items.length})`)
-            ])
         ]),
 
         // File Browser Content
@@ -1389,6 +1795,182 @@ const FileBrowser = ({ token, user }) => {
                             fontSize: '14px'
                         }
                     }, 'Create')
+                ])
+            ])
+        ]),
+
+        // Rename Modal
+        showRenameModal && React.createElement('div', {
+            key: 'rename-modal',
+            style: {
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(0, 0, 0, 0.7)',
+                backdropFilter: 'blur(8px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1000
+            },
+            onClick: (e) => {
+                if (e.target === e.currentTarget) {
+                    setShowRenameModal(false);
+                    setRenameTarget(null);
+                    setNewName('');
+                }
+            }
+        }, [
+            React.createElement('div', {
+                style: {
+                    background: 'rgba(30, 40, 50, 0.95)',
+                    backdropFilter: 'blur(20px)',
+                    borderRadius: '16px',
+                    padding: '32px',
+                    width: '450px',
+                    maxWidth: '90%',
+                    boxShadow: '0 25px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)'
+                }
+            }, [
+                React.createElement('h2', {
+                    style: {
+                        color: 'white',
+                        margin: '0 0 8px 0',
+                        fontSize: '24px',
+                        fontWeight: '600',
+                        textAlign: 'center',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '10px'
+                    }
+                }, [
+                    React.createElement('span', { key: 'rename-icon' }, '✏️'),
+                    React.createElement('span', { key: 'rename-title' }, 'Rename File')
+                ]),
+
+                React.createElement('p', {
+                    style: {
+                        color: 'rgba(255, 255, 255, 0.6)',
+                        margin: '0 0 24px 0',
+                        fontSize: '14px',
+                        textAlign: 'center'
+                    }
+                }, renameTarget ? `Renaming: ${renameTarget.name}` : ''),
+
+                React.createElement('input', {
+                    type: 'text',
+                    placeholder: 'Enter new name',
+                    value: newName,
+                    onChange: (e) => setNewName(e.target.value),
+                    onKeyPress: (e) => {
+                        if (e.key === 'Enter') {
+                            executeRename();
+                        }
+                    },
+                    autoFocus: true,
+                    style: {
+                        width: '100%',
+                        padding: '14px 16px',
+                        border: '1px solid rgba(139, 92, 246, 0.3)',
+                        borderRadius: '10px',
+                        background: 'rgba(139, 92, 246, 0.05)',
+                        color: 'white',
+                        fontSize: '15px',
+                        marginBottom: '24px',
+                        outline: 'none',
+                        transition: 'all 0.2s ease'
+                    }
+                }),
+
+                error && React.createElement('div', {
+                    key: 'rename-error',
+                    style: {
+                        color: '#ef4444',
+                        textAlign: 'center',
+                        padding: '12px',
+                        background: 'rgba(239, 68, 68, 0.1)',
+                        borderRadius: '8px',
+                        marginBottom: '16px',
+                        fontSize: '14px'
+                    }
+                }, error),
+
+                React.createElement('div', {
+                    style: {
+                        display: 'flex',
+                        gap: '12px'
+                    }
+                }, [
+                    React.createElement('button', {
+                        key: 'cancel-rename',
+                        onClick: () => {
+                            setShowRenameModal(false);
+                            setRenameTarget(null);
+                            setNewName('');
+                            setError('');
+                        },
+                        style: {
+                            flex: 1,
+                            padding: '14px',
+                            background: 'rgba(255, 255, 255, 0.08)',
+                            backdropFilter: 'blur(10px)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '10px',
+                            color: 'rgba(255, 255, 255, 0.9)',
+                            cursor: 'pointer',
+                            fontSize: '15px',
+                            fontWeight: '500',
+                            transition: 'all 0.2s ease'
+                        },
+                        onMouseEnter: (e) => {
+                            e.target.style.background = 'rgba(255, 255, 255, 0.15)';
+                            e.target.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+                        },
+                        onMouseLeave: (e) => {
+                            e.target.style.background = 'rgba(255, 255, 255, 0.08)';
+                            e.target.style.borderColor = 'rgba(255, 255, 255, 0.2)';
+                        }
+                    }, 'Cancel'),
+
+                    React.createElement('button', {
+                        key: 'confirm-rename',
+                        onClick: executeRename,
+                        disabled: !newName.trim(),
+                        style: {
+                            flex: 1,
+                            padding: '14px',
+                            background: !newName.trim()
+                                ? 'rgba(100, 100, 100, 0.3)'
+                                : 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
+                            border: 'none',
+                            borderRadius: '10px',
+                            color: 'white',
+                            cursor: !newName.trim() ? 'not-allowed' : 'pointer',
+                            fontSize: '15px',
+                            fontWeight: '600',
+                            boxShadow: !newName.trim()
+                                ? 'none'
+                                : '0 4px 12px rgba(139, 92, 246, 0.3)',
+                            transition: 'all 0.2s ease',
+                            opacity: !newName.trim() ? 0.5 : 1
+                        },
+                        onMouseEnter: (e) => {
+                            if (newName.trim()) {
+                                e.target.style.transform = 'translateY(-2px)';
+                                e.target.style.boxShadow = '0 6px 20px rgba(139, 92, 246, 0.4)';
+                            }
+                        },
+                        onMouseLeave: (e) => {
+                            if (newName.trim()) {
+                                e.target.style.transform = 'translateY(0)';
+                                e.target.style.boxShadow = '0 4px 12px rgba(139, 92, 246, 0.3)';
+                            }
+                        }
+                    }, 'Rename')
                 ])
             ])
         ]),
