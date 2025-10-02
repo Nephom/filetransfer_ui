@@ -97,10 +97,11 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Load ignore list from .ignoreDirs file
+   * Load ignore list from .ignoreDirs file (in project root)
    */
   async loadIgnoreList() {
-    const ignoreFile = path.join(this.storagePath, '.ignoreDirs');
+    // Store .ignoreDirs in project root, same location as server.log and logs/
+    const ignoreFile = path.join(__dirname, '../../../.ignoreDirs');
     const defaultIgnoreList = [
       'node_modules',
       '.git',
@@ -127,12 +128,12 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Create .ignoreDirs file with default ignores
+   * Create .ignoreDirs file with default ignores (in project root)
    */
   async createIgnoreFile(ignoreFile, defaultIgnoreList) {
     try {
       const content = defaultIgnoreList.join('\n');
-      await fs.writeFile(ignoreFile, `# Ignore file for file system cache\n# Add directories to ignore (one per line)\n${content}\n`);
+      await fs.writeFile(ignoreFile, `# Ignore file for file system cache\n# Add directories to ignore (one per line)\n# This file is in the project root, same as server.log\n${content}\n`);
       systemLogger.logSystem('INFO', `Created .ignoreDirs file at: ${ignoreFile}`);
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to create .ignoreDirs file: ${error.message}`);
