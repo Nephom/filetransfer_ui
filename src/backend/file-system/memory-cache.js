@@ -632,9 +632,7 @@ class RedisFileSystemCache extends EventEmitter {
             if (i > 0 && i % 2 === 0) {
                 findArgs.push('-o');
             }
-          }
-          results.push(fileData);
-        }
+          });
       }
       
       return results;
