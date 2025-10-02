@@ -366,6 +366,13 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
+   * Get cache statistics (alias for getCacheInfo)
+   */
+  async getStats() {
+    return await this.getCacheInfo();
+  }
+
+  /**
    * Close the cache and disconnect from Redis.
    */
   async close() {
@@ -449,45 +456,41 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Search files by spawning the system's native `find` command.
-   * This is a robust, performant solution that correctly ignores specified
-   * directories and handles large filesystems efficiently.
+   * Search files by spawning the system's native `find` command with 2>/dev/null
+   * to suppress permission denied errors.
+   * Uses wildcard patterns in exclude paths to match directories anywhere in the tree.
    */
   async searchFiles(query) {
     try {
       const { spawn } = require('child_process');
       const storageRoot = path.resolve(this.storagePath);
 
-      const findArgs = [
-        storageRoot, // The search MUST start from the configured storage root.
-      ];
-
       // Load ignore list from .ignoreDirs file
       const excludeDirs = await this.loadIgnoreList();
-      const pathExclusionArgs = [];
 
-      // Create full, absolute paths for exclusion, based on the storageRoot.
-      excludeDirs.forEach(dir => {
-        pathExclusionArgs.push('-path', path.join(storageRoot, dir));
-      });
+      // Build find command arguments
+      const findArgs = [storageRoot];
 
-      // Construct the `( -path ... -o -path ... ) -prune` part of the command.
-      if (pathExclusionArgs.length > 0) {
-          findArgs.push('(');
-          pathExclusionArgs.forEach((arg, i) => {
-              findArgs.push(arg);
-              // Add -o (OR) between each `-path ...` pair
-              if (i < pathExclusionArgs.length - 1 && i % 2 === 1) {
-                  findArgs.push('-o');
-              }
-          });
-          findArgs.push(')', '-prune', '-o');
+      // Add exclusion patterns - use wildcards to match anywhere in path
+      if (excludeDirs.length > 0) {
+        findArgs.push('\\(');
+        for (let i = 0; i < excludeDirs.length; i++) {
+          // Match the directory name anywhere in the path tree
+          findArgs.push('-path', `*/${excludeDirs[i]}/*`);
+          findArgs.push('-o');
+          findArgs.push('-name', excludeDirs[i]);
+          if (i < excludeDirs.length - 1) {
+            findArgs.push('-o');
+          }
+        }
+        findArgs.push('\\)', '-prune', '-o');
       }
 
-      // Add the case-insensitive name search and the print action.
+      // Add the case-insensitive name search and the print action
       findArgs.push('-iname', `*${query}*`, '-print');
 
-      const findProcess = spawn('find', findArgs);
+      // Spawn find with stderr redirected to suppress permission errors
+      const findProcess = spawn('sh', ['-c', `find ${findArgs.join(' ')} 2>/dev/null`]);
 
       let output = '';
       let errorOutput = '';
@@ -501,8 +504,17 @@ class RedisFileSystemCache extends EventEmitter {
       });
 
       return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          findProcess.kill();
+          systemLogger.logSystem('WARN', `Search timeout for query: ${query}`);
+          resolve({ files: [], timeout: true });
+        }, 30000); // 30 second timeout for find command
+
         findProcess.on('close', async (code) => {
-          if (code !== 0 && errorOutput) {
+          clearTimeout(timeoutId);
+
+          // With 2>/dev/null, we shouldn't get permission errors
+          if (errorOutput) {
             systemLogger.logSystem('WARN', `'find' process stderr (exit code ${code}): ${errorOutput}`);
           }
 
@@ -530,10 +542,12 @@ class RedisFileSystemCache extends EventEmitter {
           });
 
           const files = (await Promise.all(statPromises)).filter(Boolean);
+          systemLogger.logSystem('INFO', `Search completed for "${query}": ${files.length} results`);
           resolve({ files });
         });
 
         findProcess.on('error', (err) => {
+          clearTimeout(timeoutId);
           systemLogger.logSystem('ERROR', 'Failed to spawn find process: ' + err.message);
           reject(new Error('Failed to execute search command.'));
         });
