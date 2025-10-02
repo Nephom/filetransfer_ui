@@ -30,6 +30,7 @@ let authManager;
 let fileSystem;
 let securityMiddleware;
 let isCacheReady = false;
+const userActiveDirectories = new Map(); // Track active directory per user
 
 // Security checks and recommendations on startup
 async function performSecurityChecks(config) {
@@ -460,7 +461,7 @@ app.post('/auth/reset-password', (req, res, next) => {
 });
 
 // Search files using cache (must be before wildcard route)
-// POST endpoint for JSON request body
+    // POST endpoint for JSON request body
 app.post('/api/files/search', authenticate, async (req, res) => {
   if (!isCacheReady) {
     return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
@@ -483,9 +484,8 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       timeoutPromise
     ]);
 
-    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.length });
-    res.json(searchResults);
-  } catch (error) {
+    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files ? searchResults.files.length : 0 });
+    res.json(searchResults);  } catch (error) {
     if (error.message === 'Search timeout') {
       systemLogger.logAPI('search', req.body.query || req.query.query, false, req, { error: 'Search timeout' });
       res.status(408).json({ error: 'Search timeout - try a more specific query' });
@@ -657,6 +657,16 @@ app.get('/api/files/*', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: Access denied.' });
     }
 
+    // --- On-demand watcher integration ---
+    const userId = req.user.id;
+    const previousPath = userActiveDirectories.get(userId);
+    if (previousPath && previousPath !== fullPath) {
+      await fileSystem.cache.leaveDirectory(previousPath);
+    }
+    await fileSystem.cache.enterDirectory(fullPath);
+    userActiveDirectories.set(userId, fullPath);
+    // ------------------------------------
+
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
     });
@@ -699,6 +709,16 @@ app.get('/api/files', authenticate, async (req, res) => {
         return res.status(403).json({ error: 'Access denied' });
       }
     }
+
+    // --- On-demand watcher integration ---
+    const userId = req.user.id;
+    const previousPath = userActiveDirectories.get(userId);
+    if (previousPath && previousPath !== targetPath) {
+      await fileSystem.cache.leaveDirectory(previousPath);
+    }
+    await fileSystem.cache.enterDirectory(targetPath);
+    userActiveDirectories.set(userId, targetPath);
+    // ------------------------------------
 
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
