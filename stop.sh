@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# File Transfer UI - 停止腳本
-# 用途：停止檔案傳輸系統服務
+# File Transfer UI - Stop Script
+# Purpose: To stop the file transfer system service
 
-# 顏色定義
+# Color Definitions
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -12,12 +12,12 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# 配置
+# Configuration
 PID_FILE="server.pid"
 LOG_FILE="server.log"
 CONFIG_FILE="src/config.ini"
 
-# 從配置文件讀取端口
+# Read port from config file
 get_config_value() {
     local key=$1
     local config_file=$2
@@ -26,58 +26,58 @@ get_config_value() {
     fi
 }
 
-# 讀取端口配置，如果讀取失敗則使用默認值
+# Read port configuration, use default if failed
 PORT=$(get_config_value "port" "$CONFIG_FILE")
 if [ -z "$PORT" ]; then
     PORT=3000
 fi
 
-echo -e "${CYAN}🛑 File Transfer UI - 停止服務${NC}"
-echo -e "${CYAN}================================${NC}"
+echo -e "${CYAN}🛑 File Transfer UI - Stopping Service${NC}"
+echo -e "${CYAN}======================================${NC}"
 
-# 檢查 PID 文件是否存在
+# Check if PID file exists
 if [ ! -f "$PID_FILE" ]; then
-    echo -e "${YELLOW}⚠️  沒有找到 PID 文件，服務可能未運行${NC}"
+    echo -e "${YELLOW}⚠️  PID file not found, service may not be running${NC}"
     
-    # 嘗試通過端口查找進程
+    # Attempt to find the process by port
     PID=$(lsof -ti:$PORT 2>/dev/null)
     if [ -n "$PID" ]; then
-        echo -e "${BLUE}🔍 發現端口 $PORT 上的進程 (PID: $PID)${NC}"
-        echo -e "${YELLOW}⚠️  嘗試停止該進程...${NC}"
+        echo -e "${BLUE}🔍 Found process on port $PORT (PID: $PID)${NC}"
+        echo -e "${YELLOW}⚠️  Attempting to stop this process...${NC}"
         kill -TERM $PID 2>/dev/null
         sleep 2
         
-        # 檢查是否成功停止
+        # Check if stopped successfully
         if ps -p $PID > /dev/null 2>&1; then
-            echo -e "${RED}❌ 無法正常停止進程，強制終止...${NC}"
+            echo -e "${RED}❌ Could not stop the process gracefully, forcing termination...${NC}"
             kill -KILL $PID 2>/dev/null
         fi
         
-        echo -e "${GREEN}✅ 進程已停止${NC}"
+        echo -e "${GREEN}✅ Process stopped${NC}"
     else
-        echo -e "${GREEN}✅ 沒有發現運行中的服務${NC}"
+        echo -e "${GREEN}✅ No running service found${NC}"
     fi
     exit 0
 fi
 
-# 讀取 PID
+# Read PID
 PID=$(cat "$PID_FILE")
 
-# 檢查進程是否存在
+# Check if process exists
 if ! ps -p $PID > /dev/null 2>&1; then
-    echo -e "${YELLOW}⚠️  進程 $PID 不存在，清理 PID 文件${NC}"
+    echo -e "${YELLOW}⚠️  Process $PID does not exist, cleaning up PID file${NC}"
     rm -f "$PID_FILE"
-    echo -e "${GREEN}✅ 清理完成${NC}"
+    echo -e "${GREEN}✅ Cleanup complete${NC}"
     exit 0
 fi
 
-echo -e "${BLUE}🔍 找到運行中的服務 (PID: $PID)${NC}"
+echo -e "${BLUE}🔍 Found running service (PID: $PID)${NC}"
 
-# 嘗試優雅停止
-echo -e "${YELLOW}⏳ 正在停止服務...${NC}"
+# Attempt to stop gracefully
+echo -e "${YELLOW}⏳ Stopping service...${NC}"
 kill -TERM $PID 2>/dev/null
 
-# 等待進程停止
+# Wait for process to stop
 WAIT_TIME=0
 MAX_WAIT=10
 
@@ -87,33 +87,33 @@ while [ $WAIT_TIME -lt $MAX_WAIT ]; do
     fi
     sleep 1
     WAIT_TIME=$((WAIT_TIME + 1))
-    echo -e "${BLUE}⏳ 等待進程停止... ($WAIT_TIME/$MAX_WAIT)${NC}"
+    echo -e "${BLUE}⏳ Waiting for process to stop... ($WAIT_TIME/$MAX_WAIT)${NC}"
 done
 
-# 檢查是否成功停止
+# Check if stopped successfully
 if ps -p $PID > /dev/null 2>&1; then
-    echo -e "${RED}⚠️  無法正常停止進程，強制終止...${NC}"
+    echo -e "${RED}⚠️  Could not stop the process gracefully, forcing termination...${NC}"
     kill -KILL $PID 2>/dev/null
     sleep 1
     
     if ps -p $PID > /dev/null 2>&1; then
-        echo -e "${RED}❌ 無法停止進程 $PID${NC}"
+        echo -e "${RED}❌ Failed to stop process $PID${NC}"
         exit 1
     fi
 fi
 
-# 清理 PID 文件
+# Clean up PID file
 rm -f "$PID_FILE"
 
-echo -e "${GREEN}✅ 服務已成功停止${NC}"
-echo -e "${CYAN}================================${NC}"
-echo -e "${BLUE}📊 服務狀態：${NC}已停止"
-echo -e "${BLUE}📝 日誌文件：${NC}$LOG_FILE (保留)"
-echo -e "${PURPLE}💡 使用 ./start.sh 重新啟動服務${NC}"
+echo -e "${GREEN}✅ Service stopped successfully${NC}"
+echo -e "${CYAN}======================================${NC}"
+echo -e "${BLUE}📊 Service Status: ${NC}Stopped"
+echo -e "${BLUE}📝 Log File:       ${NC}$LOG_FILE (Retained)"
+echo -e "${PURPLE}💡 Use ./start.sh to restart the service${NC}"
 
-# 顯示最後幾行日誌（如果存在）
+# Show last few lines of log if it exists
 if [ -f "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
-    echo -e "${CYAN}================================${NC}"
-    echo -e "${BLUE}📋 最後的日誌記錄：${NC}"
-    tail -n 5 "$LOG_FILE" 2>/dev/null || echo -e "${YELLOW}無法讀取日誌文件${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${BLUE}📋 Last Log Entries:${NC}"
+    tail -n 5 "$LOG_FILE" 2>/dev/null || echo -e "${YELLOW}Could not read log file${NC}"
 fi
