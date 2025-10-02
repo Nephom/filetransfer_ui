@@ -555,26 +555,37 @@ class RedisFileSystemCache extends EventEmitter {
   async searchFiles(query) {
     const { spawn } = require('child_process');
     const storageRoot = path.resolve(this.storagePath);
-    const results = [];
 
-    // The `find` command is ideal for this task.
-    // - We use -iname for a case-insensitive search.
-    // - We use -path ... -prune -o to exclude specific directories.
     const findArgs = [
-      storageRoot,
-      '(',
-        '-path', '*/node_modules', '-o',
-        '-path', '*/.git', '-o',
-        '-path', '*/.cache', '-o',
-        '-path', '*/.vscode', '-o',
-        '-path', '*/.idea',
-      ')',
-      '-prune',
-      '-o',
-      '-iname',
-      `*${query}*`,
-      '-print'
+      storageRoot, // The search MUST start from the configured storage root.
     ];
+
+    // Define directories to exclude within the storageRoot.
+    const excludeDirs = ['node_modules', '.git', '.cache', '.vscode', '.idea'];
+    const pathExclusionArgs = [];
+    
+    // Create full, absolute paths for exclusion, based on the storageRoot.
+    excludeDirs.forEach(dir => {
+      pathExclusionArgs.push('-path', path.join(storageRoot, dir));
+    });
+
+    // Construct the `( -path ... -o -path ... ) -prune` part of the command.
+    if (pathExclusionArgs.length > 0) {
+        findArgs.push('(');
+        pathExclusionArgs.forEach((arg, i) => {
+            // Add -o (OR) between each `-path ...` pair
+            if (i > 0 && i % 2 === 0) {
+                findArgs.push('-o');
+            }
+            findArgs.push(arg);
+        });
+        findArgs.push(')');
+        findArgs.push('-prune');
+        findArgs.push('-o');
+    }
+
+    // Add the case-insensitive name search and the print action.
+    findArgs.push('-iname', `*${query}*`, '-print');
 
     const findProcess = spawn('find', findArgs);
 
@@ -592,8 +603,6 @@ class RedisFileSystemCache extends EventEmitter {
     return new Promise((resolve, reject) => {
       findProcess.on('close', async (code) => {
         if (code !== 0 && errorOutput) {
-          // find can write to stderr for non-fatal errors like permission denied,
-          // which we can often ignore. We'll log it but still process stdout.
           console.warn(`'find' process stderr (exit code ${code}): ${errorOutput}`);
         }
 
@@ -616,7 +625,6 @@ class RedisFileSystemCache extends EventEmitter {
               modified: stats.mtime.getTime(),
             };
           } catch (e) {
-            // Ignore files we can't stat (e.g., broken symlinks, permissions)
             return null;
           }
         });
