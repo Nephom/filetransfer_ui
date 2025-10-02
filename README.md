@@ -16,7 +16,7 @@
 ## 前置需求 (Prerequisites)
 
 1.  **Node.js**: v20 或更高版本。
-2.  **Redis Server**: 必須在本機或可存取的網路環境中執行 Redis Server。您可以使用 Docker 快速啟動一個 Redis 實例：
+2.  **Redis Server**: 必須在本機中執行 Redis Server。您可以使用 Docker 快速啟動一個 Redis 實例：
     ```bash
     docker run -d --name my-redis -p 6379:6379 redis
     ```
@@ -32,8 +32,7 @@
 2.  **設定應用程式 (必要步驟)**:
     在使用前，您 **必須** 修改 `src/config.ini` 檔案，至少設定以下項目：
     *   `storagePath`: 檔案儲存的根目錄。
-    *   `admin_user` / `admin_password`: 預設管理員的帳號密碼。
-    *   `redis_host` / `redis_port`: 如果您的 Redis 不在預設位置 (`localhost:6379`)。
+    *   `username` / `password`: 預設管理員的帳號密碼。
     ```bash
     # 建議使用您習慣的編輯器開啟並修改
     vi src/config.ini
