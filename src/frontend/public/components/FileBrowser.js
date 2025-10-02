@@ -28,9 +28,7 @@ const FileBrowser = ({ token, user }) => {
         fetchFiles();
     }, []);
 
-    // Timeout ID for debouncing search
-    const timeoutId = setTimeout(() => {}, 0);
-    clearTimeout(timeoutId);
+    const timeoutIdRef = React.useRef(null);
 
     // Handle clicks outside context menu and dropdown
     const handleGlobalClick = () => {
@@ -48,6 +46,8 @@ const FileBrowser = ({ token, user }) => {
     }, [showUserDropdown, showActionsDropdown]);
 
     const fetchFiles = async (path = currentPath) => {
+        // When fetching files, clear the search query
+        setSearchQuery('');
         try {
             setLoading(true);
             setError('');
@@ -71,24 +71,33 @@ const FileBrowser = ({ token, user }) => {
 
     const performSearch = async (query) => {
         if (!query.trim()) {
-            fetchFiles();
+            fetchFiles(currentPath); // Fetch current directory if search is cleared
             return;
         }
         
         try {
             setLoading(true);
             setError('');
-            const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+            const response = await fetch('/api/files/search', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ query })
             });
             
-            if (!response.ok) throw new Error('Search failed');
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ message: 'Search failed' }));
+                throw new Error(errorData.message || 'Search failed');
+            }
+            
             const data = await response.json();
             
-            // Filter out files with null/undefined names
+            // The backend returns a flat list of files from the search
             const validFiles = data.files ? data.files.filter(f => f && f.name) : [];
             setFiles(validFiles);
-            setCurrentPath('Search Results');
+            setCurrentPath(`Search results for "${query}"`);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -333,13 +342,8 @@ const FileBrowser = ({ token, user }) => {
         }
     };
 
-    // Filter files based on search query
+    // The files state is now the single source of truth, populated by either fetchFiles or performSearch.
     const validFilteredFiles = files.filter(file => file && file.name);
-    const filteredFiles = searchQuery 
-        ? validFilteredFiles.filter(file => 
-            file.name.toLowerCase().includes(searchQuery.toLowerCase())
-        )
-        : validFilteredFiles;
 
     const getFileIcon = (file) => {
         if (file.isDirectory) return '📁';
@@ -647,7 +651,7 @@ const FileBrowser = ({ token, user }) => {
         ]);
     };
 
-    const fileItems = filteredFiles.map((file, index) => renderFileItem(file, index));
+    const fileItems = validFilteredFiles.map((file, index) => renderFileItem(file, index));
 
     return React.createElement('div', {
         style: {
@@ -856,10 +860,12 @@ const FileBrowser = ({ token, user }) => {
                 title: 'Search files and folders',
                 value: searchQuery,
                 onChange: (e) => {
-                    setSearchQuery(e.target.value);
-                    // Debounce search
-                    clearTimeout(timeoutId);
-                    setTimeout(() => performSearch(e.target.value), 300);
+                    const query = e.target.value;
+                    setSearchQuery(query);
+                    clearTimeout(timeoutIdRef.current);
+                    timeoutIdRef.current = setTimeout(() => {
+                        performSearch(query);
+                    }, 300);
                 },
                 style: {
                     flex: 1,
