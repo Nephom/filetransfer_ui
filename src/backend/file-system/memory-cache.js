@@ -11,14 +11,14 @@ const chokidar = require('chokidar');
 class RedisFileSystemCache extends EventEmitter {
   constructor(storagePath = './storage', redisOptions = {}) {
     super();
-    this.storagePath = storagePath;
+    this.storagePath = path.resolve(storagePath); // Ensure it's an absolute path
     this.redisOptions = {
       host: redisOptions.host || 'localhost',
       port: redisOptions.port || 6379,
       ...redisOptions
     };
     this.redisClient = null;
-    this.watcher = null;
+    this.activeWatchers = new Map(); // Use a map to track active watchers
     this.initialized = false;
     this.fileHashes = new Map();
     this.directoryCache = new Map();
@@ -46,11 +46,9 @@ class RedisFileSystemCache extends EventEmitter {
       
       await this.redisClient.connect();
       
-      // Initialize file hashes
-      await this.loadFileHashes();
-      
-      // Start file watcher to monitor changes
-      await this.startFileWatcher();
+      // Perform an initial shallow scan of the root storage path
+      console.log(`Performing initial scan of root: ${this.storagePath}`);
+      await this.updateDirectoryCache(this.storagePath);
       
       this.initialized = true;
       console.log('Redis file system cache initialized successfully');
@@ -87,15 +85,28 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Start file watcher to monitor changes
+   * Scans a directory and starts watching it for changes.
+   * To be called when a user enters a directory in the UI.
    */
-  async startFileWatcher() {
+  async enterDirectory(dirPath) {
+    const absolutePath = path.resolve(dirPath);
+    console.log(`Entering and watching directory: ${absolutePath}`);
+    
+    // First, ensure the directory contents are cached
+    await this.updateDirectoryCache(absolutePath);
+
+    // Then, start watching if not already watched
+    if (this.activeWatchers.has(absolutePath)) {
+      console.log(`Already watching ${absolutePath}`);
+      return;
+    }
+
     try {
-      this.watcher = chokidar.watch(this.storagePath, {
+      const watcher = chokidar.watch(absolutePath, {
         persistent: true,
         ignoreInitial: true,
         awaitWriteFinish: true,
-        depth: 10, // Limit depth to prevent performance issues
+        depth: 0, // IMPORTANT: Watch only the current directory, not recursively
         ignored: [
           '**/node_modules/**',
           '**/.git/**',
@@ -105,7 +116,7 @@ class RedisFileSystemCache extends EventEmitter {
         ]
       });
 
-      this.watcher
+      watcher
         .on('add', (filePath) => this.handleFileChange('add', filePath))
         .on('change', (filePath) => this.handleFileChange('change', filePath))
         .on('unlink', (filePath) => this.handleFileChange('unlink', filePath))
@@ -115,13 +126,30 @@ class RedisFileSystemCache extends EventEmitter {
           if (error.code === 'EACCES') {
             console.warn(`Skipping path due to permission error: ${error.path}`);
           } else {
-            console.error('File watcher error:', error);
+            console.error(`Watcher error in ${absolutePath}:`, error);
           }
         });
-
-      console.log('File watcher started for:', this.storagePath);
+      
+      this.activeWatchers.set(absolutePath, watcher);
+      console.log(`Successfully started watcher for: ${absolutePath}`);
     } catch (error) {
-      console.error('Failed to start file watcher:', error);
+      console.error(`Failed to start watcher for ${absolutePath}:`, error);
+    }
+  }
+
+  /**
+   * Stops watching a directory for changes.
+   * To be called when a user leaves a directory in the UI.
+   */
+  async leaveDirectory(dirPath) {
+    const absolutePath = path.resolve(dirPath);
+    const watcher = this.activeWatchers.get(absolutePath);
+
+    if (watcher) {
+      console.log(`Stopping watcher for: ${absolutePath}`);
+      await watcher.close();
+      this.activeWatchers.delete(absolutePath);
+      console.log(`Successfully stopped watcher for: ${absolutePath}`);
     }
   }
 
@@ -466,10 +494,12 @@ class RedisFileSystemCache extends EventEmitter {
    * Close the cache and disconnect from Redis.
    */
   async close() {
-    if (this.watcher) {
-      await this.watcher.close();
-      this.watcher = null;
+    // Stop all active watchers
+    console.log('Closing all active file watchers...');
+    for (const path of this.activeWatchers.keys()) {
+      await this.leaveDirectory(path);
     }
+    
     if (this.redisClient) {
       await this.redisClient.quit();
       this.redisClient = null;
