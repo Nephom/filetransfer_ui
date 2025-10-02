@@ -8,6 +8,7 @@ const FileBrowser = ({ token, user }) => {
     const [loading, setLoading] = React.useState(true);
     const [error, setError] = React.useState('');
     const [currentPath, setCurrentPath] = React.useState('');
+    const [displayPath, setDisplayPath] = React.useState('');
     const [selectedFiles, setSelectedFiles] = React.useState([]);
     const [viewMode, setViewMode] = React.useState('grid');
     const [searchQuery, setSearchQuery] = React.useState('');
@@ -61,7 +62,9 @@ const FileBrowser = ({ token, user }) => {
             // Filter out files with null/undefined names
             const validFiles = data.files ? data.files.filter(f => f && f.name) : [];
             setFiles(validFiles);
-            setCurrentPath(data.currentPath || '');
+            const newPath = data.currentPath || '';
+            setCurrentPath(newPath);
+            setDisplayPath(newPath);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -97,7 +100,7 @@ const FileBrowser = ({ token, user }) => {
             // The backend returns a flat list of files from the search
             const validFiles = data.files ? data.files.filter(f => f && f.name) : [];
             setFiles(validFiles);
-            setCurrentPath(`Search results for "${query}"`);
+            setDisplayPath(`Search results for "${query}"`);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -108,16 +111,18 @@ const FileBrowser = ({ token, user }) => {
 
 
     const navigateToFolder = (folderPath, folderName) => {
-        setCurrentPath(folderPath);
         setSelectedFiles([]);
         setError(''); // Clear any errors
         fetchFiles(folderPath);
     };
 
     const navigateBack = () => {
-        if (currentPath) {
+        if (searchQuery) {
+            // If searching, "back" should clear the search and restore the previous directory
+            setSearchQuery('');
+            fetchFiles(currentPath);
+        } else if (currentPath) {
             const parentPath = currentPath.split('/').slice(0, -1).join('/');
-            setCurrentPath(parentPath);
             setSelectedFiles([]);
             setError(''); // Clear any errors
             fetchFiles(parentPath);
@@ -682,15 +687,15 @@ const FileBrowser = ({ token, user }) => {
                 React.createElement('button', {
                     key: 'back-button',
                     onClick: navigateBack,
-                    disabled: !currentPath,
+                    disabled: !currentPath && !searchQuery,
                     style: {
                         background: 'rgba(173, 181, 189, 0.2)',
                         border: 'none',
                         borderRadius: '6px',
                         padding: '8px 12px',
                         color: 'white',
-                        cursor: currentPath ? 'pointer' : 'not-allowed',
-                        opacity: currentPath ? 1 : 0.5
+                        cursor: (currentPath || searchQuery) ? 'pointer' : 'not-allowed',
+                        opacity: (currentPath || searchQuery) ? 1 : 0.5
                     }
                 }, '← Back'),
                 React.createElement('div', {
@@ -703,7 +708,7 @@ const FileBrowser = ({ token, user }) => {
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                     }
-                }, currentPath || '/'),
+                }, displayPath || '/'),
             ]),
             React.createElement('div', {
                 key: 'navbar-right', // Add key for sibling element in array
