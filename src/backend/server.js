@@ -30,6 +30,7 @@ let authManager;
 let fileSystem;
 let securityMiddleware;
 let isCacheReady = false;
+const userActiveDirectories = new Map(); // Track active directory per user
 
 // Security checks and recommendations on startup
 async function performSecurityChecks(config) {
@@ -606,6 +607,16 @@ app.get('/api/files/*', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: Access denied.' });
     }
 
+    // --- On-demand watcher integration ---
+    const userId = req.user.id;
+    const previousPath = userActiveDirectories.get(userId);
+    if (previousPath && previousPath !== fullPath) {
+      await fileSystem.cache.leaveDirectory(previousPath);
+    }
+    await fileSystem.cache.enterDirectory(fullPath);
+    userActiveDirectories.set(userId, fullPath);
+    // ------------------------------------
+
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
     });
@@ -648,6 +659,16 @@ app.get('/api/files', authenticate, async (req, res) => {
         return res.status(403).json({ error: 'Access denied' });
       }
     }
+
+    // --- On-demand watcher integration ---
+    const userId = req.user.id;
+    const previousPath = userActiveDirectories.get(userId);
+    if (previousPath && previousPath !== targetPath) {
+      await fileSystem.cache.leaveDirectory(previousPath);
+    }
+    await fileSystem.cache.enterDirectory(targetPath);
+    userActiveDirectories.set(userId, targetPath);
+    // ------------------------------------
 
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
