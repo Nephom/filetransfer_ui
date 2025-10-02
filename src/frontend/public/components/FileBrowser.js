@@ -8,6 +8,7 @@ const FileBrowser = ({ token, user }) => {
     const [loading, setLoading] = React.useState(true);
     const [error, setError] = React.useState('');
     const [currentPath, setCurrentPath] = React.useState('');
+    const [displayPath, setDisplayPath] = React.useState('');
     const [selectedFiles, setSelectedFiles] = React.useState([]);
     const [viewMode, setViewMode] = React.useState('grid');
     const [searchQuery, setSearchQuery] = React.useState('');
@@ -28,9 +29,7 @@ const FileBrowser = ({ token, user }) => {
         fetchFiles();
     }, []);
 
-    // Timeout ID for debouncing search
-    const timeoutId = setTimeout(() => {}, 0);
-    clearTimeout(timeoutId);
+    const timeoutIdRef = React.useRef(null);
 
     // Handle clicks outside context menu and dropdown
     const handleGlobalClick = () => {
@@ -48,6 +47,8 @@ const FileBrowser = ({ token, user }) => {
     }, [showUserDropdown, showActionsDropdown]);
 
     const fetchFiles = async (path = currentPath) => {
+        // When fetching files, clear the search query
+        setSearchQuery('');
         try {
             setLoading(true);
             setError('');
@@ -61,7 +62,9 @@ const FileBrowser = ({ token, user }) => {
             // Filter out files with null/undefined names
             const validFiles = data.files ? data.files.filter(f => f && f.name) : [];
             setFiles(validFiles);
-            setCurrentPath(data.currentPath || '');
+            const newPath = data.currentPath || '';
+            setCurrentPath(newPath);
+            setDisplayPath(newPath);
         } catch (err) {
             setError(err.message);
         } finally {
@@ -71,7 +74,7 @@ const FileBrowser = ({ token, user }) => {
 
     const performSearch = async (query) => {
         if (!query.trim()) {
-            fetchFiles();
+            fetchFiles(currentPath); // Fetch current directory if search is cleared
             return;
         }
         
@@ -96,16 +99,18 @@ const FileBrowser = ({ token, user }) => {
 
 
     const navigateToFolder = (folderPath, folderName) => {
-        setCurrentPath(folderPath);
         setSelectedFiles([]);
         setError(''); // Clear any errors
         fetchFiles(folderPath);
     };
 
     const navigateBack = () => {
-        if (currentPath) {
+        if (searchQuery) {
+            // If searching, "back" should clear the search and restore the previous directory
+            setSearchQuery('');
+            fetchFiles(currentPath);
+        } else if (currentPath) {
             const parentPath = currentPath.split('/').slice(0, -1).join('/');
-            setCurrentPath(parentPath);
             setSelectedFiles([]);
             setError(''); // Clear any errors
             fetchFiles(parentPath);
@@ -330,13 +335,8 @@ const FileBrowser = ({ token, user }) => {
         }
     };
 
-    // Filter files based on search query
+    // The files state is now the single source of truth, populated by either fetchFiles or performSearch.
     const validFilteredFiles = files.filter(file => file && file.name);
-    const filteredFiles = searchQuery 
-        ? validFilteredFiles.filter(file => 
-            file.name.toLowerCase().includes(searchQuery.toLowerCase())
-        )
-        : validFilteredFiles;
 
     const getFileIcon = (file) => {
         if (file.isDirectory) return '📁';
@@ -644,7 +644,7 @@ const FileBrowser = ({ token, user }) => {
         ]);
     };
 
-    const fileItems = filteredFiles.map((file, index) => renderFileItem(file, index));
+    const fileItems = validFilteredFiles.map((file, index) => renderFileItem(file, index));
 
     return React.createElement('div', {
         style: {
@@ -675,15 +675,15 @@ const FileBrowser = ({ token, user }) => {
                 React.createElement('button', {
                     key: 'back-button',
                     onClick: navigateBack,
-                    disabled: !currentPath,
+                    disabled: !currentPath && !searchQuery,
                     style: {
                         background: 'rgba(173, 181, 189, 0.2)',
                         border: 'none',
                         borderRadius: '6px',
                         padding: '8px 12px',
                         color: 'white',
-                        cursor: currentPath ? 'pointer' : 'not-allowed',
-                        opacity: currentPath ? 1 : 0.5
+                        cursor: (currentPath || searchQuery) ? 'pointer' : 'not-allowed',
+                        opacity: (currentPath || searchQuery) ? 1 : 0.5
                     }
                 }, '← Back'),
                 React.createElement('div', {
@@ -696,7 +696,7 @@ const FileBrowser = ({ token, user }) => {
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                     }
-                }, currentPath || '/'),
+                }, displayPath || '/'),
             ]),
             React.createElement('div', {
                 key: 'navbar-right', // Add key for sibling element in array
@@ -853,10 +853,12 @@ const FileBrowser = ({ token, user }) => {
                 title: 'Search files and folders',
                 value: searchQuery,
                 onChange: (e) => {
-                    setSearchQuery(e.target.value);
-                    // Debounce search
-                    clearTimeout(timeoutId);
-                    setTimeout(() => performSearch(e.target.value), 300);
+                    const query = e.target.value;
+                    setSearchQuery(query);
+                    clearTimeout(timeoutIdRef.current);
+                    timeoutIdRef.current = setTimeout(() => {
+                        performSearch(query);
+                    }, 300);
                 },
                 style: {
                     flex: 1,
