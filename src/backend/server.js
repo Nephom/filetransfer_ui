@@ -518,7 +518,7 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       timeoutPromise
     ]);
 
-    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.length });
+    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files ? searchResults.files.length : 0 });
     res.json(searchResults);
   } catch (error) {
     if (error.message === 'Search timeout') {
