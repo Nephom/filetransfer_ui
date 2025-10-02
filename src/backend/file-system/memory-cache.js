@@ -12,14 +12,14 @@ const { systemLogger } = require('../utils/logger');
 class RedisFileSystemCache extends EventEmitter {
   constructor(storagePath = './storage', redisOptions = {}) {
     super();
-    this.storagePath = storagePath;
+    this.storagePath = path.resolve(storagePath); // Ensure it's an absolute path
     this.redisOptions = {
       host: redisOptions.host || 'localhost',
       port: redisOptions.port || 6379,
       ...redisOptions
     };
     this.redisClient = null;
-    this.watcher = null;
+    this.activeWatchers = new Map(); // Use a map to track active watchers
     this.initialized = false;
     this.fileHashes = new Map();
     this.directoryCache = new Map();
@@ -52,7 +52,7 @@ class RedisFileSystemCache extends EventEmitter {
 
       // Start file watcher to monitor changes
       await this.startFileWatcher();
-
+      
       this.initialized = true;
       systemLogger.logSystem('INFO', 'Redis file system cache initialized successfully');
 
@@ -154,9 +154,22 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Start file watcher to monitor changes
+   * Scans a directory and starts watching it for changes.
+   * To be called when a user enters a directory in the UI.
    */
-  async startFileWatcher() {
+  async enterDirectory(dirPath) {
+    const absolutePath = path.resolve(dirPath);
+    console.log(`Entering and watching directory: ${absolutePath}`);
+    
+    // First, ensure the directory contents are cached
+    await this.updateDirectoryCache(absolutePath);
+
+    // Then, start watching if not already watched
+    if (this.activeWatchers.has(absolutePath)) {
+      console.log(`Already watching ${absolutePath}`);
+      return;
+    }
+
     try {
       const ignoreList = await this.loadIgnoreList();
 
@@ -168,7 +181,7 @@ class RedisFileSystemCache extends EventEmitter {
         ignored: ignoreList
       });
 
-      this.watcher
+      watcher
         .on('add', (filePath) => this.handleFileChange('add', filePath))
         .on('change', (filePath) => this.handleFileChange('change', filePath))
         .on('unlink', (filePath) => this.handleFileChange('unlink', filePath))
@@ -536,10 +549,12 @@ class RedisFileSystemCache extends EventEmitter {
    * Close the cache and disconnect from Redis.
    */
   async close() {
-    if (this.watcher) {
-      await this.watcher.close();
-      this.watcher = null;
+    // Stop all active watchers
+    console.log('Closing all active file watchers...');
+    for (const path of this.activeWatchers.keys()) {
+      await this.leaveDirectory(path);
     }
+    
     if (this.redisClient) {
       await this.redisClient.quit();
       this.redisClient = null;
@@ -588,34 +603,34 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Search files in the cache
+   * Search files by spawning the system's native `find` command.
+   * This is a robust, performant solution that correctly ignores specified
+   * directories and handles large filesystems efficiently.
    */
   async searchFiles(query) {
-    try {
-      const keys = await this.redisClient.keys('file:*');
-      const results = [];
-      
-      for (const key of keys) {
-        const fileData = await this.redisClient.hGetAll(key);
-        if (fileData && fileData.path && fileData.path.toLowerCase().includes(query.toLowerCase())) {
-          // Parse JSON values if needed
-          if (fileData.size && typeof fileData.size === 'string') {
-            fileData.size = parseInt(fileData.size);
-          }
-          if (fileData.modified && typeof fileData.modified === 'string') {
-            fileData.modified = parseInt(fileData.modified);
-          }
-          if (fileData.isDirectory && typeof fileData.isDirectory === 'string') {
-            fileData.isDirectory = fileData.isDirectory === 'true';
-          }
-          // If any field is JSON string, parse it
-          for (const [field, value] of Object.entries(fileData)) {
-            if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
-              try {
-                fileData[field] = JSON.parse(value);
-              } catch (e) {
-                // Keep as is if not valid JSON
-              }
+    const { spawn } = require('child_process');
+    const storageRoot = path.resolve(this.storagePath);
+
+    const findArgs = [
+      storageRoot, // The search MUST start from the configured storage root.
+    ];
+
+    // Define directories to exclude within the storageRoot.
+    const excludeDirs = ['node_modules', '.git', '.cache', '.vscode', '.idea'];
+    const pathExclusionArgs = [];
+    
+    // Create full, absolute paths for exclusion, based on the storageRoot.
+    excludeDirs.forEach(dir => {
+      pathExclusionArgs.push('-path', path.join(storageRoot, dir));
+    });
+
+    // Construct the `( -path ... -o -path ... ) -prune` part of the command.
+    if (pathExclusionArgs.length > 0) {
+        findArgs.push('(');
+        pathExclusionArgs.forEach((arg, i) => {
+            // Add -o (OR) between each `-path ...` pair
+            if (i > 0 && i % 2 === 0) {
+                findArgs.push('-o');
             }
           }
           results.push(fileData);
@@ -627,6 +642,61 @@ class RedisFileSystemCache extends EventEmitter {
       systemLogger.logSystem('ERROR', `Failed to search files: ${error.message}`);
       return [];
     }
+
+    // Add the case-insensitive name search and the print action.
+    findArgs.push('-iname', `*${query}*`, '-print');
+
+    const findProcess = spawn('find', findArgs);
+
+    let output = '';
+    let errorOutput = '';
+
+    findProcess.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    findProcess.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+
+    return new Promise((resolve, reject) => {
+      findProcess.on('close', async (code) => {
+        if (code !== 0 && errorOutput) {
+          console.warn(`'find' process stderr (exit code ${code}): ${errorOutput}`);
+        }
+
+        if (!output.trim()) {
+          return resolve({ files: [] });
+        }
+
+        const paths = output.trim().split('\n');
+        
+        const statPromises = paths.map(async (p) => {
+          if (!p) return null;
+          try {
+            const stats = await fs.stat(p);
+            const relativePath = path.relative(storageRoot, p);
+            return {
+              path: relativePath,
+              name: path.basename(p),
+              isDirectory: stats.isDirectory(),
+              size: stats.size,
+              modified: stats.mtime.getTime(),
+            };
+          } catch (e) {
+            return null;
+          }
+        });
+
+        const files = (await Promise.all(statPromises)).filter(Boolean);
+        resolve({ files });
+      });
+
+      findProcess.on('error', (err) => {
+        console.error('Failed to spawn find process.', err);
+        reject(new Error('Failed to execute search command.'));
+      });
+    });
   }
 }
 
