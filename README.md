@@ -5,6 +5,10 @@ A comprehensive file transfer system with modern UI and robust backend functiona
 > **🤖 AI-Generated Code Demonstration**  
 > This project was developed through multiple AI-assisted iterations, showcasing collaborative development between human requirements and AI implementation. The codebase demonstrates modern web development practices, performance optimizations, and real-world problem-solving through iterative refinement.
 
+## Precondition
+1. Need Redis-server on your site(Docker is OK)
+2. Node.js version 22 above
+
 ## Features Implemented
 
 ## Quick Start
