@@ -47,12 +47,15 @@ class RedisFileSystemCache extends EventEmitter {
 
       await this.redisClient.connect();
 
-      // Initialize file hashes
+      // Initialize file hashes from Redis (existing cached data)
       await this.loadFileHashes();
 
       // Start file watcher to monitor changes
       await this.startFileWatcher();
-      
+
+      // Cache only the root directory (non-recursive)
+      await this.updateDirectoryCache(this.storagePath);
+
       this.initialized = true;
       systemLogger.logSystem('INFO', 'Redis file system cache initialized successfully');
 
@@ -136,6 +139,41 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
+   * Start file watcher to monitor changes
+   */
+  async startFileWatcher() {
+    try {
+      const ignoreList = await this.loadIgnoreList();
+
+      this.watcher = chokidar.watch(this.storagePath, {
+        persistent: true,
+        ignoreInitial: true,
+        awaitWriteFinish: true,
+        depth: 10, // Limit depth to prevent performance issues
+        ignored: ignoreList
+      });
+
+      this.watcher
+        .on('add', (filePath) => this.handleFileChange('add', filePath))
+        .on('change', (filePath) => this.handleFileChange('change', filePath))
+        .on('unlink', (filePath) => this.handleFileChange('unlink', filePath))
+        .on('addDir', (dirPath) => this.handleDirectoryChange('add', dirPath))
+        .on('unlinkDir', (dirPath) => this.handleDirectoryChange('unlink', dirPath))
+        .on('error', (error) => {
+          if (error.code === 'EACCES') {
+            systemLogger.logSystem('WARN', `Skipping path due to permission error: ${error.path}`);
+          } else {
+            systemLogger.logSystem('ERROR', `File watcher error: ${error.message}`);
+          }
+        });
+
+      systemLogger.logSystem('INFO', `File watcher started for: ${this.storagePath}`);
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Failed to start file watcher: ${error.message}`);
+    }
+  }
+
+  /**
    * Add directory to ignore list
    */
   async addToIgnoreList(dirPath) {
@@ -154,50 +192,39 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Scans a directory and starts watching it for changes.
+   * Cache directory contents when user enters a directory.
    * To be called when a user enters a directory in the UI.
    */
   async enterDirectory(dirPath) {
     const absolutePath = path.resolve(dirPath);
-    console.log(`Entering and watching directory: ${absolutePath}`);
-    
-    // First, ensure the directory contents are cached
-    await this.updateDirectoryCache(absolutePath);
+    const isRootDir = absolutePath === path.resolve(this.storagePath);
 
-    // Then, start watching if not already watched
-    if (this.activeWatchers.has(absolutePath)) {
-      console.log(`Already watching ${absolutePath}`);
-      return;
-    }
+    systemLogger.logSystem('INFO', `User entering directory: ${absolutePath}`);
 
     try {
-      const ignoreList = await this.loadIgnoreList();
+      // Root directory is always kept in hot cache
+      if (isRootDir) {
+        systemLogger.logSystem('INFO', `Returning root directory from hot cache`);
+        return this.directoryCache.get(absolutePath) || [];
+      }
 
-      this.watcher = chokidar.watch(this.storagePath, {
-        persistent: true,
-        ignoreInitial: true,
-        awaitWriteFinish: true,
-        depth: 10, // Limit depth to prevent performance issues
-        ignored: ignoreList
-      });
+      // Check if already cached for non-root directories
+      const dirKey = `dir:${absolutePath}`;
+      const dirData = await this.redisClient.hGetAll(dirKey);
 
-      watcher
-        .on('add', (filePath) => this.handleFileChange('add', filePath))
-        .on('change', (filePath) => this.handleFileChange('change', filePath))
-        .on('unlink', (filePath) => this.handleFileChange('unlink', filePath))
-        .on('addDir', (dirPath) => this.handleDirectoryChange('add', dirPath))
-        .on('unlinkDir', (dirPath) => this.handleDirectoryChange('unlink', dirPath))
-        .on('error', (error) => {
-          if (error.code === 'EACCES') {
-            systemLogger.logSystem('WARN', `Skipping path due to permission error: ${error.path}`);
-          } else {
-            systemLogger.logSystem('ERROR', `File watcher error: ${error.message}`);
-          }
-        });
+      if (Object.keys(dirData).length > 0 && dirData.cached) {
+        systemLogger.logSystem('INFO', `Directory already cached: ${absolutePath}`);
+        return JSON.parse(dirData.contents || '[]');
+      }
 
-      systemLogger.logSystem('INFO', `File watcher started for: ${this.storagePath}`);
+      // Cache the directory contents (non-recursive)
+      await this.updateDirectoryCache(absolutePath);
+
+      // Return the cached contents
+      return this.directoryCache.get(absolutePath) || [];
     } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to start file watcher: ${error.message}`);
+      systemLogger.logSystem('ERROR', `Failed to enter directory: ${error.message}`);
+      return [];
     }
   }
 
@@ -293,9 +320,9 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Update directory cache
+   * Update directory cache (non-recursive, only direct children)
    */
-  async updateDirectoryCache(dirPath) {
+  async updateDirectoryCache(dirPath, recursive = false) {
     try {
       // Ensure the directory path is absolute before using
       const absoluteDirPath = path.resolve(dirPath);
@@ -304,44 +331,53 @@ class RedisFileSystemCache extends EventEmitter {
 
       for (const fileName of files) {
         const fullPath = path.join(absoluteDirPath, fileName);
-        const fileKey = `file:${fullPath}`;
-        const fileData = await this.redisClient.hGetAll(fileKey);
 
-        if (Object.keys(fileData).length > 0) {
-          dirContents.push(fileData);
-        } else {
-          // Create entry for file not yet in cache
-          try {
-            const stat = await fs.stat(fullPath);
-            const relativePath = path.relative(this.storagePath, fullPath);
-            const hash = stat.isDirectory() ? 'directory' : crypto.createHash('md5').update(relativePath).digest('hex');
-            
-            const newFileData = {
-              path: fullPath,
-              hash: hash,
-              size: stat.size || 0,
-              modified: stat.mtime.getTime(),
-              isDirectory: stat.isDirectory()
-            };
+        try {
+          const stat = await fs.stat(fullPath);
+          const relativePath = path.relative(this.storagePath, fullPath);
 
-            // Convert all values to strings for Redis
-            const redisNewFileData = {};
-            for (const [key, value] of Object.entries(newFileData)) {
-              redisNewFileData[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
+          const fileData = {
+            path: fullPath,
+            name: fileName,
+            size: stat.size || 0,
+            modified: stat.mtime.getTime(),
+            isDirectory: stat.isDirectory()
+          };
+
+          // Only store file hash for files, not directories
+          if (!stat.isDirectory()) {
+            const content = await fs.readFile(fullPath);
+            fileData.hash = crypto.createHash('md5').update(content).digest('hex');
+
+            // Store file in Redis
+            const fileKey = `file:${fullPath}`;
+            const redisFileData = {};
+            for (const [key, value] of Object.entries(fileData)) {
+              redisFileData[key] = typeof value === 'object' ? JSON.stringify(value) : String(value);
             }
-            await this.redisClient.hSet(fileKey, redisNewFileData);
-            dirContents.push(newFileData);
-          } catch (err) {
-            systemLogger.logSystem('ERROR', `Error processing file in directory: ${fullPath} - ${err.message}`);
+            await this.redisClient.hSet(fileKey, redisFileData);
+            this.fileHashes.set(fullPath, { hash: fileData.hash, modified: fileData.modified });
+          }
+
+          dirContents.push(fileData);
+        } catch (err) {
+          if (err.code !== 'EACCES') {
+            systemLogger.logSystem('ERROR', `Error processing item in directory: ${fullPath} - ${err.message}`);
           }
         }
       }
 
+      const isRootDir = absoluteDirPath === path.resolve(this.storagePath);
       const dirKey = `dir:${absoluteDirPath}`;
-      await this.redisClient.hSet(dirKey, { 
-        contents: typeof dirContents === 'object' ? JSON.stringify(dirContents) : String(dirContents) 
+      await this.redisClient.hSet(dirKey, {
+        contents: JSON.stringify(dirContents),
+        cached: Date.now().toString(),
+        isRoot: isRootDir.toString()
       });
       this.directoryCache.set(absoluteDirPath, dirContents);
+
+      const cacheType = isRootDir ? '(hot cache)' : '(regular cache)';
+      systemLogger.logSystem('INFO', `Cached directory ${cacheType}: ${absoluteDirPath} (${dirContents.length} items)`);
     } catch (error) {
       if (error.code === 'EACCES') {
         // Skip directories we can't access
@@ -419,77 +455,39 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Scan and cache a directory
+   * Scan and cache a directory (non-recursive, only direct children)
    */
   async scanDirectory(dirPath) {
     try {
       // Ensure the directory path is absolute before scanning
       const absoluteDirPath = path.resolve(dirPath);
-      systemLogger.logSystem('INFO', `Scanning directory: ${absoluteDirPath}`);
-      
-      // Add to scan queue to prevent concurrent scans
-      this.scanQueue.push(absoluteDirPath);
-      if (this.isScanning) {
-        return; // Already scanning, this will be processed in the queue
-      }
-      
-      this.isScanning = true;
-      
-      while (this.scanQueue.length > 0) {
-        const currentDir = this.scanQueue.shift();
-        
-        try {
-          const items = await fs.readdir(currentDir, { withFileTypes: true });
-          const scanPromises = [];
-          
-          for (const item of items) {
-            const fullPath = path.join(currentDir, item.name);
-            
-            if (item.isDirectory()) {
-              // Add subdirectory to scan queue
-              this.scanQueue.push(fullPath);
-              // For directories, update directory cache instead of file hash
-              scanPromises.push(this.updateDirectoryCache(fullPath));
-            } else {
-              scanPromises.push(this.updateFileHash(fullPath));
-            }
-          }
-          
-          await Promise.all(scanPromises);
-          await this.updateDirectoryCache(currentDir);
-          
-          systemLogger.logSystem('INFO', `Completed scan for: ${currentDir}`);
-        } catch (error) {
-          if (error.code === 'EACCES') {
-            systemLogger.logSystem('WARN', `Skipping directory scan for ${currentDir} due to permission error.`);
-            // Add to ignore list to prevent future scanning attempts
-            await this.addToIgnoreList(currentDir);
-          } else {
-            systemLogger.logSystem('ERROR', `Error scanning directory: ${currentDir} - ${error.message}`);
-          }
-        }
-      }
-      
-      this.isScanning = false;
+      systemLogger.logSystem('INFO', `Scanning directory (non-recursive): ${absoluteDirPath}`);
+
+      // Simply update the directory cache for this directory only
+      await this.updateDirectoryCache(absoluteDirPath);
+
+      systemLogger.logSystem('INFO', `Completed scan for: ${absoluteDirPath}`);
     } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to scan directory: ${error.message}`);
+      if (error.code === 'EACCES') {
+        systemLogger.logSystem('WARN', `Skipping directory scan for ${dirPath} due to permission error.`);
+        await this.addToIgnoreList(dirPath);
+      } else {
+        systemLogger.logSystem('ERROR', `Failed to scan directory: ${error.message}`);
+      }
     }
   }
 
   /**
-   * Refresh the entire cache
+   * Refresh the root directory cache
    */
   async refreshCache() {
     try {
-      systemLogger.logSystem('INFO', 'Refreshing entire file system cache...');
+      systemLogger.logSystem('INFO', 'Refreshing root directory cache...');
 
-      // Clear existing cache
-      await this.clearCache();
+      // Re-cache only the root directory (non-recursive)
+      await this.updateDirectoryCache(path.resolve(this.storagePath));
 
-      // Re-scan root directory, ensuring it's absolute
-      await this.scanDirectory(path.resolve(this.storagePath));
-
-      systemLogger.logSystem('INFO', 'Cache refresh completed');
+      systemLogger.logSystem('INFO', 'Root directory cache refresh completed');
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to refresh cache: ${error.message}`);
     }
@@ -564,17 +562,45 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Clear all cache data
+   * Clear all cache data except root directory (hot cache)
    */
   async clearCache() {
     if (!this.redisClient || !this.redisClient.isReady) {
       systemLogger.logSystem('ERROR', 'Cannot clear cache: Redis client is not connected.');
       return;
     }
-    systemLogger.logSystem('INFO', 'Clearing file system cache...');
-    await this.redisClient.flushDb();
-    systemLogger.logSystem('INFO', 'Cache cleared successfully.');
-    this.emit('clear');
+
+    try {
+      systemLogger.logSystem('INFO', 'Clearing file system cache (preserving root directory)...');
+
+      // Save root directory cache
+      const rootPath = path.resolve(this.storagePath);
+      const rootDirKey = `dir:${rootPath}`;
+      const rootCache = await this.redisClient.hGetAll(rootDirKey);
+
+      // Clear all cache
+      await this.redisClient.flushDb();
+
+      // Restore root directory cache
+      if (Object.keys(rootCache).length > 0) {
+        await this.redisClient.hSet(rootDirKey, rootCache);
+        systemLogger.logSystem('INFO', 'Root directory cache preserved');
+      }
+
+      // Clear memory cache except root
+      const rootMemoryCache = this.directoryCache.get(rootPath);
+      this.directoryCache.clear();
+      this.fileHashes.clear();
+
+      if (rootMemoryCache) {
+        this.directoryCache.set(rootPath, rootMemoryCache);
+      }
+
+      systemLogger.logSystem('INFO', 'Cache cleared successfully (root directory preserved).');
+      this.emit('clear');
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Failed to clear cache: ${error.message}`);
+    }
   }
 
   /**
