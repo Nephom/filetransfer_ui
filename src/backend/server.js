@@ -474,35 +474,38 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    // Add timeout for search operations (45 seconds to allow for large filesystems)
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Search timeout')), 45000);
-    });
+    // Search using Redis index (no timeout needed - index queries are fast)
+    const searchResults = await fileSystem.searchFiles(query);
 
-    const searchResults = await Promise.race([
-      fileSystem.searchFiles(query),
-      timeoutPromise
-    ]);
-
-    // Check if search timed out internally
-    if (searchResults.timeout) {
-      systemLogger.logAPI('search', query, false, req, { error: 'Internal search timeout' });
-      return res.status(408).json({
-        error: 'Search is taking too long. Try a more specific query or contact administrator.',
-        files: searchResults.files || []
+    // Check if indexing is in progress
+    if (searchResults.indexing) {
+      systemLogger.logAPI('search', query, false, req, { status: 'indexing', progress: searchResults.progress });
+      return res.status(202).json({
+        files: [],
+        indexing: true,
+        message: searchResults.message || 'Index is currently building. Please try again later.',
+        progress: searchResults.progress
       });
     }
 
-    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files ? searchResults.files.length : 0 });
-    res.json(searchResults);
-  } catch (error) {
-    if (error.message === 'Search timeout') {
-      systemLogger.logAPI('search', req.body.query || req.query.query, false, req, { error: 'Search timeout' });
-      res.status(408).json({ error: 'Search timeout - try a more specific query' });
-    } else {
-      systemLogger.logAPI('search', req.body.query || req.query.query, false, req, { error: error.message });
-      res.status(500).json({ error: error.message });
+    // Check for errors
+    if (searchResults.error) {
+      systemLogger.logAPI('search', query, false, req, { error: searchResults.error });
+      return res.status(500).json({
+        error: searchResults.error,
+        files: []
+      });
     }
+
+    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files.length });
+    res.json({
+      files: searchResults.files,
+      resultCount: searchResults.resultCount || searchResults.files.length,
+      indexStats: searchResults.indexStats
+    });
+  } catch (error) {
+    systemLogger.logAPI('search', req.body.query || req.query.query, false, req, { error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -518,35 +521,38 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    // Add timeout for search operations (45 seconds to allow for large filesystems)
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Search timeout')), 45000);
-    });
+    // Search using Redis index (no timeout needed - index queries are fast)
+    const searchResults = await fileSystem.searchFiles(query);
 
-    const searchResults = await Promise.race([
-      fileSystem.searchFiles(query),
-      timeoutPromise
-    ]);
-
-    // Check if search timed out internally
-    if (searchResults.timeout) {
-      systemLogger.logAPI('search', query, false, req, { error: 'Internal search timeout' });
-      return res.status(408).json({
-        error: 'Search is taking too long. Try a more specific query or contact administrator.',
-        files: searchResults.files || []
+    // Check if indexing is in progress
+    if (searchResults.indexing) {
+      systemLogger.logAPI('search', query, false, req, { status: 'indexing', progress: searchResults.progress });
+      return res.status(202).json({
+        files: [],
+        indexing: true,
+        message: searchResults.message || 'Index is currently building. Please try again later.',
+        progress: searchResults.progress
       });
     }
 
-    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files ? searchResults.files.length : 0 });
-    res.json(searchResults);
-  } catch (error) {
-    if (error.message === 'Search timeout') {
-      systemLogger.logAPI('search', req.query.query, false, req, { error: 'Search timeout' });
-      res.status(408).json({ error: 'Search timeout - try a more specific query' });
-    } else {
-      systemLogger.logAPI('search', req.query.query, false, req, { error: error.message });
-      res.status(500).json({ error: error.message });
+    // Check for errors
+    if (searchResults.error) {
+      systemLogger.logAPI('search', query, false, req, { error: searchResults.error });
+      return res.status(500).json({
+        error: searchResults.error,
+        files: []
+      });
     }
+
+    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files.length });
+    res.json({
+      files: searchResults.files,
+      resultCount: searchResults.resultCount || searchResults.files.length,
+      indexStats: searchResults.indexStats
+    });
+  } catch (error) {
+    systemLogger.logAPI('search', req.query.query, false, req, { error: error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -559,6 +565,52 @@ app.get('/api/files/cache-stats', authenticate, async (req, res) => {
     res.json(stats);
   } catch (error) {
     systemLogger.logSystem('ERROR', `Cache stats error: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Index status endpoint - shows global search index status
+app.get('/api/files/index-status', authenticate, async (req, res) => {
+  try {
+    if (!fileSystem.cache || !fileSystem.cache.getIndexStatus) {
+      return res.status(404).json({ error: 'Index status not available' });
+    }
+    const status = await fileSystem.cache.getIndexStatus();
+    res.json(status);
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Index status error: ${error.message}`);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Trigger manual index rebuild endpoint (admin only recommended)
+app.post('/api/files/rebuild-index', authenticate, async (req, res) => {
+  try {
+    if (!fileSystem.cache || !fileSystem.cache.buildGlobalIndex) {
+      return res.status(404).json({ error: 'Index rebuild not available' });
+    }
+
+    // Check if already indexing
+    const status = await fileSystem.cache.getIndexStatus();
+    if (status.isIndexing) {
+      return res.status(409).json({
+        error: 'Index rebuild already in progress',
+        progress: status.progress
+      });
+    }
+
+    // Start index rebuild in background (don't await)
+    fileSystem.cache.buildGlobalIndex().catch(err => {
+      systemLogger.logSystem('ERROR', `Background index rebuild failed: ${err.message}`);
+    });
+
+    systemLogger.logAPI('rebuild_index', 'manual trigger', true, req);
+    res.json({
+      message: 'Index rebuild started in background',
+      status: 'started'
+    });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Index rebuild error: ${error.message}`);
     res.status(500).json({ error: error.message });
   }
 });

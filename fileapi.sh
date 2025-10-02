@@ -512,6 +512,28 @@ cmd_cache_clear() {
     echo "$response" | jq . 2>/dev/null || echo "$response"
 }
 
+# Index management commands
+cmd_index_status() {
+    log_info "Getting search index status..."
+
+    local response=$(api_request "GET" "/api/files/index-status")
+    echo "$response" | jq . 2>/dev/null || echo "$response"
+}
+
+cmd_index_rebuild() {
+    log_info "Triggering index rebuild..."
+
+    local response=$(api_request "POST" "/api/files/rebuild-index" "{}")
+
+    if echo "$response" | grep -q '"status":"started"'; then
+        log_success "Index rebuild started in background!"
+    elif echo "$response" | grep -q '"error"'; then
+        log_error "Index rebuild failed!"
+    fi
+
+    echo "$response" | jq . 2>/dev/null || echo "$response"
+}
+
 # System commands
 cmd_config() {
     local action="$1"
@@ -576,6 +598,10 @@ Cache Management:
   cache-refresh [path]                  Refresh cache (optionally specific directory)
   cache-stats                           Get cache statistics
   cache-clear                           Clear cache (admin only)
+
+Index Management:
+  index-status                          Get search index status
+  index-rebuild                         Trigger manual index rebuild
 
 System:
   config <action> [value]               Configure client
@@ -660,6 +686,12 @@ main() {
             ;;
         "cache-clear")
             cmd_cache_clear "$@"
+            ;;
+        "index-status")
+            cmd_index_status "$@"
+            ;;
+        "index-rebuild")
+            cmd_index_rebuild "$@"
             ;;
         "config")
             cmd_config "$@"
