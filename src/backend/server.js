@@ -410,7 +410,7 @@ app.post('/auth/reset-password', (req, res, next) => {
 });
 
 // Search files using cache (must be before wildcard route)
-// POST endpoint for JSON request body
+    // POST endpoint for JSON request body
 app.post('/api/files/search', authenticate, async (req, res) => {
   if (!isCacheReady) {
     return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
@@ -433,9 +433,8 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       timeoutPromise
     ]);
 
-    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.length });
-    res.json(searchResults);
-  } catch (error) {
+    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files ? searchResults.files.length : 0 });
+    res.json(searchResults);  } catch (error) {
     if (error.message === 'Search timeout') {
       systemLogger.logAPI('search', req.body.query || req.query.query, false, req, { error: 'Search timeout' });
       res.status(408).json({ error: 'Search timeout - try a more specific query' });
