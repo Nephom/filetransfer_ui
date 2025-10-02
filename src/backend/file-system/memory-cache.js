@@ -548,66 +548,88 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Search files by performing a live, recursive walk of the filesystem.
-   * This is used instead of the cache to ensure complete results, as the cache
-   * is no longer guaranteed to be complete due to the on-demand watching strategy.
+   * Search files by spawning the system's native `find` command.
+   * This is a robust, performant solution that correctly ignores specified
+   * directories and handles large filesystems efficiently.
    */
   async searchFiles(query) {
-    const results = [];
+    const { spawn } = require('child_process');
     const storageRoot = path.resolve(this.storagePath);
-    const lowerCaseQuery = query.toLowerCase();
+    const results = [];
 
-    // Helper to build file data to match frontend expectations
-    const buildFileData = (itemPath, stats) => {
-      const relativePath = path.relative(storageRoot, itemPath);
-      return {
-        path: relativePath,
-        name: path.basename(itemPath),
-        isDirectory: stats.isDirectory(),
-        size: stats.size,
-        modified: stats.mtime.getTime(),
-      };
-    };
+    // The `find` command is ideal for this task.
+    // - We use -iname for a case-insensitive search.
+    // - We use -path ... -prune -o to exclude specific directories.
+    const findArgs = [
+      storageRoot,
+      '(',
+        '-path', '*/node_modules', '-o',
+        '-path', '*/.git', '-o',
+        '-path', '*/.cache', '-o',
+        '-path', '*/.vscode', '-o',
+        '-path', '*/.idea',
+      ')',
+      '-prune',
+      '-o',
+      '-iname',
+      `*${query}*`,
+      '-print'
+    ];
 
-    const walk = async (directory) => {
-      let items;
-      try {
-        items = await fs.readdir(directory, { withFileTypes: true });
-      } catch (err) {
-        // Ignore directories we can't read (e.g., permission errors)
-        console.warn(`Could not read directory ${directory}: ${err.message}`);
-        return;
-      }
+    const findProcess = spawn('find', findArgs);
 
-      for (const item of items) {
-        const fullPath = path.join(directory, item.name);
+    let output = '';
+    let errorOutput = '';
+
+    findProcess.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    findProcess.stderr.on('data', (data) => {
+      errorOutput += data.toString();
+    });
+
+    return new Promise((resolve, reject) => {
+      findProcess.on('close', async (code) => {
+        if (code !== 0 && errorOutput) {
+          // find can write to stderr for non-fatal errors like permission denied,
+          // which we can often ignore. We'll log it but still process stdout.
+          console.warn(`'find' process stderr (exit code ${code}): ${errorOutput}`);
+        }
+
+        if (!output.trim()) {
+          return resolve({ files: [] });
+        }
+
+        const paths = output.trim().split('\n');
         
-        // Check if the item name contains the query
-        if (item.name.toLowerCase().includes(lowerCaseQuery)) {
+        const statPromises = paths.map(async (p) => {
+          if (!p) return null;
           try {
-            const stats = await fs.stat(fullPath);
-            results.push(buildFileData(fullPath, stats));
-          } catch (statErr) {
-            console.warn(`Could not stat file ${fullPath}: ${statErr.message}`);
-            continue; // Skip file if we can't get its stats
+            const stats = await fs.stat(p);
+            const relativePath = path.relative(storageRoot, p);
+            return {
+              path: relativePath,
+              name: path.basename(p),
+              isDirectory: stats.isDirectory(),
+              size: stats.size,
+              modified: stats.mtime.getTime(),
+            };
+          } catch (e) {
+            // Ignore files we can't stat (e.g., broken symlinks, permissions)
+            return null;
           }
-        }
+        });
 
-        // If it's a directory, recurse into it
-        if (item.isDirectory()) {
-          await walk(fullPath);
-        }
-      }
-    };
+        const files = (await Promise.all(statPromises)).filter(Boolean);
+        resolve({ files });
+      });
 
-    try {
-      await walk(storageRoot);
-      // The search result format for the frontend is { files: [...] }
-      return { files: results };
-    } catch (error) {
-      console.error('Failed to search files during filesystem walk:', error);
-      return { files: [] };
-    }
+      findProcess.on('error', (err) => {
+        console.error('Failed to spawn find process.', err);
+        reject(new Error('Failed to execute search command.'));
+      });
+    });
   }
 }
 
