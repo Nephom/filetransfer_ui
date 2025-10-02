@@ -548,44 +548,65 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
-   * Search files in the cache
+   * Search files by performing a live, recursive walk of the filesystem.
+   * This is used instead of the cache to ensure complete results, as the cache
+   * is no longer guaranteed to be complete due to the on-demand watching strategy.
    */
   async searchFiles(query) {
-    try {
-      const keys = await this.redisClient.keys('file:*');
-      const results = [];
-      
-      for (const key of keys) {
-        const fileData = await this.redisClient.hGetAll(key);
-        if (fileData && fileData.path && fileData.path.toLowerCase().includes(query.toLowerCase())) {
-          // Parse JSON values if needed
-          if (fileData.size && typeof fileData.size === 'string') {
-            fileData.size = parseInt(fileData.size);
+    const results = [];
+    const storageRoot = path.resolve(this.storagePath);
+    const lowerCaseQuery = query.toLowerCase();
+
+    // Helper to build file data to match frontend expectations
+    const buildFileData = (itemPath, stats) => {
+      const relativePath = path.relative(storageRoot, itemPath);
+      return {
+        path: relativePath,
+        name: path.basename(itemPath),
+        isDirectory: stats.isDirectory(),
+        size: stats.size,
+        modified: stats.mtime.getTime(),
+      };
+    };
+
+    const walk = async (directory) => {
+      let items;
+      try {
+        items = await fs.readdir(directory, { withFileTypes: true });
+      } catch (err) {
+        // Ignore directories we can't read (e.g., permission errors)
+        console.warn(`Could not read directory ${directory}: ${err.message}`);
+        return;
+      }
+
+      for (const item of items) {
+        const fullPath = path.join(directory, item.name);
+        
+        // Check if the item name contains the query
+        if (item.name.toLowerCase().includes(lowerCaseQuery)) {
+          try {
+            const stats = await fs.stat(fullPath);
+            results.push(buildFileData(fullPath, stats));
+          } catch (statErr) {
+            console.warn(`Could not stat file ${fullPath}: ${statErr.message}`);
+            continue; // Skip file if we can't get its stats
           }
-          if (fileData.modified && typeof fileData.modified === 'string') {
-            fileData.modified = parseInt(fileData.modified);
-          }
-          if (fileData.isDirectory && typeof fileData.isDirectory === 'string') {
-            fileData.isDirectory = fileData.isDirectory === 'true';
-          }
-          // If any field is JSON string, parse it
-          for (const [field, value] of Object.entries(fileData)) {
-            if (typeof value === 'string' && (value.startsWith('{') || value.startsWith('['))) {
-              try {
-                fileData[field] = JSON.parse(value);
-              } catch (e) {
-                // Keep as is if not valid JSON
-              }
-            }
-          }
-          results.push(fileData);
+        }
+
+        // If it's a directory, recurse into it
+        if (item.isDirectory()) {
+          await walk(fullPath);
         }
       }
-      
-      return results;
+    };
+
+    try {
+      await walk(storageRoot);
+      // The search result format for the frontend is { files: [...] }
+      return { files: results };
     } catch (error) {
-      console.error('Failed to search files:', error);
-      return [];
+      console.error('Failed to search files during filesystem walk:', error);
+      return { files: [] };
     }
   }
 }
