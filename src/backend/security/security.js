@@ -2,6 +2,7 @@
 const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
+const { systemLogger } = require('../utils/logger');
 
 class SecurityManager {
   constructor() {
@@ -31,7 +32,7 @@ class SecurityManager {
         authTag: authTag.toString('hex')
       };
     } catch (error) {
-      console.error('Encryption error:', error);
+      systemLogger.logSystem('ERROR', `Encryption error: ${error.message}`);
       throw new Error('Failed to encrypt data');
     }
   }
@@ -49,7 +50,7 @@ class SecurityManager {
       
       return decrypted;
     } catch (error) {
-      console.error('Decryption error:', error);
+      systemLogger.logSystem('ERROR', `Decryption error: ${error.message}`);
       throw new Error('Failed to decrypt data');
     }
   }
@@ -100,9 +101,9 @@ class SecurityManager {
       await fs.writeFile(tempPath, data, { mode: 0o600 }); // Restrict permissions
       await fs.rename(tempPath, configPath);
 
-      console.log('Config file updated securely');
+      systemLogger.logSystem('INFO', 'Config file updated securely');
     } catch (error) {
-      console.error('Secure config write error:', error);
+      systemLogger.logSystem('ERROR', `Secure config write error: ${error.message}`);
       throw new Error('Failed to update configuration securely');
     }
   }
@@ -115,14 +116,14 @@ class SecurityManager {
       
       // Check if file permissions are too permissive
       if (mode > parseInt('600', 8)) {
-        console.warn(`⚠️  Config file ${configPath} has permissive permissions (${mode.toString(8)})`);
-        console.warn('   Consider running: chmod 600 ' + configPath);
+        systemLogger.logSystem('WARN', `⚠️  Config file ${configPath} has permissive permissions (${mode.toString(8)})`);
+        systemLogger.logSystem('WARN', `   Consider running: chmod 600 ${configPath}`);
         return false;
       }
-      
+
       return true;
     } catch (error) {
-      console.error('Config security validation error:', error);
+      systemLogger.logSystem('ERROR', `Config security validation error: ${error.message}`);
       return false;
     }
   }
@@ -179,8 +180,8 @@ class SecurityManager {
       userAgent: details.userAgent || 'unknown'
     };
 
-    console.log('🔒 SECURITY EVENT:', JSON.stringify(logEntry, null, 2));
-    
+    systemLogger.logSystem('INFO', `🔒 SECURITY EVENT: ${JSON.stringify(logEntry, null, 2)}`);
+
     // In production, you might want to send this to a security monitoring service
   }
 }
