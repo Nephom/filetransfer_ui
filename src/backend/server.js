@@ -474,9 +474,9 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    // Add timeout for search operations
+    // Add timeout for search operations (45 seconds to allow for large filesystems)
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Search timeout')), 15000);
+      setTimeout(() => reject(new Error('Search timeout')), 45000);
     });
 
     const searchResults = await Promise.race([
@@ -484,8 +484,18 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       timeoutPromise
     ]);
 
+    // Check if search timed out internally
+    if (searchResults.timeout) {
+      systemLogger.logAPI('search', query, false, req, { error: 'Internal search timeout' });
+      return res.status(408).json({
+        error: 'Search is taking too long. Try a more specific query or contact administrator.',
+        files: searchResults.files || []
+      });
+    }
+
     systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files ? searchResults.files.length : 0 });
-    res.json(searchResults);  } catch (error) {
+    res.json(searchResults);
+  } catch (error) {
     if (error.message === 'Search timeout') {
       systemLogger.logAPI('search', req.body.query || req.query.query, false, req, { error: 'Search timeout' });
       res.status(408).json({ error: 'Search timeout - try a more specific query' });
@@ -508,15 +518,24 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    // Add timeout for search operations
+    // Add timeout for search operations (45 seconds to allow for large filesystems)
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Search timeout')), 15000);
+      setTimeout(() => reject(new Error('Search timeout')), 45000);
     });
 
     const searchResults = await Promise.race([
       fileSystem.searchFiles(query),
       timeoutPromise
     ]);
+
+    // Check if search timed out internally
+    if (searchResults.timeout) {
+      systemLogger.logAPI('search', query, false, req, { error: 'Internal search timeout' });
+      return res.status(408).json({
+        error: 'Search is taking too long. Try a more specific query or contact administrator.',
+        files: searchResults.files || []
+      });
+    }
 
     systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files ? searchResults.files.length : 0 });
     res.json(searchResults);
