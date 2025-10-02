@@ -81,26 +81,14 @@ const FileBrowser = ({ token, user }) => {
         try {
             setLoading(true);
             setError('');
-            const response = await fetch('/api/files/search', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({ query })
+            const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
             });
             
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({ message: 'Search failed' }));
-                throw new Error(errorData.message || 'Search failed');
-            }
-            
-            const data = await response.json();
-            
-            // The backend returns a flat list of files from the search
-            const validFiles = data.files ? data.files.filter(f => f && f.name) : [];
-            setFiles(validFiles);
-            setDisplayPath(`Search results for "${query}"`);
+            if (!response.ok) throw new Error('Search failed');
+            const searchResults = await response.json();
+            setFiles(searchResults);
+            setCurrentPath('Search Results');
         } catch (err) {
             setError(err.message);
         } finally {

@@ -7,6 +7,7 @@ const { FileSystem } = require('./base');
 const RedisFileSystemCache = require('./memory-cache');
 const path = require('path');
 const fs = require('fs').promises;
+const { systemLogger } = require('../utils/logger');
 
 class EnhancedMemoryFileSystem extends FileSystem {
   constructor(storagePath) {
@@ -25,18 +26,18 @@ class EnhancedMemoryFileSystem extends FileSystem {
   async initialize() {
     if (this.initialized) return;
     
-    console.log('Initializing enhanced memory file system...');
+    systemLogger.logSystem('INFO', 'Initializing enhanced memory file system...');
     
     // Initialize cache
     await this.cache.initialize();
     
     // Listen for cache changes
     this.cache.on('change', (event) => {
-      console.log(`File system change detected: ${event.operation} ${event.path}`);
+      systemLogger.logSystem('INFO', `File system change detected: ${event.operation} ${event.path}`);
     });
     
     this.initialized = true;
-    console.log('Enhanced memory file system initialized');
+    systemLogger.logSystem('INFO', 'Enhanced memory file system initialized');
   }
 
   /**
@@ -84,7 +85,7 @@ class EnhancedMemoryFileSystem extends FileSystem {
           return cachedFiles;
         }
       } catch (error) {
-        console.error('Cache list error:', error);
+        systemLogger.logSystem('ERROR', `Cache list error: ${error.message}`);
         // Fallthrough to filesystem if cache fails
       }
     }
@@ -223,11 +224,11 @@ class EnhancedMemoryFileSystem extends FileSystem {
       return;
     }
     
-    console.log('Manual cache refresh requested - clearing and rescanning...');
+    systemLogger.logSystem('INFO', 'Manual cache refresh requested - clearing and rescanning...');
     // In Redis implementation, re-scan is handled by initialize which includes a flush
     await this.cache.close();
     await this.initialize();
-    console.log('Manual cache refresh completed');
+    systemLogger.logSystem('INFO', 'Manual cache refresh completed');
   }
 
   /**
@@ -273,9 +274,9 @@ class EnhancedMemoryFileSystem extends FileSystem {
       return;
     }
     
-    console.log("Clearing file system cache...");
+    systemLogger.logSystem('INFO', 'Clearing file system cache...');
     await this.cache.clearCache();
-    console.log("Cache cleared successfully");
+    systemLogger.logSystem('INFO', 'Cache cleared successfully');
   }
 
   async close() {

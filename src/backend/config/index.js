@@ -5,6 +5,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const { systemLogger } = require('../utils/logger');
 
 class ConfigManager {
   /**
@@ -71,7 +72,7 @@ class ConfigManager {
       }
     } catch (error) {
       // If no config file, continue with defaults
-      console.warn('No config file found, using defaults');
+      systemLogger.logSystem('WARN', 'No config file found, using defaults');
     }
 
     // Merge configurations with priority: env > file > defaults
@@ -316,9 +317,9 @@ class ConfigManager {
         await fs.writeFile(configFile, JSON.stringify(this.config, null, 2), 'utf8');
       }
 
-      console.log('Configuration saved to', configFile);
+      systemLogger.logSystem('INFO', `Configuration saved to ${configFile}`);
     } catch (error) {
-      console.error('Error saving configuration:', error);
+      systemLogger.logSystem('ERROR', `Error saving configuration: ${error.message}`);
       throw new Error('Failed to save configuration');
     }
   }

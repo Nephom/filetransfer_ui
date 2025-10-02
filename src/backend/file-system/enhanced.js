@@ -9,6 +9,7 @@ const { FileSystem } = require('./index');
 const FileSystemCache = require('./cache');
 const path = require('path');
 const fs = require('fs').promises;
+const { systemLogger } = require('../utils/logger');
 
 class EnhancedFileSystem extends FileSystem {
   constructor(storagePath) {
@@ -27,8 +28,8 @@ class EnhancedFileSystem extends FileSystem {
     await this.cache.initialize();
     await this.refreshCache();
     this.initialized = true;
-    
-    console.log('Enhanced file system initialized with cache');
+
+    systemLogger.logSystem('INFO', 'Enhanced file system initialized with cache');
   }
 
   /**
@@ -90,7 +91,7 @@ class EnhancedFileSystem extends FileSystem {
       
       return files;
     } catch (error) {
-      console.error('Error listing files:', error);
+      systemLogger.logSystem('ERROR', `Error listing files: ${error.message}`);
       // Fallback to regular filesystem operation
       return await super.list(dirPath);
     }
