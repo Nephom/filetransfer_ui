@@ -608,93 +608,94 @@ class RedisFileSystemCache extends EventEmitter {
    * directories and handles large filesystems efficiently.
    */
   async searchFiles(query) {
-    const { spawn } = require('child_process');
-    const storageRoot = path.resolve(this.storagePath);
+    try {
+      const { spawn } = require('child_process');
+      const storageRoot = path.resolve(this.storagePath);
 
-    const findArgs = [
-      storageRoot, // The search MUST start from the configured storage root.
-    ];
+      const findArgs = [
+        storageRoot, // The search MUST start from the configured storage root.
+      ];
 
-    // Define directories to exclude within the storageRoot.
-    const excludeDirs = ['node_modules', '.git', '.cache', '.vscode', '.idea'];
-    const pathExclusionArgs = [];
-    
-    // Create full, absolute paths for exclusion, based on the storageRoot.
-    excludeDirs.forEach(dir => {
-      pathExclusionArgs.push('-path', path.join(storageRoot, dir));
-    });
+      // Define directories to exclude within the storageRoot.
+      const excludeDirs = ['node_modules', '.git', '.cache', '.vscode', '.idea'];
+      const pathExclusionArgs = [];
 
-    // Construct the `( -path ... -o -path ... ) -prune` part of the command.
-    if (pathExclusionArgs.length > 0) {
-        findArgs.push('(');
-        pathExclusionArgs.forEach((arg, i) => {
-            // Add -o (OR) between each `-path ...` pair
-            if (i > 0 && i % 2 === 0) {
-                findArgs.push('-o');
+      // Create full, absolute paths for exclusion, based on the storageRoot.
+      excludeDirs.forEach(dir => {
+        pathExclusionArgs.push('-path', path.join(storageRoot, dir));
+      });
+
+      // Construct the `( -path ... -o -path ... ) -prune` part of the command.
+      if (pathExclusionArgs.length > 0) {
+          findArgs.push('(');
+          pathExclusionArgs.forEach((arg, i) => {
+              findArgs.push(arg);
+              // Add -o (OR) between each `-path ...` pair
+              if (i < pathExclusionArgs.length - 1 && i % 2 === 1) {
+                  findArgs.push('-o');
+              }
+          });
+          findArgs.push(')', '-prune', '-o');
+      }
+
+      // Add the case-insensitive name search and the print action.
+      findArgs.push('-iname', `*${query}*`, '-print');
+
+      const findProcess = spawn('find', findArgs);
+
+      let output = '';
+      let errorOutput = '';
+
+      findProcess.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+
+      findProcess.stderr.on('data', (data) => {
+        errorOutput += data.toString();
+      });
+
+      return new Promise((resolve, reject) => {
+        findProcess.on('close', async (code) => {
+          if (code !== 0 && errorOutput) {
+            console.warn(`'find' process stderr (exit code ${code}): ${errorOutput}`);
+          }
+
+          if (!output.trim()) {
+            return resolve({ files: [] });
+          }
+
+          const paths = output.trim().split('\n');
+
+          const statPromises = paths.map(async (p) => {
+            if (!p) return null;
+            try {
+              const stats = await fs.stat(p);
+              const relativePath = path.relative(storageRoot, p);
+              return {
+                path: relativePath,
+                name: path.basename(p),
+                isDirectory: stats.isDirectory(),
+                size: stats.size,
+                modified: stats.mtime.getTime(),
+              };
+            } catch (e) {
+              return null;
             }
           });
-      }
-      
-      return results;
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to search files: ${error.message}`);
-      return [];
-    }
 
-    // Add the case-insensitive name search and the print action.
-    findArgs.push('-iname', `*${query}*`, '-print');
-
-    const findProcess = spawn('find', findArgs);
-
-    let output = '';
-    let errorOutput = '';
-
-    findProcess.stdout.on('data', (data) => {
-      output += data.toString();
-    });
-
-    findProcess.stderr.on('data', (data) => {
-      errorOutput += data.toString();
-    });
-
-    return new Promise((resolve, reject) => {
-      findProcess.on('close', async (code) => {
-        if (code !== 0 && errorOutput) {
-          console.warn(`'find' process stderr (exit code ${code}): ${errorOutput}`);
-        }
-
-        if (!output.trim()) {
-          return resolve({ files: [] });
-        }
-
-        const paths = output.trim().split('\n');
-        
-        const statPromises = paths.map(async (p) => {
-          if (!p) return null;
-          try {
-            const stats = await fs.stat(p);
-            const relativePath = path.relative(storageRoot, p);
-            return {
-              path: relativePath,
-              name: path.basename(p),
-              isDirectory: stats.isDirectory(),
-              size: stats.size,
-              modified: stats.mtime.getTime(),
-            };
-          } catch (e) {
-            return null;
-          }
+          const files = (await Promise.all(statPromises)).filter(Boolean);
+          resolve({ files });
         });
 
-        const files = (await Promise.all(statPromises)).filter(Boolean);
-        resolve({ files });
+        findProcess.on('error', (err) => {
+          console.error('Failed to spawn find process.', err);
+          reject(new Error('Failed to execute search command.'));
+        });
       });
-
-      findProcess.on('error', (err) => {
-        console.error('Failed to spawn find process.', err);
-        reject(new Error('Failed to execute search command.'));
-      });
-    });
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Failed to search files: ${error.message}`);
+      return { files: [] };
+    }
   }
 }
 
