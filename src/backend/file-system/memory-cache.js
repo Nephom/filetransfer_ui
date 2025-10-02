@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs').promises;
 const crypto = require('crypto');
 const chokidar = require('chokidar');
+const { systemLogger } = require('../utils/logger');
 
 /**
  * Redis-based file system cache with file watching
@@ -31,33 +32,33 @@ class RedisFileSystemCache extends EventEmitter {
    */
   async initialize() {
     try {
-      console.log('Initializing Redis file system cache...');
-      
+      await systemLogger.logSystem('INFO', 'Initializing Redis file system cache...');
+
       // Connect to Redis
       this.redisClient = createClient(this.redisOptions);
-      
+
       this.redisClient.on('error', (err) => {
-        console.error('Redis Client Error:', err);
+        systemLogger.logSystem('ERROR', `Redis Client Error: ${err.message}`);
       });
-      
+
       this.redisClient.on('connect', () => {
-        console.log('Connected to Redis');
+        systemLogger.logSystem('INFO', 'Connected to Redis');
       });
-      
+
       await this.redisClient.connect();
-      
+
       // Initialize file hashes
       await this.loadFileHashes();
-      
+
       // Start file watcher to monitor changes
       await this.startFileWatcher();
-      
+
       this.initialized = true;
-      console.log('Redis file system cache initialized successfully');
-      
+      systemLogger.logSystem('INFO', 'Redis file system cache initialized successfully');
+
       return true;
     } catch (error) {
-      console.error('Failed to initialize Redis cache:', error);
+      systemLogger.logSystem('ERROR', `Failed to initialize Redis cache: ${error.message}`);
       return false;
     }
   }
@@ -80,9 +81,75 @@ class RedisFileSystemCache extends EventEmitter {
         }
       }
       
-      console.log(`Loaded ${this.fileHashes.size} file hashes from Redis`);
+      systemLogger.logSystem('INFO', `Loaded ${this.fileHashes.size} file hashes from Redis`);
     } catch (error) {
-      console.error('Failed to load file hashes:', error);
+      systemLogger.logSystem('ERROR', `Failed to load file hashes: ${error.message}`);
+    }
+  }
+
+  /**
+   * Load ignore list from .ignoreDirs file
+   */
+  async loadIgnoreList() {
+    const ignoreFile = path.join(this.storagePath, '.ignoreDirs');
+    const defaultIgnoreList = [
+      '**/node_modules/**',
+      '**/.git/**',
+      '**/.Trash-1000/**',
+      '**/vm/**',
+      '**/.nfs*',
+    ];
+
+    try {
+      const content = await fs.readFile(ignoreFile, 'utf8');
+      const customIgnores = content
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line && !line.startsWith('#'))
+        .map(line => `**/${line}/**`);
+
+      return [...defaultIgnoreList, ...customIgnores];
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        // Create .ignoreDirs file with existing ignores
+        await this.createIgnoreFile(ignoreFile, defaultIgnoreList);
+      }
+      return defaultIgnoreList;
+    }
+  }
+
+  /**
+   * Create .ignoreDirs file with default ignores
+   */
+  async createIgnoreFile(ignoreFile, defaultIgnoreList) {
+    try {
+      const content = defaultIgnoreList.map(pattern => {
+        const dirName = pattern.match(/\*\*\/([^\/]+)\/\*\*/)[1];
+        return dirName;
+      }).join('\n');
+
+      await fs.writeFile(ignoreFile, `# Ignore file for file system cache\n# Add directories to ignore (one per line)\n${content}\n`);
+      systemLogger.logSystem('INFO', `Created .ignoreDirs file at: ${ignoreFile}`);
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Failed to create .ignoreDirs file: ${error.message}`);
+    }
+  }
+
+  /**
+   * Add directory to ignore list
+   */
+  async addToIgnoreList(dirPath) {
+    const ignoreFile = path.join(this.storagePath, '.ignoreDirs');
+    try {
+      const relativeDir = path.relative(this.storagePath, dirPath);
+      const content = await fs.readFile(ignoreFile, 'utf8');
+
+      if (!content.includes(relativeDir)) {
+        await fs.appendFile(ignoreFile, `\n${relativeDir}\n`);
+        systemLogger.logSystem('INFO', `Added ${relativeDir} to ignore list`);
+      }
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Failed to add to ignore list: ${error.message}`);
     }
   }
 
@@ -91,18 +158,14 @@ class RedisFileSystemCache extends EventEmitter {
    */
   async startFileWatcher() {
     try {
+      const ignoreList = await this.loadIgnoreList();
+
       this.watcher = chokidar.watch(this.storagePath, {
         persistent: true,
         ignoreInitial: true,
         awaitWriteFinish: true,
         depth: 10, // Limit depth to prevent performance issues
-        ignored: [
-          '**/node_modules/**',
-          '**/.git/**',
-          '**/.Trash-1000/**',
-          '**/vm/**',
-          '**/.nfs*',
-        ]
+        ignored: ignoreList
       });
 
       this.watcher
@@ -113,15 +176,15 @@ class RedisFileSystemCache extends EventEmitter {
         .on('unlinkDir', (dirPath) => this.handleDirectoryChange('unlink', dirPath))
         .on('error', (error) => {
           if (error.code === 'EACCES') {
-            console.warn(`Skipping path due to permission error: ${error.path}`);
+            systemLogger.logSystem('WARN', `Skipping path due to permission error: ${error.path}`);
           } else {
-            console.error('File watcher error:', error);
+            systemLogger.logSystem('ERROR', `File watcher error: ${error.message}`);
           }
         });
 
-      console.log('File watcher started for:', this.storagePath);
+      systemLogger.logSystem('INFO', `File watcher started for: ${this.storagePath}`);
     } catch (error) {
-      console.error('Failed to start file watcher:', error);
+      systemLogger.logSystem('ERROR', `Failed to start file watcher: ${error.message}`);
     }
   }
 
@@ -142,10 +205,10 @@ class RedisFileSystemCache extends EventEmitter {
           break;
       }
 
-      console.log(`File ${event}:`, relativePath);
+      systemLogger.logSystem('INFO', `File ${event}: ${relativePath}`);
       this.emit('fileChange', { event, path: relativePath, fullPath: filePath });
     } catch (error) {
-      console.error('Error handling file change:', error);
+      systemLogger.logSystem('ERROR', `Error handling file change: ${error.message}`);
     }
   }
 
@@ -165,10 +228,10 @@ class RedisFileSystemCache extends EventEmitter {
           break;
       }
 
-      console.log(`Directory ${event}:`, relativePath);
+      systemLogger.logSystem('INFO', `Directory ${event}: ${relativePath}`);
       this.emit('directoryChange', { event, path: relativePath, fullPath: dirPath });
     } catch (error) {
-      console.error('Error handling directory change:', error);
+      systemLogger.logSystem('ERROR', `Error handling directory change: ${error.message}`);
     }
   }
 
@@ -204,9 +267,14 @@ class RedisFileSystemCache extends EventEmitter {
     } catch (error) {
       if (error.code === 'EACCES') {
         // Skip files we can't access
-        console.warn(`Skipping file hash update for ${error.path} due to permission error.`);
+        systemLogger.logSystem('WARN', `Skipping file hash update for ${error.path} due to permission error.`);
+        // If it's a directory permission error, add to ignore list
+        if (error.path) {
+          const containingDir = path.dirname(filePath);
+          await this.addToIgnoreList(containingDir);
+        }
       } else {
-        console.error('Failed to update file hash:', error);
+        systemLogger.logSystem('ERROR', `Failed to update file hash: ${error.message}`);
       }
     }
   }
@@ -251,7 +319,7 @@ class RedisFileSystemCache extends EventEmitter {
             await this.redisClient.hSet(fileKey, redisNewFileData);
             dirContents.push(newFileData);
           } catch (err) {
-            console.error('Error processing file in directory:', fullPath, err);
+            systemLogger.logSystem('ERROR', `Error processing file in directory: ${fullPath} - ${err.message}`);
           }
         }
       }
@@ -264,9 +332,9 @@ class RedisFileSystemCache extends EventEmitter {
     } catch (error) {
       if (error.code === 'EACCES') {
         // Skip directories we can't access
-        console.warn(`Skipping directory cache update for ${error.path} due to permission error.`);
+        systemLogger.logSystem('WARN', `Skipping directory cache update for ${error.path} due to permission error.`);
       } else {
-        console.error('Failed to update directory cache:', error);
+        systemLogger.logSystem('ERROR', `Failed to update directory cache: ${error.message}`);
       }
     }
   }
@@ -291,7 +359,7 @@ class RedisFileSystemCache extends EventEmitter {
       const cachedContents = this.directoryCache.get(absoluteDirPath);
       return cachedContents || [];
     } catch (error) {
-      console.error('Failed to get directory contents:', error);
+      systemLogger.logSystem('ERROR', `Failed to get directory contents: ${error.message}`);
       return [];
     }
   }
@@ -311,7 +379,7 @@ class RedisFileSystemCache extends EventEmitter {
       const parentDir = path.dirname(absoluteFilePath);
       await this.updateDirectoryCache(parentDir);
     } catch (error) {
-      console.error('Failed to remove file from cache:', error);
+      systemLogger.logSystem('ERROR', `Failed to remove file from cache: ${error.message}`);
     }
   }
 
@@ -333,7 +401,7 @@ class RedisFileSystemCache extends EventEmitter {
         await this.redisClient.del(fileKeys);
       }
     } catch (error) {
-      console.error('Failed to remove directory from cache:', error);
+      systemLogger.logSystem('ERROR', `Failed to remove directory from cache: ${error.message}`);
     }
   }
 
@@ -344,7 +412,7 @@ class RedisFileSystemCache extends EventEmitter {
     try {
       // Ensure the directory path is absolute before scanning
       const absoluteDirPath = path.resolve(dirPath);
-      console.log('Scanning directory:', absoluteDirPath);
+      systemLogger.logSystem('INFO', `Scanning directory: ${absoluteDirPath}`);
       
       // Add to scan queue to prevent concurrent scans
       this.scanQueue.push(absoluteDirPath);
@@ -377,19 +445,21 @@ class RedisFileSystemCache extends EventEmitter {
           await Promise.all(scanPromises);
           await this.updateDirectoryCache(currentDir);
           
-          console.log('Completed scan for:', currentDir);
+          systemLogger.logSystem('INFO', `Completed scan for: ${currentDir}`);
         } catch (error) {
           if (error.code === 'EACCES') {
-            console.warn(`Skipping directory scan for ${currentDir} due to permission error.`);
+            systemLogger.logSystem('WARN', `Skipping directory scan for ${currentDir} due to permission error.`);
+            // Add to ignore list to prevent future scanning attempts
+            await this.addToIgnoreList(currentDir);
           } else {
-            console.error('Error scanning directory:', currentDir, error);
+            systemLogger.logSystem('ERROR', `Error scanning directory: ${currentDir} - ${error.message}`);
           }
         }
       }
       
       this.isScanning = false;
     } catch (error) {
-      console.error('Failed to scan directory:', error);
+      systemLogger.logSystem('ERROR', `Failed to scan directory: ${error.message}`);
     }
   }
 
@@ -398,17 +468,17 @@ class RedisFileSystemCache extends EventEmitter {
    */
   async refreshCache() {
     try {
-      console.log('Refreshing entire file system cache...');
-      
+      systemLogger.logSystem('INFO', 'Refreshing entire file system cache...');
+
       // Clear existing cache
       await this.clearCache();
-      
+
       // Re-scan root directory, ensuring it's absolute
       await this.scanDirectory(path.resolve(this.storagePath));
-      
-      console.log('Cache refresh completed');
+
+      systemLogger.logSystem('INFO', 'Cache refresh completed');
     } catch (error) {
-      console.error('Failed to refresh cache:', error);
+      systemLogger.logSystem('ERROR', `Failed to refresh cache: ${error.message}`);
     }
   }
 
@@ -427,7 +497,7 @@ class RedisFileSystemCache extends EventEmitter {
         await this.updateFileHash(absolutePath);
       }
     } catch (error) {
-      console.error('Failed to add/update path:', error);
+      systemLogger.logSystem('ERROR', `Failed to add/update path: ${error.message}`);
     }
   }
 
@@ -450,7 +520,7 @@ class RedisFileSystemCache extends EventEmitter {
         isWatching: !!this.watcher
       };
     } catch (error) {
-      console.error('Failed to get cache info:', error);
+      systemLogger.logSystem('ERROR', `Failed to get cache info: ${error.message}`);
       return {
         initialized: this.initialized,
         totalFiles: 0,
@@ -475,7 +545,7 @@ class RedisFileSystemCache extends EventEmitter {
       this.redisClient = null;
     }
     this.initialized = false;
-    console.log('Redis cache closed');
+    systemLogger.logSystem('INFO', 'Redis cache closed');
   }
 
   /**
@@ -483,12 +553,12 @@ class RedisFileSystemCache extends EventEmitter {
    */
   async clearCache() {
     if (!this.redisClient || !this.redisClient.isReady) {
-      console.error('Cannot clear cache: Redis client is not connected.');
+      systemLogger.logSystem('ERROR', 'Cannot clear cache: Redis client is not connected.');
       return;
     }
-    console.log('Clearing file system cache...');
+    systemLogger.logSystem('INFO', 'Clearing file system cache...');
     await this.redisClient.flushDb();
-    console.log('Cache cleared successfully.');
+    systemLogger.logSystem('INFO', 'Cache cleared successfully.');
     this.emit('clear');
   }
 
@@ -512,7 +582,7 @@ class RedisFileSystemCache extends EventEmitter {
       const cachedContents = this.directoryCache.get(absoluteDirPath);
       return cachedContents || [];
     } catch (error) {
-      console.error('Failed to get files in directory:', error);
+      systemLogger.logSystem('ERROR', `Failed to get files in directory: ${error.message}`);
       return [];
     }
   }
@@ -554,7 +624,7 @@ class RedisFileSystemCache extends EventEmitter {
       
       return results;
     } catch (error) {
-      console.error('Failed to search files:', error);
+      systemLogger.logSystem('ERROR', `Failed to search files: ${error.message}`);
       return [];
     }
   }

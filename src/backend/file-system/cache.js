@@ -7,6 +7,7 @@
 const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs').promises;
 const path = require('path');
+const { systemLogger } = require('../utils/logger');
 
 class FileSystemCache {
   constructor(dbPath = './filesystem_cache.db') {
@@ -62,7 +63,7 @@ class FileSystemCache {
 
             this.db.run(indexes[indexCount], (indexErr) => {
               if (indexErr) {
-                console.warn('Warning: Could not create index:', indexErr.message);
+                systemLogger.logSystem('WARN', `Could not create database index: ${indexErr.message}`);
               }
               indexCount++;
               createNextIndex();
@@ -79,15 +80,15 @@ class FileSystemCache {
    * Scan and cache the entire file system
    */
   async scanAndCache(storagePath) {
-    console.log('Scanning file system for cache...');
-    
+    systemLogger.logSystem('INFO', 'Scanning file system for cache...');
+
     // Clear existing cache
     await this.clearCache();
-    
+
     // Recursively scan directories
     await this._scanDirectory(storagePath, storagePath);
-    
-    console.log('File system cache updated successfully');
+
+    systemLogger.logSystem('INFO', 'File system cache updated successfully');
   }
 
   /**
@@ -119,11 +120,11 @@ class FileSystemCache {
             await this._scanDirectory(itemPath, basePath, relativePath);
           }
         } catch (statError) {
-          console.error('Error getting stats for:', itemPath, statError);
+          systemLogger.logSystem('ERROR', `Error getting stats for ${itemPath}: ${statError.message}`);
         }
       }
     } catch (error) {
-      console.error('Error scanning directory:', dirPath, error);
+      systemLogger.logSystem('ERROR', `Error scanning directory ${dirPath}: ${error.message}`);
     }
   }
 
@@ -276,7 +277,7 @@ class FileSystemCache {
       if (this.db) {
         this.db.close((err) => {
           if (err) {
-            console.error('Error closing database:', err);
+            systemLogger.logSystem('ERROR', `Error closing database: ${err.message}`);
           }
           resolve();
         });

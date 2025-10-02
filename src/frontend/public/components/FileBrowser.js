@@ -78,16 +78,13 @@ const FileBrowser = ({ token, user }) => {
         try {
             setLoading(true);
             setError('');
-            const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`, {
+            const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             
             if (!response.ok) throw new Error('Search failed');
-            const data = await response.json();
-            
-            // Filter out files with null/undefined names
-            const validFiles = data.files ? data.files.filter(f => f && f.name) : [];
-            setFiles(validFiles);
+            const searchResults = await response.json();
+            setFiles(searchResults);
             setCurrentPath('Search Results');
         } catch (err) {
             setError(err.message);

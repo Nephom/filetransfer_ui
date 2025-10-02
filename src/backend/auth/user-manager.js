@@ -8,6 +8,7 @@ const path = require('path');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const configManager = require('../config');
+const { systemLogger } = require('../utils/logger');
 
 class UserManager {
   constructor() {
@@ -26,23 +27,23 @@ class UserManager {
 
       // Remove admin user from users.json if it exists (admin should only be in config.ini)
       if (this.users.has('admin')) {
-        console.log('Removing admin user from users.json (admin is managed by config.ini)');
+        systemLogger.logSystem('INFO', 'Removing admin user from users.json (admin is managed by config.ini)');
         this.users.delete('admin');
         await this.saveUsers();
       }
 
       // Also remove 'root' user if it exists (redundant admin account)
       if (this.users.has('root')) {
-        console.log('Removing root user from users.json (use admin from config.ini instead)');
+        systemLogger.logSystem('INFO', 'Removing root user from users.json (use admin from config.ini instead)');
         this.users.delete('root');
         await this.saveUsers();
       }
 
       this.initialized = true;
       const configUsername = configManager.get('auth.username') || 'admin';
-      console.log(`User manager initialized with ${this.users.size} users (excluding config admin: ${configUsername})`);
+      systemLogger.logSystem('INFO', `User manager initialized with ${this.users.size} users (excluding config admin: ${configUsername})`);
     } catch (error) {
-      console.error('Failed to initialize user manager:', error);
+      systemLogger.logSystem('ERROR', `Failed to initialize user manager: ${error.message}`);
       this.initialized = true;
     }
   }
@@ -62,7 +63,7 @@ class UserManager {
       });
     } catch (error) {
       if (error.code !== 'ENOENT') {
-        console.warn('Error loading users file:', error);
+        systemLogger.logSystem('WARN', `Error loading users file: ${error.message}`);
       }
       // File doesn't exist or is corrupted, start fresh
       this.users.clear();
@@ -78,10 +79,10 @@ class UserManager {
         lastUpdated: new Date().toISOString(),
         users: Array.from(this.users.values())
       };
-      
+
       await fs.writeFile(this.usersFilePath, JSON.stringify(userData, null, 2));
     } catch (error) {
-      console.error('Failed to save users:', error);
+      systemLogger.logSystem('ERROR', `Failed to save users: ${error.message}`);
       throw new Error('Failed to save user data');
     }
   }
@@ -91,7 +92,7 @@ class UserManager {
    * This method is kept for backward compatibility but does nothing
    */
   async createDefaultAdmin() {
-    console.log('Note: Admin user is managed by config.ini, not users.json');
+    systemLogger.logSystem('INFO', 'Note: Admin user is managed by config.ini, not users.json');
     // Do nothing - admin is managed through config.ini
   }
 

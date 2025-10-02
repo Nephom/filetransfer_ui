@@ -274,6 +274,47 @@ app.post('/auth/change-password', (req, res, next) => {
   }
 });
 
+// Token verification endpoint
+app.post('/auth/verify', (req, res, next) => {
+  // Apply auth limiter if security middleware is initialized
+  if (securityMiddleware && securityMiddleware.authLimiter) {
+    securityMiddleware.authLimiter(req, res, next);
+  } else {
+    next();
+  }
+}, async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No valid authorization header' });
+    }
+
+    const token = authHeader.substring(7);
+    const jwt = require('jsonwebtoken');
+    const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+
+    try {
+      const decoded = jwt.verify(token, jwtSecret);
+
+      // Return user information without sensitive data
+      res.json({
+        success: true,
+        user: {
+          id: decoded.id,
+          username: decoded.username,
+          role: decoded.role
+        }
+      });
+    } catch (jwtError) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Token verification error: ${error.message}`);
+    res.status(500).json({ error: 'Token verification failed' });
+  }
+});
+
 // Forgot password endpoint (generates temporary reset token)
 app.post('/auth/forgot-password', (req, res, next) => {
   // Apply auth limiter if security middleware is initialized
@@ -314,6 +355,16 @@ app.post('/auth/forgot-password', (req, res, next) => {
 
     // Log to server.log
     systemLogger.logSystem('INFO', `Password reset request for user: ${username}, Token: ${resetToken}, Valid for: 15 minutes`);
+
+    // Also display in console for immediate visibility
+    systemLogger.logSystem('INFO', '='.repeat(60));
+    systemLogger.logSystem('INFO', '🔐 PASSWORD RESET REQUEST');
+    systemLogger.logSystem('INFO', '='.repeat(60));
+    systemLogger.logSystem('INFO', `Username: ${username}`);
+    systemLogger.logSystem('INFO', `Reset Token: ${resetToken}`);
+    systemLogger.logSystem('INFO', `Valid for: 15 minutes`);
+    systemLogger.logSystem('INFO', 'Use this token to reset your password within 15 minutes.');
+    systemLogger.logSystem('INFO', '='.repeat(60));
 
     // Also display in console for immediate visibility
     console.log('='.repeat(60));
@@ -1623,11 +1674,13 @@ async function startServer() {
 
 // Graceful shutdown handling
 process.on('SIGINT', async () => {
+  systemLogger.logSystem('INFO', 'Received SIGINT, shutting down gracefully...');
   console.log('\n🛑 Received SIGINT, shutting down gracefully...');
   await gracefulShutdown();
 });
 
 process.on('SIGTERM', async () => {
+  systemLogger.logSystem('INFO', 'Received SIGTERM, shutting down gracefully...');
   console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
   await gracefulShutdown();
 });
