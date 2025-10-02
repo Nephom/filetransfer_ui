@@ -77,20 +77,45 @@ const FileBrowser = ({ token, user }) => {
             fetchFiles(currentPath); // Fetch current directory if search is cleared
             return;
         }
-        
+
         try {
             setLoading(true);
             setError('');
-            const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}`, {
+            const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
-            
-            if (!response.ok) throw new Error('Search failed');
+
+            if (!response.ok) {
+                if (response.status === 202) {
+                    // Index is building
+                    const data = await response.json();
+                    setError(data.message || 'Search index is building. Please try again in a moment.');
+                    setFiles([]);
+                    setCurrentPath('Search Results');
+                    return;
+                }
+                throw new Error('Search failed');
+            }
+
             const searchResults = await response.json();
-            setFiles(searchResults);
-            setCurrentPath('Search Results');
+
+            // Handle indexing status
+            if (searchResults.indexing) {
+                setError(searchResults.message || 'Search index is building. Please try again later.');
+                setFiles([]);
+                setCurrentPath('Search Results');
+                return;
+            }
+
+            // Set search results
+            setFiles(searchResults.files || []);
+            setCurrentPath(`Search Results (${searchResults.resultCount || 0} found)`);
+
+            // Clear any previous errors
+            setError('');
         } catch (err) {
-            setError(err.message);
+            setError(err.message || 'Search failed');
+            setFiles([]);
         } finally {
             setLoading(false);
         }
