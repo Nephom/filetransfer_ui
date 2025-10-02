@@ -119,6 +119,30 @@ cmd_logout() {
     fi
 }
 
+cmd_change_password() {
+    local current_password="$1"
+    local new_password="$2"
+
+    if [[ -z "$current_password" || -z "$new_password" ]]; then
+        log_error "Usage: $0 change-password <current_password> <new_password>"
+        exit 1
+    fi
+
+    log_info "Changing password..."
+
+    local data="{\"currentPassword\":\"$current_password\",\"newPassword\":\"$new_password\"}"
+    local response=$(api_request "POST" "/auth/change-password" "$data")
+
+    if echo "$response" | grep -q '"success":true'; then
+        log_success "Password changed successfully!"
+        log_info "Please login again with your new password."
+    else
+        log_error "Password change failed!"
+    fi
+
+    echo "$response" | jq . 2>/dev/null || echo "$response"
+}
+
 # File management commands
 cmd_upload() {
     local file_path="$1"
@@ -358,11 +382,22 @@ cmd_rename() {
 
     log_info "Renaming: $old_name -> $new_name"
 
-    local data="{\"oldName\":\"$old_name\",\"newName\":\"$new_name\""
+    local old_path
+    local new_path
+
     if [[ -n "$current_path" ]]; then
-        data+=",\"currentPath\":\"$current_path\""
+        # Ensure no trailing slash on current_path before combining
+        clean_path=$(echo "$current_path" | sed 's:/*$::')
+        old_path="$clean_path/$old_name"
+        new_path="$clean_path/$new_name"
+    else
+        old_path="$old_name"
+        new_path="$new_name"
     fi
-    data+="}"
+
+    # This payload matches the active rename endpoint in server.js
+    # which expects {oldPath, newPath} instead of {oldName, newName, currentPath}
+    local data="{\"oldPath\":\"$old_path\",\"newPath\":\"$new_path\"}"
 
     local response=$(api_request "PUT" "/api/files/rename" "$data")
 
@@ -521,6 +556,7 @@ Usage: $0 <command> [options]
 Authentication:
   login <username> <password>           Login and save token
   logout                                Logout and remove token
+  change-password <current> <new>     Change user password
 
 File Management:
   upload <file> [target_path]           Upload a file
@@ -582,6 +618,9 @@ main() {
             ;;
         "logout")
             cmd_logout "$@"
+            ;;
+        "change-password")
+            cmd_change_password "$@"
             ;;
         "upload")
             cmd_upload "$@"
