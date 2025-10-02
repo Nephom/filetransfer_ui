@@ -12,6 +12,8 @@ const FileBrowser = ({ token, user }) => {
     const [selectedFiles, setSelectedFiles] = React.useState([]);
     const [viewMode, setViewMode] = React.useState('grid');
     const [searchQuery, setSearchQuery] = React.useState('');
+    const [isSearching, setIsSearching] = React.useState(false);
+    const [pathBeforeSearch, setPathBeforeSearch] = React.useState('');
     const [showUploadModal, setShowUploadModal] = React.useState(false);
     const [uploadingFiles, setUploadingFiles] = React.useState([]);
     const [clipboard, setClipboard] = React.useState({ items: [], action: null });
@@ -74,11 +76,21 @@ const FileBrowser = ({ token, user }) => {
 
     const performSearch = async (query) => {
         if (!query.trim()) {
-            fetchFiles(currentPath); // Fetch current directory if search is cleared
+            // Clear search and return to original path
+            if (isSearching) {
+                setIsSearching(false);
+                fetchFiles(pathBeforeSearch);
+            }
             return;
         }
 
         try {
+            // Save current path before searching (only on first search)
+            if (!isSearching) {
+                setPathBeforeSearch(currentPath);
+                setIsSearching(true);
+            }
+
             setLoading(true);
             setError('');
             const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}`, {
@@ -91,7 +103,7 @@ const FileBrowser = ({ token, user }) => {
                     const data = await response.json();
                     setError(data.message || 'Search index is building. Please try again in a moment.');
                     setFiles([]);
-                    setCurrentPath('Search Results');
+                    setDisplayPath(`Search Results`);
                     return;
                 }
                 throw new Error('Search failed');
@@ -103,13 +115,13 @@ const FileBrowser = ({ token, user }) => {
             if (searchResults.indexing) {
                 setError(searchResults.message || 'Search index is building. Please try again later.');
                 setFiles([]);
-                setCurrentPath('Search Results');
+                setDisplayPath(`Search Results`);
                 return;
             }
 
-            // Set search results
+            // Set search results - only update displayPath, keep currentPath unchanged
             setFiles(searchResults.files || []);
-            setCurrentPath(`Search Results (${searchResults.resultCount || 0} found)`);
+            setDisplayPath(`Search Results (${searchResults.resultCount || 0} found)`);
 
             // Clear any previous errors
             setError('');
@@ -124,16 +136,20 @@ const FileBrowser = ({ token, user }) => {
 
 
     const navigateToFolder = (folderPath, folderName) => {
+        // Exit search mode when navigating to a folder
+        setIsSearching(false);
+        setSearchQuery('');
         setSelectedFiles([]);
         setError(''); // Clear any errors
         fetchFiles(folderPath);
     };
 
     const navigateBack = () => {
-        if (searchQuery) {
-            // If searching, "back" should clear the search and restore the previous directory
+        if (isSearching) {
+            // If in search mode, clear search and restore original path
             setSearchQuery('');
-            fetchFiles(currentPath);
+            setIsSearching(false);
+            fetchFiles(pathBeforeSearch);
         } else if (currentPath) {
             const parentPath = currentPath.split('/').slice(0, -1).join('/');
             setSelectedFiles([]);
