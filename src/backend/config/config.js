@@ -1,6 +1,7 @@
 // Configuration management for file transfer application
 const fs = require('fs');
 const path = require('path');
+const { systemLogger } = require('../utils/logger');
 
 class ConfigManager {
   constructor() {
@@ -30,7 +31,7 @@ class ConfigManager {
       }
       return this.defaultConfig;
     } catch (error) {
-      console.error('Error loading config:', error);
+      systemLogger.logSystem('ERROR', `Error loading config: ${error.message}`);
       return this.defaultConfig;
     }
   }
@@ -43,7 +44,7 @@ class ConfigManager {
       fs.writeFileSync(this.configPath, configStr);
       this.config = config;
     } catch (error) {
-      console.error('Error saving config:', error);
+      systemLogger.logSystem('ERROR', `Error saving config: ${error.message}`);
     }
   }
 

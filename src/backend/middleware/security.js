@@ -2,6 +2,7 @@
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const SecurityManager = require('../security/security');
+const { systemLogger } = require('../utils/logger');
 
 // Configuration manager will be injected
 let configManager = null;
@@ -110,13 +111,13 @@ const createRequestLogger = (config) => {
     const startTime = Date.now();
 
     // Log request
-    console.log(`📥 ${req.method} ${req.path} - ${req.ip} - ${req.get('User-Agent')}`);
+    systemLogger.logSystem('INFO', `📥 ${req.method} ${req.path} - ${req.ip} - ${req.get('User-Agent')}`);
 
     // Log response when finished
     res.on('finish', () => {
       const duration = Date.now() - startTime;
       const statusColor = res.statusCode >= 400 ? '🔴' : '🟢';
-      console.log(`📤 ${statusColor} ${res.statusCode} ${req.method} ${req.path} - ${duration}ms`);
+      systemLogger.logSystem('INFO', `📤 ${statusColor} ${res.statusCode} ${req.method} ${req.path} - ${duration}ms`);
 
       // Log security events for suspicious activity
       if (res.statusCode === 401) {
