@@ -651,18 +651,18 @@ const FileBrowser = ({ token, user }) => {
                 onClick: (e) => e.stopPropagation() // Prevent checkbox click from triggering parent div click
             }),
             React.createElement('span', {
-                key: 'file-icon',
+                key: 'file-icon-' + index,
                 style: { fontSize: '24px' }
             }, getFileIcon(file)),
             React.createElement('div', {
-                key: 'file-info-container',
+                key: 'file-info-container-' + index,
                 style: { 
                     flex: 1, 
                     minWidth: 0 
                 }
             }, [
                 React.createElement('div', {
-                    key: 'file-name',
+                    key: 'file-name-' + index,
                     style: { 
                         color: 'white', 
                         fontWeight: '500',
@@ -672,7 +672,7 @@ const FileBrowser = ({ token, user }) => {
                     }
                 }, file.name),
                 React.createElement('div', {
-                    key: 'file-details',
+                    key: 'file-details-' + index,
                     style: { 
                         fontSize: '12px', 
                         color: 'rgba(255, 255, 255, 0.6)',
@@ -1616,7 +1616,7 @@ const FileBrowser = ({ token, user }) => {
                         }
                     }, uploadingFiles.map((file, index) =>
                         React.createElement('li', {
-                            key: index,
+                            key: file.name + '-' + index,
                             style: {
                                 padding: '10px 12px',
                                 background: 'rgba(59, 130, 246, 0.1)',
@@ -1632,11 +1632,11 @@ const FileBrowser = ({ token, user }) => {
                             }
                         }, [
                             React.createElement('span', {
-                                key: 'file-icon',
+                                key: 'file-icon-' + index,
                                 style: { fontSize: '18px' }
                             }, '📄'),
                             React.createElement('span', {
-                                key: 'file-name',
+                                key: 'file-name-' + index,
                                 style: {
                                     flex: 1,
                                     whiteSpace: 'nowrap',
@@ -1645,7 +1645,7 @@ const FileBrowser = ({ token, user }) => {
                                 }
                             }, file.name),
                             React.createElement('span', {
-                                key: 'file-size',
+                                key: 'file-size-' + index,
                                 style: {
                                     fontSize: '12px',
                                     color: 'rgba(255, 255, 255, 0.5)'
