@@ -241,13 +241,13 @@ class UploadAPI {
           path: finalPath,
           size: file.size
         });
+      } catch(error) {
+	      systemLogger.logError(`Upload failed: ${error.message}`, req);
+          res.status(500).json({
+            error: 'Upload failed',
+            message: error.message
+          });
       }
-
-      systemLogger.logError(`Upload failed: ${error.message}`, req);
-      res.status(500).json({
-        error: 'Upload failed',
-        message: error.message
-      });
   }
 
   /**
