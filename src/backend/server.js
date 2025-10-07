@@ -1067,7 +1067,7 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
       deletedItems
     });
   } catch (error) {
-    systemLogger.logFileOperation('delete', currentPath || '/', false, req, { error: error.message, items: items.map(i => i.name) });
+    systemLogger.logFileOperation('delete', req.body.currentPath || '/', false, req, { error: error.message, items: req.body.items?.map(i => i.name) });
     res.status(500).json({ error: error.message });
   }
 });
