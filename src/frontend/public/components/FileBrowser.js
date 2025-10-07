@@ -1767,6 +1767,7 @@ const FileBrowser = ({ token, user }) => {
             }
         }, [
             React.createElement('div', {
+                key: 'new-folder-modal-content',
                 style: {
                     background: 'rgba(30, 30, 30, 0.9)',
                     borderRadius: '12px',
@@ -1777,15 +1778,17 @@ const FileBrowser = ({ token, user }) => {
                 }
             }, [
                 React.createElement('h2', {
-                    style: { 
-                        color: 'white', 
+                    key: 'folder-title',
+                    style: {
+                        color: 'white',
                         margin: '0 0 24px 0',
                         fontSize: '22px',
                         textAlign: 'center'
                     }
                 }, 'Create New Folder'),
-                
+
                 React.createElement('input', {
+                    key: 'folder-name-input',
                     type: 'text',
                     placeholder: 'Folder name',
                     value: newFolderName,
@@ -1820,12 +1823,14 @@ const FileBrowser = ({ token, user }) => {
                 }, error),
                 
                 React.createElement('div', {
+                    key: 'folder-buttons',
                     style: {
                         display: 'flex',
                         gap: '12px'
                     }
                 }, [
                     React.createElement('button', {
+                        key: 'cancel-folder',
                         onClick: () => {
                             setShowNewFolderModal(false);
                             setNewFolderName('');
@@ -1842,8 +1847,9 @@ const FileBrowser = ({ token, user }) => {
                             fontSize: '14px'
                         }
                     }, 'Cancel'),
-                    
+
                     React.createElement('button', {
+                        key: 'create-folder',
                         onClick: createNewFolder,
                         style: {
                             flex: 1,
