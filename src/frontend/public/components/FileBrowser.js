@@ -514,7 +514,6 @@ const FileBrowser = ({ token, user }) => {
         console.log('Paste operation:', clipboard.action);
 
         try {
-            const storagePath = './storage';
             const response = await fetch('/api/files/paste', {
                 method: 'POST',
                 headers: {
@@ -522,18 +521,11 @@ const FileBrowser = ({ token, user }) => {
                     'Authorization': `Bearer ${token}`
                 },
                 body: JSON.stringify({
-                    items: clipboard.items.map(f => {
-                        // Construct full source path
-                        const fullSourcePath = f.path.startsWith(storagePath)
-                            ? f.path
-                            : `${storagePath}/${f.path}`;
-
-                        return {
-                            name: f.name,
-                            sourcePath: fullSourcePath,
-                            isDirectory: f.isDirectory
-                        };
-                    }),
+                    items: clipboard.items.map(f => ({
+                        name: f.name,
+                        path: f.path,  // Send relative path, backend will handle storagePath
+                        isDirectory: f.isDirectory
+                    })),
                     operation: clipboard.action,
                     targetPath: currentPath
                 })
