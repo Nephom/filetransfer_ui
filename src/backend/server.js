@@ -1009,22 +1009,29 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
 
     const path = require('path');
     const processedItems = [];
+    const storageRoot = path.resolve(storagePath);
 
     for (const item of items) {
-      const sourcePath = item.sourcePath || (item.currentPath
-        ? path.join(storagePath, item.currentPath, item.name)
-        : path.join(storagePath, item.name));
+      // Build source path from item.path (relative path from frontend)
+      const sourceFullPath = path.join(storageRoot, item.path);
 
+      // Build target path
       const targetFullPath = targetPath
-        ? path.join(storagePath, targetPath, item.name)
-        : path.join(storagePath, item.name);
+        ? path.join(storageRoot, targetPath, item.name)
+        : path.join(storageRoot, item.name);
+
+      // Security check: ensure paths are within storage root
+      if (!sourceFullPath.startsWith(storageRoot) || !targetFullPath.startsWith(storageRoot)) {
+        systemLogger.logSecurity('path_traversal_attempt', { source: item.path, target: targetPath }, req);
+        return res.status(403).json({ error: 'Forbidden: Access denied.' });
+      }
 
       if (operation === 'copy') {
-        await fileSystem.copy(sourcePath, targetFullPath);
-        systemLogger.logFileOperation('copy', path.join(targetPath || '', item.name), true, req, { source: sourcePath, target: targetFullPath });
+        await fileSystem.copy(sourceFullPath, targetFullPath);
+        systemLogger.logFileOperation('copy', path.join(targetPath || '', item.name), true, req, { source: sourceFullPath, target: targetFullPath });
       } else if (operation === 'cut') {
-        await fileSystem.move(sourcePath, targetFullPath);
-        systemLogger.logFileOperation('move', path.join(targetPath || '', item.name), true, req, { source: sourcePath, target: targetFullPath });
+        await fileSystem.move(sourceFullPath, targetFullPath);
+        systemLogger.logFileOperation('move', path.join(targetPath || '', item.name), true, req, { source: sourceFullPath, target: targetFullPath });
       }
 
       processedItems.push(item.name);
@@ -1034,15 +1041,15 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
     if (fileSystem.cache && fileSystem.cache.scanDirectory) {
       try {
         // Refresh target directory
-        const targetDir = targetPath ? path.join(storagePath, targetPath) : storagePath;
+        const targetDir = targetPath ? path.join(storageRoot, targetPath) : storageRoot;
         await fileSystem.cache.scanDirectory(targetDir);
         systemLogger.logCacheOperation('refresh_after_paste', { targetPath: targetPath || '/', operation }, req);
 
         // For move operations, also refresh source directory
         if (operation === 'cut' && items.length > 0) {
           const firstItem = items[0];
-          if (firstItem.sourcePath) {
-            const sourceDir = path.dirname(firstItem.sourcePath);
+          if (firstItem.path) {
+            const sourceDir = path.dirname(path.join(storageRoot, firstItem.path));
             if (sourceDir !== targetDir) {
               await fileSystem.cache.scanDirectory(sourceDir);
             }
