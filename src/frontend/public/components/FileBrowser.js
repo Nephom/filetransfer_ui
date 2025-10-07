@@ -178,25 +178,25 @@ const FileBrowser = ({ token, user }) => {
 
     const deleteSelectedFiles = async () => {
         if (selectedFiles.length === 0) return;
-        
+
         const itemsToDelete = selectedFiles.map(file => ({
             name: file.name,
             isDirectory: file.isDirectory
         }));
-        
+
         try {
-            const response = await fetch('/api/delete', {
-                method: 'POST',
+            const response = await fetch('/api/files/delete', {
+                method: 'DELETE',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
                 body: JSON.stringify({
                     items: itemsToDelete,
-                    path: currentPath
+                    currentPath: currentPath
                 })
             });
-            
+
             if (response.ok) {
                 fetchFiles();
                 setSelectedFiles([]);
@@ -283,20 +283,20 @@ const FileBrowser = ({ token, user }) => {
             setError('Folder name cannot be empty');
             return;
         }
-        
+
         try {
-            const response = await fetch('/api/create-folder', {
+            const response = await fetch('/api/folders', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
                 body: JSON.stringify({
-                    path: currentPath,
-                    folderName: newFolderName
+                    folderName: newFolderName,
+                    currentPath: currentPath
                 })
             });
-            
+
             if (response.ok) {
                 fetchFiles();
                 setNewFolderName('');
@@ -317,24 +317,33 @@ const FileBrowser = ({ token, user }) => {
 
     const handleFileUpload = async (uploadingFiles) => {
         if (uploadingFiles.length === 0) return;
-        
+
         const formData = new FormData();
         uploadingFiles.forEach(file => {
             formData.append('files', file);
         });
         formData.append('path', currentPath);
-        
+
         try {
             const response = await fetch('/api/upload', {
                 method: 'POST',
                 body: formData,
                 headers: { 'Authorization': `Bearer ${token}` }
             });
-            
+
             if (response.ok) {
+                // Show success message
+                alert(`✅ Upload completed! ${uploadingFiles.length} file(s) uploaded successfully.`);
+
+                // Refresh file list
                 fetchFiles();
+
+                // Close upload modal and clear files
                 setShowUploadModal(false);
                 setUploadingFiles([]);
+
+                // Clear any previous errors
+                setError('');
             } else {
                 const data = await response.json();
                 setError(data.error || 'Upload failed');
