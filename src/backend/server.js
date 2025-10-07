@@ -912,122 +912,7 @@ app.post('/api/files/directory', authenticate, async (req, res) => {
   }
 });
 
-// Delete file or folder
-app.delete('/api/files/*', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params[0] || '';
-    
-    const storageRoot = path.resolve(storagePath);
-    const fullPath = path.join(storageRoot, requestPath);
-    if (!fullPath.startsWith(storageRoot)) {
-      return res.status(403).json({ error: 'Forbidden: Access denied.' });
-    }
-
-    await fileSystem.delete(fullPath);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.put('/api/files/rename', authenticate, async (req, res) => {
-  try {
-    const { oldPath, newPath } = req.body;
-    await fileSystem.rename(oldPath, newPath);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/files/copy', authenticate, async (req, res) => {
-  try {
-    const { sourcePath, destinationPath } = req.body;
-    await fileSystem.copy(sourcePath, destinationPath);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/files/move', authenticate, async (req, res) => {
-  try {
-    const { sourcePath, destinationPath } = req.body;
-    await fileSystem.move(sourcePath, destinationPath);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Create new file
-app.post('/api/files/create', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { fileName, currentPath, content = '' } = req.body;
-
-    if (!fileName || !fileName.trim()) {
-      return res.status(400).json({ error: 'File name is required' });
-    }
-
-    const fullPath = currentPath
-      ? `${storagePath}/${currentPath}/${fileName.trim()}`
-      : `${storagePath}/${fileName.trim()}`;
-
-    await fileSystem.write(fullPath, content);
-
-    // HYBRID CACHE: Update cache immediately after API operation
-    if (fileSystem.cache) {
-      await fileSystem.cache.addOrUpdatePath(fullPath);
-    }
-
-    systemLogger.logFileOperation('create', path.join(currentPath || '', fileName.trim()), true, req, { fileName, size: content.length });
-    res.json({ success: true, message: 'File created successfully' });
-  } catch (error) {
-    systemLogger.logFileOperation('create', path.join(req.body.currentPath || '', req.body.fileName), false, req, { error: error.message });
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Rename file or folder
-app.put('/api/files/rename', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { oldName, newName, currentPath } = req.body;
-
-    if (!oldName || !newName) {
-      return res.status(400).json({ error: 'Both old and new names are required' });
-    }
-
-    const path = require('path');
-    const oldPath = currentPath
-      ? path.join(storagePath, currentPath, oldName)
-      : path.join(storagePath, oldName);
-
-    const newPath = currentPath
-      ? path.join(storagePath, currentPath, newName)
-      : path.join(storagePath, newName);
-
-    // Perform rename
-    await fileSystem.rename(oldPath, newPath);
-
-    // Force cache refresh for the parent directory
-    if (fileSystem.cache && fileSystem.cache.refreshCache) {
-      const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
-      await fileSystem.cache.scanDirectory(parentPath);
-      systemLogger.logCacheOperation('refresh_after_rename', { path: currentPath || '/' }, req);
-    }
-
-    systemLogger.logFileOperation('rename', path.join(currentPath || '', oldName), true, req, { newName, oldName });
-    res.json({ success: true, message: 'Item renamed successfully' });
-  } catch (error) {
-    systemLogger.logFileOperation('rename', path.join(req.body.currentPath || '', req.body.oldName), false, req, { error: error.message });
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Delete files or folders
+// Delete files or folders (specific route - must be before wildcard)
 app.delete('/api/files/delete', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
@@ -1068,6 +953,112 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logFileOperation('delete', req.body.currentPath || '/', false, req, { error: error.message, items: req.body.items?.map(i => i.name) });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Rename file or folder (specific route - must be before wildcard)
+app.put('/api/files/rename', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const { oldName, newName, currentPath } = req.body;
+
+    if (!oldName || !newName) {
+      return res.status(400).json({ error: 'Both old and new names are required' });
+    }
+
+    const path = require('path');
+    const oldPath = currentPath
+      ? path.join(storagePath, currentPath, oldName)
+      : path.join(storagePath, oldName);
+
+    const newPath = currentPath
+      ? path.join(storagePath, currentPath, newName)
+      : path.join(storagePath, newName);
+
+    // Perform rename
+    await fileSystem.rename(oldPath, newPath);
+
+    // Force cache refresh for the parent directory
+    if (fileSystem.cache && fileSystem.cache.refreshCache) {
+      const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
+      await fileSystem.cache.scanDirectory(parentPath);
+      systemLogger.logCacheOperation('refresh_after_rename', { path: currentPath || '/' }, req);
+    }
+
+    systemLogger.logFileOperation('rename', path.join(currentPath || '', oldName), true, req, { newName, oldName });
+    res.json({ success: true, message: 'Item renamed successfully' });
+  } catch (error) {
+    systemLogger.logFileOperation('rename', path.join(req.body.currentPath || '', req.body.oldName), false, req, { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create new file (specific route - must be before wildcard)
+app.post('/api/files/create', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const { fileName, currentPath, content = '' } = req.body;
+
+    if (!fileName || !fileName.trim()) {
+      return res.status(400).json({ error: 'File name is required' });
+    }
+
+    const fullPath = currentPath
+      ? `${storagePath}/${currentPath}/${fileName.trim()}`
+      : `${storagePath}/${fileName.trim()}`;
+
+    await fileSystem.write(fullPath, content);
+
+    // HYBRID CACHE: Update cache immediately after API operation
+    if (fileSystem.cache) {
+      await fileSystem.cache.addOrUpdatePath(fullPath);
+    }
+
+    systemLogger.logFileOperation('create', path.join(currentPath || '', fileName.trim()), true, req, { fileName, size: content.length });
+    res.json({ success: true, message: 'File created successfully' });
+  } catch (error) {
+    systemLogger.logFileOperation('create', path.join(req.body.currentPath || '', req.body.fileName), false, req, { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Copy/Move/Paste operations (specific routes - must be before wildcard)
+app.post('/api/files/copy', authenticate, async (req, res) => {
+  try {
+    const { sourcePath, destinationPath } = req.body;
+    await fileSystem.copy(sourcePath, destinationPath);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/files/move', authenticate, async (req, res) => {
+  try {
+    const { sourcePath, destinationPath } = req.body;
+    await fileSystem.move(sourcePath, destinationPath);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete file or folder (wildcard route - must be AFTER all specific routes)
+app.delete('/api/files/*', authenticate, async (req, res) => {
+  try {
+    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+    const requestPath = req.params[0] || '';
+
+    const storageRoot = path.resolve(storagePath);
+    const fullPath = path.join(storageRoot, requestPath);
+    if (!fullPath.startsWith(storageRoot)) {
+      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    }
+
+    await fileSystem.delete(fullPath);
+    res.json({ success: true });
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
