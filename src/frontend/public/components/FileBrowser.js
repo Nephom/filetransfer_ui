@@ -1441,6 +1441,7 @@ const FileBrowser = ({ token, user }) => {
             }
         }, [
             React.createElement('div', {
+                key: 'upload-modal-content',
                 style: {
                     background: 'rgba(30, 40, 50, 0.95)',
                     backdropFilter: 'blur(20px)',
@@ -1453,6 +1454,7 @@ const FileBrowser = ({ token, user }) => {
                 }
             }, [
                 React.createElement('h2', {
+                    key: 'upload-title',
                     style: {
                         color: 'white',
                         margin: '0 0 8px 0',
@@ -1463,6 +1465,7 @@ const FileBrowser = ({ token, user }) => {
                 }, '📤 Upload Files'),
 
                 React.createElement('p', {
+                    key: 'upload-path',
                     style: {
                         color: 'rgba(255, 255, 255, 0.6)',
                         margin: '0 0 24px 0',
@@ -1472,6 +1475,7 @@ const FileBrowser = ({ token, user }) => {
                 }, `Uploading to: ${currentPath || '/'}`),
 
                 React.createElement('div', {
+                    key: 'upload-drop-zone',
                     style: {
                         marginBottom: '24px'
                     },
@@ -1503,6 +1507,7 @@ const FileBrowser = ({ token, user }) => {
                     }
                 }, [
                     React.createElement('div', {
+                        key: 'drop-zone-inner',
                         style: {
                             padding: '40px 20px',
                             border: '2px dashed rgba(59, 130, 246, 0.4)',
@@ -1570,6 +1575,7 @@ const FileBrowser = ({ token, user }) => {
                     ]),
 
                     React.createElement('input', {
+                        key: 'file-input-upload',
                         id: 'file-input-upload',
                         type: 'file',
                         multiple: true,
@@ -1583,6 +1589,7 @@ const FileBrowser = ({ token, user }) => {
                 ]),
                 
                 uploadingFiles.length > 0 && React.createElement('div', {
+                    key: 'uploading-files-list',
                     style: {
                         marginBottom: '24px',
                         maxHeight: '200px',
@@ -1594,6 +1601,7 @@ const FileBrowser = ({ token, user }) => {
                     }
                 }, [
                     React.createElement('h3', {
+                        key: 'files-list-header',
                         style: {
                             color: 'white',
                             margin: '0 0 12px 0',
@@ -1609,6 +1617,7 @@ const FileBrowser = ({ token, user }) => {
                     ]),
 
                     React.createElement('ul', {
+                        key: 'files-list-ul',
                         style: {
                             listStyle: 'none',
                             padding: 0,
@@ -1654,14 +1663,16 @@ const FileBrowser = ({ token, user }) => {
                         ])
                     ))
                 ]),
-                
+
                 React.createElement('div', {
+                    key: 'upload-buttons',
                     style: {
                         display: 'flex',
                         gap: '12px'
                     }
                 }, [
                     React.createElement('button', {
+                        key: 'cancel-upload',
                         onClick: () => {
                             setShowUploadModal(false);
                             setUploadingFiles([]);
@@ -1690,6 +1701,7 @@ const FileBrowser = ({ token, user }) => {
                     }, 'Cancel'),
 
                     React.createElement('button', {
+                        key: 'confirm-upload',
                         onClick: () => handleFileUpload(uploadingFiles),
                         disabled: uploadingFiles.length === 0,
                         style: {
