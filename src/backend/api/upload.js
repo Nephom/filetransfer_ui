@@ -8,6 +8,7 @@ const multer = require('multer');
 const path = require('path');
 const { transferManager } = require('../transfer');
 const { FileSystem } = require('../file-system');
+const { systemLogger } = require('../utils/logger');
 
 class UploadAPI {
   constructor() {
@@ -102,7 +103,7 @@ class UploadAPI {
       }
 
       // Get currentPath from request body to determine destination directory
-      const currentPath = req.body.currentPath || '';
+      const currentPath = req.body.path || '';
       const configManager = require('../config');
       const storagePath = configManager.get('fileSystem.storagePath') || './storage';
       
@@ -162,6 +163,7 @@ class UploadAPI {
         }
       });
     } catch (error) {
+      systemLogger.logError(`Upload failed: ${error.message}`, req);
       res.status(500).json({
         error: 'Upload failed',
         message: error.message
@@ -182,7 +184,7 @@ class UploadAPI {
       }
 
       // Get currentPath from request body to determine destination directory
-      const currentPath = req.body.currentPath || '';
+      const currentPath = req.body.path || '';
       const configManager = require('../config');
       const storagePath = configManager.get('fileSystem.storagePath') || './storage';
       
@@ -241,17 +243,11 @@ class UploadAPI {
         });
       }
 
-      res.json({
-        success: true,
-        message: `${req.files.length} files uploaded successfully`,
-        files: results
-      });
-    } catch (error) {
+      systemLogger.logError(`Upload failed: ${error.message}`, req);
       res.status(500).json({
         error: 'Upload failed',
         message: error.message
       });
-    }
   }
 
   /**
@@ -267,7 +263,7 @@ class UploadAPI {
       }
 
       // Get currentPath from request body to determine destination directory
-      const currentPath = req.body.currentPath || '';
+      const currentPath = req.body.path || '';
       const configManager = require('../config');
       const storagePath = configManager.get('fileSystem.storagePath') || './storage';
       
@@ -345,6 +341,7 @@ class UploadAPI {
         });
       }, 2000);
     } catch (error) {
+      systemLogger.logError(`Upload failed: ${error.message}`, req);
       res.status(500).json({
         error: 'Upload failed',
         message: error.message
