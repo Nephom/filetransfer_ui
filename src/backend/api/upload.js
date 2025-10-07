@@ -241,7 +241,14 @@ class UploadAPI {
           path: finalPath,
           size: file.size
         });
-      } 
+      }
+
+      // Send success response
+      res.json({
+        success: true,
+        message: `${results.length} file(s) uploaded successfully`,
+        files: results
+      });
 	} catch (error) {
       systemLogger.logError(`Upload failed: ${error.message}`, req);
       res.status(500).json({
