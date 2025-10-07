@@ -711,55 +711,6 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
   }
 });
 
-// List files in a directory (or root)
-app.get('/api/files/*', authenticate, async (req, res) => {
-  if (!isCacheReady) {
-    return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
-  }
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params[0] || '';
-
-    const storageRoot = path.resolve(storagePath);
-    const fullPath = path.join(storageRoot, requestPath);
-
-    if (!fullPath.startsWith(storageRoot)) {
-      systemLogger.logSecurity('path_traversal_attempt', { path: requestPath }, req);
-      return res.status(403).json({ error: 'Forbidden: Access denied.' });
-    }
-
-    // --- On-demand watcher integration ---
-    const userId = req.user.id;
-    const previousPath = userActiveDirectories.get(userId);
-    if (previousPath && previousPath !== fullPath) {
-      await fileSystem.cache.leaveDirectory(previousPath);
-    }
-    await fileSystem.cache.enterDirectory(fullPath);
-    userActiveDirectories.set(userId, fullPath);
-    // ------------------------------------
-
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Request timeout')), 30000);
-    });
-
-    const files = await Promise.race([
-      fileSystem.list(fullPath),
-      timeoutPromise
-    ]);
-
-    systemLogger.logAPI('list', requestPath, true, req, { fileCount: files.length });
-    res.json(files);
-  } catch (error) {
-    if (error.message === 'Request timeout') {
-      systemLogger.logAPI('list', req.params[0] || '/', false, req, { error: 'Request timeout' });
-      res.status(408).json({ error: 'Request timeout - file system may be busy' });
-    } else {
-      systemLogger.logAPI('list', req.params[0] || '/', false, req, { error: error.message });
-      res.status(500).json({ error: error.message });
-    }
-  }
-});
-
 // Handle root files API call
 app.get('/api/files', authenticate, async (req, res) => {
   if (!isCacheReady) {
@@ -892,6 +843,8 @@ app.post('/api/folders', authenticate, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ========== SPECIFIC ROUTES (must be before wildcard routes) ==========
 
 // Legacy endpoint for backward compatibility
 app.post('/api/files/directory', authenticate, async (req, res) => {
@@ -1044,21 +997,69 @@ app.post('/api/files/move', authenticate, async (req, res) => {
   }
 });
 
-// Delete file or folder (wildcard route - must be AFTER all specific routes)
-app.delete('/api/files/*', authenticate, async (req, res) => {
+// Paste (copy or move) files (specific route - must be before wildcard)
+app.post('/api/files/paste', authenticate, async (req, res) => {
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const requestPath = req.params[0] || '';
+    const { items, operation, targetPath } = req.body;
 
-    const storageRoot = path.resolve(storagePath);
-    const fullPath = path.join(storageRoot, requestPath);
-    if (!fullPath.startsWith(storageRoot)) {
-      return res.status(403).json({ error: 'Forbidden: Access denied.' });
+    if (!items || !Array.isArray(items) || !operation) {
+      return res.status(400).json({ error: 'Items array and operation are required' });
     }
 
-    await fileSystem.delete(fullPath);
-    res.json({ success: true });
+    const path = require('path');
+    const processedItems = [];
+
+    for (const item of items) {
+      const sourcePath = item.sourcePath || (item.currentPath
+        ? path.join(storagePath, item.currentPath, item.name)
+        : path.join(storagePath, item.name));
+
+      const targetFullPath = targetPath
+        ? path.join(storagePath, targetPath, item.name)
+        : path.join(storagePath, item.name);
+
+      if (operation === 'copy') {
+        await fileSystem.copy(sourcePath, targetFullPath);
+        systemLogger.logFileOperation('copy', path.join(targetPath || '', item.name), true, req, { source: sourcePath, target: targetFullPath });
+      } else if (operation === 'cut') {
+        await fileSystem.move(sourcePath, targetFullPath);
+        systemLogger.logFileOperation('move', path.join(targetPath || '', item.name), true, req, { source: sourcePath, target: targetFullPath });
+      }
+
+      processedItems.push(item.name);
+    }
+
+    // Force cache refresh for both source and target directories
+    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+      try {
+        // Refresh target directory
+        const targetDir = targetPath ? path.join(storagePath, targetPath) : storagePath;
+        await fileSystem.cache.scanDirectory(targetDir);
+        systemLogger.logCacheOperation('refresh_after_paste', { targetPath: targetPath || '/', operation }, req);
+
+        // For move operations, also refresh source directory
+        if (operation === 'cut' && items.length > 0) {
+          const firstItem = items[0];
+          if (firstItem.sourcePath) {
+            const sourceDir = path.dirname(firstItem.sourcePath);
+            if (sourceDir !== targetDir) {
+              await fileSystem.cache.scanDirectory(sourceDir);
+            }
+          }
+        }
+      } catch (cacheError) {
+        // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `${processedItems.length} item(s) ${operation === 'copy' ? 'copied' : 'moved'} successfully`,
+      processedItems
+    });
   } catch (error) {
+    systemLogger.logFileOperation(req.body.operation === 'copy' ? 'copy' : 'move', req.body.targetPath || '/', false, req, { error: error.message, items: req.body.items?.map(i => i.name) });
     res.status(500).json({ error: error.message });
   }
 });
@@ -1135,75 +1136,6 @@ app.post('/api/archive', authenticate, async (req, res) => {
     }
   }
 });
-
-// Paste (copy or move) files
-app.post('/api/files/paste', authenticate, async (req, res) => {
-  try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { items, operation, targetPath } = req.body;
-
-    if (!items || !Array.isArray(items) || !operation) {
-      return res.status(400).json({ error: 'Items array and operation are required' });
-    }
-
-    const path = require('path');
-    const processedItems = [];
-
-    for (const item of items) {
-      const sourcePath = item.sourcePath || (item.currentPath
-        ? path.join(storagePath, item.currentPath, item.name)
-        : path.join(storagePath, item.name));
-
-      const targetFullPath = targetPath
-        ? path.join(storagePath, targetPath, item.name)
-        : path.join(storagePath, item.name);
-
-      if (operation === 'copy') {
-        await fileSystem.copy(sourcePath, targetFullPath);
-        systemLogger.logFileOperation('copy', path.join(targetPath || '', item.name), true, req, { source: sourcePath, target: targetFullPath });
-      } else if (operation === 'cut') {
-        await fileSystem.move(sourcePath, targetFullPath);
-        systemLogger.logFileOperation('move', path.join(targetPath || '', item.name), true, req, { source: sourcePath, target: targetFullPath });
-      }
-
-      processedItems.push(item.name);
-    }
-
-    // Force cache refresh for both source and target directories
-    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
-      try {
-        // Refresh target directory
-        const targetDir = targetPath ? path.join(storagePath, targetPath) : storagePath;
-        await fileSystem.cache.scanDirectory(targetDir);
-        systemLogger.logCacheOperation('refresh_after_paste', { targetPath: targetPath || '/', operation }, req);
-
-        // For move operations, also refresh source directory
-        if (operation === 'cut' && items.length > 0) {
-          const firstItem = items[0];
-          if (firstItem.sourcePath) {
-            const sourceDir = path.dirname(firstItem.sourcePath);
-            if (sourceDir !== targetDir) {
-              await fileSystem.cache.scanDirectory(sourceDir);
-            }
-          }
-        }
-      } catch (cacheError) {
-        // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
-      }
-    }
-
-    res.json({
-      success: true,
-      message: `${processedItems.length} item(s) ${operation === 'copy' ? 'copied' : 'moved'} successfully`,
-      processedItems
-    });
-  } catch (error) {
-    systemLogger.logFileOperation(operation === 'copy' ? 'copy' : 'move', targetPath || '/', false, req, { error: error.message, items: items.map(i => i.name) });
-    res.status(500).json({ error: error.message });
-  }
-});
-
-
 
 // Progress tracking routes
 app.get('/api/progress/:transferId', authenticate, (req, res) => {
