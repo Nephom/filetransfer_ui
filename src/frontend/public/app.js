@@ -18,6 +18,7 @@ const App = () => {
         if (token && !user) {
             // Verify token with server
             fetch('/auth/verify', {
+                method: 'POST',
                 headers: { 'Authorization': `Bearer ${token}` }
             })
             .then(response => {
