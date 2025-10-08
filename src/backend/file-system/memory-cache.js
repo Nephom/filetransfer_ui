@@ -329,7 +329,7 @@ class RedisFileSystemCache extends EventEmitter {
       // Remove from active directories
       this.activeDirs.delete(absolutePath);
 
-      // Clear from memory cache
+      // Clear from memory cache (immediate, non-blocking)
       this.directoryCache.delete(absolutePath);
       this.directoryMtimes.delete(absolutePath);
 
@@ -343,25 +343,44 @@ class RedisFileSystemCache extends EventEmitter {
         this.hotCacheAccessOrder.splice(accessIndex, 1);
       }
 
-      // Clear from Redis
+      // OPTIMIZATION: Clear from Redis in background (non-blocking)
+      // Don't await - let it run asynchronously to avoid blocking user navigation
       if (this.redisClient && this.redisClient.isReady) {
         const dirKey = `dir:${absolutePath}`;
-        await this.redisClient.del(dirKey);
 
-        // Clear all file entries under this directory from Redis
-        const pattern = `file:${absolutePath}/*`;
-        const keys = [];
+        // Execute Redis cleanup in background without blocking
+        setImmediate(async () => {
+          try {
+            await this.redisClient.del(dirKey);
 
-        // Use SCAN instead of KEYS for production safety
-        for await (const key of this.redisClient.scanIterator({ MATCH: pattern })) {
-          keys.push(key);
-        }
+            // Clear all file entries under this directory from Redis
+            // For large file systems (800K+ files), this can be slow
+            // Run in background to avoid blocking user experience
+            const pattern = `file:${absolutePath}/*`;
+            const keys = [];
 
-        if (keys.length > 0) {
-          await this.redisClient.del(keys);
-        }
+            // Use SCAN instead of KEYS for production safety
+            for await (const key of this.redisClient.scanIterator({ MATCH: pattern, COUNT: 1000 })) {
+              keys.push(key);
 
-        systemLogger.logSystem('INFO', `Cleared cache for: ${absolutePath} (${keys.length} files removed)`);
+              // Delete in batches to avoid blocking Redis too long
+              if (keys.length >= 5000) {
+                await this.redisClient.del(keys);
+                keys.length = 0; // Clear array
+              }
+            }
+
+            if (keys.length > 0) {
+              await this.redisClient.del(keys);
+            }
+
+            systemLogger.logSystem('DEBUG', `Background cleanup completed for: ${absolutePath}`);
+          } catch (redisError) {
+            systemLogger.logSystem('WARN', `Background Redis cleanup failed: ${redisError.message}`);
+          }
+        });
+
+        systemLogger.logSystem('DEBUG', `Started background cleanup for: ${absolutePath}`);
       }
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to leave directory: ${error.message}`);
