@@ -245,7 +245,7 @@ class RedisFileSystemCache extends EventEmitter {
       // OPTIMIZATION 1: Check hot cache first (memory-level cache)
       const hotCached = this.getFromHotCache(absolutePath);
       if (hotCached) {
-        systemLogger.logSystem('DEBUG', `Returning from hot cache: ${absolutePath}`);
+        systemLogger.logSystem('DEBUG', `✅ Returning from hot cache: ${absolutePath}`);
         this.activeDirs.add(absolutePath);
         return hotCached;
       }
@@ -254,11 +254,20 @@ class RedisFileSystemCache extends EventEmitter {
       // Don't perform expensive fs.stat() on every request
       if (isRootDir) {
         const cached = this.directoryCache.get(absolutePath);
-        if (cached && cached.length > 0) {
-          systemLogger.logSystem('DEBUG', `Returning cached root directory (polling active)`);
+        if (cached !== undefined) {
+          // Root directory cache exists (even if empty array)
+          systemLogger.logSystem('DEBUG', `✅ Returning cached root directory (polling active) - ${cached.length} items`);
           this.activeDirs.add(absolutePath);
           this.updateHotCache(absolutePath, cached);
           return cached;
+        } else {
+          // Root directory not cached yet - this should only happen during startup
+          systemLogger.logSystem('WARN', `⚠️  Root directory not in cache - performing initial load`);
+          await this.updateDirectoryCache(absolutePath);
+          const contents = this.directoryCache.get(absolutePath) || [];
+          this.activeDirs.add(absolutePath);
+          this.updateHotCache(absolutePath, contents);
+          return contents;
         }
       }
 
@@ -292,9 +301,7 @@ class RedisFileSystemCache extends EventEmitter {
       const contents = this.directoryCache.get(absolutePath) || [];
 
       // Update hot cache for fast subsequent access
-      if (contents.length > 0) {
-        this.updateHotCache(absolutePath, contents);
-      }
+      this.updateHotCache(absolutePath, contents);
 
       return contents;
     } catch (error) {
