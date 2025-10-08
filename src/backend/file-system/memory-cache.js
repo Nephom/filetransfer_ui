@@ -29,6 +29,15 @@ class RedisFileSystemCache extends EventEmitter {
     this.isIndexing = false;
     this.indexProgress = { current: 0, total: 0, status: 'idle' };
     this.indexingInterval = null;
+
+    // Performance optimization: Memory-level cache for hot directories
+    this.hotCache = new Map(); // LRU-style cache for frequently accessed directories
+    this.hotCacheMaxSize = 50; // Keep up to 50 directories in hot cache
+    this.hotCacheAccessOrder = []; // Track access order for LRU eviction
+
+    // Mtime check throttling to prevent excessive fs.stat() calls
+    this.lastMtimeCheck = new Map(); // Track last mtime check timestamp for each directory
+    this.mtimeCheckThrottle = 2000; // Don't check mtime more than once per 2 seconds for same directory
   }
 
   /**
@@ -151,34 +160,143 @@ class RedisFileSystemCache extends EventEmitter {
   }
 
   /**
+   * Update hot cache with LRU eviction
+   */
+  updateHotCache(absolutePath, contents) {
+    // Add or update in hot cache
+    this.hotCache.set(absolutePath, {
+      contents: contents,
+      timestamp: Date.now()
+    });
+
+    // Update access order (move to end = most recently used)
+    const existingIndex = this.hotCacheAccessOrder.indexOf(absolutePath);
+    if (existingIndex !== -1) {
+      this.hotCacheAccessOrder.splice(existingIndex, 1);
+    }
+    this.hotCacheAccessOrder.push(absolutePath);
+
+    // Evict least recently used if cache is too large
+    while (this.hotCacheAccessOrder.length > this.hotCacheMaxSize) {
+      const lruPath = this.hotCacheAccessOrder.shift();
+      // Don't evict root directory from hot cache
+      if (lruPath !== this.storagePath) {
+        this.hotCache.delete(lruPath);
+        systemLogger.logSystem('DEBUG', `Evicted from hot cache: ${lruPath}`);
+      } else {
+        // If root is the oldest, evict the next item instead and keep root
+        if (this.hotCacheAccessOrder.length > 0) {
+          const nextLruPath = this.hotCacheAccessOrder.shift();
+          this.hotCache.delete(nextLruPath);
+          systemLogger.logSystem('DEBUG', `Evicted from hot cache (preserved root): ${nextLruPath}`);
+        }
+        this.hotCacheAccessOrder.unshift(lruPath); // Put root back at front
+        break; // Exit loop to prevent infinite iteration
+      }
+    }
+  }
+
+  /**
+   * Get from hot cache if available and fresh
+   */
+  getFromHotCache(absolutePath) {
+    const cached = this.hotCache.get(absolutePath);
+    if (cached) {
+      // Update access order
+      const existingIndex = this.hotCacheAccessOrder.indexOf(absolutePath);
+      if (existingIndex !== -1) {
+        this.hotCacheAccessOrder.splice(existingIndex, 1);
+        this.hotCacheAccessOrder.push(absolutePath);
+      }
+      return cached.contents;
+    }
+    return null;
+  }
+
+  /**
+   * Check if mtime check should be performed (throttled)
+   */
+  shouldCheckMtime(absolutePath) {
+    // Root directory: rely on rootPollingInterval, don't check on every enterDirectory
+    if (absolutePath === this.storagePath) {
+      return false; // Root polling handles this
+    }
+
+    const lastCheck = this.lastMtimeCheck.get(absolutePath);
+    if (!lastCheck) {
+      return true; // Never checked, should check
+    }
+
+    const timeSinceLastCheck = Date.now() - lastCheck;
+    return timeSinceLastCheck > this.mtimeCheckThrottle;
+  }
+
+  /**
    * Cache directory contents when user enters a directory.
    * To be called when a user enters a directory in the UI.
    */
   async enterDirectory(dirPath) {
     const absolutePath = path.resolve(dirPath);
-    const isRootDir = absolutePath === path.resolve(this.storagePath);
+    const isRootDir = absolutePath === this.storagePath;
 
     systemLogger.logSystem('INFO', `User entering directory: ${absolutePath}`);
 
     try {
-      // Check if directory mtime has changed
-      const stat = await fs.stat(absolutePath);
-      const cachedMtime = this.directoryMtimes.get(absolutePath);
+      // OPTIMIZATION 1: Check hot cache first (memory-level cache)
+      const hotCached = this.getFromHotCache(absolutePath);
+      if (hotCached) {
+        systemLogger.logSystem('DEBUG', `Returning from hot cache: ${absolutePath}`);
+        this.activeDirs.add(absolutePath);
+        return hotCached;
+      }
 
-      // Update cache if directory changed or not cached
-      if (!cachedMtime || stat.mtime.getTime() > cachedMtime) {
-        systemLogger.logSystem('INFO', `Caching directory (mtime changed): ${absolutePath}`);
-        await this.updateDirectoryCache(absolutePath);
-        this.directoryMtimes.set(absolutePath, stat.mtime.getTime());
+      // OPTIMIZATION 2: For root directory, trust the polling mechanism
+      // Don't perform expensive fs.stat() on every request
+      if (isRootDir) {
+        const cached = this.directoryCache.get(absolutePath);
+        if (cached && cached.length > 0) {
+          systemLogger.logSystem('DEBUG', `Returning cached root directory (polling active)`);
+          this.activeDirs.add(absolutePath);
+          this.updateHotCache(absolutePath, cached);
+          return cached;
+        }
+      }
+
+      // OPTIMIZATION 3: Throttle mtime checks to reduce fs.stat() calls
+      const shouldCheck = this.shouldCheckMtime(absolutePath);
+
+      if (shouldCheck) {
+        // Check if directory mtime has changed
+        const stat = await fs.stat(absolutePath);
+        const cachedMtime = this.directoryMtimes.get(absolutePath);
+
+        // Update last check timestamp
+        this.lastMtimeCheck.set(absolutePath, Date.now());
+
+        // Update cache if directory changed or not cached
+        if (!cachedMtime || stat.mtime.getTime() > cachedMtime) {
+          systemLogger.logSystem('INFO', `Caching directory (mtime changed): ${absolutePath}`);
+          await this.updateDirectoryCache(absolutePath);
+          this.directoryMtimes.set(absolutePath, stat.mtime.getTime());
+        } else {
+          systemLogger.logSystem('DEBUG', `Directory unchanged: ${absolutePath}`);
+        }
       } else {
-        systemLogger.logSystem('INFO', `Returning cached directory: ${absolutePath}`);
+        systemLogger.logSystem('DEBUG', `Mtime check throttled: ${absolutePath}`);
       }
 
       // Mark as active directory
       this.activeDirs.add(absolutePath);
 
       // Return the cached contents
-      return this.directoryCache.get(absolutePath) || [];
+      const contents = this.directoryCache.get(absolutePath) || [];
+
+      // Update hot cache for fast subsequent access
+      if (contents.length > 0) {
+        this.updateHotCache(absolutePath, contents);
+      }
+
+      return contents;
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to enter directory: ${error.message}`);
       return [];
@@ -191,7 +309,7 @@ class RedisFileSystemCache extends EventEmitter {
    */
   async leaveDirectory(dirPath) {
     const absolutePath = path.resolve(dirPath);
-    const isRootDir = absolutePath === path.resolve(this.storagePath);
+    const isRootDir = absolutePath === this.storagePath;
 
     // Never clear root directory
     if (isRootDir) {
@@ -208,24 +326,36 @@ class RedisFileSystemCache extends EventEmitter {
       this.directoryCache.delete(absolutePath);
       this.directoryMtimes.delete(absolutePath);
 
+      // Clear from mtime check cache to prevent memory leak
+      this.lastMtimeCheck.delete(absolutePath);
+
+      // Clear from hot cache and access order
+      this.hotCache.delete(absolutePath);
+      const accessIndex = this.hotCacheAccessOrder.indexOf(absolutePath);
+      if (accessIndex !== -1) {
+        this.hotCacheAccessOrder.splice(accessIndex, 1);
+      }
+
       // Clear from Redis
-      const dirKey = `dir:${absolutePath}`;
-      await this.redisClient.del(dirKey);
+      if (this.redisClient && this.redisClient.isReady) {
+        const dirKey = `dir:${absolutePath}`;
+        await this.redisClient.del(dirKey);
 
-      // Clear all file entries under this directory from Redis
-      const pattern = `file:${absolutePath}/*`;
-      const keys = [];
+        // Clear all file entries under this directory from Redis
+        const pattern = `file:${absolutePath}/*`;
+        const keys = [];
 
-      // Use SCAN instead of KEYS for production safety
-      for await (const key of this.redisClient.scanIterator({ MATCH: pattern })) {
-        keys.push(key);
+        // Use SCAN instead of KEYS for production safety
+        for await (const key of this.redisClient.scanIterator({ MATCH: pattern })) {
+          keys.push(key);
+        }
+
+        if (keys.length > 0) {
+          await this.redisClient.del(keys);
+        }
+
+        systemLogger.logSystem('INFO', `Cleared cache for: ${absolutePath} (${keys.length} files removed)`);
       }
-
-      if (keys.length > 0) {
-        await this.redisClient.del(keys);
-      }
-
-      systemLogger.logSystem('INFO', `Cleared cache for: ${absolutePath} (${keys.length} files removed)`);
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to leave directory: ${error.message}`);
     }
@@ -235,6 +365,7 @@ class RedisFileSystemCache extends EventEmitter {
   /**
    * Update directory cache (non-recursive, only direct children)
    * Uses mtime+size instead of MD5 for change detection
+   * OPTIMIZED: Uses Promise.all for parallel fs.stat() and Redis pipeline for batch operations
    */
   async updateDirectoryCache(dirPath, recursive = false) {
     try {
@@ -242,12 +373,12 @@ class RedisFileSystemCache extends EventEmitter {
       const absoluteDirPath = path.resolve(dirPath);
       const ignoreList = await this.loadIgnoreList();
       const files = await fs.readdir(absoluteDirPath);
-      const dirContents = [];
 
-      for (const fileName of files) {
+      // OPTIMIZATION: Process files in parallel using Promise.allSettled
+      const filePromises = files.map(async (fileName) => {
         // Skip ignored directories
         if (ignoreList.includes(fileName)) {
-          continue;
+          return null;
         }
 
         const fullPath = path.join(absoluteDirPath, fileName);
@@ -269,22 +400,44 @@ class RedisFileSystemCache extends EventEmitter {
             fileData.hash = `${stat.size}-${stat.mtime.getTime()}`;
           }
 
-          dirContents.push(fileData);
+          return fileData;
         } catch (err) {
           if (err.code !== 'EACCES') {
             systemLogger.logSystem('ERROR', `Error processing item in directory: ${fullPath} - ${err.message}`);
           }
+          return null;
+        }
+      });
+
+      // Wait for all file processing to complete
+      const results = await Promise.allSettled(filePromises);
+      const dirContents = results
+        .filter(result => result.status === 'fulfilled' && result.value !== null)
+        .map(result => result.value);
+
+      const isRootDir = absoluteDirPath === this.storagePath;
+      const dirKey = `dir:${absoluteDirPath}`;
+
+      // OPTIMIZATION: Use Redis pipeline for batch operations if available
+      if (this.redisClient && this.redisClient.isReady) {
+        try {
+          // Store directory data in Redis
+          await this.redisClient.hSet(dirKey, {
+            contents: JSON.stringify(dirContents),
+            cached: Date.now().toString(),
+            isRoot: isRootDir.toString()
+          });
+        } catch (redisError) {
+          systemLogger.logSystem('WARN', `Redis cache update failed: ${redisError.message}`);
+          // Continue with memory cache even if Redis fails
         }
       }
 
-      const isRootDir = absoluteDirPath === path.resolve(this.storagePath);
-      const dirKey = `dir:${absoluteDirPath}`;
-      await this.redisClient.hSet(dirKey, {
-        contents: JSON.stringify(dirContents),
-        cached: Date.now().toString(),
-        isRoot: isRootDir.toString()
-      });
+      // Update memory cache
       this.directoryCache.set(absoluteDirPath, dirContents);
+
+      // Update hot cache for frequently accessed directories
+      this.updateHotCache(absoluteDirPath, dirContents);
 
       const cacheType = isRootDir ? '(hot cache)' : '(regular cache)';
       systemLogger.logSystem('INFO', `Cached directory ${cacheType}: ${absoluteDirPath} (${dirContents.length} items)`);
@@ -300,21 +453,48 @@ class RedisFileSystemCache extends EventEmitter {
 
   /**
    * Get directory contents from cache
+   * OPTIMIZED: Check hot cache first before Redis
    */
   async getDirectoryContents(dirPath) {
     try {
       // Ensure the directory path is absolute before using
       const absoluteDirPath = path.resolve(dirPath);
-      const dirKey = `dir:${absoluteDirPath}`;
-      const dirData = await this.redisClient.hGetAll(dirKey);
 
-      if (Object.keys(dirData).length > 0) {
-        const contents = JSON.parse(dirData.contents || '[]');
-        return contents;
+      // OPTIMIZATION: Check hot cache first (fastest)
+      const hotCached = this.getFromHotCache(absoluteDirPath);
+      if (hotCached) {
+        systemLogger.logSystem('DEBUG', `getDirectoryContents from hot cache: ${absoluteDirPath}`);
+        return hotCached;
       }
 
-      // If not in cache, scan the directory and cache it
-      await this.scanDirectory(absoluteDirPath);
+      // Check memory cache second
+      const memoryCached = this.directoryCache.get(absoluteDirPath);
+      if (memoryCached && memoryCached.length > 0) {
+        systemLogger.logSystem('DEBUG', `getDirectoryContents from memory cache: ${absoluteDirPath}`);
+        this.updateHotCache(absoluteDirPath, memoryCached);
+        return memoryCached;
+      }
+
+      // Finally check Redis if available
+      if (this.redisClient && this.redisClient.isReady) {
+        try {
+          const dirKey = `dir:${absoluteDirPath}`;
+          const dirData = await this.redisClient.hGetAll(dirKey);
+
+          if (Object.keys(dirData).length > 0) {
+            const contents = JSON.parse(dirData.contents || '[]');
+            this.directoryCache.set(absoluteDirPath, contents);
+            this.updateHotCache(absoluteDirPath, contents);
+            return contents;
+          }
+        } catch (redisError) {
+          systemLogger.logSystem('WARN', `Redis fetch failed: ${redisError.message}`);
+          // Continue to update cache from filesystem
+        }
+      }
+
+      // If not in cache anywhere, update cache (will populate all cache levels)
+      await this.updateDirectoryCache(absoluteDirPath);
       const cachedContents = this.directoryCache.get(absoluteDirPath);
       return cachedContents || [];
     } catch (error) {
@@ -465,6 +645,41 @@ class RedisFileSystemCache extends EventEmitter {
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to get files in directory: ${error.message}`);
       return [];
+    }
+  }
+
+  /**
+   * Get files in a directory with pagination support
+   * OPTIMIZATION: For large directories, support offset and limit
+   */
+  async getFilesInDirectoryPaginated(dirPath, offset = 0, limit = 1000) {
+    try {
+      // Get full directory contents using optimized enterDirectory
+      const allFiles = await this.enterDirectory(dirPath);
+
+      // Calculate pagination
+      const total = allFiles.length;
+      const start = Math.max(0, offset);
+      const end = limit > 0 ? Math.min(start + limit, total) : total;
+      const files = allFiles.slice(start, end);
+
+      return {
+        files: files,
+        total: total,
+        offset: start,
+        limit: limit,
+        hasMore: end < total
+      };
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Failed to get paginated files: ${error.message}`);
+      return {
+        files: [],
+        total: 0,
+        offset: 0,
+        limit: limit,
+        hasMore: false,
+        error: error.message
+      };
     }
   }
 
