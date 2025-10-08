@@ -71,13 +71,20 @@ class EnhancedMemoryFileSystem extends FileSystem {
   /**
    * List files in directory using cache when possible
    */
-  async list(dirPath) {
+  async list(dirPath, options = {}) {
     // Ensure dirPath is an absolute path for proper cache lookup
     const absoluteDirPath = path.resolve(dirPath);
-    
+
     // If cache is ready, try to use it.
     if (this.initialized) {
       try {
+        // Support pagination if options provided
+        if (options.offset !== undefined || options.limit !== undefined) {
+          const offset = options.offset || 0;
+          const limit = options.limit || 1000;
+          return await this.cache.getFilesInDirectoryPaginated(absoluteDirPath, offset, limit);
+        }
+
         const cachedFiles = await this.cache.getFilesInDirectory(absoluteDirPath);
 
         // If cache has the directory, return it.
