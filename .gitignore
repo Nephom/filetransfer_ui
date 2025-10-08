@@ -6,6 +6,11 @@ COMMANDS.md
 CACHE_IMPROVEMENTS.md
 MIGRATION_GUIDE.md
 .api_token
+.fileapi*
+.ignoreDirs
+.gitignore
+git-helper.sh
+backup
 
 # Issue Files
 issue*
