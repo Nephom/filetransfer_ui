@@ -716,6 +716,9 @@ app.get('/api/files', authenticate, async (req, res) => {
   if (!isCacheReady) {
     return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
   }
+
+  const requestStartTime = Date.now(); // Performance monitoring
+
   try {
     const { path: requestPath, offset, limit } = req.query;
     const storagePath = configManager.get('fileSystem.storagePath');
@@ -732,14 +735,21 @@ app.get('/api/files', authenticate, async (req, res) => {
       }
     }
 
+    const isRootDir = targetPath === storageRoot;
+
     // --- On-demand watcher integration ---
     const userId = req.user.id;
     const previousPath = userActiveDirectories.get(userId);
+
+    const cacheOperationStart = Date.now();
     if (previousPath && previousPath !== targetPath) {
       await fileSystem.cache.leaveDirectory(previousPath);
     }
     await fileSystem.cache.enterDirectory(targetPath);
     userActiveDirectories.set(userId, targetPath);
+    const cacheOperationTime = Date.now() - cacheOperationStart;
+
+    systemLogger.logSystem('INFO', `📊 Cache operation took ${cacheOperationTime}ms for ${isRootDir ? 'ROOT' : 'subdirectory'}`);
     // ------------------------------------
 
     const timeoutPromise = new Promise((_, reject) => {
@@ -799,7 +809,12 @@ app.get('/api/files', authenticate, async (req, res) => {
     // Return in the format expected by FileBrowser
     const currentPath = path.relative(storageRoot, targetPath) || '';
 
-    systemLogger.logAPI('list', requestPath || '/', true, req, { fileCount: transformedFiles.length });
+    const totalRequestTime = Date.now() - requestStartTime;
+    systemLogger.logAPI('list', requestPath || '/', true, req, {
+      fileCount: transformedFiles.length,
+      responseTime: `${totalRequestTime}ms`,
+      cacheTime: `${cacheOperationTime}ms`
+    });
 
     const response = {
       files: transformedFiles,
@@ -811,6 +826,14 @@ app.get('/api/files', authenticate, async (req, res) => {
     if (paginationInfo) {
       response.pagination = paginationInfo;
     }
+
+    // Add cache-control headers for performance
+    // Root directory: short cache (3 seconds, aligned with polling interval)
+    // Subdirectories: slightly longer cache (5 seconds)
+    const cacheMaxAge = isRootDir ? 3 : 5;
+    res.setHeader('Cache-Control', `private, max-age=${cacheMaxAge}`);
+    res.setHeader('X-Response-Time', `${totalRequestTime}ms`);
+    res.setHeader('X-Cache-Time', `${cacheOperationTime}ms`);
 
     res.json(response);
   } catch (error) {
