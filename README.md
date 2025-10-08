@@ -1,3 +1,5 @@
+[English](README_EN.md)
+
 # Web-Based File Management System
 
 一個功能完善的本地檔案管理系統，提供現代化的網頁操作介面以及強大的命令列工具。
