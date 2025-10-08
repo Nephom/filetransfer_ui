@@ -717,10 +717,10 @@ app.get('/api/files', authenticate, async (req, res) => {
     return res.status(503).json({ error: 'Cache is warming up. Please try again in a few moments.' });
   }
   try {
-    const { path: requestPath } = req.query;
+    const { path: requestPath, offset, limit } = req.query;
     const storagePath = configManager.get('fileSystem.storagePath');
     const storageRoot = path.resolve(storagePath);
-    
+
     // Determine the target path
     let targetPath = storageRoot;
     if (requestPath && requestPath.trim() !== '') {
@@ -746,34 +746,73 @@ app.get('/api/files', authenticate, async (req, res) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
     });
 
+    // OPTIMIZATION: Support pagination parameters
+    const listOptions = {};
+    if (offset !== undefined) {
+      listOptions.offset = parseInt(offset) || 0;
+    }
+    if (limit !== undefined) {
+      listOptions.limit = parseInt(limit) || 1000;
+    }
+
     const rawFiles = await Promise.race([
-      fileSystem.list(targetPath),
+      fileSystem.list(targetPath, listOptions),
       timeoutPromise
     ]);
 
-    // Transform the file data to match frontend expectations
-    const transformedFiles = rawFiles.map(file => {
-      const relativePath = path.relative(storageRoot, file.path);
-      return {
-        ...file,
-        name: path.basename(file.path),
-        path: relativePath || file.path,
-        isDirectory: file.isDirectory === 'true' || file.isDirectory === true,
-        size: parseInt(file.size) || 0,
-        modified: parseInt(file.modified) || 0
+    // Handle paginated response
+    let transformedFiles, paginationInfo;
+    if (rawFiles && rawFiles.files !== undefined) {
+      // Paginated response
+      transformedFiles = rawFiles.files.map(file => {
+        const relativePath = path.relative(storageRoot, file.path);
+        return {
+          ...file,
+          name: path.basename(file.path),
+          path: relativePath || file.path,
+          isDirectory: file.isDirectory === 'true' || file.isDirectory === true,
+          size: parseInt(file.size) || 0,
+          modified: parseInt(file.modified) || 0
+        };
+      });
+      paginationInfo = {
+        total: rawFiles.total,
+        offset: rawFiles.offset,
+        limit: rawFiles.limit,
+        hasMore: rawFiles.hasMore
       };
-    });
+    } else {
+      // Non-paginated response (legacy)
+      transformedFiles = rawFiles.map(file => {
+        const relativePath = path.relative(storageRoot, file.path);
+        return {
+          ...file,
+          name: path.basename(file.path),
+          path: relativePath || file.path,
+          isDirectory: file.isDirectory === 'true' || file.isDirectory === true,
+          size: parseInt(file.size) || 0,
+          modified: parseInt(file.modified) || 0
+        };
+      });
+    }
 
     // Return in the format expected by FileBrowser
     const currentPath = path.relative(storageRoot, targetPath) || '';
 
     systemLogger.logAPI('list', requestPath || '/', true, req, { fileCount: transformedFiles.length });
 
-    res.json({
+    const response = {
       files: transformedFiles,
       currentPath: currentPath,
       success: true
-    });
+    };
+
+    // Add pagination info if available
+    if (paginationInfo) {
+      response.pagination = paginationInfo;
+    }
+
+    res.json(response);
   } catch (error) {
     if (error.message === 'Request timeout') {
       systemLogger.logAPI('list', req.query.path || '/', false, req, { error: 'Request timeout' });
