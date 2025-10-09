@@ -145,22 +145,17 @@ cmd_change_password() {
 
 # File management commands
 cmd_upload() {
-    local file_path="$1"
+    local file_pattern="$1"
     local target_path="$2"
 
-    if [[ -z "$file_path" ]]; then
-        log_error "Usage: $0 upload <file_path> [target_path]"
+    if [[ -z "$file_pattern" ]]; then
+        log_error "Usage: $0 upload <file_or_folder_path_or_pattern> [target_path]"
+        log_info "Examples: $0 upload single_file.txt [target_path]"
+        log_info "          $0 upload folder_name/ [target_path] (upload entire folder)"
+        log_info "          $0 upload \"*.txt\" [target_path] (quotes to prevent shell expansion)"
+        log_info "          $0 upload \"file1.txt file2.txt\" [target_path] (multiple files in quotes)"
         exit 1
     fi
-
-    if [[ ! -f "$file_path" ]]; then
-        log_error "File not found: $file_path"
-        exit 1
-    fi
-
-    local upload_path="${target_path:-}"
-
-    log_info "Uploading $file_path to $HOST..."
 
     local token=$(get_token)
     if [[ -z "$token" ]]; then
@@ -168,17 +163,90 @@ cmd_upload() {
         exit 1
     fi
 
-    # Use multipart upload for files
-    local response=$(curl -s -X POST \
-        -H "Authorization: Bearer $token" \
-        -F "files=@$file_path" \
-        ${upload_path:+-F "currentPath=$upload_path"} \
-        "$HOST/api/upload")
+    # Handle multiple files based on pattern or list
+    local files=()
+    local is_folder_upload=false
+    local folder_base_path=""
 
+    # Check if we're dealing with a directory
+    if [[ -d "$file_pattern" ]]; then
+        log_info "Detected directory: $file_pattern"
+        log_info "Recursively collecting all files from directory..."
+
+        is_folder_upload=true
+        # Remove trailing slash if present
+        local dir_path="${file_pattern%/}"
+        folder_base_path="$(dirname "$dir_path")"
+
+        # Find all files recursively in the directory
+        while IFS= read -r -d '' file; do
+            files+=("$file")
+        done < <(find "$dir_path" -type f -print0)
+
+        log_info "Found ${#files[@]} file(s) in directory"
+        log_info "Will preserve directory structure relative to: $folder_base_path"
+    # Check if we're dealing with a single file
+    elif [[ -f "$file_pattern" ]]; then
+        files+=("$file_pattern")
+    # Check if the pattern contains multiple files in quotes
+    elif [[ "$file_pattern" == *"*"* ]]; then
+        # Expand glob pattern
+        eval "files=($file_pattern)"
+    else
+        # Treat as space-separated list of files
+        IFS=' ' read -ra files <<< "$file_pattern"
+    fi
+
+    log_info "Total: ${#files[@]} file(s) to upload"
+
+    # Validate all files exist
+    for file in "${files[@]}"; do
+        if [[ ! -f "$file" ]]; then
+            log_error "File not found: $file"
+            exit 1
+        fi
+    done
+
+    log_info "Uploading ${#files[@]} file(s) to $HOST..."
+
+    # Build curl command array for proper execution with progress bar
+    local curl_cmd=(curl --progress-bar -X POST -H "Authorization: Bearer $token" -F "token=$token")
+
+    # Add each file as separate -F field with relative path if folder upload
+    if [[ "$is_folder_upload" == true ]]; then
+        # For folder uploads, preserve directory structure
+        for file in "${files[@]}"; do
+            # Calculate relative path from folder_base_path
+            local relative_path="${file#$folder_base_path/}"
+            curl_cmd+=(-F "files=@$file" -F "filePaths[]=$relative_path")
+        done
+    else
+        # For single/multiple file uploads, just upload files
+        for file in "${files[@]}"; do
+            curl_cmd+=(-F "files=@$file")
+        done
+    fi
+
+    # Add target path if provided
+    if [[ -n "$target_path" ]]; then
+        curl_cmd+=(-F "path=$target_path")
+    fi
+
+    curl_cmd+=("$HOST/api/upload")
+
+    # Execute the command with proper argument handling and show progress
+    log_info "Upload in progress..."
+    local response
+    response=$( "${curl_cmd[@]}" 2>&1 )
+
+    # Check if upload was successful
     if echo "$response" | grep -q '"success":true'; then
-        log_success "File uploaded successfully!"
+        log_success "${#files[@]} file(s) uploaded successfully!"
     else
         log_error "Upload failed!"
+        # Print the actual response to help debug
+        echo "$response" | jq . 2>/dev/null || echo "$response"
+        return 1
     fi
 
     echo "$response" | jq . 2>/dev/null || echo "$response"
@@ -581,7 +649,9 @@ Authentication:
   change-password <current> <new>     Change user password
 
 File Management:
-  upload <file> [target_path]           Upload a file
+  upload <file> [target_path]           Upload a single file (with progress bar)
+  upload <folder/> [target_path]        Upload entire folder recursively (with progress bar)
+  upload "<file1> <file2> ..." [target_path]  Upload multiple files (in quotes)
   download <path> [output]              Download a file
   archive <out.zip> <path> ...items     Create a zip archive of multiple items
   list [path]                           List files in directory
@@ -611,6 +681,8 @@ System:
 Examples:
   $0 login admin password123
   $0 upload ./file.zip documents/
+  $0 upload ./my_folder/ documents/
+  $0 upload "file1.txt file2.txt file3.txt" documents/
   $0 download documents/file.zip ./downloaded.zip
   $0 archive backup.zip documents/ file1.txt folder1
   $0 delete documents/ file1.txt file2.txt
