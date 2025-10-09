@@ -1157,9 +1157,26 @@ app.post('/api/archive', authenticate, async (req, res) => {
 
     systemLogger.logFileOperation('archive', currentPath || '/', true, req, { itemCount: items.length, items: items.map(i => i.name) });
 
+    // Determine archive filename based on selection
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const sanitizeName = (name) => name.replace(/[\r\n]/g, '').trim();
+    let archiveFileName = `archive_${timestamp}.zip`;
+
+    if (items.length === 1) {
+      const singleItem = items[0];
+      const safeName = sanitizeName(singleItem.name || 'archive');
+      const baseName = safeName.replace(/[\\/]/g, '');
+
+      if (singleItem.isDirectory) {
+        archiveFileName = `${baseName}.zip`;
+      } else {
+        archiveFileName = baseName.toLowerCase().endsWith('.zip') ? baseName : `${baseName}.zip`;
+      }
+    }
+
     // Set response headers for zip download
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="archive.zip"');
+    res.setHeader('Content-Disposition', `attachment; filename="${archiveFileName}"`);
 
     // Create archiver instance
     const archive = archiver('zip', {

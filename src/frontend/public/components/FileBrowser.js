@@ -264,16 +264,24 @@ const FileBrowser = ({ token, user }) => {
 
             if (response.ok) {
                 const blob = await response.blob();
+                const disposition = response.headers.get('Content-Disposition') || '';
+                let filename = 'archive.zip';
+
+                const match = disposition.match(/filename="?([^";]+)"?/i);
+                if (match && match[1]) {
+                    filename = decodeURIComponent(match[1]);
+                }
+
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'archive.zip';
+                a.download = filename;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
                 window.URL.revokeObjectURL(url);
             } else {
-                const data = await response.json();
+},                const data = await response.json();
                 setError(data.error || 'Archive download failed');
             }
         } catch (err) {
