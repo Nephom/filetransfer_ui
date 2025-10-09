@@ -69,7 +69,15 @@ class UploadAPI {
    */
   _setupRoutes() {
     // Main upload endpoint that handles files field (used by frontend)
-    this.router.post('/upload', this.upload.array('files', 10), (req, res) => {
+    // Use .fields() to accept both 'files' and 'filePaths[]' for folder uploads
+    this.router.post('/upload', this.upload.fields([
+      { name: 'files', maxCount: 1000 },
+      { name: 'filePaths[]', maxCount: 1000 }
+    ]), (req, res) => {
+      // Normalize files array for folder uploads
+      if (req.files && req.files.files) {
+        req.files = req.files.files;
+      }
       // Simplified: _handleMultipleUpload can handle one or many files
       this._handleMultipleUpload(req, res);
     });
@@ -80,7 +88,14 @@ class UploadAPI {
     });
 
     // Alternative endpoint for multiple file upload with 'files' field
-    this.router.post('/upload/multiple', this.upload.array('files', 10), (req, res) => {
+    this.router.post('/upload/multiple', this.upload.fields([
+      { name: 'files', maxCount: 1000 },
+      { name: 'filePaths[]', maxCount: 1000 }
+    ]), (req, res) => {
+      // Normalize files array for folder uploads
+      if (req.files && req.files.files) {
+        req.files = req.files.files;
+      }
       this._handleMultipleUpload(req, res);
     });
 
