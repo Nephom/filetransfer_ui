@@ -1504,6 +1504,8 @@ const FileBrowser = ({ token, user }) => {
                     padding: '32px',
                     width: '560px',
                     maxWidth: '90%',
+                    maxHeight: '90vh',
+                    overflowY: 'auto',
                     boxShadow: '0 25px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
                     border: '1px solid rgba(255, 255, 255, 0.1)'
                 }
@@ -1755,12 +1757,15 @@ const FileBrowser = ({ token, user }) => {
                     React.createElement('div', {
                         key: 'uploading-files-list',
                         style: {
-                            maxHeight: '200px',
+                            maxHeight: '300px',
                             overflowY: 'auto',
                             padding: '16px',
                             background: 'rgba(0, 0, 0, 0.2)',
                             borderRadius: '12px',
-                            border: '1px solid rgba(255, 255, 255, 0.1)'
+                            border: '1px solid rgba(255, 255, 255, 0.1)',
+                            // Important: ensure the scroll container doesn't interfere with modal scroll
+                            position: 'relative',
+                            WebkitOverflowScrolling: 'touch' // smooth scrolling on iOS
                         }
                     }, [
                     React.createElement('h3', {

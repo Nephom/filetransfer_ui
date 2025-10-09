@@ -689,7 +689,9 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
     }
 
     const fileName = path.basename(fullPath);
-    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    // Use RFC 2231 encoding for UTF-8 filenames
+    const encodedFileName = encodeURIComponent(fileName);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFileName}`);
     res.setHeader('Content-Type', 'application/octet-stream');
 
     const fileStream = require('fs').createReadStream(fullPath);
@@ -1000,10 +1002,15 @@ app.put('/api/files/rename', authenticate, async (req, res) => {
     await fileSystem.rename(oldPath, newPath);
 
     // Force cache refresh for the parent directory
-    if (fileSystem.cache && fileSystem.cache.refreshCache) {
-      const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
-      await fileSystem.cache.scanDirectory(parentPath);
-      systemLogger.logCacheOperation('refresh_after_rename', { path: currentPath || '/' }, req);
+    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+      try {
+        const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
+        await fileSystem.cache.scanDirectory(parentPath);
+        systemLogger.logCacheOperation('refresh_after_rename', { path: currentPath || '/' }, req);
+      } catch (cacheError) {
+        // Non-fatal cache error
+        systemLogger.logSystem('WARN', `Cache refresh after rename failed (non-fatal): ${cacheError.message}`);
+      }
     }
 
     systemLogger.logFileOperation('rename', path.join(currentPath || '', oldName), true, req, { newName, oldName });
