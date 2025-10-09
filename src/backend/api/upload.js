@@ -96,6 +96,38 @@ class UploadAPI {
    */
   async _handleSingleUpload(req, res) {
     try {
+      // Manual authentication check for multipart requests
+      const jwt = require('jsonwebtoken');
+      const configManager = require('../config');
+      const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+      
+      // Try to get token from header first
+      let token = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7);
+      }
+      
+      // If not in header, try to get from body (for multipart)
+      if (!token && req.body && req.body.token) {
+        token = req.body.token;
+      }
+      
+      if (!token) {
+        return res.status(401).json({
+          error: 'Authorization token missing'
+        });
+      }
+      
+      try {
+        const decoded = jwt.verify(token, jwtSecret);
+        req.user = decoded; // Attach user info to request
+      } catch (authError) {
+        return res.status(401).json({
+          error: 'Invalid or expired token'
+        });
+      }
+      
       if (!req.file) {
         return res.status(400).json({
           error: 'No file uploaded'
@@ -104,7 +136,6 @@ class UploadAPI {
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
-      const configManager = require('../config');
       const storagePath = configManager.get('fileSystem.storagePath') || './storage';
       
       // Build final path in storage directory
@@ -177,6 +208,38 @@ class UploadAPI {
    */
   async _handleMultipleUpload(req, res) {
     try {
+      // Manual authentication check for multipart requests
+      const jwt = require('jsonwebtoken');
+      const configManager = require('../config');
+      const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+      
+      // Try to get token from header first
+      let token = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7);
+      }
+      
+      // If not in header, try to get from body (for multipart)
+      if (!token && req.body && req.body.token) {
+        token = req.body.token;
+      }
+      
+      if (!token) {
+        return res.status(401).json({
+          error: 'Authorization token missing'
+        });
+      }
+      
+      try {
+        const decoded = jwt.verify(token, jwtSecret);
+        req.user = decoded; // Attach user info to request
+      } catch (authError) {
+        return res.status(401).json({
+          error: 'Invalid or expired token'
+        });
+      }
+      
       if (!req.files || req.files.length === 0) {
         return res.status(400).json({
           error: 'No files uploaded'
@@ -185,7 +248,6 @@ class UploadAPI {
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
-      const configManager = require('../config');
       const storagePath = configManager.get('fileSystem.storagePath') || './storage';
       
       // Build final path in storage directory
@@ -212,33 +274,58 @@ class UploadAPI {
       
       const results = [];
 
-      for (const file of req.files) {
-        // Final file path
-        const finalPath = path.join(normalizedFinalDir, path.basename(file.originalname));
-        
+      // Check if we have relative paths for folder uploads
+      const filePaths = req.body.filePaths || [];
+      const hasFolderStructure = Array.isArray(filePaths) && filePaths.length > 0;
+
+      for (let i = 0; i < req.files.length; i++) {
+        const file = req.files[i];
+
+        // Determine final file path
+        let finalPath;
+        if (hasFolderStructure && filePaths[i]) {
+          // Use the relative path to preserve folder structure
+          const relativePath = filePaths[i];
+          finalPath = path.join(normalizedFinalDir, relativePath);
+
+          // Ensure the parent directory exists
+          const parentDir = path.dirname(finalPath);
+          await this.fileSystem.mkdir(parentDir);
+        } else {
+          // Just use the filename
+          finalPath = path.join(normalizedFinalDir, path.basename(file.originalname));
+        }
+
+        // Ensure the destination path is still within the storage directory
+        const normalizedFinalPath = path.resolve(finalPath);
+        if (!normalizedFinalPath.startsWith(normalizedStoragePath)) {
+          systemLogger.logError(`Security: Attempted path traversal with path: ${finalPath}`, req);
+          continue; // Skip this file
+        }
+
         // Create transfer record
         const transferId = transferManager.startTransfer({
           source: file.path,
-          destination: finalPath,
+          destination: normalizedFinalPath,
           totalSize: file.size
         });
 
         // Move file to final destination in storage
-        await this.fileSystem.move(file.path, finalPath);
+        await this.fileSystem.move(file.path, normalizedFinalPath);
 
         // Update transfer as complete
         transferManager.completeTransfer(transferId, {
           result: 'success',
           file: {
             name: path.basename(file.originalname),
-            path: finalPath,
+            path: normalizedFinalPath,
             size: file.size
           }
         });
 
         results.push({
           name: path.basename(file.originalname),
-          path: finalPath,
+          path: normalizedFinalPath,
           size: file.size
         });
       }
@@ -264,6 +351,38 @@ class UploadAPI {
    */
   async _handleUploadWithProgress(req, res) {
     try {
+      // Manual authentication check for multipart requests
+      const jwt = require('jsonwebtoken');
+      const configManager = require('../config');
+      const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+      
+      // Try to get token from header first
+      let token = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.substring(7);
+      }
+      
+      // If not in header, try to get from body (for multipart)
+      if (!token && req.body && req.body.token) {
+        token = req.body.token;
+      }
+      
+      if (!token) {
+        return res.status(401).json({
+          error: 'Authorization token missing'
+        });
+      }
+      
+      try {
+        const decoded = jwt.verify(token, jwtSecret);
+        req.user = decoded; // Attach user info to request
+      } catch (authError) {
+        return res.status(401).json({
+          error: 'Invalid or expired token'
+        });
+      }
+      
       if (!req.file) {
         return res.status(400).json({
           error: 'No file uploaded'
@@ -272,7 +391,6 @@ class UploadAPI {
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
-      const configManager = require('../config');
       const storagePath = configManager.get('fileSystem.storagePath') || './storage';
       
       // Build final path in storage directory
