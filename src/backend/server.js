@@ -105,7 +105,12 @@ function getNetworkInterfaces() {
 // Security middleware will be initialized after config is loaded
 
 // Basic middleware
-app.use(cors());
+app.use(cors({
+  credentials: true,
+  origin: true,
+  exposedHeaders: ['Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '../frontend/public')));
 

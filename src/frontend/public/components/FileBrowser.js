@@ -26,6 +26,9 @@ const FileBrowser = ({ token, user }) => {
     const [showRenameModal, setShowRenameModal] = React.useState(false);
     const [renameTarget, setRenameTarget] = React.useState(null);
     const [newName, setNewName] = React.useState('');
+    const [uploadProgress, setUploadProgress] = React.useState(0);
+    const [isUploading, setIsUploading] = React.useState(false);
+    const [uploadMode, setUploadMode] = React.useState('files'); // 'files' or 'folder'
 
     React.useEffect(() => {
         fetchFiles();
@@ -319,35 +322,86 @@ const FileBrowser = ({ token, user }) => {
         if (uploadingFiles.length === 0) return;
 
         const formData = new FormData();
-        uploadingFiles.forEach(file => {
+
+        // Check if files have webkitRelativePath (folder upload)
+        const hasFolderStructure = uploadingFiles.some(file => file.webkitRelativePath);
+
+        uploadingFiles.forEach((file, index) => {
             formData.append('files', file);
+
+            // If folder upload, preserve the relative path
+            if (hasFolderStructure && file.webkitRelativePath) {
+                formData.append('filePaths[]', file.webkitRelativePath);
+            }
         });
+
         formData.append('path', currentPath);
 
         try {
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                body: formData,
-                headers: { 'Authorization': `Bearer ${token}` }
+            // Add token to formData for compatibility with backend auth check
+            formData.append('token', token);
+
+            // Calculate total size
+            const totalSize = uploadingFiles.reduce((sum, file) => sum + file.size, 0);
+            let uploadedSize = 0;
+
+            // Create XMLHttpRequest for progress tracking
+            const xhr = new XMLHttpRequest();
+
+            // Set uploading state
+            setIsUploading(true);
+            setUploadProgress(0);
+
+            // Track upload progress
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percentComplete = Math.round((e.loaded / e.total) * 100);
+                    setUploadProgress(percentComplete);
+                    console.log(`Upload progress: ${percentComplete}%`);
+                }
             });
 
-            if (response.ok) {
-                // Show success message
-                alert(`✅ Upload completed! ${uploadingFiles.length} file(s) uploaded successfully.`);
+            // Handle completion
+            xhr.addEventListener('load', () => {
+                setIsUploading(false);
+                setUploadProgress(100);
 
-                // Refresh file list
-                fetchFiles();
+                if (xhr.status === 200) {
+                    // Show success message
+                    alert(`✅ Upload completed! ${uploadingFiles.length} file(s) uploaded successfully.`);
 
-                // Close upload modal and clear files
-                setShowUploadModal(false);
-                setUploadingFiles([]);
+                    // Refresh file list
+                    fetchFiles();
 
-                // Clear any previous errors
-                setError('');
-            } else {
-                const data = await response.json();
-                setError(data.error || 'Upload failed');
-            }
+                    // Close upload modal and clear files
+                    setShowUploadModal(false);
+                    setUploadingFiles([]);
+                    setUploadProgress(0);
+
+                    // Clear any previous errors
+                    setError('');
+                } else {
+                    try {
+                        const data = JSON.parse(xhr.responseText);
+                        setError(data.error || 'Upload failed');
+                    } catch {
+                        setError('Upload failed');
+                    }
+                }
+            });
+
+            // Handle errors
+            xhr.addEventListener('error', () => {
+                setIsUploading(false);
+                setUploadProgress(0);
+                setError('Upload failed - network error');
+            });
+
+            // Send request
+            xhr.open('POST', '/api/upload');
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            xhr.send(formData);
+
         } catch (err) {
             setError('Upload failed');
         }
@@ -1469,11 +1523,63 @@ const FileBrowser = ({ token, user }) => {
                     key: 'upload-path',
                     style: {
                         color: 'rgba(255, 255, 255, 0.6)',
-                        margin: '0 0 24px 0',
+                        margin: '0 0 16px 0',
                         fontSize: '14px',
                         textAlign: 'center'
                     }
                 }, `Uploading to: ${currentPath || '/'}`),
+
+                // Upload mode selector
+                React.createElement('div', {
+                    key: 'upload-mode-selector',
+                    style: {
+                        display: 'flex',
+                        gap: '8px',
+                        marginBottom: '24px',
+                        justifyContent: 'center'
+                    }
+                }, [
+                    React.createElement('button', {
+                        key: 'files-mode',
+                        onClick: () => setUploadMode('files'),
+                        style: {
+                            flex: 1,
+                            padding: '10px 16px',
+                            background: uploadMode === 'files'
+                                ? 'linear-gradient(135deg, #3b82f6, #2563eb)'
+                                : 'rgba(255, 255, 255, 0.1)',
+                            border: uploadMode === 'files'
+                                ? '2px solid #3b82f6'
+                                : '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '8px',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: uploadMode === 'files' ? '600' : '400',
+                            transition: 'all 0.2s ease'
+                        }
+                    }, '📄 Upload Files'),
+                    React.createElement('button', {
+                        key: 'folder-mode',
+                        onClick: () => setUploadMode('folder'),
+                        style: {
+                            flex: 1,
+                            padding: '10px 16px',
+                            background: uploadMode === 'folder'
+                                ? 'linear-gradient(135deg, #10b981, #059669)'
+                                : 'rgba(255, 255, 255, 0.1)',
+                            border: uploadMode === 'folder'
+                                ? '2px solid #10b981'
+                                : '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '8px',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '14px',
+                            fontWeight: uploadMode === 'folder' ? '600' : '400',
+                            transition: 'all 0.2s ease'
+                        }
+                    }, '📁 Upload Folder')
+                ]),
 
                 React.createElement('div', {
                     key: 'upload-drop-zone',
@@ -1537,7 +1643,7 @@ const FileBrowser = ({ token, user }) => {
                                 fontWeight: '500',
                                 margin: '0 0 8px 0'
                             }
-                        }, 'Drag and drop files here'),
+                        }, uploadMode === 'folder' ? 'Click below to select a folder' : 'Drag and drop files here'),
                         React.createElement('p', {
                             key: 'upload-text-2',
                             style: {
@@ -1572,16 +1678,23 @@ const FileBrowser = ({ token, user }) => {
                                 e.target.style.background = 'rgba(59, 130, 246, 0.2)';
                                 e.target.style.borderColor = 'rgba(59, 130, 246, 0.5)';
                             }
-                        }, 'Browse Files')
+                        }, uploadMode === 'folder' ? 'Select Folder' : 'Browse Files')
                     ]),
 
                     React.createElement('input', {
                         key: 'file-input-upload',
                         id: 'file-input-upload',
                         type: 'file',
-                        multiple: true,
+                        multiple: uploadMode === 'files',
+                        webkitdirectory: uploadMode === 'folder' ? '' : undefined,
+                        directory: uploadMode === 'folder' ? '' : undefined,
                         onChange: (e) => {
-                            setUploadingFiles(Array.from(e.target.files));
+                            const files = Array.from(e.target.files);
+                            console.log('Selected files:', files.length);
+                            if (uploadMode === 'folder' && files.length > 0) {
+                                console.log('Folder upload - first file path:', files[0].webkitRelativePath);
+                            }
+                            setUploadingFiles(files);
                         },
                         style: {
                             display: 'none'
@@ -1590,17 +1703,66 @@ const FileBrowser = ({ token, user }) => {
                 ]),
                 
                 uploadingFiles.length > 0 && React.createElement('div', {
-                    key: 'uploading-files-list',
+                    key: 'uploading-files-section',
                     style: {
-                        marginBottom: '24px',
-                        maxHeight: '200px',
-                        overflowY: 'auto',
-                        padding: '16px',
-                        background: 'rgba(0, 0, 0, 0.2)',
-                        borderRadius: '12px',
-                        border: '1px solid rgba(255, 255, 255, 0.1)'
+                        marginBottom: '24px'
                     }
                 }, [
+                    // Progress bar
+                    isUploading && React.createElement('div', {
+                        key: 'upload-progress-section',
+                        style: {
+                            marginBottom: '16px'
+                        }
+                    }, [
+                        React.createElement('div', {
+                            key: 'progress-label',
+                            style: {
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                fontSize: '14px',
+                                marginBottom: '8px',
+                                display: 'flex',
+                                justifyContent: 'space-between'
+                            }
+                        }, [
+                            React.createElement('span', { key: 'uploading-text' }, 'Uploading...'),
+                            React.createElement('span', { key: 'progress-percent' }, `${uploadProgress}%`)
+                        ]),
+                        React.createElement('div', {
+                            key: 'progress-bar-bg',
+                            style: {
+                                width: '100%',
+                                height: '8px',
+                                background: 'rgba(255, 255, 255, 0.1)',
+                                borderRadius: '4px',
+                                overflow: 'hidden'
+                            }
+                        }, [
+                            React.createElement('div', {
+                                key: 'progress-bar-fill',
+                                style: {
+                                    width: `${uploadProgress}%`,
+                                    height: '100%',
+                                    background: 'linear-gradient(90deg, #10b981, #059669)',
+                                    transition: 'width 0.3s ease',
+                                    borderRadius: '4px'
+                                }
+                            })
+                        ])
+                    ]),
+
+                    // File list
+                    React.createElement('div', {
+                        key: 'uploading-files-list',
+                        style: {
+                            maxHeight: '200px',
+                            overflowY: 'auto',
+                            padding: '16px',
+                            background: 'rgba(0, 0, 0, 0.2)',
+                            borderRadius: '12px',
+                            border: '1px solid rgba(255, 255, 255, 0.1)'
+                        }
+                    }, [
                     React.createElement('h3', {
                         key: 'files-list-header',
                         style: {
@@ -1663,6 +1825,7 @@ const FileBrowser = ({ token, user }) => {
                             }, `${(file.size / 1024).toFixed(1)} KB`)
                         ])
                     ))
+                    ])
                 ]),
 
                 React.createElement('div', {
