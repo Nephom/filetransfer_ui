@@ -552,6 +552,13 @@ class RedisFileSystemCache extends EventEmitter {
   /**
    * Get cache information
    */
+  /**
+   * Alias for updateDirectoryCache to ensure compatibility with server.js
+   */
+  async scanDirectory(dirPath) {
+    return await this.updateDirectoryCache(dirPath);
+  }
+
   async getCacheInfo() {
     try {
       const totalDirectories = this.directoryCache.size;
