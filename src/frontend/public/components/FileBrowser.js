@@ -281,7 +281,7 @@ const FileBrowser = ({ token, user }) => {
                 document.body.removeChild(a);
                 window.URL.revokeObjectURL(url);
             } else {
-},                const data = await response.json();
+                const data = await response.json();
                 setError(data.error || 'Archive download failed');
             }
         } catch (err) {
