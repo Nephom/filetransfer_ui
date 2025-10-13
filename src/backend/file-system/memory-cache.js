@@ -1082,49 +1082,82 @@ class RedisFileSystemCache extends EventEmitter {
 
   /**
    * Scan for new directories that are not yet in the index
+   * OPTIMIZATION: Use iterative approach instead of recursion to prevent stack overflow
+   * for very large file systems with deep directory structures
    */
   async scanForNewDirectories(startPath, ignoreList, existingDirs) {
+    // Use a queue for breadth-first traversal instead of recursion
+    const directoriesToScan = [startPath];
+    let newDirsFound = 0;
+    let processedCount = 0;
+
     try {
-      const items = await fs.readdir(startPath);
+      while (directoriesToScan.length > 0) {
+        const currentPath = directoriesToScan.shift();
+        processedCount++;
 
-      for (const itemName of items) {
-        if (ignoreList.includes(itemName)) {
-          continue;
+        // Yield to event loop every 50 directories to prevent blocking
+        if (processedCount % 50 === 0) {
+          await new Promise(resolve => setImmediate(resolve));
         }
-
-        const fullPath = path.join(startPath, itemName);
 
         try {
-          const stat = await fs.stat(fullPath);
+          const items = await fs.readdir(currentPath);
 
-          if (stat.isDirectory()) {
-            const relativePath = path.relative(this.storagePath, fullPath);
-
-            // Check if this directory is already indexed
-            if (!existingDirs.has(relativePath) && !existingDirs.has(fullPath)) {
-              systemLogger.logSystem('INFO', `Found new directory to index: ${relativePath}`);
-
-              // Index this new directory
-              await this.indexDirectoryNonRecursive(fullPath, ignoreList);
-
-              // Store mtime
-              const mtimeKey = `index:mtime:${relativePath}`;
-              await this.redisClient.set(mtimeKey, stat.mtime.getTime().toString());
+          for (const itemName of items) {
+            if (ignoreList.includes(itemName)) {
+              continue;
             }
 
-            // Recursively scan subdirectories
-            await this.scanForNewDirectories(fullPath, ignoreList, existingDirs);
+            const fullPath = path.join(currentPath, itemName);
+
+            try {
+              const stat = await fs.stat(fullPath);
+
+              if (stat.isDirectory()) {
+                const relativePath = path.relative(this.storagePath, fullPath);
+
+                // Check if this directory is already indexed
+                if (!existingDirs.has(relativePath) && !existingDirs.has(fullPath)) {
+                  newDirsFound++;
+
+                  // OPTIMIZATION: Only log summary every 100 new directories
+                  if (newDirsFound % 100 === 0) {
+                    systemLogger.logSystem('DEBUG', `Found ${newDirsFound} new directories to index...`);
+                  }
+
+                  // Index this new directory
+                  await this.indexDirectoryNonRecursive(fullPath, ignoreList);
+
+                  // Store mtime
+                  const mtimeKey = `index:mtime:${relativePath}`;
+                  await this.redisClient.set(mtimeKey, stat.mtime.getTime().toString());
+
+                  // Add to existing dirs to prevent re-indexing
+                  existingDirs.add(relativePath);
+                }
+
+                // Add subdirectory to queue for scanning
+                directoriesToScan.push(fullPath);
+              }
+            } catch (err) {
+              if (err.code !== 'EACCES' && err.code !== 'ENOENT') {
+                systemLogger.logSystem('WARN', `Error scanning ${fullPath}: ${err.message}`);
+              }
+            }
           }
-        } catch (err) {
-          if (err.code !== 'EACCES' && err.code !== 'ENOENT') {
-            systemLogger.logSystem('WARN', `Error scanning ${fullPath}: ${err.message}`);
+        } catch (error) {
+          if (error.code !== 'EACCES') {
+            systemLogger.logSystem('DEBUG', `Cannot access directory ${currentPath}: ${error.message}`);
           }
         }
       }
-    } catch (error) {
-      if (error.code !== 'EACCES') {
-        systemLogger.logSystem('WARN', `Error scanning directory ${startPath}: ${error.message}`);
+
+      if (newDirsFound > 0) {
+        systemLogger.logSystem('INFO', `Scanned ${processedCount} directories, indexed ${newDirsFound} new directories`);
       }
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Error in scanForNewDirectories: ${error.message}`);
     }
   }
 
