@@ -1240,11 +1240,63 @@ app.get('/api/progress/:transferId', authenticate, (req, res) => {
   try {
     const progress = transferManager.getTransfer(req.params.transferId);
     if (!progress) {
-      return res.status(404).json({ error: 'Transfer not found' });
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 402,
+          message: 'Transfer ID 不存在'
+        }
+      });
     }
     res.json(progress);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Batch progress tracking route
+app.get('/api/progress/batch/:batchId', authenticate, (req, res) => {
+  try {
+    const { batchId } = req.params;
+
+    // Get batch information
+    const batch = transferManager.getBatch(batchId);
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 403,
+          message: 'Batch ID 不存在'
+        }
+      });
+    }
+
+    // Calculate batch statistics
+    const stats = transferManager.calculateBatchStats(batchId);
+
+    // Return response matching SPEC format
+    res.json({
+      batchId: batch.batchId,
+      status: batch.status,
+      totalFiles: stats.totalFiles,
+      successCount: stats.successCount,
+      failedCount: stats.failedCount,
+      pendingCount: stats.pendingCount,
+      totalSize: stats.totalSize,
+      transferredSize: stats.transferredSize,
+      progress: stats.progress,
+      files: stats.files
+    });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Batch progress error: ${error.message}`);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 500,
+        message: 'Internal server error',
+        details: error.message
+      }
+    });
   }
 });
 
