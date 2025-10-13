@@ -12,6 +12,7 @@ MIGRATION_GUIDE.md
 .gitignore
 git-helper.sh
 backup
+.docs
 
 # Issue Files
 issue*
