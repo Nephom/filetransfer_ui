@@ -327,7 +327,32 @@ const FileBrowser = ({ token, user }) => {
     const handleRefresh = async () => {
         setError('');  // Clear any errors
         setSelectedFiles([]);  // Clear selections
-        await fetchFiles(currentPath);  // Await the file refresh
+
+        // Force refresh by adding timestamp to bypass browser cache
+        try {
+            setLoading(true);
+            const timestamp = Date.now();
+            const response = await fetch(`/api/files?path=${encodeURIComponent(currentPath)}&_t=${timestamp}`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Cache-Control': 'no-cache'
+                }
+            });
+
+            if (!response.ok) throw new Error('Failed to fetch files');
+            const data = await response.json();
+
+            // Filter out files with null/undefined names
+            const validFiles = data.files ? data.files.filter(f => f && f.name) : [];
+            setFiles(validFiles);
+            const newPath = data.currentPath || '';
+            setCurrentPath(newPath);
+            setDisplayPath(newPath);
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleFileUpload = async (uploadingFiles) => {
