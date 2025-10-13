@@ -18,11 +18,21 @@ class SystemLogger {
   getClientIP(req) {
     if (!req) return 'system';
 
+    // Safety check: ensure req has headers property
+    if (!req.headers) {
+      // If req doesn't have headers, it's likely a metadata object (e.g., { user })
+      // Return 'system' or extract username if available
+      if (req.user && req.user.username) {
+        return `user:${req.user.username}`;
+      }
+      return 'system';
+    }
+
     let ip = req.headers['x-forwarded-for'] ||
              req.headers['x-real-ip'] ||
-             req.connection.remoteAddress ||
-             req.socket.remoteAddress ||
-             (req.connection.socket ? req.connection.socket.remoteAddress : null) ||
+             req.connection?.remoteAddress ||
+             req.socket?.remoteAddress ||
+             (req.connection?.socket ? req.connection.socket.remoteAddress : null) ||
              'unknown';
 
     // Extract IPv4 from IPv6-mapped IPv4 (::ffff:192.168.1.1 -> 192.168.1.1)
@@ -60,11 +70,20 @@ class SystemLogger {
 
       // Add request details if available
       if (req) {
-        logEntry += ` | URL: ${req.method} ${req.originalUrl}`;
-        const userAgent = req.headers['user-agent'];
-        if (userAgent && userAgent !== 'unknown') {
-          logEntry += ` | User-Agent: ${userAgent.substring(0, 100)}`; // Truncate long user agents
+        // Only add URL if req has method and originalUrl (full Express request)
+        if (req.method && req.originalUrl) {
+          logEntry += ` | URL: ${req.method} ${req.originalUrl}`;
         }
+
+        // Only add user agent if req has headers (full Express request)
+        if (req.headers && req.headers['user-agent']) {
+          const userAgent = req.headers['user-agent'];
+          if (userAgent !== 'unknown') {
+            logEntry += ` | User-Agent: ${userAgent.substring(0, 100)}`; // Truncate long user agents
+          }
+        }
+
+        // Add user info if available
         if (req.user) {
           logEntry += ` | User: ${req.user.username}`;
           if (req.user.role) {

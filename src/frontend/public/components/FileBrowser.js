@@ -325,8 +325,9 @@ const FileBrowser = ({ token, user }) => {
     };
 
     const handleRefresh = async () => {
-        fetchFiles(currentPath);
-        setSelectedFiles([]);
+        setError('');  // Clear any errors
+        setSelectedFiles([]);  // Clear selections
+        await fetchFiles(currentPath);  // Await the file refresh
     };
 
     const handleFileUpload = async (uploadingFiles) => {
@@ -451,6 +452,12 @@ const FileBrowser = ({ token, user }) => {
                 }
 
                 const progressData = await response.json();
+                console.log('[PROGRESS POLL]', {
+                    progress: progressData.progress,
+                    status: progressData.status,
+                    transferredSize: progressData.transferredSize,
+                    totalSize: progressData.totalSize
+                });
                 setUploadProgress(Math.round(progressData.progress || 0));
 
                 // Check if completed or failed
