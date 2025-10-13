@@ -607,14 +607,21 @@ class UploadAPI {
     const Busboy = require('busboy');
     const fs = require('fs');
 
+    // 添加詳細日誌記錄請求開始
+    systemLogger.logSystem('INFO', `📥 [UPLOAD START] Single file upload initiated`);
+    systemLogger.logSystem('INFO', `Headers: ${JSON.stringify(req.headers)}`);
+
     try {
       // 1. Manual JWT authentication (since we're not using multer middleware)
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
       const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
 
+      systemLogger.logSystem('INFO', `[UPLOAD] Step 1: Checking authentication`);
+
       const authHeader = req.headers.authorization;
       if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        systemLogger.logSystem('ERROR', `[UPLOAD] Authentication failed: missing or invalid auth header`);
         return res.status(401).json({
           success: false,
           error: {
@@ -628,7 +635,9 @@ class UploadAPI {
       try {
         const decoded = jwt.verify(token, jwtSecret);
         req.user = decoded;
+        systemLogger.logSystem('INFO', `[UPLOAD] Step 1: Authentication successful for user: ${decoded.username}`);
       } catch (authError) {
+        systemLogger.logSystem('ERROR', `[UPLOAD] JWT verification failed: ${authError.message}`);
         return res.status(401).json({
           success: false,
           error: {
@@ -639,8 +648,12 @@ class UploadAPI {
       }
 
       // 2. Validate Content-Length header
+      systemLogger.logSystem('INFO', `[UPLOAD] Step 2: Validating Content-Length`);
       const contentLength = parseInt(req.headers['content-length']);
+      systemLogger.logSystem('INFO', `[UPLOAD] Content-Length: ${contentLength} bytes`);
+
       if (!contentLength || contentLength === 0) {
+        systemLogger.logSystem('ERROR', `[UPLOAD] Invalid Content-Length: ${contentLength}`);
         return res.status(400).json({
           success: false,
           error: {
@@ -653,13 +666,16 @@ class UploadAPI {
 
       // 3. Get filename and path from query parameters OR form fields
       // Priority: query params > form fields (will be extracted from busboy)
+      systemLogger.logSystem('INFO', `[UPLOAD] Step 3: Getting filename and path`);
       let fileName = req.query.fileName;
       let uploadPath = req.query.path || '';
+      systemLogger.logSystem('INFO', `[UPLOAD] Initial fileName from query: ${fileName}, path: ${uploadPath}`);
 
       // fileName and path will be extracted from busboy form fields if not in query
       // We'll validate fileName later when we get it from busboy
 
       // 4. Initialize Busboy FIRST to extract form fields
+      systemLogger.logSystem('INFO', `[UPLOAD] Step 4: Initializing Busboy`);
       const busboy = Busboy({
         headers: req.headers,
         limits: {
@@ -675,22 +691,27 @@ class UploadAPI {
 
       // Listen to 'field' event to get fileName and path from FormData
       busboy.on('field', (fieldname, value) => {
+        systemLogger.logSystem('INFO', `[UPLOAD] Busboy field received: ${fieldname} = ${value}`);
         formFields[fieldname] = value;
 
         // Update fileName and uploadPath from form fields if not in query
         if (fieldname === 'fileName' && !fileName) {
           fileName = value;
+          systemLogger.logSystem('INFO', `[UPLOAD] fileName updated from form field: ${fileName}`);
         }
         if (fieldname === 'path' && !uploadPath) {
           uploadPath = value;
+          systemLogger.logSystem('INFO', `[UPLOAD] uploadPath updated from form field: ${uploadPath}`);
         }
       });
 
       // 5. Listen to 'file' event (when a file field is encountered)
       busboy.on('file', async (fieldname, fileStream, info) => {
         const { filename, encoding, mimeType } = info;
+        systemLogger.logSystem('INFO', `[UPLOAD] Step 5: File event received - fieldname: ${fieldname}, filename: ${filename}, mimeType: ${mimeType}`);
 
         if (fileProcessed) {
+          systemLogger.logSystem('WARN', `[UPLOAD] Additional file ignored (already processed one file)`);
           fileStream.resume(); // Discard additional files
           return;
         }
@@ -700,42 +721,75 @@ class UploadAPI {
         // If still no fileName, use the filename from file upload
         if (!fileName) {
           fileName = filename || 'unnamed_file';
+          systemLogger.logSystem('INFO', `[UPLOAD] fileName fallback to upload filename: ${fileName}`);
         }
+
+        systemLogger.logSystem('INFO', `[UPLOAD] Final fileName before sanitization: ${fileName}`);
 
         // Validate and sanitize filename
         let sanitizedFileName;
         try {
           sanitizedFileName = this._sanitizeFilename(fileName);
+          systemLogger.logSystem('INFO', `[UPLOAD] Sanitized fileName: ${sanitizedFileName}`);
         } catch (error) {
           // Fail the transfer since we can't proceed
           fileStream.resume(); // Discard file stream
-          systemLogger.logSystem('ERROR', `Invalid filename: ${error.message}`);
+          systemLogger.logSystem('ERROR', `[UPLOAD] Filename sanitization failed: ${error.message}, error code: ${error.code}`);
+
+          if (!res.headersSent) {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: error.code || 304,
+                message: error.message || '檔案名稱無效',
+                details: `Invalid filename: ${fileName}`
+              }
+            });
+          }
           return;
         }
 
         // Determine destination path
+        systemLogger.logSystem('INFO', `[UPLOAD] Step 6: Determining destination path`);
         const storagePath = configManager.get('fileSystem.storagePath') || './storage';
         const storageRoot = path.resolve(storagePath);
         const targetDir = uploadPath ? path.join(storageRoot, uploadPath) : storageRoot;
         const finalPath = path.join(targetDir, sanitizedFileName);
 
+        systemLogger.logSystem('INFO', `[UPLOAD] Storage root: ${storageRoot}`);
+        systemLogger.logSystem('INFO', `[UPLOAD] Target directory: ${targetDir}`);
+        systemLogger.logSystem('INFO', `[UPLOAD] Final path: ${finalPath}`);
+
         // Security check: ensure path is within storage root
         if (!finalPath.startsWith(storageRoot)) {
           fileStream.resume(); // Discard file stream
-          systemLogger.logSystem('ERROR', `Path traversal attempt: ${finalPath}`);
+          systemLogger.logSystem('ERROR', `[UPLOAD] SECURITY: Path traversal attempt - finalPath: ${finalPath}, storageRoot: ${storageRoot}`);
+
+          if (!res.headersSent) {
+            return res.status(403).json({
+              success: false,
+              error: {
+                code: 403,
+                message: 'Path traversal attempt blocked'
+              }
+            });
+          }
           return;
         }
 
         // Create transfer ID and initialize transfer
+        systemLogger.logSystem('INFO', `[UPLOAD] Step 7: Creating transfer record`);
         transferId = transferManager.startTransfer({
           fileName: sanitizedFileName,
           totalSize: contentLength,
           destination: finalPath,
           status: 'pending'
         });
+        systemLogger.logSystem('INFO', `[UPLOAD] Transfer created with ID: ${transferId}`);
 
         // Send 202 Accepted response immediately (if not already sent)
         if (!res.headersSent) {
+          systemLogger.logSystem('INFO', `[UPLOAD] Step 8: Sending 202 Accepted response`);
           res.status(202).json({
             success: true,
             transferId,
@@ -745,11 +799,26 @@ class UploadAPI {
 
         // Update status to 'uploading'
         transferManager.updateTransferStatus(transferId, 'uploading');
+        systemLogger.logSystem('INFO', `[UPLOAD] Step 9: Transfer status updated to 'uploading'`);
 
         // Create destination directory if it doesn't exist
-        await this.fileSystem.mkdir(targetDir);
+        systemLogger.logSystem('INFO', `[UPLOAD] Step 10: Creating destination directory: ${targetDir}`);
+        try {
+          await this.fileSystem.mkdir(targetDir);
+          systemLogger.logSystem('INFO', `[UPLOAD] Destination directory ready`);
+        } catch (mkdirError) {
+          systemLogger.logSystem('ERROR', `[UPLOAD] Failed to create directory: ${mkdirError.message}`);
+          fileStream.resume();
+          transferManager.failTransfer(transferId, {
+            code: 500,
+            message: '無法創建目標目錄',
+            details: mkdirError.message
+          });
+          return;
+        }
 
         // Create write stream to destination
+        systemLogger.logSystem('INFO', `[UPLOAD] Step 11: Creating write stream to: ${finalPath}`);
         const writeStream = fs.createWriteStream(finalPath);
 
         // Track upload progress
@@ -761,10 +830,12 @@ class UploadAPI {
         });
 
         // Pipe file stream to write stream
+        systemLogger.logSystem('INFO', `[UPLOAD] Step 12: Piping file stream to write stream`);
         fileStream.pipe(writeStream);
 
         // Handle write stream completion
         writeStream.on('finish', () => {
+          systemLogger.logSystem('INFO', `[UPLOAD] ✅ Upload completed successfully - transferId: ${transferId}, size: ${uploadedBytes} bytes`);
           transferManager.completeTransfer(transferId, {
             result: 'success',
             file: {
@@ -781,6 +852,9 @@ class UploadAPI {
 
         // Handle write stream errors
         writeStream.on('error', (err) => {
+          systemLogger.logSystem('ERROR', `[UPLOAD] ❌ Write stream error - code: ${err.code}, message: ${err.message}`);
+          systemLogger.logSystem('ERROR', `[UPLOAD] Error stack: ${err.stack}`);
+
           // Check for disk space error
           if (err.code === 'ENOSPC') {
             transferManager.failTransfer(transferId, {
@@ -807,6 +881,9 @@ class UploadAPI {
 
         // Handle file stream errors (upload interruption)
         fileStream.on('error', (err) => {
+          systemLogger.logSystem('ERROR', `[UPLOAD] ❌ File stream error: ${err.message}`);
+          systemLogger.logSystem('ERROR', `[UPLOAD] Error stack: ${err.stack}`);
+
           transferManager.failTransfer(transferId, {
             code: 302,
             message: '檔案上傳中斷',
@@ -826,42 +903,56 @@ class UploadAPI {
 
       // 10. Handle file size limit exceeded
       busboy.on('limit', () => {
-        transferManager.failTransfer(transferId, {
-          code: 413,
-          message: '檔案大小超過限制',
-          details: `Maximum file size: ${configManager.get('fileSystem.maxFileSize')} bytes`
-        });
+        systemLogger.logSystem('WARN', `[UPLOAD] File size limit exceeded`);
+        if (transferId) {
+          transferManager.failTransfer(transferId, {
+            code: 413,
+            message: '檔案大小超過限制',
+            details: `Maximum file size: ${configManager.get('fileSystem.maxFileSize')} bytes`
+          });
+        }
       });
 
       // 11. Handle busboy errors
       busboy.on('error', (err) => {
-        transferManager.failTransfer(transferId, {
-          code: 500,
-          message: '上傳處理錯誤',
-          details: err.message
-        });
+        systemLogger.logSystem('ERROR', `[UPLOAD] ❌ Busboy error: ${err.message}`);
+        systemLogger.logSystem('ERROR', `[UPLOAD] Busboy error stack: ${err.stack}`);
+        if (transferId) {
+          transferManager.failTransfer(transferId, {
+            code: 500,
+            message: '上傳處理錯誤',
+            details: err.message
+          });
+        }
       });
 
       // 12. Handle request close/abort (client disconnected)
       req.on('close', () => {
-        const transfer = transferManager.getTransfer(transferId);
-        if (transfer && transfer.status === 'uploading') {
-          transferManager.failTransfer(transferId, {
-            code: 302,
-            message: '檔案上傳中斷',
-            details: 'Client disconnected'
-          });
+        systemLogger.logSystem('WARN', `[UPLOAD] Client disconnected - transferId: ${transferId}`);
+        if (transferId) {
+          const transfer = transferManager.getTransfer(transferId);
+          if (transfer && transfer.status === 'uploading') {
+            transferManager.failTransfer(transferId, {
+              code: 302,
+              message: '檔案上傳中斷',
+              details: 'Client disconnected'
+            });
 
-          // Clean up partial file
-          fs.unlink(finalPath, () => {});
+            // Clean up partial file (finalPath may not be defined if disconnected early)
+            if (typeof finalPath !== 'undefined') {
+              fs.unlink(finalPath, () => {});
+            }
+          }
         }
       });
 
       // 13. Pipe request to busboy
+      systemLogger.logSystem('INFO', `[UPLOAD] Step 13: Piping request to Busboy`);
       req.pipe(busboy);
 
     } catch (error) {
-      systemLogger.logSystem('ERROR', `Upload error: ${error.message}`);
+      systemLogger.logSystem('ERROR', `[UPLOAD] ❌❌❌ CRITICAL ERROR in _handleSingleProgressUpload: ${error.message}`);
+      systemLogger.logSystem('ERROR', `[UPLOAD] Error stack: ${error.stack}`);
 
       // If response hasn't been sent yet
       if (!res.headersSent) {
