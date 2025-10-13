@@ -1836,6 +1836,23 @@ async function startServer() {
   }
 }
 
+// Global error handlers to prevent silent crashes
+process.on('uncaughtException', (error) => {
+  systemLogger.logSystem('ERROR', `❌ UNCAUGHT EXCEPTION: ${error.message}`);
+  systemLogger.logSystem('ERROR', `Stack trace: ${error.stack}`);
+  console.error('\n❌ UNCAUGHT EXCEPTION:', error);
+  console.error('Stack trace:', error.stack);
+  // Don't exit immediately, log the error and continue
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  systemLogger.logSystem('ERROR', `❌ UNHANDLED REJECTION at: ${promise}`);
+  systemLogger.logSystem('ERROR', `Reason: ${reason}`);
+  console.error('\n❌ UNHANDLED REJECTION at:', promise);
+  console.error('Reason:', reason);
+  // Don't exit immediately, log the error and continue
+});
+
 // Graceful shutdown handling
 process.on('SIGINT', async () => {
   systemLogger.logSystem('INFO', 'Received SIGINT, shutting down gracefully...');
