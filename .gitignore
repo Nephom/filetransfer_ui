@@ -13,7 +13,6 @@ MIGRATION_GUIDE.md
 git-helper.sh
 backup
 .docs
-fileapi_ui
 
 # Issue Files
 issue*
