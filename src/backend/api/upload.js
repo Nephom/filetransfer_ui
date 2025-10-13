@@ -66,36 +66,141 @@ class UploadAPI {
    * @private
    */
   _setupRoutes() {
+    // Multer error handler middleware
+    const handleMulterError = (err, req, res, next) => {
+      // If no error, continue to next middleware
+      if (!err) {
+        return next();
+      }
+
+      systemLogger.logSystem('ERROR', `❌ Upload error occurred`);
+      systemLogger.logSystem('ERROR', `Error message: ${err.message}`);
+      systemLogger.logSystem('ERROR', `Error code: ${err.code}`);
+      systemLogger.logSystem('ERROR', `Error field: ${err.field}`);
+      systemLogger.logSystem('ERROR', `Error stack: ${err.stack}`);
+
+      // Handle multer-specific errors
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({
+          success: false,
+          error: {
+            code: 413,
+            message: '檔案大小超過限制',
+            details: err.message
+          }
+        });
+      }
+
+      if (err.code === 'LIMIT_FILE_COUNT') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 400,
+            message: '檔案數量超過限制',
+            details: err.message
+          }
+        });
+      }
+
+      if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 400,
+            message: '未預期的檔案欄位',
+            details: err.message
+          }
+        });
+      }
+
+      // Handle file system errors
+      if (err.code === 'ENOENT') {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 404,
+            message: '目標路徑不存在',
+            details: err.message
+          }
+        });
+      }
+
+      if (err.code === 'EACCES' || err.code === 'EPERM') {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 403,
+            message: '權限不足，無法存取檔案',
+            details: err.message
+          }
+        });
+      }
+
+      if (err.code === 'ENOSPC') {
+        return res.status(507).json({
+          success: false,
+          error: {
+            code: 507,
+            message: '磁碟空間不足',
+            details: err.message
+          }
+        });
+      }
+
+      // Generic error
+      systemLogger.logSystem('ERROR', `❌ Unhandled upload error type: ${err.constructor.name}`);
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 500,
+          message: '檔案上傳錯誤',
+          details: err.message
+        }
+      });
+    };
+
     // Main upload endpoint that handles files field (used by frontend)
     // Use .fields() to accept both 'files' and 'filePaths[]' for folder uploads
-    this.router.post('/upload', this.upload.fields([
-      { name: 'files', maxCount: 1000 },
-      { name: 'filePaths[]', maxCount: 1000 }
-    ]), (req, res) => {
-      // Normalize files array for folder uploads
-      if (req.files && req.files.files) {
-        req.files = req.files.files;
+    this.router.post('/upload',
+      this.upload.fields([
+        { name: 'files', maxCount: 1000 },
+        { name: 'filePaths[]', maxCount: 1000 }
+      ]),
+      handleMulterError,
+      (req, res) => {
+        // Normalize files array for folder uploads
+        if (req.files && req.files.files) {
+          req.files = req.files.files;
+        }
+        // Simplified: _handleMultipleUpload can handle one or many files
+        this._handleMultipleUpload(req, res);
       }
-      // Simplified: _handleMultipleUpload can handle one or many files
-      this._handleMultipleUpload(req, res);
-    });
+    );
 
     // Alternative endpoint for single file upload with 'file' field
-    this.router.post('/upload/single', this.upload.single('file'), (req, res) => {
-      this._handleSingleUpload(req, res);
-    });
+    this.router.post('/upload/single',
+      this.upload.single('file'),
+      handleMulterError,
+      (req, res) => {
+        this._handleSingleUpload(req, res);
+      }
+    );
 
     // Alternative endpoint for multiple file upload with 'files' field
-    this.router.post('/upload/multiple', this.upload.fields([
-      { name: 'files', maxCount: 1000 },
-      { name: 'filePaths[]', maxCount: 1000 }
-    ]), (req, res) => {
-      // Normalize files array for folder uploads
-      if (req.files && req.files.files) {
-        req.files = req.files.files;
+    this.router.post('/upload/multiple',
+      this.upload.fields([
+        { name: 'files', maxCount: 1000 },
+        { name: 'filePaths[]', maxCount: 1000 }
+      ]),
+      handleMulterError,
+      (req, res) => {
+        // Normalize files array for folder uploads
+        if (req.files && req.files.files) {
+          req.files = req.files.files;
+        }
+        this._handleMultipleUpload(req, res);
       }
-      this._handleMultipleUpload(req, res);
-    });
+    );
 
     // Upload with progress tracking
     this.router.post('/upload/progress', this.upload.single('file'), (req, res) => {
@@ -226,10 +331,18 @@ class UploadAPI {
    */
   async _handleMultipleUpload(req, res) {
     try {
+      systemLogger.logSystem('INFO', `📥 [BATCH UPLOAD START] Multi-file upload initiated`);
+      systemLogger.logSystem('INFO', `Headers: ${JSON.stringify(req.headers)}`);
+      systemLogger.logSystem('INFO', `Body keys: ${Object.keys(req.body).join(', ')}`);
+      systemLogger.logSystem('INFO', `Files object type: ${typeof req.files}`);
+      systemLogger.logSystem('INFO', `Files object keys: ${req.files ? Object.keys(req.files).join(', ') : 'null'}`);
+
       // Manual authentication check for multipart requests
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
       const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+
+      systemLogger.logSystem('INFO', `[BATCH] Step 1: Checking authentication`);
 
       // Try to get token from header first
       let token = null;
@@ -244,6 +357,7 @@ class UploadAPI {
       }
 
       if (!token) {
+        systemLogger.logSystem('ERROR', `[BATCH] Authorization token missing`);
         return res.status(401).json({
           error: 'Authorization token missing'
         });
@@ -252,17 +366,30 @@ class UploadAPI {
       try {
         const decoded = jwt.verify(token, jwtSecret);
         req.user = decoded; // Attach user info to request
+        systemLogger.logSystem('INFO', `[BATCH] Step 1: Authentication successful for user: ${decoded.username}`);
       } catch (authError) {
+        systemLogger.logSystem('ERROR', `[BATCH] JWT verification failed: ${authError.message}`);
         return res.status(401).json({
           error: 'Invalid or expired token'
         });
       }
 
+      systemLogger.logSystem('INFO', `[BATCH] Step 2: Validating files`);
+      systemLogger.logSystem('INFO', `[BATCH] req.files type: ${typeof req.files}`);
+      systemLogger.logSystem('INFO', `[BATCH] req.files is array: ${Array.isArray(req.files)}`);
+      systemLogger.logSystem('INFO', `[BATCH] req.files length: ${req.files ? req.files.length : 'undefined'}`);
+
       if (!req.files || req.files.length === 0) {
+        systemLogger.logSystem('ERROR', `[BATCH] No files uploaded`);
         return res.status(400).json({
           error: 'No files uploaded'
         });
       }
+
+      systemLogger.logSystem('INFO', `[BATCH] Received ${req.files.length} files`);
+      req.files.forEach((file, index) => {
+        systemLogger.logSystem('INFO', `[BATCH] File ${index + 1}: ${file.originalname} (${file.size} bytes)`);
+      });
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
