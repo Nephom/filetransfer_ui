@@ -299,13 +299,19 @@ class UploadAPI {
         message: 'Batch upload initiated. Poll for batch progress.'
       });
 
-      // 3. Process files in background
+      // 3. Process files in background (with error handling)
       this._processFilesInBackground(req.files, batchId, {
         currentPath,
         normalizedFinalDir,
         normalizedStoragePath,
         filePaths: req.body.filePaths || [],
         user: req.user
+      }).catch(error => {
+        // Log the error but don't crash the server
+        systemLogger.logSystem('ERROR', `Background file processing error for batch ${batchId}: ${error.message}`);
+
+        // Mark remaining files as failed
+        transferManager.updateBatchProgress(batchId);
       });
 
     } catch (error) {
@@ -645,65 +651,15 @@ class UploadAPI {
         });
       }
 
-      // 3. Get filename and path from query parameters
-      const fileName = req.query.fileName;
-      const uploadPath = req.query.path || '';
+      // 3. Get filename and path from query parameters OR form fields
+      // Priority: query params > form fields (will be extracted from busboy)
+      let fileName = req.query.fileName;
+      let uploadPath = req.query.path || '';
 
-      if (!fileName) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 304,
-            message: '檔案名稱缺失',
-            details: 'fileName query parameter is required'
-          }
-        });
-      }
+      // fileName and path will be extracted from busboy form fields if not in query
+      // We'll validate fileName later when we get it from busboy
 
-      // 4. Sanitize filename (UTF-8 encoding, remove path traversal)
-      let sanitizedFileName;
-      try {
-        sanitizedFileName = this._sanitizeFilename(fileName);
-      } catch (error) {
-        return res.status(400).json({
-          success: false,
-          error: error
-        });
-      }
-
-      // 5. Determine destination path
-      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-      const storageRoot = path.resolve(storagePath);
-      const targetDir = uploadPath ? path.join(storageRoot, uploadPath) : storageRoot;
-      const finalPath = path.join(targetDir, sanitizedFileName);
-
-      // Security check: ensure path is within storage root
-      if (!finalPath.startsWith(storageRoot)) {
-        return res.status(403).json({
-          success: false,
-          error: {
-            code: 403,
-            message: 'Forbidden: Access denied'
-          }
-        });
-      }
-
-      // 6. Create transfer ID and initialize transfer
-      const transferId = transferManager.startTransfer({
-        fileName: sanitizedFileName,
-        totalSize: contentLength,
-        destination: finalPath,
-        status: 'pending'
-      });
-
-      // 7. Immediately respond with 202 Accepted
-      res.status(202).json({
-        success: true,
-        transferId,
-        message: 'Upload initiated. Poll for progress.'
-      });
-
-      // 8. Initialize Busboy
+      // 4. Initialize Busboy FIRST to extract form fields
       const busboy = Busboy({
         headers: req.headers,
         limits: {
@@ -714,8 +670,23 @@ class UploadAPI {
 
       let fileProcessed = false;
       let uploadedBytes = 0;
+      let transferId = null;
+      const formFields = {}; // Store form fields from busboy
 
-      // 9. Listen to 'file' event (when a file field is encountered)
+      // Listen to 'field' event to get fileName and path from FormData
+      busboy.on('field', (fieldname, value) => {
+        formFields[fieldname] = value;
+
+        // Update fileName and uploadPath from form fields if not in query
+        if (fieldname === 'fileName' && !fileName) {
+          fileName = value;
+        }
+        if (fieldname === 'path' && !uploadPath) {
+          uploadPath = value;
+        }
+      });
+
+      // 5. Listen to 'file' event (when a file field is encountered)
       busboy.on('file', async (fieldname, fileStream, info) => {
         const { filename, encoding, mimeType } = info;
 
@@ -724,6 +695,53 @@ class UploadAPI {
           return;
         }
         fileProcessed = true;
+
+        // Now we have fileName from either query or form field
+        // If still no fileName, use the filename from file upload
+        if (!fileName) {
+          fileName = filename || 'unnamed_file';
+        }
+
+        // Validate and sanitize filename
+        let sanitizedFileName;
+        try {
+          sanitizedFileName = this._sanitizeFilename(fileName);
+        } catch (error) {
+          // Fail the transfer since we can't proceed
+          fileStream.resume(); // Discard file stream
+          systemLogger.logSystem('ERROR', `Invalid filename: ${error.message}`);
+          return;
+        }
+
+        // Determine destination path
+        const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+        const storageRoot = path.resolve(storagePath);
+        const targetDir = uploadPath ? path.join(storageRoot, uploadPath) : storageRoot;
+        const finalPath = path.join(targetDir, sanitizedFileName);
+
+        // Security check: ensure path is within storage root
+        if (!finalPath.startsWith(storageRoot)) {
+          fileStream.resume(); // Discard file stream
+          systemLogger.logSystem('ERROR', `Path traversal attempt: ${finalPath}`);
+          return;
+        }
+
+        // Create transfer ID and initialize transfer
+        transferId = transferManager.startTransfer({
+          fileName: sanitizedFileName,
+          totalSize: contentLength,
+          destination: finalPath,
+          status: 'pending'
+        });
+
+        // Send 202 Accepted response immediately (if not already sent)
+        if (!res.headersSent) {
+          res.status(202).json({
+            success: true,
+            transferId,
+            message: 'Upload initiated. Poll for progress.'
+          });
+        }
 
         // Update status to 'uploading'
         transferManager.updateTransferStatus(transferId, 'uploading');
