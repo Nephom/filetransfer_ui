@@ -717,6 +717,10 @@ class UploadAPI {
         }
         fileProcessed = true;
 
+        // CRITICAL FIX: Wait a bit for field events to be processed first
+        // This ensures fileName and uploadPath are available from form fields
+        await new Promise(resolve => setImmediate(resolve));
+
         // Now we have fileName from either query or form field
         // If still no fileName, use the filename from file upload
         if (!fileName) {
@@ -724,7 +728,7 @@ class UploadAPI {
           systemLogger.logSystem('INFO', `[UPLOAD] fileName fallback to upload filename: ${fileName}`);
         }
 
-        systemLogger.logSystem('INFO', `[UPLOAD] Final fileName before sanitization: ${fileName}`);
+        systemLogger.logSystem('INFO', `[UPLOAD] Final fileName: ${fileName}, uploadPath: ${uploadPath}`);
 
         // Validate and sanitize filename
         let sanitizedFileName;
