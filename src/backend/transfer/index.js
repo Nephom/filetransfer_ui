@@ -6,6 +6,7 @@
 const EventEmitter = require('events');
 const fs = require('fs').promises;
 const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 
 class TransferManager extends EventEmitter {
   /**
@@ -14,6 +15,7 @@ class TransferManager extends EventEmitter {
   constructor() {
     super();
     this.transfers = new Map();
+    this.batches = new Map();
     this.transferIdCounter = 0;
   }
 
@@ -23,18 +25,20 @@ class TransferManager extends EventEmitter {
    * @returns {string} Transfer ID
    */
   startTransfer(options = {}) {
-    const transferId = `transfer_${++this.transferIdCounter}`;
+    const transferId = options.id || uuidv4();
 
     const transfer = {
       id: transferId,
-      status: 'pending',
+      status: 'pending', // pending | uploading | processing | completed | failed
+      fileName: options.fileName || null,
       source: options.source,
       destination: options.destination,
       totalSize: options.totalSize || 0,
-      transferred: 0,
+      transferredSize: 0,
       startTime: Date.now(),
       progress: 0,
-      error: null
+      error: null,
+      batchId: options.batchId || null
     };
 
     this.transfers.set(transferId, transfer);
@@ -63,26 +67,48 @@ class TransferManager extends EventEmitter {
     }
 
     // Update transferred bytes
-    transfer.transferred = Math.min(transferredBytes, transfer.totalSize);
+    transfer.transferredSize = Math.min(transferredBytes, transfer.totalSize);
 
     // Calculate progress percentage
     if (transfer.totalSize > 0) {
-      transfer.progress = Math.round((transfer.transferred / transfer.totalSize) * 100);
+      transfer.progress = parseFloat(((transfer.transferredSize / transfer.totalSize) * 100).toFixed(2));
     } else {
       transfer.progress = 0;
     }
 
     // Update status based on progress
-    if (transfer.progress >= 100) {
-      transfer.status = 'completed';
-    } else if (transfer.transferred > 0) {
-      transfer.status = 'in_progress';
-    } else {
-      transfer.status = 'pending';
+    if (transfer.status !== 'completed' && transfer.status !== 'failed') {
+      if (transfer.progress >= 100) {
+        transfer.status = 'processing';
+      } else if (transfer.transferredSize > 0) {
+        transfer.status = 'uploading';
+      }
     }
 
     // Emit progress update
     this.emit('progressUpdate', transfer);
+
+    return transfer;
+  }
+
+  /**
+   * Update transfer status
+   * @param {string} transferId - Transfer ID
+   * @param {string} status - New status (pending | uploading | processing | completed | failed)
+   */
+  updateTransferStatus(transferId, status) {
+    const transfer = this.transfers.get(transferId);
+    if (!transfer) {
+      throw new Error(`Transfer ${transferId} not found`);
+    }
+
+    const validStatuses = ['pending', 'uploading', 'processing', 'completed', 'failed'];
+    if (!validStatuses.includes(status)) {
+      throw new Error(`Invalid status: ${status}. Must be one of: ${validStatuses.join(', ')}`);
+    }
+
+    transfer.status = status;
+    this.emit('statusUpdate', transfer);
 
     return transfer;
   }
@@ -168,10 +194,150 @@ class TransferManager extends EventEmitter {
     return {
       total: transfers.length,
       completed: transfers.filter(t => t.status === 'completed').length,
-      inProgress: transfers.filter(t => t.status === 'in_progress').length,
+      uploading: transfers.filter(t => t.status === 'uploading').length,
+      processing: transfers.filter(t => t.status === 'processing').length,
       failed: transfers.filter(t => t.status === 'failed').length,
       pending: transfers.filter(t => t.status === 'pending').length
     };
+  }
+
+  /**
+   * Create a new batch for multi-file upload
+   * @param {Object} options - Batch options
+   * @returns {string} Batch ID
+   */
+  createBatch(options = {}) {
+    const batchId = options.batchId || uuidv4();
+
+    const batch = {
+      batchId,
+      status: 'uploading', // uploading | completed | partial_fail
+      totalFiles: options.totalFiles || 0,
+      files: [], // Array of transferIds
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    this.batches.set(batchId, batch);
+
+    // Emit event for new batch
+    this.emit('batchCreated', batch);
+
+    return batchId;
+  }
+
+  /**
+   * Get batch information
+   * @param {string} batchId - Batch ID
+   * @returns {Object|null} Batch object or null if not found
+   */
+  getBatch(batchId) {
+    return this.batches.get(batchId) || null;
+  }
+
+  /**
+   * Add transfer to batch
+   * @param {string} batchId - Batch ID
+   * @param {string} transferId - Transfer ID
+   */
+  addTransferToBatch(batchId, transferId) {
+    const batch = this.batches.get(batchId);
+    if (!batch) {
+      throw new Error(`Batch ${batchId} not found`);
+    }
+
+    if (!batch.files.includes(transferId)) {
+      batch.files.push(transferId);
+      batch.updatedAt = Date.now();
+    }
+
+    return batch;
+  }
+
+  /**
+   * Update batch progress (recalculate based on individual transfers)
+   * @param {string} batchId - Batch ID
+   */
+  updateBatchProgress(batchId) {
+    const batch = this.batches.get(batchId);
+    if (!batch) {
+      throw new Error(`Batch ${batchId} not found`);
+    }
+
+    batch.updatedAt = Date.now();
+
+    // Calculate batch status based on all transfers
+    const stats = this.calculateBatchStats(batchId);
+
+    // Update batch status
+    if (stats.successCount + stats.failedCount === batch.totalFiles && batch.totalFiles > 0) {
+      if (stats.failedCount === 0) {
+        batch.status = 'completed';
+      } else if (stats.successCount > 0) {
+        batch.status = 'partial_fail';
+      } else {
+        batch.status = 'failed';
+      }
+    }
+
+    this.emit('batchProgressUpdated', batch);
+
+    return batch;
+  }
+
+  /**
+   * Calculate batch statistics
+   * @param {string} batchId - Batch ID
+   * @returns {Object} Batch statistics
+   */
+  calculateBatchStats(batchId) {
+    const batch = this.batches.get(batchId);
+    if (!batch) {
+      throw new Error(`Batch ${batchId} not found`);
+    }
+
+    const transfers = batch.files.map(id => this.transfers.get(id)).filter(t => t);
+
+    const stats = {
+      totalFiles: batch.totalFiles,
+      successCount: transfers.filter(t => t.status === 'completed').length,
+      failedCount: transfers.filter(t => t.status === 'failed').length,
+      pendingCount: transfers.filter(t => t.status === 'pending').length,
+      uploadingCount: transfers.filter(t => t.status === 'uploading').length,
+      processingCount: transfers.filter(t => t.status === 'processing').length,
+      totalSize: transfers.reduce((sum, t) => sum + (t.totalSize || 0), 0),
+      transferredSize: transfers.reduce((sum, t) => sum + (t.transferredSize || 0), 0),
+      progress: 0,
+      files: transfers.map(t => ({
+        fileName: t.fileName,
+        status: t.status,
+        progress: t.progress,
+        error: t.error || null
+      }))
+    };
+
+    // Calculate overall progress
+    if (stats.totalSize > 0) {
+      stats.progress = parseFloat(((stats.transferredSize / stats.totalSize) * 100).toFixed(2));
+    }
+
+    return stats;
+  }
+
+  /**
+   * Get all batches
+   * @returns {Array} Array of all batches
+   */
+  getAllBatches() {
+    return Array.from(this.batches.values());
+  }
+
+  /**
+   * Remove batch
+   * @param {string} batchId - Batch ID
+   */
+  removeBatch(batchId) {
+    return this.batches.delete(batchId);
   }
 }
 
