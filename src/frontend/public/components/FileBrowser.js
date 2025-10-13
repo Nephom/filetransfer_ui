@@ -387,11 +387,12 @@ const FileBrowser = ({ token, user }) => {
     const handleSingleFileUpload = async (file) => {
         try {
             const formData = new FormData();
-            formData.append('file', file);
-            formData.append('fileName', file.name);
+            // IMPORTANT: Append path BEFORE file so backend receives it first
             if (currentPath) {
                 formData.append('path', currentPath);
             }
+            formData.append('fileName', file.name);
+            formData.append('file', file);
 
             // Initiate upload
             const response = await fetch('/api/upload/single-progress', {

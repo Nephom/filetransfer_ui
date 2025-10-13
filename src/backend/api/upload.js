@@ -814,13 +814,10 @@ class UploadAPI {
       let fileProcessed = false;
       let uploadedBytes = 0;
       let transferId = null;
-      const formFields = {}; // Store form fields from busboy
-      let pendingFileData = null; // Store file data until we have all fields
 
       // Listen to 'field' event to get fileName and path from FormData
       busboy.on('field', (fieldname, value) => {
         systemLogger.logSystem('INFO', `[UPLOAD] Busboy field received: ${fieldname} = ${value}`);
-        formFields[fieldname] = value;
 
         // Update fileName and uploadPath from form fields if not in query
         if (fieldname === 'fileName' && !fileName) {
@@ -830,15 +827,6 @@ class UploadAPI {
         if (fieldname === 'path') {
           uploadPath = value;
           systemLogger.logSystem('INFO', `[UPLOAD] uploadPath updated from form field: ${uploadPath}`);
-        }
-
-        // If we have pending file data and now have the path, process it
-        if (pendingFileData && fieldname === 'path') {
-          systemLogger.logSystem('INFO', `[UPLOAD] Path field received, processing pending file with uploadPath: ${uploadPath}`);
-          processFile(pendingFileData.fieldname, pendingFileData.fileStream, pendingFileData.info).catch(err => {
-            systemLogger.logSystem('ERROR', `[UPLOAD] Error processing pending file: ${err.message}`);
-          });
-          pendingFileData = null; // Clear pending data
         }
       });
 
@@ -1048,6 +1036,7 @@ class UploadAPI {
       };
 
       // 5. Listen to 'file' event (when a file field is encountered)
+      // Note: Frontend now sends 'path' field BEFORE 'file', so uploadPath will be available here
       busboy.on('file', async (fieldname, fileStream, info) => {
         const { filename, encoding, mimeType } = info;
         systemLogger.logSystem('INFO', `[UPLOAD] Step 5: File event received - fieldname: ${fieldname}, filename: ${filename}, mimeType: ${mimeType}`);
@@ -1058,19 +1047,8 @@ class UploadAPI {
           return;
         }
 
-        // Check if we already have the path field
-        if (uploadPath || formFields.path) {
-          // Path is available, process immediately
-          systemLogger.logSystem('INFO', `[UPLOAD] Path already available (${uploadPath || formFields.path}), processing file immediately`);
-          if (!uploadPath && formFields.path) {
-            uploadPath = formFields.path;
-          }
-          await processFile(fieldname, fileStream, info);
-        } else {
-          // Path not yet available, store file data for later processing
-          systemLogger.logSystem('INFO', `[UPLOAD] Path not yet available, storing file data for later processing`);
-          pendingFileData = { fieldname, fileStream, info };
-        }
+        // Process file immediately (path field was received before this)
+        await processFile(fieldname, fileStream, info);
       });
 
       // 10. Handle file size limit exceeded
