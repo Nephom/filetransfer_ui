@@ -325,7 +325,7 @@ const FileBrowser = ({ token, user }) => {
     };
 
     const handleRefresh = async () => {
-        fetchFiles();
+        fetchFiles(currentPath);
         setSelectedFiles([]);
     };
 
