@@ -53,9 +53,7 @@ class UploadAPI {
 
     this.upload = multer({
       storage: storage,
-      limits: {
-        fileSize: 1024 * 1024 * 100 // 100MB limit
-      },
+      // No file size limit
       fileFilter: (req, file, cb) => {
         // Allow all file types for now
         cb(null, true);
