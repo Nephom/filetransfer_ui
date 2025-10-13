@@ -662,6 +662,9 @@ func (m MainModel) handleCommand() (tea.Model, tea.Cmd) {
 
 	case parser.CmdUpload:
 		// 顯示上傳中訊息（注意：進度會在 debug log 中顯示）
+		if m.fileSuggestion != nil {
+			m.fileSuggestion.LocalDir = ""
+		}
 		m.message = fmt.Sprintf("正在上傳 %d 個項目...", len(cmd.Files))
 		m.messageType = "info"
 		return m, m.uploadFiles(cmd)
