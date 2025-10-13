@@ -18,7 +18,7 @@ class ConfigManager {
       fileSystem: {
         type: 'local',
         storagePath: './storage',
-        maxFileSize: 1024 * 1024 * 100 // 100MB default
+        maxFileSize: 1024 * 1024 * 10000 // 10 GB default
       },
 
       // Server configuration
