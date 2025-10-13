@@ -81,6 +81,7 @@ type FileSuggestion struct {
 	Filter         string
 	IsActive       bool
 	CurrentDir     string
+	LocalDir       string
 	IsLocalMode    bool // true: 本地檔案, false: 遠端檔案
 }
 
@@ -94,13 +95,29 @@ func NewFileSuggestion() *FileSuggestion {
 		Filter:        "",
 		IsActive:      false,
 		CurrentDir:    cwd,
+		LocalDir:      cwd,
 		IsLocalMode:   true,
 	}
 }
 
 // Activate 啟動檔案建議（本地模式）
 func (fs *FileSuggestion) Activate() error {
-	files, err := ScanLocalDirectory(fs.CurrentDir)
+	// 使用 LocalDir 作為本地工作目錄；如未設定則回退到當前工作目錄
+	dir := fs.LocalDir
+	if dir == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			dir = cwd
+		}
+	}
+
+	files, err := ScanLocalDirectory(dir)
+	if err != nil {
+		// 若儲存的目錄無法使用，嘗試回退到目前工作目錄
+		if cwd, cwdErr := os.Getwd(); cwdErr == nil && cwd != dir {
+			dir = cwd
+			files, err = ScanLocalDirectory(dir)
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -111,6 +128,8 @@ func (fs *FileSuggestion) Activate() error {
 	fs.IsActive = true
 	fs.Filter = ""
 	fs.IsLocalMode = true
+	fs.LocalDir = dir
+	fs.CurrentDir = dir
 
 	// 注意：這裡不能使用 debug.Log，因為會造成 import cycle
 	// debug.Log("[FileSuggestion.Activate] 本地模式啟動，目錄: %s, 檔案數: %d", fs.CurrentDir, len(files))
