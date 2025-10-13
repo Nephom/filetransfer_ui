@@ -474,7 +474,9 @@ const FileBrowser = ({ token, user }) => {
                 } else if (progressData.status === 'failed') {
                     clearInterval(pollInterval);
                     setIsUploading(false);
-                    setError(progressData.error || 'Upload failed');
+                    // Handle error object properly - extract message string
+                    const errorMessage = progressData.error?.message || progressData.error || 'Upload failed';
+                    setError(errorMessage);
                 }
 
             } catch (error) {
