@@ -947,21 +947,29 @@ class UploadAPI {
         const writeStream = fs.createWriteStream(finalPath);
 
         // Track upload progress
-        let lastLogTime = Date.now();
+        let lastLogTime = 0;
         fileStream.on('data', (chunk) => {
           uploadedBytes += chunk.length;
 
           // Update transfer progress in real-time
           transferManager.updateProgress(transferId, uploadedBytes, contentLength);
 
-          // Log progress every second to avoid spamming logs
+          // Log progress immediately on first chunk and then at most once per second
           const now = Date.now();
-          if (now - lastLogTime >= 1000) {
+          if (lastLogTime === 0 || now - lastLogTime >= 1000) {
             const progress = ((uploadedBytes / contentLength) * 100).toFixed(2);
             systemLogger.logSystem('INFO', `[UPLOAD] Progress: ${progress}% (${uploadedBytes}/${contentLength} bytes)`);
             lastLogTime = now;
           }
         });
+
+        fileStream.on('end', () => {
+          if (uploadedBytes >= contentLength) {
+            systemLogger.logSystem('INFO', `[UPLOAD] Progress: 100% (${uploadedBytes}/${contentLength} bytes)`);
+          }
+        });
+
+        // Pipe file stream to write stream
 
         // Pipe file stream to write stream
         systemLogger.logSystem('INFO', `[UPLOAD] Step 12: Piping file stream to write stream`);
