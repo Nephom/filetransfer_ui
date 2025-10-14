@@ -463,11 +463,33 @@ const FileBrowser = ({ token, user }) => {
     const resetUploadState = React.useCallback(() => {
         setShowUploadModal(false);
         setUploadingFiles([]);
-        setUploadProgress(0);
         setUploadTransferId(null);
         setUploadBatchId(null);
         setUploadDetails(null);
         setError('');
+    }, []);
+
+    const normalizeTransferProgress = React.useCallback((transfer) => {
+        if (!transfer) {
+            return 0;
+        }
+
+        const { progress, transferredSize, totalSize, status } = transfer;
+
+        if (status === 'completed') {
+            return 100;
+        }
+
+        if (typeof progress === 'number' && Number.isFinite(progress)) {
+            return Math.max(0, Math.min(100, Math.round(progress)));
+        }
+
+        if (typeof transferredSize === 'number' && typeof totalSize === 'number' && totalSize > 0) {
+            const computed = (transferredSize / totalSize) * 100;
+            return Math.max(0, Math.min(100, Math.round(computed)));
+        }
+
+        return 0;
     }, []);
 
     const buildUploadFormData = (uploadingFiles, hasFolderStructure) => {
@@ -545,7 +567,9 @@ const FileBrowser = ({ token, user }) => {
                     transferredSize: progressData.transferredSize,
                     totalSize: progressData.totalSize
                 });
-                setUploadProgress(Math.round(progressData.progress || 0));
+
+                const normalizedProgress = normalizeTransferProgress(progressData);
+                setUploadProgress(normalizedProgress);
 
                 if (progressData.status === 'completed') {
                     clearUploadPolling();
@@ -556,7 +580,9 @@ const FileBrowser = ({ token, user }) => {
 
                     await fetchFiles();
                     resetUploadState();
+                    setUploadingFiles([]);
                 } else if (progressData.status === 'failed') {
+                    setUploadProgress(0);
                     clearUploadPolling();
                     setIsUploading(false);
                     const errorMessage = progressData.error?.message || progressData.error || 'Upload failed';
@@ -565,6 +591,7 @@ const FileBrowser = ({ token, user }) => {
             } catch (error) {
                 clearUploadPolling();
                 setIsUploading(false);
+                setUploadProgress(0);
                 setError('Failed to fetch progress');
             }
         }, 1000); // Poll every second
@@ -596,17 +623,18 @@ const FileBrowser = ({ token, user }) => {
                 }
 
                 const batchData = await response.json();
-                setUploadProgress(Math.round(batchData.progress || 0));
-                setUploadDetails({
-                    totalFiles: batchData.totalFiles,
-                    successCount: batchData.successCount,
-                    failedCount: batchData.failedCount,
-                    files: batchData.files
-                });
 
                 if (['completed', 'partial_fail', 'failed'].includes(batchData.status)) {
                     clearUploadPolling();
                     setIsUploading(false);
+
+                    setUploadProgress(100);
+                    setUploadDetails({
+                        totalFiles: batchData.totalFiles,
+                        successCount: batchData.successCount,
+                        failedCount: batchData.failedCount,
+                        files: batchData.files
+                    });
 
                     if (batchData.status === 'completed') {
                         alert(`✅ Upload completed! ${batchData.successCount} file(s) uploaded successfully.`);
@@ -618,18 +646,89 @@ const FileBrowser = ({ token, user }) => {
 
                     await fetchFiles();
                     resetUploadState();
+                    setUploadProgress(100);
+                    setUploadingFiles([]);
 
                     if (batchData.status === 'failed') {
                         setError('Batch upload failed');
                     }
+
+                    return;
                 }
+
+                const normalizedProgress = normalizeTransferProgress(batchData);
+                setUploadProgress(normalizedProgress);
+                setUploadDetails({
+                    totalFiles: batchData.totalFiles,
+                    successCount: batchData.successCount,
+                    failedCount: batchData.failedCount,
+                    files: batchData.files
+                });
             } catch (error) {
                 clearUploadPolling();
                 setIsUploading(false);
+                setUploadProgress(0);
                 setError('Failed to fetch batch progress');
             }
         }, 1000); // Poll every second
     };
+
+    const handleDragEnter = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(true);
+    };
+
+    const handleDragOver = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+    };
+
+    const handleDragLeave = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Only set isDragging to false if we're leaving the content area itself
+        // Check if the related target is outside the content area
+        if (e.currentTarget === e.target) {
+            setIsDragging(false);
+        }
+    };
+
+    const handleDrop = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(false);
+        const droppedFiles = Array.from(e.dataTransfer.files);
+        if (droppedFiles.length > 0) {
+            setUploadingFiles(droppedFiles);
+            setShowUploadModal(true);
+        }
+    };
+
+    // The files state is now the single source of truth, populated by either fetchFiles or performSearch.
+    const validFilteredFiles = files.filter(file => file && file.name);
+
+    const getFileIcon = (file) => {
+        if (file.isDirectory) return '📁';
+        const ext = file.name.split('.').pop().toLowerCase();
+        const iconMap = {
+            'pdf': '📄', 'txt': '📝', 'doc': '📄', 'docx': '📄',
+            'xls': '📊', 'xlsx': '📊', 'ppt': '📽️', 'pptx': '📽️',
+            'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️',
+            'mp4': '🎬', 'avi': '🎬', 'mov': '🎬',
+            'mp3': '🎵', 'wav': '🎵', 'flac': '🎵',
+            'zip': '📦', 'rar': '📦', 'tar': '📦', 'gz': '📦',
+            'js': '📜', 'ts': '📜', 'jsx': '📜', 'tsx': '📜',
+            'py': '🐍', 'java': '☕', 'cpp': '📝', 'c': '📝',
+            'html': '🌐', 'css': '🎨', 'json': '📋', 'xml': '📋',
+            'sql': '🗄️', 'db': '🗄️'
+        };
+        return iconMap[ext] || '📄';
+    };
+
+
+
+
 
     const handleDragEnter = (e) => {
         e.preventDefault();
