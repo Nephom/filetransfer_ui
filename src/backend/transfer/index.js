@@ -150,7 +150,7 @@ class TransferManager extends EventEmitter {
 
     return transfer;
   }
-}
+
   /**
    * Fail a transfer
    * @param {string} transferId - Transfer ID
