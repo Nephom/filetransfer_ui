@@ -38,6 +38,14 @@ const FileBrowser = ({ token, user }) => {
     }, []);
 
     const timeoutIdRef = React.useRef(null);
+    const uploadPollRef = React.useRef(null);
+
+    const clearUploadPolling = React.useCallback(() => {
+        if (uploadPollRef.current) {
+            clearInterval(uploadPollRef.current);
+            uploadPollRef.current = null;
+        }
+    }, []);
 
     // Handle clicks outside context menu and dropdown
     const handleGlobalClick = () => {
@@ -328,9 +336,31 @@ const FileBrowser = ({ token, user }) => {
         setError('');  // Clear any errors
         setSelectedFiles([]);  // Clear selections
 
-        // Force refresh by adding timestamp to bypass browser cache
         try {
             setLoading(true);
+
+            // Ask backend to refresh cache for the current directory
+            const refreshResponse = await fetch('/api/files/refresh-cache', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ directoryPath: currentPath || '/' })
+            });
+
+            if (!refreshResponse.ok) {
+                let refreshError = 'Failed to refresh file cache';
+                try {
+                    const errorData = await refreshResponse.json();
+                    refreshError = errorData.error || refreshError;
+                } catch (_) {
+                    // Ignore JSON parsing issues and use default message
+                }
+                throw new Error(refreshError);
+            }
+
+            // Force refresh by adding timestamp to bypass browser cache
             const timestamp = Date.now();
             const response = await fetch(`/api/files?path=${encodeURIComponent(currentPath)}&_t=${timestamp}`, {
                 headers: {
@@ -349,7 +379,7 @@ const FileBrowser = ({ token, user }) => {
             setCurrentPath(newPath);
             setDisplayPath(newPath);
         } catch (err) {
-            setError(err.message);
+            setError(err.message || 'Failed to refresh files');
         } finally {
             setLoading(false);
         }
@@ -357,6 +387,9 @@ const FileBrowser = ({ token, user }) => {
 
     const handleFileUpload = async (uploadingFiles) => {
         if (uploadingFiles.length === 0) return;
+
+        // Ensure no previous polling continues
+        clearUploadPolling();
 
         // Check if files have webkitRelativePath (folder upload)
         const hasFolderStructure = uploadingFiles.some(file => file.webkitRelativePath);
@@ -377,6 +410,7 @@ const FileBrowser = ({ token, user }) => {
             }
 
         } catch (err) {
+            clearUploadPolling();
             setIsUploading(false);
             setUploadProgress(0);
             setError(err.message || 'Upload failed');
@@ -415,27 +449,47 @@ const FileBrowser = ({ token, user }) => {
             pollSingleProgress(transferId);
 
         } catch (error) {
+            clearUploadPolling();
             throw error;
         }
+    };
+
+    React.useEffect(() => {
+        return () => {
+            clearUploadPolling();
+        };
+    }, [clearUploadPolling]);
+
+    const resetUploadState = React.useCallback(() => {
+        setShowUploadModal(false);
+        setUploadingFiles([]);
+        setUploadProgress(0);
+        setUploadTransferId(null);
+        setUploadBatchId(null);
+        setUploadDetails(null);
+        setError('');
+    }, []);
+
+    const buildUploadFormData = (uploadingFiles, hasFolderStructure) => {
+        const formData = new FormData();
+
+        uploadingFiles.forEach((file) => {
+            formData.append('files', file);
+
+            if (hasFolderStructure && file.webkitRelativePath) {
+                formData.append('filePaths[]', file.webkitRelativePath);
+            }
+        });
+
+        formData.append('path', currentPath);
+        return formData;
     };
 
     // Handle multi-file upload with batch tracking
     const handleMultiFileUpload = async (uploadingFiles, hasFolderStructure) => {
         try {
-            const formData = new FormData();
+            const formData = buildUploadFormData(uploadingFiles, hasFolderStructure);
 
-            uploadingFiles.forEach((file, index) => {
-                formData.append('files', file);
-
-                // If folder upload, preserve the relative path
-                if (hasFolderStructure && file.webkitRelativePath) {
-                    formData.append('filePaths[]', file.webkitRelativePath);
-                }
-            });
-
-            formData.append('path', currentPath);
-
-            // Initiate batch upload
             const response = await fetch('/api/upload/multiple', {
                 method: 'POST',
                 headers: {
@@ -452,17 +506,17 @@ const FileBrowser = ({ token, user }) => {
             const { batchId } = await response.json();
             setUploadBatchId(batchId);
 
-            // Start polling for batch progress
             pollBatchProgress(batchId);
-
         } catch (error) {
+            clearUploadPolling();
             throw error;
         }
     };
 
     // Poll single file progress
     const pollSingleProgress = async (transferId) => {
-        const pollInterval = setInterval(async () => {
+        clearUploadPolling();
+        uploadPollRef.current = setInterval(async () => {
             try {
                 const response = await fetch(`/api/progress/${transferId}`, {
                     headers: {
@@ -470,8 +524,15 @@ const FileBrowser = ({ token, user }) => {
                     }
                 });
 
+                if (response.status === 404) {
+                    clearUploadPolling();
+                    setIsUploading(false);
+                    setError('Upload progress not found');
+                    return;
+                }
+
                 if (!response.ok) {
-                    clearInterval(pollInterval);
+                    clearUploadPolling();
                     setIsUploading(false);
                     setError('Failed to fetch progress');
                     return;
@@ -486,34 +547,23 @@ const FileBrowser = ({ token, user }) => {
                 });
                 setUploadProgress(Math.round(progressData.progress || 0));
 
-                // Check if completed or failed
                 if (progressData.status === 'completed') {
-                    clearInterval(pollInterval);
+                    clearUploadPolling();
                     setIsUploading(false);
                     setUploadProgress(100);
 
-                    // Show success message
-                    alert(`✅ Upload completed! File uploaded successfully.`);
+                    alert('✅ Upload completed! File uploaded successfully.');
 
-                    // Refresh file list
-                    fetchFiles();
-
-                    // Close upload modal and clear files
-                    setShowUploadModal(false);
-                    setUploadingFiles([]);
-                    setUploadProgress(0);
-                    setUploadTransferId(null);
-                    setError('');
+                    await fetchFiles();
+                    resetUploadState();
                 } else if (progressData.status === 'failed') {
-                    clearInterval(pollInterval);
+                    clearUploadPolling();
                     setIsUploading(false);
-                    // Handle error object properly - extract message string
                     const errorMessage = progressData.error?.message || progressData.error || 'Upload failed';
                     setError(errorMessage);
                 }
-
             } catch (error) {
-                clearInterval(pollInterval);
+                clearUploadPolling();
                 setIsUploading(false);
                 setError('Failed to fetch progress');
             }
@@ -522,7 +572,8 @@ const FileBrowser = ({ token, user }) => {
 
     // Poll batch progress
     const pollBatchProgress = async (batchId) => {
-        const pollInterval = setInterval(async () => {
+        clearUploadPolling();
+        uploadPollRef.current = setInterval(async () => {
             try {
                 const response = await fetch(`/api/progress/batch/${batchId}`, {
                     headers: {
@@ -530,8 +581,15 @@ const FileBrowser = ({ token, user }) => {
                     }
                 });
 
+                if (response.status === 404) {
+                    clearUploadPolling();
+                    setIsUploading(false);
+                    setError('Batch progress not found');
+                    return;
+                }
+
                 if (!response.ok) {
-                    clearInterval(pollInterval);
+                    clearUploadPolling();
                     setIsUploading(false);
                     setError('Failed to fetch batch progress');
                     return;
@@ -546,9 +604,8 @@ const FileBrowser = ({ token, user }) => {
                     files: batchData.files
                 });
 
-                // Check if batch is completed
-                if (batchData.status === 'completed' || batchData.status === 'partial_fail' || batchData.status === 'failed') {
-                    clearInterval(pollInterval);
+                if (['completed', 'partial_fail', 'failed'].includes(batchData.status)) {
+                    clearUploadPolling();
                     setIsUploading(false);
 
                     if (batchData.status === 'completed') {
@@ -556,23 +613,18 @@ const FileBrowser = ({ token, user }) => {
                     } else if (batchData.status === 'partial_fail') {
                         alert(`⚠️ Partial upload: ${batchData.successCount} succeeded, ${batchData.failedCount} failed.`);
                     } else {
-                        alert(`❌ Upload failed: All ${batchData.failedCount} file(s) failed.`);
+                        alert(`❌ Upload failed: ${batchData.failedCount} file(s) failed.`);
                     }
 
-                    // Refresh file list
-                    fetchFiles();
+                    await fetchFiles();
+                    resetUploadState();
 
-                    // Close upload modal and clear files
-                    setShowUploadModal(false);
-                    setUploadingFiles([]);
-                    setUploadProgress(0);
-                    setUploadBatchId(null);
-                    setUploadDetails(null);
-                    setError('');
+                    if (batchData.status === 'failed') {
+                        setError('Batch upload failed');
+                    }
                 }
-
             } catch (error) {
-                clearInterval(pollInterval);
+                clearUploadPolling();
                 setIsUploading(false);
                 setError('Failed to fetch batch progress');
             }
