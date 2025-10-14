@@ -128,6 +128,20 @@ class TransferManager extends EventEmitter {
     transfer.endTime = Date.now();
     transfer.duration = transfer.endTime - transfer.startTime;
 
+    // Ensure progress reflects completion
+    if (typeof transfer.totalSize === 'number' && transfer.totalSize > 0) {
+      transfer.transferredSize = transfer.totalSize;
+      transfer.progress = 100;
+    } else if (result?.file?.size) {
+      transfer.transferredSize = result.file.size;
+      transfer.totalSize = result.file.size;
+      transfer.progress = 100;
+    } else {
+      transfer.progress = 100;
+    }
+
+    transfer.updatedAt = Date.now();
+
     // Merge result data
     Object.assign(transfer, result);
 
@@ -136,7 +150,7 @@ class TransferManager extends EventEmitter {
 
     return transfer;
   }
-
+}
   /**
    * Fail a transfer
    * @param {string} transferId - Transfer ID
@@ -165,7 +179,18 @@ class TransferManager extends EventEmitter {
    * @returns {Object|null} Transfer status or null if not found
    */
   getTransfer(transferId) {
-    return this.transfers.get(transferId) || null;
+    const transfer = this.transfers.get(transferId);
+    if (!transfer) {
+      return null;
+    }
+
+    if (typeof transfer.transferredSize === 'number' && typeof transfer.totalSize === 'number' && transfer.totalSize > 0) {
+      transfer.progress = parseFloat(((transfer.transferredSize / transfer.totalSize) * 100).toFixed(2));
+    } else if (transfer.status === 'completed') {
+      transfer.progress = 100;
+    }
+
+    return transfer;
   }
 
   /**
