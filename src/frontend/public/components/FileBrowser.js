@@ -726,67 +726,6 @@ const FileBrowser = ({ token, user }) => {
         return iconMap[ext] || '📄';
     };
 
-
-
-
-
-    const handleDragEnter = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsDragging(true);
-    };
-
-    const handleDragOver = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-    };
-
-    const handleDragLeave = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        // Only set isDragging to false if we're leaving the content area itself
-        // Check if the related target is outside the content area
-        if (e.currentTarget === e.target) {
-            setIsDragging(false);
-        }
-    };
-
-    const handleDrop = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setIsDragging(false);
-        const droppedFiles = Array.from(e.dataTransfer.files);
-        if (droppedFiles.length > 0) {
-            setUploadingFiles(droppedFiles);
-            setShowUploadModal(true);
-        }
-    };
-
-    // The files state is now the single source of truth, populated by either fetchFiles or performSearch.
-    const validFilteredFiles = files.filter(file => file && file.name);
-
-    const getFileIcon = (file) => {
-        if (file.isDirectory) return '📁';
-        const ext = file.name.split('.').pop().toLowerCase();
-        const iconMap = {
-            'pdf': '📄', 'txt': '📝', 'doc': '📄', 'docx': '📄',
-            'xls': '📊', 'xlsx': '📊', 'ppt': '📽️', 'pptx': '📽️',
-            'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️',
-            'mp4': '🎬', 'avi': '🎬', 'mov': '🎬',
-            'mp3': '🎵', 'wav': '🎵', 'flac': '🎵',
-            'zip': '📦', 'rar': '📦', 'tar': '📦', 'gz': '📦',
-            'js': '📜', 'ts': '📜', 'jsx': '📜', 'tsx': '📜',
-            'py': '🐍', 'java': '☕', 'cpp': '📝', 'c': '📝',
-            'html': '🌐', 'css': '🎨', 'json': '📋', 'xml': '📋',
-            'sql': '🗄️', 'db': '🗄️'
-        };
-        return iconMap[ext] || '📄';
-    };
-
-
-
-
-
     const renameFile = async (file, newName) => {
         try {
             const response = await fetch('/api/rename', {
