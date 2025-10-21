@@ -250,8 +250,9 @@ class ConfigManager {
     }
 
     // Validate security configuration
-    if (!this.config.security.jwtSecret) {
-      throw new Error('jwtSecret is required');
+    // jwtSecret can be empty in config file, will use default value
+    if (!this.config.security.jwtSecret || this.config.security.jwtSecret.trim() === '') {
+      this.config.security.jwtSecret = 'your-secret-key-here';
     }
 
     // Validate transfer configuration
@@ -360,20 +361,54 @@ class ConfigManager {
       const configFile = this.options.configFile || './src/config.ini';
 
       if (configFile.endsWith('.ini')) {
-        // Convert config object to INI format
-        let iniContent = '';
+        // Build INI content with proper formatting and comments
+        // Only include fields that should be in config.ini
+        let iniContent = '# File Transfer Application Configuration\n\n';
 
-        for (const [section, values] of Object.entries(this.config)) {
-          if (typeof values === 'object' && values !== null) {
-            iniContent += `[${section}]\n`;
-            for (const [key, value] of Object.entries(values)) {
-              iniContent += `${key}=${value}\n`;
-            }
-            iniContent += '\n';
-          }
-        }
+        // [server] section
+        iniContent += '[server]\n';
+        iniContent += `port=${this.config.server?.port || 9400}\n\n`;
 
-        await fs.writeFile(configFile, iniContent.trim(), 'utf8');
+        // [fileSystem] section
+        iniContent += '[fileSystem]\n';
+        iniContent += '# Storage path for files - can be relative or absolute path\n';
+        iniContent += '# Examples:\n';
+        iniContent += '#   storagePath=./storage                    (relative path, default)\n';
+        iniContent += '#   storagePath=/home/user/myfiles          (absolute path on Linux/Mac)\n';
+        iniContent += '#   storagePath=C:\\Users\\User\\Documents     (absolute path on Windows)\n';
+        iniContent += `storagePath=${this.config.fileSystem?.storagePath || './storage'}\n\n`;
+
+        // [auth] section
+        iniContent += '[auth]\n';
+        iniContent += `username=${this.config.auth?.username || 'admin'}\n`;
+        iniContent += `password=${this.config.auth?.password || 'password'}\n`;
+        iniContent += `passwordHashed=${this.config.auth?.passwordHashed || false}\n\n`;
+
+        // [security] section
+        iniContent += '[security]\n';
+        iniContent += '# Security features (true/false)\n';
+        iniContent += '# Only authentication and data transmission security are always enabled\n';
+        iniContent += `enableRateLimit=${this.config.security?.enableRateLimit === true ? 'true' : 'false'}\n`;
+        iniContent += `enableSecurityHeaders=${this.config.security?.enableSecurityHeaders === true ? 'true' : 'false'}\n`;
+        iniContent += `enableInputValidation=${this.config.security?.enableInputValidation === true ? 'true' : 'false'}\n`;
+        iniContent += `enableFileUploadSecurity=${this.config.security?.enableFileUploadSecurity === true ? 'true' : 'false'}\n`;
+        iniContent += `enableRequestLogging=${this.config.security?.enableRequestLogging === true ? 'true' : 'false'}\n\n`;
+        iniContent += '# CSP (Content Security Policy) - set to false for development\n';
+        iniContent += `enableCSP=${this.config.security?.enableCSP === true ? 'true' : 'false'}\n\n`;
+        iniContent += '# JWT Secret (leave empty to use default)\n';
+        iniContent += `jwtSecret=${this.config.security?.jwtSecret || ''}\n\n`;
+
+        // [shareLinks] section
+        iniContent += '[shareLinks]\n';
+        iniContent += '# Share link feature configuration\n';
+        iniContent += `enabled=${this.config.shareLinks?.enabled === true ? 'true' : 'false'}\n`;
+        iniContent += `defaultExpiration=${this.config.shareLinks?.defaultExpiration || 86400}\n`;
+        iniContent += `maxExpiration=${this.config.shareLinks?.maxExpiration || 2592000}\n`;
+        iniContent += `allowPasswordProtection=${this.config.shareLinks?.allowPasswordProtection === true ? 'true' : 'false'}\n`;
+        iniContent += `cleanupInterval=${this.config.shareLinks?.cleanupInterval || 86400}\n`;
+        iniContent += `maxDownloadsDefault=${this.config.shareLinks?.maxDownloadsDefault || 0}\n`;
+
+        await fs.writeFile(configFile, iniContent, 'utf8');
       } else {
         // Save as JSON
         await fs.writeFile(configFile, JSON.stringify(this.config, null, 2), 'utf8');

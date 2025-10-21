@@ -32,6 +32,7 @@ const FileBrowser = ({ token, user }) => {
     const [uploadBatchId, setUploadBatchId] = React.useState(null);
     const [uploadTransferId, setUploadTransferId] = React.useState(null);
     const [uploadDetails, setUploadDetails] = React.useState(null); // For batch upload details
+    const [showAdminPanel, setShowAdminPanel] = React.useState(false);
 
     React.useEffect(() => {
         fetchFiles();
@@ -1136,11 +1137,11 @@ const FileBrowser = ({ token, user }) => {
                             React.createElement('span', { key: 'password-icon' }, '🔐'),
                             React.createElement('span', { key: 'password-text' }, ' Change Password')
                         ]),
-                        user?.username === 'admin' && React.createElement('button', {
+                        (user?.username === 'admin' || user?.role === 'admin') && React.createElement('button', {
                             key: 'admin-panel-option',
                             onClick: () => {
                                 setShowUserDropdown(false);
-                                window.location.href = '/admin.html';
+                                setShowAdminPanel(true);
                             },
                             style: {
                                 width: '100%',
@@ -2660,6 +2661,91 @@ const FileBrowser = ({ token, user }) => {
             ])
         ]),
 
+        // Admin Panel Modal
+        showAdminPanel && React.createElement('div', {
+            key: 'admin-panel-modal',
+            style: {
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(0, 0, 0, 0.7)',
+                backdropFilter: 'blur(8px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 2000,
+                padding: '20px'
+            },
+            onClick: (e) => {
+                if (e.target === e.currentTarget) {
+                    setShowAdminPanel(false);
+                }
+            }
+        }, [
+            React.createElement('div', {
+                key: 'admin-panel-content',
+                style: {
+                    width: '95%',
+                    maxWidth: '1400px',
+                    height: '90vh',
+                    background: 'white',
+                    borderRadius: '16px',
+                    overflow: 'hidden',
+                    boxShadow: '0 25px 50px rgba(0, 0, 0, 0.5)',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    position: 'relative'
+                }
+            }, [
+                // Close button
+                React.createElement('button', {
+                    key: 'close-admin-panel',
+                    onClick: () => setShowAdminPanel(false),
+                    style: {
+                        position: 'absolute',
+                        top: '20px',
+                        right: '20px',
+                        width: '40px',
+                        height: '40px',
+                        borderRadius: '50%',
+                        background: 'rgba(239, 68, 68, 0.9)',
+                        border: 'none',
+                        color: 'white',
+                        fontSize: '24px',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 10,
+                        transition: 'all 0.2s ease',
+                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)'
+                    },
+                    onMouseEnter: (e) => {
+                        e.target.style.background = 'rgba(239, 68, 68, 1)';
+                        e.target.style.transform = 'scale(1.1)';
+                    },
+                    onMouseLeave: (e) => {
+                        e.target.style.background = 'rgba(239, 68, 68, 0.9)';
+                        e.target.style.transform = 'scale(1)';
+                    }
+                }, '✕'),
+                // Admin panel iframe
+                React.createElement('iframe', {
+                    key: 'admin-iframe',
+                    src: '/admin.html?embedded=true',
+                    style: {
+                        width: '100%',
+                        height: '100%',
+                        border: 'none',
+                        borderRadius: '16px'
+                    },
+                    title: 'Admin Panel'
+                })
+            ])
+        ])
 
     ]);
 };
