@@ -55,18 +55,24 @@ class UserManager {
     try {
       const data = await fs.readFile(this.usersFilePath, 'utf8');
       const userData = JSON.parse(data);
-      
+
       // Convert array to Map for better performance
       this.users.clear();
       userData.users.forEach(user => {
         this.users.set(user.username, user);
       });
     } catch (error) {
-      if (error.code !== 'ENOENT') {
+      if (error.code === 'ENOENT') {
+        // File doesn't exist, create initial empty file
+        systemLogger.logSystem('INFO', 'users.json not found, creating new file');
+        this.users.clear();
+        await this.saveUsers();
+      } else {
+        // File exists but is corrupted, start fresh
         systemLogger.logSystem('WARN', `Error loading users file: ${error.message}`);
+        this.users.clear();
+        await this.saveUsers();
       }
-      // File doesn't exist or is corrupted, start fresh
-      this.users.clear();
     }
   }
 
