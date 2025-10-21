@@ -33,6 +33,12 @@ const FileBrowser = ({ token, user }) => {
     const [uploadTransferId, setUploadTransferId] = React.useState(null);
     const [uploadDetails, setUploadDetails] = React.useState(null); // For batch upload details
     const [showAdminPanel, setShowAdminPanel] = React.useState(false);
+    const [showShareModal, setShowShareModal] = React.useState(false);
+    const [shareExpiration, setShareExpiration] = React.useState('86400'); // 24 hours default
+    const [shareMaxDownloads, setShareMaxDownloads] = React.useState('0'); // Unlimited default
+    const [sharePassword, setSharePassword] = React.useState('');
+    const [sharePasswordEnabled, setSharePasswordEnabled] = React.useState(false);
+    const [generatedShareLink, setGeneratedShareLink] = React.useState(null);
 
     React.useEffect(() => {
         fetchFiles();
@@ -920,6 +926,98 @@ const FileBrowser = ({ token, user }) => {
         }
     };
 
+    const handleCreateShareLink = async () => {
+        if (selectedFiles.length === 0) {
+            setError('請選擇要分享的檔案');
+            return;
+        }
+
+        // For now, only support single file sharing
+        if (selectedFiles.length > 1) {
+            setError('目前只支持單檔分享');
+            return;
+        }
+
+        const file = selectedFiles[0];
+
+        // Don't allow sharing directories
+        if (file.isDirectory) {
+            setError('不支持分享資料夾');
+            return;
+        }
+
+        try {
+            setError('');
+            const requestBody = {
+                filePath: file.path,
+                expiresIn: parseInt(shareExpiration),
+                maxDownloads: parseInt(shareMaxDownloads)
+            };
+
+            // Add password if enabled
+            if (sharePasswordEnabled && sharePassword) {
+                requestBody.password = sharePassword;
+            }
+
+            const response = await fetch('/api/files/share', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                setGeneratedShareLink(data);
+                // Don't close modal yet, show the generated link
+            } else {
+                const data = await response.json();
+                setError(data.message || 'Failed to create share link');
+            }
+        } catch (err) {
+            setError('Failed to create share link: ' + err.message);
+        }
+    };
+
+    const handleOpenShareModal = () => {
+        setShowActionsDropdown(false);
+        setGeneratedShareLink(null);
+        setSharePassword('');
+        setSharePasswordEnabled(false);
+        setShareExpiration('86400'); // Reset to 24 hours
+        setShareMaxDownloads('0'); // Reset to unlimited
+        setError('');
+        setShowShareModal(true);
+    };
+
+    const handleCloseShareModal = () => {
+        setShowShareModal(false);
+        setGeneratedShareLink(null);
+        setSharePassword('');
+        setSharePasswordEnabled(false);
+        setError('');
+    };
+
+    const copyShareLinkToClipboard = async () => {
+        if (!generatedShareLink || !generatedShareLink.shareUrl) return;
+
+        try {
+            await navigator.clipboard.writeText(generatedShareLink.shareUrl);
+            alert('分享連結已複製到剪貼簿!\nShare link copied to clipboard!');
+        } catch (err) {
+            // Fallback for older browsers
+            const textArea = document.createElement('textarea');
+            textArea.value = generatedShareLink.shareUrl;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            alert('分享連結已複製到剪貼簿!\nShare link copied to clipboard!');
+        }
+    };
+
     const renderFileItem = (file, index) => {
         const isSelected = selectedFiles.some(f => f.path === file.path);
         const isFolder = file.isDirectory;
@@ -1543,6 +1641,7 @@ const FileBrowser = ({ token, user }) => {
                             alignItems: 'center',
                             gap: '12px',
                             transition: 'all 0.2s ease',
+                            borderBottom: '1px solid rgba(255, 255, 255, 0.05)',
                             opacity: selectedFiles.length !== 1 ? 0.5 : 1
                         },
                         onMouseEnter: (e) => {
@@ -1570,6 +1669,49 @@ const FileBrowser = ({ token, user }) => {
                                     textOverflow: 'ellipsis'
                                 }
                             }, selectedFiles[0].name)
+                        ])
+                    ]),
+                    React.createElement('button', {
+                        key: 'share-option',
+                        onClick: handleOpenShareModal,
+                        disabled: selectedFiles.length === 0,
+                        style: {
+                            width: '100%',
+                            padding: '14px 16px',
+                            background: 'transparent',
+                            border: 'none',
+                            color: selectedFiles.length === 0 ? 'rgba(255, 255, 255, 0.3)' : 'white',
+                            cursor: selectedFiles.length === 0 ? 'not-allowed' : 'pointer',
+                            fontSize: '14px',
+                            textAlign: 'left',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            transition: 'all 0.2s ease',
+                            opacity: selectedFiles.length === 0 ? 0.5 : 1
+                        },
+                        onMouseEnter: (e) => {
+                            if (selectedFiles.length > 0) {
+                                e.target.style.background = 'rgba(16, 185, 129, 0.2)';
+                                e.target.style.paddingLeft = '20px';
+                            }
+                        },
+                        onMouseLeave: (e) => {
+                            e.target.style.background = 'transparent';
+                            e.target.style.paddingLeft = '16px';
+                        }
+                    }, [
+                        React.createElement('span', { key: 'share-icon', style: { fontSize: '18px' } }, '🔗'),
+                        React.createElement('div', { key: 'share-content', style: { flex: 1 } }, [
+                            React.createElement('div', { key: 'share-text' }, 'Share'),
+                            selectedFiles.length > 0 && React.createElement('div', {
+                                key: 'share-count',
+                                style: {
+                                    fontSize: '11px',
+                                    color: 'rgba(255, 255, 255, 0.5)',
+                                    marginTop: '2px'
+                                }
+                            }, `${selectedFiles.length} item(s) selected`)
                         ])
                     ])
                 ])
@@ -2657,6 +2799,352 @@ const FileBrowser = ({ token, user }) => {
                             }
                         }, 'Change Password')
                     ])
+                ])
+            ])
+        ]),
+
+        // Share Link Modal
+        showShareModal && React.createElement('div', {
+            key: 'share-modal',
+            style: {
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(0, 0, 0, 0.7)',
+                backdropFilter: 'blur(8px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 1000
+            },
+            onClick: (e) => {
+                if (e.target === e.currentTarget) {
+                    handleCloseShareModal();
+                }
+            }
+        }, [
+            React.createElement('div', {
+                key: 'share-modal-content',
+                style: {
+                    background: 'rgba(30, 40, 50, 0.95)',
+                    backdropFilter: 'blur(20px)',
+                    borderRadius: '16px',
+                    padding: '32px',
+                    width: '500px',
+                    maxWidth: '90%',
+                    maxHeight: '90vh',
+                    overflowY: 'auto',
+                    boxShadow: '0 25px 50px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)'
+                }
+            }, [
+                React.createElement('h2', {
+                    key: 'share-title',
+                    style: {
+                        color: 'white',
+                        margin: '0 0 8px 0',
+                        fontSize: '24px',
+                        fontWeight: '600',
+                        textAlign: 'center',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '10px'
+                    }
+                }, [
+                    React.createElement('span', { key: 'share-icon' }, '🔗'),
+                    React.createElement('span', { key: 'share-text' }, generatedShareLink ? 'Share Link Generated!' : 'Create Share Link')
+                ]),
+
+                React.createElement('p', {
+                    key: 'share-subtitle',
+                    style: {
+                        color: 'rgba(255, 255, 255, 0.6)',
+                        margin: '0 0 24px 0',
+                        fontSize: '14px',
+                        textAlign: 'center'
+                    }
+                }, selectedFiles.length > 0 ? `Sharing: ${selectedFiles[0].name}` : ''),
+
+                // Show generated link or configuration form
+                !generatedShareLink ? [
+                    // Expiration dropdown
+                    React.createElement('div', {
+                        key: 'expiration-field',
+                        style: { marginBottom: '20px' }
+                    }, [
+                        React.createElement('label', {
+                            key: 'expiration-label',
+                            style: {
+                                display: 'block',
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                fontSize: '14px',
+                                fontWeight: '500',
+                                marginBottom: '8px'
+                            }
+                        }, 'Expiration Time'),
+                        React.createElement('select', {
+                            key: 'expiration-select',
+                            value: shareExpiration,
+                            onChange: (e) => setShareExpiration(e.target.value),
+                            style: {
+                                width: '100%',
+                                padding: '12px 16px',
+                                border: '1px solid rgba(16, 185, 129, 0.3)',
+                                borderRadius: '10px',
+                                background: 'rgba(16, 185, 129, 0.05)',
+                                color: 'white',
+                                fontSize: '15px',
+                                cursor: 'pointer'
+                            }
+                        }, [
+                            React.createElement('option', { key: '1h', value: '3600' }, '1 Hour'),
+                            React.createElement('option', { key: '1d', value: '86400' }, '1 Day (24 Hours)'),
+                            React.createElement('option', { key: '7d', value: '604800' }, '7 Days'),
+                            React.createElement('option', { key: '30d', value: '2592000' }, '30 Days'),
+                            React.createElement('option', { key: 'never', value: '0' }, 'Never Expire')
+                        ])
+                    ]),
+
+                    // Max downloads
+                    React.createElement('div', {
+                        key: 'downloads-field',
+                        style: { marginBottom: '20px' }
+                    }, [
+                        React.createElement('label', {
+                            key: 'downloads-label',
+                            style: {
+                                display: 'block',
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                fontSize: '14px',
+                                fontWeight: '500',
+                                marginBottom: '8px'
+                            }
+                        }, 'Max Downloads'),
+                        React.createElement('select', {
+                            key: 'downloads-select',
+                            value: shareMaxDownloads,
+                            onChange: (e) => setShareMaxDownloads(e.target.value),
+                            style: {
+                                width: '100%',
+                                padding: '12px 16px',
+                                border: '1px solid rgba(16, 185, 129, 0.3)',
+                                borderRadius: '10px',
+                                background: 'rgba(16, 185, 129, 0.05)',
+                                color: 'white',
+                                fontSize: '15px',
+                                cursor: 'pointer'
+                            }
+                        }, [
+                            React.createElement('option', { key: 'unlimited', value: '0' }, 'Unlimited'),
+                            React.createElement('option', { key: '1', value: '1' }, '1 Download'),
+                            React.createElement('option', { key: '10', value: '10' }, '10 Downloads'),
+                            React.createElement('option', { key: '100', value: '100' }, '100 Downloads')
+                        ])
+                    ]),
+
+                    // Password protection toggle
+                    React.createElement('div', {
+                        key: 'password-toggle-field',
+                        style: { marginBottom: '20px' }
+                    }, [
+                        React.createElement('label', {
+                            key: 'password-toggle-label',
+                            style: {
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '10px',
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                fontSize: '14px',
+                                fontWeight: '500',
+                                cursor: 'pointer'
+                            }
+                        }, [
+                            React.createElement('input', {
+                                key: 'password-checkbox',
+                                type: 'checkbox',
+                                checked: sharePasswordEnabled,
+                                onChange: (e) => setSharePasswordEnabled(e.target.checked),
+                                style: { cursor: 'pointer' }
+                            }),
+                            React.createElement('span', { key: 'password-text' }, 'Password Protection')
+                        ])
+                    ]),
+
+                    // Password input (conditional)
+                    sharePasswordEnabled && React.createElement('div', {
+                        key: 'password-input-field',
+                        style: { marginBottom: '20px' }
+                    }, [
+                        React.createElement('label', {
+                            key: 'password-input-label',
+                            style: {
+                                display: 'block',
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                fontSize: '14px',
+                                fontWeight: '500',
+                                marginBottom: '8px'
+                            }
+                        }, 'Password'),
+                        React.createElement('input', {
+                            key: 'password-input',
+                            type: 'password',
+                            placeholder: 'Enter password',
+                            value: sharePassword,
+                            onChange: (e) => setSharePassword(e.target.value),
+                            style: {
+                                width: '100%',
+                                padding: '12px 16px',
+                                border: '1px solid rgba(16, 185, 129, 0.3)',
+                                borderRadius: '10px',
+                                background: 'rgba(16, 185, 129, 0.05)',
+                                color: 'white',
+                                fontSize: '15px'
+                            }
+                        })
+                    ])
+                ] : [
+                    // Show generated share link
+                    React.createElement('div', {
+                        key: 'generated-link-display',
+                        style: {
+                            marginBottom: '24px',
+                            padding: '20px',
+                            background: 'rgba(16, 185, 129, 0.1)',
+                            border: '2px solid rgba(16, 185, 129, 0.3)',
+                            borderRadius: '12px'
+                        }
+                    }, [
+                        React.createElement('div', {
+                            key: 'link-label',
+                            style: {
+                                color: 'rgba(255, 255, 255, 0.7)',
+                                fontSize: '12px',
+                                marginBottom: '8px',
+                                textTransform: 'uppercase',
+                                letterSpacing: '1px'
+                            }
+                        }, 'Share Link'),
+                        React.createElement('div', {
+                            key: 'link-url',
+                            style: {
+                                color: '#10b981',
+                                fontSize: '14px',
+                                wordBreak: 'break-all',
+                                fontFamily: 'monospace',
+                                marginBottom: '16px'
+                            }
+                        }, generatedShareLink.shareUrl),
+                        React.createElement('button', {
+                            key: 'copy-button',
+                            onClick: copyShareLinkToClipboard,
+                            style: {
+                                width: '100%',
+                                padding: '12px',
+                                background: 'linear-gradient(135deg, #10b981, #059669)',
+                                border: 'none',
+                                borderRadius: '8px',
+                                color: 'white',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                fontWeight: '600'
+                            }
+                        }, '📋 Copy Link')
+                    ]),
+
+                    // Show link info
+                    React.createElement('div', {
+                        key: 'link-info',
+                        style: {
+                            marginBottom: '24px',
+                            fontSize: '13px',
+                            color: 'rgba(255, 255, 255, 0.6)'
+                        }
+                    }, [
+                        React.createElement('div', { key: 'info-expires', style: { marginBottom: '8px' } },
+                            `⏱️ Expires: ${generatedShareLink.expiresAt ? new Date(generatedShareLink.expiresAt).toLocaleString() : 'Never'}`
+                        ),
+                        React.createElement('div', { key: 'info-downloads', style: { marginBottom: '8px' } },
+                            `📥 Max Downloads: ${generatedShareLink.maxDownloads || 'Unlimited'}`
+                        ),
+                        generatedShareLink.password && React.createElement('div', { key: 'info-password' }, '🔒 Password Protected')
+                    ])
+                ],
+
+                // Error message
+                error && React.createElement('div', {
+                    key: 'share-error',
+                    style: {
+                        color: '#ef4444',
+                        textAlign: 'center',
+                        padding: '12px',
+                        background: 'rgba(239, 68, 68, 0.1)',
+                        borderRadius: '8px',
+                        marginBottom: '16px',
+                        fontSize: '14px'
+                    }
+                }, error),
+
+                // Action buttons
+                React.createElement('div', {
+                    key: 'share-buttons',
+                    style: {
+                        display: 'flex',
+                        gap: '12px'
+                    }
+                }, !generatedShareLink ? [
+                    React.createElement('button', {
+                        key: 'cancel-share',
+                        onClick: handleCloseShareModal,
+                        style: {
+                            flex: 1,
+                            padding: '14px',
+                            background: 'rgba(255, 255, 255, 0.08)',
+                            backdropFilter: 'blur(10px)',
+                            border: '1px solid rgba(255, 255, 255, 0.2)',
+                            borderRadius: '10px',
+                            color: 'rgba(255, 255, 255, 0.9)',
+                            cursor: 'pointer',
+                            fontSize: '15px',
+                            fontWeight: '500',
+                            transition: 'all 0.2s ease'
+                        }
+                    }, 'Cancel'),
+                    React.createElement('button', {
+                        key: 'create-share',
+                        onClick: handleCreateShareLink,
+                        style: {
+                            flex: 1,
+                            padding: '14px',
+                            background: 'linear-gradient(135deg, #10b981, #059669)',
+                            border: 'none',
+                            borderRadius: '10px',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '15px',
+                            fontWeight: '600',
+                            boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)',
+                            transition: 'all 0.2s ease'
+                        }
+                    }, '🔗 Generate Link')
+                ] : [
+                    React.createElement('button', {
+                        key: 'close-share',
+                        onClick: handleCloseShareModal,
+                        style: {
+                            flex: 1,
+                            padding: '14px',
+                            background: 'linear-gradient(135deg, #10b981, #059669)',
+                            border: 'none',
+                            borderRadius: '10px',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '15px',
+                            fontWeight: '600'
+                        }
+                    }, 'Done')
                 ])
             ])
         ]),
