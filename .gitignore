@@ -39,6 +39,9 @@ data/
 uploads/
 temp/
 
+# User data files (runtime generated)
+src/users.json
+
 # Local development files
 LOCAL_DEV_NOTES.md
 dev-notes.md
