@@ -1,5 +1,5 @@
 // File List Component
-const FileList = ({ files, searchQuery, onClearSearch, getFileIcon, error }) => {
+const FileList = ({ files, searchQuery, onClearSearch, getFileIcon, error, token }) => {
     return (
         <div style={{ padding: '24px' }}>
             {error ? (
@@ -23,7 +23,7 @@ const FileList = ({ files, searchQuery, onClearSearch, getFileIcon, error }) => 
                             <p style={{ margin: 0, fontSize: '18px', marginBottom: '8px' }}>
                                 No files found matching "{searchQuery}"
                             </p>
-                            <button 
+                            <button
                                 onClick={onClearSearch}
                                 style={{
                                     background: 'rgba(59, 130, 246, 0.2)',
@@ -58,10 +58,11 @@ const FileList = ({ files, searchQuery, onClearSearch, getFileIcon, error }) => 
                     gap: '16px'
                 }}>
                     {files.map((file, index) => (
-                        <FileItem 
+                        <FileItem
                             key={index}
                             file={file}
                             icon={getFileIcon(file)}
+                            token={token}
                         />
                     ))}
                 </div>
@@ -71,56 +72,106 @@ const FileList = ({ files, searchQuery, onClearSearch, getFileIcon, error }) => 
 };
 
 // File Item Component
-const FileItem = ({ file, icon }) => {
+const FileItem = ({ file, icon, token }) => {
+    const [showShareModal, setShowShareModal] = useState(false);
+    const isFile = file.name.includes('.');
+
+    const handleShareClick = (e) => {
+        e.stopPropagation();
+        setShowShareModal(true);
+    };
+
     return (
-        <div
-            style={{
-                background: 'rgba(255, 255, 255, 0.1)',
-                backdropFilter: 'blur(10px)',
-                borderRadius: '12px',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
-                padding: '16px',
-                cursor: 'pointer',
-                transition: 'all 0.3s ease',
-                transform: 'translateY(0)'
-            }}
-            onMouseEnter={(e) => {
-                e.target.style.background = 'rgba(255, 255, 255, 0.2)';
-                e.target.style.transform = 'translateY(-4px)';
-                e.target.style.boxShadow = '0 10px 25px rgba(0, 0, 0, 0.2)';
-            }}
-            onMouseLeave={(e) => {
-                e.target.style.background = 'rgba(255, 255, 255, 0.1)';
-                e.target.style.transform = 'translateY(0)';
-                e.target.style.boxShadow = 'none';
-            }}
-        >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ fontSize: '32px' }}>
-                    {icon}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{
-                        color: 'white',
-                        margin: 0,
-                        fontSize: '16px',
-                        fontWeight: '500',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap'
-                    }}>
-                        {file.name}
-                    </p>
-                    <p style={{
-                        color: 'rgba(255, 255, 255, 0.7)',
-                        margin: 0,
-                        fontSize: '12px',
-                        marginTop: '4px'
-                    }}>
-                        {file.name.includes('.') ? 'File' : 'Folder'}
-                    </p>
+        <>
+            <div
+                style={{
+                    background: 'rgba(255, 255, 255, 0.1)',
+                    backdropFilter: 'blur(10px)',
+                    borderRadius: '12px',
+                    border: '1px solid rgba(255, 255, 255, 0.2)',
+                    padding: '16px',
+                    cursor: 'pointer',
+                    transition: 'all 0.3s ease',
+                    transform: 'translateY(0)',
+                    position: 'relative'
+                }}
+                onMouseEnter={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.2)';
+                    e.currentTarget.style.transform = 'translateY(-4px)';
+                    e.currentTarget.style.boxShadow = '0 10px 25px rgba(0, 0, 0, 0.2)';
+                }}
+                onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                    e.currentTarget.style.transform = 'translateY(0)';
+                    e.currentTarget.style.boxShadow = 'none';
+                }}
+            >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div style={{ fontSize: '32px' }}>
+                        {icon}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{
+                            color: 'white',
+                            margin: 0,
+                            fontSize: '16px',
+                            fontWeight: '500',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                        }}>
+                            {file.name}
+                        </p>
+                        <p style={{
+                            color: 'rgba(255, 255, 255, 0.7)',
+                            margin: 0,
+                            fontSize: '12px',
+                            marginTop: '4px'
+                        }}>
+                            {isFile ? 'File' : 'Folder'}
+                        </p>
+                    </div>
+                    {isFile && (
+                        <button
+                            onClick={handleShareClick}
+                            style={{
+                                background: 'linear-gradient(135deg, #3b82f6, #8b5cf6)',
+                                border: 'none',
+                                borderRadius: '8px',
+                                color: 'white',
+                                padding: '8px 12px',
+                                cursor: 'pointer',
+                                fontSize: '14px',
+                                fontWeight: '500',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                transition: 'all 0.2s ease',
+                                outline: 'none'
+                            }}
+                            onMouseEnter={(e) => {
+                                e.target.style.transform = 'scale(1.05)';
+                                e.target.style.boxShadow = '0 4px 12px rgba(59, 130, 246, 0.4)';
+                            }}
+                            onMouseLeave={(e) => {
+                                e.target.style.transform = 'scale(1)';
+                                e.target.style.boxShadow = 'none';
+                            }}
+                        >
+                            <span>🔗</span>
+                            Share
+                        </button>
+                    )}
                 </div>
             </div>
-        </div>
+
+            {showShareModal && (
+                <ShareModal
+                    file={file}
+                    onClose={() => setShowShareModal(false)}
+                    token={token}
+                />
+            )}
+        </>
     );
 };
