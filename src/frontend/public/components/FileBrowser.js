@@ -969,8 +969,9 @@ const FileBrowser = ({ token, user }) => {
             });
 
             if (response.ok) {
-                const data = await response.json();
-                setGeneratedShareLink(data);
+                const result = await response.json();
+                // Backend returns { success: true, data: { shareToken, shareUrl, fullUrl, ... } }
+                setGeneratedShareLink(result.data);
                 // Don't close modal yet, show the generated link
             } else {
                 const data = await response.json();
@@ -1001,20 +1002,31 @@ const FileBrowser = ({ token, user }) => {
     };
 
     const copyShareLinkToClipboard = async () => {
-        if (!generatedShareLink || !generatedShareLink.shareUrl) return;
+        const urlToCopy = generatedShareLink?.fullUrl || generatedShareLink?.shareUrl;
+        if (!urlToCopy) {
+            setError('No share link available to copy');
+            return;
+        }
 
         try {
-            await navigator.clipboard.writeText(generatedShareLink.shareUrl);
-            alert('分享連結已複製到剪貼簿!\nShare link copied to clipboard!');
+            await navigator.clipboard.writeText(urlToCopy);
+            alert('分享連結已複製到剪貼簿!\nShare link copied to clipboard!\n\n' + urlToCopy);
         } catch (err) {
             // Fallback for older browsers
             const textArea = document.createElement('textarea');
-            textArea.value = generatedShareLink.shareUrl;
+            textArea.value = urlToCopy;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-9999px';
             document.body.appendChild(textArea);
+            textArea.focus();
             textArea.select();
-            document.execCommand('copy');
+            try {
+                document.execCommand('copy');
+                alert('分享連結已複製到剪貼簿!\nShare link copied to clipboard!\n\n' + urlToCopy);
+            } catch (copyErr) {
+                setError('Failed to copy: ' + copyErr.message);
+            }
             document.body.removeChild(textArea);
-            alert('分享連結已複製到剪貼簿!\nShare link copied to clipboard!');
         }
     };
 
@@ -3036,7 +3048,7 @@ const FileBrowser = ({ token, user }) => {
                                 fontFamily: 'monospace',
                                 marginBottom: '16px'
                             }
-                        }, generatedShareLink.shareUrl),
+                        }, generatedShareLink.fullUrl || generatedShareLink.shareUrl),
                         React.createElement('button', {
                             key: 'copy-button',
                             onClick: copyShareLinkToClipboard,
