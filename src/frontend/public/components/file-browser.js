@@ -427,12 +427,13 @@ const FileBrowser = ({ token, user }) => {
                     </div>
 
                     {/* File List */}
-                    <FileList 
+                    <FileList
                         files={filteredFiles}
                         searchQuery={searchQuery}
                         onClearSearch={handleClearSearch}
                         getFileIcon={getFileIcon}
                         error={error}
+                        token={token}
                     />
                 </div>
             </div>

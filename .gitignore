@@ -13,6 +13,8 @@ MIGRATION_GUIDE.md
 git-helper.sh
 backup
 .docs
+openspec/
+openspec/**
 
 # Issue Files
 issue*

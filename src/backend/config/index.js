@@ -43,6 +43,16 @@ class ConfigManager {
         maxConcurrentTransfers: 3,
         chunkSize: 1024 * 1024, // 1MB chunks
         enableResume: true
+      },
+
+      // Share links configuration
+      shareLinks: {
+        enabled: true,
+        defaultExpiration: 86400, // 24 hours
+        maxExpiration: 2592000, // 30 days
+        allowPasswordProtection: true,
+        cleanupInterval: 86400, // daily
+        maxDownloadsDefault: 0 // 0 = unlimited
       }
     };
 
@@ -93,12 +103,19 @@ class ConfigManager {
   _parseIniFile(content) {
     const config = {};
     const lines = content.split('\n');
+    let currentSection = null;
 
     for (const line of lines) {
       const trimmedLine = line.trim();
 
       // Skip empty lines and comments
       if (!trimmedLine || trimmedLine.startsWith('#') || trimmedLine.startsWith(';')) {
+        continue;
+      }
+
+      // Check for section headers [sectionName]
+      if (trimmedLine.startsWith('[') && trimmedLine.endsWith(']')) {
+        currentSection = trimmedLine.substring(1, trimmedLine.length - 1).trim();
         continue;
       }
 
@@ -118,18 +135,40 @@ class ConfigManager {
           parsedValue = parseFloat(value);
         }
 
-        // Map INI keys to nested config structure
-        if (key === 'port') {
-          config.server = config.server || {};
-          config.server.port = parsedValue;
-        } else if (key === 'storagePath') {
-          config.fileSystem = config.fileSystem || {};
-          config.fileSystem.storagePath = parsedValue;
-        } else if (key === 'username' || key === 'password') {
-          config.auth = config.auth || {};
-          config.auth[key] = parsedValue;
+        // Handle section-based or legacy flat keys
+        if (currentSection) {
+          // Map section names to config structure
+          let sectionName = currentSection;
+
+          // Handle special section name mappings
+          if (currentSection === 'fileSystem') {
+            sectionName = 'fileSystem';
+          } else if (currentSection === 'server') {
+            sectionName = 'server';
+          } else if (currentSection === 'auth') {
+            sectionName = 'auth';
+          } else if (currentSection === 'security') {
+            sectionName = 'security';
+          } else if (currentSection === 'shareLinks') {
+            sectionName = 'shareLinks';
+          }
+
+          config[sectionName] = config[sectionName] || {};
+          config[sectionName][key] = parsedValue;
         } else {
-          config[key] = parsedValue;
+          // Legacy flat keys (backwards compatibility)
+          if (key === 'port') {
+            config.server = config.server || {};
+            config.server.port = parsedValue;
+          } else if (key === 'storagePath') {
+            config.fileSystem = config.fileSystem || {};
+            config.fileSystem.storagePath = parsedValue;
+          } else if (key === 'username' || key === 'password') {
+            config.auth = config.auth || {};
+            config.auth[key] = parsedValue;
+          } else {
+            config[key] = parsedValue;
+          }
         }
       }
     }
@@ -222,6 +261,29 @@ class ConfigManager {
 
     if (this.config.transfer.chunkSize <= 0) {
       throw new Error('chunkSize must be positive');
+    }
+
+    // Validate share links configuration
+    if (this.config.shareLinks) {
+      if (this.config.shareLinks.defaultExpiration <= 0) {
+        throw new Error('shareLinks.defaultExpiration must be positive');
+      }
+
+      if (this.config.shareLinks.maxExpiration <= 0) {
+        throw new Error('shareLinks.maxExpiration must be positive');
+      }
+
+      if (this.config.shareLinks.defaultExpiration > this.config.shareLinks.maxExpiration) {
+        throw new Error('shareLinks.defaultExpiration cannot exceed shareLinks.maxExpiration');
+      }
+
+      if (this.config.shareLinks.cleanupInterval <= 0) {
+        throw new Error('shareLinks.cleanupInterval must be positive');
+      }
+
+      if (this.config.shareLinks.maxDownloadsDefault < 0) {
+        throw new Error('shareLinks.maxDownloadsDefault must be non-negative (0 = unlimited)');
+      }
     }
 
     // Validate file system storage path exists

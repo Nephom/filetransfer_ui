@@ -12,6 +12,9 @@ const { EnhancedMemoryFileSystem } = require('./file-system');
 const AuthManager = require('./auth');
 const UserManager = require('./auth/user-manager');
 const UploadAPI = require('./api/upload.js');
+const shareRoutes = require('./api/share');
+const database = require('./database/db');
+const shareManager = require('./auth/share-manager');
 const { transferManager } = require('./transfer');
 const { authenticate, setJwtSecret, requireAdmin } = require('./middleware/auth');
 const { initializeSecurity } = require('./middleware/security');
@@ -117,6 +120,10 @@ app.use(express.static(path.join(__dirname, '../frontend/public')));
 // Use the UploadAPI router for all upload endpoints
 const uploadApi = new UploadAPI();
 app.use('/api', uploadApi.getRouter());
+
+// Share routes - /api/share/:token/download does NOT require authentication
+// Other share routes require authentication via middleware
+app.use('/api', shareRoutes);
 
 // Routes
 app.get('/admin', authenticate, (req, res) => {
@@ -1738,6 +1745,10 @@ async function startServer() {
     // Load configuration first
     await configManager.load();
 
+    // Initialize database
+    await database.initialize();
+    systemLogger.logSystem('INFO', 'Database initialized successfully');
+
     // Initialize security middleware with configuration
     securityMiddleware = initializeSecurity(configManager);
 
@@ -1829,6 +1840,35 @@ async function startServer() {
         accessUrls.push(`http://${iface.address}:${port}`);
       });
       systemLogger.logSystem('INFO', `Server started successfully on port ${port}. Access URLs: ${accessUrls.join(', ')}`);
+
+      // Schedule cleanup job for share links (runs daily at 3 AM)
+      const scheduleCleanup = () => {
+        const now = new Date();
+        const night = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate() + 1, // next day
+          3, // 3 AM
+          0,
+          0
+        );
+        const msToMidnight = night.getTime() - now.getTime();
+
+        setTimeout(async () => {
+          try {
+            const deleted = await shareManager.cleanupExpiredLinks();
+            systemLogger.logSystem('INFO', `Share links cleanup completed. Deleted ${deleted} expired links.`);
+          } catch (error) {
+            systemLogger.logSystem('ERROR', `Share links cleanup failed: ${error.message}`);
+          }
+          // Schedule next cleanup
+          scheduleCleanup();
+        }, msToMidnight);
+      };
+
+      // Start cleanup scheduler
+      scheduleCleanup();
+      systemLogger.logSystem('INFO', 'Share links cleanup scheduler started (runs daily at 3 AM)');
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to start server: ${error.message}`);
