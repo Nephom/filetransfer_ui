@@ -1493,14 +1493,13 @@ app.get('/api/admin/users/:username', requireAdmin, async (req, res) => {
 app.get('/api/admin/config', requireAdmin, async (req, res) => {
   try {
     // Return current configuration (sanitized - no passwords)
+    // Only return fields that exist in config.ini
     const config = {
       server: {
-        port: configManager.get('server.port') || 3000,
-        host: configManager.get('server.host') || 'localhost'
+        port: configManager.get('server.port') || 9400
       },
       fileSystem: {
-        storagePath: configManager.get('fileSystem.storagePath') || './storage',
-        maxFileSize: configManager.get('fileSystem.maxFileSize') || (100 * 1024 * 1024), // 100MB
+        storagePath: configManager.get('fileSystem.storagePath') || './storage'
       },
       security: {
         enableRateLimit: configManager.get('security.enableRateLimit') === true,
@@ -1508,21 +1507,20 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
         enableInputValidation: configManager.get('security.enableInputValidation') === true,
         enableFileUploadSecurity: configManager.get('security.enableFileUploadSecurity') === true,
         enableRequestLogging: configManager.get('security.enableRequestLogging') === true,
-        enableCSP: configManager.get('security.enableCSP') === true
+        enableCSP: configManager.get('security.enableCSP') === true,
+        jwtSecret: configManager.get('security.jwtSecret') ? '[SET]' : '[DEFAULT]'
       },
-      logging: {
-        enableDetailedLogging: configManager.get('logging.enableDetailedLogging') === true,
-        logLevel: configManager.get('logging.logLevel') || 'info',
-        logFileOperations: configManager.get('logging.logFileOperations') === true,
-        logSecurityEvents: configManager.get('logging.logSecurityEvents') === true,
-        logPerformanceMetrics: configManager.get('logging.logPerformanceMetrics') === true,
-        includeUserAgent: configManager.get('logging.includeUserAgent') === true,
-        includeRealIP: configManager.get('logging.includeRealIP') === true
+      shareLinks: {
+        enabled: configManager.get('shareLinks.enabled') === true,
+        defaultExpiration: configManager.get('shareLinks.defaultExpiration') || 86400,
+        maxExpiration: configManager.get('shareLinks.maxExpiration') || 2592000,
+        allowPasswordProtection: configManager.get('shareLinks.allowPasswordProtection') === true,
+        cleanupInterval: configManager.get('shareLinks.cleanupInterval') || 86400,
+        maxDownloadsDefault: configManager.get('shareLinks.maxDownloadsDefault') || 0
       },
       auth: {
-        username: configManager.get('auth.username') || 'admin',
+        username: configManager.get('auth.username') || 'admin'
         // Never return password
-        jwtSecret: configManager.get('security.jwtSecret') ? '[SET]' : '[DEFAULT]'
       }
     };
 
@@ -1535,12 +1533,12 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
 
 app.put('/api/admin/config', requireAdmin, async (req, res) => {
   try {
-    const { server, fileSystem, security, logging, auth } = req.body;
+    const { server, fileSystem, security, shareLinks } = req.body;
     const updatedFields = [];
-    
+
     // Validate and update server settings
     if (server) {
-      if (server.port) {
+      if (server.port !== undefined) {
         const port = parseInt(server.port);
         if (port < 1 || port > 65535) {
           return res.status(400).json({ error: 'Port must be between 1 and 65535' });
@@ -1548,12 +1546,8 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
         configManager.set('server.port', port);
         updatedFields.push('server.port');
       }
-      if (server.host) {
-        configManager.set('server.host', server.host);
-        updatedFields.push('server.host');
-      }
     }
-    
+
     // Validate and update file system settings
     if (fileSystem) {
       if (fileSystem.storagePath) {
@@ -1564,60 +1558,72 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
         configManager.set('fileSystem.storagePath', fileSystem.storagePath);
         updatedFields.push('fileSystem.storagePath');
       }
-      if (fileSystem.maxFileSize) {
-        const maxSize = parseInt(fileSystem.maxFileSize);
-        if (maxSize < 1024) { // Minimum 1KB
-          return res.status(400).json({ error: 'Max file size must be at least 1KB' });
-        }
-        configManager.set('fileSystem.maxFileSize', maxSize);
-        updatedFields.push('fileSystem.maxFileSize');
-      }
     }
-    
+
     // Update security settings
     if (security) {
       Object.keys(security).forEach(key => {
-        configManager.set(`security.${key}`, Boolean(security[key]));
-        updatedFields.push(`security.${key}`);
-      });
-    }
-    
-    // Update logging settings
-    if (logging) {
-      Object.keys(logging).forEach(key => {
-        if (key === 'logLevel') {
-          const validLevels = ['error', 'warn', 'info', 'debug'];
-          if (!validLevels.includes(logging[key])) {
-            return res.status(400).json({ 
-              error: `Invalid log level. Must be one of: ${validLevels.join(', ')}` 
-            });
+        if (key === 'jwtSecret') {
+          // Only update jwtSecret if it's provided and not empty
+          if (security[key] && security[key].trim() !== '') {
+            if (security[key].length < 16) {
+              return res.status(400).json({ error: 'JWT secret must be at least 16 characters long' });
+            }
+            configManager.set('security.jwtSecret', security[key]);
+            updatedFields.push('security.jwtSecret');
           }
-          configManager.set(`logging.${key}`, logging[key]);
         } else {
-          configManager.set(`logging.${key}`, Boolean(logging[key]));
+          // Handle boolean security flags
+          configManager.set(`security.${key}`, Boolean(security[key]));
+          updatedFields.push(`security.${key}`);
         }
-        updatedFields.push(`logging.${key}`);
       });
     }
-    
-    // Update auth settings (careful with these)
-    if (auth) {
-      if (auth.username && auth.username !== configManager.get('auth.username')) {
-        if (auth.username.length < 3) {
-          return res.status(400).json({ error: 'Username must be at least 3 characters long' });
-        }
-        configManager.set('auth.username', auth.username);
-        updatedFields.push('auth.username');
+
+    // Update share links settings
+    if (shareLinks) {
+      if (shareLinks.enabled !== undefined) {
+        configManager.set('shareLinks.enabled', Boolean(shareLinks.enabled));
+        updatedFields.push('shareLinks.enabled');
       }
-      if (auth.jwtSecret) {
-        if (auth.jwtSecret.length < 32) {
-          return res.status(400).json({ error: 'JWT secret must be at least 32 characters long' });
+      if (shareLinks.defaultExpiration !== undefined) {
+        const expiration = parseInt(shareLinks.defaultExpiration);
+        if (expiration < 60) {
+          return res.status(400).json({ error: 'Default expiration must be at least 60 seconds' });
         }
-        configManager.set('security.jwtSecret', auth.jwtSecret);
-        updatedFields.push('security.jwtSecret');
+        configManager.set('shareLinks.defaultExpiration', expiration);
+        updatedFields.push('shareLinks.defaultExpiration');
+      }
+      if (shareLinks.maxExpiration !== undefined) {
+        const maxExpiration = parseInt(shareLinks.maxExpiration);
+        if (maxExpiration < 60) {
+          return res.status(400).json({ error: 'Max expiration must be at least 60 seconds' });
+        }
+        configManager.set('shareLinks.maxExpiration', maxExpiration);
+        updatedFields.push('shareLinks.maxExpiration');
+      }
+      if (shareLinks.allowPasswordProtection !== undefined) {
+        configManager.set('shareLinks.allowPasswordProtection', Boolean(shareLinks.allowPasswordProtection));
+        updatedFields.push('shareLinks.allowPasswordProtection');
+      }
+      if (shareLinks.cleanupInterval !== undefined) {
+        const interval = parseInt(shareLinks.cleanupInterval);
+        if (interval < 60) {
+          return res.status(400).json({ error: 'Cleanup interval must be at least 60 seconds' });
+        }
+        configManager.set('shareLinks.cleanupInterval', interval);
+        updatedFields.push('shareLinks.cleanupInterval');
+      }
+      if (shareLinks.maxDownloadsDefault !== undefined) {
+        const maxDownloads = parseInt(shareLinks.maxDownloadsDefault);
+        if (maxDownloads < 0) {
+          return res.status(400).json({ error: 'Max downloads must be non-negative (0 = unlimited)' });
+        }
+        configManager.set('shareLinks.maxDownloadsDefault', maxDownloads);
+        updatedFields.push('shareLinks.maxDownloadsDefault');
       }
     }
-    
+
     // Save configuration to file
     await configManager.save();
 
