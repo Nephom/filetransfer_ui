@@ -383,8 +383,12 @@
                 <div class="label">Cache Status</div>
             </div>
             <div class="stat-card">
-                <div class="number" id="serverPort">9400</div>
-                <div class="label">Server Port</div>
+                <div class="number" id="httpPort">9400</div>
+                <div class="label">HTTP Port</div>
+            </div>
+            <div class="stat-card">
+                <div class="number" id="httpsPort">-</div>
+                <div class="label">HTTPS Port</div>
             </div>
         </div>
 
@@ -408,6 +412,18 @@
                 <h3>👥 User Management</h3>
                 <p>Create, modify, or manage user accounts</p>
                 <button class="btn" onclick="openUserManagement()">Manage Users</button>
+            </div>
+
+            <div class="control-card">
+                <h3>🔒 SSL Certificate Management</h3>
+                <p>Manage HTTPS certificates and security settings</p>
+                <button class="btn" onclick="openSSLManagement()">Manage SSL</button>
+            </div>
+
+            <div class="control-card">
+                <h3>🔄 Service Control</h3>
+                <p>Restart backend service to apply configuration changes</p>
+                <button class="btn danger" onclick="restartService()">Restart Service</button>
             </div>
         </div>
 
@@ -483,6 +499,67 @@
         </div>
     </div>
 
+    <!-- SSL Management Modal -->
+    <div id="sslManagementModal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>🔒 SSL Certificate Management</h2>
+                <button class="modal-close" onclick="closeModal('sslManagementModal')">✕ Close</button>
+            </div>
+
+            <div id="sslStatus" style="margin-bottom: 20px;">
+                <p style="text-align: center; opacity: 0.7;">Loading SSL status...</p>
+            </div>
+
+            <div id="sslActions" style="display: none;">
+                <!-- Certificate Status Section -->
+                <div class="config-section">
+                    <h3>📜 Certificate Status</h3>
+                    <div id="certStatus"></div>
+                </div>
+
+                <!-- SAN Configuration Section -->
+                <div class="config-section">
+                    <h3>🌐 Subject Alternative Names (SANs)</h3>
+                    <p style="font-size: 0.9rem; opacity: 0.8; margin-bottom: 15px;">
+                        Configure IP addresses and hostnames for your SSL certificate
+                    </p>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="autoDetectIPs" checked>
+                        <label for="autoDetectIPs" style="margin: 0; cursor: pointer;">Auto-detect 192.x.x.x network IPs</label>
+                    </div>
+
+                    <div class="form-group" style="margin-top: 15px;">
+                        <label>IP Addresses:</label>
+                        <div id="ipList" style="margin-bottom: 10px;"></div>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="newIP" class="form-control" placeholder="Enter IP address (e.g., 192.168.1.100)" style="flex: 1;">
+                            <button class="btn" onclick="addSAN('ip')" style="width: auto; padding: 10px 20px;">Add IP</button>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Hostnames:</label>
+                        <div id="hostnameList" style="margin-bottom: 10px;"></div>
+                        <div style="display: flex; gap: 10px;">
+                            <input type="text" id="newHostname" class="form-control" placeholder="Enter hostname (e.g., myserver.local)" style="flex: 1;">
+                            <button class="btn" onclick="addSAN('hostname')" style="width: auto; padding: 10px 20px;">Add Hostname</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Actions Section -->
+                <div class="btn-group">
+                    <button class="btn" id="generateCertBtn" onclick="generateCertificate()" style="display: none;">🔐 Generate Certificates</button>
+                    <button class="btn" id="renewCertBtn" onclick="renewCertificate()" style="display: none;">🔄 Renew Certificate</button>
+                    <button class="btn" id="updateSANBtn" onclick="updateSANs()">💾 Save SAN Configuration</button>
+                    <button class="btn" id="downloadCABtn" onclick="downloadCA()" style="display: none;">⬇️ Download CA Certificate</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Log Viewer Modal -->
     <div id="logViewerModal" class="modal-overlay">
         <div class="modal-content">
@@ -530,7 +607,14 @@
                 });
                 if (configResponse.ok) {
                     const configData = await configResponse.json();
-                    document.getElementById('serverPort').textContent = configData.config?.server?.port || 9400;
+                    document.getElementById('httpPort').textContent = configData.config?.server?.port || 9400;
+
+                    // Display HTTPS port if SSL is configured
+                    if (configData.config?.ssl?.httpsPort) {
+                        document.getElementById('httpsPort').textContent = configData.config.ssl.httpsPort;
+                    } else {
+                        document.getElementById('httpsPort').textContent = '-';
+                    }
                 }
             } catch (error) {
                 console.error('Error fetching stats:', error);
@@ -1071,6 +1155,353 @@
             }
 
             return true;
+        }
+
+        // SSL Management Functions
+        async function openSSLManagement() {
+            openModal('sslManagementModal');
+            await loadSSLStatus();
+        }
+
+        async function loadSSLStatus() {
+            const sslStatus = document.getElementById('sslStatus');
+            const sslActions = document.getElementById('sslActions');
+
+            try {
+                const response = await fetch('/api/admin/ssl/status', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error('Failed to load SSL status');
+                }
+
+                const data = await response.json();
+                displaySSLStatus(data);
+
+                sslStatus.style.display = 'none';
+                sslActions.style.display = 'block';
+            } catch (error) {
+                console.error('Error loading SSL status:', error);
+                sslStatus.innerHTML = '<p style="color: #ef4444; text-align: center;">Failed to load SSL status</p>';
+            }
+        }
+
+        function displaySSLStatus(data) {
+            const certStatus = document.getElementById('certStatus');
+            let html = '';
+
+            if (!data.certificatesExist) {
+                html += '<div style="background: rgba(251, 191, 36, 0.2); padding: 15px; border-radius: 10px; margin-bottom: 15px;">';
+                html += '<p style="margin: 0;">⚠️ SSL certificates not configured. Generate certificates to enable HTTPS.</p>';
+                html += '</div>';
+                document.getElementById('generateCertBtn').style.display = 'inline-block';
+                document.getElementById('renewCertBtn').style.display = 'none';
+                document.getElementById('downloadCABtn').style.display = 'none';
+            } else {
+                // CA Certificate Status
+                if (data.ca && data.ca.exists) {
+                    const caColor = data.ca.isExpired ? 'rgba(239, 68, 68, 0.2)' : (data.ca.isExpiringSoon ? 'rgba(251, 191, 36, 0.2)' : 'rgba(34, 197, 94, 0.2)');
+                    html += `<div style="background: ${caColor}; padding: 15px; border-radius: 10px; margin-bottom: 10px;">`;
+                    html += '<p style="margin: 0; font-weight: 600;">CA Certificate</p>';
+                    html += `<p style="margin: 5px 0 0 0; font-size: 0.9rem;">Expires: ${data.ca.expirationDateLocal} (${data.ca.daysUntilExpiry} days)</p>`;
+                    if (data.ca.isExpired) {
+                        html += '<p style="margin: 5px 0 0 0; font-size: 0.9rem; color: #ef4444;">❌ Certificate has expired!</p>';
+                    } else if (data.ca.isExpiringSoon) {
+                        html += '<p style="margin: 5px 0 0 0; font-size: 0.9rem; color: #f59e0b;">⚠️ Certificate expires soon!</p>';
+                    }
+                    html += '</div>';
+                }
+
+                // Server Certificate Status
+                if (data.server && data.server.exists) {
+                    const serverColor = data.server.isExpired ? 'rgba(239, 68, 68, 0.2)' : (data.server.isExpiringSoon ? 'rgba(251, 191, 36, 0.2)' : 'rgba(34, 197, 94, 0.2)');
+                    html += `<div style="background: ${serverColor}; padding: 15px; border-radius: 10px;">`;
+                    html += '<p style="margin: 0; font-weight: 600;">Server Certificate</p>';
+                    html += `<p style="margin: 5px 0 0 0; font-size: 0.9rem;">Expires: ${data.server.expirationDateLocal} (${data.server.daysUntilExpiry} days)</p>`;
+                    if (data.server.isExpired) {
+                        html += '<p style="margin: 5px 0 0 0; font-size: 0.9rem; color: #ef4444;">❌ Certificate has expired!</p>';
+                    } else if (data.server.isExpiringSoon) {
+                        html += '<p style="margin: 5px 0 0 0; font-size: 0.9rem; color: #f59e0b;">⚠️ Certificate expires soon!</p>';
+                    }
+                    html += '</div>';
+                }
+
+                document.getElementById('generateCertBtn').style.display = 'none';
+                document.getElementById('renewCertBtn').style.display = 'inline-block';
+                document.getElementById('downloadCABtn').style.display = 'inline-block';
+            }
+
+            certStatus.innerHTML = html;
+
+            // Load SAN configuration
+            if (data.sanConfig) {
+                displaySANs(data.sanConfig);
+                document.getElementById('autoDetectIPs').checked = data.sanConfig.autoDetectIPs !== false;
+            }
+        }
+
+        function displaySANs(sanConfig) {
+            const ipList = document.getElementById('ipList');
+            const hostnameList = document.getElementById('hostnameList');
+
+            // Display IPs
+            let ipHtml = '';
+            if (sanConfig.ips && sanConfig.ips.length > 0) {
+                sanConfig.ips.forEach(ip => {
+                    const isAutoDetected = sanConfig.autoDetected && sanConfig.autoDetected.includes(ip);
+                    const badge = isAutoDetected ? '<span style="background: rgba(59, 130, 246, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; margin-left: 8px;">Auto</span>' : '';
+                    const removeBtn = !isAutoDetected ? `<button class="btn btn-small danger" onclick="removeSAN('${ip}', 'ip')" style="margin-left: 10px;">Remove</button>` : '';
+                    ipHtml += `<div style="background: rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">`;
+                    ipHtml += `<span>${ip}${badge}</span>${removeBtn}`;
+                    ipHtml += '</div>';
+                });
+            } else {
+                ipHtml = '<p style="opacity: 0.6; font-size: 0.9rem;">No IP addresses configured</p>';
+            }
+            ipList.innerHTML = ipHtml;
+
+            // Display Hostnames
+            let hostnameHtml = '';
+            if (sanConfig.hostnames && sanConfig.hostnames.length > 0) {
+                sanConfig.hostnames.forEach(hostname => {
+                    hostnameHtml += `<div style="background: rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">`;
+                    hostnameHtml += `<span>${hostname}</span>`;
+                    hostnameHtml += `<button class="btn btn-small danger" onclick="removeSAN('${hostname}', 'hostname')" style="margin-left: 10px;">Remove</button>`;
+                    hostnameHtml += '</div>';
+                });
+            } else {
+                hostnameHtml = '<p style="opacity: 0.6; font-size: 0.9rem;">No hostnames configured</p>';
+            }
+            hostnameList.innerHTML = hostnameHtml;
+        }
+
+        async function generateCertificate() {
+            if (!confirm('Generate SSL certificates? This will enable HTTPS on your server.')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/ssl/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert(data.message + '\n\n請重啟服務以啟用HTTPS。');
+                    await loadSSLStatus();
+                } else {
+                    alert(`錯誤: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error generating certificate:', error);
+                alert('生成證書失敗');
+            }
+        }
+
+        async function renewCertificate() {
+            if (!confirm('Renew server certificate? This will regenerate the server certificate with current SANs.\n\n服務需要重啟以應用新證書。')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/ssl/renew', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert(data.message);
+                    await loadSSLStatus();
+                } else {
+                    alert(`錯誤: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error renewing certificate:', error);
+                alert('更新證書失敗');
+            }
+        }
+
+        async function updateSANs() {
+            try {
+                // Get current SANs from server
+                const statusResponse = await fetch('/api/admin/ssl/sans', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                const currentSANs = await statusResponse.json();
+                const autoDetectIPs = document.getElementById('autoDetectIPs').checked;
+
+                const response = await fetch('/api/admin/ssl/sans', {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        ips: currentSANs.ips || [],
+                        hostnames: currentSANs.hostnames || [],
+                        autoDetectIPs: autoDetectIPs
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert(data.message);
+                    if (data.needsRestart) {
+                        if (confirm('證書已更新。是否立即重啟服務？')) {
+                            await restartService();
+                        }
+                    }
+                    await loadSSLStatus();
+                } else {
+                    alert(`錯誤: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error updating SANs:', error);
+                alert('更新SAN配置失敗');
+            }
+        }
+
+        async function addSAN(type) {
+            const value = type === 'ip' ? document.getElementById('newIP').value.trim() : document.getElementById('newHostname').value.trim();
+
+            if (!value) {
+                alert('請輸入' + (type === 'ip' ? 'IP地址' : '主機名'));
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/ssl/sans/add', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ san: value })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    if (type === 'ip') {
+                        document.getElementById('newIP').value = '';
+                    } else {
+                        document.getElementById('newHostname').value = '';
+                    }
+                    alert(data.message);
+                    await loadSSLStatus();
+                } else {
+                    alert(`錯誤: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error adding SAN:', error);
+                alert('添加SAN失敗');
+            }
+        }
+
+        async function removeSAN(san, type) {
+            if (!confirm(`確定要移除${type === 'ip' ? 'IP地址' : '主機名'} "${san}"?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/admin/ssl/sans/${encodeURIComponent(san)}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert(data.message);
+                    await loadSSLStatus();
+                } else {
+                    alert(`錯誤: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error removing SAN:', error);
+                alert('移除SAN失敗');
+            }
+        }
+
+        async function downloadCA() {
+            try {
+                const response = await fetch('/api/admin/ssl/download/ca', {
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'filetransfer-ca.crt';
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                } else {
+                    const data = await response.json();
+                    alert(`下載失敗: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error downloading CA:', error);
+                alert('下載CA證書失敗');
+            }
+        }
+
+        // Service Restart Function
+        async function restartService() {
+            if (!confirm('確定要重啟後端服務嗎？\n\n這將暫時中斷所有連接。服務會在幾秒鐘內重新啟動。')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/admin/service/restart', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    alert(data.message + '\n\n頁面將在5秒後重新載入...');
+
+                    // Wait 5 seconds then reload
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                } else {
+                    alert(`重啟失敗: ${data.error}`);
+                }
+            } catch (error) {
+                console.error('Error restarting service:', error);
+                // Service might have restarted, try to reload after a delay
+                alert('服務正在重啟...\n\n頁面將在10秒後重新載入。');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 10000);
+            }
         }
 
         // Initialize on page load

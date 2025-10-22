@@ -216,4 +216,16 @@ class SystemLogger {
 
 // Create and export a single instance
 const systemLogger = new SystemLogger();
+
+// Handle SIGUSR1 for logrotate compatibility
+// When logrotate rotates the log file, it sends SIGUSR1 to the process
+// We need to close and reopen the log file handles
+process.on('SIGUSR1', () => {
+  systemLogger.logSystem('INFO', 'Received SIGUSR1 signal - reopening log files for logrotate');
+  console.log('ℹ️  SIGUSR1 received - log files will be reopened on next write');
+  // Note: Since we use fs.appendFile for each log entry, file handles are automatically
+  // reopened on each write. No explicit action needed for Node.js append operations.
+  systemLogger.logSystem('INFO', 'Log rotation complete');
+});
+
 module.exports = { SystemLogger, systemLogger, createLogger: () => systemLogger };

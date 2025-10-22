@@ -15,6 +15,7 @@ NC='\033[0m' # No Color
 # Configuration
 SERVER_FILE="src/backend/server.js"
 PID_FILE="server.pid"
+LOCK_FILE="server.lock"
 LOG_FILE="server.log"
 CONFIG_FILE="src/config.ini"
 
@@ -64,6 +65,44 @@ if [ ! -f "$SERVER_FILE" ]; then
     exit 1
 fi
 
+# Check for active restart lock
+if [ -f "$LOCK_FILE" ]; then
+    echo -e "${YELLOW}⚠️  Restart lock detected${NC}"
+
+    # Read lock information
+    LOCK_TIMESTAMP=$(grep -o '"timestamp":"[^"]*"' "$LOCK_FILE" 2>/dev/null | cut -d'"' -f4)
+    LOCK_INITIATOR=$(grep -o '"initiator":"[^"]*"' "$LOCK_FILE" 2>/dev/null | cut -d'"' -f4)
+    LOCK_METHOD=$(grep -o '"method":"[^"]*"' "$LOCK_FILE" 2>/dev/null | cut -d'"' -f4)
+
+    if [ -n "$LOCK_TIMESTAMP" ]; then
+        echo -e "${BLUE}   Locked by: ${NC}$LOCK_INITIATOR ($LOCK_METHOD)"
+        echo -e "${BLUE}   Time: ${NC}$LOCK_TIMESTAMP"
+
+        # Check if lock is stale (older than 2 minutes = 120 seconds)
+        if command -v date &> /dev/null; then
+            LOCK_TIME=$(date -d "$LOCK_TIMESTAMP" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${LOCK_TIMESTAMP%.*}" +%s 2>/dev/null)
+            CURRENT_TIME=$(date +%s)
+
+            if [ -n "$LOCK_TIME" ]; then
+                LOCK_AGE=$((CURRENT_TIME - LOCK_TIME))
+
+                if [ $LOCK_AGE -gt 120 ]; then
+                    echo -e "${YELLOW}   Lock is stale (${LOCK_AGE}s old), removing...${NC}"
+                    rm -f "$LOCK_FILE"
+                else
+                    echo -e "${RED}❌ Service is being restarted by another process${NC}"
+                    echo -e "${BLUE}💡 Please wait for the restart to complete${NC}"
+                    exit 1
+                fi
+            fi
+        fi
+    else
+        # Invalid lock file, remove it
+        echo -e "${YELLOW}   Invalid lock file, removing...${NC}"
+        rm -f "$LOCK_FILE"
+    fi
+fi
+
 # Check if already running
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
@@ -89,12 +128,23 @@ echo -e "${BLUE}📁 Checking for necessary directories...${NC}"
 mkdir -p storage
 mkdir -p logs
 
+# Create lock file to prevent concurrent restarts
+echo -e "${BLUE}🔒 Creating restart lock...${NC}"
+cat > "$LOCK_FILE" << EOF
+{
+  "pid": $$,
+  "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")",
+  "initiator": "shell",
+  "method": "shell"
+}
+EOF
+
 # Start the server
 echo -e "${GREEN}🌟 Starting File Transfer Service...${NC}"
 nohup node "$SERVER_FILE" > "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 
-# Save PID
+# Save PID (will be overwritten by Node.js after successful startup)
 echo $SERVER_PID > "$PID_FILE"
 
 # Wait for the server to start
@@ -104,6 +154,7 @@ sleep 3
 # Check if server started successfully
 if ps -p $SERVER_PID > /dev/null 2>&1; then
     echo -e "${GREEN}✅ Server started successfully!${NC}"
+    echo -e "${BLUE}🔓 Lock will be released by server after complete initialization${NC}"
     echo -e "${CYAN}======================================${NC}"
     echo -e "${GREEN}📡 Server Information:${NC}"
     echo -e "${BLUE}   🏠 Local Access:  ${NC}http://localhost:$PORT"
