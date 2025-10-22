@@ -17,7 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const VERSION = "1.45"
+const VERSION = "1.46"
 
 // MainModel 主操作畫面模型
 type MainModel struct {
@@ -47,8 +47,8 @@ func NewMainModel(cfg *config.Config) MainModel {
 	input.CharLimit = 200
 	input.Width = 50
 
-	client := api.NewClient(cfg.Host, cfg.Token)
-	debug.Log("[NewMainModel] Client 創建完成，Client.Token 長度: %d", len(client.Token))
+	client := api.NewClient(cfg.Host, cfg.Token, cfg.SkipTLSVerify, cfg.CAPath)
+	debug.Log("[NewMainModel] Client 創建完成，Client.Token 長度: %d, SkipTLSVerify: %v", len(client.Token), cfg.SkipTLSVerify)
 
 	m := MainModel{
 		client:         client,

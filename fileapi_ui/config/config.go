@@ -13,15 +13,19 @@ const (
 
 // Config 儲存應用程式配置
 type Config struct {
-	Host     string `json:"host"`
-	Token    string `json:"token"`
-	Username string `json:"username"`
+	Host          string `json:"host"`
+	Token         string `json:"token"`
+	Username      string `json:"username"`
+	SkipTLSVerify bool   `json:"skipTlsVerify"` // 跳過 TLS 證書驗證（自簽證書用）
+	CAPath        string `json:"caPath"`        // CA 證書路徑（可選）
 }
 
 // HostOptions 可用的主機選項
 var HostOptions = []string{
-	"http://192.168.1.3:9400", // 192 LAB network
-	"http://10.6.66.40:9400",  // Big network
+	"http://192.168.1.6:9400",   // HTTP - 192 LAB network
+	"https://192.168.1.6:9443",  // HTTPS - 192 LAB network (自簽證書)
+	"http://10.6.66.40:9400",    // HTTP - Big network
+	"https://10.6.66.40:9443",   // HTTPS - Big network (自簽證書)
 }
 
 // LoadConfig 從檔案載入配置
