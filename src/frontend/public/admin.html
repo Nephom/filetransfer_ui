@@ -862,6 +862,27 @@
                 <label for="shareLinksPassword" style="margin: 0; cursor: pointer;">Allow Password Protection</label>
             </div></div>`;
 
+            // SSL section
+            html += '<div class="config-section"><h3>🔒 SSL/TLS Configuration</h3>';
+            html += `<div class="form-row">
+                <div class="form-group">
+                    <label>HTTPS Port:</label>
+                    <input type="number" name="ssl.httpsPort" class="form-control" value="${config.ssl?.httpsPort || 9443}" min="1" max="65535">
+                    <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">HTTPS server port (requires restart after change)</p>
+                </div>
+            </div>`;
+            html += `<div class="checkbox-group">
+                <input type="checkbox" name="ssl.enableHttpsRedirect" id="sslRedirect" ${config.ssl?.enableHttpsRedirect !== false ? 'checked' : ''}>
+                <label for="sslRedirect" style="margin: 0; cursor: pointer;">Enable HTTP to HTTPS Redirect</label>
+            </div>`;
+            html += `<div class="checkbox-group">
+                <input type="checkbox" name="ssl.autoGenerateCerts" id="sslAutoGen" ${config.ssl?.autoGenerateCerts === true ? 'checked' : ''}>
+                <label for="sslAutoGen" style="margin: 0; cursor: pointer;">Auto-generate Certificates on First Run</label>
+            </div>`;
+            html += `<p style="font-size: 0.85rem; opacity: 0.7; margin-top: 10px;">
+                ⚠️ Note: For manual certificate management, use the SSL Management panel. Changes to SSL settings require service restart.
+            </p></div>`;
+
             html += '</form>';
 
             html += '<div class="btn-group">';
@@ -885,7 +906,8 @@
                     server: {},
                     fileSystem: {},
                     security: {},
-                    shareLinks: {}
+                    shareLinks: {},
+                    ssl: {}
                 };
 
                 // Process form data
