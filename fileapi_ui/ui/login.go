@@ -63,6 +63,11 @@ func NewLoginModel(cfg *config.Config) *LoginModel {
 		username.Focus()
 	}
 
+	// 如果是新配置，設定預設值（使用 HTTPS 時跳過 TLS 驗證，適用於自簽證書）
+	if cfg.Host == "" {
+		cfg.SkipTLSVerify = true // 預設跳過 TLS 驗證（自簽證書）
+	}
+
 	return &LoginModel{
 		state:     state,
 		hostIndex: hostIndex,
@@ -237,7 +242,7 @@ type loginErrorMsg struct {
 
 func (m *LoginModel) performLogin() tea.Cmd {
 	return func() tea.Msg {
-		client := api.NewClient(m.config.Host, "")
+		client := api.NewClient(m.config.Host, "", m.config.SkipTLSVerify, m.config.CAPath)
 		resp, err := client.Login(m.username.Value(), m.password.Value())
 		if err != nil {
 			return loginErrorMsg{err: err}
