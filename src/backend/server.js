@@ -5,6 +5,9 @@ const path = require('path');
 const multer = require('multer');
 const bcrypt = require('bcrypt');
 const fs = require('fs').promises;
+const fsSync = require('fs');
+const https = require('https');
+const http = require('http');
 const os = require('os');
 const archiver = require('archiver');
 const configManager = require('./config');
@@ -13,12 +16,16 @@ const AuthManager = require('./auth');
 const UserManager = require('./auth/user-manager');
 const UploadAPI = require('./api/upload.js');
 const shareRoutes = require('./api/share');
+const sslRoutes = require('./api/ssl');
 const database = require('./database/db');
 const shareManager = require('./auth/share-manager');
 const { transferManager } = require('./transfer');
 const { authenticate, setJwtSecret, requireAdmin } = require('./middleware/auth');
 const { initializeSecurity } = require('./middleware/security');
 const { createLogger, systemLogger } = require('./utils/logger');
+const certificateManager = require('./ssl/certificate-manager');
+const sanManager = require('./ssl/san-manager');
+const pidManager = require('./utils/pid-manager');
 
 
 
@@ -34,6 +41,8 @@ let fileSystem;
 let securityMiddleware;
 let isCacheReady = false;
 const userActiveDirectories = new Map(); // Track active directory per user
+let httpServerInstance = null;
+let httpsServerInstance = null;
 
 // Security checks and recommendations on startup
 async function performSecurityChecks(config) {
@@ -124,6 +133,9 @@ app.use('/api', uploadApi.getRouter());
 // Share routes - /api/share/:token/download does NOT require authentication
 // Other share routes require authentication via middleware
 app.use('/api', shareRoutes);
+
+// SSL management routes (admin only)
+app.use('/api', sslRoutes);
 
 // Routes
 app.get('/admin', authenticate, (req, res) => {
@@ -1518,6 +1530,10 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
         cleanupInterval: configManager.get('shareLinks.cleanupInterval') || 86400,
         maxDownloadsDefault: configManager.get('shareLinks.maxDownloadsDefault') || 0
       },
+      ssl: {
+        httpsPort: configManager.get('ssl.httpsPort') || 9443,
+        enableHttpsRedirect: configManager.get('ssl.enableHttpsRedirect') !== false
+      },
       auth: {
         username: configManager.get('auth.username') || 'admin'
         // Never return password
@@ -1744,6 +1760,154 @@ app.post('/api/admin/cache/clear', requireAdmin, async (req, res) => {
   }
 });
 
+// Service restart endpoint
+app.post('/api/admin/service/restart', requireAdmin, async (req, res) => {
+  try {
+    const username = req.user?.username || 'unknown';
+
+    // Try to acquire restart lock
+    const lockResult = await pidManager.acquireLock(username, 'web');
+
+    if (!lockResult.success) {
+      systemLogger.logSystem('WARN', `Restart blocked - lock held by ${lockResult.lockData?.initiator} (${lockResult.lockData?.method})`);
+      return res.status(409).json({
+        error: lockResult.message,
+        details: {
+          locked_by: lockResult.lockData?.initiator,
+          locked_at: lockResult.lockData?.timestamp,
+          method: lockResult.lockData?.method
+        }
+      });
+    }
+
+    systemLogger.logSystem('INFO', `SERVICE RESTART initiated by user: ${username}`);
+
+    // Send response before restarting
+    res.json({
+      success: true,
+      message: '服務重啟已啟動，請稍候...'
+    });
+
+    // Wait a bit to ensure response is sent
+    setTimeout(async () => {
+      try {
+        systemLogger.logSystem('INFO', 'Starting graceful restart...');
+        console.log('\n🔄 Service restart requested by admin...');
+
+        // Close servers gracefully
+        if (httpsServerInstance) {
+          await new Promise((resolve) => {
+            httpsServerInstance.close(() => {
+              console.log('✅ HTTPS server stopped');
+              resolve();
+            });
+          });
+        }
+
+        if (httpServerInstance) {
+          await new Promise((resolve) => {
+            httpServerInstance.close(() => {
+              console.log('✅ HTTP server stopped');
+              resolve();
+            });
+          });
+        }
+
+        // Close file system
+        if (fileSystem && fileSystem.close) {
+          await fileSystem.close();
+          console.log('✅ File system closed');
+        }
+
+        systemLogger.logSystem('INFO', 'Graceful restart completed, restarting process...');
+
+        // Restart the process
+        const { spawn} = require('child_process');
+        const child = spawn(process.argv[0], process.argv.slice(1), {
+          detached: true,
+          stdio: 'inherit',
+          cwd: process.cwd(),
+          env: process.env
+        });
+
+        child.unref();
+
+        // Exit current process
+        console.log('🚀 New process started, exiting old process...');
+        process.exit(0);
+      } catch (error) {
+        systemLogger.logSystem('ERROR', `Restart failed: ${error.message}`);
+        console.error('❌ Restart failed:', error);
+        // Release lock on failure
+        await pidManager.releaseLock();
+      }
+    }, 500);
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to initiate restart: ${error.message}`);
+    await pidManager.releaseLock();
+    res.status(500).json({ error: '服務重啟失敗，請檢查日誌' });
+  }
+});
+
+
+/**
+ * Check if SSL certificates exist and are valid
+ * @returns {Object} { exist: boolean, ca: boolean, server: boolean }
+ */
+async function checkSSLCertificates() {
+  try {
+    const exists = await certificateManager.certificatesExist();
+    return {
+      exist: exists.ca && exists.server,
+      ca: exists.ca,
+      server: exists.server
+    };
+  } catch (error) {
+    return { exist: false, ca: false, server: false };
+  }
+}
+
+/**
+ * Load SSL certificates and create HTTPS options
+ * @returns {Object|null} HTTPS options or null if certificates don't exist
+ */
+async function loadSSLCertificates() {
+  try {
+    const certStatus = await checkSSLCertificates();
+    if (!certStatus.exist) {
+      return null;
+    }
+
+    const certPath = certificateManager.serverCertPath;
+    const keyPath = certificateManager.serverKeyPath;
+
+    const cert = await fs.readFile(certPath, 'utf8');
+    const key = await fs.readFile(keyPath, 'utf8');
+
+    return {
+      key: key,
+      cert: cert
+    };
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to load SSL certificates: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * HTTP to HTTPS redirect middleware
+ */
+function httpsRedirectMiddleware(httpsPort) {
+  return (req, res, next) => {
+    // Skip redirect for certain paths (e.g., health checks)
+    if (req.path === '/health') {
+      return next();
+    }
+
+    const httpsUrl = `https://${req.hostname}:${httpsPort}${req.url}`;
+    res.redirect(301, httpsUrl);
+  };
+}
 
 // Start server with configuration
 async function startServer() {
@@ -1799,9 +1963,11 @@ async function startServer() {
     }, cacheRefreshInterval);
 
     const port = configManager.get('server.port') || 3000;
+    const httpsPort = configManager.get('ssl.httpsPort') || 9443;
+    const enableHttpsRedirect = configManager.get('ssl.enableHttpsRedirect') !== false; // Default true
 
     console.log('Configuration loaded:');
-    console.log('- Port:', port);
+    console.log('- HTTP Port:', port);
     console.log('- Username:', configManager.get('auth.username'));
     console.log('- Storage Path:', storagePath);
 
@@ -1814,13 +1980,73 @@ async function startServer() {
       console.log(`- File Watcher: ${cacheInfo.isWatching ? 'Active' : 'Inactive'}`);
     }
 
-    app.listen(port, async () => {
+    // Check for SSL certificates
+    const sslOptions = await loadSSLCertificates();
+    let httpsServer = null;
+
+    if (sslOptions) {
+      console.log('- SSL Status: Enabled');
+      console.log('- HTTPS Port:', httpsPort);
+      console.log('- HTTPS Redirect:', enableHttpsRedirect ? 'Enabled' : 'Disabled');
+
+      // Get certificate expiration dates
+      const caExpiration = await certificateManager.getCertificateExpiration(certificateManager.caCertPath);
+      const serverExpiration = await certificateManager.getCertificateExpiration(certificateManager.serverCertPath);
+
+      if (caExpiration) {
+        const daysUntilExpiry = Math.floor((caExpiration - new Date()) / (1000 * 60 * 60 * 24));
+        console.log(`- CA Certificate Expires: ${caExpiration.toLocaleDateString()} (${daysUntilExpiry} days)`);
+      }
+      if (serverExpiration) {
+        const daysUntilExpiry = Math.floor((serverExpiration - new Date()) / (1000 * 60 * 60 * 24));
+        console.log(`- Server Certificate Expires: ${serverExpiration.toLocaleDateString()} (${daysUntilExpiry} days)`);
+
+        // Warn if expiring soon
+        if (certificateManager.isExpiringSoon(serverExpiration, 90)) {
+          console.log('  ⚠️  WARNING: Certificate expires within 90 days!');
+        }
+        if (certificateManager.isExpired(serverExpiration)) {
+          console.log('  ❌ ERROR: Certificate has expired!');
+        }
+      }
+
+      // Create HTTPS server
+      try {
+        httpsServer = https.createServer(sslOptions, app);
+        httpsServerInstance = httpsServer; // Store for graceful shutdown
+        httpsServer.listen(httpsPort, () => {
+          systemLogger.logSystem('INFO', `HTTPS server started on port ${httpsPort}`);
+        });
+      } catch (error) {
+        systemLogger.logSystem('ERROR', `Failed to start HTTPS server: ${error.message}`);
+        console.log('  ❌ Failed to start HTTPS server, continuing with HTTP only');
+      }
+    } else {
+      console.log('- SSL Status: Disabled (no certificates found)');
+      console.log('  💡 Generate certificates in Admin Panel to enable HTTPS');
+    }
+
+    // Create HTTP server (with redirect middleware if HTTPS is enabled and redirect is requested)
+    let httpApp = app;
+    if (httpsServer && enableHttpsRedirect) {
+      // Create a separate Express app for HTTP with redirect middleware
+      const httpRedirectApp = express();
+      httpRedirectApp.use(httpsRedirectMiddleware(httpsPort));
+      httpApp = httpRedirectApp;
+    }
+
+    const httpServer = http.createServer(httpApp);
+    httpServerInstance = httpServer; // Store for graceful shutdown
+    httpServer.listen(port, async () => {
       console.log(`\n🌐 File Transfer API is now running!`);
       console.log('='.repeat(50));
 
       // Show all available access URLs
       const networkInterfaces = getNetworkInterfaces();
       console.log('📡 Available access URLs:');
+
+      // HTTP URLs
+      console.log('\n  HTTP:');
       console.log(`   🏠 Local:     http://localhost:${port}`);
       console.log(`   🏠 Local:     http://127.0.0.1:${port}`);
 
@@ -1830,6 +2056,23 @@ async function startServer() {
         });
       } else {
         console.log('   ⚠️  No external network interfaces found');
+      }
+
+      // HTTPS URLs (if SSL is enabled)
+      if (httpsServer) {
+        console.log('\n  HTTPS:');
+        console.log(`   🔒 Local:     https://localhost:${httpsPort}`);
+        console.log(`   🔒 Local:     https://127.0.0.1:${httpsPort}`);
+
+        if (networkInterfaces.length > 0) {
+          networkInterfaces.forEach(iface => {
+            console.log(`   🔒 Network:   https://${iface.address}:${httpsPort} (${iface.name})`);
+          });
+        }
+
+        if (enableHttpsRedirect) {
+          console.log('\n  ℹ️  HTTP requests will be redirected to HTTPS');
+        }
       }
 
       console.log('\n💡 Access the application from any device on your network!');
@@ -1845,7 +2088,21 @@ async function startServer() {
       networkInterfaces.forEach(iface => {
         accessUrls.push(`http://${iface.address}:${port}`);
       });
-      systemLogger.logSystem('INFO', `Server started successfully on port ${port}. Access URLs: ${accessUrls.join(', ')}`);
+
+      if (httpsServer) {
+        accessUrls.push(`https://localhost:${httpsPort}`, `https://127.0.0.1:${httpsPort}`);
+        networkInterfaces.forEach(iface => {
+          accessUrls.push(`https://${iface.address}:${httpsPort}`);
+        });
+        systemLogger.logSystem('INFO', `Server started successfully. HTTP port: ${port}, HTTPS port: ${httpsPort}. Access URLs: ${accessUrls.join(', ')}`);
+      } else {
+        systemLogger.logSystem('INFO', `Server started successfully on port ${port}. Access URLs: ${accessUrls.join(', ')}`);
+      }
+
+      // Write PID and release lock after successful startup
+      await pidManager.writePID(process.pid);
+      await pidManager.releaseLock();
+      console.log(`✅ PID ${process.pid} written to server.pid, lock released`);
 
       // Schedule cleanup job for share links (runs daily at 3 AM)
       const scheduleCleanup = () => {
@@ -1915,6 +2172,28 @@ process.on('SIGTERM', async () => {
 async function gracefulShutdown() {
   try {
     systemLogger.logSystem('INFO', 'Starting graceful shutdown...');
+    console.log('Closing servers...');
+
+    // Close HTTP server
+    if (httpServerInstance) {
+      await new Promise((resolve) => {
+        httpServerInstance.close(() => {
+          console.log('✅ HTTP server closed');
+          resolve();
+        });
+      });
+    }
+
+    // Close HTTPS server
+    if (httpsServerInstance) {
+      await new Promise((resolve) => {
+        httpsServerInstance.close(() => {
+          console.log('✅ HTTPS server closed');
+          resolve();
+        });
+      });
+    }
+
     console.log('Closing file system cache...');
     if (fileSystem && fileSystem.close) {
       await fileSystem.close();
