@@ -211,6 +211,38 @@ router.delete('/files/share/:shareToken', authenticate, async (req, res) => {
 });
 
 /**
+ * GET /api/share/:shareToken/info
+ * Get basic share link information (NO authentication required)
+ * This is for public users to check if password is required before downloading
+ */
+router.get('/share/:shareToken/info', async (req, res) => {
+  try {
+    const { shareToken } = req.params;
+
+    const shareLink = await shareManager.getShareLinkInfo(shareToken);
+
+    if (!shareLink) {
+      return res.status(404).json({ success: false, message: '分享連結不存在' });
+    }
+
+    // Only return safe information for public access
+    res.json({
+      success: true,
+      data: {
+        fileName: shareLink.fileName,
+        hasPassword: !!shareLink.password,
+        expiresAt: shareLink.expiresAt,
+        maxDownloads: shareLink.maxDownloads,
+        isActive: shareLink.isActive
+      }
+    });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to get public share link info: ${error.message}`);
+    res.status(500).json({ success: false, message: '獲取分享連結信息失敗' });
+  }
+});
+
+/**
  * GET /api/files/share/:shareToken/info
  * Get share link information (authenticated)
  */
