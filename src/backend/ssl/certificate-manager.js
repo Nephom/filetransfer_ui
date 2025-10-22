@@ -76,7 +76,8 @@ class CertificateManager {
     const cert = forge.pki.createCertificate();
 
     cert.publicKey = keys.publicKey;
-    cert.serialNumber = Math.floor(Math.random() * 1000000).toString();
+    // 使用正數序列號（Go TLS 不接受負數）
+    cert.serialNumber = Math.abs(Math.floor(Math.random() * 1000000)).toString(16);
     cert.validity.notBefore = new Date();
     cert.validity.notAfter = new Date();
     cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + validityYears);

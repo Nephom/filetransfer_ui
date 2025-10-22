@@ -2,6 +2,8 @@ package api
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fileapi-go/debug"
@@ -26,13 +28,42 @@ type Client struct {
 	Client  *http.Client
 }
 
-// NewClient 建立新的 API 客戶端
-func NewClient(baseURL, token string) *Client {
+// NewClient 建立新的 API 客戶端（支援 HTTPS 和自簽證書）
+func NewClient(baseURL, token string, skipTLSVerify bool, caPath string) *Client {
+	// TLS 配置
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: skipTLSVerify,
+	}
+
+	// 如果提供了 CA 證書路徑，載入它
+	if caPath != "" && !skipTLSVerify {
+		caCert, err := os.ReadFile(caPath)
+		if err == nil {
+			caCertPool := x509.NewCertPool()
+			if caCertPool.AppendCertsFromPEM(caCert) {
+				tlsConfig.RootCAs = caCertPool
+				tlsConfig.InsecureSkipVerify = false
+				debug.Log("[NewClient] 已載入自定義 CA 證書: %s", caPath)
+			} else {
+				debug.Log("[NewClient] 警告: CA 證書格式無效: %s", caPath)
+			}
+		} else {
+			debug.Log("[NewClient] 警告: 無法讀取 CA 證書: %s, 錯誤: %v", caPath, err)
+		}
+	}
+
+	if skipTLSVerify {
+		debug.Log("[NewClient] TLS 證書驗證已停用（適用於自簽證書）")
+	}
+
 	return &Client{
 		BaseURL: baseURL,
 		Token:   token,
 		Client: &http.Client{
 			Timeout: 300 * time.Second, // 5 分鐘 timeout，適用於大檔案/資料夾上傳
+			Transport: &http.Transport{
+				TLSClientConfig: tlsConfig,
+			},
 		},
 	}
 }
