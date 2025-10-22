@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shared File Download</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+        }
+
+        .icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 30px;
+        }
+
+        .file-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 25px;
+        }
+
+        .file-name {
+            font-size: 16px;
+            color: #333;
+            font-weight: 500;
+            word-break: break-all;
+        }
+
+        .password-section {
+            margin-bottom: 25px;
+        }
+
+        .password-label {
+            display: block;
+            text-align: left;
+            color: #555;
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+
+        .password-input {
+            width: 100%;
+            padding: 14px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 15px;
+            transition: all 0.3s ease;
+        }
+
+        .password-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .download-btn {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .download-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+        }
+
+        .download-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .error-message {
+            background: #fee;
+            color: #c33;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .error-message.show {
+            display: block;
+        }
+
+        .info-message {
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-size: 14px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .no-password-needed {
+            color: #4caf50;
+            font-weight: 500;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">🔗</div>
+        <h1>Shared File</h1>
+        <p class="subtitle">Someone has shared a file with you</p>
+
+        <div id="fileInfo" class="file-info" style="display: none;">
+            <div class="file-name" id="fileName">Loading...</div>
+        </div>
+
+        <div id="passwordSection" class="password-section" style="display: none;">
+            <label class="password-label">🔒 This file is password protected</label>
+            <input
+                type="password"
+                id="passwordInput"
+                class="password-input"
+                placeholder="Enter password to download"
+                autocomplete="off"
+            />
+        </div>
+
+        <button id="downloadBtn" class="download-btn" onclick="handleDownload()">
+            <span id="btnText">📥 Download File</span>
+        </button>
+
+        <div id="errorMessage" class="error-message"></div>
+        <div id="infoMessage" class="info-message" style="display: none;"></div>
+    </div>
+
+    <script>
+        // Get share token from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const shareToken = urlParams.get('token');
+
+        if (!shareToken) {
+            document.getElementById('errorMessage').textContent = 'Invalid share link: No token provided';
+            document.getElementById('errorMessage').classList.add('show');
+            document.getElementById('downloadBtn').disabled = true;
+        }
+
+        let requiresPassword = false;
+        let fileName = '';
+
+        // Check share link info on page load
+        async function checkShareInfo() {
+            try {
+                const response = await fetch(`/api/files/share/${shareToken}/info`);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success && data.data) {
+                        fileName = data.data.fileName || 'file';
+                        document.getElementById('fileName').textContent = fileName;
+                        document.getElementById('fileInfo').style.display = 'block';
+
+                        // Check if password is required
+                        requiresPassword = data.data.hasPassword || false;
+                        if (requiresPassword) {
+                            document.getElementById('passwordSection').style.display = 'block';
+                        }
+                    }
+                } else {
+                    // If info endpoint doesn't exist, just try to download
+                    // Password requirement will be detected on download attempt
+                }
+            } catch (error) {
+                console.log('Could not fetch share info:', error);
+                // Continue anyway, will handle on download
+            }
+        }
+
+        // Call on page load
+        checkShareInfo();
+
+        async function handleDownload() {
+            const downloadBtn = document.getElementById('downloadBtn');
+            const btnText = document.getElementById('btnText');
+            const errorMessage = document.getElementById('errorMessage');
+            const passwordInput = document.getElementById('passwordInput');
+
+            // Hide previous errors
+            errorMessage.classList.remove('show');
+            errorMessage.textContent = '';
+
+            // Get password if provided
+            const password = passwordInput.value;
+
+            // Show loading state
+            downloadBtn.disabled = true;
+            btnText.innerHTML = '<span class="loading"></span> Downloading...';
+
+            try {
+                // Build download URL with password if provided
+                let downloadUrl = `/api/share/${shareToken}/download`;
+                if (password) {
+                    downloadUrl += `?password=${encodeURIComponent(password)}`;
+                }
+
+                const response = await fetch(downloadUrl);
+
+                if (response.ok) {
+                    // Get the file blob
+                    const blob = await response.blob();
+
+                    // Get filename from Content-Disposition header or use default
+                    const disposition = response.headers.get('Content-Disposition');
+                    let filename = fileName || 'download';
+                    if (disposition) {
+                        const matches = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                        if (matches && matches[1]) {
+                            filename = matches[1].replace(/['"]/g, '');
+                        }
+                    }
+
+                    // Create download link
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+
+                    // Show success message
+                    btnText.textContent = '✅ Downloaded!';
+                    setTimeout(() => {
+                        btnText.textContent = '📥 Download File';
+                        downloadBtn.disabled = false;
+                    }, 2000);
+
+                } else {
+                    // Handle errors
+                    const errorData = await response.json();
+                    let errorMsg = errorData.message || 'Download failed';
+
+                    if (response.status === 401 || errorMsg.includes('密碼') || errorMsg.includes('password')) {
+                        errorMsg = '❌ Incorrect password. Please try again.';
+                        requiresPassword = true;
+                        document.getElementById('passwordSection').style.display = 'block';
+                        passwordInput.focus();
+                    } else if (response.status === 410) {
+                        errorMsg = '❌ This share link has expired or reached its download limit.';
+                    } else if (response.status === 404) {
+                        errorMsg = '❌ Share link not found or has been revoked.';
+                    }
+
+                    errorMessage.textContent = errorMsg;
+                    errorMessage.classList.add('show');
+                    btnText.textContent = '📥 Download File';
+                    downloadBtn.disabled = false;
+                }
+            } catch (error) {
+                errorMessage.textContent = '❌ Network error: ' + error.message;
+                errorMessage.classList.add('show');
+                btnText.textContent = '📥 Download File';
+                downloadBtn.disabled = false;
+            }
+        }
+
+        // Allow Enter key to trigger download
+        document.getElementById('passwordInput')?.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                handleDownload();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -68,7 +68,8 @@ class ShareManager {
 
       return {
         shareToken,
-        shareUrl: `/api/share/${shareToken}/download`,
+        shareUrl: `/share.html?token=${shareToken}`,
+        directDownloadUrl: `/api/share/${shareToken}/download`,
         expiresAt,
         maxDownloads,
         createdAt
