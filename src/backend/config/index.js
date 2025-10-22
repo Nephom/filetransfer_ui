@@ -151,6 +151,8 @@ class ConfigManager {
             sectionName = 'security';
           } else if (currentSection === 'shareLinks') {
             sectionName = 'shareLinks';
+          } else if (currentSection === 'ssl') {
+            sectionName = 'ssl';
           }
 
           config[sectionName] = config[sectionName] || {};
@@ -406,7 +408,17 @@ class ConfigManager {
         iniContent += `maxExpiration=${this.config.shareLinks?.maxExpiration || 2592000}\n`;
         iniContent += `allowPasswordProtection=${this.config.shareLinks?.allowPasswordProtection === true ? 'true' : 'false'}\n`;
         iniContent += `cleanupInterval=${this.config.shareLinks?.cleanupInterval || 86400}\n`;
-        iniContent += `maxDownloadsDefault=${this.config.shareLinks?.maxDownloadsDefault || 0}\n`;
+        iniContent += `maxDownloadsDefault=${this.config.shareLinks?.maxDownloadsDefault || 0}\n\n`;
+
+        // [ssl] section
+        iniContent += '[ssl]\n';
+        iniContent += '# SSL/TLS configuration\n';
+        iniContent += '# HTTPS server port (default: 9443)\n';
+        iniContent += `httpsPort=${this.config.ssl?.httpsPort || 9443}\n`;
+        iniContent += '# Enable HTTP to HTTPS redirect (default: true)\n';
+        iniContent += `enableHttpsRedirect=${this.config.ssl?.enableHttpsRedirect === true ? 'true' : 'false'}\n`;
+        iniContent += '# Automatically generate certificates on first run (default: false)\n';
+        iniContent += `autoGenerateCerts=${this.config.ssl?.autoGenerateCerts === true ? 'true' : 'false'}\n`;
 
         await fs.writeFile(configFile, iniContent, 'utf8');
       } else {
