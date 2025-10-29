@@ -3,6 +3,15 @@ if (!window.FileTransferApp) {
     window.FileTransferApp = {};
 }
 
+// Helper function to format file size
+const formatFileSize = (bytes) => {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
+};
+
 const FileBrowser = ({ token, user }) => {
     const [files, setFiles] = React.useState([]);
     const [loading, setLoading] = React.useState(true);
@@ -39,6 +48,17 @@ const FileBrowser = ({ token, user }) => {
     const [sharePassword, setSharePassword] = React.useState('');
     const [sharePasswordEnabled, setSharePasswordEnabled] = React.useState(false);
     const [generatedShareLink, setGeneratedShareLink] = React.useState(null);
+
+    // Download progress tracking
+    const [downloadStatus, setDownloadStatus] = React.useState({
+        downloading: false,
+        fileName: '',
+        progress: 0,
+        loaded: 0,
+        total: 0,
+        speed: 0
+    });
+    const downloadAbortControllerRef = React.useRef(null);
 
     React.useEffect(() => {
         fetchFiles();
@@ -232,26 +252,108 @@ const FileBrowser = ({ token, user }) => {
 
     const downloadFile = async (file) => {
         try {
-            const response = await fetch(`/api/files/download/${encodeURIComponent(file.path)}`, {
-                headers: { 'Authorization': `Bearer ${token}` }
+            // Create AbortController for cancellation support
+            const abortController = new AbortController();
+            downloadAbortControllerRef.current = abortController;
+
+            // Initialize download status - show modal immediately
+            setDownloadStatus({
+                downloading: true,
+                fileName: file.name,
+                progress: 0,
+                loaded: 0,
+                total: 0,
+                speed: 0
             });
-            
-            if (response.ok) {
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = file.name;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                window.URL.revokeObjectURL(url);
-            } else {
+
+            const response = await fetch(`/api/files/download/${encodeURIComponent(file.path)}`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+                signal: abortController.signal
+            });
+
+            if (!response.ok) {
                 const data = await response.json();
                 setError(data.error || 'Download failed');
+                setDownloadStatus({ downloading: false, fileName: '', progress: 0, loaded: 0, total: 0, speed: 0 });
+                return;
             }
+
+            // Get file size from Content-Length header
+            const contentLength = response.headers.get('Content-Length');
+            const total = parseInt(contentLength, 10);
+
+            // Update status with total size
+            setDownloadStatus(prev => ({ ...prev, total }));
+
+            // Use ReadableStream to track progress
+            const reader = response.body.getReader();
+            const chunks = [];
+            let loaded = 0;
+            let startTime = Date.now();
+            let lastUpdateTime = startTime;
+
+            while (true) {
+                const { done, value } = await reader.read();
+
+                if (done) break;
+
+                chunks.push(value);
+                loaded += value.length;
+
+                // Calculate download speed (bytes per second)
+                const now = Date.now();
+                const timeDiff = (now - lastUpdateTime) / 1000; // seconds
+
+                if (timeDiff >= 0.5) { // Update every 0.5 seconds
+                    const speed = value.length / timeDiff;
+                    const progress = total > 0 ? (loaded / total) * 100 : 0;
+
+                    setDownloadStatus({
+                        downloading: true,
+                        fileName: file.name,
+                        progress,
+                        loaded,
+                        total,
+                        speed
+                    });
+
+                    lastUpdateTime = now;
+                }
+            }
+
+            // Final update - 100% progress
+            setDownloadStatus({
+                downloading: true,
+                fileName: file.name,
+                progress: 100,
+                loaded: total,
+                total,
+                speed: 0
+            });
+
+            // Create blob and trigger download
+            const blob = new Blob(chunks);
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = file.name;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+            // Close download modal after a brief delay
+            setTimeout(() => {
+                setDownloadStatus({ downloading: false, fileName: '', progress: 0, loaded: 0, total: 0, speed: 0 });
+            }, 1000);
+
         } catch (err) {
-            setError('Download failed');
+            if (err.name === 'AbortError') {
+                setError('下載已取消');
+            } else {
+                setError('下載失敗: ' + err.message);
+            }
+            setDownloadStatus({ downloading: false, fileName: '', progress: 0, loaded: 0, total: 0, speed: 0 });
         }
     };
 
@@ -3158,6 +3260,164 @@ const FileBrowser = ({ token, user }) => {
                         }
                     }, 'Done')
                 ])
+            ])
+        ]),
+
+        // Download Progress Modal
+        downloadStatus.downloading && React.createElement('div', {
+            key: 'download-progress-modal',
+            style: {
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(0, 0, 0, 0.7)',
+                backdropFilter: 'blur(8px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 2000,
+                padding: '20px'
+            }
+        }, [
+            React.createElement('div', {
+                key: 'download-modal-content',
+                style: {
+                    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                    borderRadius: '16px',
+                    padding: '32px',
+                    maxWidth: '500px',
+                    width: '100%',
+                    boxShadow: '0 25px 50px rgba(0, 0, 0, 0.5)',
+                    border: '1px solid rgba(255, 255, 255, 0.2)'
+                }
+            }, [
+                // Title
+                React.createElement('h2', {
+                    key: 'download-title',
+                    style: {
+                        margin: '0 0 16px 0',
+                        fontSize: '24px',
+                        fontWeight: 'bold',
+                        color: 'white',
+                        textAlign: 'center'
+                    }
+                }, '📥 下載中'),
+
+                // File name
+                React.createElement('div', {
+                    key: 'download-filename',
+                    style: {
+                        fontSize: '16px',
+                        color: 'rgba(255, 255, 255, 0.9)',
+                        marginBottom: '24px',
+                        textAlign: 'center',
+                        wordBreak: 'break-word'
+                    }
+                }, downloadStatus.fileName),
+
+                // Progress bar container
+                React.createElement('div', {
+                    key: 'progress-container',
+                    style: {
+                        background: 'rgba(255, 255, 255, 0.2)',
+                        borderRadius: '12px',
+                        height: '24px',
+                        overflow: 'hidden',
+                        marginBottom: '16px',
+                        position: 'relative'
+                    }
+                }, [
+                    // Progress bar fill
+                    React.createElement('div', {
+                        key: 'progress-fill',
+                        style: {
+                            background: 'linear-gradient(90deg, #4ade80, #22c55e)',
+                            height: '100%',
+                            width: `${downloadStatus.progress}%`,
+                            transition: 'width 0.3s ease',
+                            borderRadius: '12px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                        }
+                    }),
+                    // Progress text overlay
+                    React.createElement('div', {
+                        key: 'progress-text',
+                        style: {
+                            position: 'absolute',
+                            top: '50%',
+                            left: '50%',
+                            transform: 'translate(-50%, -50%)',
+                            color: 'white',
+                            fontSize: '14px',
+                            fontWeight: 'bold',
+                            textShadow: '0 1px 2px rgba(0, 0, 0, 0.5)'
+                        }
+                    }, `${downloadStatus.progress.toFixed(1)}%`)
+                ]),
+
+                // Download stats
+                React.createElement('div', {
+                    key: 'download-stats',
+                    style: {
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        fontSize: '14px',
+                        color: 'rgba(255, 255, 255, 0.8)',
+                        marginBottom: '20px'
+                    }
+                }, [
+                    React.createElement('div', { key: 'loaded' },
+                        `已下載: ${formatFileSize(downloadStatus.loaded)}`
+                    ),
+                    React.createElement('div', { key: 'total' },
+                        `總大小: ${formatFileSize(downloadStatus.total)}`
+                    )
+                ]),
+
+                // Download speed
+                downloadStatus.speed > 0 && React.createElement('div', {
+                    key: 'download-speed',
+                    style: {
+                        fontSize: '14px',
+                        color: 'rgba(255, 255, 255, 0.8)',
+                        textAlign: 'center',
+                        marginBottom: '20px'
+                    }
+                }, `下載速度: ${formatFileSize(downloadStatus.speed)}/s`),
+
+                // Cancel button
+                React.createElement('button', {
+                    key: 'cancel-download',
+                    onClick: () => {
+                        if (downloadAbortControllerRef.current) {
+                            downloadAbortControllerRef.current.abort();
+                        }
+                    },
+                    style: {
+                        width: '100%',
+                        padding: '12px',
+                        background: 'rgba(239, 68, 68, 0.9)',
+                        border: 'none',
+                        borderRadius: '8px',
+                        color: 'white',
+                        fontSize: '16px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease'
+                    },
+                    onMouseEnter: (e) => {
+                        e.target.style.background = 'rgba(239, 68, 68, 1)';
+                        e.target.style.transform = 'scale(1.02)';
+                    },
+                    onMouseLeave: (e) => {
+                        e.target.style.background = 'rgba(239, 68, 68, 0.9)';
+                        e.target.style.transform = 'scale(1)';
+                    }
+                }, '取消下載')
             ])
         ]),
 
