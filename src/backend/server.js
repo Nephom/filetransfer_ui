@@ -123,7 +123,9 @@ app.use(cors({
   exposedHeaders: ['Authorization'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json({ limit: '10mb' }));
+// Increase JSON body limit to 100MB for large file metadata
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use(express.static(path.join(__dirname, '../frontend/public')));
 
 // Use the UploadAPI router for all upload endpoints
@@ -1970,6 +1972,7 @@ async function startServer() {
     console.log('- HTTP Port:', port);
     console.log('- Username:', configManager.get('auth.username'));
     console.log('- Storage Path:', storagePath);
+    console.log('- Server Timeout: 10 hours (for large file transfers)');
 
     // Log cache information
     const cacheInfo = await fileSystem.getCacheInfo();
@@ -2014,8 +2017,16 @@ async function startServer() {
       try {
         httpsServer = https.createServer(sslOptions, app);
         httpsServerInstance = httpsServer; // Store for graceful shutdown
+
+        // Increase timeout for large file transfers (10 hours = 36000000ms)
+        // This prevents connection timeout during large file uploads/downloads
+        httpsServer.timeout = 36000000; // 10 hours
+        httpsServer.keepAliveTimeout = 36000000; // 10 hours
+        httpsServer.headersTimeout = 36000000; // 10 hours
+
         httpsServer.listen(httpsPort, () => {
           systemLogger.logSystem('INFO', `HTTPS server started on port ${httpsPort}`);
+          systemLogger.logSystem('INFO', `HTTPS timeout set to ${httpsServer.timeout / 1000 / 60} minutes for large file transfers`);
         });
       } catch (error) {
         systemLogger.logSystem('ERROR', `Failed to start HTTPS server: ${error.message}`);
@@ -2037,6 +2048,13 @@ async function startServer() {
 
     const httpServer = http.createServer(httpApp);
     httpServerInstance = httpServer; // Store for graceful shutdown
+
+    // Increase timeout for large file transfers (10 hours = 36000000ms)
+    // This prevents connection timeout during large file uploads/downloads
+    httpServer.timeout = 36000000; // 10 hours
+    httpServer.keepAliveTimeout = 36000000; // 10 hours
+    httpServer.headersTimeout = 36000000; // 10 hours
+
     httpServer.listen(port, async () => {
       console.log(`\n🌐 File Transfer API is now running!`);
       console.log('='.repeat(50));
