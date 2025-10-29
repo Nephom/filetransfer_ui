@@ -65,14 +65,7 @@ const FileBrowser = ({ token, user }) => {
     }, []);
 
     const timeoutIdRef = React.useRef(null);
-    const uploadPollRef = React.useRef(null);
-
-    const clearUploadPolling = React.useCallback(() => {
-        if (uploadPollRef.current) {
-            clearInterval(uploadPollRef.current);
-            uploadPollRef.current = null;
-        }
-    }, []);
+    const uploadXhrRef = React.useRef(null);
 
     // Handle clicks outside context menu and dropdown
     const handleGlobalClick = () => {
@@ -497,9 +490,6 @@ const FileBrowser = ({ token, user }) => {
     const handleFileUpload = async (uploadingFiles) => {
         if (uploadingFiles.length === 0) return;
 
-        // Ensure no previous polling continues
-        clearUploadPolling();
-
         // Check if files have webkitRelativePath (folder upload)
         const hasFolderStructure = uploadingFiles.some(file => file.webkitRelativePath);
 
@@ -519,16 +509,20 @@ const FileBrowser = ({ token, user }) => {
             }
 
         } catch (err) {
-            clearUploadPolling();
             setIsUploading(false);
             setUploadProgress(0);
             setError(err.message || 'Upload failed');
         }
     };
 
-    // Handle single file upload with real-time progress
+    // Handle single file upload with real-time progress using XMLHttpRequest
     const handleSingleFileUpload = async (file) => {
-        try {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+
+            // Store XHR reference for cancellation
+            uploadXhrRef.current = xhr;
+
             const formData = new FormData();
             // IMPORTANT: Append path BEFORE file so backend receives it first
             if (currentPath) {
@@ -537,37 +531,95 @@ const FileBrowser = ({ token, user }) => {
             formData.append('fileName', file.name);
             formData.append('file', file);
 
-            // Initiate upload
-            const response = await fetch('/api/upload/single-progress', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                },
-                body: formData
+            let startTime = Date.now();
+            let lastUpdateTime = startTime;
+            let lastLoaded = 0;
+
+            // Track upload progress in real-time
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const now = Date.now();
+                    const timeDiff = (now - lastUpdateTime) / 1000; // seconds
+
+                    // Calculate upload speed (bytes per second)
+                    let speed = 0;
+                    if (timeDiff >= 0.5) { // Update every 0.5 seconds
+                        const bytesDiff = e.loaded - lastLoaded;
+                        speed = bytesDiff / timeDiff;
+                        lastUpdateTime = now;
+                        lastLoaded = e.loaded;
+                    }
+
+                    const progress = (e.loaded / e.total) * 100;
+
+                    setUploadProgress(progress);
+                    setUploadDetails({
+                        loaded: e.loaded,
+                        total: e.total,
+                        speed: speed,
+                        fileName: file.name
+                    });
+                }
             });
 
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error?.message || 'Upload initiation failed');
-            }
+            // Handle successful upload
+            xhr.addEventListener('load', async () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        setUploadProgress(100);
+                        setIsUploading(false);
 
-            const { transferId } = await response.json();
-            setUploadTransferId(transferId);
+                        alert('✅ Upload completed! File uploaded successfully.');
 
-            // Start polling for progress
-            pollSingleProgress(transferId);
+                        await fetchFiles();
+                        resetUploadState();
+                        setUploadingFiles([]);
+                        resolve(response);
+                    } catch (error) {
+                        reject(new Error('Failed to parse server response'));
+                    }
+                } else {
+                    try {
+                        const errorData = JSON.parse(xhr.responseText);
+                        reject(new Error(errorData.error?.message || 'Upload failed'));
+                    } catch {
+                        reject(new Error(`Upload failed with status ${xhr.status}`));
+                    }
+                }
+            });
 
-        } catch (error) {
-            clearUploadPolling();
-            throw error;
-        }
+            // Handle upload errors
+            xhr.addEventListener('error', () => {
+                reject(new Error('Network error during upload'));
+            });
+
+            // Handle upload abort
+            xhr.addEventListener('abort', () => {
+                reject(new Error('Upload cancelled'));
+            });
+
+            // Open connection and send request
+            xhr.open('POST', '/api/upload/single-progress');
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            xhr.send(formData);
+        });
     };
 
-    React.useEffect(() => {
-        return () => {
-            clearUploadPolling();
-        };
-    }, [clearUploadPolling]);
+
+    const cancelUpload = React.useCallback(() => {
+        // Abort XHR if it exists
+        if (uploadXhrRef.current) {
+            uploadXhrRef.current.abort();
+            uploadXhrRef.current = null;
+        }
+
+        // Reset upload state
+        setIsUploading(false);
+        setUploadProgress(0);
+        setUploadDetails(null);
+        setError('Upload cancelled');
+    }, []);
 
     const resetUploadState = React.useCallback(() => {
         setShowUploadModal(false);
@@ -616,171 +668,111 @@ const FileBrowser = ({ token, user }) => {
         return formData;
     };
 
-    // Handle multi-file upload with batch tracking
+    // Handle multi-file upload with batch tracking using XMLHttpRequest
     const handleMultiFileUpload = async (uploadingFiles, hasFolderStructure) => {
-        try {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+
+            // Store XHR reference for cancellation
+            uploadXhrRef.current = xhr;
+
             const formData = buildUploadFormData(uploadingFiles, hasFolderStructure);
 
-            const response = await fetch('/api/upload/multiple', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                },
-                body: formData
+            let startTime = Date.now();
+            let lastUpdateTime = startTime;
+            let lastLoaded = 0;
+
+            // Calculate total size of all files
+            const totalSize = Array.from(uploadingFiles).reduce((sum, file) => sum + file.size, 0);
+
+            // Track upload progress in real-time
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const now = Date.now();
+                    const timeDiff = (now - lastUpdateTime) / 1000; // seconds
+
+                    // Calculate upload speed (bytes per second)
+                    let speed = 0;
+                    if (timeDiff >= 0.5) { // Update every 0.5 seconds
+                        const bytesDiff = e.loaded - lastLoaded;
+                        speed = bytesDiff / timeDiff;
+                        lastUpdateTime = now;
+                        lastLoaded = e.loaded;
+                    }
+
+                    const progress = (e.loaded / e.total) * 100;
+
+                    setUploadProgress(progress);
+                    setUploadDetails({
+                        loaded: e.loaded,
+                        total: e.total,
+                        speed: speed,
+                        totalFiles: uploadingFiles.length,
+                        successCount: 0,
+                        failedCount: 0
+                    });
+                }
             });
 
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error?.message || 'Batch upload initiation failed');
-            }
+            // Handle successful upload
+            xhr.addEventListener('load', async () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        setUploadProgress(100);
+                        setIsUploading(false);
 
-            const { batchId } = await response.json();
-            setUploadBatchId(batchId);
+                        // Update final details with server response
+                        if (response.batchId) {
+                            setUploadBatchId(response.batchId);
+                        }
 
-            pollBatchProgress(batchId);
-        } catch (error) {
-            clearUploadPolling();
-            throw error;
-        }
+                        // Show completion message
+                        const successCount = response.successCount || uploadingFiles.length;
+                        const failedCount = response.failedCount || 0;
+
+                        if (failedCount === 0) {
+                            alert(`✅ Upload completed! ${successCount} file(s) uploaded successfully.`);
+                        } else if (successCount > 0) {
+                            alert(`⚠️ Partial upload: ${successCount} succeeded, ${failedCount} failed.`);
+                        } else {
+                            alert(`❌ Upload failed: ${failedCount} file(s) failed.`);
+                        }
+
+                        await fetchFiles();
+                        resetUploadState();
+                        setUploadingFiles([]);
+                        resolve(response);
+                    } catch (error) {
+                        reject(new Error('Failed to parse server response'));
+                    }
+                } else {
+                    try {
+                        const errorData = JSON.parse(xhr.responseText);
+                        reject(new Error(errorData.error?.message || 'Batch upload failed'));
+                    } catch {
+                        reject(new Error(`Upload failed with status ${xhr.status}`));
+                    }
+                }
+            });
+
+            // Handle upload errors
+            xhr.addEventListener('error', () => {
+                reject(new Error('Network error during upload'));
+            });
+
+            // Handle upload abort
+            xhr.addEventListener('abort', () => {
+                reject(new Error('Upload cancelled'));
+            });
+
+            // Open connection and send request
+            xhr.open('POST', '/api/upload/multiple');
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+            xhr.send(formData);
+        });
     };
 
-    // Poll single file progress
-    const pollSingleProgress = async (transferId) => {
-        clearUploadPolling();
-        uploadPollRef.current = setInterval(async () => {
-            try {
-                const response = await fetch(`/api/progress/${transferId}`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-
-                if (response.status === 404) {
-                    clearUploadPolling();
-                    setIsUploading(false);
-                    setError('Upload progress not found');
-                    return;
-                }
-
-                if (!response.ok) {
-                    clearUploadPolling();
-                    setIsUploading(false);
-                    setError('Failed to fetch progress');
-                    return;
-                }
-
-                const progressData = await response.json();
-                console.log('[PROGRESS POLL]', {
-                    progress: progressData.progress,
-                    status: progressData.status,
-                    transferredSize: progressData.transferredSize,
-                    totalSize: progressData.totalSize
-                });
-
-                const normalizedProgress = normalizeTransferProgress(progressData);
-                setUploadProgress(normalizedProgress);
-
-                if (progressData.status === 'completed') {
-                    clearUploadPolling();
-                    setIsUploading(false);
-                    setUploadProgress(100);
-
-                    alert('✅ Upload completed! File uploaded successfully.');
-
-                    await fetchFiles();
-                    resetUploadState();
-                    setUploadingFiles([]);
-                } else if (progressData.status === 'failed') {
-                    setUploadProgress(0);
-                    clearUploadPolling();
-                    setIsUploading(false);
-                    const errorMessage = progressData.error?.message || progressData.error || 'Upload failed';
-                    setError(errorMessage);
-                }
-            } catch (error) {
-                clearUploadPolling();
-                setIsUploading(false);
-                setUploadProgress(0);
-                setError('Failed to fetch progress');
-            }
-        }, 1000); // Poll every second
-    };
-
-    // Poll batch progress
-    const pollBatchProgress = async (batchId) => {
-        clearUploadPolling();
-        uploadPollRef.current = setInterval(async () => {
-            try {
-                const response = await fetch(`/api/progress/batch/${batchId}`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-
-                if (response.status === 404) {
-                    clearUploadPolling();
-                    setIsUploading(false);
-                    setError('Batch progress not found');
-                    return;
-                }
-
-                if (!response.ok) {
-                    clearUploadPolling();
-                    setIsUploading(false);
-                    setError('Failed to fetch batch progress');
-                    return;
-                }
-
-                const batchData = await response.json();
-
-                if (['completed', 'partial_fail', 'failed'].includes(batchData.status)) {
-                    clearUploadPolling();
-                    setIsUploading(false);
-
-                    setUploadProgress(100);
-                    setUploadDetails({
-                        totalFiles: batchData.totalFiles,
-                        successCount: batchData.successCount,
-                        failedCount: batchData.failedCount,
-                        files: batchData.files
-                    });
-
-                    if (batchData.status === 'completed') {
-                        alert(`✅ Upload completed! ${batchData.successCount} file(s) uploaded successfully.`);
-                    } else if (batchData.status === 'partial_fail') {
-                        alert(`⚠️ Partial upload: ${batchData.successCount} succeeded, ${batchData.failedCount} failed.`);
-                    } else {
-                        alert(`❌ Upload failed: ${batchData.failedCount} file(s) failed.`);
-                    }
-
-                    await fetchFiles();
-                    resetUploadState();
-                    setUploadProgress(100);
-                    setUploadingFiles([]);
-
-                    if (batchData.status === 'failed') {
-                        setError('Batch upload failed');
-                    }
-
-                    return;
-                }
-
-                const normalizedProgress = normalizeTransferProgress(batchData);
-                setUploadProgress(normalizedProgress);
-                setUploadDetails({
-                    totalFiles: batchData.totalFiles,
-                    successCount: batchData.successCount,
-                    failedCount: batchData.failedCount,
-                    files: batchData.files
-                });
-            } catch (error) {
-                clearUploadPolling();
-                setIsUploading(false);
-                setUploadProgress(0);
-                setError('Failed to fetch batch progress');
-            }
-        }, 1000); // Poll every second
-    };
 
     const handleDragEnter = (e) => {
         e.preventDefault();
@@ -2233,23 +2225,42 @@ const FileBrowser = ({ token, user }) => {
                     isUploading && React.createElement('div', {
                         key: 'upload-progress-section',
                         style: {
-                            marginBottom: '16px'
+                            marginBottom: '16px',
+                            padding: '16px',
+                            background: 'rgba(59, 130, 246, 0.1)',
+                            borderRadius: '12px',
+                            border: '1px solid rgba(59, 130, 246, 0.2)'
                         }
                     }, [
                         React.createElement('div', {
-                            key: 'progress-label',
+                            key: 'progress-header',
                             style: {
-                                color: 'rgba(255, 255, 255, 0.9)',
-                                fontSize: '14px',
-                                marginBottom: '8px',
                                 display: 'flex',
-                                justifyContent: 'space-between'
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                marginBottom: '8px'
                             }
                         }, [
-                            React.createElement('span', { key: 'uploading-text' }, uploadDetails
-                                ? `Uploading... (${uploadDetails.successCount + uploadDetails.failedCount}/${uploadDetails.totalFiles} files)`
+                            React.createElement('span', {
+                                key: 'uploading-text',
+                                style: {
+                                    color: 'rgba(255, 255, 255, 0.9)',
+                                    fontSize: '14px',
+                                    fontWeight: '500'
+                                }
+                            }, uploadDetails && uploadDetails.fileName
+                                ? `Uploading: ${uploadDetails.fileName}`
+                                : uploadDetails && uploadDetails.totalFiles
+                                ? `Uploading ${uploadDetails.totalFiles} files...`
                                 : 'Uploading...'),
-                            React.createElement('span', { key: 'progress-percent' }, `${uploadProgress}%`)
+                            React.createElement('span', {
+                                key: 'progress-percent',
+                                style: {
+                                    color: 'rgba(255, 255, 255, 0.9)',
+                                    fontSize: '14px',
+                                    fontWeight: '600'
+                                }
+                            }, `${Math.round(uploadProgress)}%`)
                         ]),
                         React.createElement('div', {
                             key: 'progress-bar-bg',
@@ -2258,7 +2269,8 @@ const FileBrowser = ({ token, user }) => {
                                 height: '8px',
                                 background: 'rgba(255, 255, 255, 0.1)',
                                 borderRadius: '4px',
-                                overflow: 'hidden'
+                                overflow: 'hidden',
+                                marginBottom: '8px'
                             }
                         }, [
                             React.createElement('div', {
@@ -2271,7 +2283,48 @@ const FileBrowser = ({ token, user }) => {
                                     borderRadius: '4px'
                                 }
                             })
-                        ])
+                        ]),
+                        uploadDetails && (uploadDetails.loaded || uploadDetails.speed) && React.createElement('div', {
+                            key: 'upload-stats',
+                            style: {
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                fontSize: '12px',
+                                color: 'rgba(255, 255, 255, 0.7)',
+                                marginBottom: '12px'
+                            }
+                        }, [
+                            uploadDetails.loaded && uploadDetails.total && React.createElement('span', {
+                                key: 'size-stat'
+                            }, `${formatFileSize(uploadDetails.loaded)} / ${formatFileSize(uploadDetails.total)}`),
+                            uploadDetails.speed && React.createElement('span', {
+                                key: 'speed-stat'
+                            }, `${formatFileSize(uploadDetails.speed)}/s`)
+                        ]),
+                        React.createElement('button', {
+                            key: 'cancel-upload-btn',
+                            onClick: cancelUpload,
+                            style: {
+                                width: '100%',
+                                padding: '10px',
+                                background: 'rgba(239, 68, 68, 0.2)',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                borderRadius: '8px',
+                                color: 'rgba(255, 255, 255, 0.9)',
+                                fontSize: '13px',
+                                fontWeight: '500',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s ease'
+                            },
+                            onMouseEnter: (e) => {
+                                e.target.style.background = 'rgba(239, 68, 68, 0.3)';
+                                e.target.style.borderColor = 'rgba(239, 68, 68, 0.5)';
+                            },
+                            onMouseLeave: (e) => {
+                                e.target.style.background = 'rgba(239, 68, 68, 0.2)';
+                                e.target.style.borderColor = 'rgba(239, 68, 68, 0.3)';
+                            }
+                        }, 'Cancel Upload')
                     ]),
 
                     // Batch upload details
