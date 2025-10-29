@@ -22,9 +22,7 @@ type Config struct {
 
 // HostOptions 可用的主機選項
 var HostOptions = []string{
-	"http://192.168.1.6:9400",   // HTTP - 192 LAB network
 	"https://192.168.1.6:9443",  // HTTPS - 192 LAB network (自簽證書)
-	"http://10.6.66.40:9400",    // HTTP - Big network
 	"https://10.6.66.40:9443",   // HTTPS - Big network (自簽證書)
 }
 
