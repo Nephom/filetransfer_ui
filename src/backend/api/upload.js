@@ -306,6 +306,12 @@ class UploadAPI {
         }
       });
 
+      // Log successful upload
+      systemLogger.logUpload(path.basename(req.file.originalname), true, req, {
+        transferId,
+        size: req.file.size
+      });
+
       res.json({
         success: true,
         transferId,
@@ -318,6 +324,12 @@ class UploadAPI {
       });
     } catch (error) {
       systemLogger.logError(`Upload failed: ${error.message}`, req);
+
+      // Log failed upload
+      systemLogger.logUpload(req.file?.originalname || 'unknown', false, req, {
+        error: error.message
+      });
+
       res.status(500).json({
         error: 'Upload failed',
         message: error.message
@@ -465,6 +477,9 @@ class UploadAPI {
     const { normalizedFinalDir, normalizedStoragePath, filePaths, user } = metadata;
     const hasFolderStructure = Array.isArray(filePaths) && filePaths.length > 0;
 
+    const startTime = Date.now();
+    let totalBytes = 0;
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       let transferId = null;
@@ -542,12 +557,14 @@ class UploadAPI {
           }
         });
 
-        // Log successful upload
-        systemLogger.logFileOperation('upload', path.basename(file.originalname), true, { user }, {
+        // Log successful upload (using new logUpload method)
+        systemLogger.logUpload(path.basename(file.originalname), true, { user }, {
           transferId,
           batchId,
           size: file.size
         });
+
+        totalBytes += file.size;
 
       } catch (error) {
         // If transfer was created, mark it as failed
@@ -576,8 +593,8 @@ class UploadAPI {
           });
         }
 
-        // Log failed upload
-        systemLogger.logFileOperation('upload', path.basename(file.originalname), false, { user }, {
+        // Log failed upload (using new logUpload method)
+        systemLogger.logUpload(path.basename(file.originalname), false, { user }, {
           transferId,
           batchId,
           error: error.message
@@ -592,6 +609,20 @@ class UploadAPI {
     transferManager.updateBatchProgress(batchId);
 
     systemLogger.logSystem('INFO', `Batch ${batchId} processing completed`);
+
+    // Log batch summary if it's a large batch (>100 files or >1GB)
+    const duration = Date.now() - startTime;
+    const batchStats = transferManager.calculateBatchStats(batchId);
+
+    if (files.length > 100 || totalBytes > 1073741824) {
+      await systemLogger.logBatchSummary(batchId, {
+        totalFiles: files.length,
+        successCount: batchStats.successCount,
+        failedCount: batchStats.failedCount,
+        totalBytes: totalBytes,
+        duration: duration
+      });
+    }
   }
 
   /**
@@ -986,7 +1017,7 @@ class UploadAPI {
               size: uploadedBytes
             }
           });
-          systemLogger.logFileOperation('upload', sanitizedFileName, true, req, {
+          systemLogger.logUpload(sanitizedFileName, true, req, {
             transferId,
             size: uploadedBytes
           });
@@ -1015,7 +1046,7 @@ class UploadAPI {
           // Clean up partial file
           fs.unlink(finalPath, () => {});
 
-          systemLogger.logFileOperation('upload', sanitizedFileName, false, req, {
+          systemLogger.logUpload(sanitizedFileName, false, req, {
             transferId,
             error: err.message
           });
@@ -1036,7 +1067,7 @@ class UploadAPI {
           writeStream.destroy();
           fs.unlink(finalPath, () => {});
 
-          systemLogger.logFileOperation('upload', sanitizedFileName, false, req, {
+          systemLogger.logUpload(sanitizedFileName, false, req, {
             transferId,
             error: 'Upload interrupted'
           });

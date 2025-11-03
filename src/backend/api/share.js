@@ -146,13 +146,23 @@ router.get('/share/:shareToken/download', downloadFailLimiter, async (req, res) 
     // Increment download counter
     await shareManager.incrementDownloadCount(shareToken);
 
-    // Log download
-    systemLogger.logSystem('INFO', `File downloaded via share link: ${shareToken}, file: ${shareLink.fileName}`);
+    // Get file size
+    const stats = await fs.stat(fullPath);
+
+    // Log download (using new logDownload method)
+    systemLogger.logDownload(shareLink.fileName, 'share-link', true, req, {
+      shareToken,
+      size: stats.size
+    });
 
     // Stream file to client
     res.download(fullPath, shareLink.fileName, (err) => {
       if (err) {
         systemLogger.logSystem('ERROR', `File download error: ${err.message}`);
+        systemLogger.logDownload(shareLink.fileName, 'share-link', false, req, {
+          shareToken,
+          error: err.message
+        });
         if (!res.headersSent) {
           res.status(500).json({ success: false, message: '文件下載失敗' });
         }
