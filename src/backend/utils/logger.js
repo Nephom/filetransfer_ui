@@ -212,6 +212,77 @@ class SystemLogger {
     const message = `SECURITY ${event.toUpperCase()} - ${JSON.stringify(details)}`;
     await this.logToIPFile(ip, 'WARN', message, req);
   }
+
+  // Log file upload operations (IP-specific)
+  async logUpload(fileName, success, req, details = null) {
+    const ip = this.getClientIP(req);
+    const status = success ? 'SUCCESS' : 'FAILED';
+    let message = `UPLOAD - File: ${fileName}, Status: ${status}`;
+
+    if (details) {
+      if (details.transferId) {
+        message += `, TransferID: ${details.transferId}`;
+      }
+      if (details.batchId) {
+        message += `, BatchID: ${details.batchId}`;
+      }
+      if (details.size !== undefined) {
+        message += `, Size: ${details.size} bytes`;
+      }
+      if (details.error) {
+        message += `, Error: ${details.error}`;
+      }
+    }
+
+    await this.logToIPFile(ip, success ? 'INFO' : 'WARN', message, req);
+  }
+
+  // Log file download operations (IP-specific)
+  async logDownload(fileName, downloadType, success, req, details = null) {
+    const ip = this.getClientIP(req);
+    const status = success ? 'SUCCESS' : 'FAILED';
+    let message = `DOWNLOAD - File: ${fileName}, Type: ${downloadType}, Status: ${status}`;
+
+    if (details) {
+      if (details.size !== undefined) {
+        message += `, Size: ${details.size} bytes`;
+      }
+      if (details.shareToken) {
+        message += `, ShareToken: ${details.shareToken}`;
+      }
+      if (details.fileCount !== undefined) {
+        message += `, Files: ${details.fileCount}`;
+      }
+      if (details.error) {
+        message += `, Error: ${details.error}`;
+      }
+    }
+
+    await this.logToIPFile(ip, success ? 'INFO' : 'WARN', message, req);
+  }
+
+  // Log batch upload summary (system-level, server.log only)
+  async logBatchSummary(batchId, stats) {
+    let message = `BATCH UPLOAD SUMMARY - BatchID: ${batchId}`;
+
+    if (stats.totalFiles !== undefined) {
+      message += `, Total Files: ${stats.totalFiles}`;
+    }
+    if (stats.successCount !== undefined) {
+      message += `, Success: ${stats.successCount}`;
+    }
+    if (stats.failedCount !== undefined) {
+      message += `, Failed: ${stats.failedCount}`;
+    }
+    if (stats.totalBytes !== undefined) {
+      message += `, Total Size: ${stats.totalBytes} bytes`;
+    }
+    if (stats.duration !== undefined) {
+      message += `, Duration: ${stats.duration}ms`;
+    }
+
+    await this.logSystem('INFO', message);
+  }
 }
 
 // Create and export a single instance

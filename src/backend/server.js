@@ -705,7 +705,7 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
 
     const stats = await fs.stat(fullPath);
     if (stats.isDirectory()) {
-      systemLogger.logFileOperation('download', requestPath, false, req, { error: 'Attempted to download directory' });
+      systemLogger.logDownload(requestPath, 'authenticated', false, req, { error: 'Attempted to download directory' });
       return res.status(400).json({ error: 'This endpoint only supports file downloads. For directory downloads, please use the archive functionality.' });
     }
 
@@ -719,22 +719,22 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
     fileStream.pipe(res);
 
     fileStream.on('error', (error) => {
-      systemLogger.logFileOperation('download', requestPath, false, req, { error: error.message });
+      systemLogger.logDownload(fileName, 'authenticated', false, req, { error: error.message });
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to download file' });
       }
     });
 
     fileStream.on('close', () => {
-      systemLogger.logFileOperation('download', requestPath, true, req, { size: stats.size });
+      systemLogger.logDownload(fileName, 'authenticated', true, req, { size: stats.size });
     });
   } catch (error) {
     // Catch file not found errors from fs.stat
     if (error.code === 'ENOENT') {
-      systemLogger.logFileOperation('download', req.params[0], false, req, { error: 'File not found' });
+      systemLogger.logDownload(req.params[0] || 'unknown', 'authenticated', false, req, { error: 'File not found' });
       return res.status(404).json({ error: 'File not found' });
     }
-    systemLogger.logFileOperation('download', req.params[0], false, req, { error: error.message });
+    systemLogger.logDownload(req.params[0] || 'unknown', 'authenticated', false, req, { error: error.message });
     res.status(500).json({ error: error.message });
   }
 });
@@ -1176,8 +1176,6 @@ app.post('/api/archive', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Items array is required' });
     }
 
-    systemLogger.logFileOperation('archive', currentPath || '/', true, req, { itemCount: items.length, items: items.map(i => i.name) });
-
     // Determine archive filename based on selection
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const sanitizeName = (name) => name.replace(/[\r\n]/g, '').trim();
@@ -1218,10 +1216,17 @@ app.post('/api/archive', authenticate, async (req, res) => {
 
     archive.on('error', (err) => {
       systemLogger.logSystem('ERROR', `Archive error: ${err.message}`);
+      systemLogger.logDownload(archiveFileName, 'archive', false, req, {
+        fileCount: items.length,
+        error: err.message
+      });
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to create archive' });
       }
     });
+
+    // Track archive statistics
+    let totalArchiveSize = 0;
 
     // Add each item to the archive
     for (const item of items) {
@@ -1235,9 +1240,11 @@ app.post('/api/archive', authenticate, async (req, res) => {
         if (stats.isDirectory()) {
           // Add directory recursively
           archive.directory(itemPath, item.name);
+          // For directories, we can't easily get total size, so skip counting
         } else {
           // Add single file
           archive.file(itemPath, { name: item.name });
+          totalArchiveSize += stats.size;
         }
       } catch (err) {
         systemLogger.logSystem('ERROR', `Failed to add ${item.name} to archive: ${err.message}`);
@@ -1248,8 +1255,17 @@ app.post('/api/archive', authenticate, async (req, res) => {
     // Finalize the archive
     await archive.finalize();
 
+    // Log successful archive download
+    systemLogger.logDownload(archiveFileName, 'archive', true, req, {
+      fileCount: items.length,
+      size: totalArchiveSize
+    });
+
   } catch (error) {
-    systemLogger.logFileOperation('archive', req.body.currentPath || '/', false, req, { error: error.message });
+    systemLogger.logDownload(archiveFileName || 'archive.zip', 'archive', false, req, {
+      fileCount: items?.length || 0,
+      error: error.message
+    });
     if (!res.headersSent) {
       res.status(500).json({ error: error.message });
     }
