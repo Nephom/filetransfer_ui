@@ -1,10 +1,12 @@
 [package]
 name = "fileapi-desktop"
-version = "3.0.3"
+version = "3.0.4"
 edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "=2.6.3" }
 
 [dependencies]
+reqwest = { version = "=0.12.24", default-features = false, features = ["multipart", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
 tauri = { version = "=2.11.5" }

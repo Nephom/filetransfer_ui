@@ -2,16 +2,18 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
+import "./tls.css";
 
 type FileItem = { name: string; path: string; isDirectory: boolean; size: number; modified: number };
-type Session = { host: string; port: string; token: string; username: string };
+type Session = { host: string; port: string; token: string; username: string; ignoreTlsErrors: boolean };
 type ShareResponse = { data?: { fullUrl?: string; shareUrl?: string } };
+type NativeApiResponse = { status: number; body: number[] };
 
 const defaultHost = import.meta.env.VITE_DEFAULT_SERVER_HOST || "";
 const defaultPort = import.meta.env.VITE_DEFAULT_SERVER_PORT || "9443";
-const initialSession: Session = { host: defaultHost, port: defaultPort, token: "", username: "" };
+const initialSession: Session = { host: defaultHost, port: defaultPort, token: "", username: "", ignoreTlsErrors: false };
 
-const readError = async (response: Response) => {
+const readError = async (response: { status: number; text: () => Promise<string> }) => {
   const body = await response.text();
   try {
     const data = JSON.parse(body);
@@ -25,6 +27,20 @@ const parentPath = (path: string) => path.split("/").filter(Boolean).slice(0, -1
 const downloadPath = (path: string) => path.split("/").map(encodeURIComponent).join("/");
 const formatSize = (size: number) => size < 1024 ? `${size} B` : size < 1024 ** 2 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1024 ** 2).toFixed(1)} MB`;
 const serverUrl = (session: Session) => `https://${session.host.trim()}:${session.port.trim()}`;
+
+class ApiResponse {
+  readonly ok: boolean;
+  private readonly bytes: Uint8Array;
+
+  constructor(readonly status: number, body: number[]) {
+    this.ok = status >= 200 && status < 300;
+    this.bytes = new Uint8Array(body);
+  }
+
+  text = async () => new TextDecoder().decode(this.bytes);
+  json = async () => JSON.parse(await this.text());
+  arrayBuffer = async () => this.bytes.slice().buffer;
+}
 
 const validateServer = (session: Session) => {
   if (!/^[a-zA-Z0-9.-]+$/.test(session.host.trim())) throw new Error("Enter a server address without a protocol, path, or port.");
@@ -62,7 +78,15 @@ function App() {
   const api = async (endpoint: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
     if (session.token) headers.set("Authorization", `Bearer ${session.token}`);
-    return fetch(`${serverUrl(session)}${endpoint}`, { ...init, headers });
+    const body = init.body === undefined ? undefined : Array.from(new TextEncoder().encode(String(init.body)));
+    const response = await invoke<NativeApiResponse>("api_request", {
+      url: `${serverUrl(session)}${endpoint}`,
+      method: init.method || "GET",
+      headers: Array.from(headers.entries()),
+      body,
+      ignoreTlsErrors: session.ignoreTlsErrors
+    });
+    return new ApiResponse(response.status, response.body);
   };
 
   const loadFiles = async (nextPath = path) => {
@@ -94,7 +118,7 @@ function App() {
     event.preventDefault();
     await run(async () => {
       validateServer(session);
-      const response = await fetch(`${serverUrl(session)}/auth/login`, {
+      const response = await api("/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: session.username, password })
@@ -125,13 +149,20 @@ function App() {
     const picked = Array.from(event.target.files || []);
     event.target.value = "";
     if (!picked.length) return;
-    const form = new FormData();
-    picked.forEach(file => {
-      form.append("files", file);
-      if (file.webkitRelativePath) form.append("filePaths[]", file.webkitRelativePath);
+    const headers = session.token ? [["Authorization", `Bearer ${session.token}`]] : [];
+    const files = await Promise.all(picked.map(async file => ({
+      name: file.name,
+      bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
+      relativePath: file.webkitRelativePath || undefined
+    })));
+    const rawResponse = await invoke<NativeApiResponse>("api_upload", {
+      url: `${serverUrl(session)}/api/upload/multiple`,
+      headers,
+      files,
+      path,
+      ignoreTlsErrors: session.ignoreTlsErrors
     });
-    form.append("path", path);
-    const response = await api("/api/upload/multiple", { method: "POST", body: form });
+    const response = new ApiResponse(rawResponse.status, rawResponse.body);
     if (!response.ok) throw new Error(await readError(response));
     setNotice(`Upload started for ${picked.length} file${picked.length === 1 ? "" : "s"}.`);
     await loadFiles(path);
@@ -176,7 +207,7 @@ function App() {
     setNotice("Share link created.");
   });
 
-  if (!session.token) return <main className="login"><form onSubmit={login}><h1>File Transfer</h1><p>Sign in to your file server over HTTPS.</p><label>Server address<input placeholder="files.example.internal" value={session.host} onChange={event => setSession(current => ({ ...current, host: event.target.value }))} /></label><label>HTTPS port<input inputMode="numeric" value={session.port} onChange={event => setSession(current => ({ ...current, port: event.target.value }))} /></label><label>Username<input value={session.username} onChange={event => setSession(current => ({ ...current, username: event.target.value }))} /></label><label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>{notice && <output role="alert">{notice}</output>}</form></main>;
+  if (!session.token) return <main className="login"><form onSubmit={login}><h1>File Transfer</h1><p>Sign in to your file server over HTTPS.</p><label>Server address<input placeholder="files.example.internal" value={session.host} onChange={event => setSession(current => ({ ...current, host: event.target.value }))} /></label><label>HTTPS port<input inputMode="numeric" value={session.port} onChange={event => setSession(current => ({ ...current, port: event.target.value }))} /></label><label>Username<input value={session.username} onChange={event => setSession(current => ({ ...current, username: event.target.value }))} /></label><label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><label className="tls-option"><input type="checkbox" checked={session.ignoreTlsErrors} onChange={event => setSession(current => ({ ...current, ignoreTlsErrors: event.target.checked }))} /> Ignore SSL certificate verification <small>Only enable for a server you trust.</small></label><button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>{notice && <output role="alert">{notice}</output>}</form></main>;
 
   return <main className="explorer">
     <header><strong>File Transfer</strong><span>{session.username}</span><button onClick={() => setSession(current => ({ ...current, token: "" }))}>Sign out</button></header>
