@@ -70,7 +70,6 @@ function App() {
   const [dragItems, setDragItems] = useState<FileItem[]>([]);
   const [dropTarget, setDropTarget] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const uploadInput = useRef<HTMLInputElement>(null);
   const accountControl = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -240,35 +239,47 @@ function App() {
     if (!selectedItems.length) return;
     const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
     const fileName = singleFile ? selectedItems[0].name : "archive.zip";
-    const response = singleFile
-      ? await api(`/api/files/download/${downloadPath(selectedItems[0].path)}`)
-      : await api("/api/archive", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: selectedItems.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })), currentPath: path }) });
-    if (!response.ok) throw new Error(await readError(response));
-    const destination = await invoke<string>("write_download", { fileName, bytes: Array.from(new Uint8Array(await response.arrayBuffer())) });
+    const destination = await invoke<string>("download_to_disk", {
+      url: singleFile ? `${serverUrl(session)}/api/files/download/${downloadPath(selectedItems[0].path)}` : `${serverUrl(session)}/api/archive`,
+      method: singleFile ? "GET" : "POST",
+      headers: session.token ? [["Authorization", `Bearer ${session.token}`], ...(singleFile ? [] : [["Content-Type", "application/json"]])] : [],
+      body: singleFile ? undefined : Array.from(new TextEncoder().encode(JSON.stringify({ items: selectedItems.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })), currentPath: path }))),
+      fileName,
+      ignoreTlsErrors: session.ignoreTlsErrors
+    });
     setNotice(`Downloaded to ${destination}`);
   });
 
-  const upload = (event: React.ChangeEvent<HTMLInputElement>) => void run(async () => {
-    const picked = Array.from(event.target.files || []);
-    event.target.value = "";
-    if (!picked.length) return;
+  const upload = () => void run(async () => {
+    const paths = await invoke<string[]>("pick_upload_files");
+    if (!paths.length) return;
     const headers = session.token ? [["Authorization", `Bearer ${session.token}`]] : [];
-    const files = await Promise.all(picked.map(async file => ({
-      name: file.name,
-      bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
-      relativePath: file.webkitRelativePath || undefined
-    })));
-    const rawResponse = await invoke<NativeApiResponse>("api_upload", {
+    setNotice(`Uploading ${paths.length} item${paths.length === 1 ? "" : "s"}...`);
+    const rawResponse = await invoke<NativeApiResponse>("api_upload_paths", {
       url: `${serverUrl(session)}/api/upload/multiple`,
       headers,
-      files,
+      paths,
       path,
       ignoreTlsErrors: session.ignoreTlsErrors
     });
     const response = new ApiResponse(rawResponse.status, rawResponse.body);
     if (!response.ok) throw new Error(await readError(response));
-    setNotice(`Upload started for ${picked.length} file${picked.length === 1 ? "" : "s"}.`);
-    await loadFiles(path);
+    const { batchId } = await response.json() as { batchId?: string };
+    if (!batchId) throw new Error("The server did not return an upload batch ID.");
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      const progress = await api(`/api/progress/batch/${encodeURIComponent(batchId)}`);
+      if (!progress.ok) throw new Error(await readError(progress));
+      const batch = await progress.json() as { status: string; progress: number; successCount: number; totalFiles: number; failedCount: number };
+      setNotice(`Uploading: ${batch.successCount}/${batch.totalFiles} files (${Math.round(batch.progress)}%)`);
+      if (batch.status === "completed") {
+        setNotice(`Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`);
+        await loadFiles(path);
+        return;
+      }
+      if (batch.status === "failed" || batch.status === "partial_fail") throw new Error(`Upload finished with ${batch.failedCount} failed file${batch.failedCount === 1 ? "" : "s"}.`);
+      await new Promise(resolve => window.setTimeout(resolve, 1000));
+    }
+    throw new Error("Upload progress timed out.");
   });
 
   const createFolder = () => run(async () => {
@@ -331,13 +342,19 @@ function App() {
     setSession(current => ({ ...current, token: "", username: "", userId: null, role: "", permissions: [] }));
   };
 
+  const openAdminConsole = () => void run(async () => {
+    await invoke("open_admin_console", { baseUrl: serverUrl(session), headers: [["Authorization", `Bearer ${session.token}`]], ignoreTlsErrors: session.ignoreTlsErrors });
+    setAccountOpen(false);
+    setNotice("Admin console opened in your default browser.");
+  });
+
   const renderTreeNode = (node: FolderNode) => <div className="folder-tree" key={node.path}><div className={`tree-node ${path === node.path ? "active" : ""} ${dropTarget === node.path ? "drop-target" : ""}`} onDragOver={event => { if (isValidMoveTarget(dragItems, node.path)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(node.path); } }} onDragLeave={() => setDropTarget("")} onDrop={event => { event.preventDefault(); const items = dragItems; finishDrag(); void moveItems(items, node.path); }}><button className="tree-toggle" aria-label={`${node.expanded ? "Collapse" : "Expand"} ${node.name}`} onClick={() => toggleFolder(node)}>{node.expanded ? "−" : "+"}</button><button className="tree-folder" onClick={() => void run(() => loadFiles(node.path))}><span className="folder-mini" />{node.name}</button>{dragItems.length > 0 && dropTarget === node.path && <span className="drop-label">Move here</span>}</div>{node.expanded && <div className="tree-children">{node.loaded ? node.children.map(renderTreeNode) : <span className="tree-loading">Loading folders...</span>}</div>}</div>;
 
   if (!session.token) return <main className="login"><form onSubmit={login}><h1>File Transfer</h1><p>Sign in to your file server over HTTPS.</p><label>Server address<input placeholder="files.example.internal" value={session.host} onChange={event => setSession(current => ({ ...current, host: event.target.value }))} /></label><label>HTTPS port<input inputMode="numeric" value={session.port} onChange={event => setSession(current => ({ ...current, port: event.target.value }))} /></label><label>Username<input value={session.username} onChange={event => setSession(current => ({ ...current, username: event.target.value }))} /></label><label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><label className="tls-option"><input type="checkbox" checked={session.ignoreTlsErrors} onChange={event => setSession(current => ({ ...current, ignoreTlsErrors: event.target.checked }))} /> Ignore SSL certificate verification <small>Only enable for a server you trust.</small></label><button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>{notice && <output role="alert">{notice}</output>}</form></main>;
 
   return <main className="explorer">
-    <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountControl}><button className="account" onClick={event => { event.stopPropagation(); setAccountOpen(open => !open); }} aria-expanded={accountOpen}>{session.username}<span className="account-role">{session.role === "admin" ? "Admin" : "User"}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{session.username}</strong><span>{session.role === "admin" ? "System administrator" : "Standard user"}</span></div>{session.role === "admin" && <button onClick={() => { setAccountOpen(false); setNotice("Admin console browser handoff is being added in issue #111."); }}>Admin console</button>}<button onClick={() => { setAccountOpen(false); setChangePasswordOpen(true); }}>Change password</button><hr /><button className="danger" onClick={signOut}>Log out</button></div>}</div></header>
-    <nav className="commandbar" aria-label="File actions"><button className="primary" onClick={() => uploadInput.current?.click()} disabled={busy}>Upload</button><input ref={uploadInput} className="visually-hidden" type="file" multiple onChange={upload} /><button onClick={createFolder} disabled={busy}>New folder</button><span className="divider" /><button disabled={busy || !selectedItems.length} onClick={download}>Download</button><button disabled={busy || !selectedItems.length} onClick={() => setNotice("Drag selected files to a destination folder to move them.")}>Move</button><button disabled={busy || selectedItems.length !== 1} onClick={rename}>Rename</button><button disabled={busy || selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={share}>Share</button><button disabled={busy || !selectedItems.length} onClick={remove}>Delete</button><span className="divider" /><button onClick={() => setSelected(selected.length === files.length ? [] : files.map(file => file.path))}>Select all</button><span className="view-switch"><button className={viewMode === "details" ? "active" : ""} onClick={() => setViewMode("details")}>Details</button><button className={viewMode === "grid" ? "active" : ""} onClick={() => setViewMode("grid")}>Grid</button></span><button onClick={() => void run(() => loadFiles(path))} disabled={busy}>Refresh</button></nav>
+    <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountControl}><button className="account" onClick={event => { event.stopPropagation(); setAccountOpen(open => !open); }} aria-expanded={accountOpen}>{session.username}<span className="account-role">{session.role === "admin" ? "Admin" : "User"}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{session.username}</strong><span>{session.role === "admin" ? "System administrator" : "Standard user"}</span></div>{session.role === "admin" && <button onClick={openAdminConsole}>Admin console</button>}<button onClick={() => { setAccountOpen(false); setChangePasswordOpen(true); }}>Change password</button><hr /><button className="danger" onClick={signOut}>Log out</button></div>}</div></header>
+    <nav className="commandbar" aria-label="File actions"><button className="primary" onClick={upload} disabled={busy}>Upload</button><button onClick={createFolder} disabled={busy}>New folder</button><span className="divider" /><button disabled={busy || !selectedItems.length} onClick={download}>Download</button><button disabled={busy || !selectedItems.length} onClick={() => setNotice("Drag selected files to a destination folder to move them.")}>Move</button><button disabled={busy || selectedItems.length !== 1} onClick={rename}>Rename</button><button disabled={busy || selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={share}>Share</button><button disabled={busy || !selectedItems.length} onClick={remove}>Delete</button><span className="divider" /><button onClick={() => setSelected(selected.length === files.length ? [] : files.map(file => file.path))}>Select all</button><span className="view-switch"><button className={viewMode === "details" ? "active" : ""} onClick={() => setViewMode("details")}>Details</button><button className={viewMode === "grid" ? "active" : ""} onClick={() => setViewMode("grid")}>Grid</button></span><button onClick={() => void run(() => loadFiles(path))} disabled={busy}>Refresh</button></nav>
     <div className="navigation"><button className="nav-button" onClick={() => void run(() => loadFiles(searching ? pathBeforeSearch : parentPath(path)))} disabled={busy || (!path && !searching)}>↑</button><div className="crumbs"><button onClick={() => void run(() => loadFiles(""))}>/</button>{path.split("/").filter(Boolean).map((part, index, parts) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => void run(() => loadFiles(parts.slice(0, index + 1).join("/")))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={event => setSearch(event.target.value)} onKeyDown={event => { if (event.key === "Enter") searchFiles(); if (event.key === "Escape") clearSearch(); }} placeholder="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch}>×</button>}</div></div>
     <section className="desktop-content"><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{searching ? `Search results for "${search}"` : path || "/"}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{notice && <output className="notice transfer-notice" role="status">{notice}</output>}{shareUrl && <div className="share-link"><label>Share link<input readOnly value={shareUrl} onFocus={event => event.currentTarget.select()} /></label><button onClick={() => void navigator.clipboard.writeText(shareUrl).then(() => setNotice("Share link copied.")).catch(error => setNotice(error.message))}>Copy link</button><button onClick={() => setShareUrl("")}>Close</button></div>}<div className="file-area">{viewMode === "grid" ? <div className="file-grid">{files.map(file => <article key={file.path} className={`file-tile ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`} draggable onDragStart={event => beginDrag(event, file)} onDragEnd={finishDrag} onDragOver={event => { if (file.isDirectory && isValidMoveTarget(dragItems, file.path)) { event.preventDefault(); setDropTarget(file.path); } }} onDrop={event => { if (file.isDirectory) { event.preventDefault(); const items = dragItems; finishDrag(); void moveItems(items, file.path); } }} onClick={event => { if (event.ctrlKey || event.metaKey) toggle(file, true); else setSelected([file.path]); }} onDoubleClick={() => file.isDirectory ? void run(() => loadFiles(file.path)) : download()} onContextMenu={event => { event.preventDefault(); setSelected([file.path]); setContextMenu({ x: event.clientX, y: event.clientY }); }}><span className="tile-icon">{file.isDirectory ? "📁" : "📄"}</span><strong>{file.name}</strong><span>{file.isDirectory ? "File folder" : "File"}</span><small>{file.isDirectory ? "Drop files here" : formatSize(file.size)}</small></article>)}</div> : <table className="file-table"><thead><tr><th aria-label="Select" /><th>Name</th><th>Modified</th><th>Size</th></tr></thead><tbody>{files.map(file => <tr key={file.path} draggable className={`file-row ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`} onDragStart={event => beginDrag(event, file)} onDragEnd={finishDrag} onDragOver={event => { if (file.isDirectory && isValidMoveTarget(dragItems, file.path)) { event.preventDefault(); setDropTarget(file.path); } }} onDrop={event => { if (file.isDirectory) { event.preventDefault(); const items = dragItems; finishDrag(); void moveItems(items, file.path); } }} onClick={event => { if (event.ctrlKey || event.metaKey) toggle(file, true); else setSelected([file.path]); }} onDoubleClick={() => file.isDirectory ? void run(() => loadFiles(file.path)) : download()} onContextMenu={event => { event.preventDefault(); setSelected([file.path]); setContextMenu({ x: event.clientX, y: event.clientY }); }}><td><input aria-label={`Select ${file.name}`} type="checkbox" checked={selected.includes(file.path)} onChange={event => toggle(file, event.target.checked)} onClick={event => event.stopPropagation()} /></td><td><span className="file-name">{file.isDirectory ? "📁" : "📄"} {file.name}</span></td><td className="muted">{file.modified ? new Date(file.modified).toLocaleString() : "--"}</td><td className="muted">{file.isDirectory ? "--" : formatSize(file.size)}</td></tr>)}</tbody></table>}</div></section>
     <aside className="sidebar desktop-folder-tree"><span className="sidebar-label">Locations</span>{renderTreeNode(folderTree)}</aside>

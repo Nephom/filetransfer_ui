@@ -10,6 +10,7 @@ const https = require('https');
 const http = require('http');
 const os = require('os');
 const archiver = require('archiver');
+const crypto = require('crypto');
 const configManager = require('./config');
 const { EnhancedMemoryFileSystem } = require('./file-system');
 const AuthManager = require('./auth');
@@ -44,6 +45,7 @@ const userActiveDirectories = new Map(); // Track active directory per user
 let httpServerInstance = null;
 let httpsServerInstance = null;
 let tempUploadCleanupInterval = null;
+const browserHandoffs = new Map();
 
 // Security checks and recommendations on startup
 async function performSecurityChecks(config) {
@@ -236,6 +238,26 @@ app.post('/auth/login', (req, res, next) => {
     systemLogger.logSystem('ERROR', `Login error: ${error.message}`);
     res.status(401).json({ error: 'Authentication failed' });
   }
+});
+
+app.post('/auth/browser-handoff', authenticate, requireAdmin, (req, res) => {
+  const authorization = req.get('Authorization');
+  const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Authorization token missing' });
+
+  const code = crypto.randomBytes(32).toString('base64url');
+  browserHandoffs.set(code, { token, expiresAt: Date.now() + 60_000 });
+  res.set('Cache-Control', 'no-store');
+  res.json({ url: `/auth/browser-handoff/${code}` });
+});
+
+app.get('/auth/browser-handoff/:code', (req, res) => {
+  const handoff = browserHandoffs.get(req.params.code);
+  browserHandoffs.delete(req.params.code);
+  if (!handoff || handoff.expiresAt < Date.now()) return res.status(410).send('This browser sign-in link has expired.');
+
+  res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'Content-Type': 'text/html; charset=utf-8' });
+  res.send(`<!doctype html><meta name="referrer" content="no-referrer"><script>localStorage.setItem('token', ${JSON.stringify(handoff.token)});location.replace('/admin');</script>`);
 });
 
 // Change password endpoint
