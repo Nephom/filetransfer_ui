@@ -3,15 +3,16 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import "./styles.css";
 import "./tls.css";
+import "./webui-shell.css";
 
 type FileItem = { name: string; path: string; isDirectory: boolean; size: number; modified: number };
-type Session = { host: string; port: string; token: string; username: string; ignoreTlsErrors: boolean };
+type Session = { host: string; port: string; token: string; username: string; userId: number | null; role: string; permissions: string[]; ignoreTlsErrors: boolean };
 type ShareResponse = { data?: { fullUrl?: string; shareUrl?: string } };
 type NativeApiResponse = { status: number; body: number[] };
 
 const defaultHost = import.meta.env.VITE_DEFAULT_SERVER_HOST || "";
 const defaultPort = import.meta.env.VITE_DEFAULT_SERVER_PORT || "9443";
-const initialSession: Session = { host: defaultHost, port: defaultPort, token: "", username: "", ignoreTlsErrors: false };
+const initialSession: Session = { host: defaultHost, port: defaultPort, token: "", username: "", userId: null, role: "", permissions: [], ignoreTlsErrors: false };
 
 const readError = async (response: { status: number; text: () => Promise<string> }) => {
   const body = await response.text();
@@ -57,7 +58,10 @@ function App() {
   const [notice, setNotice] = useState("");
   const [shareUrl, setShareUrl] = useState("");
   const [busy, setBusy] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const uploadInput = useRef<HTMLInputElement>(null);
+  const accountControl = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     try {
@@ -74,6 +78,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem("fileapi-desktop-session", JSON.stringify(session));
   }, [session]);
+
+  useEffect(() => {
+    const closeAccountMenu = (event: MouseEvent) => {
+      if (!accountControl.current?.contains(event.target as Node)) setAccountOpen(false);
+    };
+    window.addEventListener("click", closeAccountMenu);
+    return () => window.removeEventListener("click", closeAccountMenu);
+  }, []);
 
   const api = async (endpoint: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -125,7 +137,7 @@ function App() {
       });
       if (!response.ok) throw new Error(await readError(response));
       const data = await response.json();
-      setSession(current => ({ ...current, token: data.token, username: data.user.username }));
+      setSession(current => ({ ...current, token: data.token, username: data.user.username, userId: data.user.id ?? null, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
       setPassword("");
     });
   };
@@ -207,15 +219,36 @@ function App() {
     setNotice("Share link created.");
   });
 
+  const changePassword = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const currentPassword = String(form.get("currentPassword") || "");
+    const newPassword = String(form.get("newPassword") || "");
+    const confirmPassword = String(form.get("confirmPassword") || "");
+    void run(async () => {
+      if (newPassword !== confirmPassword) throw new Error("The new passwords do not match.");
+      const response = await api("/auth/change-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ currentPassword, newPassword }) });
+      if (!response.ok) throw new Error(await readError(response));
+      setChangePasswordOpen(false);
+      setSession(current => ({ ...current, token: "" }));
+      setNotice("Password changed. Please sign in again.");
+    });
+  };
+
+  const signOut = () => {
+    setAccountOpen(false);
+    setSession(current => ({ ...current, token: "", username: "", userId: null, role: "", permissions: [] }));
+  };
+
   if (!session.token) return <main className="login"><form onSubmit={login}><h1>File Transfer</h1><p>Sign in to your file server over HTTPS.</p><label>Server address<input placeholder="files.example.internal" value={session.host} onChange={event => setSession(current => ({ ...current, host: event.target.value }))} /></label><label>HTTPS port<input inputMode="numeric" value={session.port} onChange={event => setSession(current => ({ ...current, port: event.target.value }))} /></label><label>Username<input value={session.username} onChange={event => setSession(current => ({ ...current, username: event.target.value }))} /></label><label>Password<input type="password" value={password} onChange={event => setPassword(event.target.value)} /></label><label className="tls-option"><input type="checkbox" checked={session.ignoreTlsErrors} onChange={event => setSession(current => ({ ...current, ignoreTlsErrors: event.target.checked }))} /> Ignore SSL certificate verification <small>Only enable for a server you trust.</small></label><button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>{notice && <output role="alert">{notice}</output>}</form></main>;
 
   return <main className="explorer">
-    <header><strong>File Transfer</strong><span>{session.username}</span><button onClick={() => setSession(current => ({ ...current, token: "" }))}>Sign out</button></header>
-    <nav aria-label="File actions"><button onClick={() => uploadInput.current?.click()} disabled={busy}>Upload</button><input ref={uploadInput} className="visually-hidden" type="file" multiple onChange={upload} /><button onClick={createFolder} disabled={busy}>New folder</button><button disabled={busy || !selectedItems.length} onClick={download}>Download</button><button disabled={busy || selectedItems.length !== 1} onClick={rename}>Rename</button><button disabled={busy || !selectedItems.length} onClick={remove}>Delete</button><button disabled={busy || selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={share}>Share</button><button onClick={() => void run(() => loadFiles(path))} disabled={busy}>Refresh</button></nav>
-    <div className="breadcrumb"><button onClick={() => void run(() => loadFiles(parentPath(path)))} disabled={busy || !path}>Up</button><span>{path || "Home"}</span></div>
-    {notice && <output role="status">{notice}</output>}
-    {shareUrl && <div className="share-link"><label>Share link<input readOnly value={shareUrl} onFocus={event => event.currentTarget.select()} /></label><button onClick={() => void navigator.clipboard.writeText(shareUrl).then(() => setNotice("Share link copied.")).catch(error => setNotice(error.message))}>Copy</button><button onClick={() => setShareUrl("")}>Close</button></div>}
-    <table><thead><tr><th aria-label="Select" /><th>Name</th><th>Modified</th><th>Size</th></tr></thead><tbody>{files.map(file => <tr key={file.path} className={selected.includes(file.path) ? "selected" : ""}><td><input aria-label={`Select ${file.name}`} type="checkbox" checked={selected.includes(file.path)} onChange={event => toggle(file, event.target.checked)} /></td><td>{file.isDirectory ? <button className="file-name folder" onClick={() => void run(() => loadFiles(file.path))}>Folder {file.name}</button> : <span className="file-name">File {file.name}</span>}</td><td>{file.modified ? new Date(file.modified).toLocaleString() : ""}</td><td>{file.isDirectory ? "" : formatSize(file.size)}</td></tr>)}</tbody></table>
+    <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountControl}><button className="account" onClick={event => { event.stopPropagation(); setAccountOpen(open => !open); }} aria-expanded={accountOpen}>{session.username}<span className="account-role">{session.role === "admin" ? "Admin" : "User"}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{session.username}</strong><span>{session.role === "admin" ? "System administrator" : "Standard user"}</span></div>{session.role === "admin" && <button onClick={() => { setAccountOpen(false); setNotice("Admin console browser handoff is being added in issue #111."); }}>Admin console</button>}<button onClick={() => { setAccountOpen(false); setChangePasswordOpen(true); }}>Change password</button><hr /><button className="danger" onClick={signOut}>Log out</button></div>}</div></header>
+    <nav className="commandbar" aria-label="File actions"><button className="primary" onClick={() => uploadInput.current?.click()} disabled={busy}>Upload</button><input ref={uploadInput} className="visually-hidden" type="file" multiple onChange={upload} /><button onClick={createFolder} disabled={busy}>New folder</button><span className="divider" /><button disabled={busy || !selectedItems.length} onClick={download}>Download</button><button disabled={busy || selectedItems.length !== 1} onClick={rename}>Rename</button><button disabled={busy || selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={share}>Share</button><button disabled={busy || !selectedItems.length} onClick={remove}>Delete</button><span className="divider" /><button onClick={() => void run(() => loadFiles(path))} disabled={busy}>Refresh</button></nav>
+    <div className="navigation"><button className="nav-button" onClick={() => void run(() => loadFiles(parentPath(path)))} disabled={busy || !path}>↑</button><div className="crumbs"><button onClick={() => void run(() => loadFiles(""))}>/</button>{path.split("/").filter(Boolean).map((part, index, parts) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => void run(() => loadFiles(parts.slice(0, index + 1).join("/")))}>{part}</button></React.Fragment>)}</div></div>
+    <section className="desktop-content"><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{path || "/"}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{notice && <output className="notice transfer-notice" role="status">{notice}</output>}{shareUrl && <div className="share-link"><label>Share link<input readOnly value={shareUrl} onFocus={event => event.currentTarget.select()} /></label><button onClick={() => void navigator.clipboard.writeText(shareUrl).then(() => setNotice("Share link copied.")).catch(error => setNotice(error.message))}>Copy link</button><button onClick={() => setShareUrl("")}>Close</button></div>}<div className="file-area"><table className="file-table"><thead><tr><th aria-label="Select" /><th>Name</th><th>Modified</th><th>Size</th></tr></thead><tbody>{files.map(file => <tr key={file.path} className={`file-row ${selected.includes(file.path) ? "selected" : ""}`}><td><input aria-label={`Select ${file.name}`} type="checkbox" checked={selected.includes(file.path)} onChange={event => toggle(file, event.target.checked)} /></td><td>{file.isDirectory ? <button className="file-name folder" onClick={() => void run(() => loadFiles(file.path))}>📁 {file.name}</button> : <span className="file-name">📄 {file.name}</span>}</td><td className="muted">{file.modified ? new Date(file.modified).toLocaleString() : "--"}</td><td className="muted">{file.isDirectory ? "--" : formatSize(file.size)}</td></tr>)}</tbody></table></div></section>
+    <footer className="statusbar"><span>{files.length} item{files.length === 1 ? "" : "s"}</span><span>{path ? `/${path}` : "/"}</span></footer>
+    {changePasswordOpen && <div className="modal-cover" onMouseDown={() => setChangePasswordOpen(false)}><div className="modal" onMouseDown={event => event.stopPropagation()}><h2>Change password</h2><form onSubmit={changePassword}><p>Changing your password signs this device out.</p><label>Current password<input name="currentPassword" type="password" autoFocus required /></label><label>New password<input name="newPassword" type="password" minLength={6} required /></label><label>Confirm new password<input name="confirmPassword" type="password" minLength={6} required /></label><div className="modal-actions"><button type="button" onClick={() => setChangePasswordOpen(false)}>Cancel</button><button className="confirm" type="submit" disabled={busy}>Change password</button></div></form></div></div>}
   </main>;
 }
 
