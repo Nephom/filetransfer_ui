@@ -1,4 +1,4 @@
-# File Transfer Desktop 3.0.3
+# File Transfer Desktop 3.1.0
 
 This is a mouse-first Tauri v2 client for Ubuntu 22.04 and newer. Windows users access the parent project's web interface in a browser; no Windows desktop package is produced.
 

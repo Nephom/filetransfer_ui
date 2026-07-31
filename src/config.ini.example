@@ -1,34 +1,64 @@
 # Local File Transfer configuration. build.sh setup creates src/config.ini from this file.
 
 [server]
+# HTTP port used by the web interface and API. Restart the service after changing it.
 port=9400
 
 [fileSystem]
+# Directory where completed uploads and user files are stored. This is not a temporary directory.
 storagePath=./storage
 
+[maintenance]
+# Files first uploaded through the multipart endpoint are briefly stored in temp/uploads.
+# Completed uploads are moved into storagePath. Interrupted or failed uploads can remain here.
+# Delete only regular temporary files older than this many full days. Minimum: 1. Default: 7.
+tempUploadRetentionDays=7
+# How often the service scans temp/uploads for expired temporary files, in hours.
+# The cleanup also runs once during service startup. Minimum: 1. Default: 24.
+tempUploadCleanupIntervalHours=24
+
+[logging]
+# Minimum severity written to server.log: DEBUG, INFO, WARN, or ERROR.
+# INFO is the recommended default and suppresses verbose cache and upload diagnostics.
+# Use DEBUG temporarily when investigating a problem, then restart the service after changing it.
+level=INFO
+
 [auth]
+# Administrator account created during setup. Keep password and jwtSecret private.
 username=admin
 password=
+# Set true only when password already contains a supported password hash.
 passwordHashed=false
 
 [security]
+# Enable individual safeguards. false is suitable for a trusted local network; enable them for production use.
 enableRateLimit=false
 enableSecurityHeaders=false
 enableInputValidation=false
 enableFileUploadSecurity=false
+# Log every HTTP request and response to server.log. This is separate from [logging] level filtering.
 enableRequestLogging=false
 enableCSP=false
+# Secret used to sign login tokens. Setup generates one automatically; never commit a real value.
 jwtSecret=
 
 [shareLinks]
+# Allow authenticated users to create public share links.
 enabled=true
+# Default and maximum public-link lifetime, in seconds.
 defaultExpiration=86400
 maxExpiration=2592000
+# Allow public links to have their own password.
 allowPasswordProtection=true
+# Interval used by the share-link expiration cleanup, in seconds.
 cleanupInterval=86400
+# Default download limit for a share link. 0 means unlimited downloads.
 maxDownloadsDefault=0
 
 [ssl]
+# HTTPS port used when certificates are available. Restart after changing it.
 httpsPort=9443
+# Redirect HTTP requests to HTTPS when HTTPS certificates are loaded.
 enableHttpsRedirect=true
+# Generate local certificates automatically when none are available.
 autoGenerateCerts=false
