@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Panel - File Transfer UI</title>
+    <title>Admin Console - LAB File Manager</title>
     <style>
         * {
             margin: 0;
@@ -360,13 +360,27 @@
             cursor: pointer;
         }
 
+        /* Match the primary Explorer's dark telemetry surfaces without changing admin behavior. */
+        body { font-family: Inter, "Segoe UI", system-ui, sans-serif; background: radial-gradient(circle at 80% -10%, #123356 0, transparent 35%), #07111f; color: #e6eefc; align-items: flex-start; }
+        .admin-container { width: min(1200px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 44px; }
+        .admin-header { display: flex; justify-content: space-between; align-items: center; text-align: left; margin-bottom: 26px; padding: 18px 20px; background: rgba(10, 27, 46, .9); border: 1px solid #1c3955; border-radius: 7px; box-shadow: 0 12px 30px rgba(0,0,0,.26); }
+        .admin-header h1 { color: #effaff; font-size: 1.55rem; text-shadow: none; }.admin-header p { color: #8fa8bf; font-size: .9rem; }
+        .back-to-files { border: 1px solid #315b7e; border-radius: 5px; padding: 9px 12px; color: #d9eafa; background: #0d2942; cursor: pointer; font: inherit; }.back-to-files:hover { border-color: #47cdf1; background: #173653; }
+        .glass-panel, .stat-card, .control-card { background: #0b2137; border-color: #254764; box-shadow: 0 12px 30px rgba(0,0,0,.22); }.glass-panel { border-radius: 7px; }.control-card { border-radius: 6px; }.control-card:hover { background: #102d49; border-color: #3b7097; transform: translateY(-2px); }.glass-panel h2, .control-card h3 { color: #e9fbff; }.control-card p, .stat-card .label { color: #91a9c0; opacity: 1; }
+        .stat-card .number { color: #6bf0ca; }.btn { background: #102d49; border-color: #315b7e; border-radius: 5px; }.btn:hover { background: #173653; border-color: #47cdf1; transform: none; }.btn.danger { background: #3b1d28; border-color: #813847; }.btn.danger:hover { background: #512332; }
+        .form-control { color: #e6eefc; background: #07192a; border-color: #315b7e; }.form-control:focus { border-color: #47cdf1; box-shadow: 0 0 0 1px #47cdf1; }.modal-overlay { background: rgba(0,6,14,.75); }.modal-content { background: #0b2137; border-color: #315b7e; border-radius: 7px; }.modal-header { border-color: #284966; }
+        @media (max-width: 768px) { .admin-container { width: min(100% - 20px, 1200px); padding-top: 10px; }.admin-header { align-items: flex-start; gap: 14px; flex-direction: column; }.back-to-files { width: 100%; } }
+
     </style>
 </head>
 <body>
     <div class="admin-container">
         <div class="admin-header">
-            <h1>📋 Admin Panel</h1>
-            <p>Manage your file transfer system efficiently</p>
+            <div>
+                <h1>Admin Console</h1>
+                <p>Manage LAB File Manager services and users</p>
+            </div>
+            <button class="back-to-files" type="button" onclick="window.location.assign('/')">← Back to File Manager</button>
         </div>
 
         <div class="stats-grid">
