@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./styles.css";
 import "./tls.css";
 import "./webui-shell.css";
@@ -250,8 +251,7 @@ function App() {
     setNotice(`Downloaded to ${destination}`);
   });
 
-  const upload = () => void run(async () => {
-    const paths = await invoke<string[]>("pick_upload_files");
+  const uploadPaths = (paths: string[]) => void run(async () => {
     if (!paths.length) return;
     const headers = session.token ? [["Authorization", `Bearer ${session.token}`]] : [];
     setNotice(`Uploading ${paths.length} item${paths.length === 1 ? "" : "s"}...`);
@@ -281,6 +281,16 @@ function App() {
     }
     throw new Error("Upload progress timed out.");
   });
+
+  const upload = async () => uploadPaths(await invoke<string[]>("pick_upload_files"));
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebviewWindow().onDragDropEvent(event => {
+      if (event.payload.type === "drop") uploadPaths(event.payload.paths);
+    }).then(listener => { unlisten = listener; });
+    return () => unlisten?.();
+  }, [session.token, path, session.ignoreTlsErrors]);
 
   const createFolder = () => run(async () => {
     const folderName = window.prompt("Folder name");
