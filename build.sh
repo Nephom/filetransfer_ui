@@ -321,8 +321,11 @@ cmd_build() {
   install_desktop_node_dependencies
   npm run build --prefix "$ROOT_DIR/fileapi_ui"
   (
-    cd "$ROOT_DIR/fileapi_ui"
+    cd "$ROOT_DIR/fileapi_ui/src-tauri"
     cargo check --locked
+  )
+  (
+    cd "$ROOT_DIR/fileapi_ui"
     npm run tauri build
   )
   echo "DEB packages are in fileapi_ui/src-tauri/target/release/bundle/deb/."
