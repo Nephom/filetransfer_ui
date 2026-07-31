@@ -35,14 +35,14 @@ usage() {
 Usage: ./build.sh <command> [--proxy http://proxy-host:port]
 
 Commands:
-  install  Install Ubuntu dependencies and both Node.js dependency sets.
+  install  Install server dependencies on Alpine Linux or Ubuntu.
   setup    Create missing local configuration and ask for deployment values.
-  build    Build the Ubuntu Tauri DEB package.
-  test     Run the backend sandbox tests and desktop type check.
+  build    Build the Ubuntu 22.04+ Tauri DEB package.
+  test     Run backend sandbox tests.
   upgrade  Fast-forward from GitHub, update dependencies, and run backend tests.
 
-The proxy applies only to this invocation. It is passed to apt, Git, npm, Cargo,
-curl, and wget; it is never saved to global configuration.
+The proxy applies only to this invocation. It is passed to apk or apt, Git, npm,
+Cargo, curl, and wget; it is never saved to global configuration.
 EOF
 }
 
@@ -68,24 +68,48 @@ run_git() {
 
 run_apt() {
   if [[ -n "$PROXY" ]]; then
-    sudo env http_proxy="$PROXY" https_proxy="$PROXY" HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY" DEBIAN_FRONTEND=noninteractive apt-get "$@"
+    run_as_root env http_proxy="$PROXY" https_proxy="$PROXY" HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY" DEBIAN_FRONTEND=noninteractive apt-get "$@"
   else
-    sudo env DEBIAN_FRONTEND=noninteractive apt-get "$@"
+    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get "$@"
   fi
 }
 
-require_ubuntu() {
-  [[ -r /etc/os-release ]] || { echo "Ubuntu 22.04 or newer is required." >&2; exit 1; }
+run_apk() {
+  if [[ -n "$PROXY" ]]; then
+    run_as_root env http_proxy="$PROXY" https_proxy="$PROXY" HTTP_PROXY="$PROXY" HTTPS_PROXY="$PROXY" apk "$@"
+  else
+    run_as_root apk "$@"
+  fi
+}
+
+run_as_root() {
+  if [[ "$EUID" -eq 0 ]]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    echo "Root privileges or sudo are required to install system packages." >&2
+    exit 1
+  fi
+}
+
+detect_os() {
+  [[ -r /etc/os-release ]] || { echo "Alpine Linux or Ubuntu is required." >&2; exit 1; }
   . /etc/os-release
-  [[ "${ID:-}" == "ubuntu" ]] || { echo "Ubuntu 22.04 or newer is required." >&2; exit 1; }
-  local major="${VERSION_ID%%.*}"
+  OS_ID="${ID:-}"
+  OS_VERSION="${VERSION_ID:-}"
+}
+
+require_ubuntu() {
+  detect_os
+  [[ "$OS_ID" == "ubuntu" ]] || { echo "Ubuntu 22.04 or newer is required for the Tauri DEB build." >&2; exit 1; }
+  local major="${OS_VERSION%%.*}"
   [[ "$major" =~ ^[0-9]+$ && "$major" -ge 22 ]] || { echo "Ubuntu 22.04 or newer is required." >&2; exit 1; }
 }
 
-install_system_dependencies() {
+install_desktop_system_dependencies() {
   require_ubuntu
-  command -v sudo >/dev/null || { echo "sudo is required to install system packages." >&2; exit 1; }
-  sudo -v
+  run_as_root true
   run_apt update
 
   local webkit_package="libwebkit2gtk-4.1-dev"
@@ -94,6 +118,24 @@ install_system_dependencies() {
   fi
 
   run_apt install -y ca-certificates curl wget git file build-essential pkg-config libssl-dev libgtk-3-dev "$webkit_package" libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+}
+
+install_server_system_dependencies() {
+  detect_os
+  case "$OS_ID" in
+    alpine)
+      run_apk add --no-cache ca-certificates curl wget git nodejs npm python3 make g++ libstdc++
+      ;;
+    ubuntu)
+      run_as_root true
+      run_apt update
+      run_apt install -y ca-certificates curl wget git file build-essential pkg-config python3
+      ;;
+    *)
+      echo "Unsupported server OS: $OS_ID. Supported server platforms are Alpine Linux and Ubuntu." >&2
+      exit 1
+      ;;
+  esac
 }
 
 node_major() {
@@ -111,9 +153,17 @@ ensure_node() {
     return
   fi
 
-  echo "Installing Node.js 22 LTS..."
-  curl --fail --location --show-error https://deb.nodesource.com/setup_22.x | sudo -E bash -
-  run_apt install -y nodejs
+  detect_os
+  if [[ "$OS_ID" == "alpine" ]]; then
+    run_apk add --no-cache nodejs npm
+  elif [[ "$OS_ID" == "ubuntu" ]]; then
+    echo "Installing Node.js 22 LTS..."
+    curl --fail --location --show-error https://deb.nodesource.com/setup_22.x | run_as_root env http_proxy="${http_proxy:-}" https_proxy="${https_proxy:-}" bash -
+    run_apt install -y nodejs
+  else
+    echo "Unsupported server OS: $OS_ID." >&2
+    exit 1
+  fi
   major="$(node_major)"
   [[ "$major" =~ ^[0-9]+$ && "$major" -ge 20 ]] && node_supports_env_file || { echo "Node.js 20.6 or newer is required." >&2; exit 1; }
 }
@@ -128,8 +178,11 @@ ensure_rust() {
   rustup default stable
 }
 
-install_node_dependencies() {
+install_server_node_dependencies() {
   npm ci --prefix "$ROOT_DIR"
+}
+
+install_desktop_node_dependencies() {
   npm ci --prefix "$ROOT_DIR/fileapi_ui"
 }
 
@@ -251,19 +304,21 @@ setup_configuration() {
 }
 
 cmd_install() {
-  install_system_dependencies
+  install_server_system_dependencies
   ensure_node
-  ensure_rust
-  install_node_dependencies
+  install_server_node_dependencies
 }
 
 cmd_setup() {
-  command -v node >/dev/null 2>&1 || cmd_install
+  node_supports_env_file || cmd_install
   setup_configuration
 }
 
 cmd_build() {
   cmd_install
+  install_desktop_system_dependencies
+  ensure_rust
+  install_desktop_node_dependencies
   npm run build --prefix "$ROOT_DIR/fileapi_ui"
   (
     cd "$ROOT_DIR/fileapi_ui"
@@ -275,7 +330,6 @@ cmd_build() {
 
 cmd_test() {
   npm test --prefix "$ROOT_DIR"
-  npm run build --prefix "$ROOT_DIR/fileapi_ui"
 }
 
 cmd_upgrade() {

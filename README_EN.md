@@ -1,12 +1,12 @@
 [正體中文](README.md)
 
-# Web-Based File Management System 3.0.0
+# Web-Based File Management System 3.0.1
 
 A local file management system with a Windows Explorer-style web interface and an Ubuntu desktop client. Windows users use the web interface in a browser; the Tauri desktop client is distributed only as an Ubuntu DEB.
 
 ## Install And Upgrade
 
-Ubuntu 22.04+, network access, and `sudo` are required. The build script installs Node.js, Rust, GTK/WebKitGTK, and the remaining dependencies.
+The server supports Alpine Linux and Ubuntu and requires network access plus permission to install system packages. `install` and `upgrade` install only Node.js and server dependencies; they do not install or build Tauri.
 
 For a new environment:
 
@@ -31,7 +31,7 @@ Use a one-command proxy when external access requires it:
 ./build.sh upgrade --proxy http://proxy.example.internal:8080
 ```
 
-The proxy is used only for that invocation by apt, Git, npm, Cargo, curl, and wget; it is not saved globally.
+The proxy is used only for that invocation by apk or apt, Git, npm, Cargo, curl, and wget; it is not saved globally.
 
 ## Local Configuration
 
@@ -41,7 +41,7 @@ The default HTTP port is `9400`; the default HTTPS port is `9443`. HTTP redirect
 
 ## Ubuntu Desktop Package
 
-Build the Ubuntu 22.04+ DEB package with:
+Only Ubuntu 22.04+ builds the desktop package. This command installs Rust, GTK/WebKitGTK, and the Tauri build dependencies:
 
 ```bash
 ./build.sh build
