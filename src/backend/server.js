@@ -43,6 +43,7 @@ let isCacheReady = false;
 const userActiveDirectories = new Map(); // Track active directory per user
 let httpServerInstance = null;
 let httpsServerInstance = null;
+let tempUploadCleanupInterval = null;
 
 // Security checks and recommendations on startup
 async function performSecurityChecks(config) {
@@ -1978,6 +1979,7 @@ async function startServer() {
   try {
     // Load configuration first
     await configManager.load();
+    systemLogger.setLogLevel(configManager.get('logging.level'));
 
     // Initialize database
     await database.initialize();
@@ -2005,6 +2007,20 @@ async function startServer() {
     setJwtSecret(jwtSecret);
 
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
+
+    const tempUploadRetentionDays = configManager.get('maintenance.tempUploadRetentionDays');
+    const tempUploadCleanupIntervalHours = configManager.get('maintenance.tempUploadCleanupIntervalHours');
+    const runTempUploadCleanup = async () => {
+      try {
+        await uploadApi.cleanupTempUploads(tempUploadRetentionDays);
+      } catch (error) {
+        // The cleanup method records the detailed failure; keep startup available.
+      }
+    };
+
+    await runTempUploadCleanup();
+    tempUploadCleanupInterval = setInterval(runTempUploadCleanup, tempUploadCleanupIntervalHours * 60 * 60 * 1000);
+    systemLogger.logSystem('INFO', `TEMP UPLOAD CLEANUP SCHEDULER - RetentionDays: ${tempUploadRetentionDays}, IntervalHours: ${tempUploadCleanupIntervalHours}`);
 
     // Initialize enhanced file system with in-memory cache
     fileSystem = new EnhancedMemoryFileSystem(storagePath);
@@ -2253,6 +2269,11 @@ async function gracefulShutdown() {
   try {
     systemLogger.logSystem('INFO', 'Starting graceful shutdown...');
     console.log('Closing servers...');
+
+    if (tempUploadCleanupInterval) {
+      clearInterval(tempUploadCleanupInterval);
+      tempUploadCleanupInterval = null;
+    }
 
     // Close HTTP server
     if (httpServerInstance) {

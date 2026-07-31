@@ -52,6 +52,15 @@ class ConfigManager {
         enableResume: true
       },
 
+      maintenance: {
+        tempUploadRetentionDays: 7,
+        tempUploadCleanupIntervalHours: 24
+      },
+
+      logging: {
+        level: 'INFO'
+      },
+
       // Share links configuration
       shareLinks: {
         enabled: true,
@@ -301,6 +310,20 @@ class ConfigManager {
       throw new Error('chunkSize must be positive');
     }
 
+    if (!Number.isInteger(this.config.maintenance.tempUploadRetentionDays) || this.config.maintenance.tempUploadRetentionDays < 1) {
+      throw new Error('maintenance.tempUploadRetentionDays must be a positive integer');
+    }
+
+    if (!Number.isInteger(this.config.maintenance.tempUploadCleanupIntervalHours) || this.config.maintenance.tempUploadCleanupIntervalHours < 1) {
+      throw new Error('maintenance.tempUploadCleanupIntervalHours must be a positive integer');
+    }
+
+    const logLevel = String(this.config.logging.level || '').toUpperCase();
+    if (!['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(logLevel)) {
+      throw new Error('logging.level must be DEBUG, INFO, WARN, or ERROR');
+    }
+    this.config.logging.level = logLevel;
+
     // Validate share links configuration
     if (this.config.shareLinks) {
       if (this.config.shareLinks.defaultExpiration <= 0) {
@@ -414,6 +437,18 @@ class ConfigManager {
         iniContent += '#   storagePath=/home/user/myfiles          (absolute path on Linux/Mac)\n';
         iniContent += '#   storagePath=C:\\Users\\User\\Documents     (absolute path on Windows)\n';
         iniContent += `storagePath=${this.config.fileSystem?.storagePath || './storage'}\n\n`;
+
+        // [maintenance] section
+        iniContent += '[maintenance]\n';
+        iniContent += '# Remove interrupted Multer uploads from temp/uploads after this many days.\n';
+        iniContent += `tempUploadRetentionDays=${this.config.maintenance?.tempUploadRetentionDays || 7}\n`;
+        iniContent += '# Run the temporary-upload cleanup at this interval, in hours.\n';
+        iniContent += `tempUploadCleanupIntervalHours=${this.config.maintenance?.tempUploadCleanupIntervalHours || 24}\n\n`;
+
+        // [logging] section
+        iniContent += '[logging]\n';
+        iniContent += '# DEBUG, INFO, WARN, or ERROR. INFO hides verbose DEBUG entries.\n';
+        iniContent += `level=${this.config.logging?.level || 'INFO'}\n\n`;
 
         // [auth] section
         iniContent += '[auth]\n';
