@@ -5,6 +5,7 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 const { systemLogger } = require('../utils/logger');
 
 class ConfigManager {
@@ -28,9 +29,15 @@ class ConfigManager {
         ssl: false
       },
 
+      auth: {
+        username: 'admin',
+        password: '',
+        passwordHashed: false
+      },
+
       // Security configuration
       security: {
-        jwtSecret: 'your-secret-key-here',
+        jwtSecret: '',
         sessionTimeout: 3600, // 1 hour
         rateLimit: {
           maxAttempts: 5,
@@ -207,10 +214,36 @@ class ConfigManager {
       env.server.host = process.env.SERVER_HOST;
     }
 
+    // Admin credentials are deployment secrets and are intentionally not tracked.
+    if (process.env.AUTH_USERNAME) {
+      env.auth = env.auth || {};
+      env.auth.username = process.env.AUTH_USERNAME;
+    }
+
+    if (process.env.AUTH_PASSWORD !== undefined) {
+      env.auth = env.auth || {};
+      env.auth.password = process.env.AUTH_PASSWORD;
+    }
+
+    if (process.env.AUTH_PASSWORD_HASHED !== undefined) {
+      env.auth = env.auth || {};
+      env.auth.passwordHashed = process.env.AUTH_PASSWORD_HASHED.toLowerCase() === 'true';
+    }
+
     // Security config
     if (process.env.JWT_SECRET) {
       env.security = env.security || {};
       env.security.jwtSecret = process.env.JWT_SECRET;
+    }
+
+    if (process.env.SSL_HTTPS_PORT || process.env.HTTPS_PORT) {
+      env.ssl = env.ssl || {};
+      env.ssl.httpsPort = parseInt(process.env.SSL_HTTPS_PORT || process.env.HTTPS_PORT);
+    }
+
+    if (process.env.SSL_ENABLE_HTTPS_REDIRECT !== undefined) {
+      env.ssl = env.ssl || {};
+      env.ssl.enableHttpsRedirect = process.env.SSL_ENABLE_HTTPS_REDIRECT.toLowerCase() === 'true';
     }
 
     return env;
@@ -252,9 +285,11 @@ class ConfigManager {
     }
 
     // Validate security configuration
-    // jwtSecret can be empty in config file, will use default value
+    // Do not fall back to a tracked secret. A setup-generated secret is preferred;
+    // direct starts receive an ephemeral secret rather than a known credential.
     if (!this.config.security.jwtSecret || this.config.security.jwtSecret.trim() === '') {
-      this.config.security.jwtSecret = 'your-secret-key-here';
+      this.config.security.jwtSecret = crypto.randomBytes(32).toString('hex');
+      systemLogger.logSystem('WARN', 'JWT_SECRET is not configured; generated an ephemeral secret for this process');
     }
 
     // Validate transfer configuration
