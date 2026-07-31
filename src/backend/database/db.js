@@ -11,7 +11,7 @@ const { systemLogger } = require('../utils/logger');
 class Database {
   constructor() {
     this.db = null;
-    this.dbPath = path.join(__dirname, '../../data/app.db');
+    this.dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/app.db');
   }
 
   /**

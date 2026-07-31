@@ -180,16 +180,16 @@ type BatchUploadResponse struct {
 
 // BatchProgress 批次進度
 type BatchProgress struct {
-	BatchID          string         `json:"batchId"`
-	Status           string         `json:"status"` // uploading, completed, partial_fail, failed
-	TotalFiles       int            `json:"totalFiles"`
-	SuccessCount     int            `json:"successCount"`
-	FailedCount      int            `json:"failedCount"`
-	PendingCount     int            `json:"pendingCount"`
-	TotalSize        int64          `json:"totalSize"`
-	TransferredSize  int64          `json:"transferredSize"`
-	Progress         float64        `json:"progress"`
-	Files            []FileProgress `json:"files"`
+	BatchID         string         `json:"batchId"`
+	Status          string         `json:"status"` // uploading, completed, partial_fail, failed
+	TotalFiles      int            `json:"totalFiles"`
+	SuccessCount    int            `json:"successCount"`
+	FailedCount     int            `json:"failedCount"`
+	PendingCount    int            `json:"pendingCount"`
+	TotalSize       int64          `json:"totalSize"`
+	TransferredSize int64          `json:"transferredSize"`
+	Progress        float64        `json:"progress"`
+	Files           []FileProgress `json:"files"`
 }
 
 // FileProgress 檔案進度
@@ -710,7 +710,7 @@ func (c *Client) DownloadFile(remotePath, localPath string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下載失敗: HTTP %d", resp.StatusCode)
+		return responseError("下載失敗", resp)
 	}
 
 	// 建立本地檔案
@@ -723,6 +723,26 @@ func (c *Client) DownloadFile(remotePath, localPath string) error {
 	// 複製內容
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+func responseError(operation string, resp *http.Response) error {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	var result struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &result) == nil {
+		if result.Error != "" {
+			return fmt.Errorf("%s: %s", operation, result.Error)
+		}
+		if result.Message != "" {
+			return fmt.Errorf("%s: %s", operation, result.Message)
+		}
+	}
+	if len(body) > 0 {
+		return fmt.Errorf("%s: HTTP %d - %s", operation, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return fmt.Errorf("%s: HTTP %d", operation, resp.StatusCode)
 }
 
 // DownloadArchive 下載多檔案打包（archive）
@@ -758,7 +778,7 @@ func (c *Client) DownloadArchive(files []string, currentPath, localPath string) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("打包下載失敗: HTTP %d", resp.StatusCode)
+		return responseError("打包下載失敗", resp)
 	}
 
 	// 建立本地檔案

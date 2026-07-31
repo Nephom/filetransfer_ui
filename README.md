@@ -1,92 +1,66 @@
 [English](README_EN.md)
 
-# Web-Based File Management System
+# Web-Based File Management System 3.0.0
 
-一個功能完善的本地檔案管理系統，提供現代化的網頁操作介面以及強大的命令列工具。
+提供檔案總管式網頁介面與 Ubuntu 桌面客戶端的本地檔案管理系統。Windows 使用者透過瀏覽器使用網頁介面；Tauri 桌面客戶端僅發行 Ubuntu DEB。
 
-> **🤖 AI-Generated Code Demonstration**  
-> This project was developed through multiple AI-assisted iterations, showcasing collaborative development between human requirements and AI implementation. The codebase demonstrates modern web development practices, performance optimizations, and real-world problem-solving through iterative refinement.
+## 功能
 
-## 核心功能 (Features)
+- 瀏覽器檔案總管：瀏覽、上傳、下載、重新命名、刪除、分享與資料夾 ZIP 下載。
+- JWT 驗證、TLS 管理、可設定的安全功能與檔案快取。
+- Ubuntu 22.04+ Tauri DEB：滑鼠導向的檔案總管桌面客戶端。
+- `build.sh`：安裝、首次設定、更新、測試與 DEB 建置。
 
-*   **網頁操作介面**: 透過瀏覽器進行檔案的瀏覽、上傳、下載、刪除、重新命名等操作。
-*   **使用者認證**: 安全的 JWT (JSON Web Token) 登入與密碼管理。
-*   **高效能快取**: 使用 Redis 建立全域檔案索引快取，加速檔案列表與搜尋反應速度。
-*   **強大的命令列工具**: 提供 `fileapi.sh` 腳本，可透過 command-line 進行所有檔案操作與系統管理。
-*   **可配置的安全性**: 提供速率限制、安全標頭、輸入驗證等多種可選安全機制。
+## 安裝與升級
 
-## 前置需求 (Prerequisites)
+需要 Ubuntu 22.04+、網路連線與可使用 `sudo` 的帳號。腳本會安裝 Node.js、Rust、GTK/WebKitGTK 與其他必要套件。
 
-1.  **Node.js**: v20 或更高版本。
-2.  **Redis Server**: 必須在本機中執行 Redis Server。您可以使用 Docker 快速啟動一個 Redis 實例：
-    ```bash
-    docker run -d --name my-redis -p 6379:6379 redis
-    ```
-3.  **NPM 套件**: 需要先安裝專案相依套件。
+全新環境：
 
-## 快速開始 (Quick Start)
-
-1.  **安裝相依套件**:
-    ```bash
-    npm install
-    ```
-
-2.  **設定應用程式 (必要步驟)**:
-    在使用前，您 **必須** 修改 `src/config.ini` 檔案，至少設定以下項目：
-    *   `storagePath`: 檔案儲存的根目錄。
-    *   `username` / `password`: 預設管理員的帳號密碼。
-    ```bash
-    # 建議使用您習慣的編輯器開啟並修改
-    vi src/config.ini
-    ```
-
-3.  **啟動伺服器**:
-    ```bash
-    ./start.sh
-    ```
-    伺服器啟動後，會開始在背景建立檔案系統的快取。根據 `storagePath` 的檔案數量，首次啟動可能需要一些時間。
-
-4.  **存取應用程式**:
-    *   開啟瀏覽器，前往 `http://localhost:3000` (或您在 `config.ini` 中設定的埠號)。
-    *   使用您設定的管理員帳號密碼登入。
-
-## 命令列工具 (`fileapi.sh`)
-
-本專案提供一個功能豐富的 `bash` 腳本 `fileapi.sh`，讓您可以直接從終端機管理檔案。
-
-**顯示所有指令**:
 ```bash
-./fileapi.sh help
+./build.sh install
+./build.sh setup
+./start.sh
 ```
 
-**常用範例**:
+既有 Git checkout 升級：
+
 ```bash
-# 登入 (會將 token 存於 .api_token)
-./fileapi.sh login <your_username> <your_password>
-
-# 列出根目錄檔案
-./fileapi.sh list
-
-# 列出指定目錄檔案
-./fileapi.sh list documents/
-
-# 上傳檔案
-./fileapi.sh upload /path/to/local/file.txt (storagePATH/)documents/ # the documents folder under parameter storagePATH in config.ini
-
-# 搜尋檔案
-./fileapi.sh search "*.pdf"
-
-# 重新整理快取
-./fileapi.sh cache-refresh
+./build.sh upgrade
+./start.sh
 ```
 
-## 重要注意事項
+`upgrade` 只允許 fast-forward 更新，並在工作樹有未提交變更時停止。它不會覆寫 `.env`、`src/config.ini`、storage、資料庫、users 或 logs。
 
-*   **Redis 快取與搜尋**: 本系統依賴 Redis 進行檔案索引。首次啟動或執行 `cache-refresh` 後，系統會在背景掃描並快取檔案結構。在此期間，搜尋功能可能無法回傳完整結果。您可以使用 `cache-stats` 或 `index-status` 指令來監控進度。
-*   **伺服器管理**:
-    *   **檢查狀態**: `./status.sh`
-    *   **停止伺服器**: `./stop.sh`
+若外部網路必須經由 proxy，所有命令均可加上暫時性的 proxy：
 
-## 授權 (License)
+```bash
+./build.sh upgrade --proxy http://proxy.example.internal:8080
+```
 
-MIT License - 詳情請見 `LICENSE` 檔案。
+此參數只在該次執行中套用至 apt、Git、npm、Cargo、curl 與 wget，不會寫入全域設定。
+
+## 首次設定
+
+`./build.sh setup` 會建立未追蹤的 `.env` 和 `src/config.ini`，再詢問 storage 路徑、管理員帳密、HTTP/HTTPS port 與可選的桌面預設 server address。實際位址、帳密、token 與憑證絕不應提交到 Git。
+
+HTTP 預設 port 為 `9400`，HTTPS 預設 port 為 `9443`。HTTP redirect 只有在伺服器已具備有效 HTTPS 憑證時才會啟用。桌面客戶端固定使用 HTTPS，並將 server address 與 HTTPS port 分開輸入。
+
+## Ubuntu Desktop DEB
+
+在 Ubuntu 22.04+ 建置桌面 package：
+
+```bash
+./build.sh build
+```
+
+產物位於 `fileapi_ui/src-tauri/target/release/bundle/deb/`。DEB 不含內網 server address；使用者首次登入時輸入 address 和 HTTPS port，或在本機 `fileapi_ui/.env` 設定開發用預填值。
+
+## 文件與規則
+
+- [專案規則](docs/PROJECT_RULES.md)
+- [完整 API 參考](docs/api/API_REFERENCE.md)
+- [文件索引](docs/README.md)
+- [Ubuntu Tauri 客戶端](fileapi_ui/README.md)
+
+`fileapi.sh` 已淘汰，不是支援的 API 相容性目標。

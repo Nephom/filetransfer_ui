@@ -18,6 +18,7 @@ PID_FILE="server.pid"
 LOCK_FILE="server.lock"
 LOG_FILE="server.log"
 CONFIG_FILE="src/config.ini"
+ENV_FILE=".env"
 
 # Read port from config file
 get_config_value() {
@@ -28,8 +29,23 @@ get_config_value() {
     fi
 }
 
+get_env_value() {
+    local key=$1
+    local env_file=$2
+    if [ -f "$env_file" ]; then
+        local value
+        value=$(grep "^$key=" "$env_file" 2>/dev/null | cut -d'=' -f2- | tr -d '\r\n' | tail -n1)
+        value=${value#\"}
+        value=${value%\"}
+        printf '%s' "$value"
+    fi
+}
+
 # Read port configuration, use default if failed
-PORT=$(get_config_value "port" "$CONFIG_FILE")
+PORT=$(get_env_value "SERVER_PORT" "$ENV_FILE")
+if [ -z "$PORT" ]; then
+    PORT=$(get_config_value "port" "$CONFIG_FILE")
+fi
 if [ -z "$PORT" ]; then
     PORT=3000
     echo -e "${YELLOW}⚠️  Could not read port from config file, using default: $PORT${NC}"
@@ -141,7 +157,7 @@ EOF
 
 # Start the server
 echo -e "${GREEN}🌟 Starting File Transfer Service...${NC}"
-nohup node "$SERVER_FILE" > "$LOG_FILE" 2>&1 &
+nohup node --env-file-if-exists="$ENV_FILE" "$SERVER_FILE" > "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 
 # Save PID (will be overwritten by Node.js after successful startup)

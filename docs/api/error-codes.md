@@ -1,6 +1,6 @@
 # Error Codes Documentation
 
-This document describes all custom error codes used in the File Transfer API.
+This document describes upload-specific structured errors. For all endpoint response shapes, archive/download rules, and generic HTTP handling, read [API_REFERENCE.md](./API_REFERENCE.md).
 
 ---
 

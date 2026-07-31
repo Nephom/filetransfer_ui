@@ -1,6 +1,6 @@
 # Progress Tracking API Documentation
 
-This document describes the progress tracking endpoints for monitoring file upload status.
+This document describes progress endpoint details. The current API contract is [API_REFERENCE.md](./API_REFERENCE.md). New clients uploading through `/api/upload/multiple` must poll the batch endpoint.
 
 ---
 

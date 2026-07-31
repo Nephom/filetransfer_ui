@@ -1,12 +1,13 @@
 const fs = require('fs').promises;
 const path = require('path');
+const net = require('net');
 
 // Create logs directory if it doesn't exist (for IP-specific logs)
-const logsDir = path.join(__dirname, '../../../logs');
+const logsDir = process.env.LOGS_DIR || path.join(__dirname, '../../../logs');
 fs.mkdir(logsDir, { recursive: true }).catch(console.error);
 
 // Server log is in root directory (used by start.sh/status.sh/stop.sh)
-const serverLogFile = path.join(__dirname, '../../../server.log');
+const serverLogFile = process.env.SERVER_LOG_FILE || path.join(__dirname, '../../../server.log');
 
 class SystemLogger {
   constructor() {
@@ -14,38 +15,30 @@ class SystemLogger {
     this.serverLogFile = serverLogFile;
   }
 
-  // Get client IPv4 address from request
+  // Return a normalized IPv4 address. IPv6 requests intentionally have no operation log.
   getClientIP(req) {
-    if (!req) return 'system';
-
-    // Safety check: ensure req has headers property
-    if (!req.headers) {
-      // If req doesn't have headers, it's likely a metadata object (e.g., { user })
-      // Return 'system' or extract username if available
-      if (req.user && req.user.username) {
-        return `user:${req.user.username}`;
-      }
-      return 'system';
-    }
+    if (!req || !req.headers) return null;
 
     let ip = req.headers['x-forwarded-for'] ||
              req.headers['x-real-ip'] ||
              req.connection?.remoteAddress ||
              req.socket?.remoteAddress ||
-             (req.connection?.socket ? req.connection.socket.remoteAddress : null) ||
-             'unknown';
+             (req.connection?.socket ? req.connection.socket.remoteAddress : null);
+
+    if (Array.isArray(ip)) {
+      ip = ip[0];
+    }
+    if (typeof ip !== 'string') return null;
+
+    // Proxies append addresses; the first entry is the original client address.
+    ip = ip.split(',')[0].trim();
 
     // Extract IPv4 from IPv6-mapped IPv4 (::ffff:192.168.1.1 -> 192.168.1.1)
     if (ip.includes('::ffff:')) {
       ip = ip.replace('::ffff:', '');
     }
 
-    // Remove port if present (192.168.1.1:12345 -> 192.168.1.1)
-    if (ip.includes(':') && !ip.includes('::')) {
-      ip = ip.split(':')[0];
-    }
-
-    return ip;
+    return net.isIP(ip) === 4 ? ip : null;
   }
 
   // Format date for log entries (using system timezone)
@@ -63,7 +56,9 @@ class SystemLogger {
   // Log to IP-specific file (user operations)
   async logToIPFile(ip, level, message, req = null) {
     try {
-      const sanitizedIP = ip.replace(/[:.]/g, '_'); // Sanitize IP for filename
+      if (net.isIP(ip) !== 4) return;
+
+      const sanitizedIP = ip.replace(/\./g, '_');
       const logFile = path.join(this.logsDir, `${sanitizedIP}.log`);
 
       let logEntry = `[${this.getFormattedDate()}] [${level}] ${message}`;
@@ -159,9 +154,9 @@ class SystemLogger {
 
   // Log general user events (IP-specific log only)
   async log(level, message, req = null) {
-    const ip = req ? this.getClientIP(req) : 'system';
+    const ip = this.getClientIP(req);
 
-    if (ip === 'system') {
+    if (!ip) {
       // System events go to server.log
       await this.logSystem(level, message);
     } else {
@@ -172,9 +167,9 @@ class SystemLogger {
 
   // Log error (both IP-specific and server.log for system errors)
   async logError(message, req = null) {
-    const ip = req ? this.getClientIP(req) : 'system';
+    const ip = this.getClientIP(req);
 
-    if (ip === 'system') {
+    if (!ip) {
       // System errors go to server.log
       await this.logSystem('ERROR', message);
     } else {

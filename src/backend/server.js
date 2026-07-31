@@ -1168,18 +1168,40 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
 
 // Archive endpoint - create zip of multiple files/folders
 app.post('/api/archive', authenticate, async (req, res) => {
+  let archiveFileName = 'archive.zip';
+  let items = [];
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const { items, currentPath } = req.body;
+    ({ items, currentPath = '' } = req.body);
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
     }
 
+    const storageRoot = path.resolve(storagePath);
+    const resolvedItems = [];
+    for (const item of items) {
+      if (!item || typeof item.name !== 'string' || item.name.trim() === '') {
+        return res.status(400).json({ error: 'Each archive item must have a name' });
+      }
+
+      // Search results carry a full relative item.path while directory listings use currentPath.
+      // Resolve both forms before validating the storage-root boundary.
+      const parentPath = typeof item.path === 'string' && item.path
+        ? path.dirname(item.path)
+        : currentPath;
+      const itemPath = path.resolve(storageRoot, parentPath, item.name);
+      if (path.relative(storageRoot, itemPath).startsWith('..') || path.isAbsolute(path.relative(storageRoot, itemPath))) {
+        systemLogger.logSecurity('path_traversal_attempt', { path: item.name }, req);
+        return res.status(403).json({ error: 'Forbidden: Access denied.' });
+      }
+      resolvedItems.push({ item, itemPath });
+    }
+
     // Determine archive filename based on selection
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const sanitizeName = (name) => name.replace(/[\r\n]/g, '').trim();
-    let archiveFileName = `archive_${timestamp}.zip`;
+    archiveFileName = `archive_${timestamp}.zip`;
 
     if (items.length === 1) {
       const singleItem = items[0];
@@ -1190,6 +1212,17 @@ app.post('/api/archive', authenticate, async (req, res) => {
         archiveFileName = `${baseName}.zip`;
       } else {
         archiveFileName = baseName.toLowerCase().endsWith('.zip') ? baseName : `${baseName}.zip`;
+      }
+    }
+
+    // Validate every source before sending headers so clients receive useful JSON errors.
+    for (const { item, itemPath } of resolvedItems) {
+      try {
+        await fs.stat(itemPath);
+      } catch (error) {
+        return res.status(error.code === 'ENOENT' ? 404 : 400).json({
+          error: `Unable to archive ${item.name}: ${error.code === 'ENOENT' ? 'item not found' : error.message}`
+        });
       }
     }
 
@@ -1229,10 +1262,7 @@ app.post('/api/archive', authenticate, async (req, res) => {
     let totalArchiveSize = 0;
 
     // Add each item to the archive
-    for (const item of items) {
-      const itemPath = currentPath
-        ? path.join(storagePath, currentPath, item.name)
-        : path.join(storagePath, item.name);
+    for (const { item, itemPath } of resolvedItems) {
 
       try {
         const stats = await fs.stat(itemPath);

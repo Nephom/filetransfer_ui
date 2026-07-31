@@ -1,10 +1,12 @@
 # Upload API Documentation
 
-This document describes the file upload endpoints with real-time progress tracking.
+This document describes upload implementation details. Read [API_REFERENCE.md](./API_REFERENCE.md) first for the current contract. New browser and desktop clients must use `POST /api/upload/multiple` for all uploads.
 
 ---
 
 ## Single File Upload with Real-Time Progress
+
+`POST /api/upload/single-progress` remains documented for existing integrations. It is not the default route for new clients.
 
 Upload a single file with real-time progress tracking.
 

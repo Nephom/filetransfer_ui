@@ -12,7 +12,7 @@ const { systemLogger } = require('../utils/logger');
 
 class UserManager {
   constructor() {
-    this.usersFilePath = path.join(__dirname, '../../users.json');
+    this.usersFilePath = process.env.USERS_FILE_PATH || path.join(__dirname, '../../users.json');
     this.saltRounds = 12;
     this.users = new Map();
     this.initialized = false;

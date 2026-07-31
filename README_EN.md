@@ -1,92 +1,59 @@
 [正體中文](README.md)
 
-# Web-Based File Management System
+# Web-Based File Management System 3.0.0
 
-A full-featured local file management system with a modern web interface and powerful command-line tools.
+A local file management system with a Windows Explorer-style web interface and an Ubuntu desktop client. Windows users use the web interface in a browser; the Tauri desktop client is distributed only as an Ubuntu DEB.
 
-> **🤖 AI-Generated Code Demonstration**  
-> This project was developed through multiple AI-assisted iterations, showcasing collaborative development between human requirements and AI implementation. The codebase demonstrates modern web development practices, performance optimizations, and real-world problem-solving through iterative refinement.
+## Install And Upgrade
 
-## Features
+Ubuntu 22.04+, network access, and `sudo` are required. The build script installs Node.js, Rust, GTK/WebKitGTK, and the remaining dependencies.
 
-*   **Web Interface**: Browse, upload, download, delete, and rename files through a web browser.
-*   **User Authentication**: Secure JWT (JSON Web Token) login and password management.
-*   **High-Performance Cache**: Uses Redis to create a global file index cache, speeding up file listing and search responses.
-*   **Powerful Command-Line Tools**: Provides the `fileapi.sh` script for all file operations and system management via the command-line.
-*   **Configurable Security**: Offers various optional security mechanisms like rate limiting, security headers, and input validation.
+For a new environment:
 
-## Prerequisites
-
-1.  **Node.js**: v20 or higher.
-2.  **Redis Server**: A Redis Server must be running locally. You can quickly start a Redis instance using Docker:
-    ```bash
-    docker run -d --name my-redis -p 6379:6379 redis
-    ```
-3.  **NPM Packages**: Project dependencies need to be installed first.
-
-## Quick Start
-
-1.  **Install Dependencies**:
-    ```bash
-    npm install
-    ```
-
-2.  **Configure the Application (Required Step)**:
-    Before use, you **must** modify the `src/config.ini` file and set at least the following items:
-    *   `storagePath`: The root directory for file storage.
-    *   `username` / `password`: The default administrator account credentials.
-    ```bash
-    # It is recommended to open and modify with your preferred editor
-    vi src/config.ini
-    ```
-
-3.  **Start the Server**:
-    ```bash
-    ./start.sh
-    ```
-    After the server starts, it will begin building the file system cache in the background. The first startup may take some time, depending on the number of files in `storagePath`.
-
-4.  **Access the Application**:
-    *   Open your browser and go to `http://localhost:3000` (or the port you configured in `config.ini`).
-    *   Log in with the administrator account you configured.
-
-## Command-Line Tool (`fileapi.sh`)
-
-This project provides a feature-rich `bash` script, `fileapi.sh`, allowing you to manage files directly from the terminal.
-
-**Show all commands**:
 ```bash
-./fileapi.sh help
+./build.sh install
+./build.sh setup
+./start.sh
 ```
 
-**Common Examples**:
+For an existing Git checkout:
+
 ```bash
-# Log in (stores the token in .api_token)
-./fileapi.sh login <your_username> <your_password>
-
-# List files in the root directory
-./fileapi.sh list
-
-# List files in a specific directory
-./fileapi.sh list documents/
-
-# Upload a file
-./fileapi.sh upload /path/to/local/file.txt (storagePATH/)documents/ # the documents folder under parameter storagePATH in config.ini
-
-# Search for files
-./fileapi.sh search "*.pdf"
-
-# Refresh the cache
-./fileapi.sh cache-refresh
+./build.sh upgrade
+./start.sh
 ```
 
-## Important Notes
+`upgrade` only fast-forwards and refuses a dirty working tree. It never overwrites `.env`, `src/config.ini`, storage, databases, users, or logs.
 
-*   **Redis Cache and Search**: The system relies on Redis for file indexing. After the first start or after running `cache-refresh`, the system will scan and cache the file structure in the background. During this time, the search function may not return complete results. You can use the `cache-stats` or `index-status` commands to monitor the progress.
-*   **Server Management**:
-    *   **Check Status**: `./status.sh`
-    *   **Stop Server**: `./stop.sh`
+Use a one-command proxy when external access requires it:
 
-## License
+```bash
+./build.sh upgrade --proxy http://proxy.example.internal:8080
+```
 
-MIT License - See the `LICENSE` file for details.
+The proxy is used only for that invocation by apt, Git, npm, Cargo, curl, and wget; it is not saved globally.
+
+## Local Configuration
+
+`./build.sh setup` creates ignored `.env` and `src/config.ini` files and asks for storage, administrator credentials, HTTP/HTTPS ports, and an optional desktop default server address. Do not commit real addresses, credentials, tokens, or certificates.
+
+The default HTTP port is `9400`; the default HTTPS port is `9443`. HTTP redirects only after an HTTPS certificate is available. The desktop client always uses HTTPS and collects the server address and port separately.
+
+## Ubuntu Desktop Package
+
+Build the Ubuntu 22.04+ DEB package with:
+
+```bash
+./build.sh build
+```
+
+The package is written to `fileapi_ui/src-tauri/target/release/bundle/deb/`. It contains no internal server address; users enter an address and HTTPS port when they sign in.
+
+## Documentation
+
+- [Project rules](docs/PROJECT_RULES.md)
+- [API reference](docs/api/API_REFERENCE.md)
+- [Documentation index](docs/README.md)
+- [Ubuntu Tauri client](fileapi_ui/README.md)
+
+`fileapi.sh` is deprecated and is not a supported compatibility target.
