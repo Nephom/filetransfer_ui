@@ -140,7 +140,9 @@ app.use('/api', shareRoutes);
 app.use('/api', sslRoutes);
 
 // Routes
-app.get('/admin', authenticate, (req, res) => {
+// The document itself contains no protected data. Its requests remain guarded by
+// requireAdmin, while loading it without a header permits normal browser navigation.
+app.get('/admin', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/public/admin.html'));
 });
 
@@ -251,43 +253,34 @@ app.post('/auth/change-password', (req, res, next) => {
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
 
-    // Get current credentials from config
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+
     const configUsername = configManager.get('auth.username');
-    const configPassword = configManager.get('auth.password');
+    if (req.user.username === configUsername) {
+      const configPassword = configManager.get('auth.password');
+      const passwordHashed = configManager.get('auth.passwordHashed');
+      const validPassword = passwordHashed === true || passwordHashed === 'true'
+        ? await bcrypt.compare(currentPassword, configPassword)
+        : currentPassword === configPassword;
 
-    // Verify current password
-    if (currentPassword !== configPassword) {
-      return res.status(401).json({ error: 'Current password is incorrect' });
-    }
+      if (!validPassword) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
 
-    // Hash the new password
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
-
-    // Update config file
-    const configPath = './src/config.ini';
-    let configContent = await fs.readFile(configPath, 'utf8');
-
-    // Replace password line
-    configContent = configContent.replace(
-      /^password=.*$/m,
-      `password=${hashedPassword}`
-    );
-
-    // Add hash indicator if not present
-    if (!configContent.includes('passwordHashed=true')) {
-      configContent += '\npasswordHashed=true';
+      const hashedPassword = await bcrypt.hash(newPassword, 12);
+      const configPath = './src/config.ini';
+      let configContent = await fs.readFile(configPath, 'utf8');
+      configContent = configContent.replace(/^password=.*$/m, `password=${hashedPassword}`);
+      configContent = configContent.includes('passwordHashed=true')
+        ? configContent.replace(/^passwordHashed=.*$/m, 'passwordHashed=true')
+        : `${configContent}\npasswordHashed=true`;
+      await fs.writeFile(configPath, configContent);
+      await configManager.load();
     } else {
-      configContent = configContent.replace(
-        /^passwordHashed=.*$/m,
-        'passwordHashed=true'
-      );
+      await userManager.changeOwnPassword(req.user.username, currentPassword, newPassword);
     }
-
-    await fs.writeFile(configPath, configContent);
-
-    // Reload configuration
-    await configManager.load();
 
     systemLogger.logSystem('INFO', `Password changed successfully for user: ${req.user.username}`);
 
