@@ -10,7 +10,7 @@ const itemKey = (item) => item.path || item.name;
 const fileIcon = (item) => item.isDirectory ? '📁' : '📄';
 const normalisePath = (value) => (value || '').replace(/^\/+|\/+$/g, '');
 
-const FileBrowser = ({ token, user }) => {
+const FileBrowser = ({ token, user, onLogout }) => {
     const [files, setFiles] = React.useState([]);
     const [currentPath, setCurrentPath] = React.useState('');
     const [displayPath, setDisplayPath] = React.useState('/');
@@ -29,7 +29,11 @@ const FileBrowser = ({ token, user }) => {
     const [folderTree, setFolderTree] = React.useState({ path: '', name: '/', expanded: true, loaded: false, children: [] });
     const [dragItems, setDragItems] = React.useState([]);
     const [dropTarget, setDropTarget] = React.useState(null);
+    const [fileDropTarget, setFileDropTarget] = React.useState(null);
+    const [viewMode, setViewMode] = React.useState(() => localStorage.getItem('file-view-mode') || 'details');
+    const [accountOpen, setAccountOpen] = React.useState(false);
     const inputRef = React.useRef(null);
+    const accountRef = React.useRef(null);
     const dragExpandTimer = React.useRef(null);
 
     const authHeaders = { Authorization: `Bearer ${token}` };
@@ -83,11 +87,15 @@ const FileBrowser = ({ token, user }) => {
 
     React.useEffect(() => { loadFiles(''); loadTreeChildren(''); }, []);
     React.useEffect(() => {
-        const close = () => setContext(null);
+        const close = (event) => {
+            setContext(null);
+            if (!accountRef.current || !accountRef.current.contains(event.target)) setAccountOpen(false);
+        };
         window.addEventListener('click', close);
         return () => window.removeEventListener('click', close);
     }, []);
     React.useEffect(() => () => window.clearTimeout(dragExpandTimer.current), []);
+    React.useEffect(() => { localStorage.setItem('file-view-mode', viewMode); }, [viewMode]);
 
     const searchFiles = async () => {
         const query = search.trim();
@@ -169,7 +177,7 @@ const FileBrowser = ({ token, user }) => {
         if (!selected.includes(itemKey(file))) setSelected([itemKey(file)]);
         setDragItems(items); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', items.map((item) => item.name).join(', '));
     };
-    const endDrag = () => { window.clearTimeout(dragExpandTimer.current); setDragItems([]); setDropTarget(null); };
+    const endDrag = () => { window.clearTimeout(dragExpandTimer.current); setDragItems([]); setDropTarget(null); setFileDropTarget(null); };
     const scheduleTreeExpand = (node) => {
         if (node.expanded) return;
         window.clearTimeout(dragExpandTimer.current);
@@ -211,31 +219,67 @@ const FileBrowser = ({ token, user }) => {
             const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Could not create share link.'); setShareLink(data.data.fullUrl);
         } catch (requestError) { setError(requestError.message); }
     };
+    const savePassword = async (event) => {
+        event.preventDefault();
+        const currentPassword = event.target.currentPassword.value;
+        const newPassword = event.target.newPassword.value;
+        const confirmPassword = event.target.confirmPassword.value;
+        if (newPassword !== confirmPassword) {
+            setError('The new passwords do not match.');
+            return;
+        }
+        try {
+            const response = await fetch('/auth/change-password', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPassword, newPassword }) });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Could not change password.');
+            setModal(null);
+            onLogout();
+        } catch (requestError) { setError(requestError.message); }
+    };
     const crumbs = currentPath ? currentPath.split('/').filter(Boolean) : [];
     const openContext = (event, file) => { event.preventDefault(); event.stopPropagation(); setSelected((items) => items.includes(itemKey(file)) ? items : [itemKey(file)]); setContext({ x: event.clientX, y: event.clientY }); };
     const action = (fn) => { setContext(null); fn(); };
+
+    const renderFileItem = (file) => {
+        const isDropTarget = file.isDirectory && fileDropTarget === itemKey(file);
+        const dropHandlers = file.isDirectory ? {
+            onDragOver: (event) => {
+                if (isValidMoveTarget(dragItems, file.path)) {
+                    event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setFileDropTarget(itemKey(file));
+                }
+            },
+            onDragLeave: () => setFileDropTarget(null),
+            onDrop: (event) => { event.preventDefault(); endDrag(); moveItems(dragItems, file.path); }
+        } : {};
+        const sharedProps = { draggable: true, onDragStart: (event) => beginDrag(event, file), onDragEnd: endDrag, onClick: (event) => choose(file, event), onDoubleClick: () => file.isDirectory ? openFolder(file) : download([file]), onContextMenu: (event) => openContext(event, file), ...dropHandlers };
+        if (viewMode === 'grid') {
+            return <article key={itemKey(file)} tabIndex="0" className={`file-tile ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><span className="tile-icon">{fileIcon(file)}</span><strong>{file.name}</strong><span>{file.isDirectory ? 'File folder' : (file.type || 'File')}</span><small>{file.isDirectory ? 'Drop files here' : formatSize(file.size)}</small></article>;
+        }
+        return <tr key={itemKey(file)} tabIndex="0" className={`file-row ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><td><span className="file-name-cell"><span className="file-icon">{fileIcon(file)}</span>{file.name}</span></td><td className="muted">{formatDate(file.modified || file.modifiedTime)}</td><td className="muted">{file.isDirectory ? 'File folder' : (file.type || 'File')}</td><td className="muted">{file.isDirectory ? '--' : formatSize(file.size)}</td></tr>;
+    };
 
     const renderTree = (onChooseDestination) => <FolderTree node={folderTree} currentPath={currentPath} dragItems={dragItems} dropTarget={dropTarget} onChooseDestination={onChooseDestination} onToggle={toggleFolder} onNavigate={loadFiles} onDragOver={(event, node) => { if (isValidMoveTarget(dragItems, node.path)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(node.path); scheduleTreeExpand(node); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, node) => { event.preventDefault(); endDrag(); moveItems(dragItems, node.path); }} />;
     const tree = renderTree();
 
     return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>
-        <header className="titlebar"><span className="app-mark" /><span className="app-name">File Transfer</span><span className="connection-status">SECURE STORAGE</span><span className="account">{user.username}</span></header>
+        <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountRef}><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : 'Standard user'}</span></div>{user.role === 'admin' && <button onClick={() => window.location.assign('/admin')}>Admin console</button>}<button onClick={() => { setAccountOpen(false); setModal('password'); }}>Change password</button><hr /><button className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
         <nav className="commandbar">
             <button className="primary" onClick={() => inputRef.current.click()}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} />
             <button onClick={() => setModal('folder')}>New folder</button><span className="divider" />
             <button disabled={!selectedItems.length || downloading} onClick={download}>{downloading ? 'Preparing download...' : 'Download'}</button><button disabled={!selectedItems.length || moving} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1} onClick={() => setModal('rename')}>Rename</button>
             <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length} onClick={remove}>Delete</button><span className="divider" />
-            <button className="optional" onClick={selectAll}>Select all</button><button onClick={() => loadFiles(currentPath)}>Refresh</button>
+            <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button onClick={() => loadFiles(currentPath)}>Refresh</button>
         </nav>
         <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && searchFiles()} placeholder="Search files" aria-label="Search files" /></div>
         <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{tree}</aside>
             <section className="content"><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{displayPath}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{error && <div className="notice error-notice">{error}</div>}{transferStatus && <div className="notice transfer-notice"><span className={downloading || moving ? 'activity-dot' : ''} />{transferStatus}</div>}
-                <div className="file-area">{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map((file) => <tr key={itemKey(file)} tabIndex="0" draggable onDragStart={(event) => beginDrag(event, file)} onDragEnd={endDrag} className={`file-row ${selected.includes(itemKey(file)) ? 'selected' : ''}`} onClick={(event) => choose(file, event)} onDoubleClick={() => file.isDirectory ? openFolder(file) : download([file])} onContextMenu={(event) => openContext(event, file)}><td><span className="file-name-cell"><span className="file-icon">{fileIcon(file)}</span>{file.name}</span></td><td className="muted">{formatDate(file.modified || file.modifiedTime)}</td><td className="muted">{file.isDirectory ? 'File folder' : (file.type || 'File')}</td><td className="muted">{file.isDirectory ? '--' : formatSize(file.size)}</td></tr>)}</tbody></table>}</div>
+                <div className="file-area">{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid">{files.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map(renderFileItem)}</tbody></table>}</div>
             </section></main>
         <footer className="statusbar"><span>{files.length} item{files.length === 1 ? '' : 's'}</span><span>{searching ? 'Search results' : currentPath ? `/${currentPath}` : '/'}</span></footer>
         {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading} onClick={() => action(download)}>Download</button><button disabled={moving} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={() => action(() => { setShareLink(''); setModal('share'); })}>Share</button><hr /><button onClick={() => action(remove)}>Delete</button></div>}
         {modal === 'folder' && <Dialog title="New folder" onClose={() => setModal(null)}><form onSubmit={saveFolder}><p>Create a folder in {currentPath ? `/${currentPath}` : '/'}.</p><label>Folder name<input name="folderName" autoFocus required /></label><DialogActions onClose={() => setModal(null)} label="Create" /></form></Dialog>}
         {modal === 'move' && <Dialog title="Move selected items" onClose={() => setModal(null)}><p>Choose a destination. You cannot move an item into its current folder or one of its own subfolders.</p><div className="move-tree">{renderTree((node) => moveItems(selectedItems, node.path))}</div><div className="modal-actions"><button type="button" onClick={() => setModal(null)}>Cancel</button></div></Dialog>}
+        {modal === 'password' && <Dialog title="Change password" onClose={() => setModal(null)}><form onSubmit={savePassword}><p>Changing your password signs this device out.</p><label>Current password<input name="currentPassword" type="password" autoFocus required /></label><label>New password<input name="newPassword" type="password" minLength="6" required /></label><label>Confirm new password<input name="confirmPassword" type="password" minLength="6" required /></label><DialogActions onClose={() => setModal(null)} label="Change password" /></form></Dialog>}
         {modal === 'rename' && selectedItems[0] && <Dialog title="Rename" onClose={() => setModal(null)}><form onSubmit={saveRename}><p>Rename {selectedItems[0].name}.</p><label>New name<input name="newName" defaultValue={selectedItems[0].name} autoFocus required /></label><DialogActions onClose={() => setModal(null)} label="Rename" /></form></Dialog>}
         {modal === 'share' && selectedItems[0] && <Dialog title="Share file" onClose={() => setModal(null)}>{shareLink ? <><p>Anyone with this link can download {selectedItems[0].name}.</p><input value={shareLink} readOnly onFocus={(event) => event.target.select()} /><div className="modal-actions"><button onClick={() => navigator.clipboard.writeText(shareLink)}>Copy link</button><button className="confirm" onClick={() => setModal(null)}>Done</button></div></> : <form onSubmit={createShare}><p>Create a download link for {selectedItems[0].name}.</p><label>Expires<select name="expiresIn" defaultValue="86400"><option value="3600">In 1 hour</option><option value="86400">In 1 day</option><option value="604800">In 7 days</option><option value="0">Never</option></select></label><label>Downloads<select name="maxDownloads" defaultValue="0"><option value="0">Unlimited</option><option value="1">1 download</option><option value="10">10 downloads</option><option value="100">100 downloads</option></select></label><DialogActions onClose={() => setModal(null)} label="Create link" /></form>}</Dialog>}
     </div>;

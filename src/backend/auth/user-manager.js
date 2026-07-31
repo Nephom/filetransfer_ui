@@ -214,6 +214,26 @@ class UserManager {
   }
 
   /**
+   * Change a regular user's own password after validating their current password.
+   */
+  async changeOwnPassword(username, currentPassword, newPassword) {
+    if (!this.initialized) {
+      throw new Error('User manager not initialized');
+    }
+
+    const user = this.users.get(username);
+    if (!user || !user.active) {
+      throw new Error('User not found or inactive');
+    }
+
+    if (!await bcrypt.compare(currentPassword, user.password)) {
+      throw new Error('Current password is incorrect');
+    }
+
+    return this.updateUser(username, { password: newPassword });
+  }
+
+  /**
    * Delete a user
    */
   async deleteUser(username) {
