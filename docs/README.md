@@ -62,7 +62,7 @@ The complete API documentation is available in the `api/` directory:
 
 ### Deployment Lifecycle
 
-Use the root `build.sh` on Ubuntu 22.04 or newer. It installs dependencies, creates local configuration only when it is missing, builds the Ubuntu desktop DEB, and safely fast-forwards an existing checkout.
+Use the root `build.sh` for the server lifecycle on Alpine Linux or Ubuntu. It installs server dependencies, creates local configuration only when it is missing, and safely fast-forwards an existing checkout. Only `build` requires Ubuntu 22.04 or newer and produces the Ubuntu desktop DEB.
 
 ```bash
 # New environment
@@ -78,7 +78,7 @@ Use the root `build.sh` on Ubuntu 22.04 or newer. It installs dependencies, crea
 ./build.sh upgrade --proxy http://proxy.example.internal:8080
 ```
 
-Actual deployment values belong in ignored `.env` and `src/config.ini` files. Never put internal addresses, credentials, tokens, or certificates in documentation or GitHub discussions.
+Actual deployment values belong in ignored `.env` and `src/config.ini` files. Never put internal addresses, credentials, tokens, or certificates in documentation or GitHub discussions. Production Alpine systems should use `install`, `setup`, `upgrade`, and `start`; they do not run the desktop `build` command.
 
 ### 1. Authentication
 

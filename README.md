@@ -1,6 +1,6 @@
 [English](README_EN.md)
 
-# Web-Based File Management System 3.0.0
+# Web-Based File Management System 3.0.1
 
 提供檔案總管式網頁介面與 Ubuntu 桌面客戶端的本地檔案管理系統。Windows 使用者透過瀏覽器使用網頁介面；Tauri 桌面客戶端僅發行 Ubuntu DEB。
 
@@ -13,7 +13,7 @@
 
 ## 安裝與升級
 
-需要 Ubuntu 22.04+、網路連線與可使用 `sudo` 的帳號。腳本會安裝 Node.js、Rust、GTK/WebKitGTK 與其他必要套件。
+主服務支援 Alpine Linux 與 Ubuntu，且需要網路連線及可安裝系統套件的權限。`install` 與 `upgrade` 只安裝 Node.js 與主服務相依性，不會安裝或建置 Tauri。
 
 全新環境：
 
@@ -38,7 +38,7 @@
 ./build.sh upgrade --proxy http://proxy.example.internal:8080
 ```
 
-此參數只在該次執行中套用至 apt、Git、npm、Cargo、curl 與 wget，不會寫入全域設定。
+此參數只在該次執行中套用至 apk 或 apt、Git、npm、Cargo、curl 與 wget，不會寫入全域設定。
 
 ## 首次設定
 
@@ -48,7 +48,7 @@ HTTP 預設 port 為 `9400`，HTTPS 預設 port 為 `9443`。HTTP redirect 只�
 
 ## Ubuntu Desktop DEB
 
-在 Ubuntu 22.04+ 建置桌面 package：
+只有 Ubuntu 22.04+ 負責建置桌面 package；這個命令才會安裝 Rust、GTK/WebKitGTK 與 Tauri 相依性：
 
 ```bash
 ./build.sh build
