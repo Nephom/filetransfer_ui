@@ -1,4 +1,4 @@
-# File Transfer Desktop 3.0.1
+# File Transfer Desktop 3.0.2
 
 This is a mouse-first Tauri v2 client for Ubuntu 22.04 and newer. Windows users access the parent project's web interface in a browser; no Windows desktop package is produced.
 
@@ -42,4 +42,4 @@ The server certificate must be trusted by the Ubuntu system. The client does not
 - Configuration and token storage use the desktop WebView's local application storage.
 - Downloads are written to the user's `Downloads` directory.
 
-See the parent [API contract](../docs/api/API_REFERENCE.md) and [project rules](../docs/PROJECT_RULES.md).
+See the parent [API contract](../docs/api/API_REFERENCE.md).

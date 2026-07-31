@@ -6,6 +6,7 @@ COMMANDS.md
 CACHE_IMPROVEMENTS.md
 QWEN.md
 MIGRATION_GUIDE.md
+migrate.sh
 .api_token
 .fileapi*
 .ignoreDirs
@@ -32,11 +33,6 @@ test/
 tests/
 *.test.js
 *.spec.js
-
-# Repository sandbox tests are intentionally tracked.
-!test/
-!test/**/*.js
-!AGENTS.md
 
 # Storage and data directories
 storage/

@@ -1,6 +1,6 @@
 [English](README_EN.md)
 
-# Web-Based File Management System 3.0.1
+# Web-Based File Management System 3.0.2
 
 提供檔案總管式網頁介面與 Ubuntu 桌面客戶端的本地檔案管理系統。Windows 使用者透過瀏覽器使用網頁介面；Tauri 桌面客戶端僅發行 Ubuntu DEB。
 
@@ -32,6 +32,22 @@
 
 `upgrade` 只允許 fast-forward 更新，並在工作樹有未提交變更時停止。它不會覆寫 `.env`、`src/config.ini`、storage、資料庫、users 或 logs。
 
+### 舊版遷移
+
+若版本早於 3.0.0，或 `git pull` 表示 `package-lock.json`、`start.sh`、`stop.sh`、`status.sh`、`src/config.ini` 有本機修改，請先停止服務並備份衝突檔：
+
+```bash
+./stop.sh
+mkdir -p ../filetransfer-local-backup
+mv package-lock.json start.sh stop.sh status.sh src/config.ini ../filetransfer-local-backup/
+git pull --ff-only
+cp ../filetransfer-local-backup/config.ini src/config.ini
+./build.sh upgrade
+./start.sh
+```
+
+不要還原舊的 `package-lock.json` 或 lifecycle scripts。暫時放回 `src/config.ini` 是為了讓 `build.sh upgrade` 將既有帳密、storage 路徑與 port 遷移至 ignored `.env`；成功後它保留為本機設定檔。
+
 若外部網路必須經由 proxy，所有命令均可加上暫時性的 proxy：
 
 ```bash
@@ -56,9 +72,8 @@ HTTP 預設 port 為 `9400`，HTTPS 預設 port 為 `9443`。HTTP redirect 只�
 
 產物位於 `fileapi_ui/src-tauri/target/release/bundle/deb/`。DEB 不含內網 server address；使用者首次登入時輸入 address 和 HTTPS port，或在本機 `fileapi_ui/.env` 設定開發用預填值。
 
-## 文件與規則
+## 文件
 
-- [專案規則](docs/PROJECT_RULES.md)
 - [完整 API 參考](docs/api/API_REFERENCE.md)
 - [文件索引](docs/README.md)
 - [Ubuntu Tauri 客戶端](fileapi_ui/README.md)
