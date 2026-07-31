@@ -1,6 +1,6 @@
 [正體中文](README.md)
 
-# Web-Based File Management System 3.0.2
+# Web-Based File Management System 3.0.3
 
 A local file management system with a Windows Explorer-style web interface and an Ubuntu desktop client. Windows users use the web interface in a browser; the Tauri desktop client is distributed only as an Ubuntu DEB.
 
@@ -27,19 +27,25 @@ For an existing Git checkout:
 
 ### Legacy Migration
 
-For releases older than 3.0.0, or when `git pull` reports local changes to `package-lock.json`, lifecycle scripts, or `src/config.ini`, stop the service and back up the conflicting files first:
+For releases older than 3.0.0, when `git pull` explicitly reports that local tracked changes would be overwritten, stop the service, back up the configuration, and move **only the files named by Git's error**:
 
 ```bash
 ./stop.sh
 mkdir -p ../filetransfer-local-backup
-mv package-lock.json start.sh stop.sh status.sh src/config.ini ../filetransfer-local-backup/
+cp src/config.ini ../filetransfer-local-backup/config.ini
+for file in package-lock.json start.sh stop.sh status.sh src/config.ini; do
+  if ! git diff --quiet -- "$file" || ! git diff --cached --quiet -- "$file"; then
+    mkdir -p "../filetransfer-local-backup/$(dirname "$file")"
+    mv "$file" "../filetransfer-local-backup/$file"
+  fi
+done
 git pull --ff-only
 cp ../filetransfer-local-backup/config.ini src/config.ini
 ./build.sh upgrade
 ./start.sh
 ```
 
-Do not restore the old `package-lock.json` or lifecycle scripts. Temporarily restoring `src/config.ini` lets `build.sh upgrade` migrate credentials, storage, and ports into ignored `.env`; it remains a local configuration file afterward.
+The loop moves only files with local Git changes. Do not restore the old `package-lock.json` or lifecycle scripts. Temporarily restoring `src/config.ini` lets `build.sh upgrade` migrate credentials, storage, and ports into ignored `.env`; it remains a local configuration file afterward.
 
 Use a one-command proxy when external access requires it:
 
