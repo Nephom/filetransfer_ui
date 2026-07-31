@@ -328,6 +328,15 @@ cmd_build() {
     cd "$ROOT_DIR/fileapi_ui"
     npm run tauri build
   )
+  local deb_dir="$ROOT_DIR/fileapi_ui/src-tauri/target/release/bundle/deb"
+  local deb_file
+  shopt -s nullglob
+  for deb_file in "$deb_dir"/*.deb; do
+    local normalized_name
+    normalized_name="$(basename "$deb_file" | tr ' ' '-')"
+    [[ "$deb_file" == "$deb_dir/$normalized_name" ]] || mv "$deb_file" "$deb_dir/$normalized_name"
+  done
+  shopt -u nullglob
   echo "DEB packages are in fileapi_ui/src-tauri/target/release/bundle/deb/."
 }
 
