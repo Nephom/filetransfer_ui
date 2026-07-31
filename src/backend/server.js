@@ -516,10 +516,11 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       });
     }
 
-    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files.length });
+    const files = (searchResults.files || []).filter((file) => file && typeof file.name === 'string' && file.name.trim() && typeof file.path === 'string' && file.path.trim());
+    systemLogger.logAPI('search', query, true, req, { resultCount: files.length, skippedResults: searchResults.files.length - files.length });
     res.json({
-      files: searchResults.files,
-      resultCount: searchResults.resultCount || searchResults.files.length,
+      files,
+      resultCount: files.length,
       indexStats: searchResults.indexStats
     });
   } catch (error) {
@@ -563,10 +564,11 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       });
     }
 
-    systemLogger.logAPI('search', query, true, req, { resultCount: searchResults.files.length });
+    const files = (searchResults.files || []).filter((file) => file && typeof file.name === 'string' && file.name.trim() && typeof file.path === 'string' && file.path.trim());
+    systemLogger.logAPI('search', query, true, req, { resultCount: files.length, skippedResults: searchResults.files.length - files.length });
     res.json({
-      files: searchResults.files,
-      resultCount: searchResults.resultCount || searchResults.files.length,
+      files,
+      resultCount: files.length,
       indexStats: searchResults.indexStats
     });
   } catch (error) {
@@ -684,6 +686,10 @@ app.get('/api/files/content/*', authenticate, async (req, res) => {
 
 // Download file endpoint
 app.get('/api/files/download/*', authenticate, async (req, res) => {
+  const requestStartedAt = Date.now();
+  let responseFinished = false;
+  let streamFailed = false;
+  let fileName = req.params[0] || 'unknown';
   try {
     const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const requestPath = req.params[0] || '';
@@ -702,24 +708,40 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'This endpoint only supports file downloads. For directory downloads, please use the archive functionality.' });
     }
 
-    const fileName = path.basename(fullPath);
+    fileName = path.basename(fullPath);
+    const userName = req.user?.username || req.user?.id || 'unknown';
+    systemLogger.logSystem('INFO', `DOWNLOAD START - User: ${userName}, Path: ${requestPath}, File: ${fileName}, Size: ${stats.size} bytes`);
     // Use RFC 2231 encoding for UTF-8 filenames
     const encodedFileName = encodeURIComponent(fileName);
     res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodedFileName}`);
     res.setHeader('Content-Type', 'application/octet-stream');
 
-    const fileStream = require('fs').createReadStream(fullPath);
+    res.on('finish', () => {
+      responseFinished = true;
+      const duration = Date.now() - requestStartedAt;
+      if (streamFailed) return;
+      systemLogger.logSystem('INFO', `DOWNLOAD COMPLETE - User: ${userName}, File: ${fileName}, Status: ${res.statusCode}, Bytes: ${stats.size}, Duration: ${duration}ms`);
+      systemLogger.logDownload(fileName, 'authenticated', true, req, { size: stats.size });
+    });
+    res.on('close', () => {
+      if (!responseFinished) {
+        const duration = Date.now() - requestStartedAt;
+        systemLogger.logSystem('WARN', `DOWNLOAD ABORTED - User: ${userName}, File: ${fileName}, Status: ${res.statusCode}, BytesWritten: ${res.socket?.bytesWritten || 0}, Duration: ${duration}ms`);
+        systemLogger.logDownload(fileName, 'authenticated', false, req, { size: stats.size, error: 'Client disconnected before response finished' });
+      }
+    });
+
+    const fileStream = fsSync.createReadStream(fullPath);
+    systemLogger.logSystem('INFO', `DOWNLOAD STREAM OPEN - User: ${userName}, File: ${fileName}`);
     fileStream.pipe(res);
 
     fileStream.on('error', (error) => {
+      streamFailed = true;
+      systemLogger.logSystem('ERROR', `DOWNLOAD STREAM FAILED - User: ${userName}, File: ${fileName}, Error: ${error.message}`);
       systemLogger.logDownload(fileName, 'authenticated', false, req, { error: error.message });
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to download file' });
       }
-    });
-
-    fileStream.on('close', () => {
-      systemLogger.logDownload(fileName, 'authenticated', true, req, { size: stats.size });
     });
   } catch (error) {
     // Catch file not found errors from fs.stat
@@ -727,6 +749,7 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
       systemLogger.logDownload(req.params[0] || 'unknown', 'authenticated', false, req, { error: 'File not found' });
       return res.status(404).json({ error: 'File not found' });
     }
+    systemLogger.logSystem('ERROR', `DOWNLOAD SETUP FAILED - User: ${req.user?.username || req.user?.id || 'unknown'}, File: ${fileName}, Error: ${error.message}`);
     systemLogger.logDownload(req.params[0] || 'unknown', 'authenticated', false, req, { error: error.message });
     res.status(500).json({ error: error.message });
   }
