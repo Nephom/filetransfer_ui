@@ -69,6 +69,7 @@ async fn pick_upload_files() -> Result<Vec<String>, String> {
     Ok(rfd::AsyncFileDialog::new()
         .pick_files()
         .await
+        .unwrap_or_default()
         .into_iter()
         .map(|file| file.path().display().to_string())
         .collect())
