@@ -334,7 +334,12 @@ cmd_test() {
 
 cmd_upgrade() {
   [[ -d "$ROOT_DIR/.git" ]] || { echo "upgrade requires a Git checkout." >&2; exit 1; }
-  [[ -z "$(git -C "$ROOT_DIR" status --porcelain)" ]] || { echo "Refusing to update a working tree with uncommitted changes." >&2; exit 1; }
+  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]]; then
+    echo "Refusing to update a working tree with uncommitted changes." >&2
+    echo "Keep ignored .env and src/config.ini, but restore any accidentally moved tracked files before retrying:" >&2
+    echo "  git restore --source=HEAD -- package-lock.json start.sh stop.sh status.sh" >&2
+    exit 1
+  fi
   local legacy_config=""
   if [[ ! -f "$ROOT_DIR/.env" && -f "$ROOT_DIR/src/config.ini" ]]; then
     legacy_config="$(mktemp)"

@@ -1,6 +1,6 @@
 [English](README_EN.md)
 
-# Web-Based File Management System 3.0.2
+# Web-Based File Management System 3.0.3
 
 提供檔案總管式網頁介面與 Ubuntu 桌面客戶端的本地檔案管理系統。Windows 使用者透過瀏覽器使用網頁介面；Tauri 桌面客戶端僅發行 Ubuntu DEB。
 
@@ -34,19 +34,25 @@
 
 ### 舊版遷移
 
-若版本早於 3.0.0，或 `git pull` 表示 `package-lock.json`、`start.sh`、`stop.sh`、`status.sh`、`src/config.ini` 有本機修改，請先停止服務並備份衝突檔：
+若版本早於 3.0.0，且 `git pull` 明確表示某些 tracked 檔案會被本機修改覆蓋，請先停止服務、備份 config，並且**只移走錯誤訊息列出的檔案**：
 
 ```bash
 ./stop.sh
 mkdir -p ../filetransfer-local-backup
-mv package-lock.json start.sh stop.sh status.sh src/config.ini ../filetransfer-local-backup/
+cp src/config.ini ../filetransfer-local-backup/config.ini
+for file in package-lock.json start.sh stop.sh status.sh src/config.ini; do
+  if ! git diff --quiet -- "$file" || ! git diff --cached --quiet -- "$file"; then
+    mkdir -p "../filetransfer-local-backup/$(dirname "$file")"
+    mv "$file" "../filetransfer-local-backup/$file"
+  fi
+done
 git pull --ff-only
 cp ../filetransfer-local-backup/config.ini src/config.ini
 ./build.sh upgrade
 ./start.sh
 ```
 
-不要還原舊的 `package-lock.json` 或 lifecycle scripts。暫時放回 `src/config.ini` 是為了讓 `build.sh upgrade` 將既有帳密、storage 路徑與 port 遷移至 ignored `.env`；成功後它保留為本機設定檔。
+迴圈只移走有本機 Git 修改的檔案。不要還原舊的 `package-lock.json` 或 lifecycle scripts。暫時放回 `src/config.ini` 是為了讓 `build.sh upgrade` 將既有帳密、storage 路徑與 port 遷移至 ignored `.env`；成功後它保留為本機設定檔。
 
 若外部網路必須經由 proxy，所有命令均可加上暫時性的 proxy：
 
