@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shared File Download</title>
+    <title>Shared File Download - LAB File Manager</title>
     <style>
         * {
             margin: 0;
@@ -12,8 +12,8 @@
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: Inter, "Segoe UI", system-ui, sans-serif;
+            background: radial-gradient(circle at 80% -10%, #123356 0, transparent 35%), #07111f;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -22,10 +22,10 @@
         }
 
         .container {
-            background: rgba(255, 255, 255, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            background: #0b2137;
+            border: 1px solid #315b7e;
+            border-radius: 8px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
             padding: 40px;
             max-width: 500px;
             width: 100%;
@@ -38,19 +38,20 @@
         }
 
         h1 {
-            color: #333;
+            color: #e9fbff;
             font-size: 28px;
             margin-bottom: 10px;
         }
 
         .subtitle {
-            color: #666;
+            color: #91a9c0;
             font-size: 14px;
             margin-bottom: 30px;
         }
 
         .file-info {
-            background: #f5f5f5;
+            background: #07192a;
+            border: 1px solid #254764;
             padding: 15px;
             border-radius: 10px;
             margin-bottom: 25px;
@@ -58,7 +59,7 @@
 
         .file-name {
             font-size: 16px;
-            color: #333;
+            color: #d9eafa;
             font-weight: 500;
             word-break: break-all;
         }
@@ -70,7 +71,7 @@
         .password-label {
             display: block;
             text-align: left;
-            color: #555;
+            color: #b9cee4;
             font-size: 14px;
             font-weight: 500;
             margin-bottom: 8px;
@@ -79,25 +80,27 @@
         .password-input {
             width: 100%;
             padding: 14px 16px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
+            border: 1px solid #315b7e;
+            border-radius: 5px;
             font-size: 15px;
             transition: all 0.3s ease;
+            color: #e6eefc;
+            background: #07192a;
         }
 
         .password-input:focus {
             outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: #47cdf1;
+            box-shadow: 0 0 0 1px #47cdf1;
         }
 
         .download-btn {
             width: 100%;
             padding: 16px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #1477c9, #168bb9);
+            border: 1px solid #43c9ed;
             color: white;
-            border: none;
-            border-radius: 10px;
+            border-radius: 5px;
             font-size: 16px;
             font-weight: 600;
             cursor: pointer;
@@ -110,7 +113,7 @@
 
         .download-btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 10px 25px rgba(37,185,231,0.25);
         }
 
         .download-btn:disabled {
@@ -120,8 +123,9 @@
         }
 
         .error-message {
-            background: #fee;
-            color: #c33;
+            background: #3b1d28;
+            color: #ffb8ae;
+            border: 1px solid #813847;
             padding: 12px;
             border-radius: 8px;
             margin-top: 15px;
@@ -134,8 +138,9 @@
         }
 
         .info-message {
-            background: #e3f2fd;
-            color: #1976d2;
+            background: #0d3850;
+            color: #9be8ff;
+            border: 1px solid #226c88;
             padding: 12px;
             border-radius: 8px;
             margin-top: 15px;
@@ -157,7 +162,7 @@
         }
 
         .no-password-needed {
-            color: #4caf50;
+            color: #6bf0ca;
             font-weight: 500;
             margin-top: 20px;
         }
@@ -285,7 +290,7 @@
                     document.body.appendChild(a);
                     a.click();
                     document.body.removeChild(a);
-                    window.URL.revokeObjectURL(url);
+                    window.setTimeout(() => window.URL.revokeObjectURL(url), 60000);
 
                     // Show success message
                     btnText.textContent = '✅ Downloaded!';

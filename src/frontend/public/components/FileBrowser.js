@@ -9,6 +9,11 @@ const formatDate = (value) => value ? new Date(value).toLocaleString() : '--';
 const itemKey = (item) => item.path || item.name;
 const fileIcon = (item) => item.isDirectory ? '📁' : '📄';
 const normalisePath = (value) => (value || '').replace(/^\/+|\/+$/g, '');
+const fileType = (item) => {
+    if (item.isDirectory) return 'File folder';
+    const extension = item.name?.split('.').pop();
+    return extension && extension !== item.name ? `${extension.toUpperCase()} file` : 'File';
+};
 
 const FileBrowser = ({ token, user, onLogout }) => {
     const [files, setFiles] = React.useState([]);
@@ -35,6 +40,8 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const inputRef = React.useRef(null);
     const accountRef = React.useRef(null);
     const dragExpandTimer = React.useRef(null);
+    const notificationTimer = React.useRef(null);
+    const downloadInProgress = React.useRef(false);
 
     const authHeaders = { Authorization: `Bearer ${token}` };
     const selectedItems = files.filter((file) => selected.includes(itemKey(file)));
@@ -94,8 +101,17 @@ const FileBrowser = ({ token, user, onLogout }) => {
         window.addEventListener('click', close);
         return () => window.removeEventListener('click', close);
     }, []);
-    React.useEffect(() => () => window.clearTimeout(dragExpandTimer.current), []);
+    React.useEffect(() => () => {
+        window.clearTimeout(dragExpandTimer.current);
+        window.clearTimeout(notificationTimer.current);
+    }, []);
     React.useEffect(() => { localStorage.setItem('file-view-mode', viewMode); }, [viewMode]);
+
+    const showSuccess = (message) => {
+        window.clearTimeout(notificationTimer.current);
+        setTransferStatus(message);
+        notificationTimer.current = window.setTimeout(() => setTransferStatus(''), 3500);
+    };
 
     const searchFiles = async () => {
         const query = search.trim();
@@ -106,13 +122,18 @@ const FileBrowser = ({ token, user, onLogout }) => {
             const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}`, { headers: authHeaders });
             const data = await response.json();
             if (!response.ok || data.indexing) throw new Error(data.message || 'Search is not available yet.');
-            setFiles(data.files || []); setDisplayPath(`Search results for "${query}"`); setSearching(true); setSelected([]);
+            const results = (data.files || []).filter((file) => file && typeof file.name === 'string' && file.name.trim() && typeof file.path === 'string' && file.path.trim());
+            setFiles(results); setDisplayPath(`Search results for "${query}"`); setSearching(true); setSelected([]);
         } catch (requestError) { setError(requestError.message); setFiles([]); }
         finally { setLoading(false); }
     };
 
     const openFolder = (file) => { if (file.isDirectory) loadFiles(file.path); };
     const goUp = () => { if (searching) return loadFiles(pathBeforeSearch); if (currentPath) loadFiles(currentPath.split('/').slice(0, -1).join('/')); };
+    const clearSearch = () => {
+        setSearch('');
+        if (searching) loadFiles(pathBeforeSearch);
+    };
     const choose = (file, event) => {
         const key = itemKey(file);
         if (event.ctrlKey || event.metaKey) setSelected((items) => items.includes(key) ? items.filter((item) => item !== key) : [...items, key]);
@@ -122,27 +143,30 @@ const FileBrowser = ({ token, user, onLogout }) => {
 
     const downloadBlob = (blob, name) => {
         const url = URL.createObjectURL(blob); const anchor = document.createElement('a');
-        anchor.href = url; anchor.download = name; document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
+        anchor.href = url; anchor.download = name; document.body.appendChild(anchor); anchor.click(); anchor.remove();
+        // The browser needs time to claim the object URL after the synthetic click.
+        window.setTimeout(() => URL.revokeObjectURL(url), 60000);
     };
     const download = async (items = selectedItems) => {
-        if (!items.length || downloading) return;
+        if (!items.length || downloadInProgress.current) return;
         const isArchive = items.length > 1 || items[0].isDirectory;
+        downloadInProgress.current = true;
+        window.clearTimeout(notificationTimer.current);
         setDownloading(true); setError('');
         setTransferStatus(isArchive ? `Preparing archive for ${items.length} item${items.length === 1 ? '' : 's'}...` : `Preparing download: ${items[0].name}...`);
-        await new Promise((resolve) => requestAnimationFrame(resolve));
         try {
             if (!isArchive) {
                 const file = items[0]; const response = await fetch(`/api/files/download/${encodeURIComponent(file.path)}`, { headers: authHeaders });
-                if (!response.ok) throw new Error('Download failed.'); downloadBlob(await response.blob(), file.name);
+                if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Download failed.'); downloadBlob(await response.blob(), file.name);
             } else {
                 const response = await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath }) });
-                if (!response.ok) throw new Error('Archive download failed.');
+                if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Archive download failed.');
                 const disposition = response.headers.get('Content-Disposition') || ''; const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
                 downloadBlob(await response.blob(), match ? decodeURIComponent(match[1]) : 'archive.zip');
             }
-            setTransferStatus('Download started in your browser.');
+            showSuccess('Download started in your browser.');
         } catch (requestError) { setTransferStatus(''); setError(requestError.message); }
-        finally { setDownloading(false); }
+        finally { downloadInProgress.current = false; setDownloading(false); }
     };
 
     const isValidMoveTarget = (items, destination) => {
@@ -165,7 +189,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             const response = await fetch('/api/files/paste', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map((item) => ({ name: item.name, isDirectory: item.isDirectory, path: pathForItem(item) })), operation: 'cut', targetPath }) });
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Move failed.');
-            setModal(null); setDragItems([]); setDropTarget(null); setTransferStatus(data.message || 'Move complete.');
+            setModal(null); setDragItems([]); setDropTarget(null); showSuccess(data.message || 'Move complete.');
             setFolderTree({ path: '', name: '/', expanded: true, loaded: false, children: [] });
             loadTreeChildren('', true); loadFiles(currentPath);
         } catch (requestError) { setTransferStatus(''); setError(requestError.message); }
@@ -188,35 +212,35 @@ const FileBrowser = ({ token, user, onLogout }) => {
         if (!selectedItems.length || !window.confirm(`Delete ${selectedItems.length} selected item${selectedItems.length === 1 ? '' : 's'}?`)) return;
         try {
             const response = await fetch('/api/files/delete', { method: 'DELETE', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: selectedItems.map(({ name, isDirectory }) => ({ name, isDirectory })), currentPath }) });
-            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Delete failed.'); } loadFiles(currentPath); loadTreeChildren('', true);
+            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Delete failed.'); } showSuccess(`Deleted ${selectedItems.length} item${selectedItems.length === 1 ? '' : 's'}.`); loadFiles(currentPath); loadTreeChildren('', true);
         } catch (requestError) { setError(requestError.message); }
     };
     const saveFolder = async (event) => {
         event.preventDefault(); const name = event.target.folderName.value.trim(); if (!name) return;
         try {
             const response = await fetch('/api/folders', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ folderName: name, currentPath }) });
-            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not create folder.'); } setModal(null); loadFiles(currentPath); loadTreeChildren('', true);
+            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not create folder.'); } setModal(null); showSuccess('Folder created.'); loadFiles(currentPath); loadTreeChildren('', true);
         } catch (requestError) { setError(requestError.message); }
     };
     const saveRename = async (event) => {
         event.preventDefault(); const newName = event.target.newName.value.trim(); if (!newName || !selectedItems[0]) return;
         try {
             const response = await fetch('/api/files/rename', { method: 'PUT', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ oldName: selectedItems[0].name, newName, currentPath }) });
-            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Rename failed.'); } setModal(null); loadFiles(currentPath); loadTreeChildren('', true);
+            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Rename complete.'); } setModal(null); showSuccess('Rename complete.'); loadFiles(currentPath); loadTreeChildren('', true);
         } catch (requestError) { setError(requestError.message); }
     };
     const upload = async (event) => {
         const uploadFiles = Array.from(event.target.files || []); event.target.value = ''; if (!uploadFiles.length) return;
         const data = new FormData(); uploadFiles.forEach((file) => data.append('files', file)); data.append('path', currentPath);
         setLoading(true); setError('');
-        try { const response = await fetch('/api/upload/multiple', { method: 'POST', headers: authHeaders, body: data }); if (!response.ok) throw new Error('Upload failed.'); loadFiles(currentPath); loadTreeChildren('', true); }
+        try { const response = await fetch('/api/upload/multiple', { method: 'POST', headers: authHeaders, body: data }); if (!response.ok) throw new Error('Upload failed.'); showSuccess(`Uploaded ${uploadFiles.length} item${uploadFiles.length === 1 ? '' : 's'}.`); loadFiles(currentPath); loadTreeChildren('', true); }
         catch (requestError) { setError(requestError.message); setLoading(false); }
     };
     const createShare = async (event) => {
         event.preventDefault(); const file = selectedItems[0]; if (!file) return;
         try {
             const response = await fetch('/api/files/share', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: file.path, expiresIn: Number(event.target.expiresIn.value), maxDownloads: Number(event.target.maxDownloads.value) }) });
-            const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Could not create share link.'); setShareLink(data.data.fullUrl);
+            const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Could not create share link.'); setShareLink(data.data.fullUrl); showSuccess('Share link created.');
         } catch (requestError) { setError(requestError.message); }
     };
     const savePassword = async (event) => {
@@ -253,9 +277,9 @@ const FileBrowser = ({ token, user, onLogout }) => {
         } : {};
         const sharedProps = { draggable: true, onDragStart: (event) => beginDrag(event, file), onDragEnd: endDrag, onClick: (event) => choose(file, event), onDoubleClick: () => file.isDirectory ? openFolder(file) : download([file]), onContextMenu: (event) => openContext(event, file), ...dropHandlers };
         if (viewMode === 'grid') {
-            return <article key={itemKey(file)} tabIndex="0" className={`file-tile ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><span className="tile-icon">{fileIcon(file)}</span><strong>{file.name}</strong><span>{file.isDirectory ? 'File folder' : (file.type || 'File')}</span><small>{file.isDirectory ? 'Drop files here' : formatSize(file.size)}</small></article>;
+            return <article key={itemKey(file)} tabIndex="0" className={`file-tile ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><span className="tile-icon">{fileIcon(file)}</span><strong>{file.name}</strong><span>{file.type || fileType(file)}</span><small>{file.isDirectory ? 'Drop files here' : formatSize(file.size)}</small></article>;
         }
-        return <tr key={itemKey(file)} tabIndex="0" className={`file-row ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><td><span className="file-name-cell"><span className="file-icon">{fileIcon(file)}</span>{file.name}</span></td><td className="muted">{formatDate(file.modified || file.modifiedTime)}</td><td className="muted">{file.isDirectory ? 'File folder' : (file.type || 'File')}</td><td className="muted">{file.isDirectory ? '--' : formatSize(file.size)}</td></tr>;
+        return <tr key={itemKey(file)} tabIndex="0" className={`file-row ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><td><span className="file-name-cell"><span className="file-icon">{fileIcon(file)}</span>{file.name}</span></td><td className="muted">{formatDate(file.modified || file.modifiedTime)}</td><td className="muted">{file.type || fileType(file)}</td><td className="muted">{file.isDirectory ? '--' : formatSize(file.size)}</td></tr>;
     };
 
     const renderTree = (onChooseDestination) => <FolderTree node={folderTree} currentPath={currentPath} dragItems={dragItems} dropTarget={dropTarget} onChooseDestination={onChooseDestination} onToggle={toggleFolder} onNavigate={loadFiles} onDragOver={(event, node) => { if (isValidMoveTarget(dragItems, node.path)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(node.path); scheduleTreeExpand(node); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, node) => { event.preventDefault(); endDrag(); moveItems(dragItems, node.path); }} />;
@@ -270,10 +294,10 @@ const FileBrowser = ({ token, user, onLogout }) => {
             <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length} onClick={remove}>Delete</button><span className="divider" />
             <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button onClick={() => loadFiles(currentPath)}>Refresh</button>
         </nav>
-        <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && searchFiles()} placeholder="Search files" aria-label="Search files" /></div>
+        <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
         <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{tree}</aside>
             <section className="content"><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{displayPath}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{error && <div className="notice error-notice">{error}</div>}{transferStatus && <div className="notice transfer-notice"><span className={downloading || moving ? 'activity-dot' : ''} />{transferStatus}</div>}
-                <div className="file-area">{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid">{files.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map(renderFileItem)}</tbody></table>}</div>
+                <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{files.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map(renderFileItem)}</tbody></table>}</div>
             </section></main>
         <footer className="statusbar"><span>{files.length} item{files.length === 1 ? '' : 's'}</span><span>{searching ? 'Search results' : currentPath ? `/${currentPath}` : '/'}</span></footer>
         {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading} onClick={() => action(download)}>Download</button><button disabled={moving} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={() => action(() => { setShareLink(''); setModal('share'); })}>Share</button><hr /><button onClick={() => action(remove)}>Delete</button></div>}
