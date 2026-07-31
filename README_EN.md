@@ -1,6 +1,6 @@
 [正體中文](README.md)
 
-# Web-Based File Management System 3.0.1
+# Web-Based File Management System 3.0.2
 
 A local file management system with a Windows Explorer-style web interface and an Ubuntu desktop client. Windows users use the web interface in a browser; the Tauri desktop client is distributed only as an Ubuntu DEB.
 
@@ -24,6 +24,22 @@ For an existing Git checkout:
 ```
 
 `upgrade` only fast-forwards and refuses a dirty working tree. It never overwrites `.env`, `src/config.ini`, storage, databases, users, or logs.
+
+### Legacy Migration
+
+For releases older than 3.0.0, or when `git pull` reports local changes to `package-lock.json`, lifecycle scripts, or `src/config.ini`, stop the service and back up the conflicting files first:
+
+```bash
+./stop.sh
+mkdir -p ../filetransfer-local-backup
+mv package-lock.json start.sh stop.sh status.sh src/config.ini ../filetransfer-local-backup/
+git pull --ff-only
+cp ../filetransfer-local-backup/config.ini src/config.ini
+./build.sh upgrade
+./start.sh
+```
+
+Do not restore the old `package-lock.json` or lifecycle scripts. Temporarily restoring `src/config.ini` lets `build.sh upgrade` migrate credentials, storage, and ports into ignored `.env`; it remains a local configuration file afterward.
 
 Use a one-command proxy when external access requires it:
 
@@ -51,7 +67,6 @@ The package is written to `fileapi_ui/src-tauri/target/release/bundle/deb/`. It 
 
 ## Documentation
 
-- [Project rules](docs/PROJECT_RULES.md)
 - [API reference](docs/api/API_REFERENCE.md)
 - [Documentation index](docs/README.md)
 - [Ubuntu Tauri client](fileapi_ui/README.md)
