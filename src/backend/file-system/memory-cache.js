@@ -799,16 +799,6 @@ class RedisFileSystemCache extends EventEmitter {
       const storageRoot = path.resolve(this.storagePath);
       const normalizedQuery = query.toLowerCase();
 
-      // Check if indexing is in progress
-      if (this.isIndexing) {
-        return {
-          files: [],
-          indexing: true,
-          progress: this.indexProgress,
-          message: `Index is building: ${this.indexProgress.current}/${this.indexProgress.total} files processed`
-        };
-      }
-
       // Search in Redis index using SCAN to find matching keys
       const matchingFiles = [];
       const searchPattern = `index:*${normalizedQuery}*`;
@@ -841,7 +831,11 @@ class RedisFileSystemCache extends EventEmitter {
 
       return {
         files: matchingFiles,
+        // Search the completed portion of the index while a refresh is running.
+        // Initial scans do not know their total file count, so blocking here produced
+        // an unhelpful "0/0" message and made search unavailable.
         indexing: false,
+        indexUpdating: this.isIndexing,
         indexStats: indexStats,
         resultCount: matchingFiles.length
       };
