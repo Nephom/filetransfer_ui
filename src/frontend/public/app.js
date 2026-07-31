@@ -13,6 +13,12 @@ const App = () => {
         localStorage.setItem('token', userToken);
     };
 
+    const handleLogout = () => {
+        localStorage.removeItem('token');
+        setUser(null);
+        setToken(null);
+    };
+
     // Check token validity on mount
     React.useEffect(() => {
         if (token && !user) {
@@ -42,7 +48,7 @@ const App = () => {
         return React.createElement(LoginForm, { onLogin: handleLogin });
     }
 
-    return React.createElement(FileBrowser, { token: token, user: user });
+    return React.createElement(FileBrowser, { token: token, user: user, onLogout: handleLogout });
 };
 
 // Make App component available globally
