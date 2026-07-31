@@ -1,6 +1,6 @@
 # File Transfer API Documentation
 
-Complete API documentation for the File Transfer system with real-time progress tracking.
+The authoritative endpoint contract is [API_REFERENCE.md](./API_REFERENCE.md). This document and its upload/progress pages provide implementation detail and examples; update both when changing an API.
 
 ---
 
@@ -17,7 +17,7 @@ Complete API documentation for the File Transfer system with real-time progress 
 
 ## Overview
 
-This API provides file upload capabilities with real-time progress tracking. It supports:
+This API provides file management and upload capabilities with real-time progress tracking. It supports:
 
 - **Single File Upload** with streaming progress
 - **Multi-File Batch Upload** with aggregate progress
@@ -125,6 +125,8 @@ const pollInterval = setInterval(async () => {
 | `/api/upload/multiple` | POST | Upload multiple files in batch | `{ batchId }` |
 | `/api/upload` | POST | Legacy upload (no progress tracking) | File metadata |
 
+For all new clients, use `/api/upload/multiple`. It is the supported streaming route for both single and multiple uploads.
+
 ### Progress Tracking Endpoints
 
 | Endpoint | Method | Description | Response |
@@ -191,7 +193,9 @@ localStorage.setItem('token', token);
   - All custom error codes (301, 302, 304, 401, 402, 403, 413)
   - Error handling examples
   - User-friendly error messages
-  - Recovery strategies
+    - Recovery strategies
+
+- **[Complete API Contract](./API_REFERENCE.md)** - Browsing, download, archive, mutation, sharing, administration, TLS, logging, and authentication contracts
 
 ---
 

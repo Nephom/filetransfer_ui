@@ -8,7 +8,7 @@ class SANManager {
     this.configPath = path.join(__dirname, '../../../src/data/ssl-config.json');
     this.defaultConfig = {
       sans: {
-        ips: ['10.6.66.40', '127.0.0.1'],
+        ips: [],
         hostnames: ['localhost']
       },
       autoDetectIPs: true
@@ -109,12 +109,10 @@ class SANManager {
     const detectedIPs = [];
 
     Object.values(interfaces).flat().forEach(iface => {
-      // Only include IPv4, non-internal addresses
+      // Include non-internal IPv4 addresses discovered on this host. Deployment
+      // addresses must never be baked into source-controlled certificate defaults.
       if (iface.family === 'IPv4' && !iface.internal) {
-        // Filter for 192.x.x.x subnet
-        if (iface.address.startsWith('192.')) {
-          detectedIPs.push(iface.address);
-        }
+        detectedIPs.push(iface.address);
       }
     });
 

@@ -868,18 +868,30 @@ func (m *MainModel) downloadFiles(cmd *parser.Command) tea.Cmd {
 			return commandErrorMsg("下載需要指定檔案")
 		}
 
+		isDirectory := false
+		if len(cmd.Files) == 1 {
+			for _, file := range m.files {
+				if file.Name() == cmd.Files[0] {
+					isDirectory = file.IsDir()
+					break
+				}
+			}
+		}
+		useArchive := len(cmd.Files) > 1 || isDirectory || cmd.ShouldUseArchive()
+
 		// 解析本地路徑
 		localPath := cmd.Destination
 		if localPath == "" || localPath == "." || localPath == "./" {
 			// 預設使用當前目錄
 			cwd, _ := filepath.Abs(".")
-			if len(cmd.Files) == 1 {
+			if !useArchive {
 				// 單檔：使用檔名（不是完整路徑）
 				// 從遠端路徑提取檔名：Personal/Kali/em_cli.py -> em_cli.py
 				fileName := filepath.Base(cmd.Files[0])
 				localPath = filepath.Join(cwd, fileName)
+			} else if len(cmd.Files) == 1 {
+				localPath = filepath.Join(cwd, filepath.Base(cmd.Files[0])+".zip")
 			} else {
-				// 多檔：預設 archive.zip
 				localPath = filepath.Join(cwd, "archive.zip")
 			}
 		} else {
@@ -890,8 +902,8 @@ func (m *MainModel) downloadFiles(cmd *parser.Command) tea.Cmd {
 			}
 		}
 
-		// 單檔下載 vs 多檔打包下載
-		if len(cmd.Files) == 1 {
+		// A directory, even when selected alone, must use the archive endpoint.
+		if !useArchive {
 			// 單檔下載：使用 /api/files/download/*
 			remotePath := cmd.Files[0]
 

@@ -22,8 +22,7 @@ type Config struct {
 
 // HostOptions 可用的主機選項
 var HostOptions = []string{
-	"https://192.168.1.6:9443",  // HTTPS - 192 LAB network (自簽證書)
-	"https://10.6.66.40:9443",   // HTTPS - Big network (自簽證書)
+	"https://files.example.internal:9443", // Documentation-only fallback for the deprecated client
 }
 
 // LoadConfig 從檔案載入配置

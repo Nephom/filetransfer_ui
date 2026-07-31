@@ -1,6 +1,6 @@
 # File Transfer Documentation
 
-Welcome to the File Transfer system documentation.
+Read [Project Rules](./PROJECT_RULES.md) before changing this repository. The rules define mandatory GitHub issue, sandbox verification, documentation, and user-validation workflows.
 
 ---
 
@@ -31,7 +31,12 @@ The complete API documentation is available in the `api/` directory:
 - **[Error Codes](./api/error-codes.md)** - Error code reference
   - Custom error codes (301, 302, 304, 401, 402, 403, 413)
   - Error handling examples
-  - User-friendly error messages
+   - User-friendly error messages
+
+- **[API Contract Reference](./api/API_REFERENCE.md)** - Authoritative endpoint contract
+  - Authentication, browsing, upload, download, archive, sharing, administration, and TLS routes
+  - Required payloads and client behaviour
+  - Archive and IPv4 logging rules
 
 ---
 
@@ -54,6 +59,26 @@ The complete API documentation is available in the `api/` directory:
 ---
 
 ## Getting Started
+
+### Deployment Lifecycle
+
+Use the root `build.sh` on Ubuntu 22.04 or newer. It installs dependencies, creates local configuration only when it is missing, builds the Ubuntu desktop DEB, and safely fast-forwards an existing checkout.
+
+```bash
+# New environment
+./build.sh install
+./build.sh setup
+./start.sh
+
+# Existing checkout
+./build.sh upgrade
+./start.sh
+
+# One-command proxy, used only for this invocation
+./build.sh upgrade --proxy http://proxy.example.internal:8080
+```
+
+Actual deployment values belong in ignored `.env` and `src/config.ini` files. Never put internal addresses, credentials, tokens, or certificates in documentation or GitHub discussions.
 
 ### 1. Authentication
 

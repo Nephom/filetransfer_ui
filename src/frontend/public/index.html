@@ -3,466 +3,73 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File Transfer UI - Futuristic File Manager</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📁</text></svg>">
-    <!-- Removed Tailwind CSS to avoid conflicts -->
+    <title>Files</title>
     <style>
-        body {
-            background: linear-gradient(135deg, #2c3e50 0%, #34495e 25%, #5d6d7e 50%, #85929e 75%, #aeb6bf 100%);
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 0;
-            min-height: 100vh;
-        }
-
-        .explorer-window {
-            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 25%, #dee2e6 50%, #ced4da 75%, #adb5bd 100%);
-            border: 1px solid #6c757d;
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
-        }
-
-        .toolbar {
-            background: linear-gradient(135deg, #495057 0%, #6c757d 50%, #868e96 100%);
-            border-bottom: 1px solid #495057;
-            padding: 8px 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .toolbar-button {
-            background: linear-gradient(135deg, #e9ecef 0%, #ced4da 50%, #adb5bd 100%);
-            border: 1px solid #6c757d;
-            border-top: 1px solid #f8f9fa;
-            border-left: 1px solid #f8f9fa;
-            padding: 6px 12px;
-            border-radius: 3px;
-            cursor: pointer;
-            font-size: 13px;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            color: #212529;
-        }
-
-        .toolbar-button:hover {
-            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 50%, #ced4da 100%);
-            box-shadow: 0 3px 6px rgba(0,0,0,0.15);
-        }
-
-        .toolbar-button:active {
-            background: linear-gradient(to bottom, #d0d0d0, #e0e0e0);
-            border: 1px solid #a0a0a0;
-            border-right: 1px solid #fff;
-            border-bottom: 1px solid #fff;
-            box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
-        }
-
-        .address-bar {
-            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-            border: 1px solid #6c757d;
-            border-top: 1px solid #adb5bd;
-            border-left: 1px solid #adb5bd;
-            padding: 6px 8px;
-            flex: 1;
-            margin: 0 8px;
-            font-size: 13px;
-            border-radius: 3px;
-            box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
-            color: #212529;
-        }
-
-        .file-list {
-            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-            min-height: 400px;
-        }
-
-        .file-item {
-            display: flex;
-            align-items: center;
-            padding: 4px 12px;
-            border-bottom: 1px solid transparent;
-            cursor: pointer;
-            font-size: 13px;
-            color: #333333;
-        }
-
-        .file-item:hover {
-            background: linear-gradient(135deg, #17a2b8 0%, #138496 100%);
-            color: #ffffff;
-        }
-
-        .file-item.selected {
-            background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
-            color: white;
-        }
-
-        .file-icon {
-            width: 16px;
-            height: 16px;
-            margin-right: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 14px;
-        }
-
-        .file-name {
-            flex: 1;
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            color: inherit;
-        }
-
-        .status-bar {
-            background: linear-gradient(135deg, #495057 0%, #6c757d 50%, #868e96 100%);
-            border-top: 1px solid #495057;
-            padding: 4px 12px;
-            font-size: 12px;
-            color: #f8f9fa;
-        }
-
-        .loading-spinner {
-            border: 2px solid rgba(248, 249, 250, 0.3);
-            border-top: 2px solid #17a2b8;
-            border-radius: 50%;
-            width: 16px;
-            height: 16px;
-            animation: spin 1s linear infinite;
-            display: inline-block;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        /* Animation delays for background elements */
-        .animation-delay-2000 {
-            animation-delay: 2s;
-        }
-
-        .animation-delay-4000 {
-            animation-delay: 4s;
-        }
-
-        /* Futuristic login styles - kept with glass effect */
-        .login-container {
-            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(147, 51, 234, 0.1) 100%);
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-        }
-
-        .drag-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(33, 150, 243, 0.1);
-            border: 3px dashed #2196f3;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-            pointer-events: none;
-        }
-
-        .drag-message {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            text-align: center;
-        }
-
-        .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-        }
-
-        .modal {
-            background: white;
-            border-radius: 8px;
-            padding: 20px;
-            min-width: 300px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-        }
-
-        .modal-header {
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 16px;
-        }
-
-        .modal-input {
-            width: 100%;
-            padding: 8px 12px;
-            border: 1px solid #d1d5db;
-            border-radius: 4px;
-            font-size: 14px;
-            margin-bottom: 16px;
-        }
-
-        .modal-buttons {
-            display: flex;
-            gap: 8px;
-            justify-content: flex-end;
-        }
-
-        .modal-button {
-            padding: 8px 16px;
-            border: 1px solid #d1d5db;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-
-        .modal-button.primary {
-            background: #2196f3;
-            color: white;
-            border-color: #2196f3;
-        }
-
-        .modal-button:hover {
-            background: #f3f4f6;
-        }
-
-        .modal-button.primary:hover {
-            background: #1976d2;
-        }
-
-        /* Theme System */
-        .theme-selector {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-right: 16px;
-        }
-
-        .theme-button {
-            width: 20px;
-            height: 20px;
-            border-radius: 50%;
-            border: 2px solid #ccc;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .theme-button:hover {
-            transform: scale(1.1);
-            border-color: #666;
-        }
-
-        .theme-button.active {
-            border-color: #333;
-            box-shadow: 0 0 0 2px rgba(0,0,0,0.2);
-        }
-
-        /* Theme Variations - with Windows-style enhancements */
-        .theme-default {
-            background: #f0f0f0;
-        }
-
-        .theme-dark {
-            background: #2d3748;
-            color: #e2e8f0;
-        }
-
-        .theme-dark .explorer-window {
-            background: #4a5568;
-            border-color: #2d3748;
-            color: #e2e8f0;
-        }
-
-        .theme-dark .toolbar {
-            background: linear-gradient(to bottom, #404040, #303030);
-            border-color: #1a202c;
-        }
-
-        .theme-dark .toolbar-button {
-            background: linear-gradient(to bottom, #505050, #404040);
-            border: 1px solid #606060;
-            border-top: 1px solid #707070;
-            border-left: 1px solid #707070;
-            color: #e2e8f0;
-        }
-
-        .theme-dark .toolbar-button:hover {
-            background: linear-gradient(to bottom, #606060, #505050);
-        }
-
-        .theme-dark .toolbar-button:active {
-            background: linear-gradient(to bottom, #303030, #404040);
-            border: 1px solid #606060;
-            border-right: 1px solid #202020;
-            border-bottom: 1px solid #202020;
-        }
-
-        .theme-dark .address-bar {
-            background: #4a5568;
-            border: 1px solid #606060;
-            border-top: 1px solid #707070;
-            border-left: 1px solid #707070;
-            color: #e2e8f0;
-        }
-
-        .theme-dark .file-item {
-            color: #e2e8f0;
-        }
-
-        .theme-dark .file-item:hover {
-            background: #718096;
-            color: #ffffff;
-        }
-
-        .theme-dark .status-bar {
-            background: linear-gradient(to bottom, #404040, #303030);
-            border-color: #1a202c;
-            color: #a0aec0;
-        }
-
-        .theme-blue {
-            background: #ebf8ff;
-        }
-
-        .theme-blue .explorer-window {
-            background: #bee3f8;
-            border-color: #90cdf4;
-        }
-
-        .theme-blue .toolbar {
-            background: linear-gradient(to bottom, #c9e7f9, #a4d0f0);
-            border-color: #63b3ed;
-        }
-
-        .theme-blue .file-item {
-            color: #1a365d;
-        }
-
-        .theme-green {
-            background: #f0fff4;
-        }
-
-        .theme-green .explorer-window {
-            background: #c6f6d5;
-            border-color: #9ae6b4;
-        }
-
-        .theme-green .toolbar {
-            background: linear-gradient(to bottom, #d4f8e8, #a5e9c2);
-            border-color: #68d391;
-        }
-
-        .theme-green .file-item {
-            color: #1a202c;
-        }
+        :root { color: #1f1f1f; font-family: "Segoe UI", system-ui, sans-serif; background: #f3f3f3; }
+        * { box-sizing: border-box; }
+        body { margin: 0; min-width: 320px; }
+        button, input, select { font: inherit; }
+        button { color: inherit; }
+        .explorer { min-height: 100vh; display: flex; flex-direction: column; background: #f8f8f8; }
+        .titlebar { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 20px; background: #fff; border-bottom: 1px solid #e5e5e5; }
+        .app-mark { width: 24px; height: 20px; border-radius: 3px; background: linear-gradient(#ffd86b 0 30%, #e9b93f 30%); position: relative; }
+        .app-mark:before { content: ""; position: absolute; width: 10px; height: 4px; top: -3px; left: 2px; border-radius: 2px 2px 0 0; background: #ffd86b; }
+        .app-name { font-size: 14px; font-weight: 600; }
+        .account { margin-left: auto; font-size: 13px; color: #555; }
+        .commandbar { display: flex; align-items: center; gap: 4px; min-height: 56px; padding: 8px 16px; background: #fff; border-bottom: 1px solid #e5e5e5; overflow-x: auto; }
+        .commandbar button, .context-menu button { border: 0; background: transparent; border-radius: 4px; cursor: pointer; padding: 8px 11px; white-space: nowrap; font-size: 13px; }
+        .commandbar button:hover, .context-menu button:hover { background: #e9e9e9; }
+        .commandbar button:disabled { opacity: .42; cursor: default; }
+        .commandbar button:disabled:hover { background: transparent; }
+        .commandbar .primary { background: #0067c0; color: white; }
+        .commandbar .primary:hover { background: #005ba9; }
+        .divider { width: 1px; height: 24px; background: #ddd; margin: 0 5px; flex: 0 0 auto; }
+        .navigation { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: #fff; border-bottom: 1px solid #e8e8e8; }
+        .nav-button { border: 0; background: transparent; border-radius: 4px; padding: 7px 10px; cursor: pointer; font-size: 17px; }
+        .nav-button:hover:not(:disabled) { background: #ececec; }
+        .nav-button:disabled { color: #aaa; }
+        .crumbs { display: flex; align-items: center; min-width: 0; flex: 1; height: 34px; padding: 0 10px; border: 1px solid #d2d2d2; border-radius: 4px; background: #fff; overflow: hidden; white-space: nowrap; }
+        .crumbs button { border: 0; padding: 3px 5px; background: transparent; cursor: pointer; border-radius: 3px; }
+        .crumbs button:hover { background: #e9e9e9; }
+        .crumb-separator { color: #777; padding: 0 2px; }
+        .search { width: min(290px, 32vw); height: 34px; padding: 0 10px; border: 1px solid #d2d2d2; border-radius: 4px; outline: none; }
+        .search:focus { border-color: #0067c0; box-shadow: 0 0 0 1px #0067c0; }
+        .workspace { flex: 1; min-height: 0; display: flex; }
+        .sidebar { width: 210px; flex: 0 0 210px; padding: 12px 8px; background: #f4f4f4; border-right: 1px solid #e1e1e1; }
+        .sidebar-label { display: block; padding: 6px 12px; color: #666; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+        .side-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 12px; border: 0; border-radius: 4px; background: transparent; text-align: left; cursor: pointer; }
+        .side-item:hover, .side-item.active { background: #e4edf8; }
+        .folder-mini, .file-icon { display: inline-block; flex: 0 0 auto; }
+        .folder-mini { width: 17px; height: 13px; border-radius: 2px; background: #e8b93f; position: relative; }
+        .folder-mini:before { content: ""; position: absolute; width: 8px; height: 3px; top: -2px; left: 1px; background: #f4cc5e; border-radius: 2px 2px 0 0; }
+        .content { min-width: 0; flex: 1; display: flex; flex-direction: column; background: #fff; }
+        .content-heading { display: flex; align-items: center; padding: 14px 20px 8px; gap: 12px; }
+        .content-heading h1 { margin: 0; font-size: 20px; font-weight: 600; }
+        .selection-count { color: #666; font-size: 13px; }
+        .notice { margin: 0 20px 10px; padding: 9px 12px; border-radius: 4px; color: #8a1f11; background: #fde9e7; border: 1px solid #f4c5c0; font-size: 13px; }
+        .file-area { flex: 1; overflow: auto; padding: 0 12px 12px; }
+        .file-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14px; }
+        .file-table th { height: 36px; color: #555; text-align: left; font-size: 12px; font-weight: 600; border-bottom: 1px solid #ddd; user-select: none; }
+        .file-table th:first-child, .file-table td:first-child { width: 48%; padding-left: 12px; }
+        .file-table th:nth-child(2) { width: 17%; }.file-table th:nth-child(3) { width: 18%; }.file-table th:nth-child(4) { width: 17%; }
+        .file-row { height: 40px; cursor: default; border-bottom: 1px solid transparent; }
+        .file-row:hover { background: #f3f8fc; }.file-row.selected { background: #cfe8ff; }.file-row:focus { outline: 1px solid #0067c0; outline-offset: -1px; }
+        .file-row td { overflow: hidden; padding: 0 8px; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid #f0f0f0; }
+        .file-name-cell { display: flex; align-items: center; gap: 10px; }.file-icon { width: 18px; text-align: center; font-size: 17px; }.muted { color: #666; }
+        .empty { display: grid; min-height: 270px; place-content: center; text-align: center; color: #666; }.empty strong { color: #333; font-size: 16px; margin-bottom: 6px; }
+        .statusbar { display: flex; justify-content: space-between; padding: 6px 16px; background: #f4f4f4; border-top: 1px solid #ddd; color: #555; font-size: 12px; }
+        .context-menu { position: fixed; z-index: 20; min-width: 185px; padding: 5px; background: #fff; border: 1px solid #c9c9c9; border-radius: 5px; box-shadow: 0 6px 18px rgba(0,0,0,.18); }.context-menu button { display: block; width: 100%; text-align: left; }.context-menu hr { border: 0; border-top: 1px solid #e5e5e5; margin: 5px 0; }
+        .modal-cover { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 20px; background: rgba(0,0,0,.22); }.modal { width: min(440px, 100%); padding: 22px; background: white; border-radius: 7px; box-shadow: 0 16px 45px rgba(0,0,0,.25); }.modal h2 { margin: 0 0 8px; font-size: 18px; }.modal p { margin: 0 0 16px; color: #555; font-size: 13px; }.modal input, .modal select { width: 100%; height: 36px; margin: 5px 0 14px; padding: 0 9px; border: 1px solid #bbb; border-radius: 3px; }.modal label { display: block; font-size: 13px; font-weight: 600; }.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }.modal-actions button { padding: 8px 14px; border: 1px solid #bbb; border-radius: 4px; background: #fff; cursor: pointer; }.modal-actions .confirm { color: white; background: #0067c0; border-color: #0067c0; }
+        @media (max-width: 720px) { .titlebar { padding: 0 12px; }.account { display: none; }.sidebar { display: none; }.navigation { flex-wrap: wrap; }.search { order: 3; width: 100%; flex-basis: 100%; }.file-table th:nth-child(3), .file-table td:nth-child(3), .file-table th:nth-child(4), .file-table td:nth-child(4) { display: none; }.file-table th:first-child, .file-table td:first-child { width: 64%; }.file-table th:nth-child(2) { width: 36%; }.commandbar { padding: 8px; }.commandbar button { padding: 8px; }.commandbar .optional { display: none; }.content-heading { padding-left: 14px; }.file-area { padding: 0 6px 8px; } }
     </style>
 </head>
-<body class="min-h-screen text-white">
-    <div id="root">
-        <!-- Enhanced Loading screen -->
-        <div style="
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: linear-gradient(135deg, #2c3e50 0%, #34495e 25%, #5d6d7e 50%, #85929e 75%, #aeb6bf 100%);
-            color: white;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            position: relative;
-            overflow: hidden;
-        ">
-            <!-- Animated background elements -->
-            <div style="
-                position: absolute;
-                top: -160px;
-                right: -160px;
-                width: 320px;
-                height: 320px;
-                background: rgba(93, 109, 126, 0.3);
-                border-radius: 50%;
-                filter: blur(40px);
-                animation: pulse 4s ease-in-out infinite;
-            "></div>
-            <div style="
-                position: absolute;
-                bottom: -160px;
-                left: -160px;
-                width: 320px;
-                height: 320px;
-                background: rgba(133, 146, 158, 0.3);
-                border-radius: 50%;
-                filter: blur(40px);
-                animation: pulse 4s ease-in-out infinite 2s;
-            "></div>
-
-            <div style="
-                position: relative;
-                z-index: 10;
-                background: rgba(255, 255, 255, 0.1);
-                backdrop-filter: blur(20px);
-                border-radius: 20px;
-                padding: 40px;
-                border: 1px solid rgba(255, 255, 255, 0.2);
-                text-align: center;
-                box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-            ">
-                <div style="
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                    width: 60px;
-                    height: 60px;
-                    background: linear-gradient(135deg, #5d6d7e, #85929e);
-                    border-radius: 50%;
-                    margin-bottom: 20px;
-                    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
-                ">
-                    <span style="font-size: 24px;">📁</span>
-                </div>
-                <div style="
-                    width: 40px;
-                    height: 40px;
-                    border: 3px solid rgba(255, 255, 255, 0.3);
-                    border-top: 3px solid white;
-                    border-radius: 50%;
-                    animation: spin 1s linear infinite;
-                    margin: 0 auto 20px;
-                "></div>
-                <div id="loading-text">
-                    <p style="margin: 0; font-size: 18px;">Loading File Transfer UI...</p>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <!-- React and other dependencies -->
+<body>
+    <div id="root"></div>
     <script crossorigin src="/lib/react.development.js"></script>
     <script crossorigin src="/lib/react-dom.development.js"></script>
     <script src="/lib/babel.min.js"></script>
-
-    <!-- Main Application -->
-    <!-- Component Scripts - Load in dependency order -->
     <script src="/components/LoginForm.js"></script>
-    <script src="/components/share-modal.js"></script>
-    <script src="/components/file-list.js"></script>
-    <script src="/components/FileBrowser.js"></script>
-
-    <!-- Main Application (includes App component and initialization) -->
-    <script src="/app.js"></script>
-
-
+    <script type="text/babel" src="/components/FileBrowser.js"></script>
+    <script type="text/babel" src="/app.js"></script>
 </body>
 </html>
