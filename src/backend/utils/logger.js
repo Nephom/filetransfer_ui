@@ -13,6 +13,19 @@ class SystemLogger {
   constructor() {
     this.logsDir = logsDir;
     this.serverLogFile = serverLogFile;
+    this.logLevel = 'INFO';
+  }
+
+  setLogLevel(level) {
+    const normalizedLevel = String(level || 'INFO').toUpperCase();
+    this.logLevel = ['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(normalizedLevel)
+      ? normalizedLevel
+      : 'INFO';
+  }
+
+  shouldLog(level) {
+    const levels = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+    return (levels[String(level).toUpperCase()] ?? levels.INFO) >= levels[this.logLevel];
   }
 
   // Return a normalized IPv4 address. IPv6 requests intentionally have no operation log.
@@ -107,6 +120,7 @@ class SystemLogger {
 
   // Log system events (server.log only)
   async logSystem(level, message) {
+    if (!this.shouldLog(level)) return;
     await this.logToServerFile(level, message);
     // Also output to console for immediate visibility
     const prefix = level === 'ERROR' ? '❌' : level === 'WARN' ? '⚠️' : 'ℹ️';

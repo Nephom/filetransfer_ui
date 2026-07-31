@@ -62,6 +62,43 @@ class UploadAPI {
   }
 
   /**
+   * Delete only stale regular files left behind by interrupted Multer uploads.
+   */
+  async cleanupTempUploads(retentionDays) {
+    const fs = require('fs').promises;
+    const uploadsDir = path.resolve('./temp/uploads');
+    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    let scanned = 0;
+    let deleted = 0;
+    let releasedBytes = 0;
+
+    try {
+      const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
+
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+
+        const filePath = path.join(uploadsDir, entry.name);
+        const stats = await fs.stat(filePath);
+        scanned += 1;
+
+        if (stats.mtimeMs >= cutoff) continue;
+
+        await fs.unlink(filePath);
+        deleted += 1;
+        releasedBytes += stats.size;
+        systemLogger.logSystem('DEBUG', `TEMP UPLOAD CLEANUP - Deleted ${entry.name}, AgeMs: ${Math.round(Date.now() - stats.mtimeMs)}, Size: ${stats.size}`);
+      }
+
+      systemLogger.logSystem('INFO', `TEMP UPLOAD CLEANUP - RetentionDays: ${retentionDays}, Scanned: ${scanned}, Deleted: ${deleted}, ReleasedBytes: ${releasedBytes}`);
+      return { scanned, deleted, releasedBytes };
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `TEMP UPLOAD CLEANUP FAILED - RetentionDays: ${retentionDays}, Error: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
    * Setup API routes
    * @private
    */
@@ -545,7 +582,9 @@ class UploadAPI {
         transferManager.updateTransferStatus(transferId, 'processing');
 
         // Move file to final destination in storage
+        systemLogger.logSystem('DEBUG', `UPLOAD MOVE START - BatchID: ${batchId}, TransferID: ${transferId}, TempFile: ${path.basename(file.path)}, Size: ${file.size}`);
         await this.fileSystem.move(file.path, normalizedFinalPath);
+        systemLogger.logSystem('DEBUG', `UPLOAD MOVE COMPLETE - BatchID: ${batchId}, TransferID: ${transferId}, File: ${path.basename(file.originalname)}, Size: ${file.size}`);
 
         // Update transfer as complete
         transferManager.completeTransfer(transferId, {
