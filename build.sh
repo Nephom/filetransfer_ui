@@ -124,7 +124,7 @@ install_server_system_dependencies() {
   detect_os
   case "$OS_ID" in
     alpine)
-      run_apk add --no-cache ca-certificates curl wget git nodejs npm python3 make g++ libstdc++
+      run_apk add --no-cache bash ca-certificates curl wget git nodejs npm python3 make g++ libstdc++ lsof iproute2
       ;;
     ubuntu)
       run_as_root true

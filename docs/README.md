@@ -1,9 +1,5 @@
 # File Transfer Documentation
 
-Read [Project Rules](./PROJECT_RULES.md) before changing this repository. The rules define mandatory GitHub issue, sandbox verification, documentation, and user-validation workflows.
-
----
-
 ## Documentation Structure
 
 ### API Documentation
@@ -79,6 +75,10 @@ Use the root `build.sh` for the server lifecycle on Alpine Linux or Ubuntu. It i
 ```
 
 Actual deployment values belong in ignored `.env` and `src/config.ini` files. Never put internal addresses, credentials, tokens, or certificates in documentation or GitHub discussions. Production Alpine systems should use `install`, `setup`, `upgrade`, and `start`; they do not run the desktop `build` command.
+
+### Legacy Deployments
+
+For a deployment older than 3.0.0, see the root [legacy migration instructions](../README.md#舊版遷移). The migration preserves local configuration while replacing tracked scripts and dependency locks with the current release.
 
 ### 1. Authentication
 
