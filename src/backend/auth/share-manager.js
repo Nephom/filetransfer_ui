@@ -59,9 +59,9 @@ class ShareManager {
       // Insert into database
       await db.run(
         `INSERT INTO share_links
-         (shareToken, userId, filePath, fileName, createdAt, expiresAt, maxDownloads, downloadCount, password, isActive)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 1)`,
-        [shareToken, userId, filePath, fileName, createdAt, expiresAt, maxDownloads, hashedPassword]
+         (shareToken, userId, locationId, filePath, fileName, createdAt, expiresAt, maxDownloads, downloadCount, password, isActive)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1)`,
+        [shareToken, userId, options.locationId || 'default', filePath, fileName, createdAt, expiresAt, maxDownloads, hashedPassword]
       );
 
       systemLogger.logSystem('INFO', `Share link created: ${shareToken} by user ${userId}`);
@@ -180,7 +180,7 @@ class ShareManager {
   async getUserShareLinks(userId) {
     try {
       const shareLinks = await db.all(
-        'SELECT id, shareToken, filePath, fileName, createdAt, expiresAt, maxDownloads, downloadCount, isActive, lastDownloadAt FROM share_links WHERE userId = ? ORDER BY createdAt DESC',
+        'SELECT id, shareToken, locationId, filePath, fileName, createdAt, expiresAt, maxDownloads, downloadCount, isActive, lastDownloadAt FROM share_links WHERE userId = ? ORDER BY createdAt DESC',
         [userId]
       );
 
@@ -204,7 +204,7 @@ class ShareManager {
   async getShareLinkInfo(shareToken) {
     try {
       const shareLink = await db.get(
-        'SELECT id, shareToken, fileName, createdAt, expiresAt, maxDownloads, downloadCount, isActive, lastDownloadAt FROM share_links WHERE shareToken = ?',
+        'SELECT id, shareToken, locationId, fileName, createdAt, expiresAt, maxDownloads, downloadCount, isActive, lastDownloadAt FROM share_links WHERE shareToken = ?',
         [shareToken]
       );
 

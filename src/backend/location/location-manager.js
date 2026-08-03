@@ -93,7 +93,8 @@ class LocationManager {
     const location = this.getLocation(locationId);
     if (!location) throw new Error(`Unknown Location: ${locationId}`);
     const candidate = path.resolve(location.rootPath, relativePath);
-    if (candidate !== location.rootPath && !candidate.startsWith(`${location.rootPath}${path.sep}`)) {
+    const relative = path.relative(location.rootPath, candidate);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error('Path escapes the Location root');
     }
     return candidate;

@@ -36,6 +36,8 @@ class UploadAPI {
     this.router = express.Router();
     this.fileSystem = new FileSystem();
     this.cache = null;
+    this.locationManager = null;
+    this.cacheResolver = null;
     this._setupMiddleware();
     this._setupRoutes();
   }
@@ -44,12 +46,42 @@ class UploadAPI {
     this.cache = cache;
   }
 
-  async _refreshCacheDirectory(directoryPath) {
-    if (!this.cache) return;
-    if (this.cache.refreshDirectory) {
-      await this.cache.refreshDirectory(directoryPath);
-    } else if (this.cache.scanDirectory) {
-      await this.cache.scanDirectory(directoryPath);
+  setLocationManager(locationManager, cacheResolver = null) {
+    this.locationManager = locationManager;
+    this.cacheResolver = cacheResolver;
+  }
+
+  _resolveLocation(req, relativePath = '') {
+    if (!this.locationManager) {
+      const configManager = require('../config');
+      const rootPath = configManager.get('fileSystem.storagePath') || './storage';
+      return {
+        locationId: 'default',
+        rootPath: path.resolve(rootPath),
+        targetPath: path.resolve(rootPath, relativePath)
+      };
+    }
+
+    const locationId = req.body?.locationId || req.headers['x-location-id'] ||
+      (this.locationManager.getLocation('default') ? 'default' : null);
+    if (!locationId) throw new Error('locationId is required');
+    const location = this.locationManager.getLocation(locationId);
+    if (!location || !location.enabled) throw new Error('Location is unavailable');
+
+    return {
+      locationId,
+      rootPath: location.rootPath,
+      targetPath: this.locationManager.resolveRelativePath(locationId, relativePath)
+    };
+  }
+
+  async _refreshCacheDirectory(directoryPath, locationId = 'default') {
+    const cache = this.cacheResolver ? await this.cacheResolver(locationId) : this.cache;
+    if (!cache) return;
+    if (cache.refreshDirectory) {
+      await cache.refreshDirectory(directoryPath);
+    } else if (cache.scanDirectory) {
+      await cache.scanDirectory(directoryPath);
     }
   }
 
@@ -329,26 +361,9 @@ class UploadAPI {
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
-      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-      
-      // Build final path in storage directory
-      let finalDir;
-      if (currentPath) {
-        // Join storage path with currentPath, ensuring no directory traversal
-        finalDir = path.join(storagePath, currentPath);
-      } else {
-        finalDir = storagePath;
-      }
-      
-      // Ensure the destination path is within the storage directory
-      const normalizedFinalDir = path.resolve(finalDir);
-      const normalizedStoragePath = path.resolve(storagePath);
-      
-      if (!pathIsWithin(normalizedStoragePath, normalizedFinalDir)) {
-        return res.status(403).json({
-          error: 'Forbidden: Access denied.'
-        });
-      }
+      const locationContext = this._resolveLocation(req, currentPath);
+      const normalizedFinalDir = locationContext.targetPath;
+      const normalizedStoragePath = locationContext.rootPath;
 
       // Create directory if it doesn't exist
       await this.fileSystem.mkdir(normalizedFinalDir);
@@ -365,14 +380,14 @@ class UploadAPI {
 
       // Move file to final destination in storage
       await this.fileSystem.move(req.file.path, finalPath);
-      await this._refreshCacheDirectory(normalizedFinalDir);
+      await this._refreshCacheDirectory(normalizedFinalDir, locationContext.locationId);
 
       // Update transfer as complete
       transferManager.completeTransfer(transferId, {
         result: 'success',
         file: {
           name: path.basename(req.file.originalname),
-          path: finalPath,
+          path: path.relative(normalizedStoragePath, finalPath),
           size: req.file.size
         }
       });
@@ -389,7 +404,7 @@ class UploadAPI {
         message: 'File uploaded successfully',
         file: {
           name: path.basename(req.file.originalname),
-          path: finalPath,
+          path: path.relative(normalizedStoragePath, finalPath),
           size: req.file.size
         }
       });
@@ -482,26 +497,9 @@ class UploadAPI {
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
-      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-
-      // Build final path in storage directory
-      let finalDir;
-      if (currentPath) {
-        // Join storage path with currentPath, ensuring no directory traversal
-        finalDir = path.join(storagePath, currentPath);
-      } else {
-        finalDir = storagePath;
-      }
-
-      // Ensure the destination path is within the storage directory
-      const normalizedFinalDir = path.resolve(finalDir);
-      const normalizedStoragePath = path.resolve(storagePath);
-
-      if (!pathIsWithin(normalizedStoragePath, normalizedFinalDir)) {
-        return res.status(403).json({
-          error: 'Forbidden: Access denied.'
-        });
-      }
+      const locationContext = this._resolveLocation(req, currentPath);
+      const normalizedFinalDir = locationContext.targetPath;
+      const normalizedStoragePath = locationContext.rootPath;
 
       if (req.files.length === 0) {
         for (const relativeDirectory of directoryPaths) {
@@ -511,8 +509,8 @@ class UploadAPI {
           }
           await this.fileSystem.mkdir(directoryPath);
         }
-        await this._refreshCacheDirectory(normalizedFinalDir);
-        return res.json({ success: true, message: 'Folders uploaded successfully.', folders: directoryPaths.length });
+        await this._refreshCacheDirectory(normalizedFinalDir, locationContext.locationId);
+        return res.json({ success: true, locationId: locationContext.locationId, message: 'Folders uploaded successfully.', folders: directoryPaths.length });
       }
 
       // 1. Create batch for this multi-file upload
@@ -532,6 +530,7 @@ class UploadAPI {
         currentPath,
         normalizedFinalDir,
         normalizedStoragePath,
+        locationId: locationContext.locationId,
         filePaths,
         directoryPaths,
         user: req.user
@@ -564,7 +563,7 @@ class UploadAPI {
    * @private
    */
   async _processFilesInBackground(files, batchId, metadata) {
-    const { normalizedFinalDir, normalizedStoragePath, filePaths, directoryPaths, user } = metadata;
+    const { normalizedFinalDir, normalizedStoragePath, filePaths, directoryPaths, user, locationId } = metadata;
     const hasFolderStructure = Array.isArray(filePaths) && filePaths.length > 0;
 
     const startTime = Date.now();
@@ -649,7 +648,7 @@ class UploadAPI {
         // Move file to final destination in storage
         systemLogger.logSystem('DEBUG', `UPLOAD MOVE START - BatchID: ${batchId}, TransferID: ${transferId}, TempFile: ${path.basename(file.path)}, Size: ${file.size}`);
         await this.fileSystem.move(file.path, normalizedFinalPath);
-        await this._refreshCacheDirectory(path.dirname(normalizedFinalPath));
+        await this._refreshCacheDirectory(path.dirname(normalizedFinalPath), locationId);
         systemLogger.logSystem('DEBUG', `UPLOAD MOVE COMPLETE - BatchID: ${batchId}, TransferID: ${transferId}, File: ${path.basename(file.originalname)}, Size: ${file.size}`);
 
         // Update transfer as complete
@@ -657,7 +656,7 @@ class UploadAPI {
           result: 'success',
           file: {
             name: path.basename(file.originalname),
-            path: normalizedFinalPath,
+            path: path.relative(normalizedStoragePath, normalizedFinalPath),
             size: file.size
           }
         });
@@ -776,26 +775,9 @@ class UploadAPI {
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
-      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-      
-      // Build final path in storage directory
-      let finalDir;
-      if (currentPath) {
-        // Join storage path with currentPath, ensuring no directory traversal
-        finalDir = path.join(storagePath, currentPath);
-      } else {
-        finalDir = storagePath;
-      }
-      
-      // Ensure the destination path is within the storage directory
-      const normalizedFinalDir = path.resolve(finalDir);
-      const normalizedStoragePath = path.resolve(storagePath);
-      
-      if (!normalizedFinalDir.startsWith(normalizedStoragePath)) {
-        return res.status(403).json({
-          error: 'Forbidden: Access denied.'
-        });
-      }
+      const locationContext = this._resolveLocation(req, currentPath);
+      const normalizedFinalDir = locationContext.targetPath;
+      const normalizedStoragePath = locationContext.rootPath;
       
       // Create directory if it doesn't exist
       await this.fileSystem.mkdir(normalizedFinalDir);
@@ -828,14 +810,14 @@ class UploadAPI {
 
         // Move file to final destination in storage
         await this.fileSystem.move(req.file.path, finalPath);
-        await this._refreshCacheDirectory(normalizedFinalDir);
+        await this._refreshCacheDirectory(normalizedFinalDir, locationContext.locationId);
 
         // Update transfer as complete
         transferManager.completeTransfer(transferId, {
           result: 'success',
           file: {
             name: path.basename(req.file.originalname),
-            path: finalPath,
+            path: path.relative(normalizedStoragePath, finalPath),
             size: req.file.size
           }
         });
@@ -847,7 +829,7 @@ class UploadAPI {
           message: 'File uploaded successfully with progress tracking',
           file: {
             name: path.basename(req.file.originalname),
-            path: finalPath,
+            path: path.relative(normalizedStoragePath, finalPath),
             size: req.file.size
           }
         });
@@ -933,6 +915,7 @@ class UploadAPI {
       systemLogger.logSystem('INFO', `[UPLOAD] Step 3: Getting filename and path`);
       let fileName = req.query.fileName;
       let uploadPath = req.query.path || '';
+      let locationId = req.query.locationId || req.headers['x-location-id'];
       systemLogger.logSystem('INFO', `[UPLOAD] Initial fileName from query: ${fileName}, path: ${uploadPath}`);
 
       // fileName and path will be extracted from busboy form fields if not in query
@@ -964,6 +947,9 @@ class UploadAPI {
         if (fieldname === 'path') {
           uploadPath = value;
           systemLogger.logSystem('INFO', `[UPLOAD] uploadPath updated from form field: ${uploadPath}`);
+        }
+        if (fieldname === 'locationId' && !locationId) {
+          locationId = value;
         }
       });
 
@@ -1013,17 +999,18 @@ class UploadAPI {
 
         // Determine destination path (NOW with correct uploadPath)
         systemLogger.logSystem('INFO', `[UPLOAD] Step 6: Determining destination path`);
-        const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-        const storageRoot = path.resolve(storagePath);
+        const locationContext = this._resolveLocation({ ...req, body: { locationId } }, uploadPath);
+        const storageRoot = locationContext.rootPath;
         systemLogger.logSystem('INFO', `[UPLOAD] Storage root: ${storageRoot}, uploadPath: ${uploadPath}`);
-        const targetDir = uploadPath ? path.join(storageRoot, uploadPath) : storageRoot;
+        const targetDir = locationContext.targetPath;
         const finalPath = path.join(targetDir, sanitizedFileName);
 
         systemLogger.logSystem('INFO', `[UPLOAD] Target directory: ${targetDir}`);
         systemLogger.logSystem('INFO', `[UPLOAD] Final path: ${finalPath}`);
 
         // Security check: ensure path is within storage root
-        if (!finalPath.startsWith(storageRoot)) {
+        const relativeFinalPath = path.relative(storageRoot, finalPath);
+        if (relativeFinalPath === '..' || relativeFinalPath.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFinalPath)) {
           fileStream.resume(); // Discard file stream
           systemLogger.logSystem('ERROR', `[UPLOAD] SECURITY: Path traversal attempt - finalPath: ${finalPath}, storageRoot: ${storageRoot}`);
 
@@ -1115,11 +1102,14 @@ class UploadAPI {
         // Handle write stream completion
         writeStream.on('finish', () => {
           systemLogger.logSystem('INFO', `[UPLOAD] ✅ Upload completed successfully - transferId: ${transferId}, size: ${uploadedBytes} bytes`);
+          this._refreshCacheDirectory(targetDir, locationContext.locationId).catch((cacheError) => {
+            systemLogger.logSystem('WARN', `[UPLOAD] Cache refresh failed: ${cacheError.message}`);
+          });
           transferManager.completeTransfer(transferId, {
             result: 'success',
             file: {
               name: sanitizedFileName,
-              path: finalPath,
+              path: path.relative(storageRoot, finalPath),
               size: uploadedBytes
             }
           });

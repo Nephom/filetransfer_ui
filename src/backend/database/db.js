@@ -80,6 +80,14 @@ class Database {
       )
     `);
 
+    // Add Location scope for databases created before multi-Location support.
+    try {
+      await this.run('ALTER TABLE share_links ADD COLUMN locationId TEXT NOT NULL DEFAULT \'default\'');
+    } catch (error) {
+      // SQLite reports a duplicate-column error on already migrated databases.
+      if (!error.message.includes('duplicate column name')) throw error;
+    }
+
     // Create indexes for performance
     await this.run('CREATE INDEX IF NOT EXISTS idx_share_token ON share_links(shareToken)');
     await this.run('CREATE INDEX IF NOT EXISTS idx_user_id ON share_links(userId)');
