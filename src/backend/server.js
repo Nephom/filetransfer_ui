@@ -1645,7 +1645,6 @@ const ADMIN_CONFIG_SCHEMA = {
     host: { type: 'string', label: 'Bind address', description: 'Network address where the service listens. Use 0.0.0.0 to listen on all interfaces.', example: '0.0.0.0', requiresRestart: true }
   },
   fileSystem: {
-    storagePath: { type: 'path', label: 'Default storage path', description: 'Legacy/default fallback directory for completed uploads. This is a path on the server, not the browser computer.', example: './storage or /srv/filetransfer/default', requiresRestart: true },
     maxFileSize: { type: 'integer', label: 'Maximum file size (bytes)', description: 'Maximum accepted upload size in bytes.', example: '10737418240', requiresRestart: true }
   },
   locations: {
@@ -1688,7 +1687,6 @@ const getAdminConfig = () => ({
     host: configManager.get('server.host') ?? 'localhost'
   },
   fileSystem: {
-    storagePath: configManager.get('fileSystem.storagePath') ?? './storage',
     maxFileSize: configManager.get('fileSystem.maxFileSize') ?? 1024 * 1024 * 10000
   },
   locations: locationManager
@@ -1786,11 +1784,6 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
 
     // Validate and update file system settings
     if (fileSystem) {
-      if (fileSystem.storagePath !== undefined) {
-        if (typeof fileSystem.storagePath !== 'string' || !fileSystem.storagePath.trim()) throw new Error('fileSystem.storagePath must be a non-empty path');
-        add('fileSystem.storagePath', fileSystem.storagePath.trim());
-        updatedFields.push('fileSystem.storagePath');
-      }
       if (fileSystem.maxFileSize !== undefined) {
         add('fileSystem.maxFileSize', integer(fileSystem.maxFileSize, 'fileSystem.maxFileSize'));
         updatedFields.push('fileSystem.maxFileSize');

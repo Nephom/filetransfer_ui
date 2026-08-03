@@ -8,11 +8,12 @@ const path = require('path');
 const fs = require('fs').promises;
 const { systemLogger } = require('../utils/logger');
 const { runMigrations } = require('./migrations');
+const { resolveDatabasePath } = require('./path');
 
 class Database {
   constructor() {
     this.db = null;
-    this.dbPath = process.env.DATABASE_PATH || path.join(__dirname, '../../data/app.db');
+    this.dbPath = resolveDatabasePath();
   }
 
   /**

@@ -15,6 +15,10 @@ class ConfigManager {
    */
   constructor(options = {}) {
     this.defaults = {
+      meta: {
+        configVersion: '3.2.0-pre.0'
+      },
+
       // File system configuration
       fileSystem: {
         type: 'local',
@@ -434,6 +438,10 @@ class ConfigManager {
         // Only include fields that should be in config.ini
         let iniContent = '# File Transfer Application Configuration\n\n';
 
+        // [meta] section
+        iniContent += '[meta]\n';
+        iniContent += `configVersion=${this.config.meta?.configVersion || '3.2.0-pre.0'}\n\n`;
+
         // [server] section
         iniContent += '[server]\n';
         iniContent += `port=${this.config.server?.port || 9400}\n`;
@@ -441,21 +449,22 @@ class ConfigManager {
 
         // [fileSystem] section
         iniContent += '[fileSystem]\n';
-        iniContent += '# Storage path for files - can be relative or absolute path\n';
-        iniContent += '# Examples:\n';
-        iniContent += '#   storagePath=./storage                    (relative path, default)\n';
-        iniContent += '#   storagePath=/home/user/myfiles          (absolute path on Linux/Mac)\n';
-        iniContent += '#   storagePath=C:\\Users\\User\\Documents     (absolute path on Windows)\n';
-        iniContent += `storagePath=${this.config.fileSystem?.storagePath || './storage'}\n\n`;
+        iniContent += '# storagePath is deprecated. Configure one or more roots in [locations].\n';
+        iniContent += `# storagePath=${this.config.fileSystem?.storagePath || './storage'}\n\n`;
         iniContent += '# Maximum accepted file size in bytes.\n';
         iniContent += `maxFileSize=${this.config.fileSystem?.maxFileSize ?? 1024 * 1024 * 10000}\n\n`;
 
-        if (Array.isArray(this.config.fileSystem?.locations)) {
+        const configuredLocations = Array.isArray(this.config.fileSystem?.locations)
+          ? this.config.fileSystem.locations
+          : this.config.fileSystem?.storagePath
+            ? [{ id: 'default', displayName: 'Default', rootPath: this.config.fileSystem.storagePath, enabled: true, readOnly: false, order: 0 }]
+            : [];
+        if (configuredLocations.length > 0) {
           iniContent += '[locations]\n';
           iniContent += '# Each rootPath is resolved on the server, not on the browser client.\n';
           iniContent += '# For NFS, mount the share first and use the mounted directory here.\n';
           iniContent += '# id must remain stable after users receive permissions for this Location.\n';
-          iniContent += `definitions=${JSON.stringify(this.config.fileSystem.locations)}\n\n`;
+          iniContent += `definitions=${JSON.stringify(configuredLocations)}\n\n`;
         }
 
         // [maintenance] section

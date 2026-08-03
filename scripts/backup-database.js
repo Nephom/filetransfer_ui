@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const sqlite3 = require('sqlite3').verbose();
+const { resolveDatabasePath } = require('../src/backend/database/path');
 
 const destination = process.argv[2];
 if (!destination) {
@@ -9,7 +10,7 @@ if (!destination) {
   process.exit(2);
 }
 
-const source = process.env.DATABASE_PATH || path.join(__dirname, '..', 'data', 'app.db');
+const source = resolveDatabasePath();
 const database = new sqlite3.Database(source, (error) => {
   if (error) {
     console.error(`Database backup failed: ${error.message}`);

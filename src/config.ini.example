@@ -1,5 +1,9 @@
 # Local File Transfer configuration. build.sh setup creates src/config.ini from this file.
 
+[meta]
+# Configuration schema version. upgrade_tools/config-upgrade.js updates this value.
+configVersion=3.2.0-pre.0
+
 [server]
 # HTTP port used by the web interface and API. Restart the service after changing it.
 # Example: port=9400
@@ -9,17 +13,18 @@ port=9400
 host=localhost
 
 [fileSystem]
-# Directory where completed uploads and user files are stored. This is not a temporary directory.
-# Keep storagePath as the migration/default fallback. Use [locations] for multiple server-side roots.
+# Legacy compatibility only. Locations are the canonical source for server-side roots.
+# Use [locations] definitions for one or more independent server-side roots.
 # Relative paths are resolved from the application directory. Absolute paths are resolved by the server OS.
 # Examples: ./storage, /srv/filetransfer/default, /mnt/nfs/default
-storagePath=./storage
+# Deprecated: storagePath is retained for older deployments that have no Locations.
+# storagePath=./storage
 # Maximum accepted upload size in bytes. 10737418240 = 10 GiB.
 maxFileSize=10737418240
 
 [maintenance]
 # Files first uploaded through the multipart endpoint are briefly stored in temp/uploads.
-# Completed uploads are moved into storagePath. Interrupted or failed uploads can remain here.
+# Completed uploads are moved into the selected Location. Interrupted or failed uploads can remain here.
 # Delete only regular temporary files older than this many full days. Minimum: 1. Default: 7.
 tempUploadRetentionDays=7
 # How often the service scans temp/uploads for expired temporary files, in hours.
