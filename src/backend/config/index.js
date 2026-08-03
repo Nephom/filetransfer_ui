@@ -171,8 +171,17 @@ class ConfigManager {
             sectionName = 'ssl';
           }
 
-          config[sectionName] = config[sectionName] || {};
-          config[sectionName][key] = parsedValue;
+          if (currentSection === 'locations' && key === 'definitions') {
+            try {
+              config.fileSystem = config.fileSystem || {};
+              config.fileSystem.locations = JSON.parse(value);
+            } catch (error) {
+              throw new Error('locations.definitions must be valid JSON');
+            }
+          } else {
+            config[sectionName] = config[sectionName] || {};
+            config[sectionName][key] = parsedValue;
+          }
         } else {
           // Legacy flat keys (backwards compatibility)
           if (key === 'port') {

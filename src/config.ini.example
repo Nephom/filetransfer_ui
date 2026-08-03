@@ -6,6 +6,7 @@ port=9400
 
 [fileSystem]
 # Directory where completed uploads and user files are stored. This is not a temporary directory.
+# Keep storagePath as the migration/default fallback. Use [locations] for multiple server-side roots.
 storagePath=./storage
 
 [maintenance]
@@ -16,6 +17,11 @@ tempUploadRetentionDays=7
 # How often the service scans temp/uploads for expired temporary files, in hours.
 # The cleanup also runs once during service startup. Minimum: 1. Default: 24.
 tempUploadCleanupIntervalHours=24
+
+[locations]
+# Optional JSON array of server-side Locations. Each rootPath should be an absolute path for NFS mounts.
+# Location ids are opaque and stable; displayName is the only value intended for UI display.
+# definitions=[{"id":"folder-a","displayName":"Folder A","rootPath":"/FolderS/FolderA","enabled":true,"readOnly":false,"order":10}]
 
 [logging]
 # Minimum severity written to server.log: DEBUG, INFO, WARN, or ERROR.
