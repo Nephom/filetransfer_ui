@@ -105,7 +105,7 @@ class UserManager {
   /**
    * Create a new user
    */
-  async createUser({ username, password, email, role = 'user', permissions = [] }) {
+  async createUser({ username, password, email, role = 'user', permissions = [], locationPermissions }) {
     if (!this.initialized) {
       throw new Error('User manager not initialized');
     }
@@ -152,6 +152,7 @@ class UserManager {
       email: email || `${username}@localhost`,
       role: 'user', // Force role to be 'user'
       permissions,
+      ...(locationPermissions === undefined ? {} : { locationPermissions }),
       active: true,
       created: new Date().toISOString(),
       lastLogin: null
