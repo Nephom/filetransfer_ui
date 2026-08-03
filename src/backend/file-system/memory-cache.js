@@ -462,6 +462,55 @@ class RedisFileSystemCache extends EventEmitter {
     }
   }
 
+  /**
+   * Invalidate every cache layer for a directory.
+   * Mutating operations must invalidate before rescanning so deletions and
+   * empty directories cannot be masked by the hot cache.
+   */
+  async invalidateDirectory(dirPath, { recursive = false } = {}) {
+    const absolutePath = path.resolve(dirPath);
+    const matches = (candidate) => candidate === absolutePath ||
+      (recursive && candidate.startsWith(`${absolutePath}${path.sep}`));
+
+    for (const cachePath of [...this.directoryCache.keys()]) {
+      if (matches(cachePath)) this.directoryCache.delete(cachePath);
+    }
+    for (const cachePath of [...this.directoryMtimes.keys()]) {
+      if (matches(cachePath)) this.directoryMtimes.delete(cachePath);
+    }
+    for (const cachePath of [...this.lastMtimeCheck.keys()]) {
+      if (matches(cachePath)) this.lastMtimeCheck.delete(cachePath);
+    }
+    for (const cachePath of [...this.hotCache.keys()]) {
+      if (matches(cachePath)) this.hotCache.delete(cachePath);
+    }
+    this.hotCacheAccessOrder = this.hotCacheAccessOrder.filter(cachePath => !matches(cachePath));
+
+    if (this.redisClient && this.redisClient.isReady) {
+      try {
+        await this.redisClient.del(`dir:${absolutePath}`);
+        if (recursive) {
+          const keys = [];
+          for await (const key of this.redisClient.scanIterator({ MATCH: `dir:${absolutePath}${path.sep}*`, COUNT: 1000 })) {
+            keys.push(key);
+          }
+          if (keys.length > 0) await this.redisClient.del(keys);
+        }
+      } catch (redisError) {
+        this.metrics.redisErrors++;
+        systemLogger.logSystem('WARN', `Redis cache invalidation failed: ${redisError.message}`);
+      }
+    }
+  }
+
+  /**
+   * Invalidate and rebuild one directory from the filesystem.
+   */
+  async refreshDirectory(dirPath) {
+    await this.invalidateDirectory(dirPath);
+    await this.updateDirectoryCache(dirPath);
+  }
+
 
   /**
    * Update directory cache (non-recursive, only direct children)
