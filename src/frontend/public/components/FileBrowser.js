@@ -81,7 +81,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const [modal, setModal] = React.useState(null);
     const [context, setContext] = React.useState(null);
     const [shareLink, setShareLink] = React.useState('');
-    const [folderTree, setFolderTree] = React.useState({ path: '', name: '/', expanded: true, loaded: false, children: [] });
+    const [locationTrees, setLocationTrees] = React.useState({});
     const [dragItems, setDragItems] = React.useState([]);
     const [dropTarget, setDropTarget] = React.useState(null);
     const [fileDropTarget, setFileDropTarget] = React.useState(null);
@@ -97,6 +97,10 @@ const FileBrowser = ({ token, user, onLogout }) => {
         Authorization: `Bearer ${token}`,
         ...(locationId ? { 'X-Location-ID': locationId } : {})
     };
+    const headersForLocation = (requestedLocationId) => ({
+        Authorization: `Bearer ${token}`,
+        ...(requestedLocationId ? { 'X-Location-ID': requestedLocationId } : {})
+    });
     const selectedItems = files.filter((file) => selected.includes(itemKey(file)));
     const pathForItem = (item) => normalisePath(item.path || (currentPath ? `${currentPath}/${item.name}` : item.name));
 
@@ -108,16 +112,20 @@ const FileBrowser = ({ token, user, onLogout }) => {
             const data = await response.json();
             const available = (data.locations || []).filter((location) => location && location.id);
             setLocations(available);
+            setLocationTrees((current) => Object.fromEntries(available.map((location) => [
+                location.id,
+                current[location.id] || { path: '', name: '/', expanded: true, loaded: false, children: [] }
+            ])));
             setExpandedLocations(Object.fromEntries(available.map((location, index) => [location.id, index === 0])));
             setLocationId((current) => available.some((location) => location.id === current) ? current : available[0]?.id || '');
         } catch (requestError) { setError(requestError.message); }
         finally { setLocationsLoading(false); }
     };
 
-    const loadFiles = async (path = currentPath) => {
+    const loadFiles = async (path = currentPath, requestedLocationId = locationId) => {
         setLoading(true); setError(''); setContext(null);
         try {
-            const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, { headers: authHeaders });
+            const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, { headers: headersForLocation(requestedLocationId) });
             if (!response.ok) throw new Error('Unable to load this folder.');
             const data = await response.json();
             setFiles((data.files || []).filter((file) => file && file.name));
@@ -133,30 +141,49 @@ const FileBrowser = ({ token, user, onLogout }) => {
         return { ...node, children: node.children.map((child) => updateTreeNode(child, targetPath, update)) };
     };
 
-    const loadTreeChildren = async (path, force = false) => {
+    const loadTreeChildren = async (requestedLocationId, path, force = false) => {
         const targetPath = normalisePath(path);
         try {
-            const response = await fetch(`/api/files?path=${encodeURIComponent(targetPath)}`, { headers: authHeaders });
+            const response = await fetch(`/api/files?path=${encodeURIComponent(targetPath)}`, { headers: headersForLocation(requestedLocationId) });
             if (!response.ok) throw new Error('Unable to load folders.');
             const data = await response.json();
             const children = (data.files || [])
                 .filter((file) => file && file.name && file.isDirectory)
                 .map((file) => ({ path: normalisePath(file.path), name: file.name, expanded: false, loaded: false, children: [] }))
                 .sort((left, right) => left.name.localeCompare(right.name));
-            setFolderTree((tree) => updateTreeNode(tree, targetPath, (node) => ({ ...node, expanded: true, loaded: true, children })));
+            setLocationTrees((current) => ({
+                ...current,
+                [requestedLocationId]: updateTreeNode(
+                    current[requestedLocationId] || { path: '', name: '/', expanded: true, loaded: false, children: [] },
+                    targetPath,
+                    (node) => ({ ...node, expanded: true, loaded: true, children })
+                )
+            }));
         } catch (requestError) {
             if (!force) setError(requestError.message);
         }
     };
 
-    const toggleFolder = (node) => {
+    const toggleFolder = (requestedLocationId, node) => {
         if (node.expanded) {
-            setFolderTree((tree) => updateTreeNode(tree, node.path, (item) => ({ ...item, expanded: false })));
+            setLocationTrees((current) => ({
+                ...current,
+                [requestedLocationId]: updateTreeNode(current[requestedLocationId], node.path, (item) => ({ ...item, expanded: false }))
+            }));
         } else if (node.loaded) {
-            setFolderTree((tree) => updateTreeNode(tree, node.path, (item) => ({ ...item, expanded: true })));
+            setLocationTrees((current) => ({
+                ...current,
+                [requestedLocationId]: updateTreeNode(current[requestedLocationId], node.path, (item) => ({ ...item, expanded: true }))
+            }));
         } else {
-            loadTreeChildren(node.path);
+            loadTreeChildren(requestedLocationId, node.path);
         }
+    };
+
+    const toggleLocation = (requestedLocationId) => {
+        const expanded = !expandedLocations[requestedLocationId];
+        setExpandedLocations((current) => ({ ...current, [requestedLocationId]: expanded }));
+        if (expanded) loadTreeChildren(requestedLocationId, '');
     };
 
     React.useEffect(() => { loadLocations(); }, [token]);
@@ -169,7 +196,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
     React.useEffect(() => {
         if (!locationId) return;
         loadFiles('');
-        loadTreeChildren('');
+        loadTreeChildren(locationId, '');
     }, [locationId]);
     React.useEffect(() => {
         const close = (event) => {
@@ -200,7 +227,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
         setDragItems([]);
         setDropTarget(null);
         setFileDropTarget(null);
-        setFolderTree({ path: '', name: '/', expanded: true, loaded: false, children: [] });
+        setLocationTrees((current) => ({ ...current, [nextLocationId]: { path: '', name: '/', expanded: true, loaded: false, children: [] } }));
     };
 
     const showSuccess = (message) => {
@@ -286,8 +313,8 @@ const FileBrowser = ({ token, user, onLogout }) => {
             const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'Move failed.');
             setModal(null); setDragItems([]); setDropTarget(null); showSuccess(data.message || 'Move complete.');
-            setFolderTree({ path: '', name: '/', expanded: true, loaded: false, children: [] });
-            loadTreeChildren('', true); loadFiles(currentPath);
+            setLocationTrees((current) => ({ ...current, [locationId]: { path: '', name: '/', expanded: true, loaded: false, children: [] } }));
+            loadTreeChildren(locationId, '', true); loadFiles(currentPath);
         } catch (requestError) { setTransferStatus(''); setError(requestError.message); }
         finally { setMoving(false); }
     };
@@ -301,28 +328,28 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const scheduleTreeExpand = (node) => {
         if (node.expanded) return;
         window.clearTimeout(dragExpandTimer.current);
-        dragExpandTimer.current = window.setTimeout(() => toggleFolder(node), 650);
+        dragExpandTimer.current = window.setTimeout(() => toggleFolder(locationId, node), 650);
     };
 
     const remove = async () => {
         if (!selectedItems.length || !window.confirm(`Delete ${selectedItems.length} selected item${selectedItems.length === 1 ? '' : 's'}?`)) return;
         try {
             const response = await fetch('/api/files/delete', { method: 'DELETE', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: selectedItems.map(({ name, isDirectory }) => ({ name, isDirectory })), currentPath }) });
-            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Delete failed.'); } showSuccess(`Deleted ${selectedItems.length} item${selectedItems.length === 1 ? '' : 's'}.`); loadFiles(currentPath); loadTreeChildren('', true);
+            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Delete failed.'); } showSuccess(`Deleted ${selectedItems.length} item${selectedItems.length === 1 ? '' : 's'}.`); loadFiles(currentPath); loadTreeChildren(locationId, '', true);
         } catch (requestError) { setError(requestError.message); }
     };
     const saveFolder = async (event) => {
         event.preventDefault(); const name = event.target.folderName.value.trim(); if (!name) return;
         try {
             const response = await fetch('/api/folders', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ folderName: name, currentPath }) });
-            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not create folder.'); } setModal(null); showSuccess('Folder created.'); loadFiles(currentPath); loadTreeChildren('', true);
+            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not create folder.'); } setModal(null); showSuccess('Folder created.'); loadFiles(currentPath); loadTreeChildren(locationId, '', true);
         } catch (requestError) { setError(requestError.message); }
     };
     const saveRename = async (event) => {
         event.preventDefault(); const newName = event.target.newName.value.trim(); if (!newName || !selectedItems[0]) return;
         try {
             const response = await fetch('/api/files/rename', { method: 'PUT', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ oldName: selectedItems[0].name, newName, currentPath }) });
-            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Rename complete.'); } setModal(null); showSuccess('Rename complete.'); loadFiles(currentPath); loadTreeChildren('', true);
+            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Rename complete.'); } setModal(null); showSuccess('Rename complete.'); loadFiles(currentPath); loadTreeChildren(locationId, '', true);
         } catch (requestError) { setError(requestError.message); }
     };
     const uploadFiles = async (items, directories = []) => {
@@ -353,7 +380,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             }
             if (!completed) throw new Error('Upload progress timed out.');
             showSuccess(`Uploaded ${items.length} file${items.length === 1 ? '' : 's'} and ${directories.length} folder${directories.length === 1 ? '' : 's'}.`);
-            loadFiles(currentPath); loadTreeChildren('', true);
+            loadFiles(currentPath); loadTreeChildren(locationId, '', true);
         } catch (requestError) { setError(requestError.message); setTransferStatus(''); }
         finally { setLoading(false); }
     };
@@ -439,7 +466,15 @@ const FileBrowser = ({ token, user, onLogout }) => {
         return <tr key={itemKey(file)} tabIndex="0" className={`file-row ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><td><span className="file-name-cell"><span className="file-icon">{fileIcon(file)}</span>{file.name}</span></td><td className="muted">{formatDate(file.modified || file.modifiedTime)}</td><td className="muted">{file.type || fileType(file)}</td><td className="muted">{file.isDirectory ? '--' : formatSize(file.size)}</td></tr>;
     };
 
-     const renderTree = (onChooseDestination) => <FolderTree node={folderTree} currentPath={currentPath} dragItems={dragItems} dropTarget={dropTarget} onChooseDestination={onChooseDestination} onToggle={toggleFolder} onNavigate={loadFiles} onDragOver={(event, node) => { if (isExternalFileDrag(event)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setDropTarget(node.path); return; } if (isValidMoveTarget(dragItems, node.path)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(node.path); scheduleTreeExpand(node); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, node) => { if (isExternalFileDrag(event)) { void handleExternalDrop(event); return; } event.preventDefault(); endDrag(); moveItems(dragItems, node.path); }} />;
+     const renderTree = (onChooseDestination) => {
+         const tree = locationTrees[locationId] || { path: '', name: '/', expanded: true, loaded: false, children: [] };
+         return <FolderTree node={tree} currentPath={currentPath} dragItems={dragItems} dropTarget={dropTarget} onChooseDestination={onChooseDestination} onToggle={(node) => toggleFolder(locationId, node)} onNavigate={(path) => loadFiles(path, locationId)} onDragOver={(event, node) => { if (isExternalFileDrag(event)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setDropTarget(node.path); return; } if (isValidMoveTarget(dragItems, node.path)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(node.path); scheduleTreeExpand(node); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, node) => { if (isExternalFileDrag(event)) { void handleExternalDrop(event); return; } event.preventDefault(); endDrag(); moveItems(dragItems, node.path); }} />;
+     };
+     const renderLocationTree = (requestedLocationId) => {
+         const tree = locationTrees[requestedLocationId];
+         if (!tree || !tree.loaded) return <span className="tree-loading">Loading folders...</span>;
+         return <div className="tree-children">{tree.children.map((node) => <FolderTree key={node.path} node={node} currentPath={currentPath} dragItems={dragItems} dropTarget={dropTarget} onToggle={(child) => toggleFolder(requestedLocationId, child)} onNavigate={(path) => { selectLocation(requestedLocationId); loadFiles(path, requestedLocationId); }} onDragOver={(event, child) => { if (isValidMoveTarget(dragItems, child.path)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(child.path); scheduleTreeExpand(child); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, child) => { event.preventDefault(); endDrag(); moveItems(dragItems, child.path); }} />)}</div>;
+     };
     const tree = renderTree();
 
     return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>
@@ -452,7 +487,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button onClick={() => loadFiles(currentPath)}>Refresh</button>
         </nav>
         <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
-         <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{locationsLoading ? <span className="tree-loading">Loading Locations...</span> : locations.map((location) => <section className="location-section" key={location.id}><div className={`tree-node ${location.id === locationId ? 'active' : ''}`}><button className="tree-toggle" aria-label={`${expandedLocations[location.id] ? 'Collapse' : 'Expand'} ${location.displayName}`} onClick={() => setExpandedLocations((current) => ({ ...current, [location.id]: !current[location.id] }))}>{expandedLocations[location.id] ? '−' : '+'}</button><button className="tree-folder" onClick={() => selectLocation(location.id)}><span className="folder-mini" />{location.displayName}</button><span className="location-status" data-status={location.status}>{location.status === 'online' ? 'ONLINE' : location.status?.toUpperCase()}</span></div>{location.id === locationId && expandedLocations[location.id] && tree}</section>)}</aside>
+         <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{locationsLoading ? <span className="tree-loading">Loading Locations...</span> : locations.map((location) => <section className="location-section" key={location.id}><div className={`tree-node ${location.id === locationId ? 'active' : ''}`}><button className="tree-toggle" aria-label={`${expandedLocations[location.id] ? 'Collapse' : 'Expand'} ${location.displayName}`} onClick={() => toggleLocation(location.id)}>{expandedLocations[location.id] ? '−' : '+'}</button><button className="tree-folder" onClick={() => selectLocation(location.id)}><span className="folder-mini" />{location.displayName}</button><span className="location-status" data-status={location.status}>{location.status === 'online' ? 'ONLINE' : location.status?.toUpperCase()}</span></div>{expandedLocations[location.id] && renderLocationTree(location.id)}</section>)}</aside>
              <section className="content" onDragOver={handleExternalDragOver} onDrop={handleExternalDrop}><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{displayPath}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{error && <div className="notice error-notice">{error}</div>}{transferStatus && <div className="notice transfer-notice"><span className={downloading || moving ? 'activity-dot' : ''} />{transferStatus}</div>}
                 <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{files.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map(renderFileItem)}</tbody></table>}</div>
             </section></main>
