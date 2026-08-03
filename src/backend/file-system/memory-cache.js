@@ -19,6 +19,15 @@ class RedisFileSystemCache extends EventEmitter {
     };
     this.redisClient = null;
     this.initialized = false;
+    this.metrics = {
+      directoryScans: 0,
+      scanErrors: 0,
+      hotCacheHits: 0,
+      memoryCacheHits: 0,
+      redisCacheHits: 0,
+      redisErrors: 0,
+      cacheMisses: 0
+    };
     this.directoryCache = new Map();
     this.directoryMtimes = new Map(); // Track directory modification times
     this.activeDirs = new Set(); // Track directories user has entered
@@ -460,6 +469,7 @@ class RedisFileSystemCache extends EventEmitter {
    * OPTIMIZED: Uses Promise.all for parallel fs.stat() and Redis pipeline for batch operations
    */
   async updateDirectoryCache(dirPath, recursive = false) {
+    this.metrics.directoryScans++;
     try {
       // Ensure the directory path is absolute before using
       const absoluteDirPath = path.resolve(dirPath);
@@ -542,6 +552,7 @@ class RedisFileSystemCache extends EventEmitter {
       const cacheType = isRootDir ? '(hot cache)' : '(regular cache)';
       systemLogger.logSystem('INFO', `Cached directory ${cacheType}: ${absoluteDirPath} (${dirContents.length} items)`);
     } catch (error) {
+      this.metrics.scanErrors++;
       if (error.code === 'EACCES') {
         // Skip directories we can't access
         systemLogger.logSystem('WARN', `Skipping directory cache update for ${error.path} due to permission error.`);
@@ -563,13 +574,15 @@ class RedisFileSystemCache extends EventEmitter {
       // OPTIMIZATION: Check hot cache first (fastest)
       const hotCached = this.getFromHotCache(absoluteDirPath);
       if (hotCached) {
+        this.metrics.hotCacheHits++;
         systemLogger.logSystem('DEBUG', `getDirectoryContents from hot cache: ${absoluteDirPath}`);
         return hotCached;
       }
 
       // Check memory cache second
       const memoryCached = this.directoryCache.get(absoluteDirPath);
-      if (memoryCached && memoryCached.length > 0) {
+      if (memoryCached !== undefined) {
+        this.metrics.memoryCacheHits++;
         systemLogger.logSystem('DEBUG', `getDirectoryContents from memory cache: ${absoluteDirPath}`);
         this.updateHotCache(absoluteDirPath, memoryCached);
         return memoryCached;
@@ -582,18 +595,21 @@ class RedisFileSystemCache extends EventEmitter {
           const dirData = await this.redisClient.hGetAll(dirKey);
 
           if (Object.keys(dirData).length > 0) {
+            this.metrics.redisCacheHits++;
             const contents = JSON.parse(dirData.contents || '[]');
             this.directoryCache.set(absoluteDirPath, contents);
             this.updateHotCache(absoluteDirPath, contents);
             return contents;
           }
         } catch (redisError) {
+          this.metrics.redisErrors++;
           systemLogger.logSystem('WARN', `Redis fetch failed: ${redisError.message}`);
           // Continue to update cache from filesystem
         }
       }
 
       // If not in cache anywhere, update cache (will populate all cache levels)
+      this.metrics.cacheMisses++;
       await this.updateDirectoryCache(absoluteDirPath);
       const cachedContents = this.directoryCache.get(absoluteDirPath);
       return cachedContents || [];
@@ -638,8 +654,10 @@ class RedisFileSystemCache extends EventEmitter {
       const totalDirectories = this.directoryCache.size;
       const activeDirectories = this.activeDirs.size;
 
-      // Get Redis info
-      const dbSize = await this.redisClient.dbSize();
+      // Redis is optional for local fallback and test environments.
+      const dbSize = this.redisClient && this.redisClient.isReady
+        ? await this.redisClient.dbSize()
+        : 0;
 
       return {
         initialized: this.initialized,
@@ -647,7 +665,8 @@ class RedisFileSystemCache extends EventEmitter {
         activeDirectories,
         redisDbSize: dbSize,
         isPolling: !!this.rootPollingInterval,
-        pollFrequency: this.rootPollFrequency
+        pollFrequency: this.rootPollFrequency,
+        cacheMetrics: { ...this.metrics }
       };
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to get cache info: ${error.message}`);
@@ -657,6 +676,7 @@ class RedisFileSystemCache extends EventEmitter {
         activeDirectories: 0,
         redisDbSize: 0,
         isPolling: !!this.rootPollingInterval,
+        cacheMetrics: { ...this.metrics },
         error: error.message
       };
     }
