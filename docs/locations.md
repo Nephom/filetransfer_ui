@@ -43,3 +43,15 @@ If `definitions` is omitted, `LocationManager` exposes one `default` Location fr
 5. Keep `storagePath` until all clients and operational tooling use Location ids.
 
 The LocationManager foundation is intentionally separate from the existing file APIs. Location-aware API and UI wiring belongs to issues #120 and #118.
+
+## Database Upgrade
+
+The Location-aware share-link change adds `share_links.locationId` and a `schema_migrations` table. Existing databases are upgraded automatically during server startup, or explicitly with:
+
+```bash
+DATABASE_PATH=/path/to/data/app.db npm run migrate:database
+```
+
+If `DATABASE_PATH` is omitted, the script uses the normal `data/app.db` path. Take a SQLite backup before a production upgrade. The migration is idempotent and preserves existing share links by assigning them to the legacy `default` Location.
+
+The migration does not alter `users.json`; user Location permissions are stored in each user's `locationPermissions` field and users without that field retain the legacy default-Location behavior.

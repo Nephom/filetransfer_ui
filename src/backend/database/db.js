@@ -7,6 +7,7 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs').promises;
 const { systemLogger } = require('../utils/logger');
+const { runMigrations } = require('./migrations');
 
 class Database {
   constructor() {
@@ -59,39 +60,7 @@ class Database {
    * @returns {Promise<void>}
    */
   async runMigrations() {
-    // Enable foreign keys
-    await this.run('PRAGMA foreign_keys = ON');
-
-    // Create share_links table
-    await this.run(`
-      CREATE TABLE IF NOT EXISTS share_links (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        shareToken TEXT UNIQUE NOT NULL,
-        userId TEXT NOT NULL,
-        filePath TEXT NOT NULL,
-        fileName TEXT NOT NULL,
-        createdAt INTEGER NOT NULL,
-        expiresAt INTEGER,
-        maxDownloads INTEGER DEFAULT 0,
-        downloadCount INTEGER DEFAULT 0,
-        password TEXT,
-        isActive INTEGER DEFAULT 1,
-        lastDownloadAt INTEGER
-      )
-    `);
-
-    // Add Location scope for databases created before multi-Location support.
-    try {
-      await this.run('ALTER TABLE share_links ADD COLUMN locationId TEXT NOT NULL DEFAULT \'default\'');
-    } catch (error) {
-      // SQLite reports a duplicate-column error on already migrated databases.
-      if (!error.message.includes('duplicate column name')) throw error;
-    }
-
-    // Create indexes for performance
-    await this.run('CREATE INDEX IF NOT EXISTS idx_share_token ON share_links(shareToken)');
-    await this.run('CREATE INDEX IF NOT EXISTS idx_user_id ON share_links(userId)');
-    await this.run('CREATE INDEX IF NOT EXISTS idx_expires_active ON share_links(expiresAt, isActive)');
+    await runMigrations(this);
 
     systemLogger.logSystem('INFO', 'Database migrations completed');
   }
