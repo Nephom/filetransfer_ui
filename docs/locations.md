@@ -57,3 +57,27 @@ If `DATABASE_PATH` is omitted, the script uses the normal `data/app.db` path. Ta
 `./build.sh upgrade` creates a consistent SQLite backup under `data/backups/` before fetching or applying the upgrade. Backup names include a UTC timestamp, for example `app.db.20260803T120000Z.sqlite`.
 
 The migration does not alter `users.json`; user Location permissions are stored in each user's `locationPermissions` field and users without that field retain the legacy default-Location behavior.
+
+## User Permissions and Health
+
+Regular users can be assigned a capability matrix by an administrator through:
+
+```text
+GET /api/admin/users/:username/locations
+PUT /api/admin/users/:username/locations
+```
+
+Example mapping:
+
+```json
+{
+  "locationPermissions": {
+    "folder-a": ["list", "read", "upload"],
+    "folder-b": ["list", "read"]
+  }
+}
+```
+
+The backend reloads this mapping from server-side user data on every request. A stale JWT therefore cannot retain a Location after an administrator revokes it. The token contains no filesystem root path or permission snapshot.
+
+The Location discovery response exposes only permitted Locations and reports one of `online`, `offline`, `permission_denied`, `error`, or `disabled`. Storage failures return an explicit service error; they are not converted into an empty directory response.
