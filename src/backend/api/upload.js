@@ -35,8 +35,22 @@ class UploadAPI {
   constructor() {
     this.router = express.Router();
     this.fileSystem = new FileSystem();
+    this.cache = null;
     this._setupMiddleware();
     this._setupRoutes();
+  }
+
+  setCache(cache) {
+    this.cache = cache;
+  }
+
+  async _refreshCacheDirectory(directoryPath) {
+    if (!this.cache) return;
+    if (this.cache.refreshDirectory) {
+      await this.cache.refreshDirectory(directoryPath);
+    } else if (this.cache.scanDirectory) {
+      await this.cache.scanDirectory(directoryPath);
+    }
   }
 
   /**
@@ -351,6 +365,7 @@ class UploadAPI {
 
       // Move file to final destination in storage
       await this.fileSystem.move(req.file.path, finalPath);
+      await this._refreshCacheDirectory(normalizedFinalDir);
 
       // Update transfer as complete
       transferManager.completeTransfer(transferId, {
@@ -496,6 +511,7 @@ class UploadAPI {
           }
           await this.fileSystem.mkdir(directoryPath);
         }
+        await this._refreshCacheDirectory(normalizedFinalDir);
         return res.json({ success: true, message: 'Folders uploaded successfully.', folders: directoryPaths.length });
       }
 
@@ -633,6 +649,7 @@ class UploadAPI {
         // Move file to final destination in storage
         systemLogger.logSystem('DEBUG', `UPLOAD MOVE START - BatchID: ${batchId}, TransferID: ${transferId}, TempFile: ${path.basename(file.path)}, Size: ${file.size}`);
         await this.fileSystem.move(file.path, normalizedFinalPath);
+        await this._refreshCacheDirectory(path.dirname(normalizedFinalPath));
         systemLogger.logSystem('DEBUG', `UPLOAD MOVE COMPLETE - BatchID: ${batchId}, TransferID: ${transferId}, File: ${path.basename(file.originalname)}, Size: ${file.size}`);
 
         // Update transfer as complete
@@ -811,6 +828,7 @@ class UploadAPI {
 
         // Move file to final destination in storage
         await this.fileSystem.move(req.file.path, finalPath);
+        await this._refreshCacheDirectory(normalizedFinalDir);
 
         // Update transfer as complete
         transferManager.completeTransfer(transferId, {

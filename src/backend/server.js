@@ -39,6 +39,16 @@ const app = express();
 // These will be initialized after config is loaded
 let authManager;
 let fileSystem;
+
+const refreshDirectoryCache = async (directoryPath, operation, req) => {
+  if (!fileSystem?.cache) return;
+  if (fileSystem.cache.refreshDirectory) {
+    await fileSystem.cache.refreshDirectory(directoryPath);
+  } else if (fileSystem.cache.scanDirectory) {
+    await fileSystem.cache.scanDirectory(directoryPath);
+  }
+  systemLogger.logCacheOperation(operation, { path: directoryPath }, req);
+};
 let securityMiddleware;
 let isCacheReady = false;
 const userActiveDirectories = new Map(); // Track active directory per user
@@ -667,12 +677,7 @@ app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
     if (directoryPath) {
       const storagePath = configManager.get('fileSystem.storagePath') || './storage';
       const fullPath = path.join(path.resolve(storagePath), directoryPath);
-      systemLogger.logCacheOperation('refresh_directory', { path: fullPath }, req);
-      // This will re-scan and overwrite the specific directory hash in Redis.
-      // Note: This won't detect deletions within the directory, a full refresh is needed for that.
-      if (fileSystem.cache && fileSystem.cache.scanDirectory) {
-        await fileSystem.cache.scanDirectory(fullPath);
-      }
+      await refreshDirectoryCache(fullPath, 'refresh_directory', req);
       res.json({ success: true, message: `Cache for ${directoryPath} refreshed.` });
     } else {
       systemLogger.logCacheOperation('refresh_full', {}, req);
@@ -927,6 +932,7 @@ app.post('/api/files', authenticate, async (req, res) => {
     }
 
     await fileSystem.write(fullPath, content);
+    await refreshDirectoryCache(path.dirname(fullPath), 'refresh_after_write', req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -955,11 +961,10 @@ app.post('/api/folders', authenticate, async (req, res) => {
     await fileSystem.mkdir(fullPath);
 
     // Force cache refresh for the parent directory
-    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+    if (fileSystem.cache) {
       try {
         const parentPath = currentPath ? path.join(storageRoot, currentPath) : storageRoot;
-        await fileSystem.cache.scanDirectory(parentPath);
-        systemLogger.logCacheOperation('refresh_after_mkdir', { path: currentPath || '/' }, req);
+        await refreshDirectoryCache(parentPath, 'refresh_after_mkdir', req);
       } catch (cacheError) {
         // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
       }
@@ -988,6 +993,7 @@ app.post('/api/files/directory', authenticate, async (req, res) => {
     }
 
     await fileSystem.mkdir(fullPath);
+    await refreshDirectoryCache(path.dirname(fullPath), 'refresh_after_mkdir', req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1018,11 +1024,10 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
     }
 
     // Force cache refresh for the parent directory
-    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+    if (fileSystem.cache) {
       try {
         const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
-        await fileSystem.cache.scanDirectory(parentPath);
-        systemLogger.logCacheOperation('refresh_after_delete', { path: currentPath || '/' }, req);
+        await refreshDirectoryCache(parentPath, 'refresh_after_delete', req);
       } catch (cacheError) {
         // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
       }
@@ -1062,11 +1067,10 @@ app.put('/api/files/rename', authenticate, async (req, res) => {
     await fileSystem.rename(oldPath, newPath);
 
     // Force cache refresh for the parent directory
-    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+    if (fileSystem.cache) {
       try {
         const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
-        await fileSystem.cache.scanDirectory(parentPath);
-        systemLogger.logCacheOperation('refresh_after_rename', { path: currentPath || '/' }, req);
+        await refreshDirectoryCache(parentPath, 'refresh_after_rename', req);
       } catch (cacheError) {
         // Non-fatal cache error
         systemLogger.logSystem('WARN', `Cache refresh after rename failed (non-fatal): ${cacheError.message}`);
@@ -1097,10 +1101,7 @@ app.post('/api/files/create', authenticate, async (req, res) => {
 
     await fileSystem.write(fullPath, content);
 
-    // HYBRID CACHE: Update cache immediately after API operation
-    if (fileSystem.cache) {
-      await fileSystem.cache.addOrUpdatePath(fullPath);
-    }
+    await refreshDirectoryCache(path.dirname(fullPath), 'refresh_after_create', req);
 
     systemLogger.logFileOperation('create', path.join(currentPath || '', fileName.trim()), true, req, { fileName, size: content.length });
     res.json({ success: true, message: 'File created successfully' });
@@ -1115,6 +1116,7 @@ app.post('/api/files/copy', authenticate, async (req, res) => {
   try {
     const { sourcePath, destinationPath } = req.body;
     await fileSystem.copy(sourcePath, destinationPath);
+    await refreshDirectoryCache(path.dirname(destinationPath), 'refresh_after_copy', req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1125,6 +1127,8 @@ app.post('/api/files/move', authenticate, async (req, res) => {
   try {
     const { sourcePath, destinationPath } = req.body;
     await fileSystem.move(sourcePath, destinationPath);
+    await refreshDirectoryCache(path.dirname(sourcePath), 'refresh_after_move_source', req);
+    await refreshDirectoryCache(path.dirname(destinationPath), 'refresh_after_move_destination', req);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1144,6 +1148,7 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
     const path = require('path');
     const processedItems = [];
     const storageRoot = path.resolve(storagePath);
+    const sourceDirectories = new Set();
 
     for (const item of items) {
       // Build source path from item.path (relative path from frontend)
@@ -1160,6 +1165,8 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
         return res.status(403).json({ error: 'Forbidden: Access denied.' });
       }
 
+      sourceDirectories.add(path.dirname(sourceFullPath));
+
       if (operation === 'copy') {
         await fileSystem.copy(sourceFullPath, targetFullPath);
         systemLogger.logFileOperation('copy', path.join(targetPath || '', item.name), true, req, { source: sourceFullPath, target: targetFullPath });
@@ -1172,20 +1179,17 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
     }
 
     // Force cache refresh for both source and target directories
-    if (fileSystem.cache && fileSystem.cache.scanDirectory) {
+    if (fileSystem.cache) {
       try {
         // Refresh target directory
         const targetDir = targetPath ? path.join(storageRoot, targetPath) : storageRoot;
-        await fileSystem.cache.scanDirectory(targetDir);
-        systemLogger.logCacheOperation('refresh_after_paste', { targetPath: targetPath || '/', operation }, req);
+        await refreshDirectoryCache(targetDir, 'refresh_after_paste', req);
 
-        // For move operations, also refresh source directory
-        if (operation === 'cut' && items.length > 0) {
-          const firstItem = items[0];
-          if (firstItem.path) {
-            const sourceDir = path.dirname(path.join(storageRoot, firstItem.path));
+        // For move operations, refresh every affected source directory.
+        if (operation === 'cut') {
+          for (const sourceDir of sourceDirectories) {
             if (sourceDir !== targetDir) {
-              await fileSystem.cache.scanDirectory(sourceDir);
+              await refreshDirectoryCache(sourceDir, 'refresh_after_paste_source', req);
             }
           }
         }
@@ -2046,6 +2050,7 @@ async function startServer() {
 
     // Initialize enhanced file system with in-memory cache
     fileSystem = new EnhancedMemoryFileSystem(storagePath);
+    uploadApi.setCache(fileSystem.cache);
     systemLogger.logSystem('INFO', 'Initializing file system cache in the background...');
     fileSystem.initialize().then(() => {
       isCacheReady = true;
