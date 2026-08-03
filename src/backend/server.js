@@ -61,7 +61,7 @@ const getStorageContext = async (req, relativePath = '', capability = 'list') =>
   if (!location || !location.enabled) {
     throw Object.assign(new Error('Location is unavailable'), { statusCode: 404 });
   }
-  locationPermissionManager.assert(req.user, locationId, capability);
+  await locationPermissionManager.assertCurrent(req.user, locationId, capability);
   const health = await locationManager.getHealth(locationId);
   if (health.status !== 'online') {
     throw Object.assign(new Error('Location storage is unavailable'), {
@@ -735,7 +735,10 @@ app.post('/api/files/rebuild-index', authenticate, async (req, res) => {
 app.get('/api/locations', authenticate, async (req, res) => {
   try {
     if (!locationManager) return res.status(503).json({ error: 'Location service is not ready' });
-    const locations = await Promise.all(locationPermissionManager.getAccessibleLocations(req.user).map(async (location) => {
+    const currentUser = req.user.role === 'admin'
+      ? req.user
+      : await userManager.getUser(req.user.username) || req.user;
+    const locations = await Promise.all(locationPermissionManager.getAccessibleLocations(currentUser).map(async (location) => {
       const health = await locationManager.getHealth(location.id);
       return { ...location, status: health.status, errorCode: health.errorCode };
     }));
@@ -2094,6 +2097,7 @@ async function startServer() {
 
     locationManager = new LocationManager(configManager.getConfig());
     locationPermissionManager = new LocationPermissionManager(locationManager);
+    locationPermissionManager.setUserResolver((username) => userManager.getUser(username));
     shareRoutes.setLocationPermissionManager?.(locationPermissionManager);
 
     // Initialize enhanced file system with in-memory cache
