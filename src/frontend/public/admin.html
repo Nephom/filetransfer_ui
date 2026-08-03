@@ -187,6 +187,53 @@
             background: rgba(59, 130, 246, 0.3);
         }
 
+        .locations-table {
+            width: 100%;
+            min-width: 920px;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        .locations-table th,
+        .locations-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+            text-align: left;
+            vertical-align: middle;
+        }
+
+        .locations-table th {
+            color: rgba(255, 255, 255, 0.78);
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .locations-table .form-control {
+            min-width: 120px;
+            padding: 9px;
+            border-radius: 7px;
+        }
+
+        .locations-table td:nth-child(3) .form-control {
+            min-width: 230px;
+        }
+
+        .locations-table .location-order {
+            min-width: 72px;
+            width: 72px;
+        }
+
+        .locations-table .location-check {
+            text-align: center;
+        }
+
+        .locations-table .location-remove {
+            width: auto;
+            min-width: 78px;
+            padding: 8px 10px;
+            font-size: 0.85rem;
+        }
+
         .action-buttons {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -804,6 +851,61 @@
                 .replace(/'/g, '&#039;');
         }
 
+        function locationRowHtml(location = {}, index = 0) {
+            const id = escapeHtml(location.id || '');
+            const displayName = escapeHtml(location.displayName || '');
+            const rootPath = escapeHtml(location.rootPath || '');
+            const order = Number.isFinite(Number(location.order)) ? Number(location.order) : index;
+            return `<tr class="location-row">
+                <td><input class="form-control" data-location-field="id" value="${id}" placeholder="team-a" autocomplete="off"></td>
+                <td><input class="form-control" data-location-field="displayName" value="${displayName}" placeholder="Team A" autocomplete="off"></td>
+                <td><input class="form-control" data-location-field="rootPath" value="${rootPath}" placeholder="/mnt/nfs/team-a" autocomplete="off"></td>
+                <td class="location-check"><input type="checkbox" data-location-field="enabled" ${location.enabled !== false ? 'checked' : ''} aria-label="Enable Location"></td>
+                <td class="location-check"><input type="checkbox" data-location-field="readOnly" ${location.readOnly === true ? 'checked' : ''} aria-label="Read-only Location"></td>
+                <td><input class="form-control location-order" type="number" min="0" step="1" data-location-field="order" value="${order}" aria-label="Display order"></td>
+                <td><button type="button" class="btn danger location-remove" onclick="removeLocationRow(this)">Remove</button></td>
+            </tr>`;
+        }
+
+        function addLocationRow() {
+            const body = document.getElementById('locationsTableBody');
+            if (!body) return;
+            body.insertAdjacentHTML('beforeend', locationRowHtml({ enabled: true, readOnly: false }, body.rows.length));
+        }
+
+        function removeLocationRow(button) {
+            button.closest('tr')?.remove();
+        }
+
+        function collectLocations() {
+            return Array.from(document.querySelectorAll('#locationsTableBody .location-row')).map((row, index) => {
+                const value = field => row.querySelector(`[data-location-field="${field}"]`);
+                return {
+                    id: value('id').value.trim(),
+                    displayName: value('displayName').value.trim(),
+                    rootPath: value('rootPath').value.trim(),
+                    enabled: value('enabled').checked,
+                    readOnly: value('readOnly').checked,
+                    order: value('order').value === '' ? index : Number(value('order').value)
+                };
+            });
+        }
+
+        function validateLocations(locations) {
+            if (!locations.length) throw new Error('Add at least one Server Location.');
+            const ids = new Set();
+            locations.forEach((location, index) => {
+                if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(location.id)) {
+                    throw new Error(`Location ${index + 1}: ID must start with a letter or number and contain only letters, numbers, _ or -.`);
+                }
+                if (ids.has(location.id)) throw new Error(`Duplicate Location ID: ${location.id}`);
+                ids.add(location.id);
+                if (!location.displayName) throw new Error(`Location ${location.id}: display name is required.`);
+                if (!location.rootPath) throw new Error(`Location ${location.id}: root path is required.`);
+                if (!Number.isInteger(location.order) || location.order < 0) throw new Error(`Location ${location.id}: order must be a non-negative integer.`);
+            });
+        }
+
         function displayConfig(config, schema) {
             const configContent = document.getElementById('configContent');
             let html = '<form id="configForm">';
@@ -821,9 +923,12 @@
                 html += `<div class="config-section"><h3>${sectionTitles[section]}</h3>`;
                 if (section === 'locations') {
                     const locations = Array.isArray(values) ? values : [];
-                    html += `<p style="font-size:0.9rem; opacity:0.85; line-height:1.5;">Locations are directories on the server. For NFS, mount the share on the server first; do not enter a path from the user's computer. Changes require a service restart. The JSON below is the exact format written to <code>[locations]</code>.</p>`;
-                    html += `<textarea name="locations.definitions" class="form-control" rows="8" spellcheck="false">${escapeHtml(JSON.stringify(locations, null, 2))}</textarea>`;
-                    html += '<p style="font-size:0.85rem; opacity:0.75; line-height:1.5;">Example: [{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10}]<br>Location IDs must stay stable after permissions are assigned. <code>readOnly=true</code> allows reading/downloading but rejects all mutations.</p>';
+                    html += `<p style="font-size:0.9rem; opacity:0.85; line-height:1.5;">Locations are directories on the server. For NFS, mount the share on the server first; do not enter a path from the user's computer. Location IDs must stay stable after permissions are assigned. Changes require a service restart.</p>`;
+                    html += '<div style="overflow-x:auto;"><table class="locations-table"><thead><tr><th>ID</th><th>Display name</th><th>Root path</th><th>Enabled</th><th>Read-only</th><th>Order</th><th>Actions</th></tr></thead><tbody id="locationsTableBody">';
+                    html += locations.map((location, index) => locationRowHtml(location, index)).join('');
+                    html += '</tbody></table></div>';
+                    html += '<button type="button" class="btn" style="margin-top:12px;" onclick="addLocationRow()">+ Add Location</button>';
+                    html += '<p style="font-size:0.85rem; opacity:0.75; line-height:1.5;">Read-only Locations allow listing and downloading but reject upload, rename, delete, move, copy, mkdir and share operations.</p>';
                 } else {
                     Object.entries(values).forEach(([key, value]) => {
                         const metadata = schema[section]?.[key] || { label: key, description: '' };
@@ -887,14 +992,8 @@
                     }
                 }
 
-                if (config.locations?.definitions !== undefined) {
-                    try {
-                        config.locations = JSON.parse(config.locations.definitions);
-                        if (!Array.isArray(config.locations)) throw new Error('Locations must be a JSON array.');
-                    } catch (error) {
-                        throw new Error(`Invalid Locations JSON: ${error.message}`);
-                    }
-                }
+                config.locations = collectLocations();
+                validateLocations(config.locations);
 
 
                 const response = await fetch('/api/admin/config', {
