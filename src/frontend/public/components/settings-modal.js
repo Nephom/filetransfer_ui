@@ -36,7 +36,6 @@ const SettingsModal = ({ onClose, token }) => {
     const [showCreateUser, setShowCreateUser] = useState(false);
     const [editingUser, setEditingUser] = useState(null);
     const [configSection, setConfigSection] = useState('server');
-    const [locationConfigText, setLocationConfigText] = useState('[]');
 
     useEffect(() => {
         const loadInitialData = async () => {
@@ -172,8 +171,7 @@ const SettingsModal = ({ onClose, token }) => {
             setSuccess('');
             const payload = { ...config, security: { ...(config.security || {}) } };
             if (payload.security.jwtSecret === '[SET]' || payload.security.jwtSecret === '[DEFAULT]') delete payload.security.jwtSecret;
-            payload.locations = JSON.parse(locationConfigText);
-            if (!Array.isArray(payload.locations)) throw new Error('Locations must be a JSON array.');
+            validateLocations(payload.locations || []);
             const response = await fetch('/api/admin/config', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -206,7 +204,6 @@ const SettingsModal = ({ onClose, token }) => {
                 const data = await response.json();
                 const loadedConfig = data.config || data;
                 setConfig(loadedConfig);
-                setLocationConfigText(JSON.stringify(loadedConfig.locations || [], null, 2));
             } else {
                 throw new Error('Failed to load config');
             }
@@ -251,6 +248,55 @@ const SettingsModal = ({ onClose, token }) => {
                 [key]: value
             }
         }));
+    };
+
+    const updateLocation = (index, key, value) => {
+        setConfig(prev => ({
+            ...prev,
+            locations: (Array.isArray(prev.locations) ? prev.locations : []).map((location, locationIndex) =>
+                locationIndex === index ? { ...location, [key]: value } : location
+            )
+        }));
+    };
+
+    const addLocation = () => {
+        setConfig(prev => ({
+            ...prev,
+            locations: [
+                ...(Array.isArray(prev.locations) ? prev.locations : []),
+                {
+                    id: '',
+                    displayName: '',
+                    rootPath: '',
+                    enabled: true,
+                    readOnly: false,
+                    order: Array.isArray(prev.locations) ? prev.locations.length : 0
+                }
+            ]
+        }));
+    };
+
+    const removeLocation = (index) => {
+        if (!window.confirm('Remove this Location? Existing user permissions may refer to its ID.')) return;
+        setConfig(prev => ({
+            ...prev,
+            locations: (Array.isArray(prev.locations) ? prev.locations : []).filter((_, locationIndex) => locationIndex !== index)
+        }));
+    };
+
+    const validateLocations = (locations) => {
+        if (!Array.isArray(locations) || locations.length === 0) throw new Error('Add at least one Server Location.');
+        const ids = new Set();
+        locations.forEach((location, index) => {
+            if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(String(location.id || ''))) {
+                throw new Error(`Location ${index + 1}: ID must start with a letter or number and contain only letters, numbers, _ or -.`);
+            }
+            if (ids.has(location.id)) throw new Error(`Duplicate Location ID: ${location.id}`);
+            ids.add(location.id);
+            if (!String(location.displayName || '').trim()) throw new Error(`Location ${location.id}: display name is required.`);
+            if (!String(location.rootPath || '').trim()) throw new Error(`Location ${location.id}: root path is required.`);
+            if (!Number.isInteger(Number(location.order)) || Number(location.order) < 0) throw new Error(`Location ${location.id}: order must be a non-negative integer.`);
+        });
     };
 
     const securityFeatures = [
@@ -443,8 +489,26 @@ const SettingsModal = ({ onClose, token }) => {
                                         {configSection === 'locations' ? (
                                             <div style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '12px', padding: '16px' }}>
                                                 <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Server Locations</label>
-                                                <textarea value={locationConfigText} onChange={(e) => setLocationConfigText(e.target.value)} rows={10} spellCheck="false" style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(0, 0, 0, 0.25)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px', fontFamily: 'monospace' }} />
-                                                <p style={{ color: 'rgba(255, 255, 255, 0.75)', fontSize: '12px', lineHeight: 1.5 }}>Use server paths such as <code>/mnt/nfs/team-a</code>, not paths from the user's computer. Changes require a restart.</p>
+                                                <p style={{ color: 'rgba(255, 255, 255, 0.75)', fontSize: '12px', lineHeight: 1.5 }}>Use server paths such as <code>/mnt/nfs/team-a</code>, not paths from the user's computer. For NFS, mount the share on the server first. Location IDs must stay stable after permissions are assigned.</p>
+                                                <div style={{ overflowX: 'auto' }}>
+                                                    <table style={{ width: '100%', minWidth: '860px', borderCollapse: 'collapse', color: 'white', fontSize: '12px' }}>
+                                                        <thead><tr style={{ color: 'rgba(255, 255, 255, 0.75)', textAlign: 'left' }}>
+                                                            <th style={{ padding: '8px' }}>ID</th><th style={{ padding: '8px' }}>Display name</th><th style={{ padding: '8px' }}>Root path</th><th style={{ padding: '8px' }}>Enabled</th><th style={{ padding: '8px' }}>Read-only</th><th style={{ padding: '8px' }}>Order</th><th style={{ padding: '8px' }}>Actions</th>
+                                                        </tr></thead>
+                                                        <tbody>
+                                                            {(Array.isArray(config.locations) ? config.locations : []).map((location, index) => (
+                                                                <tr key={`${location.id || 'new'}-${index}`} style={{ borderTop: '1px solid rgba(255, 255, 255, 0.12)' }}>
+                                                                    {['id', 'displayName', 'rootPath'].map(field => <td key={field} style={{ padding: '8px' }}><input value={location[field] || ''} onChange={(e) => updateLocation(index, field, e.target.value)} placeholder={field === 'id' ? 'team-a' : field === 'displayName' ? 'Team A' : '/mnt/nfs/team-a'} style={{ width: field === 'rootPath' ? '220px' : '120px', boxSizing: 'border-box', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px' }} /></td>)}
+                                                                    <td style={{ padding: '8px', textAlign: 'center' }}><input type="checkbox" checked={location.enabled !== false} onChange={(e) => updateLocation(index, 'enabled', e.target.checked)} aria-label={`Enable ${location.displayName || 'Location'}`} /></td>
+                                                                    <td style={{ padding: '8px', textAlign: 'center' }}><input type="checkbox" checked={location.readOnly === true} onChange={(e) => updateLocation(index, 'readOnly', e.target.checked)} aria-label={`Read-only ${location.displayName || 'Location'}`} /></td>
+                                                                    <td style={{ padding: '8px' }}><input type="number" min="0" step="1" value={location.order ?? index} onChange={(e) => updateLocation(index, 'order', e.target.value === '' ? '' : Number(e.target.value))} style={{ width: '64px', boxSizing: 'border-box', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px' }} aria-label="Display order" /></td>
+                                                                    <td style={{ padding: '8px' }}><button type="button" onClick={() => removeLocation(index)} style={{ background: 'rgba(239, 68, 68, 0.2)', border: '1px solid rgba(239, 68, 68, 0.5)', borderRadius: '6px', color: '#f87171', padding: '7px 9px', cursor: 'pointer', whiteSpace: 'nowrap' }}>Remove</button></td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                                <button type="button" onClick={addLocation} style={{ marginTop: '12px', background: 'rgba(59, 130, 246, 0.2)', border: '1px solid rgba(59, 130, 246, 0.5)', borderRadius: '6px', color: '#93c5fd', padding: '8px 12px', cursor: 'pointer' }}>+ Add Location</button>
                                             </div>
                                         ) : config[configSection] ? Object.entries(config[configSection]).map(([key, value]) => (
                                             <div key={key} style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '12px', padding: '16px' }}>
