@@ -237,6 +237,44 @@ read_ini_value() {
   ' "$ini_file"
 }
 
+read_env_value() {
+  local env_file="$1"
+  local key="$2"
+  [[ -f "$env_file" ]] || return 0
+  awk -F= -v key="$key" '$1 == key { value = substr($0, index($0, "=") + 1); gsub(/^"|"$/, "", value); print value; exit }' "$env_file"
+}
+
+backup_database_before_upgrade() {
+  local env_database_path database_path backup_dir backup_file timestamp
+  env_database_path="$(read_env_value "$ROOT_DIR/.env" DATABASE_PATH)"
+  database_path="${env_database_path:-$ROOT_DIR/data/app.db}"
+  if [[ "$database_path" != /* ]]; then
+    database_path="$ROOT_DIR/$database_path"
+  fi
+
+  if [[ ! -f "$database_path" ]]; then
+    echo "No SQLite database found at $database_path; migration will create it if needed."
+    return
+  fi
+
+  backup_dir="$ROOT_DIR/data/backups"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_file="$backup_dir/app.db.$timestamp.sqlite"
+  mkdir -p "$backup_dir"
+  DATABASE_PATH="$database_path" node "$ROOT_DIR/scripts/backup-database.js" "$backup_file"
+  echo "Upgrade database backup: $backup_file"
+}
+
+run_database_migrations() {
+  local env_database_path database_path
+  env_database_path="$(read_env_value "$ROOT_DIR/.env" DATABASE_PATH)"
+  database_path="${env_database_path:-$ROOT_DIR/data/app.db}"
+  if [[ "$database_path" != /* ]]; then
+    database_path="$ROOT_DIR/$database_path"
+  fi
+  DATABASE_PATH="$database_path" npm run migrate:database --prefix "$ROOT_DIR"
+}
+
 migrate_legacy_configuration() {
   local legacy_file="$1"
   [[ -n "$legacy_file" && -f "$legacy_file" && ! -f "$ROOT_DIR/.env" ]] || return
@@ -357,12 +395,14 @@ cmd_upgrade() {
     legacy_config="$(mktemp)"
     cp "$ROOT_DIR/src/config.ini" "$legacy_config"
   fi
+  backup_database_before_upgrade
   run_git -C "$ROOT_DIR" fetch origin
   run_git -C "$ROOT_DIR" merge --ff-only "@{u}"
   cmd_install
   migrate_legacy_configuration "$legacy_config"
   [[ -z "$legacy_config" ]] || rm -f "$legacy_config"
   setup_configuration
+  run_database_migrations
   npm test --prefix "$ROOT_DIR"
   echo "Upgrade complete. Start the service with ./start.sh."
 }
