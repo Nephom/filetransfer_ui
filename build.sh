@@ -419,9 +419,24 @@ cmd_test() {
   npm test --prefix "$ROOT_DIR"
 }
 
+has_blocking_worktree_changes() {
+  local line status path
+  while IFS= read -r line; do
+    status="${line:0:2}"
+    path="${line:3}"
+    if [[ "$status" == "??" ]]; then
+      case "$path" in
+        *.log-*|*.log.*) continue ;;
+      esac
+    fi
+    return 0
+  done < <(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)
+  return 1
+}
+
 cmd_upgrade() {
-  [[ -d "$ROOT_DIR/.git" ]] || { echo "upgrade requires a Git checkout." >&2; exit 1; }
-  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain)" ]]; then
+  git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1 || { echo "upgrade requires a Git checkout." >&2; exit 1; }
+  if has_blocking_worktree_changes; then
     echo "Refusing to update a working tree with uncommitted changes." >&2
     echo "Keep ignored .env and src/config.ini, but restore any accidentally moved tracked files before retrying:" >&2
     echo "  git restore --source=HEAD -- package-lock.json start.sh stop.sh status.sh" >&2
