@@ -332,6 +332,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             event.dataTransfer.dropEffect = 'copy';
         }
     };
+    const isExternalFileDrag = (event) => Array.from(event.dataTransfer.types || []).includes('Files') && !dragItems.length;
     const createShare = async (event) => {
         event.preventDefault(); const file = selectedItems[0]; if (!file) return;
         try {
@@ -364,12 +365,22 @@ const FileBrowser = ({ token, user, onLogout }) => {
         const isDropTarget = file.isDirectory && fileDropTarget === itemKey(file);
         const dropHandlers = file.isDirectory ? {
             onDragOver: (event) => {
+                if (isExternalFileDrag(event)) {
+                    event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setFileDropTarget(itemKey(file));
+                    return;
+                }
                 if (isValidMoveTarget(dragItems, file.path)) {
                     event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setFileDropTarget(itemKey(file));
                 }
             },
             onDragLeave: () => setFileDropTarget(null),
-            onDrop: (event) => { event.preventDefault(); endDrag(); moveItems(dragItems, file.path); }
+            onDrop: (event) => {
+                if (isExternalFileDrag(event)) {
+                    void handleExternalDrop(event);
+                    return;
+                }
+                event.preventDefault(); endDrag(); moveItems(dragItems, file.path);
+            }
         } : {};
         const sharedProps = { draggable: true, onDragStart: (event) => beginDrag(event, file), onDragEnd: endDrag, onClick: (event) => choose(file, event), onDoubleClick: () => file.isDirectory ? openFolder(file) : download([file]), onContextMenu: (event) => openContext(event, file), ...dropHandlers };
         if (viewMode === 'grid') {
@@ -378,7 +389,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
         return <tr key={itemKey(file)} tabIndex="0" className={`file-row ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><td><span className="file-name-cell"><span className="file-icon">{fileIcon(file)}</span>{file.name}</span></td><td className="muted">{formatDate(file.modified || file.modifiedTime)}</td><td className="muted">{file.type || fileType(file)}</td><td className="muted">{file.isDirectory ? '--' : formatSize(file.size)}</td></tr>;
     };
 
-    const renderTree = (onChooseDestination) => <FolderTree node={folderTree} currentPath={currentPath} dragItems={dragItems} dropTarget={dropTarget} onChooseDestination={onChooseDestination} onToggle={toggleFolder} onNavigate={loadFiles} onDragOver={(event, node) => { if (isValidMoveTarget(dragItems, node.path)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(node.path); scheduleTreeExpand(node); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, node) => { event.preventDefault(); endDrag(); moveItems(dragItems, node.path); }} />;
+     const renderTree = (onChooseDestination) => <FolderTree node={folderTree} currentPath={currentPath} dragItems={dragItems} dropTarget={dropTarget} onChooseDestination={onChooseDestination} onToggle={toggleFolder} onNavigate={loadFiles} onDragOver={(event, node) => { if (isExternalFileDrag(event)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setDropTarget(node.path); return; } if (isValidMoveTarget(dragItems, node.path)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(node.path); scheduleTreeExpand(node); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, node) => { if (isExternalFileDrag(event)) { void handleExternalDrop(event); return; } event.preventDefault(); endDrag(); moveItems(dragItems, node.path); }} />;
     const tree = renderTree();
 
     return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>

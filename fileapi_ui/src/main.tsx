@@ -265,6 +265,7 @@ function App() {
 
   const uploadPaths = (paths: string[]) => void run(async () => {
     if (!paths.length) return;
+    notify(`Drop received: inspecting ${paths.length} path${paths.length === 1 ? "" : "s"}...`, 0);
     const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths });
     const accepted = window.confirm(`Upload ${summary.files} file${summary.files === 1 ? "" : "s"} and ${summary.directories} folder${summary.directories === 1 ? "" : "s"} to ${path ? `/${path}` : "/"}?`);
     if (!accepted) return;
@@ -305,10 +306,19 @@ function App() {
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void getCurrentWebviewWindow().onDragDropEvent(event => {
+    let disposed = false;
+    getCurrentWebviewWindow().onDragDropEvent(event => {
       if (event.payload.type === "drop") uploadPaths(event.payload.paths);
-    }).then(listener => { unlisten = listener; });
-    return () => unlisten?.();
+    }).then(listener => {
+      if (disposed) listener();
+      else unlisten = listener;
+    }).catch(error => {
+      if (!disposed) setNotice(`Unable to listen for file drops: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [session.token, path, session.ignoreTlsErrors]);
 
   const createFolder = () => run(async () => {
