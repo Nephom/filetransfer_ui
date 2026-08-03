@@ -33,6 +33,8 @@ test/
 tests/
 *.test.js
 *.spec.js
+!test/
+!test/**/*.test.js
 
 # Storage and data directories
 storage/
