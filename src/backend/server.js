@@ -198,6 +198,39 @@ app.use(express.static(path.join(__dirname, '../frontend/public')));
 const uploadApi = new UploadAPI();
 app.use('/api', uploadApi.getRouter());
 
+const configureLocationRuntime = () => {
+  for (const cachedFileSystem of locationFileSystems.values()) {
+    if (cachedFileSystem !== fileSystem) {
+      const closing = cachedFileSystem.cache?.close?.();
+      closing?.catch(() => {});
+    }
+  }
+  locationFileSystems.clear();
+
+  locationManager = new LocationManager(configManager.getConfig());
+  locationPermissionManager = new LocationPermissionManager(locationManager);
+  locationPermissionManager.setUserResolver((username) => userManager.getUser(username));
+  shareRoutes.setLocationPermissionManager?.(locationPermissionManager);
+
+  const defaultLocation = locationManager.getLocation('default');
+  if (fileSystem && defaultLocation && defaultLocation.rootPath === path.resolve(fileSystem.storagePath)) {
+    locationFileSystems.set('default', fileSystem);
+  }
+
+  uploadApi.setCache(fileSystem?.cache);
+  uploadApi.setLocationManager(locationManager, async (locationId) => {
+    let targetFileSystem = locationFileSystems.get(locationId);
+    if (!targetFileSystem) {
+      const location = locationManager.getLocation(locationId);
+      if (!location) return null;
+      targetFileSystem = new EnhancedMemoryFileSystem(location.rootPath);
+      await targetFileSystem.initialize();
+      locationFileSystems.set(locationId, targetFileSystem);
+    }
+    return targetFileSystem.cache;
+  }, locationPermissionManager);
+};
+
 // Share routes - /api/share/:token/download does NOT require authentication
 // Other share routes require authentication via middleware
 app.use('/api', shareRoutes);
@@ -1469,6 +1502,10 @@ app.put('/api/settings', authenticate, async (req, res) => {
     // Save configuration to file
     await configManager.save();
 
+    if (updatedFields.includes('fileSystem.locations')) {
+      configureLocationRuntime();
+    }
+
     systemLogger.logSystem('INFO', `Security settings updated by user: ${req.user?.username}, Settings: ${JSON.stringify({
       enableRateLimit,
       enableSecurityHeaders,
@@ -1648,7 +1685,7 @@ const ADMIN_CONFIG_SCHEMA = {
     maxFileSize: { type: 'integer', label: 'Maximum file size (bytes)', description: 'Maximum accepted upload size in bytes.', example: '10737418240', requiresRestart: true }
   },
   locations: {
-    definitions: { type: 'locations', label: 'Server Locations', description: 'Additional server-side roots. For NFS, mount the share first and enter the mounted directory.', example: '[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10}]', requiresRestart: true }
+    definitions: { type: 'locations', label: 'Server Locations', description: 'Server-side roots. For NFS, mount the share first and enter the mounted directory. Changes apply immediately.', example: '[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10}]', requiresRestart: false }
   },
   maintenance: {
     tempUploadRetentionDays: { type: 'integer', label: 'Temporary upload retention (days)', description: 'Delete interrupted temporary uploads older than this many days.', example: '7', requiresRestart: false },
@@ -1898,18 +1935,13 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
     systemLogger.logSystem('INFO', `Configuration updated by admin: ${req.user?.username}, Updated fields: ${JSON.stringify(updatedFields)}`);
 
     // Determine restart requirements
-    const needsRestart = updatedFields.some(field =>
+    const requiresRestart = field =>
       field.startsWith('server.') ||
       field === 'security.jwtSecret' ||
-      field.startsWith('fileSystem.') ||
-      field.startsWith('ssl.')
-    );
-    const restartRequiredFields = updatedFields.filter(field =>
-      field.startsWith('server.') ||
-      field === 'security.jwtSecret' ||
-      field.startsWith('fileSystem.') ||
-      field.startsWith('ssl.')
-    );
+      (field.startsWith('fileSystem.') && field !== 'fileSystem.locations') ||
+      field.startsWith('ssl.');
+    const needsRestart = updatedFields.some(requiresRestart);
+    const restartRequiredFields = updatedFields.filter(requiresRestart);
 
     res.json({
       success: true,
@@ -2220,29 +2252,9 @@ async function startServer() {
     tempUploadCleanupInterval = setInterval(runTempUploadCleanup, tempUploadCleanupIntervalHours * 60 * 60 * 1000);
     systemLogger.logSystem('INFO', `TEMP UPLOAD CLEANUP SCHEDULER - RetentionDays: ${tempUploadRetentionDays}, IntervalHours: ${tempUploadCleanupIntervalHours}`);
 
-    locationManager = new LocationManager(configManager.getConfig());
-    locationPermissionManager = new LocationPermissionManager(locationManager);
-    locationPermissionManager.setUserResolver((username) => userManager.getUser(username));
-    shareRoutes.setLocationPermissionManager?.(locationPermissionManager);
-
     // Initialize enhanced file system with in-memory cache
     fileSystem = new EnhancedMemoryFileSystem(storagePath);
-    const defaultLocation = locationManager.getLocation('default');
-    if (defaultLocation && defaultLocation.rootPath === path.resolve(storagePath)) {
-      locationFileSystems.set('default', fileSystem);
-    }
-    uploadApi.setCache(fileSystem.cache);
-    uploadApi.setLocationManager(locationManager, async (locationId) => {
-      let targetFileSystem = locationFileSystems.get(locationId);
-      if (!targetFileSystem) {
-        const location = locationManager.getLocation(locationId);
-        if (!location) return null;
-        targetFileSystem = new EnhancedMemoryFileSystem(location.rootPath);
-        await targetFileSystem.initialize();
-        locationFileSystems.set(locationId, targetFileSystem);
-      }
-      return targetFileSystem.cache;
-    }, locationPermissionManager);
+    configureLocationRuntime();
     systemLogger.logSystem('INFO', 'Initializing file system cache in the background...');
     fileSystem.initialize().then(() => {
       isCacheReady = true;
