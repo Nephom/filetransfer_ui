@@ -184,6 +184,7 @@ const SettingsModal = ({ onClose, token }) => {
                     successMsg += ' Server restart may be required for some changes to take effect.';
                 }
                 setSuccess(successMsg);
+                if (payload.locations) window.dispatchEvent(new CustomEvent('locations-updated'));
                 await fetchConfig();
             } else {
                 setError(data.error || 'Failed to save configuration');
@@ -489,7 +490,7 @@ const SettingsModal = ({ onClose, token }) => {
                                         {configSection === 'locations' ? (
                                             <div style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '12px', padding: '16px' }}>
                                                 <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Server Locations</label>
-                                                <p style={{ color: 'rgba(255, 255, 255, 0.75)', fontSize: '12px', lineHeight: 1.5 }}>Use server paths such as <code>/mnt/nfs/team-a</code>, not paths from the user's computer. For NFS, mount the share on the server first. Location IDs must stay stable after permissions are assigned.</p>
+                                                <p style={{ color: 'rgba(255, 255, 255, 0.75)', fontSize: '12px', lineHeight: 1.5 }}>Use server paths such as <code>/mnt/nfs/team-a</code>, not paths from the user's computer. For NFS, mount the share on the server first. Location IDs must stay stable after permissions are assigned. Changes apply immediately.</p>
                                                 <div style={{ overflowX: 'auto' }}>
                                                     <table style={{ width: '100%', minWidth: '860px', borderCollapse: 'collapse', color: 'white', fontSize: '12px' }}>
                                                         <thead><tr style={{ color: 'rgba(255, 255, 255, 0.75)', textAlign: 'left' }}>

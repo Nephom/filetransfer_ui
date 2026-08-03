@@ -160,6 +160,12 @@ const FileBrowser = ({ token, user, onLogout }) => {
     };
 
     React.useEffect(() => { loadLocations(); }, [token]);
+
+    React.useEffect(() => {
+        const handleLocationsUpdated = () => { loadLocations(); };
+        window.addEventListener('locations-updated', handleLocationsUpdated);
+        return () => window.removeEventListener('locations-updated', handleLocationsUpdated);
+    }, [token]);
     React.useEffect(() => {
         if (!locationId) return;
         loadFiles('');
