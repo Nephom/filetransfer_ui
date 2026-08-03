@@ -1639,46 +1639,107 @@ app.get('/api/admin/users/:username', requireAdmin, async (req, res) => {
   }
 });
 
+const ADMIN_CONFIG_SCHEMA = {
+  server: {
+    port: { type: 'integer', label: 'HTTP port', description: 'Port used by the WebUI and API. Requires a service restart.', example: '9400', requiresRestart: true },
+    host: { type: 'string', label: 'Bind address', description: 'Network address where the service listens. Use 0.0.0.0 to listen on all interfaces.', example: '0.0.0.0', requiresRestart: true }
+  },
+  fileSystem: {
+    storagePath: { type: 'path', label: 'Default storage path', description: 'Legacy/default fallback directory for completed uploads. This is a path on the server, not the browser computer.', example: './storage or /srv/filetransfer/default', requiresRestart: true },
+    maxFileSize: { type: 'integer', label: 'Maximum file size (bytes)', description: 'Maximum accepted upload size in bytes.', example: '10737418240', requiresRestart: true }
+  },
+  locations: {
+    definitions: { type: 'locations', label: 'Server Locations', description: 'Additional server-side roots. For NFS, mount the share first and enter the mounted directory.', example: '[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10}]', requiresRestart: true }
+  },
+  maintenance: {
+    tempUploadRetentionDays: { type: 'integer', label: 'Temporary upload retention (days)', description: 'Delete interrupted temporary uploads older than this many days.', example: '7', requiresRestart: false },
+    tempUploadCleanupIntervalHours: { type: 'integer', label: 'Temporary upload cleanup interval (hours)', description: 'How often the service scans for expired temporary uploads.', example: '24', requiresRestart: false }
+  },
+  logging: {
+    level: { type: 'enum', label: 'Log level', description: 'DEBUG is verbose and should only be enabled while investigating a problem.', example: 'INFO', options: ['DEBUG', 'INFO', 'WARN', 'ERROR'], requiresRestart: false }
+  },
+  security: {
+    enableRateLimit: { type: 'boolean', label: 'Rate limiting', description: 'Limit request frequency to reduce abuse.', requiresRestart: false },
+    enableSecurityHeaders: { type: 'boolean', label: 'Security headers', description: 'Send protective HTTP security headers.', requiresRestart: false },
+    enableInputValidation: { type: 'boolean', label: 'Input validation', description: 'Validate and sanitize user input.', requiresRestart: false },
+    enableFileUploadSecurity: { type: 'boolean', label: 'File upload security', description: 'Apply upload security checks.', requiresRestart: false },
+    enableRequestLogging: { type: 'boolean', label: 'Request logging', description: 'Log HTTP requests and responses.', requiresRestart: false },
+    enableCSP: { type: 'boolean', label: 'Content Security Policy', description: 'Enable CSP headers to reduce XSS risk.', requiresRestart: false },
+    jwtSecret: { type: 'secret', label: 'JWT secret', description: 'Signs login tokens. Changing it invalidates existing tokens and requires a restart.', requiresRestart: true, sensitive: true }
+  },
+  shareLinks: {
+    enabled: { type: 'boolean', label: 'Enable share links', description: 'Allow authenticated users to create public share links.', requiresRestart: false },
+    defaultExpiration: { type: 'integer', label: 'Default expiration (seconds)', description: 'Default public-link lifetime. 86400 seconds equals 24 hours.', example: '86400', requiresRestart: false },
+    maxExpiration: { type: 'integer', label: 'Maximum expiration (seconds)', description: 'Longest public-link lifetime. Must not be less than the default.', example: '2592000', requiresRestart: false },
+    allowPasswordProtection: { type: 'boolean', label: 'Allow password protection', description: 'Allow a share link to require its own password.', requiresRestart: false },
+    cleanupInterval: { type: 'integer', label: 'Cleanup interval (seconds)', description: 'How often expired share links are removed.', example: '86400', requiresRestart: false },
+    maxDownloadsDefault: { type: 'integer', label: 'Default maximum downloads', description: 'Default download limit. 0 means unlimited.', example: '0', requiresRestart: false }
+  },
+  ssl: {
+    httpsPort: { type: 'integer', label: 'HTTPS port', description: 'HTTPS listener port when certificates are configured. Requires a service restart.', example: '9443', requiresRestart: true },
+    enableHttpsRedirect: { type: 'boolean', label: 'Redirect HTTP to HTTPS', description: 'Redirect HTTP requests when HTTPS is available.', requiresRestart: true },
+    autoGenerateCerts: { type: 'boolean', label: 'Auto-generate certificates', description: 'Generate local certificates when none are available.', requiresRestart: true }
+  }
+};
+
+const getAdminConfig = () => ({
+  server: {
+    port: configManager.get('server.port') ?? 9400,
+    host: configManager.get('server.host') ?? 'localhost'
+  },
+  fileSystem: {
+    storagePath: configManager.get('fileSystem.storagePath') ?? './storage',
+    maxFileSize: configManager.get('fileSystem.maxFileSize') ?? 1024 * 1024 * 10000
+  },
+  locations: locationManager
+    ? locationManager.getLocations({ includeDisabled: true }).map(({ id, displayName, rootPath, enabled, readOnly, order }) => ({ id, displayName, rootPath, enabled, readOnly, order }))
+    : (configManager.get('fileSystem.locations') || []),
+  maintenance: {
+    tempUploadRetentionDays: configManager.get('maintenance.tempUploadRetentionDays') ?? 7,
+    tempUploadCleanupIntervalHours: configManager.get('maintenance.tempUploadCleanupIntervalHours') ?? 24
+  },
+  logging: {
+    level: String(configManager.get('logging.level') ?? 'INFO').toUpperCase()
+  },
+  security: {
+    enableRateLimit: configManager.get('security.enableRateLimit') === true,
+    enableSecurityHeaders: configManager.get('security.enableSecurityHeaders') === true,
+    enableInputValidation: configManager.get('security.enableInputValidation') === true,
+    enableFileUploadSecurity: configManager.get('security.enableFileUploadSecurity') === true,
+    enableRequestLogging: configManager.get('security.enableRequestLogging') === true,
+    enableCSP: configManager.get('security.enableCSP') === true,
+    jwtSecret: configManager.get('security.jwtSecret') ? '[SET]' : '[DEFAULT]'
+  },
+  shareLinks: {
+    enabled: configManager.get('shareLinks.enabled') === true,
+    defaultExpiration: configManager.get('shareLinks.defaultExpiration') ?? 86400,
+    maxExpiration: configManager.get('shareLinks.maxExpiration') ?? 2592000,
+    allowPasswordProtection: configManager.get('shareLinks.allowPasswordProtection') === true,
+    cleanupInterval: configManager.get('shareLinks.cleanupInterval') ?? 86400,
+    maxDownloadsDefault: configManager.get('shareLinks.maxDownloadsDefault') ?? 0
+  },
+  ssl: {
+    httpsPort: configManager.get('ssl.httpsPort') ?? 9443,
+    enableHttpsRedirect: configManager.get('ssl.enableHttpsRedirect') !== false,
+    autoGenerateCerts: configManager.get('ssl.autoGenerateCerts') === true
+  },
+  auth: {
+    username: configManager.get('auth.username') ?? 'admin'
+  }
+});
+
+app.get('/api/admin/config/schema', requireAdmin, (req, res) => {
+  res.json({ schema: ADMIN_CONFIG_SCHEMA, source: './src/config.ini' });
+});
+
 app.get('/api/admin/config', requireAdmin, async (req, res) => {
   try {
-    // Return current configuration (sanitized - no passwords)
-    // Only return fields that exist in config.ini
-    const config = {
-      server: {
-        port: configManager.get('server.port') || 9400
-      },
-      fileSystem: {
-        storagePath: configManager.get('fileSystem.storagePath') || './storage',
-        locations: locationManager?.getPublicLocations({ includeDisabled: true }) || []
-      },
-      security: {
-        enableRateLimit: configManager.get('security.enableRateLimit') === true,
-        enableSecurityHeaders: configManager.get('security.enableSecurityHeaders') === true,
-        enableInputValidation: configManager.get('security.enableInputValidation') === true,
-        enableFileUploadSecurity: configManager.get('security.enableFileUploadSecurity') === true,
-        enableRequestLogging: configManager.get('security.enableRequestLogging') === true,
-        enableCSP: configManager.get('security.enableCSP') === true,
-        jwtSecret: configManager.get('security.jwtSecret') ? '[SET]' : '[DEFAULT]'
-      },
-      shareLinks: {
-        enabled: configManager.get('shareLinks.enabled') === true,
-        defaultExpiration: configManager.get('shareLinks.defaultExpiration') || 86400,
-        maxExpiration: configManager.get('shareLinks.maxExpiration') || 2592000,
-        allowPasswordProtection: configManager.get('shareLinks.allowPasswordProtection') === true,
-        cleanupInterval: configManager.get('shareLinks.cleanupInterval') || 86400,
-        maxDownloadsDefault: configManager.get('shareLinks.maxDownloadsDefault') || 0
-      },
-      ssl: {
-        httpsPort: configManager.get('ssl.httpsPort') || 9443,
-        enableHttpsRedirect: configManager.get('ssl.enableHttpsRedirect') !== false
-      },
-      auth: {
-        username: configManager.get('auth.username') || 'admin'
-        // Never return password
-      }
-    };
-
-    res.json({ config, success: true });
+    const config = getAdminConfig();
+    const restartRequiredFields = Object.entries(ADMIN_CONFIG_SCHEMA)
+      .flatMap(([section, fields]) => Object.entries(fields)
+        .filter(([, metadata]) => metadata.requiresRestart)
+        .map(([key]) => `${section}.${key}`));
+    res.json({ config, schema: ADMIN_CONFIG_SCHEMA, restartRequiredFields, source: './src/config.ini', success: true });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to fetch config: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch configuration' });
@@ -1687,96 +1748,152 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
 
 app.put('/api/admin/config', requireAdmin, async (req, res) => {
   try {
-    const { server, fileSystem, security, shareLinks } = req.body;
+    const { server, fileSystem, locations, maintenance, logging, security, shareLinks, ssl } = req.body;
     const updatedFields = [];
+
+    const integer = (value, label, minimum = 1, maximum = Number.MAX_SAFE_INTEGER) => {
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+        throw new Error(`${label} must be an integer between ${minimum} and ${maximum}`);
+      }
+      return parsed;
+    };
+
+    const booleanFields = (section, values, allowed) => {
+      if (!values) return;
+      for (const key of Object.keys(values)) {
+        if (!allowed.includes(key)) throw new Error(`Unknown configuration field: ${section}.${key}`);
+        if (typeof values[key] !== 'boolean') throw new Error(`${section}.${key} must be true or false`);
+      }
+    };
+
+    const pending = [];
+    const add = (key, value) => pending.push([key, value]);
 
     // Validate and update server settings
     if (server) {
       if (server.port !== undefined) {
-        const port = parseInt(server.port);
-        if (port < 1 || port > 65535) {
-          return res.status(400).json({ error: 'Port must be between 1 and 65535' });
-        }
-        configManager.set('server.port', port);
+        const port = integer(server.port, 'server.port', 1, 65535);
+        add('server.port', port);
         updatedFields.push('server.port');
+      }
+      if (server.host !== undefined) {
+        if (typeof server.host !== 'string' || !server.host.trim()) throw new Error('server.host must be a non-empty string');
+        add('server.host', server.host.trim());
+        updatedFields.push('server.host');
       }
     }
 
     // Validate and update file system settings
     if (fileSystem) {
-      if (fileSystem.storagePath) {
-        // Basic path validation
-        if (fileSystem.storagePath.includes('..')) {
-          return res.status(400).json({ error: 'Storage path cannot contain ".."' });
-        }
-        configManager.set('fileSystem.storagePath', fileSystem.storagePath);
+      if (fileSystem.storagePath !== undefined) {
+        if (typeof fileSystem.storagePath !== 'string' || !fileSystem.storagePath.trim()) throw new Error('fileSystem.storagePath must be a non-empty path');
+        add('fileSystem.storagePath', fileSystem.storagePath.trim());
         updatedFields.push('fileSystem.storagePath');
       }
+      if (fileSystem.maxFileSize !== undefined) {
+        add('fileSystem.maxFileSize', integer(fileSystem.maxFileSize, 'fileSystem.maxFileSize'));
+        updatedFields.push('fileSystem.maxFileSize');
+      }
+    }
+
+    if (locations !== undefined) {
+      if (!Array.isArray(locations) || locations.length === 0) throw new Error('locations must be a non-empty array');
+      const candidateFileSystem = {
+        storagePath: fileSystem?.storagePath ?? configManager.get('fileSystem.storagePath'),
+        locations
+      };
+      new LocationManager({ fileSystem: candidateFileSystem });
+      add('fileSystem.locations', locations);
+      updatedFields.push('fileSystem.locations');
+    }
+
+    if (maintenance) {
+      if (maintenance.tempUploadRetentionDays !== undefined) {
+        add('maintenance.tempUploadRetentionDays', integer(maintenance.tempUploadRetentionDays, 'maintenance.tempUploadRetentionDays'));
+        updatedFields.push('maintenance.tempUploadRetentionDays');
+      }
+      if (maintenance.tempUploadCleanupIntervalHours !== undefined) {
+        add('maintenance.tempUploadCleanupIntervalHours', integer(maintenance.tempUploadCleanupIntervalHours, 'maintenance.tempUploadCleanupIntervalHours'));
+        updatedFields.push('maintenance.tempUploadCleanupIntervalHours');
+      }
+    }
+
+    if (logging) {
+      if (!['DEBUG', 'INFO', 'WARN', 'ERROR'].includes(String(logging.level || '').toUpperCase())) throw new Error('logging.level must be DEBUG, INFO, WARN, or ERROR');
+      add('logging.level', String(logging.level).toUpperCase());
+      updatedFields.push('logging.level');
     }
 
     // Update security settings
     if (security) {
-      Object.keys(security).forEach(key => {
+      const { jwtSecret, ...securityFlags } = security;
+      booleanFields('security', securityFlags, ['enableRateLimit', 'enableSecurityHeaders', 'enableInputValidation', 'enableFileUploadSecurity', 'enableRequestLogging', 'enableCSP']);
+      for (const key of Object.keys(security)) {
         if (key === 'jwtSecret') {
-          // Only update jwtSecret if it's provided and not empty
-          if (security[key] && security[key].trim() !== '') {
-            if (security[key].length < 16) {
-              return res.status(400).json({ error: 'JWT secret must be at least 16 characters long' });
-            }
-            configManager.set('security.jwtSecret', security[key]);
-            updatedFields.push('security.jwtSecret');
-          }
+          if (typeof security[key] !== 'string' || security[key].trim().length < 16) throw new Error('JWT secret must be at least 16 characters long');
+          add('security.jwtSecret', security[key].trim());
+          updatedFields.push('security.jwtSecret');
         } else {
-          // Handle boolean security flags
-          configManager.set(`security.${key}`, Boolean(security[key]));
+          add(`security.${key}`, security[key]);
           updatedFields.push(`security.${key}`);
         }
-      });
+      }
     }
 
     // Update share links settings
     if (shareLinks) {
-      if (shareLinks.enabled !== undefined) {
-        configManager.set('shareLinks.enabled', Boolean(shareLinks.enabled));
-        updatedFields.push('shareLinks.enabled');
-      }
       if (shareLinks.defaultExpiration !== undefined) {
-        const expiration = parseInt(shareLinks.defaultExpiration);
-        if (expiration < 60) {
-          return res.status(400).json({ error: 'Default expiration must be at least 60 seconds' });
-        }
-        configManager.set('shareLinks.defaultExpiration', expiration);
+        const expiration = integer(shareLinks.defaultExpiration, 'shareLinks.defaultExpiration', 60);
+        add('shareLinks.defaultExpiration', expiration);
         updatedFields.push('shareLinks.defaultExpiration');
       }
       if (shareLinks.maxExpiration !== undefined) {
-        const maxExpiration = parseInt(shareLinks.maxExpiration);
-        if (maxExpiration < 60) {
-          return res.status(400).json({ error: 'Max expiration must be at least 60 seconds' });
-        }
-        configManager.set('shareLinks.maxExpiration', maxExpiration);
+        const maxExpiration = integer(shareLinks.maxExpiration, 'shareLinks.maxExpiration', 60);
+        add('shareLinks.maxExpiration', maxExpiration);
         updatedFields.push('shareLinks.maxExpiration');
       }
       if (shareLinks.allowPasswordProtection !== undefined) {
-        configManager.set('shareLinks.allowPasswordProtection', Boolean(shareLinks.allowPasswordProtection));
+        if (typeof shareLinks.allowPasswordProtection !== 'boolean') throw new Error('shareLinks.allowPasswordProtection must be true or false');
+        add('shareLinks.allowPasswordProtection', shareLinks.allowPasswordProtection);
         updatedFields.push('shareLinks.allowPasswordProtection');
       }
+      if (shareLinks.enabled !== undefined) {
+        if (typeof shareLinks.enabled !== 'boolean') throw new Error('shareLinks.enabled must be true or false');
+        add('shareLinks.enabled', shareLinks.enabled);
+        updatedFields.push('shareLinks.enabled');
+      }
       if (shareLinks.cleanupInterval !== undefined) {
-        const interval = parseInt(shareLinks.cleanupInterval);
-        if (interval < 60) {
-          return res.status(400).json({ error: 'Cleanup interval must be at least 60 seconds' });
-        }
-        configManager.set('shareLinks.cleanupInterval', interval);
+        const interval = integer(shareLinks.cleanupInterval, 'shareLinks.cleanupInterval', 60);
+        add('shareLinks.cleanupInterval', interval);
         updatedFields.push('shareLinks.cleanupInterval');
       }
       if (shareLinks.maxDownloadsDefault !== undefined) {
-        const maxDownloads = parseInt(shareLinks.maxDownloadsDefault);
-        if (maxDownloads < 0) {
-          return res.status(400).json({ error: 'Max downloads must be non-negative (0 = unlimited)' });
-        }
-        configManager.set('shareLinks.maxDownloadsDefault', maxDownloads);
+        const maxDownloads = integer(shareLinks.maxDownloadsDefault, 'shareLinks.maxDownloadsDefault', 0);
+        add('shareLinks.maxDownloadsDefault', maxDownloads);
         updatedFields.push('shareLinks.maxDownloadsDefault');
       }
     }
+
+    if (ssl) {
+      if (ssl.httpsPort !== undefined) {
+        add('ssl.httpsPort', integer(ssl.httpsPort, 'ssl.httpsPort', 1, 65535));
+        updatedFields.push('ssl.httpsPort');
+      }
+      booleanFields('ssl', ssl, ['enableHttpsRedirect', 'autoGenerateCerts']);
+      for (const key of ['enableHttpsRedirect', 'autoGenerateCerts']) {
+        if (ssl[key] !== undefined) {
+          add(`ssl.${key}`, ssl[key]);
+          updatedFields.push(`ssl.${key}`);
+        }
+      }
+    }
+
+    const defaultExpiration = shareLinks?.defaultExpiration ?? configManager.get('shareLinks.defaultExpiration');
+    const maxExpiration = shareLinks?.maxExpiration ?? configManager.get('shareLinks.maxExpiration');
+    if (defaultExpiration > maxExpiration) throw new Error('shareLinks.defaultExpiration cannot exceed shareLinks.maxExpiration');
+
+    pending.forEach(([key, value]) => configManager.set(key, value));
 
     // Save configuration to file
     await configManager.save();
@@ -1787,7 +1904,14 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
     const needsRestart = updatedFields.some(field =>
       field.startsWith('server.') ||
       field === 'security.jwtSecret' ||
-      field === 'fileSystem.storagePath'
+      field.startsWith('fileSystem.') ||
+      field.startsWith('ssl.')
+    );
+    const restartRequiredFields = updatedFields.filter(field =>
+      field.startsWith('server.') ||
+      field === 'security.jwtSecret' ||
+      field.startsWith('fileSystem.') ||
+      field.startsWith('ssl.')
     );
 
     res.json({
@@ -1796,11 +1920,13 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
         ? 'Configuration updated successfully. Server restart required for some changes to take effect.'
         : 'Configuration updated successfully.',
       updatedFields,
-      needsRestart
+      needsRestart,
+      restartRequiredFields
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to update config: ${error.message}`);
-    res.status(500).json({ error: 'Failed to update configuration' });
+    const statusCode = /must be|Unknown configuration|cannot exceed|non-empty|locations/.test(error.message) ? 400 : 500;
+    res.status(statusCode).json({ error: error.message || 'Failed to update configuration' });
   }
 });
 
@@ -1812,10 +1938,12 @@ app.post('/api/admin/config/backup', requireAdmin, async (req, res) => {
       createdBy: req.user?.username
     };
     
-    // Remove sensitive data from backup
-    delete backup.config.password;
-    delete backup.config.passwordHashed;
-    delete backup.config.jwtSecret;
+    // Remove sensitive data from nested configuration sections.
+    if (backup.config.auth) {
+      delete backup.config.auth.password;
+      delete backup.config.auth.passwordHashed;
+    }
+    if (backup.config.security) delete backup.config.security.jwtSecret;
     
     const backupName = `config-backup-${new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-')}.json`;
     
