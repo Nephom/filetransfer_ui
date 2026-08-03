@@ -12,6 +12,16 @@ const configManager = require('../config/index');
 const { systemLogger } = require('../utils/logger');
 const { authenticate } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
+const { LocationManager } = require('../location');
+
+const getLocationContext = (locationId) => {
+  const manager = new LocationManager(configManager.getConfig());
+  const selectedId = locationId || (manager.getLocation('default') ? 'default' : null);
+  if (!selectedId) throw new Error('locationId is required');
+  const location = manager.getLocation(selectedId);
+  if (!location || !location.enabled) throw new Error('Location is unavailable');
+  return { manager, locationId: selectedId, location };
+};
 
 // Rate limiter for share link creation (max 10 per minute per user)
 const createShareLimiter = rateLimit({
@@ -38,7 +48,7 @@ const downloadFailLimiter = rateLimit({
  */
 router.post('/files/share', authenticate, createShareLimiter, async (req, res) => {
   try {
-    const { filePath, expiresIn, maxDownloads, password } = req.body;
+    const { filePath, locationId, expiresIn, maxDownloads, password } = req.body;
 
     // Get user from JWT (set by auth middleware)
     const userId = req.user?.id || req.user?.username || 'anonymous';
@@ -54,9 +64,8 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
       return res.status(400).json({ success: false, message: '無效的文件路徑' });
     }
 
-    // Get storage path from config
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const fullPath = path.join(storagePath, normalizedPath);
+    const context = getLocationContext(locationId);
+    const fullPath = context.manager.resolveRelativePath(context.locationId, normalizedPath);
 
     // Check if file exists
     try {
@@ -77,6 +86,7 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
       normalizedPath,
       fileName,
       {
+        locationId: context.locationId,
         expiresIn: expiresIn ? parseInt(expiresIn) : undefined,
         maxDownloads: maxDownloads ? parseInt(maxDownloads) : undefined,
         password
@@ -94,6 +104,7 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
         fullUrl: `${req.protocol}://${req.get('host')}${shareLink.shareUrl}`,
         expiresAt: shareLink.expiresAt,
         maxDownloads: shareLink.maxDownloads,
+        locationId: context.locationId,
         createdAt: shareLink.createdAt
       }
     });
@@ -131,9 +142,8 @@ router.get('/share/:shareToken/download', downloadFailLimiter, async (req, res) 
       return res.status(400).json({ success: false, message: '無效的文件路徑' });
     }
 
-    // Get storage path from config
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-    const fullPath = path.join(storagePath, normalizedPath);
+    const context = getLocationContext(shareLink.locationId);
+    const fullPath = context.manager.resolveRelativePath(context.locationId, normalizedPath);
 
     // Check if file exists
     try {

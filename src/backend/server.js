@@ -13,6 +13,7 @@ const archiver = require('archiver');
 const crypto = require('crypto');
 const configManager = require('./config');
 const { EnhancedMemoryFileSystem } = require('./file-system');
+const { LocationManager } = require('./location');
 const AuthManager = require('./auth');
 const UserManager = require('./auth/user-manager');
 const UploadAPI = require('./api/upload.js');
@@ -39,13 +40,60 @@ const app = express();
 // These will be initialized after config is loaded
 let authManager;
 let fileSystem;
+let locationManager;
+const locationFileSystems = new Map();
 
-const refreshDirectoryCache = async (directoryPath, operation, req) => {
-  if (!fileSystem?.cache) return;
-  if (fileSystem.cache.refreshDirectory) {
-    await fileSystem.cache.refreshDirectory(directoryPath);
-  } else if (fileSystem.cache.scanDirectory) {
-    await fileSystem.cache.scanDirectory(directoryPath);
+const getRequestedLocationId = (req) => req.query?.locationId || req.body?.locationId || req.headers['x-location-id'];
+
+const getStorageContext = async (req, relativePath = '') => {
+  if (!locationManager) {
+    throw Object.assign(new Error('Location service is not ready'), { statusCode: 503 });
+  }
+
+  const requestedId = getRequestedLocationId(req);
+  const locationId = requestedId || (locationManager.getLocation('default') ? 'default' : null);
+  if (!locationId) {
+    throw Object.assign(new Error('locationId is required'), { statusCode: 400 });
+  }
+
+  const location = locationManager.getLocation(locationId);
+  if (!location || !location.enabled) {
+    throw Object.assign(new Error('Location is unavailable'), { statusCode: 404 });
+  }
+  const health = await locationManager.getHealth(locationId);
+  if (health.status !== 'healthy') {
+    throw Object.assign(new Error('Location storage is unavailable'), { statusCode: 503 });
+  }
+
+  let targetPath;
+  try {
+    targetPath = locationManager.resolveRelativePath(locationId, relativePath || '');
+  } catch (error) {
+    throw Object.assign(new Error('Path is outside the selected Location'), { statusCode: 403 });
+  }
+
+  let locationFileSystem = locationFileSystems.get(locationId);
+  if (!locationFileSystem) {
+    locationFileSystem = new EnhancedMemoryFileSystem(location.rootPath);
+    await locationFileSystem.initialize();
+    locationFileSystems.set(locationId, locationFileSystem);
+  }
+
+  return {
+    locationId,
+    location,
+    rootPath: location.rootPath,
+    targetPath,
+    fileSystem: locationFileSystem
+  };
+};
+
+const refreshDirectoryCache = async (directoryPath, operation, req, targetFileSystem = fileSystem) => {
+  if (!targetFileSystem?.cache) return;
+  if (targetFileSystem.cache.refreshDirectory) {
+    await targetFileSystem.cache.refreshDirectory(directoryPath);
+  } else if (targetFileSystem.cache.scanDirectory) {
+    await targetFileSystem.cache.scanDirectory(directoryPath);
   }
   systemLogger.logCacheOperation(operation, { path: directoryPath }, req);
 };
@@ -526,8 +574,10 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
+    const context = await getStorageContext(req, '');
+
     // Search using Redis index (no timeout needed - index queries are fast)
-    const searchResults = await fileSystem.searchFiles(query);
+    const searchResults = await context.fileSystem.searchFiles(query);
 
     // Check if indexing is in progress
     if (searchResults.indexing) {
@@ -554,6 +604,7 @@ app.post('/api/files/search', authenticate, async (req, res) => {
     res.json({
       files,
       resultCount: files.length,
+      locationId: context.locationId,
       indexStats: searchResults.indexStats
     });
   } catch (error) {
@@ -574,8 +625,10 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
+    const context = await getStorageContext(req, '');
+
     // Search using Redis index (no timeout needed - index queries are fast)
-    const searchResults = await fileSystem.searchFiles(query);
+    const searchResults = await context.fileSystem.searchFiles(query);
 
     // Check if indexing is in progress
     if (searchResults.indexing) {
@@ -602,6 +655,7 @@ app.get('/api/files/search', authenticate, async (req, res) => {
     res.json({
       files,
       resultCount: files.length,
+      locationId: context.locationId,
       indexStats: searchResults.indexStats
     });
   } catch (error) {
@@ -615,8 +669,9 @@ app.get('/api/files/search', authenticate, async (req, res) => {
 // Cache statistics endpoint
 app.get('/api/files/cache-stats', authenticate, async (req, res) => {
   try {
-    const stats = await fileSystem.getCacheInfo ? await fileSystem.getCacheInfo() : { message: 'Cache stats not available' };
-    res.json(stats);
+    const context = await getStorageContext(req, '');
+    const stats = await context.fileSystem.getCacheInfo ? await context.fileSystem.getCacheInfo() : { message: 'Cache stats not available' };
+    res.json({ ...stats, locationId: context.locationId });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Cache stats error: ${error.message}`);
     res.status(500).json({ error: error.message });
@@ -626,11 +681,12 @@ app.get('/api/files/cache-stats', authenticate, async (req, res) => {
 // Index status endpoint - shows global search index status
 app.get('/api/files/index-status', authenticate, async (req, res) => {
   try {
-    if (!fileSystem.cache || !fileSystem.cache.getIndexStatus) {
+    const context = await getStorageContext(req, '');
+    if (!context.fileSystem.cache || !context.fileSystem.cache.getIndexStatus) {
       return res.status(404).json({ error: 'Index status not available' });
     }
-    const status = await fileSystem.cache.getIndexStatus();
-    res.json(status);
+    const status = await context.fileSystem.cache.getIndexStatus();
+    res.json({ ...status, locationId: context.locationId });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Index status error: ${error.message}`);
     res.status(500).json({ error: error.message });
@@ -640,12 +696,13 @@ app.get('/api/files/index-status', authenticate, async (req, res) => {
 // Trigger manual index rebuild endpoint (admin only recommended)
 app.post('/api/files/rebuild-index', authenticate, async (req, res) => {
   try {
-    if (!fileSystem.cache || !fileSystem.cache.buildGlobalIndex) {
+    const context = await getStorageContext(req, '');
+    if (!context.fileSystem.cache || !context.fileSystem.cache.buildGlobalIndex) {
       return res.status(404).json({ error: 'Index rebuild not available' });
     }
 
     // Check if already indexing
-    const status = await fileSystem.cache.getIndexStatus();
+    const status = await context.fileSystem.cache.getIndexStatus();
     if (status.isIndexing) {
       return res.status(409).json({
         error: 'Index rebuild already in progress',
@@ -654,7 +711,7 @@ app.post('/api/files/rebuild-index', authenticate, async (req, res) => {
     }
 
     // Start index rebuild in background (don't await)
-    fileSystem.cache.buildGlobalIndex().catch(err => {
+    context.fileSystem.cache.buildGlobalIndex().catch(err => {
       systemLogger.logSystem('ERROR', `Background index rebuild failed: ${err.message}`);
     });
 
@@ -670,45 +727,46 @@ app.post('/api/files/rebuild-index', authenticate, async (req, res) => {
 });
 
 // Cache refresh endpoint (for manual cache updates)
+app.get('/api/locations', authenticate, async (req, res) => {
+  try {
+    if (!locationManager) return res.status(503).json({ error: 'Location service is not ready' });
+    const locations = locationManager.getPublicLocations();
+    res.json({ success: true, locations });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message });
+  }
+});
+
 app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
   try {
     const { directoryPath } = req.body; // Allow partial refresh
+    const context = await getStorageContext(req, directoryPath || '');
 
     if (directoryPath) {
-      const storagePath = configManager.get('fileSystem.storagePath') || './storage';
-      const fullPath = path.join(path.resolve(storagePath), directoryPath);
-      await refreshDirectoryCache(fullPath, 'refresh_directory', req);
-      res.json({ success: true, message: `Cache for ${directoryPath} refreshed.` });
+      await refreshDirectoryCache(context.targetPath, 'refresh_directory', req, context.fileSystem);
+      res.json({ success: true, locationId: context.locationId, message: `Cache for ${directoryPath} refreshed.` });
     } else {
       systemLogger.logCacheOperation('refresh_full', {}, req);
-      if (fileSystem.cache && fileSystem.cache.refreshCache) {
-        await fileSystem.cache.refreshCache();
+      if (context.fileSystem.cache && context.fileSystem.cache.refreshCache) {
+        await context.fileSystem.cache.refreshCache();
       }
-      res.json({ success: true, message: 'Entire cache refreshed successfully' });
+      res.json({ success: true, locationId: context.locationId, message: 'Entire cache refreshed successfully' });
     }
   } catch (error) {
     systemLogger.logSystem('ERROR', `Cache refresh error: ${error.message}`);
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
 // Get file content
 app.get('/api/files/content/*', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const requestPath = req.params[0] || '';
-
-    const storageRoot = path.resolve(storagePath);
-    const fullPath = path.join(storageRoot, requestPath);
-
-    if (!fullPath.startsWith(storageRoot)) {
-      return res.status(403).json({ error: 'Forbidden: Access denied.' });
-    }
-
-    const content = await fileSystem.read(fullPath);
+    const context = await getStorageContext(req, requestPath);
+    const content = await context.fileSystem.read(context.targetPath);
     res.json({ content: content.toString() });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
@@ -719,16 +777,9 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
   let streamFailed = false;
   let fileName = req.params[0] || 'unknown';
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const requestPath = req.params[0] || '';
-
-    const storageRoot = path.resolve(storagePath);
-    const fullPath = path.join(storageRoot, requestPath);
-
-    if (!fullPath.startsWith(storageRoot)) {
-      systemLogger.logSecurity('path_traversal_attempt', { path: requestPath }, req);
-      return res.status(403).json({ error: 'Forbidden: Access denied.' });
-    }
+    const context = await getStorageContext(req, requestPath);
+    const fullPath = context.targetPath;
 
     const stats = await fs.stat(fullPath);
     if (stats.isDirectory()) {
@@ -779,7 +830,7 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
     }
     systemLogger.logSystem('ERROR', `DOWNLOAD SETUP FAILED - User: ${req.user?.username || req.user?.id || 'unknown'}, File: ${fileName}, Error: ${error.message}`);
     systemLogger.logDownload(req.params[0] || 'unknown', 'authenticated', false, req, { error: error.message });
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
@@ -793,32 +844,22 @@ app.get('/api/files', authenticate, async (req, res) => {
 
   try {
     const { path: requestPath, offset, limit } = req.query;
-    const storagePath = configManager.get('fileSystem.storagePath');
-    const storageRoot = path.resolve(storagePath);
-
-    // Determine the target path
-    let targetPath = storageRoot;
-    if (requestPath && requestPath.trim() !== '') {
-      targetPath = path.resolve(storageRoot, requestPath);
-      // Security check: ensure the path is within storage root
-      if (!targetPath.startsWith(storageRoot)) {
-        systemLogger.logSecurity('path_traversal_attempt', { path: requestPath }, req);
-        return res.status(403).json({ error: 'Access denied' });
-      }
-    }
+    const context = await getStorageContext(req, requestPath || '');
+    const { locationId, rootPath: storageRoot, targetPath, fileSystem: locationFileSystem } = context;
 
     const isRootDir = targetPath === storageRoot;
 
     // --- On-demand watcher integration ---
     const userId = req.user.id;
-    const previousPath = userActiveDirectories.get(userId);
+    const activeDirectoryKey = `${userId}:${locationId}`;
+    const previousPath = userActiveDirectories.get(activeDirectoryKey);
 
     const cacheOperationStart = Date.now();
     if (previousPath && previousPath !== targetPath) {
-      await fileSystem.cache.leaveDirectory(previousPath);
+      await locationFileSystem.cache.leaveDirectory(previousPath);
     }
-    await fileSystem.cache.enterDirectory(targetPath);
-    userActiveDirectories.set(userId, targetPath);
+    await locationFileSystem.cache.enterDirectory(targetPath);
+    userActiveDirectories.set(activeDirectoryKey, targetPath);
     const cacheOperationTime = Date.now() - cacheOperationStart;
 
     systemLogger.logSystem('INFO', `📊 Cache operation took ${cacheOperationTime}ms for ${isRootDir ? 'ROOT' : 'subdirectory'}`);
@@ -838,7 +879,7 @@ app.get('/api/files', authenticate, async (req, res) => {
     }
 
     const rawFiles = await Promise.race([
-      fileSystem.list(targetPath, listOptions),
+      locationFileSystem.list(targetPath, listOptions),
       timeoutPromise
     ]);
 
@@ -851,7 +892,7 @@ app.get('/api/files', authenticate, async (req, res) => {
         return {
           ...file,
           name: path.basename(file.path),
-          path: relativePath || file.path,
+          path: relativePath,
           isDirectory: file.isDirectory === 'true' || file.isDirectory === true,
           size: parseInt(file.size) || 0,
           modified: parseInt(file.modified) || 0
@@ -870,7 +911,7 @@ app.get('/api/files', authenticate, async (req, res) => {
         return {
           ...file,
           name: path.basename(file.path),
-          path: relativePath || file.path,
+          path: relativePath,
           isDirectory: file.isDirectory === 'true' || file.isDirectory === true,
           size: parseInt(file.size) || 0,
           modified: parseInt(file.modified) || 0
@@ -891,6 +932,7 @@ app.get('/api/files', authenticate, async (req, res) => {
     const response = {
       files: transformedFiles,
       currentPath: currentPath,
+      locationId,
       success: true
     };
 
@@ -914,7 +956,7 @@ app.get('/api/files', authenticate, async (req, res) => {
       res.status(408).json({ error: 'Request timeout - file system may be busy' });
     } else {
       systemLogger.logAPI('list', req.query.path || '/', false, req, { error: error.message });
-      res.status(500).json({ error: error.message });
+      res.status(error.statusCode || 500).json({ error: error.message });
     }
   }
 });
@@ -922,27 +964,22 @@ app.get('/api/files', authenticate, async (req, res) => {
 // Create/write file
 app.post('/api/files', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { path: requestPath, content } = req.body;
+    const fullPath = await getStorageContext(req, requestPath).then((context) => {
+      return { ...context, parentPath: path.dirname(context.targetPath) };
+    });
 
-    const storageRoot = path.resolve(storagePath);
-    const fullPath = path.join(storageRoot, requestPath);
-    if (!fullPath.startsWith(storageRoot)) {
-      return res.status(403).json({ error: 'Forbidden: Access denied.' });
-    }
-
-    await fileSystem.write(fullPath, content);
-    await refreshDirectoryCache(path.dirname(fullPath), 'refresh_after_write', req);
-    res.json({ success: true });
+    await fullPath.fileSystem.write(fullPath.targetPath, content);
+    await refreshDirectoryCache(fullPath.parentPath, 'refresh_after_write', req, fullPath.fileSystem);
+    res.json({ success: true, locationId: fullPath.locationId });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
 // Create new folder
 app.post('/api/folders', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { folderName, currentPath } = req.body;
 
     if (!folderName || !folderName.trim()) {
@@ -950,31 +987,25 @@ app.post('/api/folders', authenticate, async (req, res) => {
     }
 
     const relativePath = currentPath ? path.join(currentPath, folderName.trim()) : folderName.trim();
+    const context = await getStorageContext(req, relativePath);
+    const parentContext = await getStorageContext(req, currentPath || '');
 
-    const storageRoot = path.resolve(storagePath);
-    const fullPath = path.join(storageRoot, relativePath);
-    if (!fullPath.startsWith(storageRoot)) {
-      systemLogger.logSecurity('path_traversal_attempt', { path: relativePath }, req);
-      return res.status(403).json({ error: 'Forbidden: Access denied.' });
-    }
-
-    await fileSystem.mkdir(fullPath);
+    await context.fileSystem.mkdir(context.targetPath);
 
     // Force cache refresh for the parent directory
-    if (fileSystem.cache) {
+    if (context.fileSystem.cache) {
       try {
-        const parentPath = currentPath ? path.join(storageRoot, currentPath) : storageRoot;
-        await refreshDirectoryCache(parentPath, 'refresh_after_mkdir', req);
+        await refreshDirectoryCache(parentContext.targetPath, 'refresh_after_mkdir', req, context.fileSystem);
       } catch (cacheError) {
         // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
       }
     }
 
     systemLogger.logFileOperation('mkdir', relativePath, true, req, { folderName });
-    res.json({ success: true, message: 'Folder created successfully' });
+    res.json({ success: true, locationId: context.locationId, message: 'Folder created successfully' });
   } catch (error) {
     systemLogger.logFileOperation('mkdir', req.body.currentPath || '/', false, req, { error: error.message, folderName: req.body.folderName });
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
@@ -983,51 +1014,40 @@ app.post('/api/folders', authenticate, async (req, res) => {
 // Legacy endpoint for backward compatibility
 app.post('/api/files/directory', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { path: requestPath } = req.body;
-
-    const storageRoot = path.resolve(storagePath);
-    const fullPath = path.join(storageRoot, requestPath);
-    if (!fullPath.startsWith(storageRoot)) {
-      return res.status(403).json({ error: 'Forbidden: Access denied.' });
-    }
-
-    await fileSystem.mkdir(fullPath);
-    await refreshDirectoryCache(path.dirname(fullPath), 'refresh_after_mkdir', req);
-    res.json({ success: true });
+    const context = await getStorageContext(req, requestPath);
+    await context.fileSystem.mkdir(context.targetPath);
+    await refreshDirectoryCache(path.dirname(context.targetPath), 'refresh_after_mkdir', req, context.fileSystem);
+    res.json({ success: true, locationId: context.locationId });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
 // Delete files or folders (specific route - must be before wildcard)
 app.delete('/api/files/delete', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { items, currentPath } = req.body;
 
     if (!items || !Array.isArray(items)) {
       return res.status(400).json({ error: 'Items array is required' });
     }
 
-    const path = require('path');
     const deletedItems = [];
+    const context = await getStorageContext(req, currentPath || '');
 
     for (const item of items) {
-      const fullPath = currentPath
-        ? path.join(storagePath, currentPath, item.name)
-        : path.join(storagePath, item.name);
+      const itemContext = await getStorageContext(req, path.join(currentPath || '', item.name));
 
-      await fileSystem.delete(fullPath);
+      await context.fileSystem.delete(itemContext.targetPath);
       deletedItems.push(item.name);
       systemLogger.logFileOperation('delete', path.join(currentPath || '', item.name), true, req, { type: item.isDirectory ? 'directory' : 'file' });
     }
 
     // Force cache refresh for the parent directory
-    if (fileSystem.cache) {
+    if (context.fileSystem.cache) {
       try {
-        const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
-        await refreshDirectoryCache(parentPath, 'refresh_after_delete', req);
+        await refreshDirectoryCache(context.targetPath, 'refresh_after_delete', req, context.fileSystem);
       } catch (cacheError) {
         // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
       }
@@ -1036,41 +1056,34 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
     res.json({
       success: true,
       message: `${deletedItems.length} item(s) deleted successfully`,
-      deletedItems
+      deletedItems,
+      locationId: context.locationId
     });
   } catch (error) {
     systemLogger.logFileOperation('delete', req.body.currentPath || '/', false, req, { error: error.message, items: req.body.items?.map(i => i.name) });
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
 // Rename file or folder (specific route - must be before wildcard)
 app.put('/api/files/rename', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { oldName, newName, currentPath } = req.body;
 
     if (!oldName || !newName) {
       return res.status(400).json({ error: 'Both old and new names are required' });
     }
 
-    const path = require('path');
-    const oldPath = currentPath
-      ? path.join(storagePath, currentPath, oldName)
-      : path.join(storagePath, oldName);
-
-    const newPath = currentPath
-      ? path.join(storagePath, currentPath, newName)
-      : path.join(storagePath, newName);
+    const oldContext = await getStorageContext(req, path.join(currentPath || '', oldName));
+    const newContext = await getStorageContext(req, path.join(currentPath || '', newName));
 
     // Perform rename
-    await fileSystem.rename(oldPath, newPath);
+    await oldContext.fileSystem.rename(oldContext.targetPath, newContext.targetPath);
 
     // Force cache refresh for the parent directory
-    if (fileSystem.cache) {
+    if (oldContext.fileSystem.cache) {
       try {
-        const parentPath = currentPath ? path.join(storagePath, currentPath) : storagePath;
-        await refreshDirectoryCache(parentPath, 'refresh_after_rename', req);
+        await refreshDirectoryCache(path.dirname(oldContext.targetPath), 'refresh_after_rename', req, oldContext.fileSystem);
       } catch (cacheError) {
         // Non-fatal cache error
         systemLogger.logSystem('WARN', `Cache refresh after rename failed (non-fatal): ${cacheError.message}`);
@@ -1078,36 +1091,33 @@ app.put('/api/files/rename', authenticate, async (req, res) => {
     }
 
     systemLogger.logFileOperation('rename', path.join(currentPath || '', oldName), true, req, { newName, oldName });
-    res.json({ success: true, message: 'Item renamed successfully' });
+    res.json({ success: true, locationId: oldContext.locationId, message: 'Item renamed successfully' });
   } catch (error) {
     systemLogger.logFileOperation('rename', path.join(req.body.currentPath || '', req.body.oldName), false, req, { error: error.message });
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
 // Create new file (specific route - must be before wildcard)
 app.post('/api/files/create', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { fileName, currentPath, content = '' } = req.body;
 
     if (!fileName || !fileName.trim()) {
       return res.status(400).json({ error: 'File name is required' });
     }
 
-    const fullPath = currentPath
-      ? `${storagePath}/${currentPath}/${fileName.trim()}`
-      : `${storagePath}/${fileName.trim()}`;
+    const context = await getStorageContext(req, path.join(currentPath || '', fileName.trim()));
 
-    await fileSystem.write(fullPath, content);
+    await context.fileSystem.write(context.targetPath, content);
 
-    await refreshDirectoryCache(path.dirname(fullPath), 'refresh_after_create', req);
+    await refreshDirectoryCache(path.dirname(context.targetPath), 'refresh_after_create', req, context.fileSystem);
 
     systemLogger.logFileOperation('create', path.join(currentPath || '', fileName.trim()), true, req, { fileName, size: content.length });
-    res.json({ success: true, message: 'File created successfully' });
+    res.json({ success: true, locationId: context.locationId, message: 'File created successfully' });
   } catch (error) {
     systemLogger.logFileOperation('create', path.join(req.body.currentPath || '', req.body.fileName), false, req, { error: error.message });
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
@@ -1115,63 +1125,63 @@ app.post('/api/files/create', authenticate, async (req, res) => {
 app.post('/api/files/copy', authenticate, async (req, res) => {
   try {
     const { sourcePath, destinationPath } = req.body;
-    await fileSystem.copy(sourcePath, destinationPath);
-    await refreshDirectoryCache(path.dirname(destinationPath), 'refresh_after_copy', req);
-    res.json({ success: true });
+    const sourceContext = await getStorageContext(req, sourcePath);
+    const destinationContext = await getStorageContext(req, destinationPath);
+    await sourceContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
+    await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_copy', req, sourceContext.fileSystem);
+    res.json({ success: true, locationId: sourceContext.locationId });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
 app.post('/api/files/move', authenticate, async (req, res) => {
   try {
     const { sourcePath, destinationPath } = req.body;
-    await fileSystem.move(sourcePath, destinationPath);
-    await refreshDirectoryCache(path.dirname(sourcePath), 'refresh_after_move_source', req);
-    await refreshDirectoryCache(path.dirname(destinationPath), 'refresh_after_move_destination', req);
-    res.json({ success: true });
+    const sourceContext = await getStorageContext(req, sourcePath);
+    const destinationContext = await getStorageContext(req, destinationPath);
+    if (sourceContext.locationId !== destinationContext.locationId) {
+      return res.status(400).json({ error: 'Cross-Location move is not supported' });
+    }
+    await sourceContext.fileSystem.move(sourceContext.targetPath, destinationContext.targetPath);
+    await refreshDirectoryCache(path.dirname(sourceContext.targetPath), 'refresh_after_move_source', req, sourceContext.fileSystem);
+    await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_move_destination', req, sourceContext.fileSystem);
+    res.json({ success: true, locationId: sourceContext.locationId });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
 // Paste (copy or move) files (specific route - must be before wildcard)
 app.post('/api/files/paste', authenticate, async (req, res) => {
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     const { items, operation, targetPath } = req.body;
 
     if (!items || !Array.isArray(items) || !operation) {
       return res.status(400).json({ error: 'Items array and operation are required' });
     }
 
-    const path = require('path');
     const processedItems = [];
-    const storageRoot = path.resolve(storagePath);
     const sourceDirectories = new Set();
+    const targetContext = await getStorageContext(req, targetPath || '');
 
     for (const item of items) {
       // Build source path from item.path (relative path from frontend)
-      const sourceFullPath = path.join(storageRoot, item.path);
-
-      // Build target path
-      const targetFullPath = targetPath
-        ? path.join(storageRoot, targetPath, item.name)
-        : path.join(storageRoot, item.name);
-
-      // Security check: ensure paths are within storage root
-      if (!sourceFullPath.startsWith(storageRoot) || !targetFullPath.startsWith(storageRoot)) {
-        systemLogger.logSecurity('path_traversal_attempt', { source: item.path, target: targetPath }, req);
-        return res.status(403).json({ error: 'Forbidden: Access denied.' });
-      }
+      const sourceContext = await getStorageContext(req, item.path);
+      const targetItemContext = await getStorageContext(req, path.join(targetPath || '', item.name));
+      const sourceFullPath = sourceContext.targetPath;
+      const targetFullPath = targetItemContext.targetPath;
 
       sourceDirectories.add(path.dirname(sourceFullPath));
 
       if (operation === 'copy') {
-        await fileSystem.copy(sourceFullPath, targetFullPath);
+        await sourceContext.fileSystem.copy(sourceFullPath, targetFullPath);
         systemLogger.logFileOperation('copy', path.join(targetPath || '', item.name), true, req, { source: sourceFullPath, target: targetFullPath });
       } else if (operation === 'cut') {
-        await fileSystem.move(sourceFullPath, targetFullPath);
+        if (sourceContext.locationId !== targetItemContext.locationId) {
+          return res.status(400).json({ error: 'Cross-Location move is not supported' });
+        }
+        await sourceContext.fileSystem.move(sourceFullPath, targetFullPath);
         systemLogger.logFileOperation('move', path.join(targetPath || '', item.name), true, req, { source: sourceFullPath, target: targetFullPath });
       }
 
@@ -1179,17 +1189,17 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
     }
 
     // Force cache refresh for both source and target directories
-    if (fileSystem.cache) {
+    if (targetContext.fileSystem.cache) {
       try {
         // Refresh target directory
-        const targetDir = targetPath ? path.join(storageRoot, targetPath) : storageRoot;
-        await refreshDirectoryCache(targetDir, 'refresh_after_paste', req);
+        const targetDir = targetContext.targetPath;
+        await refreshDirectoryCache(targetDir, 'refresh_after_paste', req, targetContext.fileSystem);
 
         // For move operations, refresh every affected source directory.
         if (operation === 'cut') {
           for (const sourceDir of sourceDirectories) {
             if (sourceDir !== targetDir) {
-              await refreshDirectoryCache(sourceDir, 'refresh_after_paste_source', req);
+              await refreshDirectoryCache(sourceDir, 'refresh_after_paste_source', req, targetContext.fileSystem);
             }
           }
         }
@@ -1200,6 +1210,7 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
 
     res.json({
       success: true,
+      locationId: targetContext.locationId,
       message: `${processedItems.length} item(s) ${operation === 'copy' ? 'copied' : 'moved'} successfully`,
       processedItems
     });
@@ -1214,14 +1225,13 @@ app.post('/api/archive', authenticate, async (req, res) => {
   let archiveFileName = 'archive.zip';
   let items = [];
   try {
-    const storagePath = configManager.get('fileSystem.storagePath') || './storage';
     ({ items, currentPath = '' } = req.body);
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
     }
 
-    const storageRoot = path.resolve(storagePath);
+    await getStorageContext(req, currentPath);
     const resolvedItems = [];
     for (const item of items) {
       if (!item || typeof item.name !== 'string' || item.name.trim() === '') {
@@ -1233,12 +1243,8 @@ app.post('/api/archive', authenticate, async (req, res) => {
       const parentPath = typeof item.path === 'string' && item.path
         ? path.dirname(item.path)
         : currentPath;
-      const itemPath = path.resolve(storageRoot, parentPath, item.name);
-      if (path.relative(storageRoot, itemPath).startsWith('..') || path.isAbsolute(path.relative(storageRoot, itemPath))) {
-        systemLogger.logSecurity('path_traversal_attempt', { path: item.name }, req);
-        return res.status(403).json({ error: 'Forbidden: Access denied.' });
-      }
-      resolvedItems.push({ item, itemPath });
+      const itemContext = await getStorageContext(req, path.join(parentPath, item.name));
+      resolvedItems.push({ item, itemPath: itemContext.targetPath });
     }
 
     // Determine archive filename based on selection
@@ -1340,7 +1346,7 @@ app.post('/api/archive', authenticate, async (req, res) => {
       error: error.message
     });
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      res.status(error.statusCode || 500).json({ error: error.message });
     }
   }
 });
@@ -1602,7 +1608,8 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
         port: configManager.get('server.port') || 9400
       },
       fileSystem: {
-        storagePath: configManager.get('fileSystem.storagePath') || './storage'
+        storagePath: configManager.get('fileSystem.storagePath') || './storage',
+        locations: locationManager?.getPublicLocations({ includeDisabled: true }) || []
       },
       security: {
         enableRateLimit: configManager.get('security.enableRateLimit') === true,
@@ -2048,9 +2055,26 @@ async function startServer() {
     tempUploadCleanupInterval = setInterval(runTempUploadCleanup, tempUploadCleanupIntervalHours * 60 * 60 * 1000);
     systemLogger.logSystem('INFO', `TEMP UPLOAD CLEANUP SCHEDULER - RetentionDays: ${tempUploadRetentionDays}, IntervalHours: ${tempUploadCleanupIntervalHours}`);
 
+    locationManager = new LocationManager(configManager.getConfig());
+
     // Initialize enhanced file system with in-memory cache
     fileSystem = new EnhancedMemoryFileSystem(storagePath);
+    const defaultLocation = locationManager.getLocation('default');
+    if (defaultLocation && defaultLocation.rootPath === path.resolve(storagePath)) {
+      locationFileSystems.set('default', fileSystem);
+    }
     uploadApi.setCache(fileSystem.cache);
+    uploadApi.setLocationManager(locationManager, async (locationId) => {
+      let targetFileSystem = locationFileSystems.get(locationId);
+      if (!targetFileSystem) {
+        const location = locationManager.getLocation(locationId);
+        if (!location) return null;
+        targetFileSystem = new EnhancedMemoryFileSystem(location.rootPath);
+        await targetFileSystem.initialize();
+        locationFileSystems.set(locationId, targetFileSystem);
+      }
+      return targetFileSystem.cache;
+    });
     systemLogger.logSystem('INFO', 'Initializing file system cache in the background...');
     fileSystem.initialize().then(() => {
       isCacheReady = true;
