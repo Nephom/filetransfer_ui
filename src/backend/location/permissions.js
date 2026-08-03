@@ -20,6 +20,11 @@ const MUTATION_CAPABILITIES = new Set(['upload', 'write', 'delete', 'rename', 'm
 class LocationPermissionManager {
   constructor(locationManager) {
     this.locationManager = locationManager;
+    this.userResolver = null;
+  }
+
+  setUserResolver(userResolver) {
+    this.userResolver = userResolver;
   }
 
   normalizeCapabilities(capabilities) {
@@ -69,6 +74,13 @@ class LocationPermissionManager {
     if (!this.can(user, locationId, capability)) {
       throw Object.assign(new Error('Location permission denied'), { statusCode: 403 });
     }
+  }
+
+  async assertCurrent(user, locationId, capability) {
+    const currentUser = user?.role === 'admin' || !this.userResolver
+      ? user
+      : await this.userResolver(user.username) || user;
+    this.assert(currentUser, locationId, capability);
   }
 
   validateMapping(mapping) {

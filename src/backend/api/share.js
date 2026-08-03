@@ -70,7 +70,7 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     }
 
     const context = getLocationContext(locationId);
-    locationPermissionManager?.assert(req.user, context.locationId, 'share');
+    await locationPermissionManager?.assertCurrent(req.user, context.locationId, 'share');
     const fullPath = context.manager.resolveRelativePath(context.locationId, normalizedPath);
 
     // Check if file exists
