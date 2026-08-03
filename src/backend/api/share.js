@@ -13,6 +13,11 @@ const { systemLogger } = require('../utils/logger');
 const { authenticate } = require('../middleware/auth');
 const rateLimit = require('express-rate-limit');
 const { LocationManager } = require('../location');
+let locationPermissionManager = null;
+
+const setLocationPermissionManager = (manager) => {
+  locationPermissionManager = manager;
+};
 
 const getLocationContext = (locationId) => {
   const manager = new LocationManager(configManager.getConfig());
@@ -65,6 +70,7 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     }
 
     const context = getLocationContext(locationId);
+    locationPermissionManager?.assert(req.user, context.locationId, 'share');
     const fullPath = context.manager.resolveRelativePath(context.locationId, normalizedPath);
 
     // Check if file exists
@@ -287,3 +293,4 @@ router.get('/files/share/:shareToken/info', authenticate, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.setLocationPermissionManager = setLocationPermissionManager;

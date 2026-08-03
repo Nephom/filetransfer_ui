@@ -1,3 +1,4 @@
 const LocationManager = require('./location-manager');
+const { CAPABILITIES, LocationPermissionManager } = require('./permissions');
 
-module.exports = { LocationManager };
+module.exports = { CAPABILITIES, LocationManager, LocationPermissionManager };

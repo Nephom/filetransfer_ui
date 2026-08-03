@@ -37,6 +37,7 @@ class UploadAPI {
     this.fileSystem = new FileSystem();
     this.cache = null;
     this.locationManager = null;
+    this.locationPermissionManager = null;
     this.cacheResolver = null;
     this._setupMiddleware();
     this._setupRoutes();
@@ -46,12 +47,13 @@ class UploadAPI {
     this.cache = cache;
   }
 
-  setLocationManager(locationManager, cacheResolver = null) {
+  setLocationManager(locationManager, cacheResolver = null, locationPermissionManager = null) {
     this.locationManager = locationManager;
     this.cacheResolver = cacheResolver;
+    this.locationPermissionManager = locationPermissionManager;
   }
 
-  _resolveLocation(req, relativePath = '') {
+  _resolveLocation(req, relativePath = '', capability = 'upload') {
     if (!this.locationManager) {
       const configManager = require('../config');
       const rootPath = configManager.get('fileSystem.storagePath') || './storage';
@@ -67,6 +69,7 @@ class UploadAPI {
     if (!locationId) throw new Error('locationId is required');
     const location = this.locationManager.getLocation(locationId);
     if (!location || !location.enabled) throw new Error('Location is unavailable');
+    this.locationPermissionManager?.assert(req.user, locationId, capability);
 
     return {
       locationId,
