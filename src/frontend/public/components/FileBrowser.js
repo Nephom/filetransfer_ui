@@ -63,6 +63,10 @@ const collectDroppedUpload = async (dataTransfer) => {
 
 const FileBrowser = ({ token, user, onLogout }) => {
     const [files, setFiles] = React.useState([]);
+    const [locations, setLocations] = React.useState([]);
+    const [locationId, setLocationId] = React.useState('');
+    const [expandedLocations, setExpandedLocations] = React.useState({});
+    const [locationsLoading, setLocationsLoading] = React.useState(true);
     const [currentPath, setCurrentPath] = React.useState('');
     const [displayPath, setDisplayPath] = React.useState('/');
     const [selected, setSelected] = React.useState([]);
@@ -89,9 +93,26 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const notificationTimer = React.useRef(null);
     const downloadInProgress = React.useRef(false);
 
-    const authHeaders = { Authorization: `Bearer ${token}` };
+    const authHeaders = {
+        Authorization: `Bearer ${token}`,
+        ...(locationId ? { 'X-Location-ID': locationId } : {})
+    };
     const selectedItems = files.filter((file) => selected.includes(itemKey(file)));
     const pathForItem = (item) => normalisePath(item.path || (currentPath ? `${currentPath}/${item.name}` : item.name));
+
+    const loadLocations = async () => {
+        setLocationsLoading(true);
+        try {
+            const response = await fetch('/api/locations', { headers: { Authorization: `Bearer ${token}` } });
+            if (!response.ok) throw new Error('Unable to load Locations.');
+            const data = await response.json();
+            const available = (data.locations || []).filter((location) => location && location.id);
+            setLocations(available);
+            setExpandedLocations(Object.fromEntries(available.map((location, index) => [location.id, index === 0])));
+            setLocationId((current) => available.some((location) => location.id === current) ? current : available[0]?.id || '');
+        } catch (requestError) { setError(requestError.message); }
+        finally { setLocationsLoading(false); }
+    };
 
     const loadFiles = async (path = currentPath) => {
         setLoading(true); setError(''); setContext(null);
@@ -138,7 +159,12 @@ const FileBrowser = ({ token, user, onLogout }) => {
         }
     };
 
-    React.useEffect(() => { loadFiles(''); loadTreeChildren(''); }, []);
+    React.useEffect(() => { loadLocations(); }, [token]);
+    React.useEffect(() => {
+        if (!locationId) return;
+        loadFiles('');
+        loadTreeChildren('');
+    }, [locationId]);
     React.useEffect(() => {
         const close = (event) => {
             setContext(null);
@@ -152,6 +178,24 @@ const FileBrowser = ({ token, user, onLogout }) => {
         window.clearTimeout(notificationTimer.current);
     }, []);
     React.useEffect(() => { localStorage.setItem('file-view-mode', viewMode); }, [viewMode]);
+
+    const activeLocation = locations.find((location) => location.id === locationId);
+    const hasCapability = (capability) => activeLocation?.capabilities?.includes(capability) === true;
+    const selectLocation = (nextLocationId) => {
+        if (nextLocationId === locationId) return;
+        setLocationId(nextLocationId);
+        setCurrentPath('');
+        setDisplayPath('/');
+        setSelected([]);
+        setSearch('');
+        setSearching(false);
+        setPathBeforeSearch('');
+        setContext(null);
+        setDragItems([]);
+        setDropTarget(null);
+        setFileDropTarget(null);
+        setFolderTree({ path: '', name: '/', expanded: true, loaded: false, children: [] });
+    };
 
     const showSuccess = (message) => {
         window.clearTimeout(notificationTimer.current);
@@ -336,7 +380,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const createShare = async (event) => {
         event.preventDefault(); const file = selectedItems[0]; if (!file) return;
         try {
-            const response = await fetch('/api/files/share', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ filePath: file.path, expiresIn: Number(event.target.expiresIn.value), maxDownloads: Number(event.target.maxDownloads.value) }) });
+            const response = await fetch('/api/files/share', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ locationId, filePath: file.path, expiresIn: Number(event.target.expiresIn.value), maxDownloads: Number(event.target.maxDownloads.value) }) });
             const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Could not create share link.'); setShareLink(data.data.fullUrl); showSuccess('Share link created.');
         } catch (requestError) { setError(requestError.message); }
     };
@@ -395,19 +439,19 @@ const FileBrowser = ({ token, user, onLogout }) => {
     return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>
         <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountRef}><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : 'Standard user'}</span></div>{user.role === 'admin' && <button onClick={() => window.location.assign('/admin')}>Admin console</button>}<button onClick={() => { setAccountOpen(false); setModal('password'); }}>Change password</button><hr /><button className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
         <nav className="commandbar">
-            <button className="primary" onClick={() => inputRef.current.click()}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} />
-            <button onClick={() => setModal('folder')}>New folder</button><span className="divider" />
-            <button disabled={!selectedItems.length || downloading} onClick={() => download()}>{downloading ? 'Preparing download...' : 'Download'}</button><button disabled={!selectedItems.length || moving} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1} onClick={() => setModal('rename')}>Rename</button>
-            <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length} onClick={remove}>Delete</button><span className="divider" />
+             <button className="primary" disabled={!hasCapability('upload')} onClick={() => inputRef.current.click()}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} />
+             <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
+             <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={() => download()}>{downloading ? 'Preparing download...' : 'Download'}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
+             <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
             <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button onClick={() => loadFiles(currentPath)}>Refresh</button>
         </nav>
         <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
-        <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{tree}</aside>
+         <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{locationsLoading ? <span className="tree-loading">Loading Locations...</span> : locations.map((location) => <section className="location-section" key={location.id}><div className={`tree-node ${location.id === locationId ? 'active' : ''}`}><button className="tree-toggle" aria-label={`${expandedLocations[location.id] ? 'Collapse' : 'Expand'} ${location.displayName}`} onClick={() => setExpandedLocations((current) => ({ ...current, [location.id]: !current[location.id] }))}>{expandedLocations[location.id] ? '−' : '+'}</button><button className="tree-folder" onClick={() => selectLocation(location.id)}><span className="folder-mini" />{location.displayName}</button><span className="location-status" data-status={location.status}>{location.status === 'online' ? 'ONLINE' : location.status?.toUpperCase()}</span></div>{location.id === locationId && expandedLocations[location.id] && tree}</section>)}</aside>
              <section className="content" onDragOver={handleExternalDragOver} onDrop={handleExternalDrop}><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{displayPath}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{error && <div className="notice error-notice">{error}</div>}{transferStatus && <div className="notice transfer-notice"><span className={downloading || moving ? 'activity-dot' : ''} />{transferStatus}</div>}
                 <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{files.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map(renderFileItem)}</tbody></table>}</div>
             </section></main>
         <footer className="statusbar"><span>{files.length} item{files.length === 1 ? '' : 's'}</span><span>{searching ? 'Search results' : currentPath ? `/${currentPath}` : '/'}</span></footer>
-        {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading} onClick={() => action(download)}>Download</button><button disabled={moving} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory} onClick={() => action(() => { setShareLink(''); setModal('share'); })}>Share</button><hr /><button onClick={() => action(remove)}>Delete</button></div>}
+         {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading || !hasCapability('read')} onClick={() => action(download)}>Download</button><button disabled={moving || !hasCapability('move')} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => action(() => { setShareLink(''); setModal('share'); })}>Share</button><hr /><button disabled={!hasCapability('delete')} onClick={() => action(remove)}>Delete</button></div>}
         {modal === 'folder' && <Dialog title="New folder" onClose={() => setModal(null)}><form onSubmit={saveFolder}><p>Create a folder in {currentPath ? `/${currentPath}` : '/'}.</p><label>Folder name<input name="folderName" autoFocus required /></label><DialogActions onClose={() => setModal(null)} label="Create" /></form></Dialog>}
         {modal === 'move' && <Dialog title="Move selected items" onClose={() => setModal(null)}><p>Choose a destination. You cannot move an item into its current folder or one of its own subfolders.</p><div className="move-tree">{renderTree((node) => moveItems(selectedItems, node.path))}</div><div className="modal-actions"><button type="button" onClick={() => setModal(null)}>Cancel</button></div></Dialog>}
         {modal === 'password' && <Dialog title="Change password" onClose={() => setModal(null)}><form onSubmit={savePassword}><p>Changing your password signs this device out.</p><label>Current password<input name="currentPassword" type="password" autoFocus required /></label><label>New password<input name="newPassword" type="password" minLength="6" required /></label><label>Confirm new password<input name="confirmPassword" type="password" minLength="6" required /></label><DialogActions onClose={() => setModal(null)} label="Change password" /></form></Dialog>}
