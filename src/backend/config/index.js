@@ -436,7 +436,8 @@ class ConfigManager {
 
         // [server] section
         iniContent += '[server]\n';
-        iniContent += `port=${this.config.server?.port || 9400}\n\n`;
+        iniContent += `port=${this.config.server?.port || 9400}\n`;
+        iniContent += `host=${this.config.server?.host || 'localhost'}\n\n`;
 
         // [fileSystem] section
         iniContent += '[fileSystem]\n';
@@ -446,6 +447,16 @@ class ConfigManager {
         iniContent += '#   storagePath=/home/user/myfiles          (absolute path on Linux/Mac)\n';
         iniContent += '#   storagePath=C:\\Users\\User\\Documents     (absolute path on Windows)\n';
         iniContent += `storagePath=${this.config.fileSystem?.storagePath || './storage'}\n\n`;
+        iniContent += '# Maximum accepted file size in bytes.\n';
+        iniContent += `maxFileSize=${this.config.fileSystem?.maxFileSize ?? 1024 * 1024 * 10000}\n\n`;
+
+        if (Array.isArray(this.config.fileSystem?.locations)) {
+          iniContent += '[locations]\n';
+          iniContent += '# Each rootPath is resolved on the server, not on the browser client.\n';
+          iniContent += '# For NFS, mount the share first and use the mounted directory here.\n';
+          iniContent += '# id must remain stable after users receive permissions for this Location.\n';
+          iniContent += `definitions=${JSON.stringify(this.config.fileSystem.locations)}\n\n`;
+        }
 
         // [maintenance] section
         iniContent += '[maintenance]\n';
@@ -462,8 +473,8 @@ class ConfigManager {
         // [auth] section
         iniContent += '[auth]\n';
         iniContent += `username=${this.config.auth?.username || 'admin'}\n`;
-        iniContent += `password=${this.config.auth?.password || 'password'}\n`;
-        iniContent += `passwordHashed=${this.config.auth?.passwordHashed || false}\n\n`;
+        iniContent += `password=${this.config.auth?.password ?? ''}\n`;
+        iniContent += `passwordHashed=${this.config.auth?.passwordHashed === true ? 'true' : 'false'}\n\n`;
 
         // [security] section
         iniContent += '[security]\n';
@@ -483,11 +494,11 @@ class ConfigManager {
         iniContent += '[shareLinks]\n';
         iniContent += '# Share link feature configuration\n';
         iniContent += `enabled=${this.config.shareLinks?.enabled === true ? 'true' : 'false'}\n`;
-        iniContent += `defaultExpiration=${this.config.shareLinks?.defaultExpiration || 86400}\n`;
-        iniContent += `maxExpiration=${this.config.shareLinks?.maxExpiration || 2592000}\n`;
+        iniContent += `defaultExpiration=${this.config.shareLinks?.defaultExpiration ?? 86400}\n`;
+        iniContent += `maxExpiration=${this.config.shareLinks?.maxExpiration ?? 2592000}\n`;
         iniContent += `allowPasswordProtection=${this.config.shareLinks?.allowPasswordProtection === true ? 'true' : 'false'}\n`;
-        iniContent += `cleanupInterval=${this.config.shareLinks?.cleanupInterval || 86400}\n`;
-        iniContent += `maxDownloadsDefault=${this.config.shareLinks?.maxDownloadsDefault || 0}\n\n`;
+        iniContent += `cleanupInterval=${this.config.shareLinks?.cleanupInterval ?? 86400}\n`;
+        iniContent += `maxDownloadsDefault=${this.config.shareLinks?.maxDownloadsDefault ?? 0}\n\n`;
 
         // [ssl] section
         iniContent += '[ssl]\n';

@@ -2,12 +2,20 @@
 
 [server]
 # HTTP port used by the web interface and API. Restart the service after changing it.
+# Example: port=9400
 port=9400
+# Address to bind. Use 127.0.0.1 for local-only access or 0.0.0.0 for all interfaces.
+# Restart the service after changing it.
+host=localhost
 
 [fileSystem]
 # Directory where completed uploads and user files are stored. This is not a temporary directory.
 # Keep storagePath as the migration/default fallback. Use [locations] for multiple server-side roots.
+# Relative paths are resolved from the application directory. Absolute paths are resolved by the server OS.
+# Examples: ./storage, /srv/filetransfer/default, /mnt/nfs/default
 storagePath=./storage
+# Maximum accepted upload size in bytes. 10737418240 = 10 GiB.
+maxFileSize=10737418240
 
 [maintenance]
 # Files first uploaded through the multipart endpoint are briefly stored in temp/uploads.
@@ -19,9 +27,16 @@ tempUploadRetentionDays=7
 tempUploadCleanupIntervalHours=24
 
 [locations]
-# Optional JSON array of server-side Locations. Each rootPath should be an absolute path for NFS mounts.
-# Location ids are opaque and stable; displayName is the only value intended for UI display.
-# definitions=[{"id":"folder-a","displayName":"Folder A","rootPath":"/FolderS/FolderA","enabled":true,"readOnly":false,"order":10}]
+# Optional JSON array of server-side Locations. These paths are on the server, not on the user's computer.
+# For NFS, mount the share first and set rootPath to the mounted directory.
+# id is stable and is used by permissions/API requests; displayName is shown in the WebUI.
+# enabled=false hides a Location from normal use without deleting its definition.
+# readOnly=true allows list/read/download but rejects upload, rename, delete, move, copy, mkdir and share.
+# order controls the order shown in the WebUI; lower values appear first.
+# One Location:
+# definitions=[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10}]
+# Multiple Locations:
+# definitions=[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10},{"id":"team-b","displayName":"Team B","rootPath":"/srv/filetransfer/team-b","enabled":true,"readOnly":true,"order":20}]
 
 [logging]
 # Minimum severity written to server.log: DEBUG, INFO, WARN, or ERROR.

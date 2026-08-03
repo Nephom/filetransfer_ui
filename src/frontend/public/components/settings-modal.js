@@ -36,6 +36,7 @@ const SettingsModal = ({ onClose, token }) => {
     const [showCreateUser, setShowCreateUser] = useState(false);
     const [editingUser, setEditingUser] = useState(null);
     const [configSection, setConfigSection] = useState('server');
+    const [locationConfigText, setLocationConfigText] = useState('[]');
 
     useEffect(() => {
         const loadInitialData = async () => {
@@ -169,10 +170,14 @@ const SettingsModal = ({ onClose, token }) => {
             setSaving(true);
             setError('');
             setSuccess('');
+            const payload = { ...config, security: { ...(config.security || {}) } };
+            if (payload.security.jwtSecret === '[SET]' || payload.security.jwtSecret === '[DEFAULT]') delete payload.security.jwtSecret;
+            payload.locations = JSON.parse(locationConfigText);
+            if (!Array.isArray(payload.locations)) throw new Error('Locations must be a JSON array.');
             const response = await fetch('/api/admin/config', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify(config)
+                body: JSON.stringify(payload)
             });
             const data = await response.json();
             if (response.ok) {
@@ -199,7 +204,9 @@ const SettingsModal = ({ onClose, token }) => {
             });
             if (response.ok) {
                 const data = await response.json();
-                setConfig(data);
+                const loadedConfig = data.config || data;
+                setConfig(loadedConfig);
+                setLocationConfigText(JSON.stringify(loadedConfig.locations || [], null, 2));
             } else {
                 throw new Error('Failed to load config');
             }
@@ -433,7 +440,13 @@ const SettingsModal = ({ onClose, token }) => {
                                         </div>
                                     </div>
                                     <div style={{ display: 'grid', gap: '16px' }}>
-                                        {config[configSection] ? Object.entries(config[configSection]).map(([key, value]) => (
+                                        {configSection === 'locations' ? (
+                                            <div style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '12px', padding: '16px' }}>
+                                                <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Server Locations</label>
+                                                <textarea value={locationConfigText} onChange={(e) => setLocationConfigText(e.target.value)} rows={10} spellCheck="false" style={{ width: '100%', boxSizing: 'border-box', background: 'rgba(0, 0, 0, 0.25)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px', fontFamily: 'monospace' }} />
+                                                <p style={{ color: 'rgba(255, 255, 255, 0.75)', fontSize: '12px', lineHeight: 1.5 }}>Use server paths such as <code>/mnt/nfs/team-a</code>, not paths from the user's computer. Changes require a restart.</p>
+                                            </div>
+                                        ) : config[configSection] ? Object.entries(config[configSection]).map(([key, value]) => (
                                             <div key={key} style={{ background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '12px', padding: '16px' }}>
                                                 <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase())}</label>
                                                 {typeof value === 'boolean' ? (

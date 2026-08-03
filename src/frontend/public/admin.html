@@ -788,114 +788,69 @@
                 }
 
                 const data = await response.json();
-                displayConfig(data.config);
+                displayConfig(data.config, data.schema || {});
             } catch (error) {
                 console.error('Error loading config:', error);
                 configContent.innerHTML = '<p style="color: #ef4444; text-align: center;">Failed to load configuration</p>';
             }
         }
 
-        function displayConfig(config) {
-            const configContent = document.getElementById('configContent');
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
 
+        function displayConfig(config, schema) {
+            const configContent = document.getElementById('configContent');
             let html = '<form id="configForm">';
 
-            // Server section
-            html += '<div class="config-section"><h3>🖥️ Server Configuration</h3>';
-            html += `<div class="form-group">
-                <label>Port:</label>
-                <input type="number" name="server.port" class="form-control" value="${config.server?.port || 9400}">
-                <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">Server port number (requires restart after change)</p>
-            </div></div>`;
+            const sectionTitles = {
+                server: '🖥️ Server', fileSystem: '📁 File System', locations: '🗂️ Server Locations',
+                maintenance: '🧹 Maintenance', logging: '📋 Logging', security: '🔒 Security',
+                shareLinks: '🔗 Share Links', ssl: '🔐 SSL/TLS', auth: '👤 Administrator'
+            };
+            const sectionOrder = ['server', 'fileSystem', 'locations', 'maintenance', 'logging', 'security', 'shareLinks', 'ssl', 'auth'];
 
-            // File System section
-            html += '<div class="config-section"><h3>📁 File System Configuration</h3>';
-            html += `<div class="form-group">
-                <label>Storage Path:</label>
-                <input type="text" name="fileSystem.storagePath" class="form-control" value="${config.fileSystem?.storagePath || './storage'}">
-                <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">Relative or absolute path to file storage directory</p>
-            </div></div>`;
-
-            // Security section
-            html += '<div class="config-section"><h3>🔒 Security Configuration</h3>';
-            const securityOptions = [
-                { key: 'enableRateLimit', label: 'Enable Rate Limiting' },
-                { key: 'enableSecurityHeaders', label: 'Enable Security Headers' },
-                { key: 'enableInputValidation', label: 'Enable Input Validation' },
-                { key: 'enableFileUploadSecurity', label: 'Enable File Upload Security' },
-                { key: 'enableRequestLogging', label: 'Enable Request Logging' },
-                { key: 'enableCSP', label: 'Enable Content Security Policy' }
-            ];
-
-            securityOptions.forEach(opt => {
-                const checked = config.security?.[opt.key] === true ? 'checked' : '';
-                html += `<div class="checkbox-group">
-                    <input type="checkbox" name="security.${opt.key}" id="${opt.key}" ${checked}>
-                    <label for="${opt.key}" style="margin: 0; cursor: pointer;">${opt.label}</label>
-                </div>`;
+            sectionOrder.forEach(section => {
+                const values = config[section];
+                if (!values) return;
+                html += `<div class="config-section"><h3>${sectionTitles[section]}</h3>`;
+                if (section === 'locations') {
+                    const locations = Array.isArray(values) ? values : [];
+                    html += `<p style="font-size:0.9rem; opacity:0.85; line-height:1.5;">Locations are directories on the server. For NFS, mount the share on the server first; do not enter a path from the user's computer. Changes require a service restart. The JSON below is the exact format written to <code>[locations]</code>.</p>`;
+                    html += `<textarea name="locations.definitions" class="form-control" rows="8" spellcheck="false">${escapeHtml(JSON.stringify(locations, null, 2))}</textarea>`;
+                    html += '<p style="font-size:0.85rem; opacity:0.75; line-height:1.5;">Example: [{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10}]<br>Location IDs must stay stable after permissions are assigned. <code>readOnly=true</code> allows reading/downloading but rejects all mutations.</p>';
+                } else {
+                    Object.entries(values).forEach(([key, value]) => {
+                        const metadata = schema[section]?.[key] || { label: key, description: '' };
+                        const fieldName = `${section}.${key}`;
+                        const inputId = `config-${section}-${key}`;
+                        const label = escapeHtml(metadata.label || key);
+                        const description = escapeHtml(metadata.description || '');
+                        const example = metadata.example ? `<br><strong>Example:</strong> <code>${escapeHtml(metadata.example)}</code>` : '';
+                        const restart = metadata.requiresRestart ? '<span style="color:#fbbf24; margin-left:8px;">Restart required</span>' : '<span style="color:#86efac; margin-left:8px;">Applies without restart</span>';
+                        html += `<div class="form-group"><label for="${inputId}">${label}${restart}</label>`;
+                        if (metadata.type === 'boolean') {
+                            html += `<div class="checkbox-group"><input type="checkbox" id="${inputId}" name="${fieldName}" ${value === true ? 'checked' : ''}><label for="${inputId}" style="margin:0;cursor:pointer;">${label}</label></div>`;
+                        } else if (metadata.type === 'enum') {
+                            html += `<select id="${inputId}" name="${fieldName}" class="form-control">${(metadata.options || []).map(option => `<option value="${escapeHtml(option)}" ${String(value).toUpperCase() === option ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}</select>`;
+                        } else if (metadata.type === 'secret') {
+                            html += `<input type="password" id="${inputId}" name="${fieldName}" class="form-control" value="" placeholder="${escapeHtml(value === '[SET]' ? 'Configured; enter a new value to replace it' : 'Generated at startup')}">`;
+                        } else {
+                            const inputType = metadata.type === 'integer' ? 'number' : 'text';
+                            html += `<input type="${inputType}" id="${inputId}" name="${fieldName}" class="form-control" value="${escapeHtml(value)}" ${inputType === 'number' ? 'step="1"' : ''} ${section === 'auth' ? 'readonly' : ''}>`;
+                        }
+                        html += `<p style="font-size:0.85rem; opacity:0.75; margin-top:5px; line-height:1.45;">${description}${example}</p></div>`;
+                    });
+                }
+                html += '</div>';
             });
 
-            html += `<div class="form-group" style="margin-top: 15px;">
-                <label>JWT Secret:</label>
-                <input type="text" name="security.jwtSecret" class="form-control" value="${config.security?.jwtSecret === '[SET]' || config.security?.jwtSecret === '[DEFAULT]' ? '' : (config.security?.jwtSecret || '')}" placeholder="Leave empty for default">
-                <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">⚠️ Changing this will invalidate all existing tokens</p>
-            </div></div>`;
-
-            // Share Links section
-            html += '<div class="config-section"><h3>🔗 Share Links Configuration</h3>';
-            html += `<div class="checkbox-group">
-                <input type="checkbox" name="shareLinks.enabled" id="shareLinksEnabled" ${config.shareLinks?.enabled === true ? 'checked' : ''}>
-                <label for="shareLinksEnabled" style="margin: 0; cursor: pointer;">Enable Share Links Feature</label>
-            </div>`;
-            html += `<div class="form-row" style="margin-top: 15px;">
-                <div class="form-group">
-                    <label>Default Expiration (seconds):</label>
-                    <input type="number" name="shareLinks.defaultExpiration" class="form-control" value="${config.shareLinks?.defaultExpiration || 86400}" min="60">
-                    <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">86400 = 24 hours</p>
-                </div>
-                <div class="form-group">
-                    <label>Max Expiration (seconds):</label>
-                    <input type="number" name="shareLinks.maxExpiration" class="form-control" value="${config.shareLinks?.maxExpiration || 2592000}" min="60">
-                    <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">2592000 = 30 days</p>
-                </div>
-            </div>`;
-            html += `<div class="form-row">
-                <div class="form-group">
-                    <label>Cleanup Interval (seconds):</label>
-                    <input type="number" name="shareLinks.cleanupInterval" class="form-control" value="${config.shareLinks?.cleanupInterval || 86400}" min="60">
-                    <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">How often to clean expired links</p>
-                </div>
-                <div class="form-group">
-                    <label>Max Downloads Default:</label>
-                    <input type="number" name="shareLinks.maxDownloadsDefault" class="form-control" value="${config.shareLinks?.maxDownloadsDefault || 0}" min="0">
-                    <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">0 = unlimited</p>
-                </div>
-            </div>`;
-            html += `<div class="checkbox-group">
-                <input type="checkbox" name="shareLinks.allowPasswordProtection" id="shareLinksPassword" ${config.shareLinks?.allowPasswordProtection === true ? 'checked' : ''}>
-                <label for="shareLinksPassword" style="margin: 0; cursor: pointer;">Allow Password Protection</label>
-            </div></div>`;
-
-            // SSL section
-            html += '<div class="config-section"><h3>🔒 SSL/TLS Configuration</h3>';
-            html += `<div class="form-row">
-                <div class="form-group">
-                    <label>HTTPS Port:</label>
-                    <input type="number" name="ssl.httpsPort" class="form-control" value="${config.ssl?.httpsPort || 9443}" min="1" max="65535">
-                    <p style="font-size: 0.85rem; opacity: 0.7; margin-top: 5px;">HTTPS server port (requires restart after change)</p>
-                </div>
-            </div>`;
-            html += `<div class="checkbox-group">
-                <input type="checkbox" name="ssl.enableHttpsRedirect" id="sslRedirect" ${config.ssl?.enableHttpsRedirect !== false ? 'checked' : ''}>
-                <label for="sslRedirect" style="margin: 0; cursor: pointer;">Enable HTTP to HTTPS Redirect</label>
-            </div>`;
-            html += `<div class="checkbox-group">
-                <input type="checkbox" name="ssl.autoGenerateCerts" id="sslAutoGen" ${config.ssl?.autoGenerateCerts === true ? 'checked' : ''}>
-                <label for="sslAutoGen" style="margin: 0; cursor: pointer;">Auto-generate Certificates on First Run</label>
-            </div>`;
-            html += `<p style="font-size: 0.85rem; opacity: 0.7; margin-top: 10px;">
-                ⚠️ Note: For manual certificate management, use the SSL Management panel. Changes to SSL settings require service restart.
-            </p></div>`;
+            html += `<div style="background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.35);border-radius:8px;padding:12px;margin-top:16px;font-size:0.9rem;line-height:1.5;">⚠️ Settings are saved to <code>src/config.ini</code>. Server port, storage paths, Locations, SSL ports, and JWT secret require a service restart. Passwords and JWT secrets are never shown in this panel.</div>`;
 
             html += '</form>';
 
@@ -914,34 +869,33 @@
 
             try {
                 const form = document.getElementById('configForm');
-                const formData = new FormData(form);
+                const config = {};
 
-                const config = {
-                    server: {},
-                    fileSystem: {},
-                    security: {},
-                    shareLinks: {},
-                    ssl: {}
-                };
-
-                // Process form data
-                for (let [key, value] of formData.entries()) {
+                // Process every named control so unchecked checkboxes are sent as false.
+                for (const input of form.querySelectorAll('[name]')) {
+                    const key = input.name;
                     const [section, field] = key.split('.');
                     if (section && field) {
-                        // Handle checkboxes
-                        const input = form.querySelector(`[name="${key}"]`);
-                        if (input && input.type === 'checkbox') {
+                        config[section] = config[section] || {};
+                        if (input.type === 'checkbox') {
                             config[section][field] = input.checked;
-                        } else if (input && input.type === 'number') {
-                            config[section][field] = parseInt(value);
-                        } else {
-                            // Only set non-empty string values
-                            if (value && value.trim() !== '') {
-                                config[section][field] = value.trim();
-                            }
+                        } else if (input.type === 'number') {
+                            config[section][field] = input.value === '' ? '' : Number(input.value);
+                        } else if (input.value.trim() !== '') {
+                            config[section][field] = input.value.trim();
                         }
                     }
                 }
+
+                if (config.locations?.definitions !== undefined) {
+                    try {
+                        config.locations = JSON.parse(config.locations.definitions);
+                        if (!Array.isArray(config.locations)) throw new Error('Locations must be a JSON array.');
+                    } catch (error) {
+                        throw new Error(`Invalid Locations JSON: ${error.message}`);
+                    }
+                }
+
 
                 const response = await fetch('/api/admin/config', {
                     method: 'PUT',
@@ -958,7 +912,10 @@
                 }
 
                 const result = await response.json();
-                alert(result.message || 'Configuration saved successfully!');
+                const restartNote = result.restartRequiredFields?.length
+                    ? `\n\nRestart required for:\n${result.restartRequiredFields.join('\n')}`
+                    : '';
+                alert(`${result.message || 'Configuration saved successfully!'}${restartNote}`);
                 closeModal('configModal');
                 fetchStats();
             } catch (error) {
