@@ -11,11 +11,6 @@ struct ApiResponse {
     body: Vec<u8>,
 }
 
-#[derive(Deserialize)]
-struct BrowserHandoffResponse {
-    url: String,
-}
-
 fn api_client(ignore_tls_errors: bool) -> Result<Client, String> {
     Client::builder()
         // This is intentionally opt-in for private, self-signed servers.
@@ -162,34 +157,6 @@ async fn download_to_disk(
     Ok(destination.display().to_string())
 }
 
-#[tauri::command]
-async fn open_admin_console(
-    base_url: String,
-    headers: Vec<(String, String)>,
-    ignore_tls_errors: bool,
-) -> Result<(), String> {
-    let response = apply_headers(
-        api_client(ignore_tls_errors)?.post(format!("{base_url}/auth/browser-handoff")),
-        headers,
-    )
-    .send()
-    .await
-    .map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        return Err(response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unable to create browser sign-in link".to_string()));
-    }
-    let handoff: BrowserHandoffResponse =
-        response.json().await.map_err(|error| error.to_string())?;
-    std::process::Command::new("xdg-open")
-        .arg(format!("{base_url}{}", handoff.url))
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -197,7 +164,6 @@ fn main() {
             pick_upload_files,
             api_upload_paths,
             download_to_disk,
-            open_admin_console,
             write_download
         ])
         .run(tauri::generate_context!())
