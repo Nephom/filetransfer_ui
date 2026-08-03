@@ -107,13 +107,15 @@ class LocationManager {
 
     try {
       const stats = await this.fs.stat(location.rootPath);
-      if (!stats.isDirectory()) return { ...location, status: 'not_directory' };
+      if (!stats.isDirectory()) return { ...location, status: 'error', errorCode: 'ENOTDIR' };
       await this.fs.access(location.rootPath);
-      return { ...location, status: 'healthy' };
+      return { ...location, status: 'online' };
     } catch (error) {
       const status = error.code === 'EACCES' || error.code === 'EPERM'
         ? 'permission_denied'
-        : 'missing';
+        : error.code === 'ENOENT' || error.code === 'ENOTDIR'
+          ? 'offline'
+          : 'error';
       return { ...location, status, errorCode: error.code };
     }
   }

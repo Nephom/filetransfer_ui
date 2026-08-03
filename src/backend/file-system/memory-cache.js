@@ -96,8 +96,18 @@ class RedisFileSystemCache extends EventEmitter {
       return true;
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to initialize Redis cache: ${error.message}`);
-      return false;
+      throw this.createStorageError(error, 'initialize');
     }
+  }
+
+  createStorageError(error, operation) {
+    const storageError = new Error(`Storage operation failed during ${operation}`);
+    storageError.name = 'StorageCacheError';
+    storageError.storageCode = error.storageCode || error.code || 'STORAGE_ERROR';
+    storageError.operation = operation;
+    storageError.statusCode = 503;
+    storageError.cause = error;
+    return storageError;
   }
 
   /**
@@ -381,7 +391,7 @@ class RedisFileSystemCache extends EventEmitter {
       return contents;
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to enter directory: ${error.message}`);
-      return [];
+      throw error;
     }
   }
 
@@ -507,8 +517,9 @@ class RedisFileSystemCache extends EventEmitter {
    * Invalidate and rebuild one directory from the filesystem.
    */
   async refreshDirectory(dirPath) {
-    await this.invalidateDirectory(dirPath);
-    await this.updateDirectoryCache(dirPath);
+    // Replace cache only after a complete scan succeeds. A transient NFS
+    // failure must preserve the last known-good directory contents.
+    return await this.updateDirectoryCache(dirPath);
   }
 
 
@@ -524,6 +535,7 @@ class RedisFileSystemCache extends EventEmitter {
       const absoluteDirPath = path.resolve(dirPath);
       const ignoreList = await this.loadIgnoreList();
       const files = await fs.readdir(absoluteDirPath);
+      let scanError = null;
 
       // OPTIMIZATION: Process files in parallel using Promise.allSettled
       const filePromises = files.map(async (fileName) => {
@@ -556,6 +568,7 @@ class RedisFileSystemCache extends EventEmitter {
           if (err.code !== 'EACCES') {
             systemLogger.logSystem('ERROR', `Error processing item in directory: ${fullPath} - ${err.message}`);
           }
+          if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') scanError = err;
           return null;
         }
       });
@@ -565,6 +578,8 @@ class RedisFileSystemCache extends EventEmitter {
       const dirContents = results
         .filter(result => result.status === 'fulfilled' && result.value !== null)
         .map(result => result.value);
+
+      if (scanError) throw scanError;
 
       const isRootDir = absoluteDirPath === this.storagePath;
       const dirKey = `dir:${absoluteDirPath}`;
@@ -608,6 +623,7 @@ class RedisFileSystemCache extends EventEmitter {
       } else {
         systemLogger.logSystem('ERROR', `Failed to update directory cache: ${error.message}`);
       }
+      throw this.createStorageError(error, 'directory_scan');
     }
   }
 
@@ -664,7 +680,7 @@ class RedisFileSystemCache extends EventEmitter {
       return cachedContents || [];
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to get directory contents: ${error.message}`);
-      return [];
+      throw error;
     }
   }
 
@@ -685,6 +701,7 @@ class RedisFileSystemCache extends EventEmitter {
       systemLogger.logSystem('INFO', 'Root directory cache refresh completed');
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to refresh cache: ${error.message}`);
+      throw error;
     }
   }
 
