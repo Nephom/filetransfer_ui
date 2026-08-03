@@ -92,9 +92,17 @@ class LocationPermissionManager {
   }
 
   getAccessibleLocations(user) {
+    const permissions = this.getLocationPermissions(user);
     return this.locationManager.getLocations({ includeDisabled: false })
       .filter((location) => this.can(user, location.id, 'list'))
-      .map(({ id, displayName, enabled, readOnly, order }) => ({ id, displayName, enabled, readOnly, order }));
+      .map(({ id, displayName, enabled, readOnly, order }) => ({
+        id,
+        displayName,
+        enabled,
+        readOnly,
+        order,
+        capabilities: permissions[id] || []
+      }));
   }
 }
 
