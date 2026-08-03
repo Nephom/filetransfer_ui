@@ -1,14 +1,70 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use reqwest::{multipart, Client};
-use serde::Deserialize;
 use serde::Serialize;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize)]
 struct ApiResponse {
     status: u16,
     body: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct UploadSummary {
+    files: usize,
+    directories: usize,
+}
+
+fn collect_upload_path(
+    path: &Path,
+    relative_path: String,
+    files: &mut Vec<(PathBuf, String)>,
+    directories: &mut Vec<String>,
+) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.is_dir() {
+        directories.push(relative_path.clone());
+        let mut children = std::fs::read_dir(path)
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        children.sort_by_key(|entry| entry.path());
+        for child in children {
+            let name = child
+                .file_name()
+                .to_str()
+                .ok_or_else(|| "Upload path contains a non-UTF-8 filename".to_string())?
+                .to_string();
+            collect_upload_path(
+                &child.path(),
+                format!("{relative_path}/{name}"),
+                files,
+                directories,
+            )?;
+        }
+    } else if metadata.is_file() {
+        files.push((path.to_path_buf(), relative_path));
+    } else {
+        return Err(format!("Unsupported upload path: {}", path.display()));
+    }
+    Ok(())
+}
+
+fn collect_upload_paths(paths: &[String]) -> Result<(Vec<(PathBuf, String)>, Vec<String>), String> {
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    for path in paths {
+        let path = Path::new(path);
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| "Invalid upload filename".to_string())?;
+        collect_upload_path(path, name.to_string(), &mut files, &mut directories)?;
+    }
+    Ok((files, directories))
 }
 
 fn api_client(ignore_tls_errors: bool) -> Result<Client, String> {
@@ -71,6 +127,15 @@ async fn pick_upload_files() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
+fn inspect_upload_paths(paths: Vec<String>) -> Result<UploadSummary, String> {
+    let (files, directories) = collect_upload_paths(&paths)?;
+    Ok(UploadSummary {
+        files: files.len(),
+        directories: directories.len(),
+    })
+}
+
+#[tauri::command]
 async fn api_upload_paths(
     url: String,
     headers: Vec<(String, String)>,
@@ -78,9 +143,12 @@ async fn api_upload_paths(
     path: String,
     ignore_tls_errors: bool,
 ) -> Result<ApiResponse, String> {
+    let (files, directories) = collect_upload_paths(&paths)?;
     let mut form = multipart::Form::new().text("path", path);
-    for path in paths {
-        let file_path = std::path::PathBuf::from(&path);
+    for directory in directories {
+        form = form.text("directoryPaths[]", directory);
+    }
+    for (file_path, relative_path) in files {
         let file_name = file_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -89,7 +157,7 @@ async fn api_upload_paths(
             .await
             .map_err(|error| error.to_string())?
             .file_name(file_name.to_string());
-        form = form.text("filePaths[]", file_name.to_string());
+        form = form.text("filePaths[]", relative_path);
         form = form.part("files", part);
     }
     let request = apply_headers(
@@ -162,6 +230,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             api_request,
             pick_upload_files,
+            inspect_upload_paths,
             api_upload_paths,
             download_to_disk,
             write_download

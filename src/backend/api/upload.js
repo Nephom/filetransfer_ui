@@ -10,6 +10,27 @@ const { transferManager } = require('../transfer');
 const { FileSystem } = require('../file-system');
 const { systemLogger } = require('../utils/logger');
 
+const pathIsWithin = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
+
+const safeRelativePath = (value, label) => {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${label} must be a non-empty relative path`);
+  }
+
+  const portablePath = value.replace(/\\/g, '/');
+  if (portablePath.startsWith('/') || path.posix.isAbsolute(portablePath)) {
+    throw new Error(`${label} must be relative`);
+  }
+
+  const normalized = path.posix.normalize(portablePath);
+  if (normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')) {
+    throw new Error(`${label} contains an unsafe path`);
+  }
+  return normalized;
+};
+
+const asFieldArray = (value) => Array.isArray(value) ? value : value ? [value] : [];
+
 class UploadAPI {
   constructor() {
     this.router = express.Router();
@@ -201,14 +222,13 @@ class UploadAPI {
     this.router.post('/upload',
       this.upload.fields([
         { name: 'files', maxCount: 1000 },
-        { name: 'filePaths[]', maxCount: 1000 }
+        { name: 'filePaths[]', maxCount: 1000 },
+        { name: 'directoryPaths[]', maxCount: 1000 }
       ]),
       handleMulterError,
       (req, res) => {
         // Normalize files array for folder uploads
-        if (req.files && req.files.files) {
-          req.files = req.files.files;
-        }
+        req.files = req.files?.files || [];
         // Simplified: _handleMultipleUpload can handle one or many files
         this._handleMultipleUpload(req, res);
       }
@@ -227,14 +247,13 @@ class UploadAPI {
     this.router.post('/upload/multiple',
       this.upload.fields([
         { name: 'files', maxCount: 1000 },
-        { name: 'filePaths[]', maxCount: 1000 }
+        { name: 'filePaths[]', maxCount: 1000 },
+        { name: 'directoryPaths[]', maxCount: 1000 }
       ]),
       handleMulterError,
       (req, res) => {
         // Normalize files array for folder uploads
-        if (req.files && req.files.files) {
-          req.files = req.files.files;
-        }
+        req.files = req.files?.files || [];
         this._handleMultipleUpload(req, res);
       }
     );
@@ -311,12 +330,12 @@ class UploadAPI {
       const normalizedFinalDir = path.resolve(finalDir);
       const normalizedStoragePath = path.resolve(storagePath);
       
-      if (!normalizedFinalDir.startsWith(normalizedStoragePath)) {
+      if (!pathIsWithin(normalizedStoragePath, normalizedFinalDir)) {
         return res.status(403).json({
           error: 'Forbidden: Access denied.'
         });
       }
-      
+
       // Create directory if it doesn't exist
       await this.fileSystem.mkdir(normalizedFinalDir);
       
@@ -428,15 +447,21 @@ class UploadAPI {
       systemLogger.logSystem('INFO', `[BATCH] req.files is array: ${Array.isArray(req.files)}`);
       systemLogger.logSystem('INFO', `[BATCH] req.files length: ${req.files ? req.files.length : 'undefined'}`);
 
-      if (!req.files || req.files.length === 0) {
+      const filePaths = asFieldArray(req.body.filePaths ?? req.body['filePaths[]']).map((filePath, index) => safeRelativePath(filePath, `filePaths[${index}]`));
+      const directoryPaths = asFieldArray(req.body.directoryPaths ?? req.body['directoryPaths[]']).map((directoryPath, index) => safeRelativePath(directoryPath, `directoryPaths[${index}]`));
+      if ((!req.files || req.files.length === 0) && directoryPaths.length === 0) {
         systemLogger.logSystem('ERROR', `[BATCH] No files uploaded`);
         return res.status(400).json({
           error: 'No files uploaded'
         });
       }
+      if (filePaths.length > 0 && filePaths.length !== (req.files || []).length) {
+        return res.status(400).json({ error: 'The uploaded file paths do not match the uploaded files.' });
+      }
+      req.files = req.files || [];
 
       systemLogger.logSystem('INFO', `[BATCH] Received ${req.files.length} files`);
-      req.files.forEach((file, index) => {
+      (req.files || []).forEach((file, index) => {
         systemLogger.logSystem('INFO', `[BATCH] File ${index + 1}: ${file.originalname} (${file.size} bytes)`);
       });
 
@@ -457,10 +482,21 @@ class UploadAPI {
       const normalizedFinalDir = path.resolve(finalDir);
       const normalizedStoragePath = path.resolve(storagePath);
 
-      if (!normalizedFinalDir.startsWith(normalizedStoragePath)) {
+      if (!pathIsWithin(normalizedStoragePath, normalizedFinalDir)) {
         return res.status(403).json({
           error: 'Forbidden: Access denied.'
         });
+      }
+
+      if (req.files.length === 0) {
+        for (const relativeDirectory of directoryPaths) {
+          const directoryPath = path.resolve(normalizedFinalDir, relativeDirectory);
+          if (!pathIsWithin(normalizedFinalDir, directoryPath)) {
+            return res.status(400).json({ error: 'Unsafe directory path.' });
+          }
+          await this.fileSystem.mkdir(directoryPath);
+        }
+        return res.json({ success: true, message: 'Folders uploaded successfully.', folders: directoryPaths.length });
       }
 
       // 1. Create batch for this multi-file upload
@@ -480,7 +516,8 @@ class UploadAPI {
         currentPath,
         normalizedFinalDir,
         normalizedStoragePath,
-        filePaths: req.body.filePaths || [],
+        filePaths,
+        directoryPaths,
         user: req.user
       }).catch(error => {
         // Log the error but don't crash the server
@@ -511,11 +548,20 @@ class UploadAPI {
    * @private
    */
   async _processFilesInBackground(files, batchId, metadata) {
-    const { normalizedFinalDir, normalizedStoragePath, filePaths, user } = metadata;
+    const { normalizedFinalDir, normalizedStoragePath, filePaths, directoryPaths, user } = metadata;
     const hasFolderStructure = Array.isArray(filePaths) && filePaths.length > 0;
 
     const startTime = Date.now();
     let totalBytes = 0;
+
+    for (const relativeDirectory of directoryPaths || []) {
+      const safeDirectory = safeRelativePath(relativeDirectory, 'directoryPaths');
+      const directoryPath = path.resolve(normalizedFinalDir, safeDirectory);
+      if (!pathIsWithin(normalizedFinalDir, directoryPath)) {
+        throw new Error(`Unsafe directory path: ${relativeDirectory}`);
+      }
+      await this.fileSystem.mkdir(directoryPath);
+    }
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -526,15 +572,18 @@ class UploadAPI {
         let finalPath;
         if (hasFolderStructure && filePaths[i]) {
           // Use the relative path to preserve folder structure
-          const relativePath = filePaths[i];
-          finalPath = path.join(normalizedFinalDir, relativePath);
+          const relativePath = safeRelativePath(filePaths[i], `filePaths[${i}]`);
+          finalPath = path.resolve(normalizedFinalDir, relativePath);
+          if (!pathIsWithin(normalizedFinalDir, finalPath)) {
+            throw new Error(`Unsafe file path: ${relativePath}`);
+          }
 
           // Ensure the parent directory exists
           const parentDir = path.dirname(finalPath);
           await this.fileSystem.mkdir(parentDir);
         } else {
           // Just use the filename
-          finalPath = path.join(normalizedFinalDir, path.basename(file.originalname));
+          finalPath = path.resolve(normalizedFinalDir, path.basename(file.originalname));
         }
 
         // Ensure the destination path is still within the storage directory
