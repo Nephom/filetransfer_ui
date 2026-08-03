@@ -15,6 +15,52 @@ const fileType = (item) => {
     return extension && extension !== item.name ? `${extension.toUpperCase()} file` : 'File';
 };
 
+const readDirectoryEntries = (reader) => new Promise((resolve, reject) => {
+    const entries = [];
+    const read = () => reader.readEntries((batch) => {
+        if (!batch.length) return resolve(entries);
+        entries.push(...batch);
+        read();
+    }, reject);
+    read();
+});
+
+const readDroppedEntry = async (entry, prefix = '') => {
+    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isFile) {
+        const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
+        return { files: [{ file, relativePath }], directories: [] };
+    }
+
+    const children = await readDirectoryEntries(entry.createReader());
+    const nested = await Promise.all(children.map((child) => readDroppedEntry(child, relativePath)));
+    return {
+        files: nested.flatMap((result) => result.files),
+        directories: [relativePath, ...nested.flatMap((result) => result.directories)]
+    };
+};
+
+const collectDroppedUpload = async (dataTransfer) => {
+    const entries = Array.from(dataTransfer.items || [])
+        .filter((item) => item.kind === 'file')
+        .map((item) => item.webkitGetAsEntry?.())
+        .filter(Boolean);
+
+    if (entries.length) {
+        const results = await Promise.all(entries.map((entry) => readDroppedEntry(entry)));
+        return {
+            files: results.flatMap((result) => result.files),
+            directories: [...new Set(results.flatMap((result) => result.directories))]
+        };
+    }
+
+    const files = Array.from(dataTransfer.files || []).map((file) => ({
+        file,
+        relativePath: file.webkitRelativePath || file.name
+    }));
+    return { files, directories: [] };
+};
+
 const FileBrowser = ({ token, user, onLogout }) => {
     const [files, setFiles] = React.useState([]);
     const [currentPath, setCurrentPath] = React.useState('');
@@ -229,12 +275,62 @@ const FileBrowser = ({ token, user, onLogout }) => {
             if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Rename complete.'); } setModal(null); showSuccess('Rename complete.'); loadFiles(currentPath); loadTreeChildren('', true);
         } catch (requestError) { setError(requestError.message); }
     };
+    const uploadFiles = async (items, directories = []) => {
+        if (!items.length && !directories.length) return;
+        const data = new FormData();
+        items.forEach(({ file, relativePath }) => {
+            data.append('files', file, file.name);
+            data.append('filePaths[]', relativePath);
+        });
+        directories.forEach((directory) => data.append('directoryPaths[]', directory));
+        data.append('path', currentPath);
+        setLoading(true); setError(''); setTransferStatus(`Uploading ${items.length} file${items.length === 1 ? '' : 's'}...`);
+        try {
+            const response = await fetch('/api/upload/multiple', { method: 'POST', headers: authHeaders, body: data });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.error?.message || result.error || 'Upload failed.');
+            let completed = !result.batchId;
+            if (result.batchId) {
+                for (let attempt = 0; attempt < 600; attempt += 1) {
+                    const progressResponse = await fetch(`/api/progress/batch/${encodeURIComponent(result.batchId)}`, { headers: authHeaders });
+                    const progress = await progressResponse.json().catch(() => ({}));
+                    if (!progressResponse.ok) throw new Error(progress.error || 'Unable to read upload progress.');
+                    setTransferStatus(`Uploading: ${progress.successCount}/${progress.totalFiles} files (${Math.round(progress.progress)}%)`);
+                    if (progress.status === 'completed') { completed = true; break; }
+                    if (progress.status === 'failed' || progress.status === 'partial_fail') throw new Error(`Upload finished with ${progress.failedCount} failed file${progress.failedCount === 1 ? '' : 's'}.`);
+                    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+                }
+            }
+            if (!completed) throw new Error('Upload progress timed out.');
+            showSuccess(`Uploaded ${items.length} file${items.length === 1 ? '' : 's'} and ${directories.length} folder${directories.length === 1 ? '' : 's'}.`);
+            loadFiles(currentPath); loadTreeChildren('', true);
+        } catch (requestError) { setError(requestError.message); setTransferStatus(''); }
+        finally { setLoading(false); }
+    };
+
+    const confirmUpload = async (upload) => {
+        if (!upload.files.length && !upload.directories.length) return;
+        const answer = window.confirm(`Upload ${upload.files.length} file${upload.files.length === 1 ? '' : 's'} and ${upload.directories.length} folder${upload.directories.length === 1 ? '' : 's'} to ${currentPath ? `/${currentPath}` : '/'}?`);
+        if (answer) await uploadFiles(upload.files, upload.directories);
+    };
+
     const upload = async (event) => {
-        const uploadFiles = Array.from(event.target.files || []); event.target.value = ''; if (!uploadFiles.length) return;
-        const data = new FormData(); uploadFiles.forEach((file) => data.append('files', file)); data.append('path', currentPath);
-        setLoading(true); setError('');
-        try { const response = await fetch('/api/upload/multiple', { method: 'POST', headers: authHeaders, body: data }); if (!response.ok) throw new Error('Upload failed.'); showSuccess(`Uploaded ${uploadFiles.length} item${uploadFiles.length === 1 ? '' : 's'}.`); loadFiles(currentPath); loadTreeChildren('', true); }
-        catch (requestError) { setError(requestError.message); setLoading(false); }
+        const uploadItems = Array.from(event.target.files || []).map((file) => ({ file, relativePath: file.webkitRelativePath || file.name }));
+        event.target.value = '';
+        await uploadFiles(uploadItems);
+    };
+
+    const handleExternalDrop = async (event) => {
+        if (!Array.from(event.dataTransfer.types || []).includes('Files') || dragItems.length) return;
+        event.preventDefault(); event.stopPropagation();
+        await confirmUpload(await collectDroppedUpload(event.dataTransfer));
+    };
+
+    const handleExternalDragOver = (event) => {
+        if (Array.from(event.dataTransfer.types || []).includes('Files') && !dragItems.length) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'copy';
+        }
     };
     const createShare = async (event) => {
         event.preventDefault(); const file = selectedItems[0]; if (!file) return;
@@ -296,7 +392,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
         </nav>
         <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
         <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{tree}</aside>
-            <section className="content"><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{displayPath}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{error && <div className="notice error-notice">{error}</div>}{transferStatus && <div className="notice transfer-notice"><span className={downloading || moving ? 'activity-dot' : ''} />{transferStatus}</div>}
+             <section className="content" onDragOver={handleExternalDragOver} onDrop={handleExternalDrop}><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{displayPath}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{error && <div className="notice error-notice">{error}</div>}{transferStatus && <div className="notice transfer-notice"><span className={downloading || moving ? 'activity-dot' : ''} />{transferStatus}</div>}
                 <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{files.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map(renderFileItem)}</tbody></table>}</div>
             </section></main>
         <footer className="statusbar"><span>{files.length} item{files.length === 1 ? '' : 's'}</span><span>{searching ? 'Search results' : currentPath ? `/${currentPath}` : '/'}</span></footer>

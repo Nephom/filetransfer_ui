@@ -1,6 +1,6 @@
 [正體中文](README.md)
 
-# Web-Based File Management System 3.1.0
+# Web-Based File Management System 3.1.1
 
 A local file management system with a Windows Explorer-style web interface and an Ubuntu desktop client. Windows users use the web interface in a browser; the Tauri desktop client is distributed only as an Ubuntu DEB.
 
