@@ -1873,7 +1873,11 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
         add('ssl.httpsPort', integer(ssl.httpsPort, 'ssl.httpsPort', 1, 65535));
         updatedFields.push('ssl.httpsPort');
       }
-      booleanFields('ssl', ssl, ['enableHttpsRedirect', 'autoGenerateCerts']);
+      const sslFlags = Object.fromEntries(Object.entries({
+        enableHttpsRedirect: ssl.enableHttpsRedirect,
+        autoGenerateCerts: ssl.autoGenerateCerts
+      }).filter(([, value]) => value !== undefined));
+      booleanFields('ssl', sslFlags, ['enableHttpsRedirect', 'autoGenerateCerts']);
       for (const key of ['enableHttpsRedirect', 'autoGenerateCerts']) {
         if (ssl[key] !== undefined) {
           add(`ssl.${key}`, ssl[key]);
