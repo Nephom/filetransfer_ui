@@ -63,8 +63,11 @@ const getStorageContext = async (req, relativePath = '', capability = 'list') =>
   }
   locationPermissionManager.assert(req.user, locationId, capability);
   const health = await locationManager.getHealth(locationId);
-  if (health.status !== 'healthy') {
-    throw Object.assign(new Error('Location storage is unavailable'), { statusCode: 503 });
+  if (health.status !== 'online') {
+    throw Object.assign(new Error('Location storage is unavailable'), {
+      statusCode: 503,
+      storageCode: health.status
+    });
   }
 
   let targetPath;
@@ -732,7 +735,10 @@ app.post('/api/files/rebuild-index', authenticate, async (req, res) => {
 app.get('/api/locations', authenticate, async (req, res) => {
   try {
     if (!locationManager) return res.status(503).json({ error: 'Location service is not ready' });
-    const locations = locationPermissionManager.getAccessibleLocations(req.user);
+    const locations = await Promise.all(locationPermissionManager.getAccessibleLocations(req.user).map(async (location) => {
+      const health = await locationManager.getHealth(location.id);
+      return { ...location, status: health.status, errorCode: health.errorCode };
+    }));
     res.json({ success: true, locations });
   } catch (error) {
     res.status(error.statusCode || 500).json({ error: error.message });

@@ -30,7 +30,7 @@ If `definitions` is omitted, `LocationManager` exposes one `default` Location fr
 - A Location has its own filesystem, cache, and search scope. Shared Redis deployments must prefix keys with `location:<id>`.
 - Changing `rootPath` for an existing `id` requires a service restart. The old cache scope is discarded; files are not copied or deleted automatically.
 - Disabling a Location prevents new selection. Existing sessions must be revalidated and moved to another enabled Location.
-- A missing mount reports `missing`; a permission failure reports `permission_denied`; a mounted file reports `not_directory`.
+- A missing mount reports `offline`; a permission failure reports `permission_denied`; other I/O failures report `error`.
 - Health failures are not represented as an empty directory. Listing and mutation APIs must return an explicit Location/storage error.
 - Location initialization may be lazy. Health checks and cache scans should run only when a Location is selected or explicitly inspected.
 
