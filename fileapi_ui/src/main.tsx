@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./styles.css";
 import "./tls.css";
 import "./webui-shell.css";
@@ -307,7 +307,7 @@ function App() {
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let disposed = false;
-    getCurrentWebviewWindow().onDragDropEvent(event => {
+    getCurrentWebview().onDragDropEvent(event => {
       if (event.payload.type === "drop") uploadPaths(event.payload.paths);
     }).then(listener => {
       if (disposed) listener();
