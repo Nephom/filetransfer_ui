@@ -52,7 +52,7 @@ The Location-aware share-link change adds `share_links.locationId` and a `schema
 DATABASE_PATH=/path/to/data/app.db npm run migrate:database
 ```
 
-If `DATABASE_PATH` is omitted, the script uses the normal `data/app.db` path. Take a SQLite backup before a production upgrade. The migration is idempotent and preserves existing share links by assigning them to the legacy `default` Location.
+If `DATABASE_PATH` is omitted, the script uses the normal `src/data/app.db` path. Relative `DATABASE_PATH` values are resolved from the project root. Take a SQLite backup before a production upgrade. The migration is idempotent and preserves existing share links by assigning them to the legacy `default` Location.
 
 `./build.sh upgrade` creates a consistent SQLite backup under `data/backups/` before fetching or applying the upgrade. Backup names include a UTC timestamp, for example `app.db.20260803T120000Z.sqlite`.
 

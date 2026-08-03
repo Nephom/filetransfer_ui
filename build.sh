@@ -247,7 +247,7 @@ read_env_value() {
 backup_database_before_upgrade() {
   local env_database_path database_path backup_dir backup_file timestamp
   env_database_path="$(read_env_value "$ROOT_DIR/.env" DATABASE_PATH)"
-  database_path="${env_database_path:-$ROOT_DIR/data/app.db}"
+  database_path="${env_database_path:-$ROOT_DIR/src/data/app.db}"
   if [[ "$database_path" != /* ]]; then
     database_path="$ROOT_DIR/$database_path"
   fi
@@ -268,7 +268,7 @@ backup_database_before_upgrade() {
 run_database_migrations() {
   local env_database_path database_path
   env_database_path="$(read_env_value "$ROOT_DIR/.env" DATABASE_PATH)"
-  database_path="${env_database_path:-$ROOT_DIR/data/app.db}"
+  database_path="${env_database_path:-$ROOT_DIR/src/data/app.db}"
   if [[ "$database_path" != /* ]]; then
     database_path="$ROOT_DIR/$database_path"
   fi
@@ -300,6 +300,41 @@ migrate_legacy_configuration() {
   upsert_env JWT_SECRET "${secret:-$(generate_secret)}"
   chmod 600 "$ROOT_DIR/.env"
   echo "Migrated the existing local configuration to .env without replacing its values."
+}
+
+target_application_version() {
+  run_git -C "$ROOT_DIR" show '@{u}:package.json' | node -e '
+    let input = "";
+    process.stdin.on("data", chunk => { input += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        process.stdout.write(`${JSON.parse(input).version}\n`);
+      } catch (error) {
+        console.error(`Unable to read target package version: ${error.message}`);
+        process.exitCode = 1;
+      }
+    });
+  '
+}
+
+confirm_configuration_upgrade() {
+  local target_version current_version needs_upgrade answer
+  target_version="$1"
+  current_version="$(node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --print-version --target-version "$target_version")"
+  needs_upgrade="$(node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --needs-upgrade --target-version "$target_version")"
+
+  [[ "$needs_upgrade" == "yes" ]] || return
+
+  echo "Configuration upgrade required: $current_version -> $target_version"
+  echo "The upgrade keeps matching values, migrates Locations, and comments deprecated options."
+  read -r -p "Upgrade src/config.ini and continue? [y/N] " answer
+  case "${answer,,}" in
+    y|yes) ;;
+    *)
+      echo "Upgrade stopped. src/config.ini remains at $current_version; application code was not updated."
+      exit 0
+      ;;
+  esac
 }
 
 setup_configuration() {
@@ -390,14 +425,20 @@ cmd_upgrade() {
     echo "  git restore --source=HEAD -- package-lock.json start.sh stop.sh status.sh" >&2
     exit 1
   fi
+  local target_version
+  run_git -C "$ROOT_DIR" fetch origin
+  target_version="$(target_application_version)"
+  confirm_configuration_upgrade "$target_version"
   local legacy_config=""
   if [[ ! -f "$ROOT_DIR/.env" && -f "$ROOT_DIR/src/config.ini" ]]; then
     legacy_config="$(mktemp)"
     cp "$ROOT_DIR/src/config.ini" "$legacy_config"
   fi
   backup_database_before_upgrade
-  run_git -C "$ROOT_DIR" fetch origin
   run_git -C "$ROOT_DIR" merge --ff-only "@{u}"
+  if [[ -f "$ROOT_DIR/src/config.ini" ]]; then
+    node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --target-version "$target_version"
+  fi
   cmd_install
   migrate_legacy_configuration "$legacy_config"
   [[ -z "$legacy_config" ]] || rm -f "$legacy_config"
