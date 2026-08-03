@@ -303,18 +303,20 @@ migrate_legacy_configuration() {
 }
 
 target_application_version() {
-  run_git -C "$ROOT_DIR" show '@{u}:package.json' | node -e '
-    let input = "";
-    process.stdin.on("data", chunk => { input += chunk; });
-    process.stdin.on("end", () => {
-      try {
-        process.stdout.write(`${JSON.parse(input).version}\n`);
-      } catch (error) {
-        console.error(`Unable to read target package version: ${error.message}`);
-        process.exitCode = 1;
-      }
-    });
-  '
+  local upstream_ref package_json
+  upstream_ref="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref '@{u}')" || {
+    echo "Unable to determine the upstream branch for this checkout." >&2
+    echo "Configure an upstream branch before running upgrade, for example: git branch --set-upstream-to=origin/main main" >&2
+    return 1
+  }
+  package_json="$(run_git -C "$ROOT_DIR" show "${upstream_ref}:package.json")" || {
+    echo "Unable to read package.json from upstream ${upstream_ref}." >&2
+    return 1
+  }
+  node -e 'process.stdout.write(`${JSON.parse(process.argv[1]).version}\n`)' "$package_json" || {
+    echo "Unable to parse package.json from upstream ${upstream_ref}." >&2
+    return 1
+  }
 }
 
 confirm_configuration_upgrade() {
@@ -426,24 +428,33 @@ cmd_upgrade() {
     exit 1
   fi
   local target_version
+  echo "Upgrade: fetching upstream changes..."
   run_git -C "$ROOT_DIR" fetch origin
+  echo "Upgrade: checking the upstream application version..."
   target_version="$(target_application_version)"
+  echo "Upgrade: upstream application version is $target_version."
   confirm_configuration_upgrade "$target_version"
   local legacy_config=""
   if [[ ! -f "$ROOT_DIR/.env" && -f "$ROOT_DIR/src/config.ini" ]]; then
     legacy_config="$(mktemp)"
     cp "$ROOT_DIR/src/config.ini" "$legacy_config"
   fi
+  echo "Upgrade: backing up the database..."
   backup_database_before_upgrade
+  echo "Upgrade: applying a fast-forward update..."
   run_git -C "$ROOT_DIR" merge --ff-only "@{u}"
   if [[ -f "$ROOT_DIR/src/config.ini" ]]; then
+    echo "Upgrade: applying configuration migration..."
     node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --target-version "$target_version"
   fi
+  echo "Upgrade: installing dependencies..."
   cmd_install
   migrate_legacy_configuration "$legacy_config"
   [[ -z "$legacy_config" ]] || rm -f "$legacy_config"
   setup_configuration
+  echo "Upgrade: running database migrations..."
   run_database_migrations
+  echo "Upgrade: running backend tests..."
   npm test --prefix "$ROOT_DIR"
   echo "Upgrade complete. Start the service with ./start.sh."
 }
