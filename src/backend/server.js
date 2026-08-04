@@ -44,6 +44,20 @@ let locationManager;
 let locationPermissionManager;
 const locationFileSystems = new Map();
 
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const publicLocationLabel = (location) => `${location.displayName} (${location.id})`;
+const publicErrorMessage = (error) => {
+  let message = error?.message || String(error);
+  if (!locationManager) return message;
+
+  for (const location of locationManager.getLocations().sort((left, right) => right.rootPath.length - left.rootPath.length)) {
+    if (location.rootPath === path.parse(location.rootPath).root) continue;
+    const rootPattern = new RegExp(`${escapeRegExp(location.rootPath)}(?=$|[\\/])`, 'g');
+    message = message.replace(rootPattern, publicLocationLabel(location));
+  }
+  return message;
+};
+
 const getRequestedLocationId = (req) => req.query?.locationId || req.body?.locationId || req.headers['x-location-id'];
 
 const getStorageContext = async (req, relativePath = '', capability = 'list', requestedLocationId = null) => {
@@ -192,7 +206,13 @@ app.use(cors({
 // Increase JSON body limit to 100MB for large file metadata
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
-app.use(express.static(path.join(__dirname, '../frontend/public')));
+app.use(express.static(path.join(__dirname, '../frontend/public'), {
+  setHeaders: (response, filePath) => {
+    if (/\.(?:html|js|jsx|css)$/.test(filePath)) {
+      response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    }
+  }
+}));
 
 // Use the UploadAPI router for all upload endpoints
 const uploadApi = new UploadAPI();
@@ -647,7 +667,7 @@ app.post('/api/files/search', authenticate, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logAPI('search', req.body.query || req.query.query, false, req, { error: error.message });
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -698,7 +718,7 @@ app.get('/api/files/search', authenticate, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logAPI('search', req.query.query, false, req, { error: error.message });
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -712,7 +732,7 @@ app.get('/api/files/cache-stats', authenticate, async (req, res) => {
     res.json({ ...stats, locationId: context.locationId });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Cache stats error: ${error.message}`);
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -727,7 +747,7 @@ app.get('/api/files/index-status', authenticate, async (req, res) => {
     res.json({ ...status, locationId: context.locationId });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Index status error: ${error.message}`);
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -760,7 +780,7 @@ app.post('/api/files/rebuild-index', authenticate, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Index rebuild error: ${error.message}`);
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -777,7 +797,7 @@ app.get('/api/locations', authenticate, async (req, res) => {
     }));
     res.json({ success: true, locations });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -798,7 +818,7 @@ app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
     }
   } catch (error) {
     systemLogger.logSystem('ERROR', `Cache refresh error: ${error.message}`);
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -810,7 +830,7 @@ app.get('/api/files/content/*', authenticate, async (req, res) => {
     const content = await context.fileSystem.read(context.targetPath);
     res.json({ content: content.toString() });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -874,7 +894,7 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
     }
     systemLogger.logSystem('ERROR', `DOWNLOAD SETUP FAILED - User: ${req.user?.username || req.user?.id || 'unknown'}, File: ${fileName}, Error: ${error.message}`);
     systemLogger.logDownload(req.params[0] || 'unknown', 'authenticated', false, req, { error: error.message });
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1000,7 +1020,7 @@ app.get('/api/files', authenticate, async (req, res) => {
       res.status(408).json({ error: 'Request timeout - file system may be busy' });
     } else {
       systemLogger.logAPI('list', req.query.path || '/', false, req, { error: error.message });
-      res.status(error.statusCode || 500).json({ error: error.message });
+      res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
     }
   }
 });
@@ -1017,7 +1037,7 @@ app.post('/api/files', authenticate, async (req, res) => {
     await refreshDirectoryCache(fullPath.parentPath, 'refresh_after_write', req, fullPath.fileSystem);
     res.json({ success: true, locationId: fullPath.locationId });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1049,7 +1069,7 @@ app.post('/api/folders', authenticate, async (req, res) => {
     res.json({ success: true, locationId: context.locationId, message: 'Folder created successfully' });
   } catch (error) {
     systemLogger.logFileOperation('mkdir', req.body.currentPath || '/', false, req, { error: error.message, folderName: req.body.folderName });
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1064,7 +1084,7 @@ app.post('/api/files/directory', authenticate, async (req, res) => {
     await refreshDirectoryCache(path.dirname(context.targetPath), 'refresh_after_mkdir', req, context.fileSystem);
     res.json({ success: true, locationId: context.locationId });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1105,7 +1125,7 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logFileOperation('delete', req.body.currentPath || '/', false, req, { error: error.message, items: req.body.items?.map(i => i.name) });
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1138,7 +1158,7 @@ app.put('/api/files/rename', authenticate, async (req, res) => {
     res.json({ success: true, locationId: oldContext.locationId, message: 'Item renamed successfully' });
   } catch (error) {
     systemLogger.logFileOperation('rename', path.join(req.body.currentPath || '', req.body.oldName), false, req, { error: error.message });
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1161,7 +1181,7 @@ app.post('/api/files/create', authenticate, async (req, res) => {
     res.json({ success: true, locationId: context.locationId, message: 'File created successfully' });
   } catch (error) {
     systemLogger.logFileOperation('create', path.join(req.body.currentPath || '', req.body.fileName), false, req, { error: error.message });
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1176,7 +1196,7 @@ app.post('/api/files/copy', authenticate, async (req, res) => {
     await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_copy', req, destinationContext.fileSystem);
     res.json({ success: true, locationId: destinationContext.locationId, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1196,7 +1216,7 @@ app.post('/api/files/move', authenticate, async (req, res) => {
     await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_move_destination', req, destinationContext.fileSystem);
     res.json({ success: true, locationId: destinationContext.locationId, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1269,7 +1289,7 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logFileOperation(req.body.operation === 'copy' ? 'copy' : 'move', req.body.targetPath || '/', false, req, { error: error.message, items: req.body.items?.map(i => i.name) });
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
@@ -1399,7 +1419,7 @@ app.post('/api/archive', authenticate, async (req, res) => {
       error: error.message
     });
     if (!res.headersSent) {
-      res.status(error.statusCode || 500).json({ error: error.message });
+      res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
     }
   }
 });

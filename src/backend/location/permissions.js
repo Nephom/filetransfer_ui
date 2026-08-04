@@ -71,8 +71,16 @@ class LocationPermissionManager {
   }
 
   assert(user, locationId, capability) {
-    if (!this.can(user, locationId, capability)) {
-      throw Object.assign(new Error('Location permission denied'), { statusCode: 403 });
+    const location = this.locationManager.getLocation(locationId);
+    const label = location ? `${location.displayName} (${location.id})` : locationId;
+    if (!location || !location.enabled) {
+      throw Object.assign(new Error(`Location ${label} is unavailable.`), { statusCode: 404 });
+    }
+    if (location.readOnly && MUTATION_CAPABILITIES.has(capability)) {
+      throw Object.assign(new Error(`Location ${label} is read-only; ${capability} operations are not allowed.`), { statusCode: 403 });
+    }
+    if (!this.getLocationPermissions(user)[locationId]?.includes(capability)) {
+      throw Object.assign(new Error(`permission denied: ${capability} permission is not granted for Location ${label}.`), { statusCode: 403 });
     }
   }
 

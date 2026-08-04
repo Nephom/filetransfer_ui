@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMAND=""
 PROXY=""
+INTERACTIVE_UPGRADE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -14,6 +15,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --help|-h)
       COMMAND="help"
+      shift
+      ;;
+    --interactive)
+      INTERACTIVE_UPGRADE=1
       shift
       ;;
     install|setup|build|test|upgrade|help)
@@ -32,14 +37,14 @@ COMMAND="${COMMAND:-help}"
 
 usage() {
   cat <<'EOF'
-Usage: ./build.sh <command> [--proxy http://proxy-host:port]
+Usage: ./build.sh <command> [--proxy http://proxy-host:port] [--interactive]
 
 Commands:
   install  Install server dependencies on Alpine Linux or Ubuntu.
   setup    Create missing local configuration and ask for deployment values.
   build    Build the Ubuntu 22.04+ Tauri DEB package.
   test     Run backend sandbox tests.
-  upgrade  Fast-forward from GitHub, update dependencies, and run backend tests.
+  upgrade  Fast-forward from GitHub, migrate configuration, update dependencies, and run backend tests.
 
 The proxy applies only to this invocation. It is passed to apk or apt, Git, npm,
 Cargo, curl, and wget; it is never saved to global configuration.
@@ -329,14 +334,18 @@ confirm_configuration_upgrade() {
 
   echo "Configuration upgrade required: $current_version -> $target_version"
   echo "The upgrade keeps matching values, migrates Locations, and comments deprecated options."
-  read -r -p "Upgrade src/config.ini and continue? [y/N] " answer
-  case "${answer,,}" in
-    y|yes) ;;
-    *)
-      echo "Upgrade stopped. src/config.ini remains at $current_version; application code was not updated."
-      exit 0
-      ;;
-  esac
+  if [[ "$INTERACTIVE_UPGRADE" -eq 1 ]]; then
+    read -r -p "Upgrade src/config.ini and continue? [y/N] " answer
+    case "${answer,,}" in
+      y|yes) ;;
+      *)
+        echo "Upgrade stopped. src/config.ini remains at $current_version; application code was not updated." >&2
+        exit 1
+        ;;
+    esac
+  else
+    echo "Non-interactive upgrade: preserving existing values and applying migration defaults."
+  fi
 }
 
 setup_configuration() {
@@ -458,9 +467,20 @@ cmd_upgrade() {
   backup_database_before_upgrade
   echo "Upgrade: applying a fast-forward update..."
   run_git -C "$ROOT_DIR" merge --ff-only "@{u}"
+  local local_head upstream_head
+  local_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
+  upstream_head="$(git -C "$ROOT_DIR" rev-parse '@{u}')"
+  [[ "$local_head" == "$upstream_head" ]] || {
+    echo "Upgrade failed: local HEAD $local_head does not match upstream $upstream_head after merge." >&2
+    exit 1
+  }
   if [[ -f "$ROOT_DIR/src/config.ini" ]]; then
     echo "Upgrade: applying configuration migration..."
-    node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --target-version "$target_version"
+    if [[ "$INTERACTIVE_UPGRADE" -eq 1 ]]; then
+      node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --target-version "$target_version"
+    else
+      node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --target-version "$target_version" --non-interactive
+    fi
   fi
   echo "Upgrade: installing dependencies..."
   cmd_install
