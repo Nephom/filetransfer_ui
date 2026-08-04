@@ -855,11 +855,13 @@
             const id = escapeHtml(location.id || '');
             const displayName = escapeHtml(location.displayName || '');
             const rootPath = escapeHtml(location.rootPath || '');
+            const storageType = location.storageType === 'nfs' ? 'nfs' : 'local';
             const order = Number.isFinite(Number(location.order)) ? Number(location.order) : index;
             return `<tr class="location-row">
                 <td><input class="form-control" data-location-field="id" value="${id}" placeholder="team-a" autocomplete="off"></td>
                 <td><input class="form-control" data-location-field="displayName" value="${displayName}" placeholder="Team A" autocomplete="off"></td>
                 <td><input class="form-control" data-location-field="rootPath" value="${rootPath}" placeholder="/mnt/nfs/team-a" autocomplete="off"></td>
+                <td><select class="form-control" data-location-field="storageType"><option value="local" ${storageType === 'local' ? 'selected' : ''}>Local</option><option value="nfs" ${storageType === 'nfs' ? 'selected' : ''}>NFS</option></select></td>
                 <td class="location-check"><input type="checkbox" data-location-field="enabled" ${location.enabled !== false ? 'checked' : ''} aria-label="Enable Location"></td>
                 <td class="location-check"><input type="checkbox" data-location-field="readOnly" ${location.readOnly === true ? 'checked' : ''} aria-label="Read-only Location"></td>
                 <td><input class="form-control location-order" type="number" min="0" step="1" data-location-field="order" value="${order}" aria-label="Display order"></td>
@@ -884,6 +886,7 @@
                     id: value('id').value.trim(),
                     displayName: value('displayName').value.trim(),
                     rootPath: value('rootPath').value.trim(),
+                    storageType: value('storageType').value,
                     enabled: value('enabled').checked,
                     readOnly: value('readOnly').checked,
                     order: value('order').value === '' ? index : Number(value('order').value)
@@ -902,6 +905,7 @@
                 ids.add(location.id);
                 if (!location.displayName) throw new Error(`Location ${location.id}: display name is required.`);
                 if (!location.rootPath) throw new Error(`Location ${location.id}: root path is required.`);
+                if (!['local', 'nfs'].includes(location.storageType)) throw new Error(`Location ${location.id}: storage type must be local or nfs.`);
                 if (!Number.isInteger(location.order) || location.order < 0) throw new Error(`Location ${location.id}: order must be a non-negative integer.`);
             });
         }
@@ -924,7 +928,7 @@
                 if (section === 'locations') {
                     const locations = Array.isArray(values) ? values : [];
                     html += `<p style="font-size:0.9rem; opacity:0.85; line-height:1.5;">Locations are directories on the server. For NFS, mount the share on the server first; do not enter a path from the user's computer. Location IDs must stay stable after permissions are assigned. Changes require a service restart.</p>`;
-                    html += '<div style="overflow-x:auto;"><table class="locations-table"><thead><tr><th>ID</th><th>Display name</th><th>Root path</th><th>Enabled</th><th>Read-only</th><th>Order</th><th>Actions</th></tr></thead><tbody id="locationsTableBody">';
+                    html += '<div style="overflow-x:auto;"><table class="locations-table"><thead><tr><th>ID</th><th>Display name</th><th>Root path</th><th>Storage type</th><th>Enabled</th><th>Read-only</th><th>Order</th><th>Actions</th></tr></thead><tbody id="locationsTableBody">';
                     html += locations.map((location, index) => locationRowHtml(location, index)).join('');
                     html += '</tbody></table></div>';
                     html += '<button type="button" class="btn" style="margin-top:12px;" onclick="addLocationRow()">+ Add Location</button>';
