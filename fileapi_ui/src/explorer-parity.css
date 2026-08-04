@@ -1,6 +1,7 @@
 .explorer { position: relative; }
 .desktop-workspace { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
 .desktop-folder-tree { order: -1; display: flex; flex-direction: column; flex: 0 0 250px; width: 250px; min-height: 0; max-height: 100%; padding: 14px 8px; overflow: hidden; background: rgba(8, 24, 42, .82); border-right: 1px solid #1c3955; }
+.folder-pane, .file-pane { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
 .folder-tree-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
 .folder-tree-scroll::-webkit-scrollbar { display: none; }
 .desktop-content { flex: 1; min-width: 0; margin-left: 0; }
@@ -12,10 +13,9 @@
 .context-menu hr { margin: 4px 0; border: 0; border-top: 1px solid #284966; }
 
 /* Both panes use a custom rail so it remains visible when content fits. */
-.persistent-scrollbar { position: relative; flex: 0 0 14px; width: 14px; min-height: 100%; background: #091a2b; border-left: 1px solid #1c3955; }
+.persistent-scrollbar { position: relative; align-self: stretch; flex: 0 0 14px; width: 14px; min-height: 0; background: #091a2b; border-left: 1px solid #1c3955; }
 .persistent-scrollbar-thumb { position: absolute; top: 0; left: 2px; width: 10px; min-height: 28px; border-radius: 7px; background: #315b7e; cursor: grab; }
 .persistent-scrollbar-thumb:hover { background: #4a789e; }
 .persistent-scrollbar-thumb:active { cursor: grabbing; }
 .folder-tree-scroll + .persistent-scrollbar, .file-area + .persistent-scrollbar { cursor: pointer; }
 .folder-tree-scroll + .persistent-scrollbar .persistent-scrollbar-thumb, .file-area + .persistent-scrollbar .persistent-scrollbar-thumb { cursor: grab; }
-.folder-tree-scroll + .persistent-scrollbar .persistent-scrollbar-thumb[style*="height: 0px"], .file-area + .persistent-scrollbar .persistent-scrollbar-thumb[style*="height: 0px"] { height: 100%; }
