@@ -49,11 +49,19 @@ const publicLocationLabel = (location) => `${location.displayName} (${location.i
 const publicErrorMessage = (error) => {
   let message = error?.message || String(error);
   if (!locationManager) return message;
+  const filesystemPermissionError = /\b(?:EACCES|EPERM)\b/i.test(message);
+  const matchedLabels = [];
 
   for (const location of locationManager.getLocations().sort((left, right) => right.rootPath.length - left.rootPath.length)) {
     if (location.rootPath === path.parse(location.rootPath).root) continue;
     const rootPattern = new RegExp(`${escapeRegExp(location.rootPath)}(?=$|[\\/])`, 'g');
+    if (rootPattern.test(message)) matchedLabels.push(publicLocationLabel(location));
+    rootPattern.lastIndex = 0;
     message = message.replace(rootPattern, publicLocationLabel(location));
+  }
+  if (filesystemPermissionError) {
+    const locations = matchedLabels.length > 0 ? matchedLabels.join(', ') : 'the requested Location';
+    return `Permission denied: the server process cannot access ${locations}. Check the filesystem ownership and permissions of the configured directory.`;
   }
   return message;
 };
