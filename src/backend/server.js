@@ -1174,7 +1174,7 @@ app.post('/api/files/copy', authenticate, async (req, res) => {
     const destinationContext = await getStorageContext(req, destinationPath, 'copy', targetId);
     await destinationContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
     await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_copy', req, destinationContext.fileSystem);
-    res.json({ success: true, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
+    res.json({ success: true, locationId: destinationContext.locationId, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
   } catch (error) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -1194,7 +1194,7 @@ app.post('/api/files/move', authenticate, async (req, res) => {
     }
     await refreshDirectoryCache(path.dirname(sourceContext.targetPath), 'refresh_after_move_source', req, sourceContext.fileSystem);
     await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_move_destination', req, destinationContext.fileSystem);
-    res.json({ success: true, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
+    res.json({ success: true, locationId: destinationContext.locationId, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
   } catch (error) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }
