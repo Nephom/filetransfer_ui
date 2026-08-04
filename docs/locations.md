@@ -51,6 +51,14 @@ Do not expose a web API that directly runs `mount` or `umount`. Such an API woul
 6. After recovery, refresh only the affected Location and confirm the other Locations remain available.
 7. For rollback, stop the service, restore the application/database backup, restore the previous configuration, verify mounts, and start the service again.
 
+For an existing deployment whose Location definition does not yet include a type, update only the intended Location and keep the automatic backup:
+
+```bash
+node scripts/update-location-type.js --location backup --type nfs
+```
+
+The command creates a timestamped `config.ini` backup and changes no other Location or deployment value. The same field can be edited through Admin Configuration -> Locations -> Storage type.
+
 The production application must never contain real NFS credentials in this repository. Keep mount credentials and host-specific paths in the server's protected configuration.
 
 ## Migration

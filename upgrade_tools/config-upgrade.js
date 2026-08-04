@@ -239,7 +239,18 @@ async function migrate({ configFile, templateFile, targetVersion, backupDir, non
     }
 
     const oldLocations = getValue(oldSections, 'locations', 'definitions');
-    if (oldLocations) values.set('locations\u0000definitions', oldLocations);
+    if (oldLocations) {
+      try {
+        const locations = JSON.parse(oldLocations);
+        const globalStorageType = getValue(oldSections, 'fileSystem', 'type');
+        const migratedLocations = Array.isArray(locations)
+          ? locations.map((location) => location?.storageType ? location : { ...location, storageType: globalStorageType === 'nfs' ? 'nfs' : 'local' })
+          : locations;
+        values.set('locations\u0000definitions', JSON.stringify(migratedLocations));
+      } catch {
+        values.set('locations\u0000definitions', oldLocations);
+      }
+    }
     const oldStoragePath = getValue(oldSections, 'fileSystem', 'storagePath');
     const hasLocations = Boolean(getLocationDefinitions(oldSections));
     if (oldStoragePath) {
