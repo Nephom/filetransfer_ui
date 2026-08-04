@@ -133,6 +133,7 @@ function App() {
   const [shareUrl, setShareUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [locationMenuOpen, setLocationMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
@@ -154,6 +155,7 @@ function App() {
     y: number;
   } | null>(null);
   const accountControl = useRef<HTMLDivElement>(null);
+  const locationControl = useRef<HTMLDivElement>(null);
   const noticeTimer = useRef<number | undefined>();
   const locationsLoaded = useRef(false);
   const locationRefreshInProgress = useRef(false);
@@ -189,6 +191,8 @@ function App() {
     const closeAccountMenu = (event: MouseEvent) => {
       if (!accountControl.current?.contains(event.target as Node))
         setAccountOpen(false);
+      if (!locationControl.current?.contains(event.target as Node))
+        setLocationMenuOpen(false);
       if (!(event.target as HTMLElement).closest(".context-menu"))
         setContextMenu(null);
     };
@@ -898,26 +902,45 @@ function App() {
         <span className="app-name">LAB File Manager</span>
         <span className="connection-status">SECURE STORAGE</span>
         {activeLocation && (
-          <div className="location-control">
+          <div className="location-control" ref={locationControl}>
             <span className="location-label">Location</span>
             {locations.length > 1 ? (
-              <select
+              <button
                 className="location-select"
                 aria-label="Location"
-                value={session.locationId}
+                aria-expanded={locationMenuOpen}
+                aria-haspopup="listbox"
                 disabled={busy}
-                onChange={(event) => selectLocation(event.target.value)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setLocationMenuOpen((open) => !open);
+                }}
               >
-                {locations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.displayName}
-                  </option>
-                ))}
-              </select>
+                {activeLocation.displayName}
+                <span className="location-chevron" aria-hidden="true">⌄</span>
+              </button>
             ) : (
               <span className="location-single">
                 {activeLocation.displayName}
               </span>
+            )}
+            {locations.length > 1 && locationMenuOpen && (
+              <div className="location-menu" role="listbox" aria-label="Locations">
+                {locations.map((location) => (
+                  <button
+                    key={location.id}
+                    className={location.id === session.locationId ? "selected" : ""}
+                    role="option"
+                    aria-selected={location.id === session.locationId}
+                    onClick={() => {
+                      setLocationMenuOpen(false);
+                      void selectLocation(location.id);
+                    }}
+                  >
+                    {location.displayName}
+                  </button>
+                ))}
+              </div>
             )}
             <span
               className={`health-dot ${activeLocation.status === "online" ? "online" : ""}`}
@@ -1129,7 +1152,7 @@ function App() {
       <div className="desktop-workspace">
         <aside className="desktop-folder-tree">
           <span className="sidebar-label">Folders</span>
-          {renderTreeNode(folderTree)}
+          <div className="folder-tree-scroll">{renderTreeNode(folderTree)}</div>
         </aside>
         <section className="desktop-content">
           <div className="content-heading">

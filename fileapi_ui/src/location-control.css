@@ -1,4 +1,5 @@
 .location-control {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -12,8 +13,12 @@
 
 .location-label { color: #78c9ee; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .location-select, .location-single { min-width: 110px; max-width: 190px; overflow: hidden; border: 0; color: #e6eefc; background: transparent; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.location-select:focus { outline: 1px solid #47cdf1; }
-.location-select option { color: #102033; background: #ffffff; }
+.location-select { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0; cursor: pointer; text-align: left; }
+.location-select:focus { outline: 1px solid #47cdf1; outline-offset: 2px; }
+.location-chevron { color: #78c9ee; flex: 0 0 auto; font-size: 16px; line-height: 12px; }
+.location-menu { position: absolute; z-index: 50; top: calc(100% + 7px); right: 8px; min-width: 180px; max-width: 260px; overflow: hidden; padding: 4px; border: 1px solid #315b7e; border-radius: 5px; background: #0b2137; box-shadow: 0 12px 30px rgba(0, 0, 0, .45); }
+.location-menu button { display: block; width: 100%; overflow: hidden; border: 0; border-radius: 3px; padding: 8px 10px; color: #e6eefc; background: transparent; cursor: pointer; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.location-menu button:hover, .location-menu button.selected { color: #ffffff; background: #174565; }
 .health-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: #ff625f; box-shadow: 0 0 0 2px rgba(255, 98, 95, .18); }
 .health-dot.online { background: #61e6bb; box-shadow: 0 0 0 2px rgba(97, 230, 187, .18); }
 @media (max-width: 720px) { .location-control { margin-left: auto; } .location-label { display: none; } .location-select, .location-single { min-width: 78px; max-width: 120px; } }
