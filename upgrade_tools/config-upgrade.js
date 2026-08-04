@@ -112,6 +112,11 @@ function getLocationDefinitions(sections) {
   }
 }
 
+function needsLocationTypeMigration(sections) {
+  const locations = getLocationDefinitions(sections);
+  return Array.isArray(locations) && locations.some((location) => !location?.storageType);
+}
+
 function formatIni(template, values, deprecated) {
   const output = [];
   let section = '';
@@ -201,7 +206,7 @@ async function migrate({ configFile, templateFile, targetVersion, backupDir, non
   const comparison = compareVersions(currentVersion, targetVersion);
 
   if (comparison === null) throw new Error(`Unsupported config version: ${currentVersion}`);
-  if (comparison >= 0) {
+  if (comparison >= 0 && !needsLocationTypeMigration(oldSections)) {
     console.log(`Configuration is already at ${currentVersion}.`);
     return false;
   }
@@ -259,6 +264,7 @@ async function migrate({ configFile, templateFile, targetVersion, backupDir, non
           id: 'default',
           displayName: 'Default',
           rootPath: oldStoragePath,
+          storageType: getValue(oldSections, 'fileSystem', 'type') === 'nfs' ? 'nfs' : 'local',
           enabled: true,
           readOnly: false,
           order: 0
@@ -329,7 +335,7 @@ async function main() {
     const currentVersion = getConfigVersion(parseIni(await fsp.readFile(configFile, 'utf8')));
     const comparison = compareVersions(currentVersion, targetVersion);
     if (comparison === null) throw new Error(`Unsupported config version: ${currentVersion}`);
-    console.log(comparison < 0 ? 'yes' : 'no');
+    console.log(comparison < 0 || needsLocationTypeMigration(parseIni(await fsp.readFile(configFile, 'utf8'))) ? 'yes' : 'no');
     return;
   }
 
