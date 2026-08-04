@@ -463,6 +463,27 @@ setup_configuration() {
   echo "Created local deployment settings. Keep .env and src/config.ini out of version control."
 }
 
+normalize_generated_tauri_changes() {
+  local manifest="$ROOT_DIR/fileapi_ui/src-tauri/Cargo.toml"
+  local changed expected
+  [[ -f "$manifest" ]] || return
+  changed="$(git -C "$ROOT_DIR" diff --unified=0 -- "$manifest" | while IFS= read -r line; do
+    case "$line" in
+      +++*|---*|@@*) ;;
+      +*|-*) printf '%s\n' "$line" ;;
+    esac
+  done)"
+  expected="$(printf '%s\n' \
+    '-tauri-build = { version = "=2.6.3" }' \
+    '+tauri-build = { version = "=2.6.3", features = [] }' \
+    '-tauri = { version = "=2.11.5" }' \
+    '+tauri = { version = "=2.11.5", features = [] }')"
+  if [[ "$changed" == "$expected" ]]; then
+    echo "Removing Tauri's generated empty feature-list changes from Cargo.toml."
+    git -C "$ROOT_DIR" restore --source=HEAD -- "$manifest"
+  fi
+}
+
 cmd_install() {
   install_server_system_dependencies
   ensure_node
@@ -492,6 +513,7 @@ cmd_build() {
     cd "$ROOT_DIR/fileapi_ui"
     npm run tauri build -- --config "{\"version\":\"$VITE_APP_VERSION\"}"
   )
+  normalize_generated_tauri_changes
   local deb_dir="$ROOT_DIR/fileapi_ui/src-tauri/target/release/bundle/deb"
   local deb_file
   shopt -s nullglob
@@ -559,6 +581,7 @@ preflight_upstream() {
 
 cmd_upgrade() {
   git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1 || { echo "upgrade requires a Git checkout." >&2; exit 1; }
+  normalize_generated_tauri_changes
   if has_blocking_worktree_changes; then
     echo "Refusing to update a working tree with uncommitted changes." >&2
     echo "Keep ignored .env and src/config.ini, but restore any accidentally moved tracked files before retrying:" >&2
