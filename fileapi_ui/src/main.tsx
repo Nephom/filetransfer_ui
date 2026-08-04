@@ -1252,10 +1252,12 @@ function App() {
       <div className="desktop-workspace">
         <aside className="desktop-folder-tree">
           <span className="sidebar-label">Folders</span>
-          <div id="folders" ref={folderTreeRef} className="folder-tree-scroll">
-            {renderTreeNode(folderTree)}
+          <div className="folder-pane">
+            <div id="folders" ref={folderTreeRef} className="folder-tree-scroll">
+              {renderTreeNode(folderTree)}
+            </div>
+            <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
           </div>
-          <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
         </aside>
         <section className="desktop-content">
           <div className="content-heading">
@@ -1299,8 +1301,9 @@ function App() {
               <button onClick={() => setShareUrl("")}>Close</button>
             </div>
           )}
-          <div id="files" ref={fileAreaRef} className="file-area">
-            {viewMode === "grid" ? (
+          <div className="file-pane">
+            <div id="files" ref={fileAreaRef} className="file-area">
+              {viewMode === "grid" ? (
               <div className="file-grid">
                 {files.map((file) => (
                   <article
@@ -1435,8 +1438,9 @@ function App() {
                 </tbody>
               </table>
             )}
+            </div>
+            <PersistentScrollbar targetRef={fileAreaRef} label="Files" />
           </div>
-          <PersistentScrollbar targetRef={fileAreaRef} label="Files" />
         </section>
       </div>
       <footer className="statusbar">
