@@ -345,7 +345,7 @@ confirm_configuration_upgrade() {
   current_version="$(node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --print-version --target-version "$target_version")"
   needs_upgrade="$(node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --needs-upgrade --target-version "$target_version")"
 
-  [[ "$needs_upgrade" == "yes" ]] || return
+  [[ "$needs_upgrade" == "yes" ]] || return 0
 
   echo "Configuration upgrade required: $current_version -> $target_version"
   echo "The upgrade keeps matching values, migrates Locations, and comments deprecated options."
