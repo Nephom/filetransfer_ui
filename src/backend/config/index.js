@@ -16,7 +16,7 @@ class ConfigManager {
   constructor(options = {}) {
     this.defaults = {
       meta: {
-        configVersion: '3.2.0-pre.0'
+        configVersion: '3.2.0'
       },
 
       // File system configuration
@@ -440,7 +440,7 @@ class ConfigManager {
 
         // [meta] section
         iniContent += '[meta]\n';
-        iniContent += `configVersion=${this.config.meta?.configVersion || '3.2.0-pre.0'}\n\n`;
+        iniContent += `configVersion=${this.config.meta?.configVersion || '3.2.0'}\n\n`;
 
         // [server] section
         iniContent += '[server]\n';

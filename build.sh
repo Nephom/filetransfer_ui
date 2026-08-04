@@ -308,11 +308,16 @@ migrate_legacy_configuration() {
 }
 
 target_application_version() {
-  local upstream_ref package_json
+  local upstream_ref version_file package_json
   upstream_ref="$(get_upstream_ref)" || {
     echo "Unable to determine an upstream branch for this checkout." >&2
     return 1
   }
+  version_file="$(run_git -C "$ROOT_DIR" show "${upstream_ref}:VERSION" 2>/dev/null || true)"
+  if [[ -n "$version_file" ]]; then
+    printf '%s\n' "${version_file//$'\n'/}"
+    return 0
+  fi
   package_json="$(run_git -C "$ROOT_DIR" show "${upstream_ref}:package.json")" || {
     echo "Unable to read package.json from upstream ${upstream_ref}." >&2
     return 1
@@ -321,6 +326,14 @@ target_application_version() {
     echo "Unable to parse package.json from upstream ${upstream_ref}." >&2
     return 1
   }
+}
+
+application_version() {
+  node "$ROOT_DIR/scripts/version.js" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).version));'
+}
+
+application_version_display() {
+  node "$ROOT_DIR/scripts/version.js" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).display));'
 }
 
 get_upstream_ref() {
@@ -414,6 +427,8 @@ cmd_setup() {
 }
 
 cmd_build() {
+  export VITE_APP_VERSION="$(application_version)"
+  export VITE_APP_VERSION_DISPLAY="$(application_version_display)"
   cmd_install
   install_desktop_system_dependencies
   ensure_rust
@@ -425,7 +440,7 @@ cmd_build() {
   )
   (
     cd "$ROOT_DIR/fileapi_ui"
-    npm run tauri build
+    npm run tauri build -- --config "{\"version\":\"$VITE_APP_VERSION\"}"
   )
   local deb_dir="$ROOT_DIR/fileapi_ui/src-tauri/target/release/bundle/deb"
   local deb_file

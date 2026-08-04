@@ -2,7 +2,7 @@
 
 [meta]
 # Configuration schema version. upgrade_tools/config-upgrade.js updates this value.
-configVersion=3.2.0-pre.0
+configVersion=3.2.0
 
 [server]
 # HTTP port used by the web interface and API. Restart the service after changing it.

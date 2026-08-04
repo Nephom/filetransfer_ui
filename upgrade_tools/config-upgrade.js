@@ -233,7 +233,7 @@ async function migrate({ configFile, templateFile, targetVersion, backupDir, non
     for (const [section, entries] of oldSections) {
       for (const [key, value] of entries) {
         if (!templateKeys.has(`${section}\u0000${key}`) && !(section === 'fileSystem' && key === 'storagePath')) {
-          oldEntries.push({ section, key, value, reason: 'This option is not part of the 3.2.0-pre.0 configuration schema.' });
+          oldEntries.push({ section, key, value, reason: 'This option is not part of the 3.2.0 configuration schema.' });
         }
       }
     }
