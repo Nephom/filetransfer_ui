@@ -92,6 +92,8 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const dragExpandTimer = React.useRef(null);
     const notificationTimer = React.useRef(null);
     const downloadInProgress = React.useRef(false);
+    const locationsLoaded = React.useRef(false);
+    const locationRefreshInProgress = React.useRef(false);
 
     const authHeaders = {
         Authorization: `Bearer ${token}`,
@@ -105,12 +107,15 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const pathForItem = (item) => normalisePath(item.path || (currentPath ? `${currentPath}/${item.name}` : item.name));
 
     const loadLocations = async () => {
-        setLocationsLoading(true);
+        if (locationRefreshInProgress.current) return;
+        locationRefreshInProgress.current = true;
+        if (!locationsLoaded.current) setLocationsLoading(true);
         try {
             const response = await fetch('/api/locations', { headers: { Authorization: `Bearer ${token}` } });
             if (!response.ok) throw new Error('Unable to load Locations.');
             const data = await response.json();
             const available = (data.locations || []).filter((location) => location && location.id);
+            locationsLoaded.current = true;
             setLocations(available);
             setLocationTrees((current) => Object.fromEntries(available.map((location) => [
                 location.id,
@@ -119,7 +124,10 @@ const FileBrowser = ({ token, user, onLogout }) => {
             setExpandedLocations((current) => Object.fromEntries(available.map((location, index) => [location.id, current[location.id] ?? index === 0])));
             setLocationId((current) => available.some((location) => location.id === current) ? current : available[0]?.id || '');
         } catch (requestError) { setError(requestError.message); }
-        finally { setLocationsLoading(false); }
+        finally {
+            locationRefreshInProgress.current = false;
+            setLocationsLoading(false);
+        }
     };
 
     const loadFiles = async (path = currentPath, requestedLocationId = locationId) => {
@@ -505,7 +513,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
              <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
         </nav>
          <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
-         <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{locationsLoading ? <span className="tree-loading">Loading Locations...</span> : locations.map((location) => <section className="location-section" key={location.id}><div className={`tree-node ${location.id === locationId ? 'active' : ''}`} onDragOver={(event) => { if (isExternalFileDrag(event)) return; if (isValidMoveTarget(dragItems, '', location.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(`${location.id}:`); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event) => { if (isExternalFileDrag(event)) return; event.preventDefault(); endDrag(); moveItems(dragItems, '', location.id); }}><button className="tree-toggle" aria-label={`${expandedLocations[location.id] ? 'Collapse' : 'Expand'} ${location.displayName}`} onClick={() => toggleLocation(location.id)}>{expandedLocations[location.id] ? '−' : '+'}</button><button className={`tree-folder ${dropTarget === `${location.id}:` ? 'drop-target' : ''}`} onClick={() => selectLocation(location.id)}><span className="folder-mini" />{location.displayName}</button><span className={`location-status-dot ${location.status === 'online' ? 'online' : ''}`} title={location.status || 'unknown'} aria-label={location.status || 'unknown'} /></div>{expandedLocations[location.id] && renderLocationTree(location.id)}</section>)}</aside>
+          <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{locationsLoading && locations.length === 0 ? <span className="tree-loading">Loading Locations...</span> : locations.map((location) => <section className="location-section" key={location.id}><div className={`tree-node ${location.id === locationId ? 'active' : ''}`} onDragOver={(event) => { if (isExternalFileDrag(event)) return; if (isValidMoveTarget(dragItems, '', location.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(`${location.id}:`); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event) => { if (isExternalFileDrag(event)) return; event.preventDefault(); endDrag(); moveItems(dragItems, '', location.id); }}><button className="tree-toggle" aria-label={`${expandedLocations[location.id] ? 'Collapse' : 'Expand'} ${location.displayName}`} onClick={() => toggleLocation(location.id)}>{expandedLocations[location.id] ? '−' : '+'}</button><button className={`tree-folder ${dropTarget === `${location.id}:` ? 'drop-target' : ''}`} onClick={() => selectLocation(location.id)}><span className="folder-mini" />{location.displayName}</button><span className={`location-status-dot ${location.status === 'online' ? 'online' : ''}`} title={location.status || 'unknown'} aria-label={location.status || 'unknown'} /></div>{expandedLocations[location.id] && renderLocationTree(location.id)}</section>)}</aside>
              <section className="content" onDragOver={handleExternalDragOver} onDrop={handleExternalDrop}><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{displayPath}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{error && <div className="notice error-notice">{error}</div>}{transferStatus && <div className="notice transfer-notice"><span className={downloading || moving ? 'activity-dot' : ''} />{transferStatus}</div>}
                 <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{files.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map(renderFileItem)}</tbody></table>}</div>
             </section></main>
