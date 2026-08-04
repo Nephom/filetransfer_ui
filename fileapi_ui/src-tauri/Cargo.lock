@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "fileapi-desktop"
-version = "3.2.0-pre.0"
+version = "3.2.0"
 dependencies = [
  "reqwest 0.12.24",
  "rfd",
