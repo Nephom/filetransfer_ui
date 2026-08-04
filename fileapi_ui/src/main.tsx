@@ -133,6 +133,12 @@ function PersistentScrollbar({
       aria-valuemin={0}
       aria-valuemax={maxScroll}
       aria-valuenow={metrics.scrollTop}
+      onWheel={(event) => {
+        const target = targetRef.current;
+        if (!target) return;
+        event.preventDefault();
+        target.scrollTop += event.deltaY;
+      }}
     >
       <div
         className="persistent-scrollbar-thumb"
