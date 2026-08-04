@@ -574,6 +574,10 @@ preflight_upstream() {
 
   echo "Upgrade: validating dependencies and tests before changing the active checkout..."
   ROOT_DIR="$checkout"
+  if compgen -G "$old_root/test/*.test.js" >/dev/null; then
+    mkdir -p "$checkout/test"
+    cp "$old_root"/test/*.test.js "$checkout/test/"
+  fi
   if ! ensure_node || ! install_server_node_dependencies || ! cmd_test; then
     cleanup_preflight
     echo "Upgrade preflight failed; the active checkout was not changed." >&2
