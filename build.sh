@@ -309,9 +309,8 @@ migrate_legacy_configuration() {
 
 target_application_version() {
   local upstream_ref package_json
-  upstream_ref="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref '@{u}')" || {
-    echo "Unable to determine the upstream branch for this checkout." >&2
-    echo "Configure an upstream branch before running upgrade, for example: git branch --set-upstream-to=origin/main main" >&2
+  upstream_ref="$(get_upstream_ref)" || {
+    echo "Unable to determine an upstream branch for this checkout." >&2
     return 1
   }
   package_json="$(run_git -C "$ROOT_DIR" show "${upstream_ref}:package.json")" || {
@@ -322,6 +321,22 @@ target_application_version() {
     echo "Unable to parse package.json from upstream ${upstream_ref}." >&2
     return 1
   }
+}
+
+get_upstream_ref() {
+  local tracked_ref
+  tracked_ref="$(git -C "$ROOT_DIR" rev-parse --abbrev-ref '@{u}' 2>/dev/null || true)"
+  if [[ -n "$tracked_ref" ]]; then
+    printf '%s\n' "$tracked_ref"
+    return 0
+  fi
+
+  if git -C "$ROOT_DIR" show-ref --verify --quiet refs/remotes/origin/main; then
+    printf '%s\n' 'origin/main'
+    return 0
+  fi
+
+  return 1
 }
 
 confirm_configuration_upgrade() {
@@ -466,10 +481,11 @@ cmd_upgrade() {
   echo "Upgrade: backing up the database..."
   backup_database_before_upgrade
   echo "Upgrade: applying a fast-forward update..."
-  run_git -C "$ROOT_DIR" merge --ff-only "@{u}"
-  local local_head upstream_head
+  local upstream_ref local_head upstream_head
+  upstream_ref="$(get_upstream_ref)"
+  run_git -C "$ROOT_DIR" merge --ff-only "$upstream_ref"
   local_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-  upstream_head="$(git -C "$ROOT_DIR" rev-parse '@{u}')"
+  upstream_head="$(git -C "$ROOT_DIR" rev-parse "$upstream_ref")"
   [[ "$local_head" == "$upstream_head" ]] || {
     echo "Upgrade failed: local HEAD $local_head does not match upstream $upstream_head after merge." >&2
     exit 1
