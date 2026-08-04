@@ -12,7 +12,7 @@
 .context-menu hr { margin: 4px 0; border: 0; border-top: 1px solid #284966; }
 
 /* Both panes use a custom rail so it remains visible when content fits. */
-.persistent-scrollbar { position: relative; flex: 0 0 14px; width: 14px; min-height: 0; background: #091a2b; border-left: 1px solid #1c3955; }
+.persistent-scrollbar { position: relative; flex: 0 0 14px; width: 14px; min-height: 100%; background: #091a2b; border-left: 1px solid #1c3955; }
 .persistent-scrollbar-thumb { position: absolute; top: 0; left: 2px; width: 10px; min-height: 28px; border-radius: 7px; background: #315b7e; cursor: grab; }
 .persistent-scrollbar-thumb:hover { background: #4a789e; }
 .persistent-scrollbar-thumb:active { cursor: grabbing; }
