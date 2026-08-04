@@ -204,6 +204,10 @@ ensure_node() {
 }
 
 ensure_rust() {
+  if [[ -x "$HOME/.cargo/bin/cargo" && -x "$HOME/.cargo/bin/rustc" ]]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
   if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
     echo "Using existing Rust toolchain: $(rustc --version)"
     return
@@ -471,6 +475,8 @@ cmd_setup() {
 }
 
 cmd_build() {
+  local before_build_status after_build_status
+  before_build_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)"
   export VITE_APP_VERSION="$(application_version)"
   export VITE_APP_VERSION_DISPLAY="$(application_version_display)"
   cmd_install
@@ -495,7 +501,8 @@ cmd_build() {
     [[ "$deb_file" == "$deb_dir/$normalized_name" ]] || mv "$deb_file" "$deb_dir/$normalized_name"
   done
   shopt -u nullglob
-  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)" ]]; then
+  after_build_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)"
+  if [[ "$after_build_status" != "$before_build_status" ]]; then
     echo "Build created uncommitted files in the repository; refusing to continue." >&2
     git -C "$ROOT_DIR" status --short >&2
     exit 1
