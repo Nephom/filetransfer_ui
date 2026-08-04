@@ -28,6 +28,7 @@ const { createLogger, systemLogger } = require('./utils/logger');
 const certificateManager = require('./ssl/certificate-manager');
 const sanManager = require('./ssl/san-manager');
 const pidManager = require('./utils/pid-manager');
+const { getVersion } = require('../../scripts/version');
 
 
 
@@ -275,6 +276,11 @@ app.get('/admin', (req, res) => {
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/public/index.html'));
+});
+
+app.get('/api/version', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.json(getVersion());
 });
 
 // Server log endpoint (for admin panel)

@@ -11,6 +11,14 @@ const LoginForm = ({ onLogin }) => {
     const [forgotPasswordUsername, setForgotPasswordUsername] = React.useState('');
     const [forgotPasswordLoading, setForgotPasswordLoading] = React.useState(false);
     const [forgotPasswordSuccess, setForgotPasswordSuccess] = React.useState('');
+    const [appVersion, setAppVersion] = React.useState('');
+
+    React.useEffect(() => {
+        fetch('/api/version')
+            .then(response => response.ok ? response.json() : null)
+            .then(data => { if (data?.display) setAppVersion(data.display); })
+            .catch(() => {});
+    }, []);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -274,7 +282,11 @@ const LoginForm = ({ onLogin }) => {
                             fontSize: '14px'
                         }
                     }, 'Forgot Password?')
-                )
+                ),
+                React.createElement('div', {
+                    key: 'version',
+                    style: { textAlign: 'center', color: 'rgba(255, 255, 255, 0.65)', fontSize: '12px', marginTop: '18px' }
+                }, appVersion)
             ])
         ])
     );

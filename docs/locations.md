@@ -34,6 +34,24 @@ If `definitions` is omitted, `LocationManager` exposes one `default` Location fr
 - Health failures are not represented as an empty directory. Listing and mutation APIs must return an explicit Location/storage error.
 - Location initialization may be lazy. Health checks and cache scans should run only when a Location is selected or explicitly inspected.
 
+## NFS Mount Lifecycle
+
+The application does not mount or unmount NFS filesystems. Mount lifecycle is an operating-system responsibility and must be prepared by the server administrator before enabling a Location. Use `/etc/fstab`, a systemd mount/automount unit, or an approved manual mount procedure. The application only checks the configured directory, reports `online`/`offline`/`permission_denied`/`error`, and preserves valid cache data during transient failures.
+
+Do not expose a web API that directly runs `mount` or `umount`. Such an API would require a separately designed privileged helper, strict allowlists, credential handling, audit logging, and busy/unmount recovery. After an NFS mount is restored, refresh that Location; other Locations use independent filesystem and cache scopes.
+
+## Operations Runbook
+
+1. Mount the NFS export using the host's approved `/etc/fstab` or systemd configuration.
+2. Verify the mount and service-user permissions before enabling the Location.
+3. Start or restart the application after mount ordering is ready.
+4. Check Location health in the admin view and run a root/subdirectory refresh.
+5. If a Location becomes offline, repair the host mount first; do not replace it with an empty directory or delete its cache manually.
+6. After recovery, refresh only the affected Location and confirm the other Locations remain available.
+7. For rollback, stop the service, restore the application/database backup, restore the previous configuration, verify mounts, and start the service again.
+
+The production application must never contain real NFS credentials in this repository. Keep mount credentials and host-specific paths in the server's protected configuration.
+
 ## Migration
 
 1. Keep the current `storagePath` unchanged and deploy the LocationManager fallback.
