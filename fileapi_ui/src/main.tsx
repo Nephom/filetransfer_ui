@@ -254,6 +254,8 @@ function App() {
   } | null>(null);
   const accountControl = useRef<HTMLDivElement>(null);
   const locationControl = useRef<HTMLDivElement>(null);
+  const folderTreeRef = useRef<HTMLDivElement>(null);
+  const fileAreaRef = useRef<HTMLDivElement>(null);
   const noticeTimer = useRef<number | undefined>();
   const locationsLoaded = useRef(false);
   const locationRefreshInProgress = useRef(false);
@@ -1250,7 +1252,10 @@ function App() {
       <div className="desktop-workspace">
         <aside className="desktop-folder-tree">
           <span className="sidebar-label">Folders</span>
-          <div className="folder-tree-scroll">{renderTreeNode(folderTree)}</div>
+          <div id="folders" ref={folderTreeRef} className="folder-tree-scroll">
+            {renderTreeNode(folderTree)}
+          </div>
+          <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
         </aside>
         <section className="desktop-content">
           <div className="content-heading">
@@ -1294,7 +1299,7 @@ function App() {
               <button onClick={() => setShareUrl("")}>Close</button>
             </div>
           )}
-          <div className="file-area">
+          <div id="files" ref={fileAreaRef} className="file-area">
             {viewMode === "grid" ? (
               <div className="file-grid">
                 {files.map((file) => (
@@ -1431,6 +1436,7 @@ function App() {
               </table>
             )}
           </div>
+          <PersistentScrollbar targetRef={fileAreaRef} label="Files" />
         </section>
       </div>
       <footer className="statusbar">
