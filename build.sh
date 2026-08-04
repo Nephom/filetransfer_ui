@@ -533,6 +533,10 @@ cmd_build() {
 }
 
 cmd_test() {
+  if ! compgen -G "$ROOT_DIR/test/*.test.js" >/dev/null; then
+    echo "No backend test files were found under $ROOT_DIR/test; refusing to report a false pass." >&2
+    return 1
+  fi
   npm test --prefix "$ROOT_DIR"
 }
 
@@ -570,7 +574,7 @@ preflight_upstream() {
 
   echo "Upgrade: validating dependencies and tests before changing the active checkout..."
   ROOT_DIR="$checkout"
-  if ! ensure_node || ! install_server_node_dependencies || ! npm test --prefix "$ROOT_DIR"; then
+  if ! ensure_node || ! install_server_node_dependencies || ! cmd_test; then
     cleanup_preflight
     echo "Upgrade preflight failed; the active checkout was not changed." >&2
     return 1
@@ -629,7 +633,7 @@ cmd_upgrade() {
   echo "Upgrade: running database migrations..."
   run_database_migrations
   echo "Upgrade: running backend tests..."
-  npm test --prefix "$ROOT_DIR"
+  cmd_test
   echo "Upgrade complete. Start the service with ./start.sh."
 }
 
