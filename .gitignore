@@ -28,10 +28,8 @@ issue*
 .claude/
 .claude/**
 
-# Test directories and files
-test/
-tests/
-*.test.js
+# Local-only test data should be ignored explicitly; committed tests remain available to fresh clones.
+tests/data/
 *.spec.js
 
 # Storage and data directories
