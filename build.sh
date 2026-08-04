@@ -604,6 +604,10 @@ cmd_upgrade() {
     legacy_config="$(mktemp)"
     cp "$ROOT_DIR/src/config.ini" "$legacy_config"
   fi
+  if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! (cd "$ROOT_DIR" && node -e 'require.resolve("sqlite3")' >/dev/null 2>&1); then
+    echo "Upgrade: installing server dependencies before the database backup..."
+    cmd_install
+  fi
   echo "Upgrade: backing up the database..."
   backup_database_before_upgrade
   echo "Upgrade: applying a fast-forward update..."
