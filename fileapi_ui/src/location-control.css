@@ -1,0 +1,18 @@
+.location-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: 18px;
+  padding: 5px 8px;
+  border: 1px solid #315b7e;
+  border-radius: 5px;
+  background: #0d2942;
+}
+
+.location-label { color: #78c9ee; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.location-select, .location-single { min-width: 110px; max-width: 190px; overflow: hidden; border: 0; color: #e6eefc; background: transparent; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.location-select:focus { outline: 1px solid #47cdf1; }
+.health-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: #ff625f; box-shadow: 0 0 0 2px rgba(255, 98, 95, .18); }
+.health-dot.online { background: #61e6bb; box-shadow: 0 0 0 2px rgba(97, 230, 187, .18); }
+@media (max-width: 720px) { .location-control { margin-left: auto; } .location-label { display: none; } .location-select, .location-single { min-width: 78px; max-width: 120px; } }

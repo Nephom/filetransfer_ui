@@ -1727,7 +1727,7 @@ const ADMIN_CONFIG_SCHEMA = {
     maxFileSize: { type: 'integer', label: 'Maximum file size (bytes)', description: 'Maximum accepted upload size in bytes.', example: '10737418240', requiresRestart: true }
   },
   locations: {
-    definitions: { type: 'locations', label: 'Server Locations', description: 'Server-side roots. For NFS, mount the share first and enter the mounted directory. Changes apply immediately.', example: '[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10}]', requiresRestart: false }
+    definitions: { type: 'locations', label: 'Server Locations', description: 'Server-side roots. Set storageType to nfs for mount presence checks; mount the share first and enter the mounted directory. Changes apply immediately.', example: '[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","storageType":"nfs","enabled":true,"readOnly":false,"order":10}]', requiresRestart: false }
   },
   maintenance: {
     tempUploadRetentionDays: { type: 'integer', label: 'Temporary upload retention (days)', description: 'Delete interrupted temporary uploads older than this many days.', example: '7', requiresRestart: false },
@@ -1769,7 +1769,7 @@ const getAdminConfig = () => ({
     maxFileSize: configManager.get('fileSystem.maxFileSize') ?? 1024 * 1024 * 10000
   },
   locations: locationManager
-    ? locationManager.getLocations({ includeDisabled: true }).map(({ id, displayName, rootPath, enabled, readOnly, order }) => ({ id, displayName, rootPath, enabled, readOnly, order }))
+    ? locationManager.getLocations({ includeDisabled: true }).map(({ id, displayName, rootPath, storageType, enabled, readOnly, order }) => ({ id, displayName, rootPath, storageType, enabled, readOnly, order }))
     : (configManager.get('fileSystem.locations') || []),
   maintenance: {
     tempUploadRetentionDays: configManager.get('maintenance.tempUploadRetentionDays') ?? 7,

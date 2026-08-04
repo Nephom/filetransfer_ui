@@ -39,9 +39,9 @@ tempUploadCleanupIntervalHours=24
 # readOnly=true allows list/read/download but rejects upload, rename, delete, move, copy, mkdir and share.
 # order controls the order shown in the WebUI; lower values appear first.
 # One Location:
-# definitions=[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10}]
+# definitions=[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","storageType":"nfs","enabled":true,"readOnly":false,"order":10}]
 # Multiple Locations:
-# definitions=[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","enabled":true,"readOnly":false,"order":10},{"id":"team-b","displayName":"Team B","rootPath":"/srv/filetransfer/team-b","enabled":true,"readOnly":true,"order":20}]
+# definitions=[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","storageType":"nfs","enabled":true,"readOnly":false,"order":10},{"id":"team-b","displayName":"Team B","rootPath":"/srv/filetransfer/team-b","storageType":"local","enabled":true,"readOnly":true,"order":20}]
 
 [logging]
 # Minimum severity written to server.log: DEBUG, INFO, WARN, or ERROR.
