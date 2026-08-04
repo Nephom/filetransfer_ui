@@ -82,6 +82,7 @@ src/config.ini
 *.swo
 .codegraph/
 .opencode/
+.opencode/skills/project-testing/
 
 # OS generated files
 Thumbs.db
