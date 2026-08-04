@@ -77,7 +77,7 @@ class LocationPermissionManager {
       throw Object.assign(new Error(`Location ${label} is unavailable.`), { statusCode: 404 });
     }
     if (location.readOnly && MUTATION_CAPABILITIES.has(capability)) {
-      throw Object.assign(new Error(`Location ${label} is read-only; ${capability} operations are not allowed.`), { statusCode: 403 });
+      throw Object.assign(new Error(`permission denied: Location ${label} is read-only; ${capability} operations are not allowed.`), { statusCode: 403 });
     }
     if (!this.getLocationPermissions(user)[locationId]?.includes(capability)) {
       throw Object.assign(new Error(`permission denied: ${capability} permission is not granted for Location ${label}.`), { statusCode: 403 });
