@@ -46,12 +46,12 @@ const locationFileSystems = new Map();
 
 const getRequestedLocationId = (req) => req.query?.locationId || req.body?.locationId || req.headers['x-location-id'];
 
-const getStorageContext = async (req, relativePath = '', capability = 'list') => {
+const getStorageContext = async (req, relativePath = '', capability = 'list', requestedLocationId = null) => {
   if (!locationManager) {
     throw Object.assign(new Error('Location service is not ready'), { statusCode: 503 });
   }
 
-  const requestedId = getRequestedLocationId(req);
+  const requestedId = requestedLocationId || getRequestedLocationId(req);
   const locationId = requestedId || (locationManager.getLocation('default') ? 'default' : null);
   if (!locationId) {
     throw Object.assign(new Error('locationId is required'), { statusCode: 400 });
@@ -1168,12 +1168,13 @@ app.post('/api/files/create', authenticate, async (req, res) => {
 // Copy/Move/Paste operations (specific routes - must be before wildcard)
 app.post('/api/files/copy', authenticate, async (req, res) => {
   try {
-    const { sourcePath, destinationPath } = req.body;
-    const sourceContext = await getStorageContext(req, sourcePath, 'copy');
-    const destinationContext = await getStorageContext(req, destinationPath, 'copy');
-    await sourceContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
-    await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_copy', req, sourceContext.fileSystem);
-    res.json({ success: true, locationId: sourceContext.locationId });
+    const { sourcePath, destinationPath, sourceLocationId, targetLocationId, destinationLocationId } = req.body;
+    const targetId = targetLocationId || destinationLocationId;
+    const sourceContext = await getStorageContext(req, sourcePath, 'copy', sourceLocationId);
+    const destinationContext = await getStorageContext(req, destinationPath, 'copy', targetId);
+    await destinationContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
+    await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_copy', req, destinationContext.fileSystem);
+    res.json({ success: true, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
   } catch (error) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -1181,16 +1182,19 @@ app.post('/api/files/copy', authenticate, async (req, res) => {
 
 app.post('/api/files/move', authenticate, async (req, res) => {
   try {
-    const { sourcePath, destinationPath } = req.body;
-    const sourceContext = await getStorageContext(req, sourcePath, 'move');
-    const destinationContext = await getStorageContext(req, destinationPath, 'move');
-    if (sourceContext.locationId !== destinationContext.locationId) {
-      return res.status(400).json({ error: 'Cross-Location move is not supported' });
+    const { sourcePath, destinationPath, sourceLocationId, targetLocationId, destinationLocationId } = req.body;
+    const targetId = targetLocationId || destinationLocationId;
+    const sourceContext = await getStorageContext(req, sourcePath, 'move', sourceLocationId);
+    const destinationContext = await getStorageContext(req, destinationPath, 'move', targetId);
+    if (sourceContext.locationId === destinationContext.locationId) {
+      await sourceContext.fileSystem.move(sourceContext.targetPath, destinationContext.targetPath);
+    } else {
+      await destinationContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
+      await sourceContext.fileSystem.delete(sourceContext.targetPath);
     }
-    await sourceContext.fileSystem.move(sourceContext.targetPath, destinationContext.targetPath);
     await refreshDirectoryCache(path.dirname(sourceContext.targetPath), 'refresh_after_move_source', req, sourceContext.fileSystem);
-    await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_move_destination', req, sourceContext.fileSystem);
-    res.json({ success: true, locationId: sourceContext.locationId });
+    await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_move_destination', req, destinationContext.fileSystem);
+    res.json({ success: true, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
   } catch (error) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -1199,7 +1203,7 @@ app.post('/api/files/move', authenticate, async (req, res) => {
 // Paste (copy or move) files (specific route - must be before wildcard)
 app.post('/api/files/paste', authenticate, async (req, res) => {
   try {
-    const { items, operation, targetPath } = req.body;
+    const { items, operation, targetPath, sourceLocationId, targetLocationId, destinationLocationId } = req.body;
 
     if (!items || !Array.isArray(items) || !operation) {
       return res.status(400).json({ error: 'Items array and operation are required' });
@@ -1208,25 +1212,29 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
     const processedItems = [];
     const sourceDirectories = new Set();
     const pasteCapability = operation === 'copy' ? 'copy' : 'move';
-    const targetContext = await getStorageContext(req, targetPath || '', pasteCapability);
+    const targetId = targetLocationId || destinationLocationId;
+    const targetContext = await getStorageContext(req, targetPath || '', pasteCapability, targetId);
 
     for (const item of items) {
       // Build source path from item.path (relative path from frontend)
-      const sourceContext = await getStorageContext(req, item.path, pasteCapability);
-      const targetItemContext = await getStorageContext(req, path.join(targetPath || '', item.name), pasteCapability);
+      const itemSourceLocationId = item.sourceLocationId || sourceLocationId;
+      const sourceContext = await getStorageContext(req, item.path, pasteCapability, itemSourceLocationId);
+      const targetItemContext = await getStorageContext(req, path.join(targetPath || '', item.name), pasteCapability, targetContext.locationId);
       const sourceFullPath = sourceContext.targetPath;
       const targetFullPath = targetItemContext.targetPath;
 
-      sourceDirectories.add(path.dirname(sourceFullPath));
+      sourceDirectories.add({ fileSystem: sourceContext.fileSystem, path: path.dirname(sourceFullPath) });
 
       if (operation === 'copy') {
-        await sourceContext.fileSystem.copy(sourceFullPath, targetFullPath);
+        await targetItemContext.fileSystem.copy(sourceFullPath, targetFullPath);
         systemLogger.logFileOperation('copy', path.join(targetPath || '', item.name), true, req, { source: sourceFullPath, target: targetFullPath });
       } else if (operation === 'cut') {
-        if (sourceContext.locationId !== targetItemContext.locationId) {
-          return res.status(400).json({ error: 'Cross-Location move is not supported' });
+        if (sourceContext.locationId === targetItemContext.locationId) {
+          await sourceContext.fileSystem.move(sourceFullPath, targetFullPath);
+        } else {
+          await targetItemContext.fileSystem.copy(sourceFullPath, targetFullPath);
+          await sourceContext.fileSystem.delete(sourceFullPath);
         }
-        await sourceContext.fileSystem.move(sourceFullPath, targetFullPath);
         systemLogger.logFileOperation('move', path.join(targetPath || '', item.name), true, req, { source: sourceFullPath, target: targetFullPath });
       }
 
@@ -1240,11 +1248,11 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
         const targetDir = targetContext.targetPath;
         await refreshDirectoryCache(targetDir, 'refresh_after_paste', req, targetContext.fileSystem);
 
-        // For move operations, refresh every affected source directory.
+        // For move operations, refresh every affected source directory in its own Location cache.
         if (operation === 'cut') {
-          for (const sourceDir of sourceDirectories) {
-            if (sourceDir !== targetDir) {
-              await refreshDirectoryCache(sourceDir, 'refresh_after_paste_source', req, targetContext.fileSystem);
+          for (const sourceDirectory of sourceDirectories) {
+            if (sourceDirectory.path !== targetDir || sourceDirectory.fileSystem !== targetContext.fileSystem) {
+              await refreshDirectoryCache(sourceDirectory.path, 'refresh_after_paste_source', req, sourceDirectory.fileSystem);
             }
           }
         }
@@ -1261,7 +1269,7 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logFileOperation(req.body.operation === 'copy' ? 'copy' : 'move', req.body.targetPath || '/', false, req, { error: error.message, items: req.body.items?.map(i => i.name) });
-    res.status(500).json({ error: error.message });
+    res.status(error.statusCode || 500).json({ error: error.message });
   }
 });
 
