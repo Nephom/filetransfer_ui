@@ -2,6 +2,7 @@
 .DS_Store
 CLAUDE.md
 AGENTS.md
+**/AGENTS.md
 COMMANDS.md
 CACHE_IMPROVEMENTS.md
 QWEN.md
@@ -16,6 +17,24 @@ backup
 .docs
 openspec/
 openspec/**
+
+# Local work documents and workflow notes
+**/*WORKFLOW*.md
+**/*workflow*.md
+**/*WORK*.md
+**/*work*.md
+**/*工作*.md
+**/工作流程*.md
+**/*SELF-TEST*
+**/*self-test*
+**/*SELF_TEST*
+**/*self_test*
+**/*SELFTEST*
+**/*selftest*
+test-results/
+test-results/**
+test-output/
+test-output/**
 
 # Issue Files
 issue*
