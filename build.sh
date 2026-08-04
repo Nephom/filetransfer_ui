@@ -114,27 +114,57 @@ require_ubuntu() {
 
 install_desktop_system_dependencies() {
   require_ubuntu
-  run_as_root true
-  run_apt update
-
   local webkit_package="libwebkit2gtk-4.1-dev"
   if ! apt-cache show "$webkit_package" >/dev/null 2>&1; then
     webkit_package="libwebkit2gtk-4.0-dev"
   fi
 
-  run_apt install -y ca-certificates curl wget git file build-essential pkg-config libssl-dev libgtk-3-dev "$webkit_package" libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+  local packages=(ca-certificates curl wget git file build-essential pkg-config libssl-dev libgtk-3-dev "$webkit_package" libayatana-appindicator3-dev librsvg2-dev libxdo-dev)
+  local missing=()
+  local package
+  for package in "${packages[@]}"; do
+    dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii ' || missing+=("$package")
+  done
+
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    echo "Desktop system dependencies are already installed; skipping root-only package installation."
+    return
+  fi
+
+  echo "Installing missing desktop system dependencies: ${missing[*]}"
+  run_as_root true
+  run_apt update
+  run_apt install -y "${missing[@]}"
 }
 
 install_server_system_dependencies() {
   detect_os
   case "$OS_ID" in
     alpine)
-      run_apk add --no-cache bash ca-certificates curl wget git nodejs npm python3 make g++ libstdc++ lsof iproute2
+      local commands=(bash curl wget git node npm python3 make g++ lsof ip)
+      local command_name
+      for command_name in "${commands[@]}"; do
+        if ! command -v "$command_name" >/dev/null 2>&1; then
+          run_apk add --no-cache bash ca-certificates curl wget git nodejs npm python3 make g++ libstdc++ lsof iproute2
+          return
+        fi
+      done
+      echo "Server system dependencies are already installed; skipping root-only package installation."
       ;;
     ubuntu)
+      local packages=(ca-certificates curl wget git file build-essential pkg-config python3)
+      local missing=()
+      local package
+      for package in "${packages[@]}"; do
+        dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii ' || missing+=("$package")
+      done
+      if [[ "${#missing[@]}" -eq 0 ]]; then
+        echo "Server system dependencies are already installed; skipping root-only package installation."
+        return
+      fi
       run_as_root true
       run_apt update
-      run_apt install -y ca-certificates curl wget git file build-essential pkg-config python3
+      run_apt install -y "${missing[@]}"
       ;;
     *)
       echo "Unsupported server OS: $OS_ID. Supported server platforms are Alpine Linux and Ubuntu." >&2
@@ -174,21 +204,35 @@ ensure_node() {
 }
 
 ensure_rust() {
-  if ! command -v rustup >/dev/null 2>&1; then
-    echo "Installing Rust stable toolchain..."
-    curl --fail --location --show-error https://sh.rustup.rs | sh -s -- -y --profile minimal
+  if command -v cargo >/dev/null 2>&1 && command -v rustc >/dev/null 2>&1; then
+    echo "Using existing Rust toolchain: $(rustc --version)"
+    return
   fi
+
+  if command -v rustup >/dev/null 2>&1; then
+    echo "Rust compiler is incomplete; installing the stable rustup toolchain..."
+    rustup toolchain install stable --profile minimal
+    rustup default stable
+    export PATH="$HOME/.cargo/bin:$PATH"
+    return
+  fi
+
+  echo "Installing Rust stable toolchain..."
+  curl --fail --location --show-error https://sh.rustup.rs | sh -s -- -y --profile minimal
   export PATH="$HOME/.cargo/bin:$PATH"
   rustup toolchain install stable --profile minimal
   rustup default stable
 }
 
 install_server_node_dependencies() {
-  npm ci --prefix "$ROOT_DIR"
+  npm ci --ignore-scripts --include=optional --prefix "$ROOT_DIR"
+  npm rebuild --foreground-scripts --prefix "$ROOT_DIR"
+  (cd "$ROOT_DIR" && node -e 'for (const name of ["bcrypt", "sqlite3", "unrs-resolver"]) require.resolve(name);')
 }
 
 install_desktop_node_dependencies() {
-  npm ci --prefix "$ROOT_DIR/fileapi_ui"
+  npm ci --ignore-scripts --include=optional --prefix "$ROOT_DIR/fileapi_ui"
+  npm rebuild --foreground-scripts --prefix "$ROOT_DIR/fileapi_ui"
 }
 
 format_env_value() {
@@ -451,6 +495,11 @@ cmd_build() {
     [[ "$deb_file" == "$deb_dir/$normalized_name" ]] || mv "$deb_file" "$deb_dir/$normalized_name"
   done
   shopt -u nullglob
+  if [[ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)" ]]; then
+    echo "Build created uncommitted files in the repository; refusing to continue." >&2
+    git -C "$ROOT_DIR" status --short >&2
+    exit 1
+  fi
   echo "DEB packages are in fileapi_ui/src-tauri/target/release/bundle/deb/."
 }
 
@@ -471,6 +520,34 @@ has_blocking_worktree_changes() {
     return 0
   done < <(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)
   return 1
+}
+
+preflight_upstream() {
+  local upstream_head="$1"
+  local checkout old_root
+  checkout="$(mktemp -d)"
+  old_root="$ROOT_DIR"
+
+  cleanup_preflight() {
+    ROOT_DIR="$old_root"
+    git -C "$old_root" worktree remove --force "$checkout" >/dev/null 2>&1 || true
+    rmdir "$checkout" >/dev/null 2>&1 || true
+  }
+
+  if ! git -C "$old_root" worktree add --detach "$checkout" "$upstream_head"; then
+    cleanup_preflight
+    return 1
+  fi
+
+  echo "Upgrade: validating dependencies and tests before changing the active checkout..."
+  ROOT_DIR="$checkout"
+  if ! ensure_node || ! install_server_node_dependencies || ! npm test --prefix "$ROOT_DIR"; then
+    cleanup_preflight
+    echo "Upgrade preflight failed; the active checkout was not changed." >&2
+    return 1
+  fi
+
+  cleanup_preflight
 }
 
 cmd_upgrade() {
@@ -498,9 +575,10 @@ cmd_upgrade() {
   echo "Upgrade: applying a fast-forward update..."
   local upstream_ref local_head upstream_head
   upstream_ref="$(get_upstream_ref)"
+  upstream_head="$(git -C "$ROOT_DIR" rev-parse "$upstream_ref")"
+  preflight_upstream "$upstream_head"
   run_git -C "$ROOT_DIR" merge --ff-only "$upstream_ref"
   local_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
-  upstream_head="$(git -C "$ROOT_DIR" rev-parse "$upstream_ref")"
   [[ "$local_head" == "$upstream_head" ]] || {
     echo "Upgrade failed: local HEAD $local_head does not match upstream $upstream_head after merge." >&2
     exit 1
