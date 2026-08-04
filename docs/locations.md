@@ -17,6 +17,7 @@ Each Location contains:
 - `id`: stable opaque identifier matching `[A-Za-z0-9][A-Za-z0-9_-]*`. It is safe to expose as an API identifier, but it must not encode a filesystem path.
 - `displayName`: user-facing name. UI must show this instead of `rootPath`.
 - `rootPath`: server-side filesystem/NFS mount root. It is never returned to ordinary clients.
+- `storageType`: `local` (default) or `nfs`. NFS Locations are `offline` when the configured path is no longer a Linux mount point, even if the underlying directory still exists. A legacy global `fileSystem.type=nfs` also marks Locations without an explicit type as NFS; set per-Location `storageType=local` when mixing storage types.
 - `enabled`: disabled Locations remain configured and report `disabled` health, but are not selectable.
 - `readOnly`: capability metadata used by later API authorization work.
 - `order`: explicit display/selection order. Filesystem or NFS creation time is never used.

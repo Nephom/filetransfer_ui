@@ -4,10 +4,12 @@ const path = require('node:path');
 const LOCATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
 class LocationManager {
-  constructor(config, { fsModule = fs, cwd = process.cwd() } = {}) {
+  constructor(config, { fsModule = fs, cwd = process.cwd(), platform = process.platform, mountInfoReader } = {}) {
     this.config = config || {};
     this.fs = fsModule;
     this.cwd = cwd;
+    this.platform = platform;
+    this.mountInfoReader = mountInfoReader || (fsModule.readFile ? (filePath, encoding) => fsModule.readFile(filePath, encoding) : null);
     this.locations = this._normalizeLocations();
   }
 
@@ -54,10 +56,16 @@ class LocationManager {
         throw new Error(`Location ${id} requires rootPath`);
       }
 
+      const storageType = location.storageType || (this.config.fileSystem?.type === 'nfs' ? 'nfs' : 'local');
+      if (!['local', 'nfs'].includes(storageType)) {
+        throw new Error(`Location ${id} storageType must be local or nfs`);
+      }
+
       return Object.freeze({
         id,
         displayName,
         rootPath: path.resolve(this.cwd, rootPath),
+        storageType,
         enabled: location.enabled !== false,
         readOnly: location.readOnly === true,
         order: Number.isFinite(Number(location.order)) ? Number(location.order) : index
@@ -106,6 +114,9 @@ class LocationManager {
     if (!location.enabled) return { ...location, status: 'disabled' };
 
     try {
+      if (location.storageType === 'nfs' && !(await this.isMounted(location.rootPath))) {
+        return { ...location, status: 'offline', errorCode: 'NOT_MOUNTED' };
+      }
       const stats = await this.fs.stat(location.rootPath);
       if (!stats.isDirectory()) return { ...location, status: 'error', errorCode: 'ENOTDIR' };
       await this.fs.access(location.rootPath);
@@ -118,6 +129,23 @@ class LocationManager {
           : 'error';
       return { ...location, status, errorCode: error.code };
     }
+  }
+
+  async isMounted(rootPath) {
+    if (this.platform !== 'linux') return true;
+    if (!this.mountInfoReader) return false;
+
+    const mountInfo = await this.mountInfoReader('/proc/self/mountinfo', 'utf8');
+    return mountInfo.split(/\r?\n/).some((line) => {
+      const separator = line.indexOf(' - ');
+      if (separator === -1) return false;
+      const fields = line.slice(0, separator).split(' ');
+      const filesystemType = line.slice(separator + 3).split(' ')[0];
+      const mountPoint = fields[4];
+      if (!mountPoint) return false;
+      if (!['nfs', 'nfs4'].includes(filesystemType)) return false;
+      return mountPoint.replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8))) === rootPath;
+    });
   }
 
   async getHealthStatuses() {
