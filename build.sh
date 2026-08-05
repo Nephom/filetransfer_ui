@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${FILETRANSFER_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 COMMAND=""
 PROXY=""
 INTERACTIVE_UPGRADE=0
+SELF_UPDATE_CONTINUE=0
+SELF_UPDATE_DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -21,7 +23,15 @@ while [[ $# -gt 0 ]]; do
       INTERACTIVE_UPGRADE=1
       shift
       ;;
-    install|setup|build|test|upgrade|help)
+    --continue)
+      SELF_UPDATE_CONTINUE=1
+      shift
+      ;;
+    --dry-run)
+      SELF_UPDATE_DRY_RUN=1
+      shift
+      ;;
+    install|setup|build|test|upgrade|self-update|help)
       [[ -z "$COMMAND" ]] || { echo "Only one command may be provided." >&2; exit 2; }
       COMMAND="$1"
       shift
@@ -44,7 +54,8 @@ Commands:
   setup    Create missing local configuration and ask for deployment values.
   build    Build the Ubuntu 22.04+ Tauri DEB package.
   test     Run backend sandbox tests.
-  upgrade  Fast-forward from GitHub, migrate configuration, update dependencies, and run backend tests.
+  upgrade      Fast-forward from GitHub, migrate configuration, update dependencies, and run backend tests.
+  self-update  Fetch and syntax-check the upstream build.sh; use --continue to run upgrade with it.
 
 The proxy applies only to this invocation. It is passed to apk or apt, Git, npm,
 Cargo, curl, and wget; it is never saved to global configuration.
@@ -400,6 +411,48 @@ get_upstream_ref() {
   return 1
 }
 
+self_update() {
+  local upstream_ref temporary
+  git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1 || {
+    echo "self-update requires a Git checkout." >&2
+    exit 1
+  }
+
+  echo "Self-update: fetching upstream changes..."
+  run_git -C "$ROOT_DIR" fetch origin
+  upstream_ref="$(get_upstream_ref)" || {
+    echo "Self-update: unable to determine an upstream branch for this checkout." >&2
+    exit 1
+  }
+
+  temporary="$(mktemp "${TMPDIR:-/tmp}/filetransfer-build.XXXXXX")"
+  cleanup_self_update() {
+    rm -f "$temporary"
+  }
+  trap cleanup_self_update RETURN
+
+  if ! run_git -C "$ROOT_DIR" show "${upstream_ref}:build.sh" > "$temporary"; then
+    echo "Self-update: unable to read build.sh from ${upstream_ref}." >&2
+    exit 1
+  fi
+  if ! bash -n "$temporary"; then
+    echo "Self-update: fetched build.sh failed syntax validation." >&2
+    exit 1
+  fi
+  echo "Self-update: fetched build.sh from ${upstream_ref} passed syntax validation."
+
+  [[ "$SELF_UPDATE_DRY_RUN" -eq 1 ]] && return 0
+  [[ "$SELF_UPDATE_CONTINUE" -eq 1 ]] || {
+    echo "Self-update complete. Run ./build.sh upgrade to apply it, or use --continue next time."
+    return 0
+  }
+
+  local -a forwarded_args=(upgrade)
+  [[ "$INTERACTIVE_UPGRADE" -eq 1 ]] && forwarded_args+=(--interactive)
+  [[ -n "$PROXY" ]] && forwarded_args+=(--proxy "$PROXY")
+  FILETRANSFER_ROOT="$ROOT_DIR" SELF_UPDATE_BOOTSTRAPPED=1 bash "$temporary" "${forwarded_args[@]}"
+}
+
 confirm_configuration_upgrade() {
   local target_version current_version needs_upgrade answer
   target_version="$1"
@@ -590,7 +643,7 @@ preflight_upstream() {
 cmd_upgrade() {
   git -C "$ROOT_DIR" rev-parse --git-dir >/dev/null 2>&1 || { echo "upgrade requires a Git checkout." >&2; exit 1; }
   normalize_generated_tauri_changes
-  if has_blocking_worktree_changes; then
+  if [[ "${SELF_UPDATE_BOOTSTRAPPED:-0}" -ne 1 ]] && has_blocking_worktree_changes; then
     echo "Refusing to update a working tree with uncommitted changes." >&2
     echo "Keep ignored .env and src/config.ini, but restore any accidentally moved tracked files before retrying:" >&2
     echo "  git restore --source=HEAD -- package-lock.json start.sh stop.sh status.sh" >&2
@@ -652,6 +705,7 @@ case "$COMMAND" in
   build) cmd_build ;;
   test) cmd_test ;;
   upgrade) cmd_upgrade ;;
+  self-update) self_update ;;
   help|"") usage ;;
   *) usage >&2; exit 2 ;;
 esac
