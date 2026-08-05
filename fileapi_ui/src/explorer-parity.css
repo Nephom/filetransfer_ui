@@ -61,6 +61,14 @@
 .ssh-profile-form label { margin: 0; }
 .ssh-profile-form label:last-of-type { grid-column: 1 / -1; }
 .ssh-recording-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.upload-session-select { min-width: 190px; margin: 0; color: #91a9c0; font-size: 11px; }
+.upload-session-select select { display: block; width: 100%; margin-top: 4px; padding: 6px; color: #e6eefc; background: #091b2d; border: 1px solid #315b7e; border-radius: 4px; }
+.queue-modal { width: min(620px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
+.queue-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; margin: 8px 0; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; background: #07192a; }
+.queue-item small, .queue-item > span:not(.queue-status) { color: #91a9c0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-status { justify-self: end; color: #6bf0ca; font-size: 11px; text-transform: uppercase; }
+.queue-status.failed { color: #ffb8ae; }
+.queue-status.running { color: #9be8ff; }
 .recording-indicator { color: #ffb8ae; font-size: 12px; font-weight: 700; }
 .terminal-restore { order: 10; flex: 0 0 28px; width: 100%; padding: 4px; border: 0; border-top: 1px solid #315b7e; border-radius: 0; color: #91a9c0; background: #091a2b; }
 .explorer > .statusbar { order: 20; }

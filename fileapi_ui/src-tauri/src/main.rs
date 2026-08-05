@@ -2,6 +2,7 @@
 
 use reqwest::{multipart, Client};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -259,6 +260,19 @@ fn inspect_upload_paths(paths: Vec<String>) -> Result<UploadSummary, String> {
         files: files.len(),
         directories: directories.len(),
     })
+}
+
+#[tauri::command]
+fn hash_upload_paths(paths: Vec<String>) -> Result<HashMap<String, String>, String> {
+    let (files, _) = collect_upload_paths(&paths)?;
+    files
+        .into_iter()
+        .map(|(path, relative_path)| {
+            let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+            let digest = Sha256::digest(bytes);
+            Ok((relative_path, format!("{digest:x}")))
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -546,6 +560,7 @@ fn main() {
             pick_upload_files,
             local_list_directory,
             inspect_upload_paths,
+            hash_upload_paths,
             api_upload_paths,
             download_to_disk,
             write_download,
