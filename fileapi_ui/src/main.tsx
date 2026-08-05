@@ -467,6 +467,7 @@ function App() {
       return "";
     }
   });
+  const [selectedSshEntryId, setSelectedSshEntryId] = useState("");
   const [sxpWorkspaceId, setSxpWorkspaceId] = useState("");
   const [sshConnected, setSshConnected] = useState(false);
   const [sshSessionId, setSshSessionId] = useState("");
@@ -977,6 +978,7 @@ function App() {
           ? current.map((item) => item.id === sshProfile.id ? sshProfile : item)
           : [...current, sshProfile]);
         setSshProfileId(sshProfile.id);
+        setSelectedSshEntryId(sshProfile.id);
         sshPasswordKeyRef.current = sshProfile.id;
         loadSshProfileDraft(sshProfile);
       }
@@ -1131,6 +1133,7 @@ function App() {
     const profile = workspace?.sshEntries[0] || sshProfiles.find((item) => item.id === sshProfileId);
     if (profile) {
       setSshEntryDraftId(workspace?.sshEntries[0]?.id || profile.id);
+      setSelectedSshEntryId(profile.id);
       setSshProfileId(profile.id);
       sshPasswordKeyRef.current = profile.id;
       loadSshProfileDraft(profile);
@@ -1196,9 +1199,11 @@ function App() {
         setRemoteAliasDraft(sxpEntry?.remoteAlias || "Personal");
         if (profile) {
           setSshEntryDraftId(workspace.sshEntries[0]?.id || profile.id);
+          setSelectedSshEntryId(profile.id);
           loadSshProfileDraft(profile);
         } else {
           setSshEntryDraftId("");
+          setSelectedSshEntryId("");
           setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
         }
       }
@@ -1221,6 +1226,7 @@ function App() {
 
   const startNewSshEntry = () => {
     setSshEntryDraftId("");
+    setSelectedSshEntryId("");
     setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
   };
 
@@ -1232,7 +1238,7 @@ function App() {
   };
 
   const connectSsh = () => {
-    const profile = activeWorkspaceSession?.sshEntries[0] || sshProfiles.find((item) => item.id === sshProfileId);
+    const profile = activeWorkspaceSession?.sshEntries.find((item) => item.id === selectedSshEntryId);
     if (!activeWorkspaceSession || !profile) {
       openSessionsModal();
       setNotice("Select or create a Session with an SSH connection before connecting.");
@@ -2771,6 +2777,22 @@ function App() {
                   options={workspaceSessions.map((workspace) => ({ value: workspace.id, label: workspace.name }))}
                   onChange={selectWorkspaceSession}
                 />
+                {activeWorkspaceSession && (
+                  <PaletteSelect
+                    label="Select an SSH entry"
+                    value={selectedSshEntryId}
+                    options={activeWorkspaceSession.sshEntries.map((entry) => ({ value: entry.id, label: entry.name }))}
+                    onChange={(id) => {
+                      const entry = activeWorkspaceSession.sshEntries.find((item) => item.id === id);
+                      setSelectedSshEntryId(id);
+                      if (entry) {
+                        setSshProfileId(entry.id);
+                        sshPasswordKeyRef.current = entry.id;
+                        loadSshProfileDraft(entry);
+                      }
+                    }}
+                  />
+                )}
                 {!sshConnected ? (
                   <button className="confirm" onClick={connectSsh}>Connect</button>
                 ) : (
