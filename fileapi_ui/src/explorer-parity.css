@@ -55,6 +55,11 @@
 .terminal-tabs, .terminal-actions { display: flex; align-items: center; gap: 6px; }
 .terminal-tabs button, .terminal-actions button { padding: 5px 10px; border: 1px solid transparent; color: #91a9c0; background: transparent; }
 .terminal-tabs button.active, .terminal-tabs button:hover, .terminal-actions button:hover { color: #e6eefc; border-color: #315b7e; background: #102d49; }
+.ssh-tab { display: inline-flex; align-items: center; gap: 0; border: 1px solid #315b7e; border-radius: 4px; background: #0b2137; }
+.ssh-tab.active { border-color: #47cdf1; background: #174565; }
+.ssh-tab > button:first-child { border: 0; padding-right: 5px; }
+.ssh-tab .ssh-tab-close { min-width: 24px; padding: 4px 6px; border: 0; color: #91a9c0; }
+.ssh-tab .ssh-tab-close:hover { color: #ffb8ae; background: #3b1d28; }
 .terminal-content { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 8px; padding: 10px 12px 12px; }
 .terminal-content .sxp-output { flex: 1; min-height: 0; max-height: none; margin: 0; }
 .xterm-host { flex: 1; min-height: 0; overflow: hidden; padding: 8px; background: #020a12; border: 1px solid #254764; }
@@ -121,6 +126,7 @@
 .local-pane-footer { padding: 7px 14px; color: #7f9bb5; border-top: 1px solid #1c3955; font-size: 12px; }
 @media (max-width: 900px) { .local-pane { flex-basis: 250px; } }
 @media (max-width: 720px) { .sessions-layout { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .terminal-header { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 12px; }.terminal-tabs { max-width: 100%; overflow-x: auto; }.terminal-actions { width: 100%; justify-content: flex-end; } }
 @media (max-width: 720px) { .session-ssh-fields { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .split-workspace { overflow: auto; }.split-workspace .local-pane { flex: 0 0 100%; min-height: 260px; }.split-workspace .desktop-folder-tree { flex: 0 0 100%; } }
 
