@@ -214,7 +214,7 @@
         // Check share link info on page load
         async function checkShareInfo() {
             try {
-                const response = await fetch(`/api/files/share/${shareToken}/info`);
+                const response = await fetch(`/api/share/${shareToken}/info`);
 
                 if (response.ok) {
                     const data = await response.json();
