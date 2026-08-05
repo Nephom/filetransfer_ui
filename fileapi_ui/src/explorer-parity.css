@@ -23,6 +23,28 @@
 .sxp-modal { max-width: 680px; }
 .sxp-modal p { line-height: 1.5; }
 .sxp-output { min-height: 120px; max-height: 240px; overflow: auto; padding: 12px; color: #9be8ff; background: #061321; border: 1px solid #254764; white-space: pre-wrap; }
+.field-help { display: block; margin-top: 5px; color: #7f9bb5; font-size: 11px; font-weight: 400; }
+.file-table { table-layout: fixed; }
+.file-table .selection-column { width: 42px; }
+.resizable-column { position: relative; }
+.column-resize-handle { position: absolute; top: 4px; right: 0; bottom: 4px; width: 7px; border-right: 2px solid transparent; cursor: col-resize; }
+.column-resize-handle:hover, .column-resize-handle:active { border-right-color: #4ad9f4; }
+.terminal-dock { position: relative; order: 10; flex: 0 0 auto; min-height: 160px; display: flex; flex-direction: column; background: #061321; border-top: 1px solid #315b7e; box-shadow: 0 -10px 25px rgba(0, 0, 0, .2); }
+.terminal-resize-handle { position: absolute; top: -4px; right: 0; left: 0; z-index: 2; height: 8px; cursor: row-resize; }
+.terminal-resize-handle:hover { background: #47cdf1; }
+.terminal-header { display: flex; align-items: center; justify-content: space-between; min-height: 38px; padding: 0 12px; border-bottom: 1px solid #254764; }
+.terminal-tabs, .terminal-actions { display: flex; align-items: center; gap: 6px; }
+.terminal-tabs button, .terminal-actions button { padding: 5px 10px; border: 1px solid transparent; color: #91a9c0; background: transparent; }
+.terminal-tabs button.active, .terminal-tabs button:hover, .terminal-actions button:hover { color: #e6eefc; border-color: #315b7e; background: #102d49; }
+.terminal-content { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 8px; padding: 10px 12px 12px; }
+.terminal-content .sxp-output { flex: 1; min-height: 0; max-height: none; margin: 0; }
+.terminal-command { display: flex; gap: 8px; }
+.terminal-command input { flex: 1; margin: 0; color: #e6eefc; background: #091b2d; }
+.terminal-placeholder { align-items: flex-start; justify-content: center; color: #a8c0d8; }
+.terminal-placeholder p { margin: 0; }
+.terminal-restore { order: 10; flex: 0 0 28px; width: 100%; padding: 4px; border: 0; border-top: 1px solid #315b7e; border-radius: 0; color: #91a9c0; background: #091a2b; }
+.explorer > .statusbar { order: 20; }
+.terminal-restore:hover { color: #e6eefc; background: #102d49; }
 
 /* Both panes use a custom rail so it remains visible when content fits. */
 .persistent-scrollbar { position: relative; align-self: stretch; flex: 0 0 14px; width: 14px; min-height: 0; background: #091a2b; border-left: 1px solid #1c3955; }

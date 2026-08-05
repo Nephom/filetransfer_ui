@@ -61,20 +61,21 @@ type ManagedSession = {
   name: string;
   entries: SessionEntry[];
 };
+type ColumnKey = "name" | "modified" | "size";
 
-const sxpHelp = `sxp <session-id> upload <source-entry> <destination-entry>
-sxp <session-id> mv <source-entry> <destination-entry>
+const sxpHelp = `sxp <Session name> upload <source folder> <destination folder>
+sxp <Session name> mv <source folder> <destination folder>
 
-REMOTE (Location displayName) means the API Remote selected by the top LOCATION control.
-SXP only accepts entries registered in the selected Session.`;
+REMOTE (Location name) is the API Remote selected by the top LOCATION control.
+Source and destination folders must be named folders in the selected Session.`;
 
 const parseSxpCommand = (input: string, sessions: ManagedSession[]) => {
   const args = input.trim().split(/\s+/).filter(Boolean);
-  if (args[0] !== "sxp") return "Only the embedded sxp command is available here.";
-  if (!sessions.length) return "請先設置 Session，建立 Session 後才能使用 sxp。";
+  if (args[0] !== "sxp") return "Only the embedded SXP command is available here.";
+  if (!sessions.length) return "Please create a Session before using SXP.";
   if (args[1] === "help") return sxpHelp;
   if (args.length !== 5 || !["upload", "mv"].includes(args[2])) {
-    return `Usage: sxp <session-id> ${args[2] === "mv" ? "mv" : "upload"} <source-entry> <destination-entry>`;
+    return `Usage: sxp <Session name> ${args[2] === "mv" ? "mv" : "upload"} <source folder> <destination folder>`;
   }
   const session = sessions.find(
     (item) => item.id === args[1] || item.name === args[1],
@@ -83,7 +84,7 @@ const parseSxpCommand = (input: string, sessions: ManagedSession[]) => {
   const source = session.entries.find((entry) => entry.alias === args[3]);
   const destination = session.entries.find((entry) => entry.alias === args[4]);
   if (!source || !destination) {
-    return "SXP source and destination must be named entries in the selected Session.";
+    return "Source and destination folders must be named folders in the selected Session.";
   }
   return `Parsed ${args[2]}: ${source.alias} -> ${destination.alias}\n` +
     "Transfer execution will be submitted to the shared queue.";
@@ -306,9 +307,25 @@ function App() {
     }
   });
   const [sessionsOpen, setSessionsOpen] = useState(false);
-  const [sxpOpen, setSxpOpen] = useState(false);
   const [sxpInput, setSxpInput] = useState("");
   const [sxpOutput, setSxpOutput] = useState("");
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalTab, setTerminalTab] = useState<"sxp" | "ssh">("sxp");
+  const [terminalHeight, setTerminalHeight] = useState(() =>
+    Number(localStorage.getItem("fileapi-terminal-height")) || 260,
+  );
+  const [columnWidths, setColumnWidths] = useState<Record<ColumnKey, number>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("fileapi-column-widths") || "{}");
+      return {
+        name: Number(saved.name) || 50,
+        modified: Number(saved.modified) || 30,
+        size: Number(saved.size) || 20,
+      };
+    } catch {
+      return { name: 50, modified: 30, size: 20 };
+    }
+  });
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
   const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
@@ -333,6 +350,12 @@ function App() {
   const noticeTimer = useRef<number | undefined>();
   const locationsLoaded = useRef(false);
   const locationRefreshInProgress = useRef(false);
+  const terminalResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const columnResizeRef = useRef<{
+    key: ColumnKey;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
 
   useEffect(() => {
     try {
@@ -364,6 +387,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem("file-layout-mode", splitMode ? "split" : "single");
   }, [splitMode]);
+
+  useEffect(() => {
+    localStorage.setItem("fileapi-terminal-height", String(terminalHeight));
+  }, [terminalHeight]);
+
+  useEffect(() => {
+    localStorage.setItem("fileapi-column-widths", JSON.stringify(columnWidths));
+  }, [columnWidths]);
 
   useEffect(() => {
     localStorage.setItem(sessionRegistryKey, JSON.stringify(managedSessions));
@@ -647,6 +678,59 @@ function App() {
     setNotice(message);
     if (duration > 0)
       noticeTimer.current = window.setTimeout(() => setNotice(""), duration);
+  };
+
+  const stopTerminalResize = () => {
+    terminalResizeRef.current = null;
+    window.removeEventListener("pointermove", resizeTerminal);
+    window.removeEventListener("pointerup", stopTerminalResize);
+  };
+  const resizeTerminal = (event: PointerEvent) => {
+    const start = terminalResizeRef.current;
+    if (!start) return;
+    setTerminalHeight(
+      Math.max(160, Math.min(window.innerHeight - 180, start.startHeight + start.startY - event.clientY)),
+    );
+  };
+  const beginTerminalResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    terminalResizeRef.current = { startY: event.clientY, startHeight: terminalHeight };
+    window.addEventListener("pointermove", resizeTerminal);
+    window.addEventListener("pointerup", stopTerminalResize);
+  };
+
+  const stopColumnResize = () => {
+    columnResizeRef.current = null;
+    window.removeEventListener("pointermove", resizeColumn);
+    window.removeEventListener("pointerup", stopColumnResize);
+  };
+  const resizeColumn = (event: PointerEvent) => {
+    const start = columnResizeRef.current;
+    const area = fileAreaRef.current;
+    if (!start || !area) return;
+    const delta = ((event.clientX - start.startX) / area.clientWidth) * 100;
+    const next = Math.max(12, Math.min(70, start.startWidth + delta));
+    setColumnWidths((current) => {
+      const otherTotal = Object.entries(current)
+        .filter(([key]) => key !== start.key)
+        .reduce((total, [, width]) => total + width, 0);
+      if (next + otherTotal > 96) return current;
+      return { ...current, [start.key]: next };
+    });
+  };
+  const beginColumnResize = (
+    key: ColumnKey,
+    event: React.PointerEvent<HTMLSpanElement>,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    columnResizeRef.current = {
+      key,
+      startX: event.clientX,
+      startWidth: columnWidths[key],
+    };
+    window.addEventListener("pointermove", resizeColumn);
+    window.addEventListener("pointerup", stopColumnResize);
   };
 
   const login = async (event: React.FormEvent) => {
@@ -1294,19 +1378,6 @@ function App() {
               <button
                 onClick={() => {
                   setAccountOpen(false);
-                  setSxpOutput(
-                    managedSessions.length
-                      ? sxpHelp
-                      : "請先設置 Session，建立 Session 後才能使用 sxp。",
-                  );
-                  setSxpOpen(true);
-                }}
-              >
-                SXP Terminal
-              </button>
-              <button
-                onClick={() => {
-                  setAccountOpen(false);
                   setChangePasswordOpen(true);
                 }}
               >
@@ -1434,6 +1505,13 @@ function App() {
           disabled={busy}
         >
           Refresh
+        </button>
+        <button
+          className={terminalOpen ? "active" : ""}
+          onClick={() => setTerminalOpen((open) => !open)}
+          aria-pressed={terminalOpen}
+        >
+          Terminal
         </button>
       </nav>
       <div className="navigation">
@@ -1598,12 +1676,26 @@ function App() {
               </div>
             ) : (
               <table className="file-table">
+                <colgroup>
+                  <col className="selection-column" />
+                  <col style={{ width: `${columnWidths.name}%` }} />
+                  <col style={{ width: `${columnWidths.modified}%` }} />
+                  <col style={{ width: `${columnWidths.size}%` }} />
+                </colgroup>
                 <thead>
                   <tr>
                     <th aria-label="Select" />
-                    <th>Name</th>
-                    <th>Modified</th>
-                    <th>Size</th>
+                    {(["name", "modified", "size"] as ColumnKey[]).map((column) => (
+                      <th key={column} className="resizable-column">
+                        {column[0].toUpperCase() + column.slice(1)}
+                        <span
+                          className="column-resize-handle"
+                          onPointerDown={(event) => beginColumnResize(column, event)}
+                          role="separator"
+                          aria-label={`Resize ${column} column`}
+                        />
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -1809,10 +1901,7 @@ function App() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <h2>Sessions</h2>
-            <p>
-              Sessions store named directory entries only. API tokens, passwords,
-              and private keys are never saved here.
-            </p>
+            <p>Save the current LOCAL and API Remote folders under a name you can recognize later.</p>
             <form
               onSubmit={(event) => {
                 event.preventDefault();
@@ -1827,22 +1916,25 @@ function App() {
                   placeholder="ReleaseWorkspace"
                   required
                 />
+                <small className="field-help">Name for this saved workspace.</small>
               </label>
               <label>
-                LOCAL entry alias
+                Local folder name
                 <input
                   value={localAliasDraft}
                   onChange={(event) => setLocalAliasDraft(event.target.value)}
                   required
                 />
+                <small className="field-help">Name used to identify the current LOCAL folder in this Session.</small>
               </label>
               <label>
-                REMOTE entry alias
+                Remote folder name
                 <input
                   value={remoteAliasDraft}
                   onChange={(event) => setRemoteAliasDraft(event.target.value)}
                   required
                 />
+                <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
               </label>
               <div className="modal-actions">
                 <button type="button" onClick={() => setSessionsOpen(false)}>
@@ -1880,7 +1972,7 @@ function App() {
                       <small>
                         {entry.kind === "REMOTE"
                           ? `REMOTE (${entry.locationName || entry.locationId}) ${entry.path || "/"}`
-                          : `LOCAL ~/${entry.path}`}
+                          : `LOCAL ~/${entry.path || ""}`}
                       </small>
                     </button>
                   ))}
@@ -1890,34 +1982,52 @@ function App() {
           </div>
         </div>
       )}
-      {sxpOpen && (
-        <div className="modal-cover" onMouseDown={() => setSxpOpen(false)}>
-          <div className="modal sxp-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <h2>SXP Terminal</h2>
-            <p>Embedded only. This does not install or invoke a system `sxp` command.</p>
-            <pre className="sxp-output">{sxpOutput || sxpHelp}</pre>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                setSxpOutput(parseSxpCommand(sxpInput, managedSessions));
-              }}
-            >
-              <label>
-                Command
+      {terminalOpen && (
+        <section className="terminal-dock" style={{ height: `${terminalHeight}px` }} aria-label="Terminal panel">
+          <div className="terminal-resize-handle" onPointerDown={beginTerminalResize} role="separator" aria-label="Resize terminal" />
+          <header className="terminal-header">
+            <div className="terminal-tabs">
+              <button className={terminalTab === "sxp" ? "active" : ""} onClick={() => setTerminalTab("sxp")}>SXP</button>
+              <button className={terminalTab === "ssh" ? "active" : ""} onClick={() => setTerminalTab("ssh")}>SSH</button>
+            </div>
+            <div className="terminal-actions">
+              <button onClick={() => setSessionsOpen(true)}>Open Sessions</button>
+              <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
+            </div>
+          </header>
+          {terminalTab === "sxp" ? (
+            <div className="terminal-content">
+              <pre className="sxp-output">{sxpOutput || (managedSessions.length ? sxpHelp : "Please create a Session before using SXP.")}</pre>
+              <form
+                className="terminal-command"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  setSxpOutput(parseSxpCommand(sxpInput, managedSessions));
+                }}
+              >
                 <input
                   value={sxpInput}
                   onChange={(event) => setSxpInput(event.target.value)}
-                  placeholder="sxp help"
+                  placeholder="sxp <Session name> upload <source folder> <destination folder>"
                   spellCheck={false}
+                  aria-label="SXP command"
                 />
-              </label>
-              <div className="modal-actions">
-                <button type="button" onClick={() => setSxpOpen(false)}>Close</button>
                 <button className="confirm" type="submit">Run</button>
-              </div>
-            </form>
-          </div>
-        </div>
+              </form>
+            </div>
+          ) : (
+            <div className="terminal-content terminal-placeholder">
+              <strong>SSH Terminal</strong>
+              <p>SSH Profiles and interactive shell sessions will use this panel.</p>
+              <button onClick={() => setSessionsOpen(true)}>Open Sessions</button>
+            </div>
+          )}
+        </section>
+      )}
+      {!terminalOpen && (
+        <button className="terminal-restore" onClick={() => setTerminalOpen(true)} aria-label="Restore terminal">
+          Terminal ⌃
+        </button>
       )}
     </main>
   );
