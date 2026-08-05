@@ -1,6 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use keyring::Entry;
 use reqwest::{multipart, Client};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -47,7 +46,6 @@ struct SshProfile {
     port: u16,
     username: String,
     private_key_path: Option<String>,
-    password_key: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -407,19 +405,6 @@ fn validate_ssh_profile(profile: &SshProfile) -> Result<(), String> {
     Ok(())
 }
 
-const SSH_KEYRING_SERVICE: &str = "com.nephom.filetransfer.ssh";
-
-#[tauri::command]
-fn set_ssh_password(key: String, password: String) -> Result<(), String> {
-    if key.trim().is_empty() {
-        return Err("SSH password key is required".to_string());
-    }
-    Entry::new(SSH_KEYRING_SERVICE, &key)
-        .map_err(|error| error.to_string())?
-        .set_password(&password)
-        .map_err(|error| error.to_string())
-}
-
 #[tauri::command]
 fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, String> {
     validate_ssh_profile(&profile)?;
@@ -435,7 +420,6 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
         .map_err(|error| error.to_string())?;
 
     let mut command = portable_pty::CommandBuilder::new("ssh");
-    let password_key = profile.password_key.clone();
     command.args(["-tt", "-p", &profile.port.to_string()]);
     command.args(["-o", "ConnectTimeout=15"]);
     command.args(["-o", "ServerAliveInterval=30"]);
@@ -458,44 +442,14 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
         .take_writer()
         .map_err(|error| error.to_string())?;
     let writer = Arc::new(Mutex::new(writer));
-    let reader_writer = Arc::clone(&writer);
     let reader_session = session_id.clone();
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
-        let mut recent_output = String::new();
-        let mut password_sent = false;
         loop {
             match std::io::Read::read(&mut reader, &mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(size) => {
                     let data = String::from_utf8_lossy(&buffer[..size]).into_owned();
-                    recent_output.push_str(&data);
-                    if recent_output.len() > 512 {
-                        let trim_from = recent_output.len() - 512;
-                        recent_output = recent_output[trim_from..].to_string();
-                    }
-                    let prompt = recent_output
-                        .replace('\r', "")
-                        .lines()
-                        .last()
-                        .unwrap_or_default()
-                        .to_ascii_lowercase();
-                    if !password_sent
-                        && (prompt.contains("password:") || prompt.contains("passphrase:"))
-                    {
-                        if let Some(key) = password_key.as_deref() {
-                            if let Ok(entry) = Entry::new(SSH_KEYRING_SERVICE, key) {
-                                if let Ok(password) = entry.get_password() {
-                                    if let Ok(mut writer) = reader_writer.lock() {
-                                        let _ = writer.write_all(password.as_bytes());
-                                        let _ = writer.write_all(b"\r");
-                                        let _ = writer.flush();
-                                        password_sent = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
                     let _ = app.emit(
                         "ssh-output",
                         SshEvent {
@@ -527,29 +481,97 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
 }
 
 #[tauri::command]
-fn ssh_send_stored_password(session_id: String, password_key: String) -> Result<(), String> {
-    let password = Entry::new(SSH_KEYRING_SERVICE, &password_key)
-        .map_err(|error| error.to_string())?
-        .get_password()
-        .map_err(|error| error.to_string())?;
-    let mut processes = ssh_processes()
-        .lock()
-        .map_err(|_| "SSH process registry is unavailable".to_string())?;
-    let process = processes
-        .get_mut(&session_id)
-        .ok_or_else(|| "SSH session is not connected".to_string())?;
-    let result = {
-        let mut writer = process
-            .writer
-            .lock()
-            .map_err(|_| "SSH writer is unavailable".to_string())?;
-        writer
-            .write_all(password.as_bytes())
+fn ssh_install_key(app: tauri::AppHandle, profile: SshProfile) -> Result<String, String> {
+    validate_ssh_profile(&profile)?;
+    let home = local_home()?;
+    let key_path = profile
+        .private_key_path
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".ssh").join("id_ed25519"));
+    if !key_path.is_file() {
+        if let Some(parent) = key_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-N", "", "-f"])
+            .arg(&key_path)
+            .status()
             .map_err(|error| error.to_string())?;
-        writer.write_all(b"\r").map_err(|error| error.to_string())?;
-        writer.flush().map_err(|error| error.to_string())
-    };
-    result
+        if !status.success() {
+            return Err("Unable to generate the local SSH key".to_string());
+        }
+    }
+    let public_key = PathBuf::from(format!("{}.pub", key_path.display()));
+    if !public_key.is_file() {
+        return Err(format!(
+            "SSH public key not found: {}",
+            public_key.display()
+        ));
+    }
+
+    let session_id = format!("ssh-copy-id-{}", uuid::Uuid::new_v4());
+    let pty_system = portable_pty::native_pty_system();
+    let pair = pty_system
+        .openpty(portable_pty::PtySize {
+            rows: 32,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| error.to_string())?;
+    let mut command = portable_pty::CommandBuilder::new("ssh-copy-id");
+    command.args([
+        "-i",
+        &public_key.display().to_string(),
+        "-p",
+        &profile.port.to_string(),
+    ]);
+    command.args(["-o", "ConnectTimeout=15"]);
+    command.arg(format!("{}@{}", profile.username, profile.host));
+    let child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| error.to_string())?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| error.to_string())?;
+    let writer = Arc::new(Mutex::new(
+        pair.master
+            .take_writer()
+            .map_err(|error| error.to_string())?,
+    ));
+    let reader_session = session_id.clone();
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match std::io::Read::read(&mut reader, &mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(size) => {
+                    let data = String::from_utf8_lossy(&buffer[..size]).into_owned();
+                    let _ = app.emit(
+                        "ssh-output",
+                        SshEvent {
+                            session_id: reader_session.clone(),
+                            data,
+                        },
+                    );
+                }
+            }
+        }
+        let _ = app.emit(
+            "ssh-exit",
+            SshEvent {
+                session_id: reader_session,
+                data: "SSH key installation process ended.".to_string(),
+            },
+        );
+    });
+    ssh_processes()
+        .lock()
+        .map_err(|_| "SSH process registry is unavailable".to_string())?
+        .insert(session_id.clone(), SshProcess { writer, child });
+    Ok(session_id)
 }
 
 #[tauri::command]
@@ -644,10 +666,9 @@ fn main() {
             download_to_disk,
             write_download,
             ssh_connect,
+            ssh_install_key,
             ssh_write,
-            ssh_send_stored_password,
             ssh_disconnect,
-            set_ssh_password,
             save_ssh_logs
         ])
         .run(tauri::generate_context!())
