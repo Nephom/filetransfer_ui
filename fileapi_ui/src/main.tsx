@@ -63,10 +63,21 @@ type SessionEntry = {
   profileName?: string;
   sshProfile?: SshProfile;
 };
+type SxpEntry = {
+  id: string;
+  name: string;
+  localAlias: string;
+  localPath: string;
+  remoteAlias: string;
+  remotePath: string;
+  locationId: string;
+  locationName: string;
+};
 type ManagedSession = {
   id: string;
   name: string;
-  entries: SessionEntry[];
+  sxpEntries: SxpEntry[];
+  sshEntries: SshProfile[];
 };
 type ColumnKey = "name" | "modified" | "size";
 type SshProfile = {
@@ -95,6 +106,29 @@ sxp <Session name> mv <source folder> <destination folder>
 REMOTE (Location name) is the API Remote selected by the top LOCATION control.
 Source and destination folders must be named folders in the selected Session.`;
 
+const sessionEntries = (session: ManagedSession): SessionEntry[] => session.sxpEntries.flatMap((entry) => [
+  { id: `${entry.id}-local`, alias: entry.localAlias, kind: "LOCAL", path: entry.localPath },
+  { id: `${entry.id}-remote`, alias: entry.remoteAlias, kind: "REMOTE", path: entry.remotePath, locationId: entry.locationId, locationName: entry.locationName },
+]);
+
+const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
+  if (!Array.isArray(value)) return [];
+  return value.map((raw) => {
+    const item = raw as Partial<ManagedSession> & { entries?: SessionEntry[] };
+    if (Array.isArray(item.sxpEntries) && Array.isArray(item.sshEntries)) return item as ManagedSession;
+    const entries = Array.isArray(item.entries) ? item.entries : [];
+    const local = entries.find((entry) => entry.kind === "LOCAL");
+    const remote = entries.find((entry) => entry.kind === "REMOTE");
+    const ssh = entries.filter((entry) => entry.kind === "SSH").map((entry) => entry.sshProfile).filter(Boolean) as SshProfile[];
+    return {
+      id: item.id || crypto.randomUUID(),
+      name: item.name || "Default",
+      sxpEntries: local && remote ? [{ id: crypto.randomUUID(), name: "Default Transfer", localAlias: local.alias, localPath: local.path, remoteAlias: remote.alias, remotePath: remote.path, locationId: remote.locationId || "", locationName: remote.locationName || remote.locationId || "" }] : [],
+      sshEntries: ssh,
+    };
+  });
+};
+
 const parseSxpCommand = (input: string, sessions: ManagedSession[]) => {
   const args = input.trim().split(/\s+/).filter(Boolean);
   if (args[0] !== "sxp") return "Only the embedded SXP command is available here.";
@@ -107,8 +141,9 @@ const parseSxpCommand = (input: string, sessions: ManagedSession[]) => {
     (item) => item.id === args[1] || item.name === args[1],
   );
   if (!session) return `Session not found: ${args[1]}`;
-  const source = session.entries.find((entry) => entry.alias === args[3]);
-  const destination = session.entries.find((entry) => entry.alias === args[4]);
+  const entries = sessionEntries(session);
+  const source = entries.find((entry) => entry.alias === args[3]);
+  const destination = entries.find((entry) => entry.alias === args[4]);
   if (!source || !destination) {
     return "Source and destination folders must be named folders in the selected Session.";
   }
@@ -388,7 +423,7 @@ function App() {
     try {
       const saved = localStorage.getItem(sessionRegistryKey);
       const parsed = saved ? JSON.parse(saved) : [];
-      return Array.isArray(parsed) ? parsed : [];
+      return normalizeManagedSessions(parsed);
     } catch {
       return [];
     }
@@ -426,11 +461,13 @@ function App() {
   const [workspaceSessionId, setWorkspaceSessionId] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(sessionRegistryKey) || "[]");
-      return Array.isArray(saved) ? saved.find((item) => item.entries?.some((entry: SessionEntry) => entry.kind === "SSH"))?.id || "" : "";
+      const sessions = normalizeManagedSessions(saved);
+      return sessions.find((item) => item.sshEntries.length)?.id || "";
     } catch {
       return "";
     }
   });
+  const [sxpWorkspaceId, setSxpWorkspaceId] = useState("");
   const [sshConnected, setSshConnected] = useState(false);
   const [sshSessionId, setSshSessionId] = useState("");
   const [sshOutput, setSshOutput] = useState("");
@@ -444,6 +481,7 @@ function App() {
     privateKeyPath: "",
     password: "",
   });
+  const [sshEntryDraftId, setSshEntryDraftId] = useState("");
   const [recording, setRecording] = useState(false);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
@@ -463,6 +501,8 @@ function App() {
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
   const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
+  const [sxpEntryDraftId, setSxpEntryDraftId] = useState("");
+  const [sxpEntryNameDraft, setSxpEntryNameDraft] = useState("Default Transfer");
   const [pendingRemotePath, setPendingRemotePath] = useState<string | null>(null);
   const [folderTree, setFolderTree] = useState<FolderNode>({
     path: "",
@@ -558,15 +598,8 @@ function App() {
     const migrated = sshProfiles.map((profile) => ({
       id: makeId(),
       name: profile.name,
-      entries: [{
-        id: makeId(),
-        alias: profile.name,
-        kind: "SSH" as const,
-        path: "/",
-        profileId: profile.id,
-        profileName: profile.name,
-        sshProfile: profile,
-      }],
+      sxpEntries: [{ id: makeId(), name: "Default Transfer", localAlias: "Desktop", localPath: "Desktop", remoteAlias: "Personal", remotePath: "", locationId: session.locationId, locationName: session.locationId }],
+      sshEntries: [profile],
     }));
     setManagedSessions(migrated);
     setWorkspaceSessionId(migrated[0]?.id || "");
@@ -580,14 +613,13 @@ function App() {
       sshOutputRef.current += data;
       setSshOutput(sshOutputRef.current);
       terminalInstanceRef.current?.write(data);
-       const secretPrompt = /(password|passphrase|verification code|token)\s*[:?]\s*$/i.test(
-         stripAnsi(sshOutputRef.current.slice(-180)),
-       );
+       const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd();
+       const secretPrompt = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText);
        if (secretPrompt && !sshSecretPromptRef.current && sshPasswordKeyRef.current) {
          void invoke("ssh_send_stored_password", {
            sessionId: event.payload.sessionId,
            passwordKey: sshPasswordKeyRef.current,
-         });
+         }).catch((error) => setNotice(`Unable to send the saved SSH password: ${String(error)}`));
        }
        sshSecretPromptRef.current = secretPrompt;
       if (recordingRef.current) {
@@ -898,12 +930,11 @@ function App() {
       typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const existingSshEntry = managedSessions
-      .find((item) => item.id === workspaceSessionId)
-      ?.entries.find((entry) => entry.kind === "SSH");
+    const existingSxpEntry = existingWorkspace?.sxpEntries.find((entry) => entry.id === sxpEntryDraftId);
+    const existingSshEntry = existingWorkspace?.sshEntries.find((entry) => entry.id === sshEntryDraftId);
     const sshProfile = hasSshConnection
       ? {
-          id: existingSshEntry?.profileId || sshProfileId || makeId(),
+          id: sshProfileDraft.id || makeId(),
           name: sshName,
           host: sshHost,
           port: sshPort,
@@ -911,34 +942,32 @@ function App() {
           privateKeyPath: sshPrivateKeyPath,
         }
       : undefined;
-    const entries: SessionEntry[] = [
-      {
-        id: existingWorkspace?.entries.find((entry) => entry.kind === "LOCAL")?.id || makeId(),
-        alias: localAlias,
-        kind: "LOCAL",
-        path: localPath,
-      },
-      {
-        id: existingWorkspace?.entries.find((entry) => entry.kind === "REMOTE")?.id || makeId(),
-        alias: remoteAlias,
-        kind: "REMOTE",
-        path,
-        locationId: session.locationId,
-        locationName: activeLocation?.displayName || session.locationId,
-      },
-    ];
-    if (sshProfile) {
-      entries.push({
-        id: existingSshEntry?.id || makeId(),
-        alias: sshProfile.name,
-        kind: "SSH",
-        path: "/",
-        profileId: sshProfile.id,
-        profileName: sshProfile.name,
-        sshProfile,
-      });
-    }
-    const managedSession: ManagedSession = { id: existingWorkspace?.id || makeId(), name, entries };
+    const sxpEntry: SxpEntry = {
+      id: existingSxpEntry?.id || makeId(),
+      name: String(values?.get("sxpEntryName") || existingSxpEntry?.name || "Default Transfer").trim(),
+      localAlias,
+      localPath,
+      remoteAlias,
+      remotePath: path,
+      locationId: session.locationId,
+      locationName: activeLocation?.displayName || session.locationId,
+    };
+    const managedSession: ManagedSession = {
+      id: existingWorkspace?.id || makeId(),
+      name,
+      sxpEntries: existingWorkspace?.sxpEntries.length
+        ? existingSxpEntry
+          ? existingWorkspace.sxpEntries.map((entry) => entry.id === existingSxpEntry.id ? sxpEntry : entry)
+          : [...existingWorkspace.sxpEntries, sxpEntry]
+        : [sxpEntry],
+      sshEntries: sshProfile
+        ? existingWorkspace?.sshEntries.length
+          ? existingSshEntry
+            ? existingWorkspace.sshEntries.map((entry) => entry.id === existingSshEntry.id ? sshProfile : entry)
+            : [...existingWorkspace.sshEntries, sshProfile]
+          : [sshProfile]
+        : existingWorkspace?.sshEntries || [],
+    };
     void run(async () => {
       if (sshProfile && sshPassword) {
         await invoke("set_ssh_password", { key: sshProfile.id, password: sshPassword });
@@ -955,6 +984,7 @@ function App() {
         ? current.map((item) => item.id === existingWorkspace.id ? managedSession : item)
         : [...current, managedSession]);
       setWorkspaceSessionId(managedSession.id);
+      setSxpWorkspaceId(managedSession.id);
       setSessionNameDraft(name);
       setSessionFormError("");
       setLastSavedSessionId(managedSession.id);
@@ -999,7 +1029,14 @@ function App() {
   };
 
   const removeSession = (sessionId: string) => {
+    if (managedSessions.length === 1) {
+      setManagedSessions((current) => current.map((item) => item.id === sessionId ? { ...item, name: "Default" } : item));
+      setSessionNameDraft("Default");
+      notify("The last Workspace is kept as Default.");
+      return;
+    }
     setManagedSessions((current) => current.filter((item) => item.id !== sessionId));
+    if (workspaceSessionId === sessionId) setWorkspaceSessionId("");
   };
 
   const run = async (action: () => Promise<void>) => {
@@ -1091,39 +1128,119 @@ function App() {
   const selectWorkspaceSession = (id: string) => {
     setWorkspaceSessionId(id);
     const workspace = managedSessions.find((item) => item.id === id);
-    const entry = workspace?.entries.find((item) => item.kind === "SSH");
-    const profile = entry?.sshProfile || sshProfiles.find((item) => item.id === entry?.profileId);
+    const profile = workspace?.sshEntries[0] || sshProfiles.find((item) => item.id === sshProfileId);
     if (profile) {
+      setSshEntryDraftId(workspace?.sshEntries[0]?.id || profile.id);
       setSshProfileId(profile.id);
       sshPasswordKeyRef.current = profile.id;
       loadSshProfileDraft(profile);
     }
   };
 
-  const openSessionsModal = () => {
-    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
-    const localEntry = workspace?.entries.find((item) => item.kind === "LOCAL");
-    const remoteEntry = workspace?.entries.find((item) => item.kind === "REMOTE");
-    const entry = activeWorkspaceSession?.entries.find((item) => item.kind === "SSH");
-    const profile = entry?.sshProfile || sshProfiles.find((item) => item.id === (entry?.profileId || sshProfileId));
-    setSessionNameDraft(workspace?.name || "");
-    setLocalAliasDraft(localEntry?.alias || "LocalHome");
-    setRemoteAliasDraft(remoteEntry?.alias || "RemoteRoot");
-    if (profile) loadSshProfileDraft(profile);
-    else setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+  const openSessionsModal = (requestedWorkspaceId = workspaceSessionId) => {
+    void run(async () => {
+      let workspace = managedSessions.find((item) => item.id === requestedWorkspaceId);
+      if (!workspace && !managedSessions.length) {
+        const makeId = () => typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        let localPath = "";
+        let localAlias = "Home";
+        try {
+          const desktop = await invoke<LocalDirectory>("local_list_directory", { path: "Desktop" });
+          localPath = desktop.path;
+          localAlias = "Desktop";
+        } catch {
+          // Home root is the safe fallback when Desktop is unavailable.
+        }
+        let remotePath = "";
+        let remoteAlias = activeLocation?.displayName || "Remote root";
+        if (session.locationId) {
+          const rootResponse = await api("/api/files?path=");
+          if (rootResponse.ok) {
+            const root = await rootResponse.json();
+            const personal = (root.files || []).find((item: FileItem) => item.isDirectory && item.name.toLowerCase() === "personal");
+            if (personal) {
+              remotePath = personal.path;
+              const personalResponse = await api(`/api/files?path=${encodeURIComponent(personal.path)}`);
+              if (personalResponse.ok) {
+                const personalData = await personalResponse.json();
+                const username = session.username.toLowerCase();
+                const userFolder = (personalData.files || []).find((item: FileItem) => item.isDirectory && item.name.toLowerCase() === username);
+                if (userFolder) {
+                  remotePath = userFolder.path;
+                  remoteAlias = `Personal/${userFolder.name}`;
+                } else {
+                  remoteAlias = "Personal";
+                }
+              }
+            }
+          }
+        }
+        workspace = {
+          id: makeId(),
+          name: "Default",
+          sxpEntries: [{ id: makeId(), name: "Default Transfer", localAlias, localPath, remoteAlias, remotePath, locationId: session.locationId, locationName: activeLocation?.displayName || session.locationId }],
+          sshEntries: [],
+        };
+        setManagedSessions([workspace]);
+        setSxpWorkspaceId(workspace.id);
+      }
+      if (workspace) {
+        setWorkspaceSessionId(workspace.id);
+        if (workspace.sxpEntries.length) setSxpWorkspaceId(workspace.id);
+        const sxpEntry = workspace.sxpEntries[0];
+        setSxpEntryDraftId(sxpEntry?.id || "");
+        setSxpEntryNameDraft(sxpEntry?.name || "Default Transfer");
+        const profile = workspace.sshEntries[0] || sshProfiles.find((item) => item.id === sshProfileId);
+        setSessionNameDraft(workspace.name);
+        setLocalAliasDraft(sxpEntry?.localAlias || "Home");
+        setRemoteAliasDraft(sxpEntry?.remoteAlias || "Personal");
+        if (profile) {
+          setSshEntryDraftId(workspace.sshEntries[0]?.id || profile.id);
+          loadSshProfileDraft(profile);
+        } else {
+          setSshEntryDraftId("");
+          setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+        }
+      }
+      setSessionFormError("");
+      setSessionsOpen(true);
+    });
+  };
+
+  const startNewWorkspace = () => {
+    setWorkspaceSessionId("");
+    setSessionNameDraft("");
+    setLocalAliasDraft("Desktop");
+    setRemoteAliasDraft(activeLocation?.displayName || "Personal");
+    setSxpEntryDraftId("");
+    setSxpEntryNameDraft("Default Transfer");
+    setSshEntryDraftId("");
+    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
     setSessionFormError("");
-    setSessionsOpen(true);
+  };
+
+  const startNewSshEntry = () => {
+    setSshEntryDraftId("");
+    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+  };
+
+  const startNewSxpEntry = () => {
+    setSxpEntryDraftId("");
+    setSxpEntryNameDraft("New Transfer");
+    setLocalAliasDraft("Desktop");
+    setRemoteAliasDraft(activeLocation?.displayName || "Personal");
   };
 
   const connectSsh = () => {
-    const entry = activeWorkspaceSession?.entries.find((item) => item.kind === "SSH");
-    const profile = entry?.sshProfile || sshProfiles.find((item) => item.id === entry?.profileId);
+    const profile = activeWorkspaceSession?.sshEntries[0] || sshProfiles.find((item) => item.id === sshProfileId);
     if (!activeWorkspaceSession || !profile) {
       openSessionsModal();
       setNotice("Select or create a Session with an SSH connection before connecting.");
       return;
     }
     void run(async () => {
+      sshPasswordKeyRef.current = profile.id;
+      sshSecretPromptRef.current = false;
       const id = await invoke<string>("ssh_connect", {
         profile: {
           name: profile.name,
@@ -1263,7 +1380,12 @@ function App() {
 
   const uploadSavedLog = () => {
     const managedSession = managedSessions.find((item) => item.id === uploadSessionId);
-    const destination = managedSession?.entries.find((entry) => entry.kind === "REMOTE");
+    const sxpEntry = managedSession?.sxpEntries[0];
+    const destination = sxpEntry && {
+      path: sxpEntry.remotePath,
+      locationId: sxpEntry.locationId,
+      locationName: sxpEntry.locationName,
+    };
     if (!savedLogPaths.length) {
       setNotice("Save the completed SSH log package before uploading it.");
       return;
@@ -1313,7 +1435,7 @@ function App() {
   };
 
   const selectedItems = files.filter((file) => selected.includes(file.path));
-  const workspaceSessions = managedSessions.filter((item) => item.entries.some((entry) => entry.kind === "SSH"));
+  const workspaceSessions = managedSessions.filter((item) => item.sshEntries.length > 0);
   const activeWorkspaceSession = workspaceSessions.find((item) => item.id === workspaceSessionId);
   const toggle = (file: FileItem, checked: boolean) =>
     setSelected((current) =>
@@ -2479,7 +2601,22 @@ function App() {
                   placeholder="ReleaseWorkspace"
                   required
                 />
-                <small className="field-help">Name for this saved workspace.</small>
+               <small className="field-help">Name for this saved workspace.</small>
+              </label>
+              <div className="sxp-entry-picker">
+                <span>SXP entries in this Workspace</span>
+                <div>
+                  {managedSessions.find((item) => item.id === workspaceSessionId)?.sxpEntries.map((entry) => (
+                    <button type="button" className={entry.id === sxpEntryDraftId ? "selected" : ""} key={entry.id} onClick={() => { setSxpEntryDraftId(entry.id); setSxpEntryNameDraft(entry.name); setLocalAliasDraft(entry.localAlias); setRemoteAliasDraft(entry.remoteAlias); }}>
+                      {entry.name}
+                    </button>
+                  ))}
+                  <button type="button" onClick={startNewSxpEntry}>+ Add SXP Entry</button>
+                </div>
+              </div>
+              <label>
+                SXP entry name
+                <input name="sxpEntryName" value={sxpEntryNameDraft} onChange={(event) => setSxpEntryNameDraft(event.target.value)} required />
               </label>
               <label>
                 Local folder name
@@ -2503,6 +2640,17 @@ function App() {
                </label>
                 <fieldset className="session-ssh-fields">
                   <legend>SSH connection (optional)</legend>
+                  <div className="ssh-entry-picker">
+                    <span>SSH entries in this Workspace</span>
+                    <div>
+                      {managedSessions.find((item) => item.id === workspaceSessionId)?.sshEntries.map((entry) => (
+                        <button type="button" className={entry.id === sshEntryDraftId ? "selected" : ""} key={entry.id} onClick={() => { setSshEntryDraftId(entry.id); setSshProfileId(entry.id); sshPasswordKeyRef.current = entry.id; loadSshProfileDraft(entry); }}>
+                          {entry.name}
+                        </button>
+                      ))}
+                      <button type="button" onClick={startNewSshEntry}>+ Add SSH Entry</button>
+                    </div>
+                  </div>
                   <label>
                     Connection name
                     <input name="sshName" value={sshProfileDraft.name} onChange={(event) => setSshProfileDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Production shell" />
@@ -2539,7 +2687,10 @@ function App() {
               </div>
               </form>
               <div className="session-list">
-                <strong>Saved Sessions</strong>
+                <div className="session-list-heading">
+                  <strong>Workspaces</strong>
+                  <button type="button" className="confirm" onClick={startNewWorkspace}>+ New Workspace</button>
+                </div>
                 {lastSavedSessionId && <span className="session-saved-note">Saved successfully.</span>}
               {!managedSessions.length && (
                 <span className="muted">No Sessions saved yet.</span>
@@ -2548,29 +2699,27 @@ function App() {
                 <div className="session-card" key={managedSession.id}>
                   <div className="session-card-heading">
                     <strong>{managedSession.name}</strong>
+                    <button type="button" onClick={() => openSessionsModal(managedSession.id)}>Edit</button>
                     <button
                       type="button"
                       className="session-delete"
+                      disabled={managedSessions.length === 1}
                       onClick={() => removeSession(managedSession.id)}
                     >
                       Remove
                     </button>
                   </div>
-                  {managedSession.entries.map((entry) => (
-                    <button
-                      className="session-entry"
-                      key={entry.id}
-                      onClick={() => openSessionEntry(entry, managedSession.id)}
-                    >
-                      <span>{entry.alias}</span>
-                        <small>
-                         {entry.kind === "REMOTE"
-                           ? `REMOTE (${entry.locationName || entry.locationId}) ${entry.path || "/"}`
-                           : entry.kind === "SSH"
-                             ? `SSH (${entry.profileName || entry.profileId})`
-                             : `LOCAL ~/${entry.path || ""}`}
-                       </small>
-                    </button>
+                  {managedSession.sxpEntries.map((entry) => (
+                    <div className="session-entry" key={entry.id}>
+                      <span>SXP: {entry.name}</span>
+                      <small>LOCAL ~/{entry.localPath || ""} → {entry.locationName || entry.locationId}:{entry.remotePath || "/"}</small>
+                    </div>
+                  ))}
+                  {managedSession.sshEntries.map((entry) => (
+                    <div className="session-entry" key={entry.id}>
+                      <span>SSH: {entry.name}</span>
+                      <small>{entry.username}@{entry.host}:{entry.port}</small>
+                    </div>
                   ))}
                 </div>
               ))}
@@ -2588,13 +2737,21 @@ function App() {
               <button className={terminalTab === "ssh" ? "active" : ""} onClick={() => setTerminalTab("ssh")}>SSH</button>
             </div>
             <div className="terminal-actions">
-              <button onClick={openSessionsModal}>Open Sessions</button>
+              <button onClick={() => openSessionsModal()}>Open Sessions</button>
               <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => item.status === "queued" || item.status === "running").length})</button>
               <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
             </div>
           </header>
           {terminalTab === "sxp" ? (
             <div className="terminal-content">
+              <div className="sxp-terminal-controls">
+                <PaletteSelect
+                  label="Select a File Transfer Workspace"
+                  value={sxpWorkspaceId}
+                  options={managedSessions.filter((workspace) => workspace.sxpEntries.length > 0).map((workspace) => ({ value: workspace.id, label: workspace.name }))}
+                  onChange={setSxpWorkspaceId}
+                />
+              </div>
               <div ref={terminalHostRef} className="xterm-host" aria-label="SXP terminal" />
               <button
                 className="terminal-help-button"

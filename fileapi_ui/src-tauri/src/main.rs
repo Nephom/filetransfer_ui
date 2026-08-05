@@ -511,7 +511,7 @@ fn ssh_send_stored_password(session_id: String, password_key: String) -> Result<
         .map_err(|error| error.to_string())?;
     process
         .writer
-        .write_all(b"\n")
+        .write_all(b"\r")
         .map_err(|error| error.to_string())?;
     process.writer.flush().map_err(|error| error.to_string())
 }
