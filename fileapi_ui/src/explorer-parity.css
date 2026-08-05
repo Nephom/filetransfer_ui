@@ -24,6 +24,7 @@
 .sxp-modal p { line-height: 1.5; }
 .sxp-output { min-height: 120px; max-height: 240px; overflow: auto; padding: 12px; color: #9be8ff; background: #061321; border: 1px solid #254764; white-space: pre-wrap; }
 .field-help { display: block; margin-top: 5px; color: #7f9bb5; font-size: 11px; font-weight: 400; }
+.form-error { display: block; margin: 8px 0; padding: 8px; color: #ffb8ae; background: #3b1d28; border: 1px solid #813847; border-radius: 4px; }
 .file-table { table-layout: fixed; }
 .file-table .selection-column { width: 42px; }
 .resizable-column { position: relative; }
@@ -40,6 +41,10 @@
 .terminal-content .sxp-output { flex: 1; min-height: 0; max-height: none; margin: 0; }
 .xterm-host { flex: 1; min-height: 0; overflow: hidden; padding: 8px; background: #020a12; border: 1px solid #254764; }
 .xterm-host .xterm { height: 100%; }
+.terminal-content { position: relative; }
+.terminal-help-button { position: absolute; right: 18px; bottom: 16px; z-index: 3; width: 26px; height: 26px; padding: 0; border: 1px solid #47cdf1; border-radius: 50%; color: #e6eefc; background: #123b58; font-weight: 700; line-height: 24px; }
+.terminal-help-button:hover { background: #1b5e80; }
+.terminal-help-popover { position: absolute; right: 50px; bottom: 12px; z-index: 2; max-width: min(620px, calc(100% - 70px)); max-height: 180px; overflow: auto; margin: 0; padding: 12px; color: #9be8ff; background: #07192a; border: 1px solid #315b7e; box-shadow: 0 8px 22px rgba(0, 0, 0, .45); white-space: pre-wrap; }
 .terminal-command { display: flex; gap: 8px; }
 .terminal-command input { flex: 1; margin: 0; color: #e6eefc; background: #091b2d; }
 .terminal-placeholder { align-items: flex-start; justify-content: center; color: #a8c0d8; }
