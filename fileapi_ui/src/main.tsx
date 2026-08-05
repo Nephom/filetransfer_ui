@@ -1294,6 +1294,11 @@ function App() {
               <button
                 onClick={() => {
                   setAccountOpen(false);
+                  setSxpOutput(
+                    managedSessions.length
+                      ? sxpHelp
+                      : "請先設置 Session，建立 Session 後才能使用 sxp。",
+                  );
                   setSxpOpen(true);
                 }}
               >
