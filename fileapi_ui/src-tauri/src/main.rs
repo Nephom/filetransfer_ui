@@ -186,6 +186,7 @@ async fn pick_upload_files() -> Result<Vec<String>, String> {
 
 fn local_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .ok_or_else(|| "Unable to locate the local home directory".to_string())
 }
@@ -314,9 +315,7 @@ fn write_download(file_name: String, bytes: Vec<u8>) -> Result<String, String> {
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| "Invalid download filename".to_string())?;
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| "Unable to locate the user home directory".to_string())?;
-    let downloads = std::path::PathBuf::from(home).join("Downloads");
+    let downloads = local_home()?.join("Downloads");
     std::fs::create_dir_all(&downloads).map_err(|error| error.to_string())?;
     let destination = downloads.join(safe_name);
     std::fs::write(&destination, bytes).map_err(|error| error.to_string())?;
@@ -353,9 +352,7 @@ async fn download_to_disk(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| "Invalid download filename".to_string())?;
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| "Unable to locate the user home directory".to_string())?;
-    let downloads = std::path::PathBuf::from(home).join("Downloads");
+    let downloads = local_home()?.join("Downloads");
     std::fs::create_dir_all(&downloads).map_err(|error| error.to_string())?;
     let destination = downloads.join(safe_name);
     let mut file = std::fs::File::create(&destination).map_err(|error| error.to_string())?;

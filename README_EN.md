@@ -1,8 +1,8 @@
 [正體中文](README.md)
 
-# Web-Based File Management System 3.2.0
+# Web-Based File Management System 3.2.3
 
-A local file management system with a Windows Explorer-style web interface and an Ubuntu desktop client. Windows users use the web interface in a browser; the Tauri desktop client is distributed only as an Ubuntu DEB.
+A local file management system with a Windows Explorer-style web interface and a Tauri v2 desktop client for Ubuntu and Windows.
 
 ## Install And Upgrade
 
@@ -61,20 +61,30 @@ The proxy is used only for that invocation by apk or apt, Git, npm, Cargo, curl,
 
 The default HTTP port is `9400`; the default HTTPS port is `9443`. HTTP redirects only after an HTTPS certificate is available. The desktop client always uses HTTPS and collects the server address and port separately.
 
-## Ubuntu Desktop Package
+## Desktop Package
 
-Only Ubuntu 22.04+ builds the desktop package. This command installs Rust, GTK/WebKitGTK, and the Tauri build dependencies:
+Ubuntu 22.04+ builds the desktop DEB with:
 
 ```bash
 ./build.sh build
 ```
 
-The package is written to `fileapi_ui/src-tauri/target/release/bundle/deb/`. It contains no internal server address; users enter an address and HTTPS port when they sign in.
+The package is written to `fileapi_ui/src-tauri/target/release/bundle/deb/`.
+
+Windows build machines use the PowerShell workflow. It only handles the Tauri desktop client; server `install` and `setup` remain in `build.sh`:
+
+```powershell
+.\build.ps1 build
+.\build.ps1 upgrade
+.\build.ps1 self-upgrade
+```
+
+The Windows build creates a portable EXE at `fileapi_ui/src-tauri/target/release/fileapi-desktop.exe` and an NSIS package under `fileapi_ui/src-tauri/target/release/bundle/nsis/`. The local file pane defaults to the current user's Desktop.
 
 ## Documentation
 
 - [API reference](docs/api/API_REFERENCE.md)
 - [Documentation index](docs/README.md)
-- [Ubuntu Tauri client](fileapi_ui/README.md)
+- [Tauri desktop client](fileapi_ui/README.md)
 
 `fileapi.sh` is deprecated and is not a supported compatibility target.
