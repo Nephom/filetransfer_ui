@@ -98,3 +98,8 @@
 @media (max-width: 900px) { .local-pane { flex-basis: 250px; } }
 @media (max-width: 720px) { .sessions-layout { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .split-workspace { overflow: auto; }.split-workspace .local-pane { flex: 0 0 100%; min-height: 260px; }.split-workspace .desktop-folder-tree { flex: 0 0 100%; } }
+
+/* Keep native selects aligned with the dark desktop palette instead of the OS light theme. */
+select { color: #e6eefc; background-color: #091b2d; border: 1px solid #315b7e; }
+select option, select optgroup { color: #e6eefc; background-color: #091b2d; }
+select:hover, select:focus { border-color: #47cdf1; outline: none; }
