@@ -222,6 +222,65 @@ function PersistentScrollbar({
   );
 }
 
+function PaletteSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const controlRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((option) => option.value === value);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event: MouseEvent) => {
+      if (!controlRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [open]);
+
+  return (
+    <div ref={controlRef} className="palette-select-control">
+      <button
+        type="button"
+        className="location-select palette-select"
+        aria-label={label}
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>{selected?.label || label}</span>
+        <span className="location-chevron">⌄</span>
+      </button>
+      {open && (
+        <div className="location-menu palette-select-menu" role="listbox" aria-label={label}>
+          {options.map((option) => (
+            <button
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              className={option.value === value ? "selected" : ""}
+              key={option.value}
+              onClick={() => {
+                onChange(option.value);
+                setOpen(false);
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const defaultHost = import.meta.env.VITE_DEFAULT_SERVER_HOST || "";
 const defaultPort = import.meta.env.VITE_DEFAULT_SERVER_PORT || "9443";
 const appVersion =
@@ -376,7 +435,6 @@ function App() {
   const [sshSessionId, setSshSessionId] = useState("");
   const [sshOutput, setSshOutput] = useState("");
   const sshOutputRef = useRef("");
-  const [sshProfileOpen, setSshProfileOpen] = useState(false);
   const [sshProfileDraft, setSshProfileDraft] = useState({
     id: "",
     name: "",
@@ -568,7 +626,7 @@ function App() {
     if (terminalTab === "sxp") {
       terminal.write(managedSessions.length ? "SXP terminal ready. Type a command or open help.\r\n" : "Please create a Session before using SXP.\r\n");
     } else {
-      terminal.write(sshOutput || "Select an SSH Profile and connect.\r\n");
+      terminal.write(sshOutput || "Select a Session and connect.\r\n");
     }
     const resizeObserver = new ResizeObserver(() => fit.fit());
     resizeObserver.observe(terminalHostRef.current);
@@ -808,7 +866,13 @@ function App() {
     const name = String(values?.get("sessionName") || sessionNameDraft).trim();
     const localAlias = String(values?.get("localFolderName") || localAliasDraft).trim();
     const remoteAlias = String(values?.get("remoteFolderName") || remoteAliasDraft).trim();
-    const sshProfile = sshProfiles.find((profile) => profile.id === sshProfileId);
+    const sshName = String(values ? values.get("sshName") || "" : sshProfileDraft.name).trim();
+    const sshHost = String(values ? values.get("sshHost") || "" : sshProfileDraft.host).trim();
+    const sshPort = Number(values ? values.get("sshPort") || "" : sshProfileDraft.port);
+    const sshUsername = String(values ? values.get("sshUsername") || "" : sshProfileDraft.username).trim();
+    const sshPrivateKeyPath = String(values ? values.get("sshPrivateKeyPath") || "" : sshProfileDraft.privateKeyPath).trim();
+    const sshPassword = String(values ? values.get("sshPassword") || "" : sshProfileDraft.password);
+    const hasSshConnection = [sshName, sshHost, sshUsername, sshPrivateKeyPath].some(Boolean);
     if (!name || !localAlias || !remoteAlias) {
       setSessionFormError("Session name and folder names are required.");
       return;
@@ -817,11 +881,16 @@ function App() {
       setSessionFormError("Session names and folder names cannot contain spaces.");
       return;
     }
+    if (hasSshConnection && (!sshName || !sshHost || !sshUsername || !Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65535)) {
+      setSessionFormError("Complete the SSH connection name, host, username, and valid port, or clear all SSH fields.");
+      return;
+    }
     if (!session.locationId) {
       setSessionFormError("Select an available API Remote Location before saving this Session.");
       return;
     }
-    if (managedSessions.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
+    const existingWorkspace = managedSessions.find((item) => item.id === workspaceSessionId);
+    if (managedSessions.some((item) => item.id !== existingWorkspace?.id && item.name.toLowerCase() === name.toLowerCase())) {
       setSessionFormError(`A Session named "${name}" already exists.`);
       return;
     }
@@ -829,15 +898,28 @@ function App() {
       typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const existingSshEntry = managedSessions
+      .find((item) => item.id === workspaceSessionId)
+      ?.entries.find((entry) => entry.kind === "SSH");
+    const sshProfile = hasSshConnection
+      ? {
+          id: existingSshEntry?.profileId || sshProfileId || makeId(),
+          name: sshName,
+          host: sshHost,
+          port: sshPort,
+          username: sshUsername,
+          privateKeyPath: sshPrivateKeyPath,
+        }
+      : undefined;
     const entries: SessionEntry[] = [
       {
-        id: makeId(),
+        id: existingWorkspace?.entries.find((entry) => entry.kind === "LOCAL")?.id || makeId(),
         alias: localAlias,
         kind: "LOCAL",
         path: localPath,
       },
       {
-        id: makeId(),
+        id: existingWorkspace?.entries.find((entry) => entry.kind === "REMOTE")?.id || makeId(),
         alias: remoteAlias,
         kind: "REMOTE",
         path,
@@ -847,7 +929,7 @@ function App() {
     ];
     if (sshProfile) {
       entries.push({
-        id: makeId(),
+        id: existingSshEntry?.id || makeId(),
         alias: sshProfile.name,
         kind: "SSH",
         path: "/",
@@ -856,17 +938,28 @@ function App() {
         sshProfile,
       });
     }
-    const managedSession: ManagedSession = {
-      id: makeId(),
-      name,
-      entries,
-    };
-    setManagedSessions((current) => [...current, managedSession]);
-    setWorkspaceSessionId(managedSession.id);
-    setSessionNameDraft(name);
-    setSessionFormError("");
-    setLastSavedSessionId(managedSession.id);
-    notify(`Saved Session: ${name}`);
+    const managedSession: ManagedSession = { id: existingWorkspace?.id || makeId(), name, entries };
+    void run(async () => {
+      if (sshProfile && sshPassword) {
+        await invoke("set_ssh_password", { key: sshProfile.id, password: sshPassword });
+      }
+      if (sshProfile) {
+        setSshProfiles((current) => current.some((item) => item.id === sshProfile.id)
+          ? current.map((item) => item.id === sshProfile.id ? sshProfile : item)
+          : [...current, sshProfile]);
+        setSshProfileId(sshProfile.id);
+        sshPasswordKeyRef.current = sshProfile.id;
+        loadSshProfileDraft(sshProfile);
+      }
+      setManagedSessions((current) => existingWorkspace
+        ? current.map((item) => item.id === existingWorkspace.id ? managedSession : item)
+        : [...current, managedSession]);
+      setWorkspaceSessionId(managedSession.id);
+      setSessionNameDraft(name);
+      setSessionFormError("");
+      setLastSavedSessionId(managedSession.id);
+      notify(`Saved Session: ${name}`);
+    });
   };
 
   const openSessionEntry = (entry: SessionEntry, managedSessionId?: string) => {
@@ -889,7 +982,7 @@ function App() {
       if (managedSessionId) setWorkspaceSessionId(managedSessionId);
       setTerminalTab("ssh");
       setTerminalOpen(true);
-      setNotice(`SSH Profile selected: ${entry.profileName || entry.profileId}. Connect when ready.`);
+      setNotice(`Session SSH connection selected: ${entry.profileName || entry.profileId}. Connect when ready.`);
       return;
     }
     const location = locations.find((candidate) => candidate.id === entry.locationId);
@@ -1007,57 +1100,26 @@ function App() {
     }
   };
 
-  const saveSshProfile = () => {
-    const name = sshProfileDraft.name.trim();
-    const host = sshProfileDraft.host.trim();
-    const username = sshProfileDraft.username.trim();
-    const port = Number(sshProfileDraft.port);
-    if (!name || !host || !username || !Number.isInteger(port) || port < 1 || port > 65535) {
-      setNotice("Enter a profile name, host, username, and valid SSH port.");
-      return;
-    }
-    const id = sshProfileDraft.id || (typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
-    const profile: SshProfile = {
-      id,
-      name,
-      host,
-      port,
-      username,
-      privateKeyPath: sshProfileDraft.privateKeyPath.trim(),
-    };
-    void run(async () => {
-      if (sshProfileDraft.password) {
-        await invoke("set_ssh_password", {
-          key: id,
-          password: sshProfileDraft.password,
-        });
-      }
-      setSshProfiles((current) => current.some((item) => item.id === id)
-        ? current.map((item) => item.id === id ? profile : item)
-        : [...current, profile]);
-      setManagedSessions((current) => current.map((workspace) => workspace.id === workspaceSessionId
-        ? {
-            ...workspace,
-            entries: workspace.entries.map((entry) => entry.kind === "SSH" && entry.profileId === id
-              ? { ...entry, alias: profile.name, profileName: profile.name, sshProfile: profile }
-              : entry),
-          }
-        : workspace));
-      setSshProfileId(id);
-      sshPasswordKeyRef.current = id;
-      loadSshProfileDraft(profile);
-      setSshProfileOpen(false);
-      notify(`Saved SSH Profile: ${name}`);
-    });
+  const openSessionsModal = () => {
+    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
+    const localEntry = workspace?.entries.find((item) => item.kind === "LOCAL");
+    const remoteEntry = workspace?.entries.find((item) => item.kind === "REMOTE");
+    const entry = activeWorkspaceSession?.entries.find((item) => item.kind === "SSH");
+    const profile = entry?.sshProfile || sshProfiles.find((item) => item.id === (entry?.profileId || sshProfileId));
+    setSessionNameDraft(workspace?.name || "");
+    setLocalAliasDraft(localEntry?.alias || "LocalHome");
+    setRemoteAliasDraft(remoteEntry?.alias || "RemoteRoot");
+    if (profile) loadSshProfileDraft(profile);
+    else setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+    setSessionFormError("");
+    setSessionsOpen(true);
   };
 
   const connectSsh = () => {
     const entry = activeWorkspaceSession?.entries.find((item) => item.kind === "SSH");
     const profile = entry?.sshProfile || sshProfiles.find((item) => item.id === entry?.profileId);
     if (!activeWorkspaceSession || !profile) {
-      setSessionsOpen(true);
+      openSessionsModal();
       setNotice("Select or create a Session with an SSH connection before connecting.");
       return;
     }
@@ -1865,9 +1927,8 @@ function App() {
               </div>
               <button
                 onClick={() => {
-                  setAccountOpen(false);
-                  setSessionFormError("");
-                  setSessionsOpen(true);
+                   setAccountOpen(false);
+                   openSessionsModal();
                 }}
               >
                 Sessions
@@ -2399,7 +2460,7 @@ function App() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <h2>Sessions</h2>
-            <p>Save the current LOCAL, API Remote, and selected SSH connection as one Session for SXP and SSH.</p>
+             <p>Save LOCAL, API Remote, and SSH connection details as one Session shared by SXP and SSH.</p>
             {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
             <div className="sessions-layout">
               <form
@@ -2440,11 +2501,34 @@ function App() {
                 />
                  <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
                </label>
-               <small className="field-help session-connection-note">
-                 {sshProfiles.find((profile) => profile.id === sshProfileId)
-                   ? `SSH connection included: ${sshProfiles.find((profile) => profile.id === sshProfileId)?.name}`
-                   : "Select an SSH connection in the SSH terminal before saving if this Session should include SSH."}
-               </small>
+                <fieldset className="session-ssh-fields">
+                  <legend>SSH connection (optional)</legend>
+                  <label>
+                    Connection name
+                    <input name="sshName" value={sshProfileDraft.name} onChange={(event) => setSshProfileDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Production shell" />
+                  </label>
+                  <label>
+                    Host
+                    <input name="sshHost" value={sshProfileDraft.host} onChange={(event) => setSshProfileDraft((current) => ({ ...current, host: event.target.value }))} placeholder="server.example.com" />
+                  </label>
+                  <label>
+                    Port
+                    <input name="sshPort" inputMode="numeric" value={sshProfileDraft.port} onChange={(event) => setSshProfileDraft((current) => ({ ...current, port: event.target.value }))} />
+                  </label>
+                  <label>
+                    Username
+                    <input name="sshUsername" value={sshProfileDraft.username} onChange={(event) => setSshProfileDraft((current) => ({ ...current, username: event.target.value }))} />
+                  </label>
+                  <label>
+                    Private key path (optional)
+                    <input name="sshPrivateKeyPath" value={sshProfileDraft.privateKeyPath} onChange={(event) => setSshProfileDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="/home/test/.ssh/id_ed25519" />
+                  </label>
+                  <label>
+                    Password (optional)
+                    <input name="sshPassword" type="password" autoComplete="new-password" value={sshProfileDraft.password} onChange={(event) => setSshProfileDraft((current) => ({ ...current, password: event.target.value }))} placeholder="Stored in the OS keyring" />
+                  </label>
+                  <small className="field-help">SSH details are stored inside this Session. The password is saved only in the OS keyring.</small>
+                </fieldset>
               <div className="modal-actions">
                 <button type="button" onClick={() => setSessionsOpen(false)}>
                   Close
@@ -2504,7 +2588,7 @@ function App() {
               <button className={terminalTab === "ssh" ? "active" : ""} onClick={() => setTerminalTab("ssh")}>SSH</button>
             </div>
             <div className="terminal-actions">
-              <button onClick={() => setSessionsOpen(true)}>Open Sessions</button>
+              <button onClick={openSessionsModal}>Open Sessions</button>
               <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => item.status === "queued" || item.status === "running").length})</button>
               <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
             </div>
@@ -2524,72 +2608,39 @@ function App() {
           ) : (
             <div className="terminal-content ssh-terminal-content">
               <div className="ssh-controls">
-                <label>
-                  Session
-                  <select
-                    value={workspaceSessionId}
-                    onChange={(event) => selectWorkspaceSession(event.target.value)}
-                  >
-                    <option value="">Select a Session</option>
-                    {workspaceSessions.map((workspace) => (
-                      <option value={workspace.id} key={workspace.id}>{workspace.name}</option>
-                    ))}
-                  </select>
-                </label>
-                <button onClick={() => {
-                  setSshProfileOpen((open) => !open);
-                  if (!sshProfileOpen) {
-                    const entry = activeWorkspaceSession?.entries.find((item) => item.kind === "SSH");
-                    loadSshProfileDraft(entry?.sshProfile || sshProfiles.find((profile) => profile.id === (entry?.profileId || sshProfileId)));
-                  }
-                }}>
-                  {sshProfileOpen ? "Close SSH Editor" : "Edit SSH connection"}
-                </button>
+                <PaletteSelect
+                  label="Select a Session"
+                  value={workspaceSessionId}
+                  options={workspaceSessions.map((workspace) => ({ value: workspace.id, label: workspace.name }))}
+                  onChange={selectWorkspaceSession}
+                />
                 {!sshConnected ? (
                   <button className="confirm" onClick={connectSsh}>Connect</button>
                 ) : (
                   <button className="danger" onClick={disconnectSsh}>Disconnect</button>
                 )}
               </div>
-              {sshProfileOpen ? (
-                <form
-                  className="ssh-profile-form"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    saveSshProfile();
-                  }}
-                >
-                  <label>Profile name<input value={sshProfileDraft.name} onChange={(event) => setSshProfileDraft((current) => ({ ...current, name: event.target.value }))} required /></label>
-                  <label>Host<input value={sshProfileDraft.host} onChange={(event) => setSshProfileDraft((current) => ({ ...current, host: event.target.value }))} placeholder="server.example.com" required /></label>
-                  <label>Port<input inputMode="numeric" value={sshProfileDraft.port} onChange={(event) => setSshProfileDraft((current) => ({ ...current, port: event.target.value }))} required /></label>
-                  <label>Username<input value={sshProfileDraft.username} onChange={(event) => setSshProfileDraft((current) => ({ ...current, username: event.target.value }))} required /></label>
-                  <label>Private key path (optional)<input value={sshProfileDraft.privateKeyPath} onChange={(event) => setSshProfileDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="/home/test/.ssh/id_ed25519" /></label>
-                  <label>Password (optional)<input type="password" autoComplete="new-password" value={sshProfileDraft.password} onChange={(event) => setSshProfileDraft((current) => ({ ...current, password: event.target.value }))} placeholder="Stored in the OS keyring" /></label>
-                  <button className="confirm" type="submit">Save SSH Profile</button>
-                </form>
-              ) : (
-                <>
-                  {!activeWorkspaceSession && <p className="terminal-inline-note">Create or open a Session with an SSH connection before connecting.</p>}
-                  <div ref={terminalHostRef} className="xterm-host" aria-label="SSH terminal" />
-                  <div className="ssh-recording-actions">
+              {!activeWorkspaceSession && <p className="terminal-inline-note">Create or open a Session with an SSH connection before connecting.</p>}
+              <div ref={terminalHostRef} className="xterm-host" aria-label="SSH terminal" />
+              <div className="ssh-recording-actions">
                     {!recording ? (
                       <button disabled={!sshConnected} onClick={startRecording}>Start Recording</button>
                     ) : (
                       <button className="danger" onClick={stopRecording}>Stop Recording</button>
                     )}
                     <button disabled={recording || !rawLogRef.current} onClick={saveSshLogs}>Save Log</button>
-                    <label className="upload-session-select">
-                      Destination Session
-                      <select value={uploadSessionId} onChange={(event) => setUploadSessionId(event.target.value)}>
-                        <option value="">Select Session</option>
-                        {managedSessions.map((managedSession) => <option value={managedSession.id} key={managedSession.id}>{managedSession.name}</option>)}
-                      </select>
-                    </label>
+                    <div className="upload-session-select">
+                      <span>Destination Session</span>
+                      <PaletteSelect
+                        label="Select Session"
+                        value={uploadSessionId}
+                        options={managedSessions.map((managedSession) => ({ value: managedSession.id, label: managedSession.name }))}
+                        onChange={setUploadSessionId}
+                      />
+                    </div>
                     <button disabled={!savedLogPaths.length || recording} onClick={uploadSavedLog}>Upload Log</button>
                     {recording && <span className="recording-indicator">Recording</span>}
-                  </div>
-                </>
-              )}
+              </div>
             </div>
           )}
         </section>
