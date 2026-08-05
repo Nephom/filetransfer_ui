@@ -55,10 +55,12 @@ type LocalDirectory = {
 type SessionEntry = {
   id: string;
   alias: string;
-  kind: "LOCAL" | "REMOTE";
+  kind: "LOCAL" | "REMOTE" | "SSH";
   path: string;
   locationId?: string;
   locationName?: string;
+  profileId?: string;
+  profileName?: string;
 };
 type ManagedSession = {
   id: string;
@@ -75,6 +77,16 @@ type SshProfile = {
   privateKeyPath: string;
 };
 type SshEvent = { sessionId: string; data: string };
+type TransferQueueItem = {
+  id: string;
+  label: string;
+  paths: string[];
+  destinationPath: string;
+  locationId: string;
+  locationName: string;
+  status: "queued" | "running" | "completed" | "failed";
+  detail: string;
+};
 
 const sxpHelp = `sxp <Session name> upload <source folder> <destination folder>
 sxp <Session name> mv <source folder> <destination folder>
@@ -365,6 +377,10 @@ function App() {
   });
   const [recording, setRecording] = useState(false);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
+  const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
+  const [uploadSessionId, setUploadSessionId] = useState("");
+  const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>([]);
+  const [queueOpen, setQueueOpen] = useState(false);
   const rawLogRef = useRef("");
   const plainLogRef = useRef("");
   const commandLogRef = useRef("");
@@ -377,6 +393,8 @@ function App() {
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
   const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
+  const [sshAliasDraft, setSshAliasDraft] = useState("SSH");
+  const [sshSessionProfileId, setSshSessionProfileId] = useState("");
   const [pendingRemotePath, setPendingRemotePath] = useState<string | null>(null);
   const [folderTree, setFolderTree] = useState<FolderNode>({
     path: "",
@@ -511,7 +529,7 @@ function App() {
     }
     const resizeObserver = new ResizeObserver(() => fit.fit());
     resizeObserver.observe(terminalHostRef.current);
-    const inputListener = terminal.onData((data) => {
+    const inputListener = terminal.onData((data: string) => {
       if (terminalTab === "ssh") {
         if (!sshSessionIdRef.current) return;
         void invoke("ssh_write", { sessionId: sshSessionIdRef.current, data });
@@ -747,11 +765,14 @@ function App() {
     const name = String(values?.get("sessionName") || sessionNameDraft).trim();
     const localAlias = String(values?.get("localFolderName") || localAliasDraft).trim();
     const remoteAlias = String(values?.get("remoteFolderName") || remoteAliasDraft).trim();
-    if (!name || !localAlias || !remoteAlias) {
-      setSessionFormError("Session name and both folder names are required.");
+    const sshAlias = String(values?.get("sshFolderName") || sshAliasDraft).trim();
+    const selectedSshProfileId = String(values?.get("sshProfileId") || sshSessionProfileId);
+    const sshProfile = sshProfiles.find((profile) => profile.id === selectedSshProfileId);
+    if (!name || !localAlias || !remoteAlias || (selectedSshProfileId && !sshAlias)) {
+      setSessionFormError("Session name and folder names are required.");
       return;
     }
-    if ([name, localAlias, remoteAlias].some((value) => /\s/.test(value))) {
+    if ([name, localAlias, remoteAlias, ...(selectedSshProfileId ? [sshAlias] : [])].some((value) => /\s/.test(value))) {
       setSessionFormError("Session names and folder names cannot contain spaces.");
       return;
     }
@@ -767,25 +788,36 @@ function App() {
       typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const entries: SessionEntry[] = [
+      {
+        id: makeId(),
+        alias: localAlias,
+        kind: "LOCAL",
+        path: localPath,
+      },
+      {
+        id: makeId(),
+        alias: remoteAlias,
+        kind: "REMOTE",
+        path,
+        locationId: session.locationId,
+        locationName: activeLocation?.displayName || session.locationId,
+      },
+    ];
+    if (sshProfile) {
+      entries.push({
+        id: makeId(),
+        alias: sshAlias,
+        kind: "SSH",
+        path: "/",
+        profileId: sshProfile.id,
+        profileName: sshProfile.name,
+      });
+    }
     const managedSession: ManagedSession = {
       id: makeId(),
       name,
-      entries: [
-        {
-          id: makeId(),
-          alias: localAlias,
-          kind: "LOCAL",
-          path: localPath,
-        },
-        {
-          id: makeId(),
-          alias: remoteAlias,
-          kind: "REMOTE",
-          path,
-          locationId: session.locationId,
-          locationName: activeLocation?.displayName || session.locationId,
-        },
-      ],
+      entries,
     };
     setManagedSessions((current) => [...current, managedSession]);
     setSessionNameDraft(name);
@@ -798,6 +830,17 @@ function App() {
     if (entry.kind === "LOCAL") {
       setSplitMode(true);
       void run(() => loadLocalFiles(entry.path));
+      return;
+    }
+    if (entry.kind === "SSH") {
+      if (!entry.profileId || !sshProfiles.some((profile) => profile.id === entry.profileId)) {
+        setNotice(`Session entry "${entry.alias}" is unavailable; SSH Profile was not found.`);
+        return;
+      }
+      setSshProfileId(entry.profileId);
+      setTerminalTab("ssh");
+      setTerminalOpen(true);
+      setNotice(`SSH Profile selected: ${entry.profileName || entry.profileId}. Connect when ready.`);
       return;
     }
     const location = locations.find((candidate) => candidate.id === entry.locationId);
@@ -994,10 +1037,99 @@ function App() {
           plain: plainLogRef.current,
           commands: commandLogRef.current,
           metadata,
-        },
+          },
       );
+      setSavedLogPaths([paths.raw, paths.plain, paths.commands, paths.metadata]);
       notify(`Saved SSH logs to ${paths.raw}`);
     });
+  };
+
+  const updateQueueItem = (id: string, update: Partial<TransferQueueItem>) => {
+    setTransferQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
+  };
+
+  const runQueuedUpload = async (item: TransferQueueItem) => {
+    updateQueueItem(item.id, { status: "running", detail: "Inspecting files..." });
+    try {
+      const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths: item.paths });
+      const checksums = await invoke<Record<string, string>>("hash_upload_paths", { paths: item.paths });
+      const headers: [string, string][] = session.token
+        ? [
+            ["Authorization", `Bearer ${session.token}`],
+            ["X-Location-ID", item.locationId],
+          ]
+        : [["X-Location-ID", item.locationId]];
+      updateQueueItem(item.id, { detail: `Staged ${Object.keys(checksums).length} checksummed file${Object.keys(checksums).length === 1 ? "" : "s"}; uploading...` });
+      const rawResponse = await invoke<NativeApiResponse>("api_upload_paths", {
+        url: `${serverUrl(session)}/api/upload/multiple`,
+        headers,
+        paths: item.paths,
+        path: item.destinationPath,
+        ignoreTlsErrors: session.ignoreTlsErrors,
+      });
+      const response = new ApiResponse(rawResponse.status, rawResponse.body);
+      if (!response.ok) throw new Error(await readError(response));
+      const { batchId } = (await response.json()) as { batchId?: string };
+      if (!batchId) {
+        updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.` });
+        return;
+      }
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        const progressResponse = await invoke<NativeApiResponse>("api_request", {
+          url: `${serverUrl(session)}/api/progress/batch/${encodeURIComponent(batchId)}`,
+          method: "GET",
+          headers,
+          body: null,
+          ignoreTlsErrors: session.ignoreTlsErrors,
+        });
+        const progress = new ApiResponse(progressResponse.status, progressResponse.body);
+        if (!progress.ok) throw new Error(await readError(progress));
+        const batch = await progress.json() as { status: string; progress: number; successCount: number; totalFiles: number; failedCount: number };
+        updateQueueItem(item.id, { detail: `${batch.successCount}/${batch.totalFiles} files (${Math.round(batch.progress)}%)` });
+        if (batch.status === "completed") {
+          updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.` });
+          return;
+        }
+        if (batch.status === "failed" || batch.status === "partial_fail") {
+          throw new Error(`${batch.failedCount} file${batch.failedCount === 1 ? "" : "s"} failed.`);
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      }
+      throw new Error("Upload progress timed out.");
+    } catch (error) {
+      updateQueueItem(item.id, {
+        status: "failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const uploadSavedLog = () => {
+    const managedSession = managedSessions.find((item) => item.id === uploadSessionId);
+    const destination = managedSession?.entries.find((entry) => entry.kind === "REMOTE");
+    if (!savedLogPaths.length) {
+      setNotice("Save the completed SSH log package before uploading it.");
+      return;
+    }
+    if (!destination?.locationId) {
+      setNotice("Select a Session with an API Remote destination before uploading the log.");
+      setQueueOpen(true);
+      return;
+    }
+    const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+    const item: TransferQueueItem = {
+      id,
+      label: "SSH log package",
+      paths: savedLogPaths,
+      destinationPath: destination.path,
+      locationId: destination.locationId,
+      locationName: destination.locationName || destination.locationId,
+      status: "queued",
+      detail: "Waiting to start",
+    };
+    setTransferQueue((current) => [...current, item]);
+    setQueueOpen(true);
+    void runQueuedUpload(item);
   };
 
   const login = async (event: React.FormEvent) => {
@@ -2201,16 +2333,39 @@ function App() {
                 />
                 <small className="field-help">Name used to identify the current LOCAL folder in this Session.</small>
               </label>
-              <label>
-                Remote folder name
+               <label>
+                 Remote folder name
                 <input
                   name="remoteFolderName"
                   value={remoteAliasDraft}
                   onChange={(event) => setRemoteAliasDraft(event.target.value)}
                   required
                 />
-                <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
-              </label>
+                 <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
+               </label>
+               <label>
+                 SSH Profile (optional)
+                 <select
+                   name="sshProfileId"
+                   value={sshSessionProfileId}
+                   onChange={(event) => setSshSessionProfileId(event.target.value)}
+                 >
+                   <option value="">No SSH entry</option>
+                   {sshProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}
+                 </select>
+                 <small className="field-help">Save a shortcut to this SSH Profile in the Session.</small>
+               </label>
+               {sshSessionProfileId && (
+                 <label>
+                   SSH entry name
+                   <input
+                     name="sshFolderName"
+                     value={sshAliasDraft}
+                     onChange={(event) => setSshAliasDraft(event.target.value)}
+                     required
+                   />
+                 </label>
+               )}
               <div className="modal-actions">
                 <button type="button" onClick={() => setSessionsOpen(false)}>
                   Close
@@ -2245,11 +2400,13 @@ function App() {
                       onClick={() => openSessionEntry(entry)}
                     >
                       <span>{entry.alias}</span>
-                      <small>
-                        {entry.kind === "REMOTE"
-                          ? `REMOTE (${entry.locationName || entry.locationId}) ${entry.path || "/"}`
-                          : `LOCAL ~/${entry.path || ""}`}
-                      </small>
+                        <small>
+                         {entry.kind === "REMOTE"
+                           ? `REMOTE (${entry.locationName || entry.locationId}) ${entry.path || "/"}`
+                           : entry.kind === "SSH"
+                             ? `SSH (${entry.profileName || entry.profileId})`
+                             : `LOCAL ~/${entry.path || ""}`}
+                       </small>
                     </button>
                   ))}
                 </div>
@@ -2271,6 +2428,7 @@ function App() {
               {terminalTab === "sxp" && (
                 <button onClick={() => setSessionsOpen(true)}>Open Sessions</button>
               )}
+              <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => item.status === "queued" || item.status === "running").length})</button>
               <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
             </div>
           </header>
@@ -2332,7 +2490,14 @@ function App() {
                       <button className="danger" onClick={stopRecording}>Stop Recording</button>
                     )}
                     <button disabled={recording || !rawLogRef.current} onClick={saveSshLogs}>Save Log</button>
-                    <button disabled={!rawLogRef.current || recording} onClick={() => notify("Upload Log will use the selected Session and SXP transfer queue.")}>Upload Log</button>
+                    <label className="upload-session-select">
+                      Destination Session
+                      <select value={uploadSessionId} onChange={(event) => setUploadSessionId(event.target.value)}>
+                        <option value="">Select Session</option>
+                        {managedSessions.map((managedSession) => <option value={managedSession.id} key={managedSession.id}>{managedSession.name}</option>)}
+                      </select>
+                    </label>
+                    <button disabled={!savedLogPaths.length || recording} onClick={uploadSavedLog}>Upload Log</button>
                     {recording && <span className="recording-indicator">Recording</span>}
                   </div>
                 </>
@@ -2345,6 +2510,31 @@ function App() {
         <button className="terminal-restore" onClick={() => setTerminalOpen(true)} aria-label="Restore terminal">
           Terminal ⌃
         </button>
+      )}
+      {queueOpen && (
+        <div className="modal-cover" onMouseDown={() => setQueueOpen(false)}>
+          <div className="modal queue-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <h2>Transfer Queue</h2>
+            {!transferQueue.length && <p className="muted">No transfers queued.</p>}
+            {transferQueue.map((item) => (
+              <div className="queue-item" key={item.id}>
+                <strong>{item.label}</strong>
+                <small>{item.locationName} {item.destinationPath || "/"}</small>
+                <span className={`queue-status ${item.status}`}>{item.status}</span>
+                <span>{item.detail}</span>
+                {item.status === "failed" && (
+                  <button type="button" onClick={() => {
+                    updateQueueItem(item.id, { status: "queued", detail: "Retry queued" });
+                    void runQueuedUpload({ ...item, status: "queued", detail: "Retry queued" });
+                  }}>Retry</button>
+                )}
+              </div>
+            ))}
+            <div className="modal-actions">
+              <button type="button" onClick={() => setQueueOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );
