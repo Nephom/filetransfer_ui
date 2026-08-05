@@ -17,6 +17,22 @@ struct UploadSummary {
     directories: usize,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalFile {
+    name: String,
+    path: String,
+    is_directory: bool,
+    size: u64,
+    modified: u128,
+}
+
+#[derive(Serialize)]
+struct LocalDirectory {
+    path: String,
+    files: Vec<LocalFile>,
+}
+
 fn collect_upload_path(
     path: &Path,
     relative_path: String,
@@ -126,6 +142,65 @@ async fn pick_upload_files() -> Result<Vec<String>, String> {
         .collect())
 }
 
+fn local_home() -> Result<PathBuf, String> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "Unable to locate the local home directory".to_string())
+}
+
+#[tauri::command]
+fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
+    let root = local_home()?.canonicalize().map_err(|error| error.to_string())?;
+    let relative = Path::new(&path);
+    if relative.is_absolute() || relative.components().any(|component| {
+        matches!(component, std::path::Component::ParentDir)
+    }) {
+        return Err("Local path must stay inside the user home directory".to_string());
+    }
+    let directory = root.join(relative);
+    let directory = directory.canonicalize().map_err(|error| error.to_string())?;
+    if !directory.starts_with(&root) || !directory.is_dir() {
+        return Err("Local path is outside the user home directory".to_string());
+    }
+
+    let mut files = std::fs::read_dir(&directory)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            if !metadata.is_file() && !metadata.is_dir() {
+                return None;
+            }
+            let name = entry.file_name().to_str()?.to_string();
+            let child = directory.join(&name);
+            let child_relative = child.strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis())
+                .unwrap_or_default();
+            Some(LocalFile {
+                name,
+                path: child_relative,
+                is_directory: metadata.is_dir(),
+                size: metadata.len(),
+                modified,
+            })
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+
+    Ok(LocalDirectory {
+        path: directory
+            .strip_prefix(&root)
+            .map_err(|error| error.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/"),
+        files,
+    })
+}
+
 #[tauri::command]
 fn inspect_upload_paths(paths: Vec<String>) -> Result<UploadSummary, String> {
     let (files, directories) = collect_upload_paths(&paths)?;
@@ -230,6 +305,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             api_request,
             pick_upload_files,
+            local_list_directory,
             inspect_upload_paths,
             api_upload_paths,
             download_to_disk,
