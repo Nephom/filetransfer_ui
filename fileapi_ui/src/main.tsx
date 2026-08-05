@@ -2182,7 +2182,9 @@ function App() {
               <button className={terminalTab === "ssh" ? "active" : ""} onClick={() => setTerminalTab("ssh")}>SSH</button>
             </div>
             <div className="terminal-actions">
-              <button onClick={() => setSessionsOpen(true)}>Open Sessions</button>
+              {terminalTab === "sxp" && (
+                <button onClick={() => setSessionsOpen(true)}>Open Sessions</button>
+              )}
               <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
             </div>
           </header>
