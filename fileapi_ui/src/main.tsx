@@ -480,7 +480,6 @@ function App() {
     port: "22",
     username: "",
     privateKeyPath: "",
-    password: "",
   });
   const [sshEntryDraftId, setSshEntryDraftId] = useState("");
   const [recording, setRecording] = useState(false);
@@ -496,7 +495,6 @@ function App() {
   const terminalInstanceRef = useRef<Terminal | null>(null);
   const sshSessionIdRef = useRef("");
   const sshConnectingRef = useRef(false);
-  const sshPasswordKeyRef = useRef("");
   const recordingRef = useRef(false);
   const sshSecretPromptRef = useRef(false);
   const shellInputRef = useRef("");
@@ -536,10 +534,6 @@ function App() {
   useEffect(() => {
     sshSessionIdRef.current = sshSessionId;
   }, [sshSessionId]);
-
-  useEffect(() => {
-    sshPasswordKeyRef.current = sshProfileId;
-  }, [sshProfileId]);
 
   useEffect(() => {
     recordingRef.current = recording;
@@ -906,7 +900,6 @@ function App() {
     const sshPort = Number(values ? values.get("sshPort") || "" : sshProfileDraft.port);
     const sshUsername = String(values ? values.get("sshUsername") || "" : sshProfileDraft.username).trim();
     const sshPrivateKeyPath = String(values ? values.get("sshPrivateKeyPath") || "" : sshProfileDraft.privateKeyPath).trim();
-    const sshPassword = String(values ? values.get("sshPassword") || "" : sshProfileDraft.password);
     const hasSshConnection = [sshName, sshHost, sshUsername, sshPrivateKeyPath].some(Boolean);
     if (!name || !localAlias || !remoteAlias) {
       setSessionFormError("Session name and folder names are required.");
@@ -972,16 +965,12 @@ function App() {
         : existingWorkspace?.sshEntries || [],
     };
     void run(async () => {
-      if (sshProfile && sshPassword) {
-        await invoke("set_ssh_password", { key: sshProfile.id, password: sshPassword });
-      }
       if (sshProfile) {
         setSshProfiles((current) => current.some((item) => item.id === sshProfile.id)
           ? current.map((item) => item.id === sshProfile.id ? sshProfile : item)
           : [...current, sshProfile]);
         setSshProfileId(sshProfile.id);
         setSelectedSshEntryId(sshProfile.id);
-        sshPasswordKeyRef.current = sshProfile.id;
         loadSshProfileDraft(sshProfile);
       }
       setManagedSessions((current) => existingWorkspace
@@ -1012,7 +1001,6 @@ function App() {
         ? current.map((item) => item.id === profile.id ? profile : item)
         : [...current, profile]);
       setSshProfileId(profile.id);
-      sshPasswordKeyRef.current = profile.id;
       if (managedSessionId) setWorkspaceSessionId(managedSessionId);
       setTerminalTab("ssh");
       setTerminalOpen(true);
@@ -1124,9 +1112,8 @@ function App() {
           port: String(profile.port),
           username: profile.username,
           privateKeyPath: profile.privateKeyPath,
-          password: "",
         }
-      : { id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+      : { id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "" });
   };
 
   const selectWorkspaceSession = (id: string) => {
@@ -1137,7 +1124,6 @@ function App() {
       setSshEntryDraftId(workspace?.sshEntries[0]?.id || profile.id);
       setSelectedSshEntryId(profile.id);
       setSshProfileId(profile.id);
-      sshPasswordKeyRef.current = profile.id;
       loadSshProfileDraft(profile);
     }
   };
@@ -1206,7 +1192,7 @@ function App() {
         } else {
           setSshEntryDraftId("");
           setSelectedSshEntryId("");
-          setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+          setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "" });
         }
       }
       setSessionFormError("");
@@ -1222,14 +1208,14 @@ function App() {
     setSxpEntryDraftId("");
     setSxpEntryNameDraft("Default Transfer");
     setSshEntryDraftId("");
-    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "" });
     setSessionFormError("");
   };
 
   const startNewSshEntry = () => {
     setSshEntryDraftId("");
     setSelectedSshEntryId("");
-    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "" });
   };
 
   const startNewSxpEntry = () => {
@@ -1247,8 +1233,6 @@ function App() {
       return;
     }
     void run(async () => {
-      sshPasswordKeyRef.current = profile.id;
-      sshSecretPromptRef.current = false;
       sshConnectingRef.current = true;
       sshSessionIdRef.current = "";
       try {
@@ -1259,7 +1243,6 @@ function App() {
             port: profile.port,
             username: profile.username,
             privateKeyPath: profile.privateKeyPath || null,
-            passwordKey: profile.id,
           },
         });
         sshSessionIdRef.current = id;
@@ -1270,6 +1253,33 @@ function App() {
       } finally {
         sshConnectingRef.current = false;
       }
+    });
+  };
+
+  const installSshKey = () => {
+    const profile = activeWorkspaceSession?.sshEntries.find((item) => item.id === selectedSshEntryId);
+    if (!activeWorkspaceSession || !profile) {
+      openSessionsModal();
+      setNotice("Select an SSH entry before installing its key.");
+      return;
+    }
+    void run(async () => {
+      sshConnectingRef.current = true;
+      const id = await invoke<string>("ssh_install_key", {
+        profile: {
+          name: profile.name,
+          host: profile.host,
+          port: profile.port,
+          username: profile.username,
+          privateKeyPath: profile.privateKeyPath || null,
+        },
+      });
+      sshSessionIdRef.current = id;
+      setSshSessionId(id);
+      setSshConnected(true);
+      sshOutputRef.current = `Installing SSH key for ${profile.username}@${profile.host}:${profile.port}...\nType the remote password in this terminal.\n`;
+      setSshOutput(sshOutputRef.current);
+      sshConnectingRef.current = false;
     });
   };
 
@@ -2662,7 +2672,7 @@ function App() {
                     <span>SSH entries in this Workspace</span>
                     <div>
                       {managedSessions.find((item) => item.id === workspaceSessionId)?.sshEntries.map((entry) => (
-                        <button type="button" className={entry.id === sshEntryDraftId ? "selected" : ""} key={entry.id} onClick={() => { setSshEntryDraftId(entry.id); setSshProfileId(entry.id); sshPasswordKeyRef.current = entry.id; loadSshProfileDraft(entry); }}>
+                        <button type="button" className={entry.id === sshEntryDraftId ? "selected" : ""} key={entry.id} onClick={() => { setSshEntryDraftId(entry.id); setSshProfileId(entry.id); loadSshProfileDraft(entry); }}>
                           {entry.name}
                         </button>
                       ))}
@@ -2689,11 +2699,7 @@ function App() {
                     Private key path (optional)
                     <input name="sshPrivateKeyPath" value={sshProfileDraft.privateKeyPath} onChange={(event) => setSshProfileDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="/home/test/.ssh/id_ed25519" />
                   </label>
-                  <label>
-                    Password (optional)
-                    <input name="sshPassword" type="password" autoComplete="new-password" value={sshProfileDraft.password} onChange={(event) => setSshProfileDraft((current) => ({ ...current, password: event.target.value }))} placeholder="Stored in the OS keyring" />
-                  </label>
-                  <small className="field-help">SSH details are stored inside this Session. The password is saved only in the OS keyring.</small>
+                  <small className="field-help">Use Install SSH key in the SSH terminal. Enter the remote password there once; the key is used for later connections.</small>
                 </fieldset>
               <div className="modal-actions">
                 <button type="button" onClick={() => setSessionsOpen(false)}>
@@ -2799,7 +2805,6 @@ function App() {
                       setSelectedSshEntryId(id);
                       if (entry) {
                         setSshProfileId(entry.id);
-                        sshPasswordKeyRef.current = entry.id;
                         loadSshProfileDraft(entry);
                       }
                     }}
@@ -2810,6 +2815,7 @@ function App() {
                 ) : (
                   <button className="danger" onClick={disconnectSsh}>Disconnect</button>
                 )}
+                <button onClick={installSshKey}>Install SSH key</button>
               </div>
               {!activeWorkspaceSession && <p className="terminal-inline-note">Create or open a Session with an SSH connection before connecting.</p>}
               <div ref={terminalHostRef} className="xterm-host" aria-label="SSH terminal" />
