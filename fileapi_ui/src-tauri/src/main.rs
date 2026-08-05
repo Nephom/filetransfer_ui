@@ -415,7 +415,7 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
         command.args(["-i", &key_path]);
     }
 
-    let mut child = pair
+    let child = pair
         .slave
         .spawn_command(command)
         .map_err(|error| error.to_string())?;
