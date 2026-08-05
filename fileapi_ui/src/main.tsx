@@ -44,6 +44,10 @@ type FolderNode = {
   loaded: boolean;
   children: FolderNode[];
 };
+type LocalDirectory = {
+  path: string;
+  files: FileItem[];
+};
 
 type ScrollMetrics = {
   scrollTop: number;
@@ -229,6 +233,9 @@ function App() {
   const [session, setSession] = useState<Session>(initialSession);
   const [password, setPassword] = useState("");
   const [files, setFiles] = useState<FileItem[]>([]);
+  const [localFiles, setLocalFiles] = useState<FileItem[]>([]);
+  const [localPath, setLocalPath] = useState("");
+  const [localSelected, setLocalSelected] = useState<string[]>([]);
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [path, setPath] = useState("");
@@ -244,6 +251,9 @@ function App() {
   const [pathBeforeSearch, setPathBeforeSearch] = useState("");
   const [viewMode, setViewMode] = useState<"details" | "grid">(() =>
     localStorage.getItem("file-view-mode") === "grid" ? "grid" : "details",
+  );
+  const [splitMode, setSplitMode] = useState(() =>
+    localStorage.getItem("file-layout-mode") === "split",
   );
   const [folderTree, setFolderTree] = useState<FolderNode>({
     path: "",
@@ -292,6 +302,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("file-view-mode", viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    localStorage.setItem("file-layout-mode", splitMode ? "split" : "single");
+  }, [splitMode]);
 
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
@@ -370,6 +384,15 @@ function App() {
     setSelected([]);
   };
 
+  const loadLocalFiles = async (nextPath = localPath) => {
+    const data = await invoke<LocalDirectory>("local_list_directory", {
+      path: nextPath,
+    });
+    setLocalFiles(data.files || []);
+    setLocalPath(data.path || "");
+    setLocalSelected([]);
+  };
+
   const updateTreeNode = (
     node: FolderNode,
     targetPath: string,
@@ -444,6 +467,12 @@ function App() {
     }
     return undefined;
   }, [session.token]);
+
+  useEffect(() => {
+    void loadLocalFiles().catch((error) =>
+      setNotice(error instanceof Error ? error.message : String(error)),
+    );
+  }, []);
 
   useEffect(() => {
     if (session.token && session.locationId) {
@@ -925,6 +954,48 @@ function App() {
     </div>
   );
 
+  const renderLocalPane = () => (
+    <section className="local-pane" aria-label="Local files">
+      <div className="local-pane-heading">
+        <span className="sidebar-label">LOCAL</span>
+        <strong>{localPath ? `~/${localPath}` : "~/"}</strong>
+      </div>
+      <div className="local-pane-actions">
+        <button
+          onClick={() =>
+            void run(() =>
+              loadLocalFiles(parentPath(localPath)),
+            )
+          }
+          disabled={busy || !localPath}
+        >
+          Up
+        </button>
+        <button onClick={() => void run(() => loadLocalFiles(""))} disabled={busy}>
+          Home
+        </button>
+      </div>
+      <div className="local-file-list">
+        {localFiles.map((file) => (
+          <button
+            key={file.path}
+            className={`local-file ${localSelected.includes(file.path) ? "selected" : ""}`}
+            onClick={() => setLocalSelected([file.path])}
+            onDoubleClick={() =>
+              file.isDirectory && void run(() => loadLocalFiles(file.path))
+            }
+          >
+            <span>{file.isDirectory ? "📁" : "📄"}</span>
+            <span className="local-file-name">{file.name}</span>
+            <small>{file.isDirectory ? "Folder" : formatSize(file.size)}</small>
+          </button>
+        ))}
+        {!localFiles.length && <span className="muted">No files in this folder.</span>}
+      </div>
+      <div className="local-pane-footer">{localFiles.length} items</div>
+    </section>
+  );
+
   if (!session.token)
     return (
       <main className="login">
@@ -1194,6 +1265,13 @@ function App() {
           >
             Grid
           </button>
+          <button
+            className={splitMode ? "active" : ""}
+            onClick={() => setSplitMode((enabled) => !enabled)}
+            aria-pressed={splitMode}
+          >
+            Split
+          </button>
         </span>
         <button
           onClick={() => {
@@ -1255,7 +1333,8 @@ function App() {
           )}
         </div>
       </div>
-      <div className="desktop-workspace">
+      <div className={`desktop-workspace${splitMode ? " split-workspace" : ""}`}>
+        {splitMode && renderLocalPane()}
         <aside className="desktop-folder-tree">
           <span className="sidebar-label">Folders</span>
           <div className="folder-pane">
