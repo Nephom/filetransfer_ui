@@ -21,6 +21,7 @@
 .folder-tree-scroll + .persistent-scrollbar .persistent-scrollbar-thumb, .file-area + .persistent-scrollbar .persistent-scrollbar-thumb { cursor: grab; }
 .file-pane .file-area { overscroll-behavior: contain; }
 .split-workspace { gap: 0; }
+.split-workspace .desktop-folder-tree { display: none; }
 .local-pane { display: flex; flex: 0 0 320px; min-width: 220px; min-height: 0; flex-direction: column; background: rgba(8, 24, 42, .92); border-right: 1px solid #1c3955; }
 .local-pane-heading { display: flex; flex-direction: column; gap: 2px; padding: 14px 14px 8px; color: #e6eefc; }
 .local-pane-heading .sidebar-label { padding: 0; color: #6bf0ca; }
