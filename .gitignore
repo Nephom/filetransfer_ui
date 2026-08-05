@@ -78,6 +78,7 @@ node_modules/
 fileapi_ui/dist/
 fileapi_ui/src-tauri/gen/
 fileapi_ui/src-tauri/target/
+fileapi_ui/Backup/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
