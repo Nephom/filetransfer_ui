@@ -61,6 +61,7 @@ type SessionEntry = {
   locationName?: string;
   profileId?: string;
   profileName?: string;
+  sshProfile?: SshProfile;
 };
 type ManagedSession = {
   id: string;
@@ -369,11 +370,13 @@ function App() {
   const sshOutputRef = useRef("");
   const [sshProfileOpen, setSshProfileOpen] = useState(false);
   const [sshProfileDraft, setSshProfileDraft] = useState({
+    id: "",
     name: "",
     host: "",
     port: "22",
     username: "",
     privateKeyPath: "",
+    password: "",
   });
   const [recording, setRecording] = useState(false);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
@@ -393,8 +396,6 @@ function App() {
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
   const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
-  const [sshAliasDraft, setSshAliasDraft] = useState("SSH");
-  const [sshSessionProfileId, setSshSessionProfileId] = useState("");
   const [pendingRemotePath, setPendingRemotePath] = useState<string | null>(null);
   const [folderTree, setFolderTree] = useState<FolderNode>({
     path: "",
@@ -765,14 +766,12 @@ function App() {
     const name = String(values?.get("sessionName") || sessionNameDraft).trim();
     const localAlias = String(values?.get("localFolderName") || localAliasDraft).trim();
     const remoteAlias = String(values?.get("remoteFolderName") || remoteAliasDraft).trim();
-    const sshAlias = String(values?.get("sshFolderName") || sshAliasDraft).trim();
-    const selectedSshProfileId = String(values?.get("sshProfileId") || sshSessionProfileId);
-    const sshProfile = sshProfiles.find((profile) => profile.id === selectedSshProfileId);
-    if (!name || !localAlias || !remoteAlias || (selectedSshProfileId && !sshAlias)) {
+    const sshProfile = sshProfiles.find((profile) => profile.id === sshProfileId);
+    if (!name || !localAlias || !remoteAlias) {
       setSessionFormError("Session name and folder names are required.");
       return;
     }
-    if ([name, localAlias, remoteAlias, ...(selectedSshProfileId ? [sshAlias] : [])].some((value) => /\s/.test(value))) {
+    if ([name, localAlias, remoteAlias].some((value) => /\s/.test(value))) {
       setSessionFormError("Session names and folder names cannot contain spaces.");
       return;
     }
@@ -807,11 +806,12 @@ function App() {
     if (sshProfile) {
       entries.push({
         id: makeId(),
-        alias: sshAlias,
+        alias: sshProfile.name,
         kind: "SSH",
         path: "/",
         profileId: sshProfile.id,
         profileName: sshProfile.name,
+        sshProfile,
       });
     }
     const managedSession: ManagedSession = {
@@ -833,11 +833,15 @@ function App() {
       return;
     }
     if (entry.kind === "SSH") {
-      if (!entry.profileId || !sshProfiles.some((profile) => profile.id === entry.profileId)) {
+      const profile = entry.sshProfile || sshProfiles.find((item) => item.id === entry.profileId);
+      if (!profile) {
         setNotice(`Session entry "${entry.alias}" is unavailable; SSH Profile was not found.`);
         return;
       }
-      setSshProfileId(entry.profileId);
+      setSshProfiles((current) => current.some((item) => item.id === profile.id)
+        ? current.map((item) => item.id === profile.id ? profile : item)
+        : [...current, profile]);
+      setSshProfileId(profile.id);
       setTerminalTab("ssh");
       setTerminalOpen(true);
       setNotice(`SSH Profile selected: ${entry.profileName || entry.profileId}. Connect when ready.`);
@@ -932,6 +936,20 @@ function App() {
     window.addEventListener("pointerup", stopColumnResize);
   };
 
+  const loadSshProfileDraft = (profile: SshProfile | undefined) => {
+    setSshProfileDraft(profile
+      ? {
+          id: profile.id,
+          name: profile.name,
+          host: profile.host,
+          port: String(profile.port),
+          username: profile.username,
+          privateKeyPath: profile.privateKeyPath,
+          password: "",
+        }
+      : { id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+  };
+
   const saveSshProfile = () => {
     const name = sshProfileDraft.name.trim();
     const host = sshProfileDraft.host.trim();
@@ -941,9 +959,9 @@ function App() {
       setNotice("Enter a profile name, host, username, and valid SSH port.");
       return;
     }
-    const id = typeof crypto.randomUUID === "function"
+    const id = sshProfileDraft.id || (typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
     const profile: SshProfile = {
       id,
       name,
@@ -952,11 +970,21 @@ function App() {
       username,
       privateKeyPath: sshProfileDraft.privateKeyPath.trim(),
     };
-    setSshProfiles((current) => [...current, profile]);
-    setSshProfileId(id);
-    setSshProfileDraft({ name: "", host: "", port: "22", username: "", privateKeyPath: "" });
-    setSshProfileOpen(false);
-    notify(`Saved SSH Profile: ${name}`);
+    void run(async () => {
+      if (sshProfileDraft.password) {
+        await invoke("set_ssh_password", {
+          key: id,
+          password: sshProfileDraft.password,
+        });
+      }
+      setSshProfiles((current) => current.some((item) => item.id === id)
+        ? current.map((item) => item.id === id ? profile : item)
+        : [...current, profile]);
+      setSshProfileId(id);
+      loadSshProfileDraft(profile);
+      setSshProfileOpen(false);
+      notify(`Saved SSH Profile: ${name}`);
+    });
   };
 
   const connectSsh = () => {
@@ -972,9 +1000,10 @@ function App() {
           name: profile.name,
           host: profile.host,
           port: profile.port,
-          username: profile.username,
-          privateKeyPath: profile.privateKeyPath || null,
-        },
+           username: profile.username,
+           privateKeyPath: profile.privateKeyPath || null,
+           passwordKey: profile.id,
+         },
       });
       setSshSessionId(id);
       setSshConnected(true);
@@ -2302,7 +2331,7 @@ function App() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <h2>Sessions</h2>
-            <p>Save the current LOCAL and API Remote folders under a name you can recognize later.</p>
+            <p>Save the current LOCAL, API Remote, and selected SSH connection as one Session for SXP and SSH.</p>
             {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
             <div className="sessions-layout">
               <form
@@ -2343,29 +2372,11 @@ function App() {
                 />
                  <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
                </label>
-               <label>
-                 SSH Profile (optional)
-                 <select
-                   name="sshProfileId"
-                   value={sshSessionProfileId}
-                   onChange={(event) => setSshSessionProfileId(event.target.value)}
-                 >
-                   <option value="">No SSH entry</option>
-                   {sshProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}
-                 </select>
-                 <small className="field-help">Save a shortcut to this SSH Profile in the Session.</small>
-               </label>
-               {sshSessionProfileId && (
-                 <label>
-                   SSH entry name
-                   <input
-                     name="sshFolderName"
-                     value={sshAliasDraft}
-                     onChange={(event) => setSshAliasDraft(event.target.value)}
-                     required
-                   />
-                 </label>
-               )}
+               <small className="field-help session-connection-note">
+                 {sshProfiles.find((profile) => profile.id === sshProfileId)
+                   ? `SSH connection included: ${sshProfiles.find((profile) => profile.id === sshProfileId)?.name}`
+                   : "Select an SSH connection in the SSH terminal before saving if this Session should include SSH."}
+               </small>
               <div className="modal-actions">
                 <button type="button" onClick={() => setSessionsOpen(false)}>
                   Close
@@ -2449,14 +2460,24 @@ function App() {
               <div className="ssh-controls">
                 <label>
                   SSH Profile
-                  <select value={sshProfileId} onChange={(event) => setSshProfileId(event.target.value)}>
+                  <select
+                    value={sshProfileId}
+                    onChange={(event) => {
+                      const id = event.target.value;
+                      setSshProfileId(id);
+                      loadSshProfileDraft(sshProfiles.find((profile) => profile.id === id));
+                    }}
+                  >
                     <option value="">Select a profile</option>
                     {sshProfiles.map((profile) => (
                       <option value={profile.id} key={profile.id}>{profile.name}</option>
                     ))}
                   </select>
                 </label>
-                <button onClick={() => setSshProfileOpen((open) => !open)}>
+                <button onClick={() => {
+                  setSshProfileOpen((open) => !open);
+                  if (!sshProfileOpen) loadSshProfileDraft(sshProfiles.find((profile) => profile.id === sshProfileId));
+                }}>
                   {sshProfileOpen ? "Close Profile Editor" : "Manage SSH Profiles"}
                 </button>
                 {!sshConnected ? (
@@ -2478,6 +2499,7 @@ function App() {
                   <label>Port<input inputMode="numeric" value={sshProfileDraft.port} onChange={(event) => setSshProfileDraft((current) => ({ ...current, port: event.target.value }))} required /></label>
                   <label>Username<input value={sshProfileDraft.username} onChange={(event) => setSshProfileDraft((current) => ({ ...current, username: event.target.value }))} required /></label>
                   <label>Private key path (optional)<input value={sshProfileDraft.privateKeyPath} onChange={(event) => setSshProfileDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="/home/test/.ssh/id_ed25519" /></label>
+                  <label>Password (optional)<input type="password" autoComplete="new-password" value={sshProfileDraft.password} onChange={(event) => setSshProfileDraft((current) => ({ ...current, password: event.target.value }))} placeholder="Stored in the OS keyring" /></label>
                   <button className="confirm" type="submit">Save SSH Profile</button>
                 </form>
               ) : (
