@@ -48,6 +48,19 @@ type LocalDirectory = {
   path: string;
   files: FileItem[];
 };
+type SessionEntry = {
+  id: string;
+  alias: string;
+  kind: "LOCAL" | "REMOTE";
+  path: string;
+  locationId?: string;
+  locationName?: string;
+};
+type ManagedSession = {
+  id: string;
+  name: string;
+  entries: SessionEntry[];
+};
 
 type ScrollMetrics = {
   scrollTop: number;
@@ -170,6 +183,7 @@ const initialSession: Session = {
   locationId: "",
   ignoreTlsErrors: false,
 };
+const sessionRegistryKey = "fileapi-session-registry";
 
 const readError = async (response: {
   status: number;
@@ -255,6 +269,20 @@ function App() {
   const [splitMode, setSplitMode] = useState(() =>
     localStorage.getItem("file-layout-mode") === "split",
   );
+  const [managedSessions, setManagedSessions] = useState<ManagedSession[]>(() => {
+    try {
+      const saved = localStorage.getItem(sessionRegistryKey);
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [sessionNameDraft, setSessionNameDraft] = useState("");
+  const [localAliasDraft, setLocalAliasDraft] = useState("Local home");
+  const [remoteAliasDraft, setRemoteAliasDraft] = useState("Remote root");
+  const [pendingRemotePath, setPendingRemotePath] = useState<string | null>(null);
   const [folderTree, setFolderTree] = useState<FolderNode>({
     path: "",
     name: "/",
@@ -306,6 +334,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("file-layout-mode", splitMode ? "split" : "single");
   }, [splitMode]);
+
+  useEffect(() => {
+    localStorage.setItem(sessionRegistryKey, JSON.stringify(managedSessions));
+  }, [managedSessions]);
 
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
@@ -476,10 +508,12 @@ function App() {
 
   useEffect(() => {
     if (session.token && session.locationId) {
-      void loadFiles("").catch((error) => setNotice(error.message));
+      const nextPath = pendingRemotePath ?? "";
+      if (pendingRemotePath !== null) setPendingRemotePath(null);
+      void loadFiles(nextPath).catch((error) => setNotice(error.message));
       void loadTreeChildren("").catch((error) => setNotice(error.message));
     }
-  }, [session.token, session.locationId]);
+  }, [session.token, session.locationId, pendingRemotePath]);
 
   const selectLocation = (locationId: string) => {
     if (locationId === session.locationId) return;
@@ -496,6 +530,66 @@ function App() {
       loaded: false,
       children: [],
     });
+  };
+
+  const saveSession = () => {
+    const name = sessionNameDraft.trim();
+    const localAlias = localAliasDraft.trim();
+    const remoteAlias = remoteAliasDraft.trim();
+    if (!name || !localAlias || !remoteAlias) {
+      setNotice("Session name and both entry aliases are required.");
+      return;
+    }
+    if (!activeLocation || !session.locationId) {
+      setNotice("A connected Remote Location is required to save a Session.");
+      return;
+    }
+    const makeId = () =>
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const managedSession: ManagedSession = {
+      id: makeId(),
+      name,
+      entries: [
+        {
+          id: makeId(),
+          alias: localAlias,
+          kind: "LOCAL",
+          path: localPath,
+        },
+        {
+          id: makeId(),
+          alias: remoteAlias,
+          kind: "REMOTE",
+          path,
+          locationId: session.locationId,
+          locationName: activeLocation.displayName,
+        },
+      ],
+    };
+    setManagedSessions((current) => [...current, managedSession]);
+    setSessionNameDraft("");
+    notify(`Saved Session: ${name}`);
+  };
+
+  const openSessionEntry = (entry: SessionEntry) => {
+    if (entry.kind === "LOCAL") {
+      setSplitMode(true);
+      void run(() => loadLocalFiles(entry.path));
+      return;
+    }
+    const location = locations.find((candidate) => candidate.id === entry.locationId);
+    if (!location || location.status !== "online") {
+      setNotice(`Session entry "${entry.alias}" is unavailable; Location was not changed.`);
+      return;
+    }
+    if (location.id === session.locationId) {
+      void run(() => loadFiles(entry.path));
+      return;
+    }
+    setPendingRemotePath(entry.path);
+    setSession((current) => ({ ...current, locationId: location.id }));
   };
 
   const run = async (action: () => Promise<void>) => {
@@ -1154,6 +1248,14 @@ function App() {
               <button
                 onClick={() => {
                   setAccountOpen(false);
+                  setSessionsOpen(true);
+                }}
+              >
+                Sessions
+              </button>
+              <button
+                onClick={() => {
+                  setAccountOpen(false);
                   setChangePasswordOpen(true);
                 }}
               >
@@ -1643,6 +1745,88 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {sessionsOpen && (
+        <div
+          className="modal-cover"
+          onMouseDown={() => setSessionsOpen(false)}
+        >
+          <div
+            className="modal sessions-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2>Sessions</h2>
+            <p>
+              Sessions store named directory entries only. API tokens, passwords,
+              and private keys are never saved here.
+            </p>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                saveSession();
+              }}
+            >
+              <label>
+                Session name
+                <input
+                  value={sessionNameDraft}
+                  onChange={(event) => setSessionNameDraft(event.target.value)}
+                  placeholder="Release workspace"
+                  required
+                />
+              </label>
+              <label>
+                LOCAL entry alias
+                <input
+                  value={localAliasDraft}
+                  onChange={(event) => setLocalAliasDraft(event.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                REMOTE entry alias
+                <input
+                  value={remoteAliasDraft}
+                  onChange={(event) => setRemoteAliasDraft(event.target.value)}
+                  required
+                />
+              </label>
+              <div className="modal-actions">
+                <button type="button" onClick={() => setSessionsOpen(false)}>
+                  Close
+                </button>
+                <button className="confirm" type="submit">
+                  Save current paths
+                </button>
+              </div>
+            </form>
+            <div className="session-list">
+              <strong>Saved Sessions</strong>
+              {!managedSessions.length && (
+                <span className="muted">No Sessions saved yet.</span>
+              )}
+              {managedSessions.map((managedSession) => (
+                <div className="session-card" key={managedSession.id}>
+                  <strong>{managedSession.name}</strong>
+                  {managedSession.entries.map((entry) => (
+                    <button
+                      className="session-entry"
+                      key={entry.id}
+                      onClick={() => openSessionEntry(entry)}
+                    >
+                      <span>{entry.alias}</span>
+                      <small>
+                        {entry.kind === "REMOTE"
+                          ? `REMOTE (${entry.locationName || entry.locationId}) ${entry.path || "/"}`
+                          : `LOCAL ~/${entry.path}`}
+                      </small>
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
