@@ -150,15 +150,21 @@ fn local_home() -> Result<PathBuf, String> {
 
 #[tauri::command]
 fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
-    let root = local_home()?.canonicalize().map_err(|error| error.to_string())?;
+    let root = local_home()?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     let relative = Path::new(&path);
-    if relative.is_absolute() || relative.components().any(|component| {
-        matches!(component, std::path::Component::ParentDir)
-    }) {
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
         return Err("Local path must stay inside the user home directory".to_string());
     }
     let directory = root.join(relative);
-    let directory = directory.canonicalize().map_err(|error| error.to_string())?;
+    let directory = directory
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
     if !directory.starts_with(&root) || !directory.is_dir() {
         return Err("Local path is outside the user home directory".to_string());
     }
@@ -173,7 +179,11 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
             }
             let name = entry.file_name().to_str()?.to_string();
             let child = directory.join(&name);
-            let child_relative = child.strip_prefix(&root).ok()?.to_string_lossy().replace('\\', "/");
+            let child_relative = child
+                .strip_prefix(&root)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
             let modified = metadata
                 .modified()
                 .ok()
