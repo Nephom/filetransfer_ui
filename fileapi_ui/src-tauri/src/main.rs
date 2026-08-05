@@ -410,10 +410,10 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
     command.args(["-o", "ConnectTimeout=15"]);
     command.args(["-o", "ServerAliveInterval=30"]);
     command.args(["-o", "ServerAliveCountMax=3"]);
-    command.arg(format!("{}@{}", profile.username, profile.host));
     if let Some(key_path) = profile.private_key_path {
         command.args(["-i", &key_path]);
     }
+    command.arg(format!("{}@{}", profile.username, profile.host));
 
     let child = pair
         .slave
