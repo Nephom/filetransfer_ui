@@ -89,6 +89,21 @@ type SshProfile = {
   privateKeyPath: string;
 };
 type SshEvent = { sessionId: string; data: string };
+type SshTerminalTab = {
+  id: string;
+  title: string;
+  workspaceId: string;
+  sshEntryId: string;
+  sessionId: string;
+  connected: boolean;
+  output: string;
+  recording: boolean;
+  recordingStartedAt: number | null;
+  rawLog: string;
+  plainLog: string;
+  commandLog: string;
+  savedLogPaths: string[];
+};
 type TransferQueueItem = {
   id: string;
   label: string;
@@ -434,6 +449,8 @@ function App() {
   const [sxpHelpOpen, setSxpHelpOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalTab, setTerminalTab] = useState<"sxp" | "ssh">("sxp");
+  const [sshTabs, setSshTabs] = useState<SshTerminalTab[]>([]);
+  const [activeSshTabId, setActiveSshTabId] = useState("");
   const [terminalHeight, setTerminalHeight] = useState(() =>
     Number(localStorage.getItem("fileapi-terminal-height")) || 260,
   );
@@ -497,6 +514,9 @@ function App() {
   const sshConnectingRef = useRef(false);
   const recordingRef = useRef(false);
   const sshSecretPromptRef = useRef(false);
+  const activeSshTabIdRef = useRef("");
+  const pendingSshTabIdsRef = useRef<string[]>([]);
+  const sshTabsRef = useRef<SshTerminalTab[]>([]);
   const shellInputRef = useRef("");
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
@@ -532,8 +552,33 @@ function App() {
   } | null>(null);
 
   useEffect(() => {
+    sshTabsRef.current = sshTabs;
+  }, [sshTabs]);
+
+  useEffect(() => {
+    return () => {
+      for (const tab of sshTabsRef.current) {
+        if (tab.sessionId) void invoke("ssh_disconnect", { sessionId: tab.sessionId });
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     sshSessionIdRef.current = sshSessionId;
   }, [sshSessionId]);
+
+  useEffect(() => {
+    activeSshTabIdRef.current = activeSshTabId;
+    const tab = sshTabs.find((item) => item.id === activeSshTabId);
+    setSshConnected(Boolean(tab?.connected));
+    setSshSessionId(tab?.sessionId || "");
+    setSshOutput(tab?.output || "");
+    setRecording(Boolean(tab?.recording));
+    setRecordingStartedAt(tab?.recordingStartedAt || null);
+    setSavedLogPaths(tab?.savedLogPaths || []);
+    sshSessionIdRef.current = tab?.sessionId || "";
+    sshOutputRef.current = tab?.output || "";
+  }, [activeSshTabId, sshTabs]);
 
   useEffect(() => {
     recordingRef.current = recording;
@@ -605,30 +650,46 @@ function App() {
     let disposed = false;
     const unlistenOutput = listen<SshEvent>("ssh-output", (event) => {
       if (disposed) return;
-      if (!sshSessionIdRef.current && sshConnectingRef.current) {
-        sshSessionIdRef.current = event.payload.sessionId;
-        setSshSessionId(event.payload.sessionId);
-        setSshConnected(true);
+      let tab = sshTabsRef.current.find((item) => item.sessionId === event.payload.sessionId);
+      if (!tab && pendingSshTabIdsRef.current.length) {
+        const pendingTab = sshTabsRef.current.find((item) => item.id === pendingSshTabIdsRef.current[0]);
+        if (pendingTab) {
+          tab = { ...pendingTab, sessionId: event.payload.sessionId, connected: true };
+          setSshTabs((current) => current.map((item) => item.id === tab?.id ? { ...item, sessionId: event.payload.sessionId, connected: true } : item));
+          pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.slice(1);
+        }
       }
-      if (event.payload.sessionId !== sshSessionIdRef.current) return;
+      if (!tab) return;
       const data = event.payload.data;
-      sshOutputRef.current += data;
-      setSshOutput(sshOutputRef.current);
-      terminalInstanceRef.current?.write(data);
-       const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd();
-       const secretPrompt = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText);
-       sshSecretPromptRef.current = secretPrompt;
-      if (recordingRef.current) {
-        rawLogRef.current += data;
-        plainLogRef.current += stripAnsi(data);
+      setSshTabs((current) => current.map((item) => {
+        if (item.id !== tab.id) return item;
+        const output = item.output + data;
+        return {
+          ...item,
+          output,
+          rawLog: item.recording ? item.rawLog + data : item.rawLog,
+          plainLog: item.recording ? item.plainLog + stripAnsi(data) : item.plainLog,
+        };
+      }));
+      if (tab.id === activeSshTabIdRef.current) {
+        sshOutputRef.current += data;
+        terminalInstanceRef.current?.write(data);
+        const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd();
+        sshSecretPromptRef.current = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText);
       }
     });
     const unlistenExit = listen<SshEvent>("ssh-exit", (event) => {
-      if (disposed || event.payload.sessionId !== sshSessionIdRef.current) return;
-      setSshConnected(false);
-      sshConnectingRef.current = false;
-      sshOutputRef.current += `\n${event.payload.data}\n`;
-      setSshOutput(sshOutputRef.current);
+      if (disposed) return;
+      setSshTabs((current) => current.map((item) => item.sessionId !== event.payload.sessionId ? item : {
+        ...item,
+        connected: false,
+        sessionId: "",
+        output: `${item.output}\n${event.payload.data}\n`,
+      }));
+      if (event.payload.sessionId === sshSessionIdRef.current) {
+        setSshConnected(false);
+        sshConnectingRef.current = false;
+      }
     });
     return () => {
       disposed = true;
@@ -655,18 +716,21 @@ function App() {
     if (terminalTab === "sxp") {
       terminal.write(managedSessions.length ? "SXP terminal ready. Type a command or open help.\r\n" : "Please create a Session before using SXP.\r\n");
     } else {
-      terminal.write(sshOutput || "Select a Session and connect.\r\n");
+      terminal.write(sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Create an SSH tab and connect.\r\n");
     }
     const resizeObserver = new ResizeObserver(() => fit.fit());
     resizeObserver.observe(terminalHostRef.current);
     const inputListener = terminal.onData((data: string) => {
-      if (terminalTab === "ssh") {
-        if (!sshSessionIdRef.current) return;
-        void invoke("ssh_write", { sessionId: sshSessionIdRef.current, data });
-        if (recordingRef.current && !sshSecretPromptRef.current) {
-          if (data === "\r" || data === "\n") {
-            if (shellInputRef.current.trim()) {
-              commandLogRef.current += `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
+        if (terminalTab === "ssh") {
+          const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
+          if (!tab?.sessionId) return;
+          void invoke("ssh_write", { sessionId: tab.sessionId, data });
+          if (recordingRef.current && !sshSecretPromptRef.current) {
+            if (data === "\r" || data === "\n") {
+              if (shellInputRef.current.trim()) {
+                const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
+                commandLogRef.current += command;
+                setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, commandLog: item.commandLog + command } : item));
             }
             shellInputRef.current = "";
           } else if (data === "\u007f") {
@@ -695,7 +759,7 @@ function App() {
       terminal.dispose();
       terminalInstanceRef.current = null;
     };
-  }, [terminalOpen, terminalTab]);
+  }, [terminalOpen, terminalTab, activeSshTabId]);
 
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
@@ -1116,6 +1180,70 @@ function App() {
       : { id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "" });
   };
 
+  const makeSshTabId = () => typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const activeSshTab = sshTabs.find((item) => item.id === activeSshTabId);
+
+  const createSshTab = (workspaceId = workspaceSessionId, entryId = selectedSshEntryId) => {
+    const workspace = managedSessions.find((item) => item.id === workspaceId);
+    const profile = workspace?.sshEntries.find((item) => item.id === entryId);
+    if (!workspace || !profile) {
+      openSessionsModal();
+      setNotice("Select an SSH entry before opening a terminal tab.");
+      return "";
+    }
+    const tab: SshTerminalTab = {
+      id: makeSshTabId(),
+      title: profile.name || `${profile.username}@${profile.host}`,
+      workspaceId,
+      sshEntryId: profile.id,
+      sessionId: "",
+      connected: false,
+      output: "",
+      recording: false,
+      recordingStartedAt: null,
+      rawLog: "",
+      plainLog: "",
+      commandLog: "",
+      savedLogPaths: [],
+    };
+    setSshTabs((current) => [...current, tab]);
+    setActiveSshTabId(tab.id);
+    setWorkspaceSessionId(workspaceId);
+    setSelectedSshEntryId(entryId);
+    setTerminalTab("ssh");
+    setTerminalOpen(true);
+    loadSshProfileDraft(profile);
+    return tab.id;
+  };
+
+  const closeSshTab = (tabId: string) => {
+    const tab = sshTabs.find((item) => item.id === tabId);
+    if (!tab) return;
+    if (tab.connected && !window.confirm(`Disconnect and close ${tab.title}?`)) return;
+    void run(async () => {
+      if (tab.sessionId) await invoke("ssh_disconnect", { sessionId: tab.sessionId });
+      setSshTabs((current) => {
+        const remaining = current.filter((item) => item.id !== tabId);
+        if (tabId === activeSshTabId) setActiveSshTabId(remaining[remaining.length - 1]?.id || "");
+        return remaining;
+      });
+    });
+  };
+
+  const selectSshTab = (tab: SshTerminalTab) => {
+    setActiveSshTabId(tab.id);
+    setWorkspaceSessionId(tab.workspaceId);
+    setSelectedSshEntryId(tab.sshEntryId);
+    const profile = managedSessions.find((item) => item.id === tab.workspaceId)?.sshEntries.find((item) => item.id === tab.sshEntryId);
+    if (profile) {
+      setSshProfileId(profile.id);
+      loadSshProfileDraft(profile);
+    }
+  };
+
   const selectWorkspaceSession = (id: string) => {
     setWorkspaceSessionId(id);
     const workspace = managedSessions.find((item) => item.id === id);
@@ -1226,16 +1354,19 @@ function App() {
   };
 
   const connectSsh = () => {
-    const profile = activeWorkspaceSession?.sshEntries.find((item) => item.id === selectedSshEntryId);
-    if (!activeWorkspaceSession || !profile) {
+    const tabId = activeSshTabId || createSshTab();
+    const tab = sshTabs.find((item) => item.id === tabId);
+    const workspace = managedSessions.find((item) => item.id === (tab?.workspaceId || workspaceSessionId));
+    const profile = workspace?.sshEntries.find((item) => item.id === (tab?.sshEntryId || selectedSshEntryId));
+    if (!tabId || !workspace || !profile) {
       openSessionsModal();
       setNotice("Select or create a Session with an SSH connection before connecting.");
       return;
     }
     void run(async () => {
       sshConnectingRef.current = true;
-      sshSessionIdRef.current = "";
       try {
+        pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tabId];
         const id = await invoke<string>("ssh_connect", {
           profile: {
             name: profile.name,
@@ -1245,26 +1376,29 @@ function App() {
             privateKeyPath: profile.privateKeyPath || null,
           },
         });
-        sshSessionIdRef.current = id;
-        setSshSessionId(id);
-        setSshConnected(true);
-        sshOutputRef.current = `Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`;
-        setSshOutput(sshOutputRef.current);
+        const output = `Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`;
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, output: item.output + output }));
+        pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
       } finally {
+        pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
         sshConnectingRef.current = false;
       }
     });
   };
 
   const installSshKey = () => {
-    const profile = activeWorkspaceSession?.sshEntries.find((item) => item.id === selectedSshEntryId);
-    if (!activeWorkspaceSession || !profile) {
+    const tabId = activeSshTabId || createSshTab();
+    const tab = sshTabs.find((item) => item.id === tabId);
+    const workspace = managedSessions.find((item) => item.id === (tab?.workspaceId || workspaceSessionId));
+    const profile = workspace?.sshEntries.find((item) => item.id === (tab?.sshEntryId || selectedSshEntryId));
+    if (!tabId || !workspace || !profile) {
       openSessionsModal();
       setNotice("Select an SSH entry before installing its key.");
       return;
     }
     void run(async () => {
       sshConnectingRef.current = true;
+      pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tabId];
       const id = await invoke<string>("ssh_install_key", {
         profile: {
           name: profile.name,
@@ -1274,60 +1408,56 @@ function App() {
           privateKeyPath: profile.privateKeyPath || null,
         },
       });
-      sshSessionIdRef.current = id;
-      setSshSessionId(id);
-      setSshConnected(true);
-      sshOutputRef.current = `Installing SSH key for ${profile.username}@${profile.host}:${profile.port}...\nType the remote password in this terminal.\n`;
-      setSshOutput(sshOutputRef.current);
+      const output = `Installing SSH key for ${profile.username}@${profile.host}:${profile.port}...\nType the remote password in this terminal.\n`;
+      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, output: item.output + output }));
+      pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
       sshConnectingRef.current = false;
     });
   };
 
   const disconnectSsh = () => {
-    if (!sshSessionId) return;
+    const tab = activeSshTab;
+    if (!tab?.sessionId) return;
     void run(async () => {
-      await invoke("ssh_disconnect", { sessionId: sshSessionId });
-      setSshConnected(false);
-      setSshSessionId("");
-      sshSessionIdRef.current = "";
+      await invoke("ssh_disconnect", { sessionId: tab.sessionId });
+      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, connected: false, sessionId: "", output: `${item.output}\nDisconnected.\n`, recording: false }));
       sshConnectingRef.current = false;
-      if (recording) setRecording(false);
-      sshOutputRef.current += "\nDisconnected.\n";
-      setSshOutput(sshOutputRef.current);
     });
   };
 
   const startRecording = () => {
-    if (!sshConnected) return;
+    if (!activeSshTab?.connected) return;
     rawLogRef.current = "";
     plainLogRef.current = "";
     commandLogRef.current = "";
-    setRecordingStartedAt(Date.now());
-    setRecording(true);
+    const startedAt = Date.now();
+    setSshTabs((current) => current.map((item) => item.id !== activeSshTab.id ? item : { ...item, recording: true, recordingStartedAt: startedAt, rawLog: "", plainLog: "", commandLog: "", savedLogPaths: [] }));
     notify("SSH output recording started.");
   };
 
   const stopRecording = () => {
-    setRecording(false);
+    if (!activeSshTab) return;
+    setSshTabs((current) => current.map((item) => item.id === activeSshTab.id ? { ...item, recording: false } : item));
     notify("Recording finalized. Save the log package before disconnecting.");
   };
 
   const saveSshLogs = () => {
-    const profile = sshProfiles.find((item) => item.id === sshProfileId);
-    if (recording) {
+    const tab = activeSshTab;
+    const profile = managedSessions.find((item) => item.id === tab?.workspaceId)?.sshEntries.find((item) => item.id === tab?.sshEntryId);
+    if (tab?.recording) {
       setNotice("Stop the SSH recording before saving the log package.");
       return;
     }
-    if (!profile || (!rawLogRef.current && !plainLogRef.current)) {
+    if (!tab || !profile || (!tab.rawLog && !tab.plainLog)) {
       setNotice("There is no completed SSH recording to save.");
       return;
     }
     const metadata = JSON.stringify({
       profileName: profile.name,
       host: profile.host,
-      startedAt: recordingStartedAt ? new Date(recordingStartedAt).toISOString() : null,
+      startedAt: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null,
       endedAt: new Date().toISOString(),
-      rawBytes: new TextEncoder().encode(rawLogRef.current).length,
+      rawBytes: new TextEncoder().encode(tab.rawLog).length,
       files: ["raw.log", "txt", "commands.log", "meta.json"],
     }, null, 2);
     void run(async () => {
@@ -1335,13 +1465,13 @@ function App() {
         "save_ssh_logs",
         {
           profileName: profile.name,
-          raw: rawLogRef.current,
-          plain: plainLogRef.current,
-          commands: commandLogRef.current,
+          raw: tab.rawLog,
+          plain: tab.plainLog,
+          commands: tab.commandLog,
           metadata,
-          },
+        },
       );
-      setSavedLogPaths([paths.raw, paths.plain, paths.commands, paths.metadata]);
+      setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, savedLogPaths: [paths.raw, paths.plain, paths.commands, paths.metadata] } : item));
       notify(`Saved SSH logs to ${paths.raw}`);
     });
   };
@@ -2759,6 +2889,15 @@ function App() {
             <div className="terminal-tabs">
               <button className={terminalTab === "sxp" ? "active" : ""} onClick={() => setTerminalTab("sxp")}>SXP</button>
               <button className={terminalTab === "ssh" ? "active" : ""} onClick={() => setTerminalTab("ssh")}>SSH</button>
+              {terminalTab === "ssh" && sshTabs.map((tab) => (
+                <span className={`ssh-tab ${tab.id === activeSshTabId ? "active" : ""}`} key={tab.id}>
+                  <button type="button" onClick={() => selectSshTab(tab)}>
+                    {tab.title}{tab.connected ? " ●" : ""}
+                  </button>
+                  <button type="button" className="ssh-tab-close" aria-label={`Close ${tab.title}`} onClick={() => closeSshTab(tab.id)}>×</button>
+                </span>
+              ))}
+              {terminalTab === "ssh" && <button type="button" aria-label="New SSH terminal tab" onClick={() => createSshTab()}>+</button>}
             </div>
             <div className="terminal-actions">
               <button onClick={() => openSessionsModal()}>Open Sessions</button>
@@ -2810,7 +2949,7 @@ function App() {
                     }}
                   />
                 )}
-                {!sshConnected ? (
+                {!activeSshTab?.connected ? (
                   <button className="confirm" onClick={connectSsh}>Connect</button>
                 ) : (
                   <button className="danger" onClick={disconnectSsh}>Disconnect</button>

@@ -463,10 +463,13 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
         let _ = app.emit(
             "ssh-exit",
             SshEvent {
-                session_id: reader_session,
+                session_id: reader_session.clone(),
                 data: "SSH process ended.".to_string(),
             },
         );
+        if let Ok(mut processes) = ssh_processes().lock() {
+            processes.remove(&reader_session);
+        }
     });
 
     let process = SshProcess {
@@ -562,10 +565,13 @@ fn ssh_install_key(app: tauri::AppHandle, profile: SshProfile) -> Result<String,
         let _ = app.emit(
             "ssh-exit",
             SshEvent {
-                session_id: reader_session,
+                session_id: reader_session.clone(),
                 data: "SSH key installation process ended.".to_string(),
             },
         );
+        if let Ok(mut processes) = ssh_processes().lock() {
+            processes.remove(&reader_session);
+        }
     });
     ssh_processes()
         .lock()
