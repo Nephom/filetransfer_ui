@@ -58,6 +58,9 @@
 .ssh-tab { display: inline-flex; align-items: center; gap: 0; border: 1px solid #315b7e; border-radius: 4px; background: #0b2137; }
 .ssh-tab.active { border-color: #47cdf1; background: #174565; }
 .ssh-tab > button:first-child { border: 0; padding-right: 5px; }
+.ssh-tab-status { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; vertical-align: 1px; }
+.ssh-tab-status.connected { background: #41d98a; box-shadow: 0 0 6px rgba(65, 217, 138, .75); }
+.ssh-tab-status.disconnected { background: #ef6262; box-shadow: 0 0 6px rgba(239, 98, 98, .65); }
 .ssh-tab .ssh-tab-close { min-width: 24px; padding: 4px 6px; border: 0; color: #91a9c0; }
 .ssh-tab .ssh-tab-close:hover { color: #ffb8ae; background: #3b1d28; }
 .terminal-content { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 8px; padding: 10px 12px 12px; }

@@ -2892,7 +2892,12 @@ function App() {
               {terminalTab === "ssh" && sshTabs.map((tab) => (
                 <span className={`ssh-tab ${tab.id === activeSshTabId ? "active" : ""}`} key={tab.id}>
                   <button type="button" onClick={() => selectSshTab(tab)}>
-                    {tab.title}{tab.connected ? " ●" : ""}
+                    <span
+                      className={`ssh-tab-status ${tab.connected ? "connected" : "disconnected"}`}
+                      aria-label={tab.connected ? "Connected" : "Disconnected"}
+                      title={tab.connected ? "Connected" : "Disconnected"}
+                    />
+                    {tab.title}
                   </button>
                   <button type="button" className="ssh-tab-close" aria-label={`Close ${tab.title}`} onClick={() => closeSshTab(tab.id)}>×</button>
                 </span>
