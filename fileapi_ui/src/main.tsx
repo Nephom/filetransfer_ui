@@ -923,9 +923,17 @@ function App() {
   }, [session.token]);
 
   useEffect(() => {
-    void loadLocalFiles().catch((error) =>
-      setNotice(error instanceof Error ? error.message : String(error)),
-    );
+    void (async () => {
+      try {
+        await loadLocalFiles("Desktop");
+      } catch {
+        try {
+          await loadLocalFiles("");
+        } catch (error) {
+          setNotice(error instanceof Error ? error.message : String(error));
+        }
+      }
+    })();
   }, []);
 
   useEffect(() => {

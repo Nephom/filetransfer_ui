@@ -58,7 +58,7 @@ The complete API documentation is available in the `api/` directory:
 
 ### Deployment Lifecycle
 
-Use the root `build.sh` for the server lifecycle on Alpine Linux or Ubuntu. It installs server dependencies, creates local configuration only when it is missing, and safely fast-forwards an existing checkout. Only `build` requires Ubuntu 22.04 or newer and produces the Ubuntu desktop DEB.
+Use the root `build.sh` for the server lifecycle on Alpine Linux or Ubuntu. On a Windows build machine, use `build.ps1 build`, `build.ps1 upgrade`, and `build.ps1 self-upgrade` for the Tauri desktop client. The desktop `build` command produces a Linux DEB on Ubuntu or a Windows NSIS package and portable EXE on Windows.
 
 ```bash
 # New environment

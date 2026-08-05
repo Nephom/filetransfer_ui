@@ -1,15 +1,16 @@
 [English](README_EN.md)
 
-# Web-Based File Management System 3.2.2
+# Web-Based File Management System 3.2.3
 
-提供檔案總管式網頁介面與 Ubuntu 桌面客戶端的本地檔案管理系統。Windows 使用者透過瀏覽器使用網頁介面；Tauri 桌面客戶端僅發行 Ubuntu DEB。
+提供檔案總管式網頁介面，以及可在 Ubuntu 與 Windows 執行的 Tauri v2 桌面客戶端。
 
 ## 功能
 
 - 瀏覽器檔案總管：瀏覽、上傳、下載、重新命名、刪除、分享與資料夾 ZIP 下載。
 - JWT 驗證、TLS 管理、可設定的安全功能與檔案快取。
-- Ubuntu 22.04+ Tauri DEB：滑鼠導向的檔案總管桌面客戶端。
-- `build.sh`：安裝、首次設定、更新、測試與 DEB 建置。
+- Ubuntu 22.04+ 與 Windows 10/11 Tauri v2 桌面客戶端：滑鼠導向的檔案總管介面。
+- `build.sh`：Linux 的安裝、首次設定、更新、測試與 DEB 建置。
+- `build.ps1`：Windows 建置機的桌面相依性檢查、更新建置與腳本自我更新。
 
 ## 安裝與升級
 
@@ -31,6 +32,14 @@
 ```
 
 `upgrade` 只允許 fast-forward 更新，並在工作樹有未提交變更時停止。它不會覆寫 `.env`、`src/config.ini`、storage、資料庫、users 或 logs。
+
+Windows 建置機可以使用 PowerShell 流程。它只處理 Tauri 桌面客戶端，不接管主服務器的 `install/setup`：
+
+```powershell
+.\build.ps1 build
+.\build.ps1 upgrade
+.\build.ps1 self-upgrade
+```
 
 ### 舊版遷移
 
@@ -68,20 +77,28 @@ cp ../filetransfer-local-backup/config.ini src/config.ini
 
 HTTP 預設 port 為 `9400`，HTTPS 預設 port 為 `9443`。HTTP redirect 只有在伺服器已具備有效 HTTPS 憑證時才會啟用。桌面客戶端固定使用 HTTPS，並將 server address 與 HTTPS port 分開輸入。
 
-## Ubuntu Desktop DEB
+## Desktop Build
 
-只有 Ubuntu 22.04+ 負責建置桌面 package；這個命令才會安裝 Rust、GTK/WebKitGTK 與 Tauri 相依性：
+Ubuntu 22.04+ 使用 `build.sh` 建置 DEB：
 
 ```bash
 ./build.sh build
 ```
 
-產物位於 `fileapi_ui/src-tauri/target/release/bundle/deb/`。DEB 不含內網 server address；使用者首次登入時輸入 address 和 HTTPS port，或在本機 `fileapi_ui/.env` 設定開發用預填值。
+產物位於 `fileapi_ui/src-tauri/target/release/bundle/deb/`。
+
+Windows 使用 `build.ps1` 建置 NSIS 安裝包與不需安裝的 portable EXE：
+
+```powershell
+.\build.ps1 build
+```
+
+portable EXE 位於 `fileapi_ui/src-tauri/target/release/fileapi-desktop.exe`；NSIS 產物位於 `fileapi_ui/src-tauri/target/release/bundle/nsis/`。Windows 執行檔使用目前使用者的 Desktop 作為本機檔案區預設目錄。
 
 ## 文件
 
 - [完整 API 參考](docs/api/API_REFERENCE.md)
 - [文件索引](docs/README.md)
-- [Ubuntu Tauri 客戶端](fileapi_ui/README.md)
+- [Tauri 桌面客戶端](fileapi_ui/README.md)
 
 `fileapi.sh` 已淘汰，不是支援的 API 相容性目標。

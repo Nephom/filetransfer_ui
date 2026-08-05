@@ -1,16 +1,24 @@
-# File Transfer Desktop 3.2.2
+# File Transfer Desktop 3.2.3
 
-This is a mouse-first Tauri v2 client for Ubuntu 22.04 and newer. Windows users access the parent project's web interface in a browser; no Windows desktop package is produced.
+This is a mouse-first Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11.
 
 ## Build
 
-From the repository root, use the supported build workflow:
+From the repository root on Ubuntu, use the supported Linux build workflow:
 
 ```bash
 ./build.sh build
 ```
 
 It installs the required Ubuntu, Node.js, Rust, GTK, and WebKitGTK dependencies, then creates a DEB in `src-tauri/target/release/bundle/deb/`.
+
+On a Windows build machine, run the repository-level PowerShell workflow. It checks or installs Node.js, Rust with the MSVC toolchain, and the required desktop dependencies:
+
+```powershell
+.\build.ps1 build
+```
+
+The portable EXE is created at `src-tauri/target/release/fileapi-desktop.exe`. The NSIS installer is created in `src-tauri/target/release/bundle/nsis/`.
 
 For development only:
 
@@ -30,9 +38,9 @@ VITE_DEFAULT_SERVER_HOST=files.example.internal
 VITE_DEFAULT_SERVER_PORT=9443
 ```
 
-Values beginning with `VITE_` are compiled into a build. Leave both values blank for distributable DEBs so no deployment address is embedded.
+Values beginning with `VITE_` are compiled into a build. Leave both values blank for distributable packages so no deployment address is embedded.
 
-The server certificate must be trusted by the Ubuntu system. The client does not bypass TLS certificate validation.
+The server certificate must be trusted by the operating system. The client does not bypass TLS certificate validation.
 
 ## API Behaviour
 
