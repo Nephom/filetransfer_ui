@@ -322,6 +322,8 @@ function App() {
     }
   });
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [sessionFormError, setSessionFormError] = useState("");
+  const [sxpHelpOpen, setSxpHelpOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalTab, setTerminalTab] = useState<"sxp" | "ssh">("sxp");
   const [terminalHeight, setTerminalHeight] = useState(() =>
@@ -347,7 +349,7 @@ function App() {
       return [];
     }
   });
-  const [sshProfileId, setSshProfileId] = useState("");
+  const [sshProfileId, setSshProfileId] = useState(() => sshProfiles[0]?.id || "");
   const [sshConnected, setSshConnected] = useState(false);
   const [sshSessionId, setSshSessionId] = useState("");
   const [sshOutput, setSshOutput] = useState("");
@@ -502,7 +504,7 @@ function App() {
     terminalInstanceRef.current = terminal;
     shellInputRef.current = "";
     if (terminalTab === "sxp") {
-      terminal.write(managedSessions.length ? `${sxpHelp}\r\n` : "Please create a Session before using SXP.\r\n");
+      terminal.write(managedSessions.length ? "SXP terminal ready. Type a command or open help.\r\n" : "Please create a Session before using SXP.\r\n");
     } else {
       terminal.write(sshOutput || "Select an SSH Profile and connect.\r\n");
     }
@@ -744,15 +746,19 @@ function App() {
     const localAlias = localAliasDraft.trim();
     const remoteAlias = remoteAliasDraft.trim();
     if (!name || !localAlias || !remoteAlias) {
-      setNotice("Session name and both entry aliases are required.");
+      setSessionFormError("Session name and both folder names are required.");
       return;
     }
     if ([name, localAlias, remoteAlias].some((value) => /\s/.test(value))) {
-      setNotice("Session names and entry aliases cannot contain spaces.");
+      setSessionFormError("Session names and folder names cannot contain spaces.");
       return;
     }
-    if (!activeLocation || !session.locationId) {
-      setNotice("A connected Remote Location is required to save a Session.");
+    if (!session.locationId) {
+      setSessionFormError("Select an available API Remote Location before saving this Session.");
+      return;
+    }
+    if (managedSessions.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
+      setSessionFormError(`A Session named "${name}" already exists.`);
       return;
     }
     const makeId = () =>
@@ -775,12 +781,13 @@ function App() {
           kind: "REMOTE",
           path,
           locationId: session.locationId,
-          locationName: activeLocation.displayName,
+          locationName: activeLocation?.displayName || session.locationId,
         },
       ],
     };
     setManagedSessions((current) => [...current, managedSession]);
     setSessionNameDraft("");
+    setSessionFormError("");
     notify(`Saved Session: ${name}`);
   };
 
@@ -1627,6 +1634,7 @@ function App() {
               <button
                 onClick={() => {
                   setAccountOpen(false);
+                  setSessionFormError("");
                   setSessionsOpen(true);
                 }}
               >
@@ -2160,6 +2168,7 @@ function App() {
           >
             <h2>Sessions</h2>
             <p>Save the current LOCAL and API Remote folders under a name you can recognize later.</p>
+            {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
             <form
               onSubmit={(event) => {
                 event.preventDefault();
@@ -2258,6 +2267,14 @@ function App() {
           {terminalTab === "sxp" ? (
             <div className="terminal-content">
               <div ref={terminalHostRef} className="xterm-host" aria-label="SXP terminal" />
+              <button
+                className="terminal-help-button"
+                aria-label="Show SXP help"
+                onClick={() => setSxpHelpOpen((open) => !open)}
+              >
+                ?
+              </button>
+              {sxpHelpOpen && <pre className="terminal-help-popover">{sxpHelp}</pre>}
             </div>
           ) : (
             <div className="terminal-content ssh-terminal-content">
