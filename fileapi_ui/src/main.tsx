@@ -351,6 +351,7 @@ function App() {
   const [sshConnected, setSshConnected] = useState(false);
   const [sshSessionId, setSshSessionId] = useState("");
   const [sshOutput, setSshOutput] = useState("");
+  const sshOutputRef = useRef("");
   const [sshProfileOpen, setSshProfileOpen] = useState(false);
   const [sshProfileDraft, setSshProfileDraft] = useState({
     name: "",
@@ -457,15 +458,15 @@ function App() {
   }, [sshProfiles]);
 
   useEffect(() => {
-    if (!sshSessionId) return undefined;
     let disposed = false;
     const unlistenOutput = listen<SshEvent>("ssh-output", (event) => {
-      if (disposed || event.payload.sessionId !== sshSessionId) return;
+      if (disposed || event.payload.sessionId !== sshSessionIdRef.current) return;
       const data = event.payload.data;
-      setSshOutput((current) => current + data);
+      sshOutputRef.current += data;
+      setSshOutput(sshOutputRef.current);
       terminalInstanceRef.current?.write(data);
       sshSecretPromptRef.current = /(password|passphrase|verification code|token)\s*[:?]\s*$/i.test(
-        stripAnsi((sshOutput + data).slice(-180)),
+        stripAnsi(sshOutputRef.current.slice(-180)),
       );
       if (recordingRef.current) {
         rawLogRef.current += data;
@@ -473,16 +474,17 @@ function App() {
       }
     });
     const unlistenExit = listen<SshEvent>("ssh-exit", (event) => {
-      if (disposed || event.payload.sessionId !== sshSessionId) return;
+      if (disposed || event.payload.sessionId !== sshSessionIdRef.current) return;
       setSshConnected(false);
-      setSshOutput((current) => `${current}\n${event.payload.data}\n`);
+      sshOutputRef.current += `\n${event.payload.data}\n`;
+      setSshOutput(sshOutputRef.current);
     });
     return () => {
       disposed = true;
       void unlistenOutput.then((dispose) => dispose());
       void unlistenExit.then((dispose) => dispose());
     };
-  }, [sshSessionId]);
+  }, []);
 
   useEffect(() => {
     if (!terminalOpen || !terminalHostRef.current) return undefined;
@@ -923,7 +925,8 @@ function App() {
       });
       setSshSessionId(id);
       setSshConnected(true);
-      setSshOutput(`Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`);
+      sshOutputRef.current = `Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`;
+      setSshOutput(sshOutputRef.current);
     });
   };
 
@@ -934,7 +937,8 @@ function App() {
       setSshConnected(false);
       setSshSessionId("");
       if (recording) setRecording(false);
-      setSshOutput((current) => `${current}\nDisconnected.\n`);
+      sshOutputRef.current += "\nDisconnected.\n";
+      setSshOutput(sshOutputRef.current);
     });
   };
 
