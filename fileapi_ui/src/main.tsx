@@ -1510,6 +1510,7 @@ function App() {
           className={terminalOpen ? "active" : ""}
           onClick={() => setTerminalOpen((open) => !open)}
           aria-pressed={terminalOpen}
+          aria-label="Terminal"
         >
           Terminal
         </button>
