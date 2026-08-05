@@ -22,6 +22,10 @@
 .session-delete { padding: 3px 7px; color: #ffb8ae; background: transparent; border-color: #813847; font-size: 11px; }
 .session-entry { display: grid; gap: 2px; width: 100%; padding: 7px 8px; border: 1px solid transparent; border-radius: 4px; color: #d9eafa; background: #102d49; text-align: left; cursor: pointer; }
 .session-entry:hover { border-color: #47cdf1; background: #173e5f; }
+.session-ssh-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0 0; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; }
+.session-ssh-fields legend { padding: 0 5px; color: #78c9ee; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.session-ssh-fields label { margin: 0; }
+.session-ssh-fields label:last-of-type { grid-column: 1 / -1; }
 .session-entry small { overflow: hidden; color: #91a9c0; text-overflow: ellipsis; white-space: nowrap; }
 .sxp-modal { max-width: 680px; }
 .sxp-modal p { line-height: 1.5; }
@@ -57,6 +61,10 @@
 .ssh-terminal-content { gap: 8px; }
 .ssh-controls { display: flex; align-items: end; gap: 8px; flex-wrap: wrap; }
 .ssh-controls label { min-width: 220px; margin: 0; }
+.palette-select-control { position: relative; min-width: 220px; }
+.palette-select { width: 100%; min-width: 0; max-width: none; padding: 8px; border: 1px solid #315b7e; border-radius: 4px; background: #0b2137; font-size: 13px; font-weight: 400; }
+.palette-select:hover { border-color: #47cdf1; background: #133b5b; }
+.palette-select-menu { top: calc(100% + 5px); right: 0; left: 0; min-width: 100%; max-width: none; }
 .ssh-controls select, .ssh-profile-form input { width: 100%; margin-top: 5px; padding: 8px; color: #e6eefc; background: #091b2d; border: 1px solid #315b7e; border-radius: 4px; }
 .ssh-output { flex: 1; min-height: 80px; overflow: auto; margin: 0; padding: 12px; color: #d9eafa; background: #020a12; border: 1px solid #254764; white-space: pre-wrap; font: 13px/1.45 monospace; }
 .ssh-profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; overflow: auto; }
@@ -64,7 +72,9 @@
 .ssh-profile-form label:last-of-type { grid-column: 1 / -1; }
 .ssh-recording-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .upload-session-select { min-width: 190px; margin: 0; color: #91a9c0; font-size: 11px; }
-.upload-session-select select { display: block; width: 100%; margin-top: 4px; padding: 6px; color: #e6eefc; background: #091b2d; border: 1px solid #315b7e; border-radius: 4px; }
+.upload-session-select > span { display: block; margin-bottom: 4px; }
+.upload-session-select .palette-select-control { min-width: 190px; }
+.upload-session-select .palette-select { padding: 6px; }
 .queue-modal { width: min(620px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
 .queue-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; margin: 8px 0; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; background: #07192a; }
 .queue-item small, .queue-item > span:not(.queue-status) { color: #91a9c0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -99,6 +109,7 @@
 .local-pane-footer { padding: 7px 14px; color: #7f9bb5; border-top: 1px solid #1c3955; font-size: 12px; }
 @media (max-width: 900px) { .local-pane { flex-basis: 250px; } }
 @media (max-width: 720px) { .sessions-layout { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .session-ssh-fields { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .split-workspace { overflow: auto; }.split-workspace .local-pane { flex: 0 0 100%; min-height: 260px; }.split-workspace .desktop-folder-tree { flex: 0 0 100%; } }
 
 /* Match native controls to the LOCATION menu palette. */
