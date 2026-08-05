@@ -3,15 +3,15 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Terminal } from "xterm";
-import { FitAddon } from "xterm-addon-fit";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
 import "./styles.css";
 import "./login.css";
 import "./location-control.css";
 import "./tls.css";
 import "./webui-shell.css";
 import "./explorer-parity.css";
-import "xterm/css/xterm.css";
+import "@xterm/xterm/css/xterm.css";
 
 type FileItem = {
   name: string;
