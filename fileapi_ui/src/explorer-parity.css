@@ -15,6 +15,8 @@
 .sessions-modal p { line-height: 1.5; }
 .session-list { display: grid; gap: 8px; margin-top: 18px; }
 .session-card { display: grid; gap: 5px; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; background: #07192a; }
+.session-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.session-delete { padding: 3px 7px; color: #ffb8ae; background: transparent; border-color: #813847; font-size: 11px; }
 .session-entry { display: grid; gap: 2px; width: 100%; padding: 7px 8px; border: 1px solid transparent; border-radius: 4px; color: #d9eafa; background: #102d49; text-align: left; cursor: pointer; }
 .session-entry:hover { border-color: #47cdf1; background: #173e5f; }
 .session-entry small { overflow: hidden; color: #91a9c0; text-overflow: ellipsis; white-space: nowrap; }
