@@ -623,12 +623,6 @@ function App() {
       terminalInstanceRef.current?.write(data);
        const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd();
        const secretPrompt = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText);
-       if (secretPrompt && !sshSecretPromptRef.current && sshPasswordKeyRef.current) {
-         void invoke("ssh_send_stored_password", {
-           sessionId: event.payload.sessionId,
-           passwordKey: sshPasswordKeyRef.current,
-         }).catch((error) => setNotice(`Unable to send the saved SSH password: ${String(error)}`));
-       }
        sshSecretPromptRef.current = secretPrompt;
       if (recordingRef.current) {
         rawLogRef.current += data;
@@ -1265,6 +1259,7 @@ function App() {
             port: profile.port,
             username: profile.username,
             privateKeyPath: profile.privateKeyPath || null,
+            passwordKey: profile.id,
           },
         });
         sshSessionIdRef.current = id;
