@@ -513,7 +513,7 @@ function App() {
       void loadFiles(nextPath).catch((error) => setNotice(error.message));
       void loadTreeChildren("").catch((error) => setNotice(error.message));
     }
-  }, [session.token, session.locationId, pendingRemotePath]);
+  }, [session.token, session.locationId]);
 
   const selectLocation = (locationId: string) => {
     if (locationId === session.locationId) return;
@@ -590,6 +590,10 @@ function App() {
     }
     setPendingRemotePath(entry.path);
     setSession((current) => ({ ...current, locationId: location.id }));
+  };
+
+  const removeSession = (sessionId: string) => {
+    setManagedSessions((current) => current.filter((item) => item.id !== sessionId));
   };
 
   const run = async (action: () => Promise<void>) => {
@@ -1809,7 +1813,16 @@ function App() {
               )}
               {managedSessions.map((managedSession) => (
                 <div className="session-card" key={managedSession.id}>
-                  <strong>{managedSession.name}</strong>
+                  <div className="session-card-heading">
+                    <strong>{managedSession.name}</strong>
+                    <button
+                      type="button"
+                      className="session-delete"
+                      onClick={() => removeSession(managedSession.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
                   {managedSession.entries.map((entry) => (
                     <button
                       className="session-entry"
