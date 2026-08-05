@@ -364,6 +364,14 @@ function App() {
     }
   });
   const [sshProfileId, setSshProfileId] = useState(() => sshProfiles[0]?.id || "");
+  const [workspaceSessionId, setWorkspaceSessionId] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(sessionRegistryKey) || "[]");
+      return Array.isArray(saved) ? saved.find((item) => item.entries?.some((entry: SessionEntry) => entry.kind === "SSH"))?.id || "" : "";
+    } catch {
+      return "";
+    }
+  });
   const [sshConnected, setSshConnected] = useState(false);
   const [sshSessionId, setSshSessionId] = useState("");
   const [sshOutput, setSshOutput] = useState("");
@@ -832,13 +840,14 @@ function App() {
       entries,
     };
     setManagedSessions((current) => [...current, managedSession]);
+    setWorkspaceSessionId(managedSession.id);
     setSessionNameDraft(name);
     setSessionFormError("");
     setLastSavedSessionId(managedSession.id);
     notify(`Saved Session: ${name}`);
   };
 
-  const openSessionEntry = (entry: SessionEntry) => {
+  const openSessionEntry = (entry: SessionEntry, managedSessionId?: string) => {
     if (entry.kind === "LOCAL") {
       setSplitMode(true);
       void run(() => loadLocalFiles(entry.path));
@@ -855,6 +864,7 @@ function App() {
         : [...current, profile]);
       setSshProfileId(profile.id);
       sshPasswordKeyRef.current = profile.id;
+      if (managedSessionId) setWorkspaceSessionId(managedSessionId);
       setTerminalTab("ssh");
       setTerminalOpen(true);
       setNotice(`SSH Profile selected: ${entry.profileName || entry.profileId}. Connect when ready.`);
@@ -963,6 +973,18 @@ function App() {
       : { id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
   };
 
+  const selectWorkspaceSession = (id: string) => {
+    setWorkspaceSessionId(id);
+    const workspace = managedSessions.find((item) => item.id === id);
+    const entry = workspace?.entries.find((item) => item.kind === "SSH");
+    const profile = entry?.sshProfile || sshProfiles.find((item) => item.id === entry?.profileId);
+    if (profile) {
+      setSshProfileId(profile.id);
+      sshPasswordKeyRef.current = profile.id;
+      loadSshProfileDraft(profile);
+    }
+  };
+
   const saveSshProfile = () => {
     const name = sshProfileDraft.name.trim();
     const host = sshProfileDraft.host.trim();
@@ -993,6 +1015,14 @@ function App() {
       setSshProfiles((current) => current.some((item) => item.id === id)
         ? current.map((item) => item.id === id ? profile : item)
         : [...current, profile]);
+      setManagedSessions((current) => current.map((workspace) => workspace.id === workspaceSessionId
+        ? {
+            ...workspace,
+            entries: workspace.entries.map((entry) => entry.kind === "SSH" && entry.profileId === id
+              ? { ...entry, alias: profile.name, profileName: profile.name, sshProfile: profile }
+              : entry),
+          }
+        : workspace));
       setSshProfileId(id);
       sshPasswordKeyRef.current = id;
       loadSshProfileDraft(profile);
@@ -1002,10 +1032,11 @@ function App() {
   };
 
   const connectSsh = () => {
-    const profile = sshProfiles.find((item) => item.id === sshProfileId);
-    if (!profile) {
-      setSshProfileOpen(true);
-      setNotice("Select or create an SSH Profile before connecting.");
+    const entry = activeWorkspaceSession?.entries.find((item) => item.kind === "SSH");
+    const profile = entry?.sshProfile || sshProfiles.find((item) => item.id === entry?.profileId);
+    if (!activeWorkspaceSession || !profile) {
+      setSessionsOpen(true);
+      setNotice("Select or create a Session with an SSH connection before connecting.");
       return;
     }
     void run(async () => {
@@ -1198,6 +1229,8 @@ function App() {
   };
 
   const selectedItems = files.filter((file) => selected.includes(file.path));
+  const workspaceSessions = managedSessions.filter((item) => item.entries.some((entry) => entry.kind === "SSH"));
+  const activeWorkspaceSession = workspaceSessions.find((item) => item.id === workspaceSessionId);
   const toggle = (file: FileItem, checked: boolean) =>
     setSelected((current) =>
       checked
@@ -2421,7 +2454,7 @@ function App() {
                     <button
                       className="session-entry"
                       key={entry.id}
-                      onClick={() => openSessionEntry(entry)}
+                      onClick={() => openSessionEntry(entry, managedSession.id)}
                     >
                       <span>{entry.alias}</span>
                         <small>
@@ -2449,9 +2482,7 @@ function App() {
               <button className={terminalTab === "ssh" ? "active" : ""} onClick={() => setTerminalTab("ssh")}>SSH</button>
             </div>
             <div className="terminal-actions">
-              {terminalTab === "sxp" && (
-                <button onClick={() => setSessionsOpen(true)}>Open Sessions</button>
-              )}
+              <button onClick={() => setSessionsOpen(true)}>Open Sessions</button>
               <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => item.status === "queued" || item.status === "running").length})</button>
               <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
             </div>
@@ -2472,27 +2503,25 @@ function App() {
             <div className="terminal-content ssh-terminal-content">
               <div className="ssh-controls">
                 <label>
-                  SSH Profile
+                  Session
                   <select
-                    value={sshProfileId}
-                    onChange={(event) => {
-                      const id = event.target.value;
-                      setSshProfileId(id);
-                      sshPasswordKeyRef.current = id;
-                      loadSshProfileDraft(sshProfiles.find((profile) => profile.id === id));
-                    }}
+                    value={workspaceSessionId}
+                    onChange={(event) => selectWorkspaceSession(event.target.value)}
                   >
-                    <option value="">Select a profile</option>
-                    {sshProfiles.map((profile) => (
-                      <option value={profile.id} key={profile.id}>{profile.name}</option>
+                    <option value="">Select a Session</option>
+                    {workspaceSessions.map((workspace) => (
+                      <option value={workspace.id} key={workspace.id}>{workspace.name}</option>
                     ))}
                   </select>
                 </label>
                 <button onClick={() => {
                   setSshProfileOpen((open) => !open);
-                  if (!sshProfileOpen) loadSshProfileDraft(sshProfiles.find((profile) => profile.id === sshProfileId));
+                  if (!sshProfileOpen) {
+                    const entry = activeWorkspaceSession?.entries.find((item) => item.kind === "SSH");
+                    loadSshProfileDraft(entry?.sshProfile || sshProfiles.find((profile) => profile.id === entry?.profileId));
+                  }
                 }}>
-                  {sshProfileOpen ? "Close Profile Editor" : "Manage SSH Profiles"}
+                  {sshProfileOpen ? "Close SSH Editor" : "Edit SSH connection"}
                 </button>
                 {!sshConnected ? (
                   <button className="confirm" onClick={connectSsh}>Connect</button>
@@ -2518,6 +2547,7 @@ function App() {
                 </form>
               ) : (
                 <>
+                  {!activeWorkspaceSession && <p className="terminal-inline-note">Create or open a Session with an SSH connection before connecting.</p>}
                   <div ref={terminalHostRef} className="xterm-host" aria-label="SSH terminal" />
                   <div className="ssh-recording-actions">
                     {!recording ? (
