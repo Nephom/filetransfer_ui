@@ -323,6 +323,7 @@ function App() {
   });
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [sessionFormError, setSessionFormError] = useState("");
+  const [lastSavedSessionId, setLastSavedSessionId] = useState("");
   const [sxpHelpOpen, setSxpHelpOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalTab, setTerminalTab] = useState<"sxp" | "ssh">("sxp");
@@ -741,10 +742,11 @@ function App() {
     });
   };
 
-  const saveSession = () => {
-    const name = sessionNameDraft.trim();
-    const localAlias = localAliasDraft.trim();
-    const remoteAlias = remoteAliasDraft.trim();
+  const saveSession = (form?: HTMLFormElement) => {
+    const values = form ? new FormData(form) : null;
+    const name = String(values?.get("sessionName") || sessionNameDraft).trim();
+    const localAlias = String(values?.get("localFolderName") || localAliasDraft).trim();
+    const remoteAlias = String(values?.get("remoteFolderName") || remoteAliasDraft).trim();
     if (!name || !localAlias || !remoteAlias) {
       setSessionFormError("Session name and both folder names are required.");
       return;
@@ -786,8 +788,9 @@ function App() {
       ],
     };
     setManagedSessions((current) => [...current, managedSession]);
-    setSessionNameDraft("");
+    setSessionNameDraft(name);
     setSessionFormError("");
+    setLastSavedSessionId(managedSession.id);
     notify(`Saved Session: ${name}`);
   };
 
@@ -2169,15 +2172,18 @@ function App() {
             <h2>Sessions</h2>
             <p>Save the current LOCAL and API Remote folders under a name you can recognize later.</p>
             {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                saveSession();
-              }}
-            >
+            <div className="sessions-layout">
+              <form
+                className="session-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  saveSession(event.currentTarget);
+                }}
+              >
               <label>
                 Session name
                 <input
+                  name="sessionName"
                   value={sessionNameDraft}
                   onChange={(event) => setSessionNameDraft(event.target.value)}
                   placeholder="ReleaseWorkspace"
@@ -2188,6 +2194,7 @@ function App() {
               <label>
                 Local folder name
                 <input
+                  name="localFolderName"
                   value={localAliasDraft}
                   onChange={(event) => setLocalAliasDraft(event.target.value)}
                   required
@@ -2197,6 +2204,7 @@ function App() {
               <label>
                 Remote folder name
                 <input
+                  name="remoteFolderName"
                   value={remoteAliasDraft}
                   onChange={(event) => setRemoteAliasDraft(event.target.value)}
                   required
@@ -2211,9 +2219,10 @@ function App() {
                   Save current paths
                 </button>
               </div>
-            </form>
-            <div className="session-list">
-              <strong>Saved Sessions</strong>
+              </form>
+              <div className="session-list">
+                <strong>Saved Sessions</strong>
+                {lastSavedSessionId && <span className="session-saved-note">Saved successfully.</span>}
               {!managedSessions.length && (
                 <span className="muted">No Sessions saved yet.</span>
               )}
@@ -2245,6 +2254,7 @@ function App() {
                   ))}
                 </div>
               ))}
+              </div>
             </div>
           </div>
         </div>
