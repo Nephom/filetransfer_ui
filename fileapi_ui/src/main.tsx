@@ -390,6 +390,7 @@ function App() {
   const terminalHostRef = useRef<HTMLDivElement>(null);
   const terminalInstanceRef = useRef<Terminal | null>(null);
   const sshSessionIdRef = useRef("");
+  const sshPasswordKeyRef = useRef("");
   const recordingRef = useRef(false);
   const sshSecretPromptRef = useRef(false);
   const shellInputRef = useRef("");
@@ -427,6 +428,10 @@ function App() {
   useEffect(() => {
     sshSessionIdRef.current = sshSessionId;
   }, [sshSessionId]);
+
+  useEffect(() => {
+    sshPasswordKeyRef.current = sshProfileId;
+  }, [sshProfileId]);
 
   useEffect(() => {
     recordingRef.current = recording;
@@ -487,9 +492,16 @@ function App() {
       sshOutputRef.current += data;
       setSshOutput(sshOutputRef.current);
       terminalInstanceRef.current?.write(data);
-      sshSecretPromptRef.current = /(password|passphrase|verification code|token)\s*[:?]\s*$/i.test(
-        stripAnsi(sshOutputRef.current.slice(-180)),
-      );
+       const secretPrompt = /(password|passphrase|verification code|token)\s*[:?]\s*$/i.test(
+         stripAnsi(sshOutputRef.current.slice(-180)),
+       );
+       if (secretPrompt && !sshSecretPromptRef.current && sshPasswordKeyRef.current) {
+         void invoke("ssh_send_stored_password", {
+           sessionId: event.payload.sessionId,
+           passwordKey: sshPasswordKeyRef.current,
+         });
+       }
+       sshSecretPromptRef.current = secretPrompt;
       if (recordingRef.current) {
         rawLogRef.current += data;
         plainLogRef.current += stripAnsi(data);
@@ -842,6 +854,7 @@ function App() {
         ? current.map((item) => item.id === profile.id ? profile : item)
         : [...current, profile]);
       setSshProfileId(profile.id);
+      sshPasswordKeyRef.current = profile.id;
       setTerminalTab("ssh");
       setTerminalOpen(true);
       setNotice(`SSH Profile selected: ${entry.profileName || entry.profileId}. Connect when ready.`);
@@ -981,6 +994,7 @@ function App() {
         ? current.map((item) => item.id === id ? profile : item)
         : [...current, profile]);
       setSshProfileId(id);
+      sshPasswordKeyRef.current = id;
       loadSshProfileDraft(profile);
       setSshProfileOpen(false);
       notify(`Saved SSH Profile: ${name}`);
@@ -1002,7 +1016,6 @@ function App() {
           port: profile.port,
            username: profile.username,
            privateKeyPath: profile.privateKeyPath || null,
-           passwordKey: profile.id,
          },
       });
       setSshSessionId(id);
@@ -2465,6 +2478,7 @@ function App() {
                     onChange={(event) => {
                       const id = event.target.value;
                       setSshProfileId(id);
+                      sshPasswordKeyRef.current = id;
                       loadSshProfileDraft(sshProfiles.find((profile) => profile.id === id));
                     }}
                   >

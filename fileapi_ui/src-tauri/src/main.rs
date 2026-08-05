@@ -47,7 +47,6 @@ struct SshProfile {
     port: u16,
     username: String,
     private_key_path: Option<String>,
-    password_key: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -452,50 +451,18 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
         .master
         .try_clone_reader()
         .map_err(|error| error.to_string())?;
-    let mut password_writer = pair
-        .master
-        .try_clone_writer()
-        .map_err(|error| error.to_string())?;
     let writer = pair
         .master
         .take_writer()
         .map_err(|error| error.to_string())?;
-    let password = profile.password_key.as_deref().and_then(|key| {
-        Entry::new(SSH_KEYRING_SERVICE, key)
-            .ok()
-            .and_then(|entry| entry.get_password().ok())
-    });
     let reader_session = session_id.clone();
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
-        let mut recent_output = String::new();
-        let mut password_sent = false;
         loop {
             match std::io::Read::read(&mut reader, &mut buffer) {
                 Ok(0) | Err(_) => break,
                 Ok(size) => {
                     let data = String::from_utf8_lossy(&buffer[..size]).into_owned();
-                    recent_output.push_str(&data);
-                    if recent_output.len() > 512 {
-                        let trim_from = recent_output.len() - 512;
-                        recent_output = recent_output[trim_from..].to_string();
-                    }
-                    let prompt = recent_output
-                        .lines()
-                        .last()
-                        .unwrap_or_default()
-                        .to_ascii_lowercase();
-                    if !password_sent
-                        && password.is_some()
-                        && (prompt.contains("password:") || prompt.contains("passphrase:"))
-                    {
-                        if let Some(password) = password.as_deref() {
-                            let _ = password_writer.write_all(password.as_bytes());
-                            let _ = password_writer.write_all(b"\n");
-                            let _ = password_writer.flush();
-                            password_sent = true;
-                        }
-                    }
                     let _ = app.emit(
                         "ssh-output",
                         SshEvent {
@@ -524,6 +491,29 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
         .map_err(|_| "SSH process registry is unavailable".to_string())?
         .insert(session_id.clone(), process);
     Ok(session_id)
+}
+
+#[tauri::command]
+fn ssh_send_stored_password(session_id: String, password_key: String) -> Result<(), String> {
+    let password = Entry::new(SSH_KEYRING_SERVICE, &password_key)
+        .map_err(|error| error.to_string())?
+        .get_password()
+        .map_err(|error| error.to_string())?;
+    let mut processes = ssh_processes()
+        .lock()
+        .map_err(|_| "SSH process registry is unavailable".to_string())?;
+    let process = processes
+        .get_mut(&session_id)
+        .ok_or_else(|| "SSH session is not connected".to_string())?;
+    process
+        .writer
+        .write_all(password.as_bytes())
+        .map_err(|error| error.to_string())?;
+    process
+        .writer
+        .write_all(b"\n")
+        .map_err(|error| error.to_string())?;
+    process.writer.flush().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -613,6 +603,7 @@ fn main() {
             write_download,
             ssh_connect,
             ssh_write,
+            ssh_send_stored_password,
             ssh_disconnect,
             set_ssh_password,
             save_ssh_logs
