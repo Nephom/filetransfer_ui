@@ -495,6 +495,7 @@ function App() {
   const terminalHostRef = useRef<HTMLDivElement>(null);
   const terminalInstanceRef = useRef<Terminal | null>(null);
   const sshSessionIdRef = useRef("");
+  const sshConnectingRef = useRef(false);
   const sshPasswordKeyRef = useRef("");
   const recordingRef = useRef(false);
   const sshSecretPromptRef = useRef(false);
@@ -609,7 +610,13 @@ function App() {
   useEffect(() => {
     let disposed = false;
     const unlistenOutput = listen<SshEvent>("ssh-output", (event) => {
-      if (disposed || event.payload.sessionId !== sshSessionIdRef.current) return;
+      if (disposed) return;
+      if (!sshSessionIdRef.current && sshConnectingRef.current) {
+        sshSessionIdRef.current = event.payload.sessionId;
+        setSshSessionId(event.payload.sessionId);
+        setSshConnected(true);
+      }
+      if (event.payload.sessionId !== sshSessionIdRef.current) return;
       const data = event.payload.data;
       sshOutputRef.current += data;
       setSshOutput(sshOutputRef.current);
@@ -631,6 +638,7 @@ function App() {
     const unlistenExit = listen<SshEvent>("ssh-exit", (event) => {
       if (disposed || event.payload.sessionId !== sshSessionIdRef.current) return;
       setSshConnected(false);
+      sshConnectingRef.current = false;
       sshOutputRef.current += `\n${event.payload.data}\n`;
       setSshOutput(sshOutputRef.current);
     });
@@ -1247,19 +1255,26 @@ function App() {
     void run(async () => {
       sshPasswordKeyRef.current = profile.id;
       sshSecretPromptRef.current = false;
-      const id = await invoke<string>("ssh_connect", {
-        profile: {
-          name: profile.name,
-          host: profile.host,
-          port: profile.port,
-           username: profile.username,
-           privateKeyPath: profile.privateKeyPath || null,
-         },
-      });
-      setSshSessionId(id);
-      setSshConnected(true);
-      sshOutputRef.current = `Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`;
-      setSshOutput(sshOutputRef.current);
+      sshConnectingRef.current = true;
+      sshSessionIdRef.current = "";
+      try {
+        const id = await invoke<string>("ssh_connect", {
+          profile: {
+            name: profile.name,
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            privateKeyPath: profile.privateKeyPath || null,
+          },
+        });
+        sshSessionIdRef.current = id;
+        setSshSessionId(id);
+        setSshConnected(true);
+        sshOutputRef.current = `Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`;
+        setSshOutput(sshOutputRef.current);
+      } finally {
+        sshConnectingRef.current = false;
+      }
     });
   };
 
@@ -1269,6 +1284,8 @@ function App() {
       await invoke("ssh_disconnect", { sessionId: sshSessionId });
       setSshConnected(false);
       setSshSessionId("");
+      sshSessionIdRef.current = "";
+      sshConnectingRef.current = false;
       if (recording) setRecording(false);
       sshOutputRef.current += "\nDisconnected.\n";
       setSshOutput(sshOutputRef.current);
