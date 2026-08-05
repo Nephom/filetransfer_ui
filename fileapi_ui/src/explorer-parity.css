@@ -20,6 +20,9 @@
 .session-entry { display: grid; gap: 2px; width: 100%; padding: 7px 8px; border: 1px solid transparent; border-radius: 4px; color: #d9eafa; background: #102d49; text-align: left; cursor: pointer; }
 .session-entry:hover { border-color: #47cdf1; background: #173e5f; }
 .session-entry small { overflow: hidden; color: #91a9c0; text-overflow: ellipsis; white-space: nowrap; }
+.sxp-modal { max-width: 680px; }
+.sxp-modal p { line-height: 1.5; }
+.sxp-output { min-height: 120px; max-height: 240px; overflow: auto; padding: 12px; color: #9be8ff; background: #061321; border: 1px solid #254764; white-space: pre-wrap; }
 
 /* Both panes use a custom rail so it remains visible when content fits. */
 .persistent-scrollbar { position: relative; align-self: stretch; flex: 0 0 14px; width: 14px; min-height: 0; background: #091a2b; border-left: 1px solid #1c3955; }

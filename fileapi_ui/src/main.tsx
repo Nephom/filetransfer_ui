@@ -62,6 +62,33 @@ type ManagedSession = {
   entries: SessionEntry[];
 };
 
+const sxpHelp = `sxp <session-id> upload <source-entry> <destination-entry>
+sxp <session-id> mv <source-entry> <destination-entry>
+
+REMOTE (Location displayName) means the API Remote selected by the top LOCATION control.
+SXP only accepts entries registered in the selected Session.`;
+
+const parseSxpCommand = (input: string, sessions: ManagedSession[]) => {
+  const args = input.trim().split(/\s+/).filter(Boolean);
+  if (args[0] !== "sxp") return "Only the embedded sxp command is available here.";
+  if (!sessions.length) return "請先設置 Session，建立 Session 後才能使用 sxp。";
+  if (args[1] === "help") return sxpHelp;
+  if (args.length !== 5 || !["upload", "mv"].includes(args[2])) {
+    return `Usage: sxp <session-id> ${args[2] === "mv" ? "mv" : "upload"} <source-entry> <destination-entry>`;
+  }
+  const session = sessions.find(
+    (item) => item.id === args[1] || item.name === args[1],
+  );
+  if (!session) return `Session not found: ${args[1]}`;
+  const source = session.entries.find((entry) => entry.alias === args[3]);
+  const destination = session.entries.find((entry) => entry.alias === args[4]);
+  if (!source || !destination) {
+    return "SXP source and destination must be named entries in the selected Session.";
+  }
+  return `Parsed ${args[2]}: ${source.alias} -> ${destination.alias}\n` +
+    "Transfer execution will be submitted to the shared queue.";
+};
+
 type ScrollMetrics = {
   scrollTop: number;
   clientHeight: number;
@@ -279,9 +306,12 @@ function App() {
     }
   });
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [sxpOpen, setSxpOpen] = useState(false);
+  const [sxpInput, setSxpInput] = useState("");
+  const [sxpOutput, setSxpOutput] = useState("");
   const [sessionNameDraft, setSessionNameDraft] = useState("");
-  const [localAliasDraft, setLocalAliasDraft] = useState("Local home");
-  const [remoteAliasDraft, setRemoteAliasDraft] = useState("Remote root");
+  const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
+  const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
   const [pendingRemotePath, setPendingRemotePath] = useState<string | null>(null);
   const [folderTree, setFolderTree] = useState<FolderNode>({
     path: "",
@@ -538,6 +568,10 @@ function App() {
     const remoteAlias = remoteAliasDraft.trim();
     if (!name || !localAlias || !remoteAlias) {
       setNotice("Session name and both entry aliases are required.");
+      return;
+    }
+    if ([name, localAlias, remoteAlias].some((value) => /\s/.test(value))) {
+      setNotice("Session names and entry aliases cannot contain spaces.");
       return;
     }
     if (!activeLocation || !session.locationId) {
@@ -1260,6 +1294,14 @@ function App() {
               <button
                 onClick={() => {
                   setAccountOpen(false);
+                  setSxpOpen(true);
+                }}
+              >
+                SXP Terminal
+              </button>
+              <button
+                onClick={() => {
+                  setAccountOpen(false);
                   setChangePasswordOpen(true);
                 }}
               >
@@ -1777,7 +1819,7 @@ function App() {
                 <input
                   value={sessionNameDraft}
                   onChange={(event) => setSessionNameDraft(event.target.value)}
-                  placeholder="Release workspace"
+                  placeholder="ReleaseWorkspace"
                   required
                 />
               </label>
@@ -1840,6 +1882,35 @@ function App() {
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+      {sxpOpen && (
+        <div className="modal-cover" onMouseDown={() => setSxpOpen(false)}>
+          <div className="modal sxp-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <h2>SXP Terminal</h2>
+            <p>Embedded only. This does not install or invoke a system `sxp` command.</p>
+            <pre className="sxp-output">{sxpOutput || sxpHelp}</pre>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                setSxpOutput(parseSxpCommand(sxpInput, managedSessions));
+              }}
+            >
+              <label>
+                Command
+                <input
+                  value={sxpInput}
+                  onChange={(event) => setSxpInput(event.target.value)}
+                  placeholder="sxp help"
+                  spellCheck={false}
+                />
+              </label>
+              <div className="modal-actions">
+                <button type="button" onClick={() => setSxpOpen(false)}>Close</button>
+                <button className="confirm" type="submit">Run</button>
+              </div>
+            </form>
           </div>
         </div>
       )}
