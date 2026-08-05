@@ -493,6 +493,28 @@ function App() {
   }, [sshProfiles]);
 
   useEffect(() => {
+    if (managedSessions.length || !sshProfiles.length) return;
+    const makeId = () => typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const migrated = sshProfiles.map((profile) => ({
+      id: makeId(),
+      name: profile.name,
+      entries: [{
+        id: makeId(),
+        alias: profile.name,
+        kind: "SSH" as const,
+        path: "/",
+        profileId: profile.id,
+        profileName: profile.name,
+        sshProfile: profile,
+      }],
+    }));
+    setManagedSessions(migrated);
+    setWorkspaceSessionId(migrated[0]?.id || "");
+  }, [managedSessions.length, sshProfiles]);
+
+  useEffect(() => {
     let disposed = false;
     const unlistenOutput = listen<SshEvent>("ssh-output", (event) => {
       if (disposed || event.payload.sessionId !== sshSessionIdRef.current) return;
@@ -2518,7 +2540,7 @@ function App() {
                   setSshProfileOpen((open) => !open);
                   if (!sshProfileOpen) {
                     const entry = activeWorkspaceSession?.entries.find((item) => item.kind === "SSH");
-                    loadSshProfileDraft(entry?.sshProfile || sshProfiles.find((profile) => profile.id === entry?.profileId));
+                    loadSshProfileDraft(entry?.sshProfile || sshProfiles.find((profile) => profile.id === (entry?.profileId || sshProfileId)));
                   }
                 }}>
                   {sshProfileOpen ? "Close SSH Editor" : "Edit SSH connection"}
