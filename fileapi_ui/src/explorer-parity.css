@@ -38,6 +38,8 @@
 .terminal-tabs button.active, .terminal-tabs button:hover, .terminal-actions button:hover { color: #e6eefc; border-color: #315b7e; background: #102d49; }
 .terminal-content { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 8px; padding: 10px 12px 12px; }
 .terminal-content .sxp-output { flex: 1; min-height: 0; max-height: none; margin: 0; }
+.xterm-host { flex: 1; min-height: 0; overflow: hidden; padding: 8px; background: #020a12; border: 1px solid #254764; }
+.xterm-host .xterm { height: 100%; }
 .terminal-command { display: flex; gap: 8px; }
 .terminal-command input { flex: 1; margin: 0; color: #e6eefc; background: #091b2d; }
 .terminal-placeholder { align-items: flex-start; justify-content: center; color: #a8c0d8; }

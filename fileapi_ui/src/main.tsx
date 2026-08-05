@@ -3,12 +3,15 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { Terminal } from "xterm";
+import { FitAddon } from "xterm-addon-fit";
 import "./styles.css";
 import "./login.css";
 import "./location-control.css";
 import "./tls.css";
 import "./webui-shell.css";
 import "./explorer-parity.css";
+import "xterm/css/xterm.css";
 
 type FileItem = {
   name: string;
@@ -319,8 +322,6 @@ function App() {
     }
   });
   const [sessionsOpen, setSessionsOpen] = useState(false);
-  const [sxpInput, setSxpInput] = useState("");
-  const [sxpOutput, setSxpOutput] = useState("");
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [terminalTab, setTerminalTab] = useState<"sxp" | "ssh">("sxp");
   const [terminalHeight, setTerminalHeight] = useState(() =>
@@ -350,7 +351,6 @@ function App() {
   const [sshConnected, setSshConnected] = useState(false);
   const [sshSessionId, setSshSessionId] = useState("");
   const [sshOutput, setSshOutput] = useState("");
-  const [sshInput, setSshInput] = useState("");
   const [sshProfileOpen, setSshProfileOpen] = useState(false);
   const [sshProfileDraft, setSshProfileDraft] = useState({
     name: "",
@@ -364,6 +364,12 @@ function App() {
   const rawLogRef = useRef("");
   const plainLogRef = useRef("");
   const commandLogRef = useRef("");
+  const terminalHostRef = useRef<HTMLDivElement>(null);
+  const terminalInstanceRef = useRef<Terminal | null>(null);
+  const sshSessionIdRef = useRef("");
+  const recordingRef = useRef(false);
+  const sshSecretPromptRef = useRef(false);
+  const shellInputRef = useRef("");
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
   const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
@@ -394,6 +400,14 @@ function App() {
     startX: number;
     startWidth: number;
   } | null>(null);
+
+  useEffect(() => {
+    sshSessionIdRef.current = sshSessionId;
+  }, [sshSessionId]);
+
+  useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
 
   useEffect(() => {
     try {
@@ -449,7 +463,11 @@ function App() {
       if (disposed || event.payload.sessionId !== sshSessionId) return;
       const data = event.payload.data;
       setSshOutput((current) => current + data);
-      if (recording) {
+      terminalInstanceRef.current?.write(data);
+      sshSecretPromptRef.current = /(password|passphrase|verification code|token)\s*[:?]\s*$/i.test(
+        stripAnsi((sshOutput + data).slice(-180)),
+      );
+      if (recordingRef.current) {
         rawLogRef.current += data;
         plainLogRef.current += stripAnsi(data);
       }
@@ -464,7 +482,67 @@ function App() {
       void unlistenOutput.then((dispose) => dispose());
       void unlistenExit.then((dispose) => dispose());
     };
-  }, [sshSessionId, recording]);
+  }, [sshSessionId]);
+
+  useEffect(() => {
+    if (!terminalOpen || !terminalHostRef.current) return undefined;
+    const terminal = new Terminal({
+      cursorBlink: true,
+      convertEol: true,
+      fontFamily: "monospace",
+      fontSize: 13,
+      theme: { background: "#020a12", foreground: "#d9eafa", cursor: "#47cdf1" },
+    });
+    const fit = new FitAddon();
+    terminal.loadAddon(fit);
+    terminal.open(terminalHostRef.current);
+    fit.fit();
+    terminalInstanceRef.current = terminal;
+    shellInputRef.current = "";
+    if (terminalTab === "sxp") {
+      terminal.write(managedSessions.length ? `${sxpHelp}\r\n` : "Please create a Session before using SXP.\r\n");
+    } else {
+      terminal.write(sshOutput || "Select an SSH Profile and connect.\r\n");
+    }
+    const resizeObserver = new ResizeObserver(() => fit.fit());
+    resizeObserver.observe(terminalHostRef.current);
+    const inputListener = terminal.onData((data) => {
+      if (terminalTab === "ssh") {
+        if (!sshSessionIdRef.current) return;
+        void invoke("ssh_write", { sessionId: sshSessionIdRef.current, data });
+        if (recordingRef.current && !sshSecretPromptRef.current) {
+          if (data === "\r" || data === "\n") {
+            if (shellInputRef.current.trim()) {
+              commandLogRef.current += `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
+            }
+            shellInputRef.current = "";
+          } else if (data === "\u007f") {
+            shellInputRef.current = shellInputRef.current.slice(0, -1);
+          } else if (!data.startsWith("\u001b")) {
+            shellInputRef.current += data;
+          }
+        }
+        return;
+      }
+      if (data === "\r" || data === "\n") {
+        const result = parseSxpCommand(shellInputRef.current, managedSessions);
+        terminal.write(`\r\n${result.replace(/\n/g, "\r\n")}\r\n`);
+        shellInputRef.current = "";
+      } else if (data === "\u007f") {
+        shellInputRef.current = shellInputRef.current.slice(0, -1);
+        terminal.write("\b \b");
+      } else if (!data.startsWith("\u001b")) {
+        shellInputRef.current += data;
+        terminal.write(data);
+      }
+    });
+    return () => {
+      inputListener.dispose();
+      resizeObserver.disconnect();
+      terminal.dispose();
+      terminalInstanceRef.current = null;
+    };
+  }, [terminalOpen, terminalTab]);
 
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
@@ -857,21 +935,6 @@ function App() {
       setSshSessionId("");
       if (recording) setRecording(false);
       setSshOutput((current) => `${current}\nDisconnected.\n`);
-    });
-  };
-
-  const sendSshInput = () => {
-    const input = sshInput;
-    if (!input.trim() || !sshConnected || !sshSessionId) return;
-    const secretPrompt = /(password|passphrase|verification code|token)\s*[:?]\s*$/i.test(
-      sshOutput.slice(-180),
-    );
-    void run(async () => {
-      await invoke("ssh_write", { sessionId: sshSessionId, data: `${input}\n` });
-      if (recording && !secretPrompt) {
-        commandLogRef.current += `[${new Date().toISOString()}] ${input}\n`;
-      }
-      setSshInput("");
     });
   };
 
@@ -2190,23 +2253,7 @@ function App() {
           </header>
           {terminalTab === "sxp" ? (
             <div className="terminal-content">
-              <pre className="sxp-output">{sxpOutput || (managedSessions.length ? sxpHelp : "Please create a Session before using SXP.")}</pre>
-              <form
-                className="terminal-command"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  setSxpOutput(parseSxpCommand(sxpInput, managedSessions));
-                }}
-              >
-                <input
-                  value={sxpInput}
-                  onChange={(event) => setSxpInput(event.target.value)}
-                  placeholder="sxp <Session name> upload <source folder> <destination folder>"
-                  spellCheck={false}
-                  aria-label="SXP command"
-                />
-                <button className="confirm" type="submit">Run</button>
-              </form>
+              <div ref={terminalHostRef} className="xterm-host" aria-label="SXP terminal" />
             </div>
           ) : (
             <div className="terminal-content ssh-terminal-content">
@@ -2246,7 +2293,7 @@ function App() {
                 </form>
               ) : (
                 <>
-                  <pre className="ssh-output">{sshOutput || "Select an SSH Profile and connect."}</pre>
+                  <div ref={terminalHostRef} className="xterm-host" aria-label="SSH terminal" />
                   <div className="ssh-recording-actions">
                     {!recording ? (
                       <button disabled={!sshConnected} onClick={startRecording}>Start Recording</button>
@@ -2257,23 +2304,6 @@ function App() {
                     <button disabled={!rawLogRef.current || recording} onClick={() => notify("Upload Log will use the selected Session and SXP transfer queue.")}>Upload Log</button>
                     {recording && <span className="recording-indicator">Recording</span>}
                   </div>
-                  <form
-                    className="terminal-command"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      sendSshInput();
-                    }}
-                  >
-                    <input
-                      value={sshInput}
-                      onChange={(event) => setSshInput(event.target.value)}
-                      placeholder={sshConnected ? "Enter a shell command" : "Connect to SSH before entering a command"}
-                      disabled={!sshConnected}
-                      type={/(password|passphrase|verification code|token)\s*[:?]\s*$/i.test(sshOutput.slice(-180)) ? "password" : "text"}
-                      aria-label="SSH shell input"
-                    />
-                    <button className="confirm" type="submit" disabled={!sshConnected}>Send</button>
-                  </form>
                 </>
               )}
             </div>
