@@ -1,9 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use reqwest::{multipart, Client};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+use tauri::Emitter;
 
 #[derive(Serialize)]
 struct ApiResponse {
@@ -31,6 +35,43 @@ struct LocalFile {
 struct LocalDirectory {
     path: String,
     files: Vec<LocalFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SshProfile {
+    name: String,
+    host: String,
+    port: u16,
+    username: String,
+    private_key_path: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SshEvent {
+    session_id: String,
+    data: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SshLogPaths {
+    raw: String,
+    plain: String,
+    commands: String,
+    metadata: String,
+}
+
+struct SshProcess {
+    writer: Box<dyn Write + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+}
+
+static SSH_PROCESSES: OnceLock<Arc<Mutex<HashMap<String, SshProcess>>>> = OnceLock::new();
+
+fn ssh_processes() -> &'static Arc<Mutex<HashMap<String, SshProcess>>> {
+    SSH_PROCESSES.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
 fn collect_upload_path(
@@ -310,6 +351,194 @@ async fn download_to_disk(
     Ok(destination.display().to_string())
 }
 
+fn validate_ssh_profile(profile: &SshProfile) -> Result<(), String> {
+    if profile.name.trim().is_empty()
+        || profile.host.trim().is_empty()
+        || profile.username.trim().is_empty()
+    {
+        return Err("SSH profile name, host, and username are required".to_string());
+    }
+    if profile
+        .host
+        .chars()
+        .any(|character| character.is_whitespace())
+    {
+        return Err("SSH host must not contain whitespace".to_string());
+    }
+    if profile
+        .username
+        .chars()
+        .any(|character| character.is_whitespace())
+    {
+        return Err("SSH username must not contain whitespace".to_string());
+    }
+    if profile.port == 0 {
+        return Err("SSH port must be between 1 and 65535".to_string());
+    }
+    if let Some(key_path) = &profile.private_key_path {
+        let key = Path::new(key_path);
+        if !key.is_absolute()
+            || key
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err("SSH private key path must be an absolute path without '..'".to_string());
+        }
+        if !key.is_file() {
+            return Err("SSH private key file does not exist".to_string());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, String> {
+    validate_ssh_profile(&profile)?;
+    let session_id = format!("ssh-{}", uuid::Uuid::new_v4());
+    let pty_system = portable_pty::native_pty_system();
+    let pair = pty_system
+        .openpty(portable_pty::PtySize {
+            rows: 32,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut command = portable_pty::CommandBuilder::new("ssh");
+    command.args(["-tt", "-p", &profile.port.to_string()]);
+    command.args(["-o", "ConnectTimeout=15"]);
+    command.args(["-o", "ServerAliveInterval=30"]);
+    command.args(["-o", "ServerAliveCountMax=3"]);
+    command.arg(format!("{}@{}", profile.username, profile.host));
+    if let Some(key_path) = profile.private_key_path {
+        command.args(["-i", &key_path]);
+    }
+
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| error.to_string())?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| error.to_string())?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| error.to_string())?;
+    let reader_session = session_id.clone();
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match std::io::Read::read(&mut reader, &mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(size) => {
+                    let data = String::from_utf8_lossy(&buffer[..size]).into_owned();
+                    let _ = app.emit(
+                        "ssh-output",
+                        SshEvent {
+                            session_id: reader_session.clone(),
+                            data,
+                        },
+                    );
+                }
+            }
+        }
+        let _ = app.emit(
+            "ssh-exit",
+            SshEvent {
+                session_id: reader_session,
+                data: "SSH process ended.".to_string(),
+            },
+        );
+    });
+
+    let process = SshProcess {
+        writer,
+        child: child,
+    };
+    ssh_processes()
+        .lock()
+        .map_err(|_| "SSH process registry is unavailable".to_string())?
+        .insert(session_id.clone(), process);
+    Ok(session_id)
+}
+
+#[tauri::command]
+fn ssh_write(session_id: String, data: String) -> Result<(), String> {
+    let mut processes = ssh_processes()
+        .lock()
+        .map_err(|_| "SSH process registry is unavailable".to_string())?;
+    let process = processes
+        .get_mut(&session_id)
+        .ok_or_else(|| "SSH session is not connected".to_string())?;
+    process
+        .writer
+        .write_all(data.as_bytes())
+        .map_err(|error| error.to_string())?;
+    process.writer.flush().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn ssh_disconnect(session_id: String) -> Result<(), String> {
+    if let Some(mut process) = ssh_processes()
+        .lock()
+        .map_err(|_| "SSH process registry is unavailable".to_string())?
+        .remove(&session_id)
+    {
+        process.child.kill().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_ssh_logs(
+    profile_name: String,
+    raw: String,
+    plain: String,
+    commands: String,
+    metadata: String,
+) -> Result<SshLogPaths, String> {
+    let safe_name: String = profile_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let safe_name = if safe_name.is_empty() {
+        "ssh-session".to_string()
+    } else {
+        safe_name
+    };
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs();
+    let home = local_home()?;
+    let directory = home.join("Downloads");
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let stem = directory.join(format!("{safe_name}-{timestamp}"));
+    let raw_path = stem.with_extension("raw.log");
+    let plain_path = stem.with_extension("txt");
+    let commands_path = stem.with_extension("commands.log");
+    let metadata_path = stem.with_extension("meta.json");
+    std::fs::write(&raw_path, raw).map_err(|error| error.to_string())?;
+    std::fs::write(&plain_path, plain).map_err(|error| error.to_string())?;
+    std::fs::write(&commands_path, commands).map_err(|error| error.to_string())?;
+    std::fs::write(&metadata_path, metadata).map_err(|error| error.to_string())?;
+    Ok(SshLogPaths {
+        raw: raw_path.display().to_string(),
+        plain: plain_path.display().to_string(),
+        commands: commands_path.display().to_string(),
+        metadata: metadata_path.display().to_string(),
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -319,7 +548,11 @@ fn main() {
             inspect_upload_paths,
             api_upload_paths,
             download_to_disk,
-            write_download
+            write_download,
+            ssh_connect,
+            ssh_write,
+            ssh_disconnect,
+            save_ssh_logs
         ])
         .run(tauri::generate_context!())
         .expect("error while running File Transfer desktop application");

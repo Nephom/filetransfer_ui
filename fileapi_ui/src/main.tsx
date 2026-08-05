@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import "./styles.css";
 import "./login.css";
@@ -62,6 +63,15 @@ type ManagedSession = {
   entries: SessionEntry[];
 };
 type ColumnKey = "name" | "modified" | "size";
+type SshProfile = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  privateKeyPath: string;
+};
+type SshEvent = { sessionId: string; data: string };
 
 const sxpHelp = `sxp <Session name> upload <source folder> <destination folder>
 sxp <Session name> mv <source folder> <destination folder>
@@ -89,6 +99,8 @@ const parseSxpCommand = (input: string, sessions: ManagedSession[]) => {
   return `Parsed ${args[2]}: ${source.alias} -> ${destination.alias}\n` +
     "Transfer execution will be submitted to the shared queue.";
 };
+const stripAnsi = (value: string) =>
+  value.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:][\d;]*)*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
 
 type ScrollMetrics = {
   scrollTop: number;
@@ -326,6 +338,32 @@ function App() {
       return { name: 50, modified: 30, size: 20 };
     }
   });
+  const [sshProfiles, setSshProfiles] = useState<SshProfile[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("fileapi-ssh-profiles") || "[]");
+      return Array.isArray(saved) ? saved : [];
+    } catch {
+      return [];
+    }
+  });
+  const [sshProfileId, setSshProfileId] = useState("");
+  const [sshConnected, setSshConnected] = useState(false);
+  const [sshSessionId, setSshSessionId] = useState("");
+  const [sshOutput, setSshOutput] = useState("");
+  const [sshInput, setSshInput] = useState("");
+  const [sshProfileOpen, setSshProfileOpen] = useState(false);
+  const [sshProfileDraft, setSshProfileDraft] = useState({
+    name: "",
+    host: "",
+    port: "22",
+    username: "",
+    privateKeyPath: "",
+  });
+  const [recording, setRecording] = useState(false);
+  const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
+  const rawLogRef = useRef("");
+  const plainLogRef = useRef("");
+  const commandLogRef = useRef("");
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
   const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
@@ -399,6 +437,34 @@ function App() {
   useEffect(() => {
     localStorage.setItem(sessionRegistryKey, JSON.stringify(managedSessions));
   }, [managedSessions]);
+
+  useEffect(() => {
+    localStorage.setItem("fileapi-ssh-profiles", JSON.stringify(sshProfiles));
+  }, [sshProfiles]);
+
+  useEffect(() => {
+    if (!sshSessionId) return undefined;
+    let disposed = false;
+    const unlistenOutput = listen<SshEvent>("ssh-output", (event) => {
+      if (disposed || event.payload.sessionId !== sshSessionId) return;
+      const data = event.payload.data;
+      setSshOutput((current) => current + data);
+      if (recording) {
+        rawLogRef.current += data;
+        plainLogRef.current += stripAnsi(data);
+      }
+    });
+    const unlistenExit = listen<SshEvent>("ssh-exit", (event) => {
+      if (disposed || event.payload.sessionId !== sshSessionId) return;
+      setSshConnected(false);
+      setSshOutput((current) => `${current}\n${event.payload.data}\n`);
+    });
+    return () => {
+      disposed = true;
+      void unlistenOutput.then((dispose) => dispose());
+      void unlistenExit.then((dispose) => dispose());
+    };
+  }, [sshSessionId, recording]);
 
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
@@ -731,6 +797,130 @@ function App() {
     };
     window.addEventListener("pointermove", resizeColumn);
     window.addEventListener("pointerup", stopColumnResize);
+  };
+
+  const saveSshProfile = () => {
+    const name = sshProfileDraft.name.trim();
+    const host = sshProfileDraft.host.trim();
+    const username = sshProfileDraft.username.trim();
+    const port = Number(sshProfileDraft.port);
+    if (!name || !host || !username || !Number.isInteger(port) || port < 1 || port > 65535) {
+      setNotice("Enter a profile name, host, username, and valid SSH port.");
+      return;
+    }
+    const id = typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const profile: SshProfile = {
+      id,
+      name,
+      host,
+      port,
+      username,
+      privateKeyPath: sshProfileDraft.privateKeyPath.trim(),
+    };
+    setSshProfiles((current) => [...current, profile]);
+    setSshProfileId(id);
+    setSshProfileDraft({ name: "", host: "", port: "22", username: "", privateKeyPath: "" });
+    setSshProfileOpen(false);
+    notify(`Saved SSH Profile: ${name}`);
+  };
+
+  const connectSsh = () => {
+    const profile = sshProfiles.find((item) => item.id === sshProfileId);
+    if (!profile) {
+      setSshProfileOpen(true);
+      setNotice("Select or create an SSH Profile before connecting.");
+      return;
+    }
+    void run(async () => {
+      const id = await invoke<string>("ssh_connect", {
+        profile: {
+          name: profile.name,
+          host: profile.host,
+          port: profile.port,
+          username: profile.username,
+          privateKeyPath: profile.privateKeyPath || null,
+        },
+      });
+      setSshSessionId(id);
+      setSshConnected(true);
+      setSshOutput(`Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`);
+    });
+  };
+
+  const disconnectSsh = () => {
+    if (!sshSessionId) return;
+    void run(async () => {
+      await invoke("ssh_disconnect", { sessionId: sshSessionId });
+      setSshConnected(false);
+      setSshSessionId("");
+      if (recording) setRecording(false);
+      setSshOutput((current) => `${current}\nDisconnected.\n`);
+    });
+  };
+
+  const sendSshInput = () => {
+    const input = sshInput;
+    if (!input.trim() || !sshConnected || !sshSessionId) return;
+    const secretPrompt = /(password|passphrase|verification code|token)\s*[:?]\s*$/i.test(
+      sshOutput.slice(-180),
+    );
+    void run(async () => {
+      await invoke("ssh_write", { sessionId: sshSessionId, data: `${input}\n` });
+      if (recording && !secretPrompt) {
+        commandLogRef.current += `[${new Date().toISOString()}] ${input}\n`;
+      }
+      setSshInput("");
+    });
+  };
+
+  const startRecording = () => {
+    if (!sshConnected) return;
+    rawLogRef.current = "";
+    plainLogRef.current = "";
+    commandLogRef.current = "";
+    setRecordingStartedAt(Date.now());
+    setRecording(true);
+    notify("SSH output recording started.");
+  };
+
+  const stopRecording = () => {
+    setRecording(false);
+    notify("Recording finalized. Save the log package before disconnecting.");
+  };
+
+  const saveSshLogs = () => {
+    const profile = sshProfiles.find((item) => item.id === sshProfileId);
+    if (recording) {
+      setNotice("Stop the SSH recording before saving the log package.");
+      return;
+    }
+    if (!profile || (!rawLogRef.current && !plainLogRef.current)) {
+      setNotice("There is no completed SSH recording to save.");
+      return;
+    }
+    const metadata = JSON.stringify({
+      profileName: profile.name,
+      host: profile.host,
+      startedAt: recordingStartedAt ? new Date(recordingStartedAt).toISOString() : null,
+      endedAt: new Date().toISOString(),
+      rawBytes: new TextEncoder().encode(rawLogRef.current).length,
+      files: ["raw.log", "txt", "commands.log", "meta.json"],
+    }, null, 2);
+    void run(async () => {
+      const paths = await invoke<{ raw: string; plain: string; commands: string; metadata: string }>(
+        "save_ssh_logs",
+        {
+          profileName: profile.name,
+          raw: rawLogRef.current,
+          plain: plainLogRef.current,
+          commands: commandLogRef.current,
+          metadata,
+        },
+      );
+      notify(`Saved SSH logs to ${paths.raw}`);
+    });
   };
 
   const login = async (event: React.FormEvent) => {
@@ -2017,10 +2207,73 @@ function App() {
               </form>
             </div>
           ) : (
-            <div className="terminal-content terminal-placeholder">
-              <strong>SSH Terminal</strong>
-              <p>SSH Profiles and interactive shell sessions will use this panel.</p>
-              <button onClick={() => setSessionsOpen(true)}>Open Sessions</button>
+            <div className="terminal-content ssh-terminal-content">
+              <div className="ssh-controls">
+                <label>
+                  SSH Profile
+                  <select value={sshProfileId} onChange={(event) => setSshProfileId(event.target.value)}>
+                    <option value="">Select a profile</option>
+                    {sshProfiles.map((profile) => (
+                      <option value={profile.id} key={profile.id}>{profile.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <button onClick={() => setSshProfileOpen((open) => !open)}>
+                  {sshProfileOpen ? "Close Profile Editor" : "Manage SSH Profiles"}
+                </button>
+                {!sshConnected ? (
+                  <button className="confirm" onClick={connectSsh}>Connect</button>
+                ) : (
+                  <button className="danger" onClick={disconnectSsh}>Disconnect</button>
+                )}
+              </div>
+              {sshProfileOpen ? (
+                <form
+                  className="ssh-profile-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    saveSshProfile();
+                  }}
+                >
+                  <label>Profile name<input value={sshProfileDraft.name} onChange={(event) => setSshProfileDraft((current) => ({ ...current, name: event.target.value }))} required /></label>
+                  <label>Host<input value={sshProfileDraft.host} onChange={(event) => setSshProfileDraft((current) => ({ ...current, host: event.target.value }))} placeholder="server.example.com" required /></label>
+                  <label>Port<input inputMode="numeric" value={sshProfileDraft.port} onChange={(event) => setSshProfileDraft((current) => ({ ...current, port: event.target.value }))} required /></label>
+                  <label>Username<input value={sshProfileDraft.username} onChange={(event) => setSshProfileDraft((current) => ({ ...current, username: event.target.value }))} required /></label>
+                  <label>Private key path (optional)<input value={sshProfileDraft.privateKeyPath} onChange={(event) => setSshProfileDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="/home/test/.ssh/id_ed25519" /></label>
+                  <button className="confirm" type="submit">Save SSH Profile</button>
+                </form>
+              ) : (
+                <>
+                  <pre className="ssh-output">{sshOutput || "Select an SSH Profile and connect."}</pre>
+                  <div className="ssh-recording-actions">
+                    {!recording ? (
+                      <button disabled={!sshConnected} onClick={startRecording}>Start Recording</button>
+                    ) : (
+                      <button className="danger" onClick={stopRecording}>Stop Recording</button>
+                    )}
+                    <button disabled={recording || !rawLogRef.current} onClick={saveSshLogs}>Save Log</button>
+                    <button disabled={!rawLogRef.current || recording} onClick={() => notify("Upload Log will use the selected Session and SXP transfer queue.")}>Upload Log</button>
+                    {recording && <span className="recording-indicator">Recording</span>}
+                  </div>
+                  <form
+                    className="terminal-command"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      sendSshInput();
+                    }}
+                  >
+                    <input
+                      value={sshInput}
+                      onChange={(event) => setSshInput(event.target.value)}
+                      placeholder={sshConnected ? "Enter a shell command" : "Connect to SSH before entering a command"}
+                      disabled={!sshConnected}
+                      type={/(password|passphrase|verification code|token)\s*[:?]\s*$/i.test(sshOutput.slice(-180)) ? "password" : "text"}
+                      aria-label="SSH shell input"
+                    />
+                    <button className="confirm" type="submit" disabled={!sshConnected}>Send</button>
+                  </form>
+                </>
+              )}
             </div>
           )}
         </section>
