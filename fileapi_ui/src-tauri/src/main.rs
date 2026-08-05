@@ -538,24 +538,18 @@ fn ssh_send_stored_password(session_id: String, password_key: String) -> Result<
     let process = processes
         .get_mut(&session_id)
         .ok_or_else(|| "SSH session is not connected".to_string())?;
-    process
-        .writer
-        .lock()
-        .map_err(|_| "SSH writer is unavailable".to_string())?
-        .write_all(password.as_bytes())
-        .map_err(|error| error.to_string())?;
-    process
-        .writer
-        .lock()
-        .map_err(|_| "SSH writer is unavailable".to_string())?
-        .write_all(b"\r")
-        .map_err(|error| error.to_string())?;
-    process
-        .writer
-        .lock()
-        .map_err(|_| "SSH writer is unavailable".to_string())?
-        .flush()
-        .map_err(|error| error.to_string())
+    let result = {
+        let mut writer = process
+            .writer
+            .lock()
+            .map_err(|_| "SSH writer is unavailable".to_string())?;
+        writer
+            .write_all(password.as_bytes())
+            .map_err(|error| error.to_string())?;
+        writer.write_all(b"\r").map_err(|error| error.to_string())?;
+        writer.flush().map_err(|error| error.to_string())
+    };
+    result
 }
 
 #[tauri::command]
@@ -566,18 +560,17 @@ fn ssh_write(session_id: String, data: String) -> Result<(), String> {
     let process = processes
         .get_mut(&session_id)
         .ok_or_else(|| "SSH session is not connected".to_string())?;
-    process
-        .writer
-        .lock()
-        .map_err(|_| "SSH writer is unavailable".to_string())?
-        .write_all(data.as_bytes())
-        .map_err(|error| error.to_string())?;
-    process
-        .writer
-        .lock()
-        .map_err(|_| "SSH writer is unavailable".to_string())?
-        .flush()
-        .map_err(|error| error.to_string())
+    let result = {
+        let mut writer = process
+            .writer
+            .lock()
+            .map_err(|_| "SSH writer is unavailable".to_string())?;
+        writer
+            .write_all(data.as_bytes())
+            .map_err(|error| error.to_string())?;
+        writer.flush().map_err(|error| error.to_string())
+    };
+    result
 }
 
 #[tauri::command]
