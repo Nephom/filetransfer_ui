@@ -89,17 +89,21 @@ fn validate_profile(profile: &SshProfile) -> Result<(), String> {
     if profile.port == 0 {
         return Err("SSH port must be between 1 and 65535".to_string());
     }
-    if let Some(key_path) = &profile.private_key_path {
-        let key = Path::new(key_path);
-        if !key.is_absolute()
-            || key
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
-        {
-            return Err("SSH private key path must be an absolute path without '..'".to_string());
-        }
-        if !key.is_file() {
-            return Err("SSH private key file does not exist".to_string());
+    if let Some(key_path) = profile.private_key_path.as_deref().map(str::trim) {
+        if !key_path.is_empty() {
+            let key = Path::new(key_path);
+            if !key.is_absolute()
+                || key
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(
+                    "SSH private key path must be an absolute path without '..'".to_string(),
+                );
+            }
+            if !key.is_file() {
+                return Err("SSH private key file does not exist".to_string());
+            }
         }
     }
     Ok(())
@@ -112,23 +116,43 @@ fn default_config() -> Arc<client::Config> {
 /// Try public-key authentication (if a key path is configured) and then
 /// stored-password authentication (if a password has been saved for this
 /// entry). Returns Ok(()) only once one of these methods succeeds.
+///
+/// A blank/whitespace-only `private_key_path` (e.g. sent as `""` instead of
+/// `null` by some callers) is treated as "no key configured" rather than an
+/// attempt to load a key from an empty path — otherwise every SFTP browse
+/// call for a password-only entry would hard-fail with "Unable to load
+/// private key" and never even try the saved password. Likewise, if a real
+/// key path IS configured but fails to load/authenticate, we still fall
+/// through and try the saved password instead of aborting immediately.
 async fn authenticate(
     handle: &mut client::Handle<ClientHandler>,
     profile: &SshProfile,
 ) -> Result<(), String> {
     let stored_password = secrets::load_password(&profile.id)?;
+    let mut key_error: Option<String> = None;
 
-    if let Some(key_path) = &profile.private_key_path {
+    let key_path = profile
+        .private_key_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+
+    if let Some(key_path) = key_path {
         let passphrase = stored_password.as_deref();
-        let key = russh::keys::load_secret_key(key_path, passphrase)
-            .map_err(|error| format!("Unable to load private key: {error}"))?;
-        let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha256));
-        let result = handle
-            .authenticate_publickey(profile.username.clone(), key_with_hash)
-            .await
-            .map_err(|error| error.to_string())?;
-        if matches!(result, AuthResult::Success) {
-            return Ok(());
+        match russh::keys::load_secret_key(key_path, passphrase) {
+            Ok(key) => {
+                let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key), Some(HashAlg::Sha256));
+                let result = handle
+                    .authenticate_publickey(profile.username.clone(), key_with_hash)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if matches!(result, AuthResult::Success) {
+                    return Ok(());
+                }
+            }
+            Err(error) => {
+                key_error = Some(format!("Unable to load private key: {error}"));
+            }
         }
     }
 
@@ -142,7 +166,9 @@ async fn authenticate(
         }
     }
 
-    Err("Authentication failed. Add a password or a private key to this SSH entry in the Session manager, then try again.".to_string())
+    Err(key_error.unwrap_or_else(|| {
+        "Authentication failed. Add a password or a private key to this SSH entry in the Session manager, then try again.".to_string()
+    }))
 }
 
 /// Bound how long a connection attempt (TCP connect, key exchange, and
