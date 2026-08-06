@@ -50,3 +50,31 @@ body {
 .login button { margin-top: 8px; background: linear-gradient(135deg, #1477c9, #168bb9); border-color: #47cdf1; }
 .login-version { display: block; margin-top: 20px; color: #7f9bb5; font-size: 12px; text-align: center; }
 .tls-option small { color: #8fa8bf; }
+
+/* "Only Terminal" is a dev-only escape hatch (skips login + API server).
+   Kept physically separate from the sign-in form, in a low-key corner
+   affordance, so it can't be fat-fingered while trying to sign in. */
+.only-terminal-corner-button {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: #8fa8bf;
+  background: rgba(11, 33, 55, .55);
+  border: 1px dashed #315b7e;
+  border-radius: 999px;
+  opacity: .55;
+  transition: opacity .15s ease, color .15s ease, border-color .15s ease;
+}
+.only-terminal-corner-button:hover,
+.only-terminal-corner-button:focus-visible {
+  opacity: 1;
+  color: #e6eefc;
+  border-color: #47cdf1;
+  border-style: solid;
+}
+.only-terminal-corner-button:disabled {
+  opacity: .3;
+  cursor: not-allowed;
+}

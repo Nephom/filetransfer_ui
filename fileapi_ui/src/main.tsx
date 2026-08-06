@@ -40,6 +40,7 @@ type Session = {
   permissions: string[];
   locationId: string;
   ignoreTlsErrors: boolean;
+  onlyTerminalMode: boolean;
 };
 type ShareResponse = { data?: { fullUrl?: string; shareUrl?: string } };
 type NativeApiResponse = { status: number; body: number[] };
@@ -356,6 +357,12 @@ const appVersion =
   import.meta.env.VITE_APP_VERSION_DISPLAY ||
   import.meta.env.VITE_APP_VERSION ||
   "";
+// "Only Terminal" lets a developer reach the Local Explorer + SSH Terminal
+// without signing in or running the API server at all. It's available
+// automatically in `npm run dev` / `npm run tauri dev` builds; production
+// builds only expose it if VITE_ENABLE_ONLY_TERMINAL_MODE=true is baked in.
+const onlyTerminalAvailable =
+  import.meta.env.DEV || import.meta.env.VITE_ENABLE_ONLY_TERMINAL_MODE === "true";
 const initialSession: Session = {
   host: defaultHost,
   port: defaultPort,
@@ -366,6 +373,7 @@ const initialSession: Session = {
   permissions: [],
   locationId: "",
   ignoreTlsErrors: false,
+  onlyTerminalMode: false,
 };
 const sessionRegistryKey = "fileapi-session-registry";
 const desktopSettingsKey = "fileapi-desktop-settings";
@@ -1168,7 +1176,7 @@ function App() {
   };
 
   useEffect(() => {
-    if (session.token) {
+    if (session.token && !session.onlyTerminalMode) {
       void loadLocations().catch((error) =>
         setNotice(error instanceof Error ? error.message : String(error)),
       );
@@ -1182,7 +1190,7 @@ function App() {
       return () => window.clearInterval(healthTimer);
     }
     return undefined;
-  }, [session.token]);
+  }, [session.token, session.onlyTerminalMode]);
 
   useEffect(() => {
     void (async () => {
@@ -1196,13 +1204,13 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (session.token && session.locationId) {
+    if (session.token && session.locationId && !session.onlyTerminalMode) {
       const nextPath = pendingRemotePath ?? "";
       if (pendingRemotePath !== null) setPendingRemotePath(null);
       void loadFiles(nextPath).catch((error) => setNotice(error.message));
       void loadTreeChildren("").catch((error) => setNotice(error.message));
     }
-  }, [session.token, session.locationId]);
+  }, [session.token, session.locationId, session.onlyTerminalMode]);
 
   const selectLocation = (locationId: string) => {
     const wasSsh = Boolean(remoteSshEntryId);
@@ -2161,6 +2169,23 @@ function App() {
     });
   };
 
+  const enterOnlyTerminalMode = () => {
+    setPassword("");
+    setSession((current) => ({
+      ...current,
+      token: "only-terminal-mode",
+      username: "only-terminal",
+      userId: 0,
+      role: "test",
+      permissions: [],
+      locationId: "",
+      onlyTerminalMode: true,
+    }));
+    setNotice(
+      "Only Terminal: skipped login and API server connection. Local Explorer and SSH Terminal are available; remote (REMOTE) features are disabled.",
+    );
+  };
+
   const selectedItems = files.filter((file) => selected.includes(file.path));
   const workspaceSessions = managedSessions.filter((item) => item.sshEntries.length > 0);
   const activeWorkspaceSession = workspaceSessions.find((item) => item.id === workspaceSessionId);
@@ -2891,6 +2916,7 @@ function App() {
       userId: null,
       role: "",
       permissions: [],
+      onlyTerminalMode: false,
     }));
   };
 
@@ -3117,6 +3143,17 @@ function App() {
           {notice && <output role="alert">{notice}</output>}
           {appVersion && <small className="login-version">{appVersion}</small>}
         </form>
+        {onlyTerminalAvailable && (
+          <button
+            type="button"
+            className="only-terminal-corner-button"
+            disabled={busy}
+            onClick={enterOnlyTerminalMode}
+            title="Skip login and the API server. Local Explorer and SSH Terminal only."
+          >
+            🧪 Only Terminal
+          </button>
+        )}
       </main>
     );
 
@@ -3209,7 +3246,7 @@ function App() {
           >
             {session.username}
             <span className="account-role">
-              {session.role === "admin" ? "Admin" : "User"}
+              {session.onlyTerminalMode ? "Only Terminal" : session.role === "admin" ? "Admin" : "User"}
             </span>
             <span className="account-chevron">⌄</span>
           </button>
@@ -3218,9 +3255,11 @@ function App() {
               <div className="account-summary">
                 <strong>{session.username}</strong>
                 <span>
-                  {session.role === "admin"
-                    ? "System administrator"
-                    : "Standard user"}
+                  {session.onlyTerminalMode
+                    ? "Offline dev session — no API server connected"
+                    : session.role === "admin"
+                      ? "System administrator"
+                      : "Standard user"}
                 </span>
               </div>
                <button
@@ -3240,14 +3279,16 @@ function App() {
                >
                  Settings
                </button>
-               <button
-                onClick={() => {
-                  setAccountOpen(false);
-                  setChangePasswordOpen(true);
-                }}
-              >
-                Change password
-              </button>
+               {!session.onlyTerminalMode && (
+                 <button
+                   onClick={() => {
+                     setAccountOpen(false);
+                     setChangePasswordOpen(true);
+                   }}
+                 >
+                   Change password
+                 </button>
+               )}
               <hr />
               <button className="danger" onClick={signOut}>
                 Log out
