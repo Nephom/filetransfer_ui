@@ -2403,7 +2403,8 @@ function App() {
     dragSourceRef.current = "remote";
     setDragItems(items);
     setDragSource("remote");
-    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.effectAllowed = "copyMove";
+    event.dataTransfer.setData("application/x-filetransfer-source", "remote");
   };
 
   const beginLocalDrag = (event: React.DragEvent, file: FileItem) => {
@@ -2414,6 +2415,7 @@ function App() {
     setDragItems(items);
     setDragSource("local");
     event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("application/x-filetransfer-source", "local");
   };
 
   const resolveDragIcon = () => {
@@ -2427,10 +2429,7 @@ function App() {
     beginDrag(event, file);
     // Normal drags stay inside the app so LOCAL <-> SSH transfers can use the
     // HTML5 drop targets. Hold Alt when an OS-level drag-out is wanted.
-    if (!event.altKey) {
-      event.dataTransfer.setData("application/x-filetransfer-source", "remote");
-      return;
-    }
+    if (!event.altKey) return;
     // The webview's native HTML5 drag-and-drop cannot drop files onto
     // external apps on Linux (webkit2gtk does not implement outbound file
     // drag via DownloadURL/text/uri-list). tauri-plugin-drag starts a real
@@ -3075,7 +3074,7 @@ function App() {
           setDropTarget("");
           window.clearTimeout(dragExpandTimerRef.current);
         }}
-        onDrop={(event) => {
+        onDropCapture={(event) => {
           event.preventDefault();
           event.stopPropagation();
           stopDragAutoScroll();
@@ -3180,13 +3179,13 @@ function App() {
       <div
         className={`local-pane-body ${dragSource === "remote" && remoteSshEntryId ? "drop-target" : ""}`}
         onDragOver={(event) => {
-          if (dragSource === "remote" && remoteSshEntryId && dragItems.length) {
+          if (dragSourceRef.current === "remote" && remoteSshEntryId && dragItemsRef.current.length) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
           }
         }}
-        onDrop={(event) => {
-          if (dragSource === "remote" && remoteSshEntryId) {
+        onDropCapture={(event) => {
+          if (dragSourceRef.current === "remote" && remoteSshEntryId) {
             event.preventDefault();
             event.stopPropagation();
             downloadRemoteItemsToLocal(dragItemsRef.current);
@@ -3219,9 +3218,10 @@ function App() {
               onDragStart={(event) => beginLocalDrag(event, file)}
               onDragEnd={finishDrag}
               onClick={() => setLocalSelected([file.path])}
-              onDoubleClick={() =>
-                file.isDirectory && void run(() => loadLocalFiles(file.path))
-              }
+              onDoubleClick={() => {
+                if (file.isDirectory) void run(() => loadLocalFiles(file.path));
+                else openLocalViewer(file.path);
+              }}
             >
               <span>{file.isDirectory ? "📁" : "📄"}</span>
               <span className="local-file-name">{file.name}</span>
@@ -3737,15 +3737,15 @@ function App() {
               className="file-area"
               onDragOver={(event) => {
                 handleDragAutoScroll(event, fileAreaRef.current);
-                if (dragSource === "local" && remoteSshEntryId && dragItems.length) {
+                if (dragSourceRef.current === "local" && remoteSshEntryId && dragItemsRef.current.length) {
                   event.preventDefault();
                   event.dataTransfer.dropEffect = "copy";
                 }
               }}
               onDragLeave={stopDragAutoScroll}
-              onDrop={(event) => {
+              onDropCapture={(event) => {
                 stopDragAutoScroll();
-                if (dragSource === "local" && remoteSshEntryId) {
+                if (dragSourceRef.current === "local" && remoteSshEntryId) {
                   event.preventDefault();
                   event.stopPropagation();
                   const items = dragItemsRef.current;
