@@ -688,11 +688,7 @@ function App() {
     if (!splitMode) return;
     if (!localPath) {
       void run(async () => {
-        try {
-          await loadLocalFiles("Desktop");
-        } catch {
-          await loadLocalFiles("");
-        }
+        await loadLocalFiles("");
       });
       return;
     }
@@ -2349,13 +2345,7 @@ function App() {
     const nextMode = !splitMode;
     setSplitMode(nextMode);
     if (nextMode && !localPath) {
-      void run(async () => {
-        try {
-          await loadLocalFiles("Desktop");
-        } catch {
-          await loadLocalFiles("");
-        }
-      });
+      void run(() => loadLocalFiles(""));
     }
   };
 
