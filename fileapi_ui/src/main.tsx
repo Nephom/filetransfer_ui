@@ -99,6 +99,7 @@ type SshTerminalTab = {
   sshEntryId: string;
   sessionId: string;
   connected: boolean;
+  connecting?: boolean;
   output: string;
   recording: boolean;
   recordingStartedAt: number | null;
@@ -115,7 +116,7 @@ type TransferQueueItem = {
   destinationPath: string;
   locationId: string;
   locationName: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
   detail: string;
   downloadUrl?: string;
   downloadMethod?: string;
@@ -126,6 +127,17 @@ type TransferQueueItem = {
   setFiles?: { relativePath: string; remotePath: string; size: number }[];
   setCompleted?: number;
   setLabel?: string;
+  sshEntryId?: string;
+  sshItems?: FileItem[];
+};
+type UndoEntry = {
+  id: string;
+  description: string;
+  source: "api" | "ssh";
+  locationId?: string;
+  entryId?: string;
+  oldPath: string;
+  newPath: string;
 };
 type DesktopSettings = {
   uiDensity: "auto" | "compact" | "standard" | "comfortable";
@@ -146,12 +158,6 @@ type OperationStorageInfo = {
   logBytes: number;
   logFiles: string[];
 };
-
-const sxpHelp = `sxp <Session name> upload <source folder> <destination folder>
-sxp <Session name> mv <source folder> <destination folder>
-
-REMOTE (Location name) is the API Remote selected by the top LOCATION control.
-Source and destination folders must be named folders in the selected Session.`;
 
 const sessionEntries = (session: ManagedSession): SessionEntry[] => session.sxpEntries.flatMap((entry) => [
   { id: `${entry.id}-local`, alias: entry.localAlias, kind: "LOCAL", path: entry.localPath },
@@ -176,27 +182,6 @@ const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
   });
 };
 
-const parseSxpCommand = (input: string, sessions: ManagedSession[]) => {
-  const args = input.trim().split(/\s+/).filter(Boolean);
-  if (args[0] !== "sxp") return "Only the embedded SXP command is available here.";
-  if (!sessions.length) return "Please create a Session before using SXP.";
-  if (args[1] === "help") return sxpHelp;
-  if (args.length !== 5 || !["upload", "mv"].includes(args[2])) {
-    return `Usage: sxp <Session name> ${args[2] === "mv" ? "mv" : "upload"} <source folder> <destination folder>`;
-  }
-  const session = sessions.find(
-    (item) => item.id === args[1] || item.name === args[1],
-  );
-  if (!session) return `Session not found: ${args[1]}`;
-  const entries = sessionEntries(session);
-  const source = entries.find((entry) => entry.alias === args[3]);
-  const destination = entries.find((entry) => entry.alias === args[4]);
-  if (!source || !destination) {
-    return "Source and destination folders must be named folders in the selected Session.";
-  }
-  return `Parsed ${args[2]}: ${source.alias} -> ${destination.alias}\n` +
-    "Transfer execution will be submitted to the shared queue.";
-};
 const stripAnsi = (value: string) =>
   value.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:][\d;]*)*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
 
@@ -457,6 +442,13 @@ function App() {
   const [localFiles, setLocalFiles] = useState<FileItem[]>([]);
   const [localPath, setLocalPath] = useState("");
   const [localSelected, setLocalSelected] = useState<string[]>([]);
+  const [localFolderTree, setLocalFolderTree] = useState<FolderNode>({
+    path: "",
+    name: "/",
+    expanded: true,
+    loaded: false,
+    children: [],
+  });
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [path, setPath] = useState("");
@@ -518,11 +510,12 @@ function App() {
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [sessionFormError, setSessionFormError] = useState("");
   const [lastSavedSessionId, setLastSavedSessionId] = useState("");
-  const [sxpHelpOpen, setSxpHelpOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [terminalTab, setTerminalTab] = useState<"sxp" | "ssh">("sxp");
   const [sshTabs, setSshTabs] = useState<SshTerminalTab[]>([]);
   const [activeSshTabId, setActiveSshTabId] = useState("");
+  const [sshQuickListOpen, setSshQuickListOpen] = useState(true);
+  const [terminalMaximized, setTerminalMaximized] = useState(false);
+  const previousTerminalHeightRef = useRef(260);
   const [terminalHeight, setTerminalHeight] = useState(() =>
     Number(localStorage.getItem("fileapi-terminal-height")) || 260,
   );
@@ -557,7 +550,6 @@ function App() {
     }
   });
   const [selectedSshEntryId, setSelectedSshEntryId] = useState("");
-  const [sxpWorkspaceId, setSxpWorkspaceId] = useState("");
   const [sshConnected, setSshConnected] = useState(false);
   const [sshSessionId, setSshSessionId] = useState("");
   const [sshOutput, setSshOutput] = useState("");
@@ -578,6 +570,7 @@ function App() {
   const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
   const [uploadSessionId, setUploadSessionId] = useState("");
   const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>([]);
+  const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
   const [archiveFormatOpen, setArchiveFormatOpen] = useState(false);
   const [archiveFormatDraft, setArchiveFormatDraft] = useState<"tar.gz" | "zip" | "queue">("tar.gz");
@@ -600,9 +593,12 @@ function App() {
   const sshSecretPromptRef = useRef(false);
   const activeSshTabIdRef = useRef("");
   const pendingSshTabIdsRef = useRef<string[]>([]);
+  const connectAttemptRef = useRef<Record<string, string>>({});
   const sshTabsRef = useRef<SshTerminalTab[]>([]);
   const shellInputRef = useRef("");
   const dragPreparationRef = useRef(new Map<string, Promise<string>>());
+  const dragExpandTimerRef = useRef<number | undefined>(undefined);
+  const dragScrollIntervalRef = useRef<number | null>(null);
   const dragIconPathRef = useRef<Promise<string> | null>(null);
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
@@ -852,13 +848,8 @@ function App() {
     fit.fit();
     terminalInstanceRef.current = terminal;
     shellInputRef.current = "";
-    if (terminalTab === "sxp") {
-      terminal.write(managedSessions.length ? "SXP terminal ready. Type a command or open help.\r\n" : "Please create a Session before using SXP.\r\n");
-    } else {
-      terminal.write(sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Create an SSH tab and connect.\r\n");
-    }
+    terminal.write(sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n");
     const resizeSshPty = () => {
-      if (terminalTab !== "ssh") return;
       const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
       if (!tab?.sessionId) return;
       void invoke("ssh_resize", { sessionId: tab.sessionId, cols: terminal.cols, rows: terminal.rows });
@@ -870,36 +861,22 @@ function App() {
     resizeObserver.observe(terminalHostRef.current);
     resizeSshPty();
     const inputListener = terminal.onData((data: string) => {
-        if (terminalTab === "ssh") {
-          const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
-          if (!tab?.sessionId) return;
-          void invoke("ssh_write", { sessionId: tab.sessionId, data });
-          if (recordingRef.current && !sshSecretPromptRef.current) {
-            if (data === "\r" || data === "\n") {
-              if (shellInputRef.current.trim()) {
-                const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
-                commandLogRef.current += command;
-                setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, commandLog: item.commandLog + command } : item));
-            }
-            shellInputRef.current = "";
-          } else if (data === "\u007f") {
-            shellInputRef.current = shellInputRef.current.slice(0, -1);
-          } else if (!data.startsWith("\u001b")) {
-            shellInputRef.current += data;
+      const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
+      if (!tab?.sessionId) return;
+      void invoke("ssh_write", { sessionId: tab.sessionId, data });
+      if (recordingRef.current && !sshSecretPromptRef.current) {
+        if (data === "\r" || data === "\n") {
+          if (shellInputRef.current.trim()) {
+            const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
+            commandLogRef.current += command;
+            setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, commandLog: item.commandLog + command } : item));
           }
+          shellInputRef.current = "";
+        } else if (data === "\u007f") {
+          shellInputRef.current = shellInputRef.current.slice(0, -1);
+        } else if (!data.startsWith("\u001b")) {
+          shellInputRef.current += data;
         }
-        return;
-      }
-      if (data === "\r" || data === "\n") {
-        const result = parseSxpCommand(shellInputRef.current, managedSessions);
-        terminal.write(`\r\n${result.replace(/\n/g, "\r\n")}\r\n`);
-        shellInputRef.current = "";
-      } else if (data === "\u007f") {
-        shellInputRef.current = shellInputRef.current.slice(0, -1);
-        terminal.write("\b \b");
-      } else if (!data.startsWith("\u001b")) {
-        shellInputRef.current += data;
-        terminal.write(data);
       }
     });
     return () => {
@@ -908,7 +885,7 @@ function App() {
       terminal.dispose();
       terminalInstanceRef.current = null;
     };
-  }, [terminalOpen, terminalTab, activeSshTabId, sshTabs.find((item) => item.id === activeSshTabId)?.sessionId]);
+  }, [terminalOpen, activeSshTabId, sshTabs.find((item) => item.id === activeSshTabId)?.sessionId]);
 
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
@@ -1004,9 +981,10 @@ function App() {
       .flatMap((workspace) => workspace.sshEntries)
       .filter((entry) => sshTabs.some((tab) => tab.sshEntryId === entry.id && tab.connected));
 
-  const loadFiles = async (nextPath = path) => {
-    if (remoteSshEntryId) {
-      const profile = findSshProfileById(remoteSshEntryId);
+  const loadFiles = async (nextPath = path, sshEntryOverride: string | null = null) => {
+    const sshEntryId = sshEntryOverride !== null ? sshEntryOverride : remoteSshEntryId;
+    if (sshEntryId) {
+      const profile = findSshProfileById(sshEntryId);
       if (!profile) {
         setRemoteSshEntryId("");
         throw new Error("The SSH connection for this remote view is no longer available.");
@@ -1051,6 +1029,31 @@ function App() {
     ));
   };
 
+  const loadLocalTreeChildren = async (treePath: string, force = false) => {
+    try {
+      const data = await invoke<LocalDirectory>("local_list_directory", { path: treePath });
+      const children = (data.files || [])
+        .filter((file) => file.isDirectory)
+        .map((file) => ({ path: file.path, name: file.name, expanded: false, loaded: false, children: [] }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+      setLocalFolderTree((tree) =>
+        updateTreeNode(tree, treePath, (node) => ({ ...node, expanded: true, loaded: true, children })),
+      );
+    } catch (error) {
+      if (!force) throw error instanceof Error ? error : new Error(String(error));
+    }
+  };
+
+  const toggleLocalFolder = (node: FolderNode) => {
+    if (!node.expanded && !node.loaded) {
+      void run(() => loadLocalTreeChildren(node.path));
+      return;
+    }
+    setLocalFolderTree((tree) =>
+      updateTreeNode(tree, node.path, (item) => ({ ...item, expanded: !item.expanded })),
+    );
+  };
+
   const updateTreeNode = (
     node: FolderNode,
     targetPath: string,
@@ -1065,16 +1068,34 @@ function App() {
           ),
         };
 
-  const loadTreeChildren = async (treePath: string, force = false) => {
-    const response = await api(
-      `/api/files?path=${encodeURIComponent(treePath)}`,
-    );
-    if (!response.ok) {
-      if (!force) throw new Error(await readError(response));
-      return;
+  const loadTreeChildren = async (treePath: string, force = false, sshEntryOverride: string | null = null) => {
+    const sshEntryId = sshEntryOverride !== null ? sshEntryOverride : remoteSshEntryId;
+    let childFiles: FileItem[];
+    if (sshEntryId) {
+      const profile = findSshProfileById(sshEntryId);
+      if (!profile) {
+        if (!force) throw new Error("The SSH connection for this remote view is no longer available.");
+        return;
+      }
+      try {
+        const data = await invoke<LocalDirectory>("ssh_list_directory", { profile, path: treePath });
+        childFiles = data.files || [];
+      } catch (error) {
+        if (!force) throw error instanceof Error ? error : new Error(String(error));
+        return;
+      }
+    } else {
+      const response = await api(
+        `/api/files?path=${encodeURIComponent(treePath)}`,
+      );
+      if (!response.ok) {
+        if (!force) throw new Error(await readError(response));
+        return;
+      }
+      const data = await response.json();
+      childFiles = data.files || [];
     }
-    const data = await response.json();
-    const children = (data.files || [])
+    const children = childFiles
       .filter((file: FileItem) => file.isDirectory)
       .map((file: FileItem) => ({
         path: file.path,
@@ -1109,6 +1130,43 @@ function App() {
     );
   };
 
+  // Drag-and-drop UX helpers shared by every scrollable drop target (the
+  // Folders tree, the file list, and the LOCAL tree/list) so a user can drag
+  // a file to any folder -- including ones currently off-screen or
+  // collapsed -- without needing a separate "Move" picker dialog.
+  const stopDragAutoScroll = () => {
+    if (dragScrollIntervalRef.current !== null) {
+      window.clearInterval(dragScrollIntervalRef.current);
+      dragScrollIntervalRef.current = null;
+    }
+  };
+
+  const handleDragAutoScroll = (event: React.DragEvent, container: HTMLElement | null) => {
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const threshold = 48;
+    const distanceFromTop = event.clientY - rect.top;
+    const distanceFromBottom = rect.bottom - event.clientY;
+    stopDragAutoScroll();
+    if (distanceFromTop >= 0 && distanceFromTop < threshold) {
+      const speed = Math.max(2, (threshold - distanceFromTop) / 2);
+      dragScrollIntervalRef.current = window.setInterval(() => {
+        container.scrollTop -= speed;
+      }, 16);
+    } else if (distanceFromBottom >= 0 && distanceFromBottom < threshold) {
+      const speed = Math.max(2, (threshold - distanceFromBottom) / 2);
+      dragScrollIntervalRef.current = window.setInterval(() => {
+        container.scrollTop += speed;
+      }, 16);
+    }
+  };
+
+  const scheduleTreeExpand = (node: FolderNode) => {
+    if (node.expanded) return;
+    window.clearTimeout(dragExpandTimerRef.current);
+    dragExpandTimerRef.current = window.setTimeout(() => toggleFolder(node), 650);
+  };
+
   useEffect(() => {
     if (session.token) {
       void loadLocations().catch((error) =>
@@ -1129,13 +1187,10 @@ function App() {
   useEffect(() => {
     void (async () => {
       try {
-        await loadLocalFiles("Desktop");
-      } catch {
-        try {
-          await loadLocalFiles("");
-        } catch (error) {
-          setNotice(error instanceof Error ? error.message : String(error));
-        }
+        await loadLocalFiles("");
+        await loadLocalTreeChildren("", true);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error));
       }
     })();
   }, []);
@@ -1150,9 +1205,8 @@ function App() {
   }, [session.token, session.locationId]);
 
   const selectLocation = (locationId: string) => {
+    const wasSsh = Boolean(remoteSshEntryId);
     setRemoteSshEntryId("");
-    if (locationId === session.locationId) return;
-    setSession((current) => ({ ...current, locationId }));
     setPath("");
     setSelected([]);
     setSearch("");
@@ -1165,6 +1219,18 @@ function App() {
       loaded: false,
       children: [],
     });
+    if (locationId === session.locationId) {
+      // Same API Location as before: the [session.locationId] effect will
+      // not re-fire, so if we were leaving SSH browsing we must refresh
+      // explicitly to avoid leaving the old SSH listing on screen.
+      if (wasSsh) {
+        void run(async () => {
+          await Promise.all([loadFiles("", ""), loadTreeChildren("", true, "")]);
+        });
+      }
+      return;
+    }
+    setSession((current) => ({ ...current, locationId }));
   };
 
   const selectSshBrowse = (entryId: string) => {
@@ -1182,7 +1248,9 @@ function App() {
       loaded: false,
       children: [],
     });
-    void run(() => loadFiles(""));
+    void run(async () => {
+      await Promise.all([loadFiles("", entryId), loadTreeChildren("", true, entryId)]);
+    });
   };
 
   const saveSession = (form?: HTMLFormElement) => {
@@ -1237,7 +1305,6 @@ function App() {
         ? current.map((item) => item.id === existingWorkspace.id ? managedSession : item)
         : [...current, managedSession]);
       setWorkspaceSessionId(managedSession.id);
-      setSxpWorkspaceId(managedSession.id);
       setSessionNameDraft(name);
       setSessionFormError("");
       setLastSavedSessionId(managedSession.id);
@@ -1262,7 +1329,6 @@ function App() {
         : [...current, profile]);
       setSshProfileId(profile.id);
       if (managedSessionId) setWorkspaceSessionId(managedSessionId);
-      setTerminalTab("ssh");
       setTerminalOpen(true);
       setNotice(`Session SSH connection selected: ${entry.profileName || entry.profileId}. Connect when ready.`);
       return;
@@ -1405,6 +1471,7 @@ function App() {
       sshEntryId: profile.id,
       sessionId: "",
       connected: false,
+      connecting: false,
       output: "",
       recording: false,
       recordingStartedAt: null,
@@ -1417,7 +1484,6 @@ function App() {
     setActiveSshTabId(tab.id);
     setWorkspaceSessionId(workspaceId);
     setSelectedSshEntryId(entryId);
-    setTerminalTab("ssh");
     setTerminalOpen(true);
     loadSshProfileDraft(profile);
     return tab.id;
@@ -1445,6 +1511,73 @@ function App() {
     if (profile) {
       setSshProfileId(profile.id);
       loadSshProfileDraft(profile);
+    }
+  };
+
+  const performSshConnect = (tabId: string, profile: SshProfile) => {
+    const attemptId = `${tabId}-${Date.now()}`;
+    connectAttemptRef.current[tabId] = attemptId;
+    setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: true }));
+    void run(async () => {
+      sshConnectingRef.current = true;
+      pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tabId];
+      try {
+        const nativeProfile = {
+          id: profile.id,
+          name: profile.name,
+          host: profile.host,
+          port: profile.port,
+          username: profile.username,
+          privateKeyPath: profile.privateKeyPath || null,
+        };
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n` }));
+        const id = await invoke<string>("ssh_connect", { profile: nativeProfile });
+        if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, connecting: false }));
+      } catch (error) {
+        if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
+        const detail = error instanceof Error ? error.message : String(error);
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${detail}\n`, connecting: false }));
+        setNotice(detail);
+      } finally {
+        pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
+        sshConnectingRef.current = false;
+      }
+    });
+  };
+
+  const cancelSshConnect = (tabId: string) => {
+    delete connectAttemptRef.current[tabId];
+    setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: false, output: `${item.output}Connection attempt cancelled.\n` }));
+    notify("Connection attempt cancelled. The connection may still complete in the background and will be ignored if it does.");
+  };
+
+  const quickConnectSsh = (workspaceId: string, entryId: string) => {
+    const existingTab = sshTabs.find((tab) => tab.workspaceId === workspaceId && tab.sshEntryId === entryId);
+    const workspace = managedSessions.find((item) => item.id === workspaceId);
+    const profile = workspace?.sshEntries.find((item) => item.id === entryId);
+    if (existingTab) {
+      selectSshTab(existingTab);
+      if (!existingTab.connected && !existingTab.connecting && profile) performSshConnect(existingTab.id, profile);
+      return;
+    }
+    if (!workspace || !profile) {
+      openSessionsModal();
+      setNotice("Select an SSH entry before connecting.");
+      return;
+    }
+    const tabId = createSshTab(workspaceId, entryId);
+    if (tabId) performSshConnect(tabId, profile);
+  };
+
+  const toggleTerminalMaximized = () => {
+    if (terminalMaximized) {
+      setTerminalHeight(previousTerminalHeightRef.current);
+      setTerminalMaximized(false);
+    } else {
+      previousTerminalHeightRef.current = terminalHeight;
+      setTerminalHeight(Math.max(160, window.innerHeight - 180));
+      setTerminalMaximized(true);
     }
   };
 
@@ -1505,11 +1638,9 @@ function App() {
           sshEntries: [],
         };
         setManagedSessions([workspace]);
-        setSxpWorkspaceId(workspace.id);
       }
       if (workspace) {
         setWorkspaceSessionId(workspace.id);
-        if (workspace.sxpEntries.length) setSxpWorkspaceId(workspace.id);
         const sxpEntry = workspace.sxpEntries[0];
         setSxpEntryDraftId(sxpEntry?.id || "");
         setSxpEntryNameDraft(sxpEntry?.name || "Default Transfer");
@@ -1625,30 +1756,7 @@ function App() {
       setNotice("Select or create a Session with an SSH connection before connecting.");
       return;
     }
-    void run(async () => {
-      sshConnectingRef.current = true;
-      pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tabId];
-      try {
-        const nativeProfile = {
-          id: profile.id,
-          name: profile.name,
-          host: profile.host,
-          port: profile.port,
-          username: profile.username,
-          privateKeyPath: profile.privateKeyPath || null,
-        };
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n` }));
-        const id = await invoke<string>("ssh_connect", { profile: nativeProfile });
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true }));
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${detail}\n` }));
-        setNotice(detail);
-      } finally {
-        pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
-        sshConnectingRef.current = false;
-      }
-    });
+    performSshConnect(tabId, profile);
   };
 
   const installSshKey = () => {
@@ -1786,6 +1894,35 @@ function App() {
     setTransferQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
   };
 
+  const cancelledQueueItemsRef = useRef(new Set<string>());
+  const cancelQueueItem = (id: string) => {
+    cancelledQueueItemsRef.current.add(id);
+    updateQueueItem(id, { status: "cancelled", detail: "Cancelled by user." });
+  };
+  const isQueueItemCancelled = (id: string) => cancelledQueueItemsRef.current.has(id);
+
+  const runQueuedSshUpload = async (item: TransferQueueItem, profile: SshProfile) => {
+    writeOperationLog("upload", "started", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "SSH transfer queue upload started.", "DEBUG");
+    updateQueueItem(item.id, { status: "running", detail: `Uploading 0/${item.paths.length} items...` });
+    let completed = 0;
+    try {
+      for (const localPath of item.paths) {
+        if (isQueueItemCancelled(item.id)) return;
+        await invoke("ssh_upload_path", { profile, localPath, remoteDestinationFolder: item.destinationPath });
+        completed += 1;
+        updateQueueItem(item.id, { detail: `Uploading ${completed}/${item.paths.length} items...` });
+      }
+      updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${completed} item(s) to ${item.destinationPath || "/"}.` });
+      writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${completed} item(s) via SFTP.`);
+      await loadFiles(path);
+    } catch (error) {
+      if (isQueueItemCancelled(item.id)) return;
+      const detail = error instanceof Error ? error.message : String(error);
+      updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${item.paths.length} completed before failing)` });
+      writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `SSH queued upload failed: ${detail}`, "ERROR");
+    }
+  };
+
   const runQueuedUpload = async (item: TransferQueueItem) => {
     writeOperationLog("upload", "started", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "Transfer queue upload started.", "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: "Inspecting files..." });
@@ -1815,6 +1952,7 @@ function App() {
          return;
       }
       for (let attempt = 0; attempt < 600; attempt += 1) {
+        if (isQueueItemCancelled(item.id)) return;
         const progressResponse = await invoke<NativeApiResponse>("api_request", {
           url: `${serverUrl(session)}/api/progress/batch/${encodeURIComponent(batchId)}`,
           method: "GET",
@@ -1822,6 +1960,7 @@ function App() {
           body: null,
           ignoreTlsErrors: session.ignoreTlsErrors,
         });
+        if (isQueueItemCancelled(item.id)) return;
         const progress = new ApiResponse(progressResponse.status, progressResponse.body);
         if (!progress.ok) throw new Error(await readError(progress));
         const batch = await progress.json() as { status: string; progress: number; successCount: number; totalFiles: number; failedCount: number };
@@ -1884,6 +2023,7 @@ function App() {
     let lastDestinationRoot = "";
     try {
       for (const file of files) {
+        if (isQueueItemCancelled(item.id)) return;
         const relativePath = `${item.setLabel}/${file.relativePath}`;
         const destination = await invoke<string>("download_to_disk_at", {
           url: `${serverUrl(session)}/api/files/download/${downloadPath(file.remotePath)}`,
@@ -1900,6 +2040,7 @@ function App() {
       updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || "Downloads"}.` });
       writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded ${completed} file(s).`);
     } catch (error) {
+      if (isQueueItemCancelled(item.id)) return;
       const detail = error instanceof Error ? error.message : String(error);
       updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${files.length} completed before failing)` });
       writeOperationLog("download", "failed", item.label, "Local Downloads", `Queued download failed: ${detail}`, "ERROR");
@@ -2092,13 +2233,79 @@ function App() {
       );
     });
 
+  // Undo history is intentionally limited to operations that can be reliably
+  // and verifiably reversed: rename and move (a move is just a rename that
+  // also changes the parent folder). There is no remote Trash, so delete is
+  // never recorded here -- the delete confirmation dialog makes that explicit
+  // to the user instead.
+  const MAX_UNDO_ENTRIES = 20;
+
+  const recordUndoEntry = (entry: Omit<UndoEntry, "id">) => {
+    if (!desktopSettings.undoHistoryEnabled) return;
+    const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+    setUndoStack((current) => [...current, { ...entry, id }].slice(-MAX_UNDO_ENTRIES));
+  };
+
+  const recordUndoableRename = (options: { source: "api" | "ssh"; locationId?: string; entryId?: string; oldPath: string; newPath: string }) =>
+    recordUndoEntry({
+      description: `Rename ${options.oldPath.split("/").pop()} back to ${options.newPath.split("/").pop()}`,
+      ...options,
+    });
+
+  const recordUndoableMove = (options: { source: "api" | "ssh"; locationId?: string; entryId?: string; oldPath: string; newPath: string }) =>
+    recordUndoEntry({
+      description: `Move ${options.newPath} back to ${options.oldPath}`,
+      ...options,
+    });
+
+  const undoLastOperation = () =>
+    run(async () => {
+      const entry = undoStack[undoStack.length - 1];
+      if (!entry) return;
+      if (entry.source === "ssh") {
+        const profile = entry.entryId ? findSshProfileById(entry.entryId) : undefined;
+        if (!profile) throw new Error("The SSH connection for this undo entry is no longer available.");
+        await invoke("ssh_rename_path", { profile, oldPath: entry.newPath, newPath: entry.oldPath });
+      } else {
+        if (entry.locationId && entry.locationId !== session.locationId) {
+          throw new Error("Switch LOCATION back to the Remote this operation happened on before undoing it.");
+        }
+        const oldName = entry.oldPath.split("/").pop() || entry.oldPath;
+        const newParent = entry.newPath.split("/").slice(0, -1).join("/");
+        const newName = entry.newPath.split("/").pop() || entry.newPath;
+        const response = await api("/api/files/rename", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ oldName: newName, newName: oldName, currentPath: newParent }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+      }
+      setUndoStack((current) => current.slice(0, -1));
+      await loadFiles(path);
+      notify(`Undone: ${entry.description}`);
+    });
+
   const moveItems = (items: FileItem[], destination: string) =>
     run(async () => {
-      ensureApiRemote();
       if (!isValidMoveTarget(items, destination))
         throw new Error(
           "Choose a folder other than the current folder or a folder inside a selected folder.",
         );
+      if (remoteSshEntryId) {
+        const profile = findSshProfileById(remoteSshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+        for (const item of items) {
+          const newPath = `${destination.replace(/\/+$/, "")}/${item.name}`;
+          await invoke("ssh_rename_path", { profile, oldPath: item.path, newPath });
+          recordUndoableMove({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath });
+        }
+        setDragItems([]);
+        setDropTarget("");
+        setContextMenu(null);
+        notify(`Moved ${items.length} item${items.length === 1 ? "" : "s"}.`);
+        await loadFiles(path);
+        return;
+      }
       const response = await api("/api/files/paste", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2114,6 +2321,14 @@ function App() {
       });
       if (!response.ok) throw new Error(await readError(response));
       const data = await response.json();
+      for (const item of items) {
+        recordUndoableMove({
+          source: "api",
+          locationId: session.locationId,
+          oldPath: item.path,
+          newPath: `${destination.replace(/\/+$/, "")}/${item.name}`,
+        });
+      }
       setDragItems([]);
       setDropTarget("");
       setContextMenu(null);
@@ -2173,10 +2388,31 @@ function App() {
   };
 
   const prepareRemoteDrag = (file: FileItem) => {
-    if (remoteSshEntryId) return;
     const items = selected.includes(file.path) ? selectedItems : [file];
     const preparationKey = items.map((item) => item.path).join("\0");
     if (dragPreparationRef.current.has(preparationKey)) return;
+    if (remoteSshEntryId) {
+      const profile = findSshProfileById(remoteSshEntryId);
+      if (!profile) return;
+      setNotice(`Preparing ${items.length} selected item${items.length === 1 ? "" : "s"} for drag...`);
+      const setId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+      const preparation = (async () => {
+        let lastDestination = "";
+        for (const item of items) {
+          lastDestination = await invoke<string>("ssh_download_to_drag_staging", {
+            profile,
+            remotePath: item.path,
+            isDirectory: item.isDirectory,
+            setId,
+          });
+        }
+        if (items.length === 1) return lastDestination;
+        const suffixLength = items[items.length - 1].name.length + 1;
+        return lastDestination.slice(0, lastDestination.length - suffixLength);
+      })();
+      dragPreparationRef.current.set(preparationKey, preparation);
+      return;
+    }
     const singleFile = items.length === 1 && !items[0].isDirectory;
     const headers: [string, string][] = session.token
       ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
@@ -2319,9 +2555,62 @@ function App() {
     void runQueuedDownload(item);
   };
 
+  const runQueuedSshDownload = async (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => {
+    writeOperationLog("download", "started", item.label, "Local Downloads", `SSH queued download of ${items.length} item(s) started.`, "DEBUG");
+    updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${items.length} items...` });
+    let completed = 0;
+    let lastDestination = "";
+    try {
+      for (const file of items) {
+        if (isQueueItemCancelled(item.id)) return;
+        lastDestination = await invoke<string>("ssh_download_to_downloads", {
+          profile,
+          remotePath: file.path,
+          isDirectory: file.isDirectory,
+        });
+        completed += 1;
+        updateQueueItem(item.id, { detail: `Downloading ${completed}/${items.length} items...` });
+      }
+      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} item(s) to ${lastDestination.split("/").slice(0, -1).join("/") || "Downloads"}.` });
+      writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded ${completed} item(s) via SFTP.`);
+    } catch (error) {
+      if (isQueueItemCancelled(item.id)) return;
+      const detail = error instanceof Error ? error.message : String(error);
+      updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${items.length} completed before failing)` });
+      writeOperationLog("download", "failed", item.label, "Local Downloads", `SSH queued download failed: ${detail}`, "ERROR");
+    }
+  };
+
+  const enqueueSshDownload = () => {
+    if (!selectedItems.length) return;
+    const profile = findSshProfileById(remoteSshEntryId);
+    if (!profile) {
+      setNotice("The SSH connection for this remote view is no longer available.");
+      return;
+    }
+    const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+    const label = selectedItems.length === 1 ? selectedItems[0].name : `${selectedItems.length} selected items`;
+    const item: TransferQueueItem = {
+      id,
+      label,
+      kind: "download",
+      paths: [],
+      destinationPath: "Downloads",
+      locationId: "",
+      locationName: `SSH: ${profile.name}`,
+      status: "queued",
+      detail: "Waiting to start",
+      sshEntryId: remoteSshEntryId,
+      sshItems: selectedItems,
+    };
+    setTransferQueue((current) => [...current, item]);
+    setQueueOpen(true);
+    void runQueuedSshDownload(item, profile, selectedItems);
+  };
+
   const download = () => {
     if (remoteSshEntryId) {
-      setNotice("Downloading from an SSH remote is not supported yet. Use the terminal, or switch LOCATION back to an API Remote.");
+      enqueueSshDownload();
       return;
     }
     if (!selectedItems.length) return;
@@ -2380,7 +2669,6 @@ function App() {
 
   const uploadPaths = (paths: string[]) =>
     void run(async () => {
-      ensureApiRemote();
       if (!paths.length) return;
       const summary = await invoke<UploadSummary>("inspect_upload_paths", {
         paths,
@@ -2390,6 +2678,26 @@ function App() {
       );
       if (!accepted) return;
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+      if (remoteSshEntryId) {
+        const profile = findSshProfileById(remoteSshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+        const item: TransferQueueItem = {
+          id,
+          label: `${summary.files} files, ${summary.directories} folders`,
+          kind: "upload",
+          paths,
+          destinationPath: path,
+          locationId: "",
+          locationName: `SSH: ${profile.name}`,
+          status: "queued",
+          detail: "Waiting to start",
+          sshEntryId: remoteSshEntryId,
+        };
+        setTransferQueue((current) => [...current, item]);
+        setQueueOpen(true);
+        void runQueuedSshUpload(item, profile);
+        return;
+      }
       const item: TransferQueueItem = {
         id,
         label: `${summary.files} files, ${summary.directories} folders`,
@@ -2430,57 +2738,88 @@ function App() {
       disposed = true;
       unlisten?.();
     };
-  }, [session.token, path, session.ignoreTlsErrors]);
+  }, [session.token, path, session.ignoreTlsErrors, remoteSshEntryId]);
 
   const createFolder = () =>
     run(async () => {
-      ensureApiRemote();
       const folderName = window.prompt("Folder name");
       if (!folderName?.trim()) return;
+      const name = folderName.trim();
+      if (remoteSshEntryId) {
+        const profile = findSshProfileById(remoteSshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+        const fullPath = path ? `${path}/${name}` : name;
+        await invoke("ssh_create_directory", { profile, path: fullPath });
+        await loadFiles(path);
+        notify(`Created ${name}.`);
+        return;
+      }
       const response = await api("/api/folders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          folderName: folderName.trim(),
+          folderName: name,
           currentPath: path,
         }),
       });
       if (!response.ok) throw new Error(await readError(response));
       await loadFiles(path);
-      notify(`Created ${folderName.trim()}.`);
+      notify(`Created ${name}.`);
     });
 
   const rename = () =>
     run(async () => {
-      ensureApiRemote();
       if (selectedItems.length !== 1) return;
       const item = selectedItems[0];
       const newName = window.prompt("New name", item.name);
       if (!newName?.trim() || newName === item.name) return;
+      const trimmedName = newName.trim();
+      if (remoteSshEntryId) {
+        const profile = findSshProfileById(remoteSshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+        const parentPath = item.path.split("/").slice(0, -1).join("/");
+        const newPath = parentPath ? `${parentPath}/${trimmedName}` : trimmedName;
+        await invoke("ssh_rename_path", { profile, oldPath: item.path, newPath });
+        recordUndoableRename({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath });
+        await loadFiles(path);
+        notify(`Renamed ${item.name}.`);
+        return;
+      }
       const response = await api("/api/files/rename", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           oldName: item.name,
-          newName: newName.trim(),
+          newName: trimmedName,
           currentPath: path,
         }),
       });
       if (!response.ok) throw new Error(await readError(response));
+      recordUndoableRename({ source: "api", locationId: session.locationId, oldPath: item.path, newPath: path ? `${path}/${trimmedName}` : trimmedName });
       await loadFiles(path);
       notify(`Renamed ${item.name}.`);
     });
 
   const remove = () =>
     run(async () => {
-      ensureApiRemote();
       if (
         !selectedItems.length ||
         (desktopSettings.confirmations.delete && !window.confirm(
-          `Delete ${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}?`,
+          `Delete ${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}? This cannot be undone.`,
         ))
       )
         return;
+      if (remoteSshEntryId) {
+        const profile = findSshProfileById(remoteSshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+        for (const item of selectedItems) {
+          await invoke("ssh_delete_path", { profile, path: item.path, isDirectory: item.isDirectory });
+        }
+        await loadFiles(path);
+        writeOperationLog("delete", "completed", `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`, `SSH: ${profile.name}:${path || "/"}`, "Deleted through SFTP. This cannot be undone.");
+        notify("Deleted selected items. This cannot be undone.");
+        return;
+      }
       const response = await api("/api/files/delete", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
@@ -2494,8 +2833,8 @@ function App() {
       });
       if (!response.ok) throw new Error(await readError(response));
       await loadFiles(path);
-      writeOperationLog("delete", "completed", `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`, `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`, "Deleted through the API Remote.");
-      notify("Deleted selected items.");
+      writeOperationLog("delete", "completed", `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`, `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`, "Deleted through the API Remote. This cannot be undone.");
+      notify("Deleted selected items. This cannot be undone.");
     });
 
   const share = () =>
@@ -2564,11 +2903,17 @@ function App() {
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
             setDropTarget(node.path);
+            scheduleTreeExpand(node);
+            handleDragAutoScroll(event, folderTreeRef.current);
           }
         }}
-        onDragLeave={() => setDropTarget("")}
+        onDragLeave={() => {
+          setDropTarget("");
+          window.clearTimeout(dragExpandTimerRef.current);
+        }}
         onDrop={(event) => {
           event.preventDefault();
+          stopDragAutoScroll();
           const items = dragItems;
           finishDrag();
           void moveItems(items, node.path);
@@ -2607,10 +2952,40 @@ function App() {
   const toggleSplitMode = () => {
     const nextMode = !splitMode;
     setSplitMode(nextMode);
-    if (nextMode && !localPath) {
-      void run(() => loadLocalFiles(""));
+    if (nextMode && !localFolderTree.loaded) {
+      void run(() => loadLocalTreeChildren("", true));
     }
   };
+
+  const renderLocalTreeNode = (node: FolderNode): React.ReactNode => (
+    <div className="folder-tree" key={node.path}>
+      <div className={`tree-node ${localPath === node.path ? "active" : ""}`}>
+        <button
+          className="tree-toggle"
+          aria-label={`${node.expanded ? "Collapse" : "Expand"} ${node.name}`}
+          onClick={() => toggleLocalFolder(node)}
+        >
+          {node.expanded ? "−" : "+"}
+        </button>
+        <button
+          className="tree-folder"
+          onClick={() => void run(() => loadLocalFiles(node.path))}
+        >
+          <span className="folder-mini" />
+          {node.name}
+        </button>
+      </div>
+      {node.expanded && (
+        <div className="tree-children">
+          {node.loaded ? (
+            node.children.map(renderLocalTreeNode)
+          ) : (
+            <span className="tree-loading">Loading folders...</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
 
   const renderLocalPane = () => (
     <section className="local-pane" aria-label="Local files">
@@ -2636,22 +3011,34 @@ function App() {
           Home
         </button>
       </div>
-      <div className="local-file-list">
-        {localFiles.map((file) => (
-          <button
-            key={file.path}
-            className={`local-file ${localSelected.includes(file.path) ? "selected" : ""}`}
-            onClick={() => setLocalSelected([file.path])}
-            onDoubleClick={() =>
-              file.isDirectory && void run(() => loadLocalFiles(file.path))
-            }
-          >
-            <span>{file.isDirectory ? "📁" : "📄"}</span>
-            <span className="local-file-name">{file.name}</span>
-            <small>{file.isDirectory ? "Folder" : formatSize(file.size)}</small>
-          </button>
-        ))}
-        {!localFiles.length && <span className="muted">No files in this folder.</span>}
+      <div className="local-pane-body">
+        <div className="local-pane-tree">{renderLocalTreeNode(localFolderTree)}</div>
+        <div className="local-file-list">
+          {localPath && (
+            <button
+              className="local-file local-file-dotdot"
+              onClick={() => void run(() => loadLocalFiles(parentPath(localPath)))}
+            >
+              <span>📁</span>
+              <span className="local-file-name">..</span>
+            </button>
+          )}
+          {localFiles.map((file) => (
+            <button
+              key={file.path}
+              className={`local-file ${localSelected.includes(file.path) ? "selected" : ""}`}
+              onClick={() => setLocalSelected([file.path])}
+              onDoubleClick={() =>
+                file.isDirectory && void run(() => loadLocalFiles(file.path))
+              }
+            >
+              <span>{file.isDirectory ? "📁" : "📄"}</span>
+              <span className="local-file-name">{file.name}</span>
+              <small>{file.isDirectory ? "Folder" : formatSize(file.size)}</small>
+            </button>
+          ))}
+          {!localFiles.length && !localPath && <span className="muted">This folder is empty.</span>}
+        </div>
       </div>
       <div className="local-pane-footer">{localFiles.length} items</div>
     </section>
@@ -2873,13 +3260,13 @@ function App() {
         <button
           className="primary"
           onClick={upload}
-          disabled={busy || !locationOnline || !hasCapability("upload")}
+          disabled={busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("upload"))}
         >
           Upload
         </button>
         <button
           onClick={createFolder}
-          disabled={busy || !locationOnline || !hasCapability("mkdir")}
+          disabled={busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir"))}
         >
           New folder
         </button>
@@ -2887,9 +3274,8 @@ function App() {
         <button
           disabled={
             busy ||
-            !locationOnline ||
             !selectedItems.length ||
-            !hasCapability("read")
+            !(remoteSshEntryId ? true : locationOnline && hasCapability("read"))
           }
          onClick={download}
         >
@@ -2901,6 +3287,7 @@ function App() {
             !locationOnline ||
             selectedItems.length !== 1 ||
             selectedItems[0].isDirectory ||
+            !!remoteSshEntryId ||
             !hasCapability("read")
           }
           onClick={() => openRemoteViewer(selectedItems[0])}
@@ -2910,9 +3297,8 @@ function App() {
         <button
           disabled={
             busy ||
-            !locationOnline ||
             !selectedItems.length ||
-            !hasCapability("move")
+            !(remoteSshEntryId ? true : locationOnline && hasCapability("move"))
           }
           onClick={() =>
             notify("Drag selected files to a destination folder to move them.")
@@ -2923,9 +3309,8 @@ function App() {
         <button
           disabled={
             busy ||
-            !locationOnline ||
             selectedItems.length !== 1 ||
-            !hasCapability("rename")
+            !(remoteSshEntryId ? true : locationOnline && hasCapability("rename"))
           }
           onClick={rename}
         >
@@ -2937,6 +3322,7 @@ function App() {
             !locationOnline ||
             selectedItems.length !== 1 ||
             selectedItems[0].isDirectory ||
+            !!remoteSshEntryId ||
             !hasCapability("share")
           }
           onClick={share}
@@ -2946,13 +3332,19 @@ function App() {
         <button
           disabled={
             busy ||
-            !locationOnline ||
             !selectedItems.length ||
-            !hasCapability("delete")
+            !(remoteSshEntryId ? true : locationOnline && hasCapability("delete"))
           }
           onClick={remove}
         >
           Delete
+        </button>
+        <button
+          disabled={busy || !undoStack.length}
+          onClick={undoLastOperation}
+          title={undoStack.length ? `Undo: ${undoStack[undoStack.length - 1].description}` : "No operation to undo"}
+        >
+          Undo
         </button>
         <span className="divider" />
         <button
@@ -3060,7 +3452,14 @@ function App() {
         <aside className="desktop-folder-tree">
           <span className="sidebar-label">Folders</span>
           <div className="folder-pane">
-            <div id="folders" ref={folderTreeRef} className="folder-tree-scroll">
+            <div
+              id="folders"
+              ref={folderTreeRef}
+              className="folder-tree-scroll"
+              onDragOver={(event) => handleDragAutoScroll(event, folderTreeRef.current)}
+              onDragLeave={stopDragAutoScroll}
+              onDrop={stopDragAutoScroll}
+            >
               {renderTreeNode(folderTree)}
             </div>
             <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
@@ -3109,7 +3508,14 @@ function App() {
             </div>
           )}
           <div className="file-pane">
-            <div id="files" ref={fileAreaRef} className="file-area">
+            <div
+              id="files"
+              ref={fileAreaRef}
+              className="file-area"
+              onDragOver={(event) => handleDragAutoScroll(event, fileAreaRef.current)}
+              onDragLeave={stopDragAutoScroll}
+              onDrop={stopDragAutoScroll}
+            >
               {viewMode === "grid" ? (
               <div className="file-grid">
                 {files.map((file) => (
@@ -3303,7 +3709,7 @@ function App() {
           </button>
           <button
             disabled={
-              selectedItems.length !== 1 || selectedItems[0].isDirectory
+              selectedItems.length !== 1 || selectedItems[0].isDirectory || !!remoteSshEntryId
             }
             onClick={() => {
               setContextMenu(null);
@@ -3640,13 +4046,14 @@ function App() {
         </div>
       )}
       {terminalOpen && (
-        <section className="terminal-dock" style={{ height: `${terminalHeight}px` }} aria-label="Terminal panel">
+        <section className={`terminal-dock${terminalMaximized ? " terminal-maximized" : ""}`} style={{ height: `${terminalHeight}px` }} aria-label="Terminal panel">
           <div className="terminal-resize-handle" onPointerDown={beginTerminalResize} role="separator" aria-label="Resize terminal" />
           <header className="terminal-header">
             <div className="terminal-tabs">
-              <button className={terminalTab === "sxp" ? "active" : ""} onClick={() => setTerminalTab("sxp")}>SXP</button>
-              <button className={terminalTab === "ssh" ? "active" : ""} onClick={() => setTerminalTab("ssh")}>SSH</button>
-              {terminalTab === "ssh" && sshTabs.map((tab) => (
+              <button className={sshQuickListOpen ? "active" : ""} aria-pressed={sshQuickListOpen} onClick={() => setSshQuickListOpen((open) => !open)}>
+                Sessions
+              </button>
+              {sshTabs.map((tab) => (
                 <span className={`ssh-tab ${tab.id === activeSshTabId ? "active" : ""}`} key={tab.id}>
                   <button type="button" onClick={() => selectSshTab(tab)}>
                     <span
@@ -3659,35 +4066,42 @@ function App() {
                   <button type="button" className="ssh-tab-close" aria-label={`Close ${tab.title}`} onClick={() => closeSshTab(tab.id)}>×</button>
                 </span>
               ))}
-              {terminalTab === "ssh" && <button type="button" aria-label="New SSH terminal tab" onClick={() => createSshTab()}>+</button>}
+              <button type="button" aria-label="New SSH terminal tab" onClick={() => createSshTab()}>+</button>
             </div>
             <div className="terminal-actions">
               <button onClick={() => openSessionsModal()}>Open Sessions</button>
               <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => item.status === "queued" || item.status === "running").length})</button>
+              <button aria-label={terminalMaximized ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMaximized} onClick={toggleTerminalMaximized}>{terminalMaximized ? "⤡" : "⤢"}</button>
               <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
             </div>
           </header>
-          {terminalTab === "sxp" ? (
-            <div className="terminal-content">
-              <div className="sxp-terminal-controls">
-                <PaletteSelect
-                  label="Select a File Transfer Workspace"
-                  value={sxpWorkspaceId}
-                  options={managedSessions.filter((workspace) => workspace.sxpEntries.length > 0).map((workspace) => ({ value: workspace.id, label: workspace.name }))}
-                  onChange={setSxpWorkspaceId}
-                />
-              </div>
-              <div ref={terminalHostRef} className="xterm-host" aria-label="SXP terminal" />
-              <button
-                className="terminal-help-button"
-                aria-label="Show SXP help"
-                onClick={() => setSxpHelpOpen((open) => !open)}
-              >
-                ?
-              </button>
-              {sxpHelpOpen && <pre className="terminal-help-popover">{sxpHelp}</pre>}
-            </div>
-          ) : (
+          <div className="terminal-body">
+            {sshQuickListOpen && (
+              <aside className="ssh-quick-list" aria-label="Saved SSH sessions">
+                <div className="ssh-quick-list-heading">Sessions</div>
+                {workspaceSessions.length === 0 && <p className="terminal-inline-note">No saved SSH entries yet. Use Open Sessions to add one.</p>}
+                {workspaceSessions.map((workspace) => (
+                  <div className="ssh-quick-list-group" key={workspace.id}>
+                    <span className="ssh-quick-list-group-label">{workspace.name}</span>
+                    {workspace.sshEntries.map((entry) => {
+                      const connected = sshTabs.some((tab) => tab.workspaceId === workspace.id && tab.sshEntryId === entry.id && tab.connected);
+                      const isActive = activeSshTab?.workspaceId === workspace.id && activeSshTab?.sshEntryId === entry.id;
+                      return (
+                        <button
+                          type="button"
+                          key={entry.id}
+                          className={`ssh-quick-list-entry ${isActive ? "active" : ""}`}
+                          onClick={() => quickConnectSsh(workspace.id, entry.id)}
+                        >
+                          <span className={`ssh-tab-status ${connected ? "connected" : "disconnected"}`} aria-hidden="true" />
+                          {entry.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+              </aside>
+            )}
             <div className="terminal-content ssh-terminal-content">
               <div className="ssh-controls">
                 <PaletteSelect
@@ -3712,9 +4126,12 @@ function App() {
                   />
                 )}
                 {!activeSshTab?.connected ? (
-                  <button className="confirm" onClick={connectSsh}>Connect</button>
+                  <button className="confirm" onClick={connectSsh} disabled={activeSshTab?.connecting}>{activeSshTab?.connecting ? "Connecting…" : "Connect"}</button>
                 ) : (
                   <button className="danger" onClick={disconnectSsh}>Disconnect</button>
+                )}
+                {activeSshTab?.connecting && (
+                  <button className="danger" onClick={() => cancelSshConnect(activeSshTab.id)}>Cancel</button>
                 )}
               </div>
               {!activeWorkspaceSession && <p className="terminal-inline-note">Create or open a Session with an SSH connection before connecting.</p>}
@@ -3742,7 +4159,7 @@ function App() {
                      {recording && <span className="recording-indicator">Recording</span>}
               </div>
             </div>
-          )}
+          </div>
         </section>
       )}
       {!terminalOpen && (
@@ -3805,10 +4222,23 @@ function App() {
                 <small>{item.locationName} {item.destinationPath || "/"}</small>
                 <span className={`queue-status ${item.status}`}>{item.status}</span>
                 <span>{item.detail}</span>
+                {item.status === "running" && (
+                  <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>
+                )}
                 {item.status === "failed" && (
                   <button type="button" onClick={() => {
+                    cancelledQueueItemsRef.current.delete(item.id);
                     updateQueueItem(item.id, { status: "queued", detail: "Retry queued" });
                     const retryItem = { ...item, status: "queued" as const, detail: "Retry queued" };
+                    if (retryItem.sshEntryId) {
+                      const profile = findSshProfileById(retryItem.sshEntryId);
+                      if (!profile) {
+                        updateQueueItem(item.id, { status: "failed", detail: "The SSH connection for this transfer is no longer available." });
+                        return;
+                      }
+                      void (retryItem.kind === "download" ? runQueuedSshDownload(retryItem, profile, retryItem.sshItems || []) : runQueuedSshUpload(retryItem, profile));
+                      return;
+                    }
                     void (retryItem.kind === "download" ? runQueuedDownload(retryItem) : retryItem.kind === "download-set" ? runQueuedDownloadSet(retryItem) : runQueuedUpload(retryItem));
                   }}>Retry</button>
                 )}
