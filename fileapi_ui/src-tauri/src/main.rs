@@ -389,6 +389,50 @@ async fn download_to_disk(
     Ok(destination.display().to_string())
 }
 
+#[tauri::command]
+async fn download_to_drag_staging(
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+    file_name: String,
+    ignore_tls_errors: bool,
+) -> Result<String, String> {
+    let method = method
+        .parse()
+        .map_err(|error| format!("Invalid HTTP method: {error}"))?;
+    let request = apply_headers(api_client(ignore_tls_errors)?.request(method, url), headers);
+    let request = if let Some(body) = body {
+        request.body(body)
+    } else {
+        request
+    };
+    let mut response = request.send().await.map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Download failed".to_string()));
+    }
+    let safe_name = Path::new(&file_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "Invalid staging filename".to_string())?;
+    let staging_directory = operation_storage_directory()?.join("drag-staging");
+    std::fs::create_dir_all(&staging_directory).map_err(|error| error.to_string())?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    let destination = staging_directory.join(format!("{stamp}-{safe_name}"));
+    let mut file = std::fs::File::create(&destination).map_err(|error| error.to_string())?;
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        file.write_all(&chunk).map_err(|error| error.to_string())?;
+    }
+    Ok(destination.display().to_string())
+}
+
 fn validate_ssh_profile(profile: &SshProfile) -> Result<(), String> {
     if profile.name.trim().is_empty()
         || profile.host.trim().is_empty()
@@ -840,6 +884,10 @@ fn clear_operation_logs() -> Result<(), String> {
 
 #[tauri::command]
 fn initialize_operation_log() -> Result<(), String> {
+    let staging_directory = operation_storage_directory()?.join("drag-staging");
+    if staging_directory.exists() {
+        std::fs::remove_dir_all(&staging_directory).map_err(|error| error.to_string())?;
+    }
     let (_, log_path) = operation_paths()?;
     let rotated_two = log_path.with_extension("log.2");
     let rotated_one = log_path.with_extension("log.1");
@@ -940,6 +988,7 @@ fn main() {
             hash_upload_paths,
             api_upload_paths,
             download_to_disk,
+            download_to_drag_staging,
             write_download,
             ssh_connect,
             ssh_key_available,
