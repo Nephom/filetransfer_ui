@@ -64,7 +64,34 @@ struct SshLogPaths {
     metadata: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OperationStorageInfo {
+    history_path: String,
+    log_path: String,
+    history_bytes: u64,
+    log_bytes: u64,
+    log_files: Vec<String>,
+}
+
+fn operation_storage_directory() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("FILEAPI_DATA_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+    Ok(local_home()?.join(".fileapi-desktop"))
+}
+
+fn operation_paths() -> Result<(PathBuf, PathBuf), String> {
+    let directory = operation_storage_directory()?;
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    Ok((
+        directory.join("undo-history.json"),
+        directory.join("operations.log"),
+    ))
+}
+
 struct SshProcess {
+    master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
 }
@@ -442,6 +469,7 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
 
     let mut command = portable_pty::CommandBuilder::new("ssh");
     command.args(["-tt", "-p", &profile.port.to_string()]);
+    command.env("TERM", "xterm-256color");
     command.args(["-o", "ConnectTimeout=15"]);
     command.args(["-o", "ServerAliveInterval=30"]);
     command.args(["-o", "ServerAliveCountMax=3"]);
@@ -462,6 +490,7 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
         .master
         .take_writer()
         .map_err(|error| error.to_string())?;
+    let master = Arc::new(Mutex::new(pair.master));
     let writer = Arc::new(Mutex::new(writer));
     let reader_session = session_id.clone();
     thread::spawn(move || {
@@ -494,6 +523,7 @@ fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, Str
     });
 
     let process = SshProcess {
+        master,
         writer,
         child: child,
     };
@@ -551,6 +581,7 @@ fn ssh_install_key(app: tauri::AppHandle, profile: SshProfile) -> Result<String,
         &profile.port.to_string(),
     ]);
     command.args(["-o", "ConnectTimeout=15"]);
+    command.env("TERM", "xterm-256color");
     command.arg(format!("{}@{}", profile.username, profile.host));
     let child = pair
         .slave
@@ -565,6 +596,7 @@ fn ssh_install_key(app: tauri::AppHandle, profile: SshProfile) -> Result<String,
             .take_writer()
             .map_err(|error| error.to_string())?,
     ));
+    let master = Arc::new(Mutex::new(pair.master));
     let reader_session = session_id.clone();
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
@@ -597,7 +629,14 @@ fn ssh_install_key(app: tauri::AppHandle, profile: SshProfile) -> Result<String,
     ssh_processes()
         .lock()
         .map_err(|_| "SSH process registry is unavailable".to_string())?
-        .insert(session_id.clone(), SshProcess { writer, child });
+        .insert(
+            session_id.clone(),
+            SshProcess {
+                master,
+                writer,
+                child,
+            },
+        );
     Ok(session_id)
 }
 
@@ -620,6 +659,31 @@ fn ssh_write(session_id: String, data: String) -> Result<(), String> {
         writer.flush().map_err(|error| error.to_string())
     };
     result
+}
+
+#[tauri::command]
+fn ssh_resize(session_id: String, cols: u16, rows: u16) -> Result<(), String> {
+    if cols == 0 || rows == 0 {
+        return Err("SSH terminal size must be greater than zero".to_string());
+    }
+    let processes = ssh_processes()
+        .lock()
+        .map_err(|_| "SSH process registry is unavailable".to_string())?;
+    let process = processes
+        .get(&session_id)
+        .ok_or_else(|| "SSH session is not connected".to_string())?;
+    let master = process
+        .master
+        .lock()
+        .map_err(|_| "SSH PTY is unavailable".to_string())?;
+    master
+        .resize(portable_pty::PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -681,6 +745,126 @@ fn save_ssh_logs(
     })
 }
 
+#[tauri::command]
+fn operation_storage_info() -> Result<OperationStorageInfo, String> {
+    let (history_path, log_path) = operation_paths()?;
+    let history_bytes = std::fs::metadata(&history_path)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let mut log_files = Vec::new();
+    let mut log_bytes = 0;
+    for path in [
+        &log_path,
+        &log_path.with_extension("log.1"),
+        &log_path.with_extension("log.2"),
+    ] {
+        if let Ok(metadata) = std::fs::metadata(path) {
+            log_bytes += metadata.len();
+            log_files.push(path.display().to_string());
+        }
+    }
+    Ok(OperationStorageInfo {
+        history_path: history_path.display().to_string(),
+        log_path: log_path.display().to_string(),
+        history_bytes,
+        log_bytes,
+        log_files,
+    })
+}
+
+#[tauri::command]
+fn clear_operation_history() -> Result<(), String> {
+    let (history_path, _) = operation_paths()?;
+    match std::fs::remove_file(history_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn clear_operation_logs() -> Result<(), String> {
+    let (_, log_path) = operation_paths()?;
+    for path in [
+        &log_path,
+        &log_path.with_extension("log.1"),
+        &log_path.with_extension("log.2"),
+    ] {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn append_operation_log(
+    operation: String,
+    status: String,
+    source_label: String,
+    destination_label: String,
+    detail: String,
+) -> Result<(), String> {
+    let (_, log_path) = operation_paths()?;
+    let record = serde_json::json!({
+        "timestamp": chrono_like_timestamp(),
+        "operation": sanitize_operation_value(operation),
+        "status": sanitize_operation_value(status),
+        "source": sanitize_operation_value(source_label),
+        "destination": sanitize_operation_value(destination_label),
+        "detail": sanitize_operation_value(detail),
+    });
+    let line = format!(
+        "{}\n",
+        serde_json::to_string(&record).map_err(|error| error.to_string())?
+    );
+    if std::fs::metadata(&log_path)
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+        + line.len() as u64
+        > 10 * 1024 * 1024
+    {
+        let rotated_two = log_path.with_extension("log.2");
+        let rotated_one = log_path.with_extension("log.1");
+        let _ = std::fs::remove_file(&rotated_two);
+        if rotated_one.exists() {
+            std::fs::rename(&rotated_one, &rotated_two).map_err(|error| error.to_string())?;
+        }
+        if log_path.exists() {
+            std::fs::rename(&log_path, &rotated_one).map_err(|error| error.to_string())?;
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|error| error.to_string())?;
+    file.write_all(line.as_bytes())
+        .map_err(|error| error.to_string())
+}
+
+fn sanitize_operation_value(value: String) -> String {
+    let normalized = value.replace(['\r', '\n'], " ");
+    let lower = normalized.to_ascii_lowercase();
+    if ["password", "token", "secret", "private key", "private_key"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return "[REDACTED]".to_string();
+    }
+    normalized.chars().take(256).collect()
+}
+
+fn chrono_like_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -696,8 +880,13 @@ fn main() {
             ssh_key_available,
             ssh_install_key,
             ssh_write,
+            ssh_resize,
             ssh_disconnect,
-            save_ssh_logs
+            save_ssh_logs,
+            operation_storage_info,
+            clear_operation_history,
+            clear_operation_logs,
+            append_operation_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running File Transfer desktop application");

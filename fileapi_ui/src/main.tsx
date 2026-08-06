@@ -114,6 +114,23 @@ type TransferQueueItem = {
   status: "queued" | "running" | "completed" | "failed";
   detail: string;
 };
+type DesktopSettings = {
+  undoHistoryEnabled: boolean;
+  operationLogEnabled: boolean;
+  confirmations: {
+    delete: boolean;
+    overwrite: boolean;
+    recursive: boolean;
+    crossSourceMove: boolean;
+  };
+};
+type OperationStorageInfo = {
+  historyPath: string;
+  logPath: string;
+  historyBytes: number;
+  logBytes: number;
+  logFiles: string[];
+};
 
 const sxpHelp = `sxp <Session name> upload <source folder> <destination folder>
 sxp <Session name> mv <source folder> <destination folder>
@@ -349,6 +366,12 @@ const initialSession: Session = {
   ignoreTlsErrors: false,
 };
 const sessionRegistryKey = "fileapi-session-registry";
+const desktopSettingsKey = "fileapi-desktop-settings";
+const defaultDesktopSettings: DesktopSettings = {
+  undoHistoryEnabled: true,
+  operationLogEnabled: true,
+  confirmations: { delete: true, overwrite: true, recursive: true, crossSourceMove: true },
+};
 
 const readError = async (response: {
   status: number;
@@ -425,6 +448,20 @@ function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
+      return {
+        ...defaultDesktopSettings,
+        ...saved,
+        confirmations: { ...defaultDesktopSettings.confirmations, ...(saved?.confirmations || {}) },
+      };
+    } catch {
+      return defaultDesktopSettings;
+    }
+  });
+  const [storageInfo, setStorageInfo] = useState<OperationStorageInfo | null>(null);
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
   const [pathBeforeSearch, setPathBeforeSearch] = useState("");
@@ -633,6 +670,10 @@ function App() {
   }, [sshProfiles]);
 
   useEffect(() => {
+    localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings));
+  }, [desktopSettings]);
+
+  useEffect(() => {
     if (managedSessions.length || !sshProfiles.length) return;
     const makeId = () => typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
@@ -738,8 +779,18 @@ function App() {
     } else {
       terminal.write(sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Create an SSH tab and connect.\r\n");
     }
-    const resizeObserver = new ResizeObserver(() => fit.fit());
+    const resizeSshPty = () => {
+      if (terminalTab !== "ssh") return;
+      const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
+      if (!tab?.sessionId) return;
+      void invoke("ssh_resize", { sessionId: tab.sessionId, cols: terminal.cols, rows: terminal.rows });
+    };
+    const resizeObserver = new ResizeObserver(() => {
+      fit.fit();
+      resizeSshPty();
+    });
     resizeObserver.observe(terminalHostRef.current);
+    resizeSshPty();
     const inputListener = terminal.onData((data: string) => {
         if (terminalTab === "ssh") {
           const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
@@ -1178,6 +1229,7 @@ function App() {
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   const activeSshTab = sshTabs.find((item) => item.id === activeSshTabId);
+  const recordingHasOutput = Boolean(activeSshTab?.rawLog || activeSshTab?.plainLog);
 
   const createSshTab = (workspaceId = workspaceSessionId, entryId = selectedSshEntryId) => {
     const workspace = managedSessions.find((item) => item.id === workspaceId);
@@ -1511,9 +1563,29 @@ function App() {
           commands: tab.commandLog,
           metadata,
         },
-      );
-      setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, savedLogPaths: [paths.raw, paths.plain, paths.commands, paths.metadata] } : item));
-      notify(`Saved SSH logs to ${paths.raw}`);
+       );
+       setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, savedLogPaths: [paths.raw, paths.plain, paths.commands, paths.metadata] } : item));
+       if (desktopSettings.operationLogEnabled) {
+         void invoke("append_operation_log", {
+           operation: "save_ssh_log",
+           status: "completed",
+           sourceLabel: profile.name,
+           destinationLabel: "Downloads",
+           detail: "SSH output recording package saved.",
+         });
+       }
+       notify(`Saved SSH logs to ${paths.raw}`);
+     });
+   };
+
+  const writeOperationLog = (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string) => {
+    if (!desktopSettings.operationLogEnabled) return;
+    void invoke("append_operation_log", {
+      operation,
+      status,
+      sourceLabel,
+      destinationLabel,
+      detail,
     });
   };
 
@@ -1544,8 +1616,9 @@ function App() {
       if (!response.ok) throw new Error(await readError(response));
       const { batchId } = (await response.json()) as { batchId?: string };
       if (!batchId) {
-        updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.` });
-        return;
+         updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.` });
+         writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.`);
+         return;
       }
       for (let attempt = 0; attempt < 600; attempt += 1) {
         const progressResponse = await invoke<NativeApiResponse>("api_request", {
@@ -1560,8 +1633,9 @@ function App() {
         const batch = await progress.json() as { status: string; progress: number; successCount: number; totalFiles: number; failedCount: number };
         updateQueueItem(item.id, { detail: `${batch.successCount}/${batch.totalFiles} files (${Math.round(batch.progress)}%)` });
         if (batch.status === "completed") {
-          updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.` });
-          return;
+           updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.` });
+           writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`);
+           return;
         }
         if (batch.status === "failed" || batch.status === "partial_fail") {
           throw new Error(`${batch.failedCount} file${batch.failedCount === 1 ? "" : "s"} failed.`);
@@ -1574,6 +1648,7 @@ function App() {
         status: "failed",
         detail: error instanceof Error ? error.message : String(error),
       });
+      writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "Upload failed.");
     }
   };
 
@@ -1608,6 +1683,31 @@ function App() {
     setTransferQueue((current) => [...current, item]);
     setQueueOpen(true);
     void runQueuedUpload(item);
+  };
+
+  const refreshStorageInfo = () => {
+    void run(async () => {
+      const info = await invoke<OperationStorageInfo>("operation_storage_info");
+      setStorageInfo(info);
+    });
+  };
+
+  const clearHistory = () => {
+    if (!window.confirm("Clear undo history? This removes only the saved undo records and cannot be undone.")) return;
+    void run(async () => {
+      await invoke("clear_operation_history");
+      refreshStorageInfo();
+      notify("Undo history cleared.");
+    });
+  };
+
+  const clearLogs = () => {
+    if (!window.confirm("Clear operation logs? This removes only File Transfer operation logs, not user files or transfer staging data.")) return;
+    void run(async () => {
+      await invoke("clear_operation_logs");
+      refreshStorageInfo();
+      notify("Operation logs cleared.");
+    });
   };
 
   const login = async (event: React.FormEvent) => {
@@ -1818,10 +1918,11 @@ function App() {
       if (!response.ok) throw new Error(await readError(response));
       const { batchId } = (await response.json()) as { batchId?: string };
       if (!batchId) {
-        notify(
-          `Uploaded ${summary.directories} folder${summary.directories === 1 ? "" : "s"}.`,
-        );
-        await loadFiles(path);
+       notify(
+         `Uploaded ${summary.directories} folder${summary.directories === 1 ? "" : "s"}.`,
+       );
+       writeOperationLog("upload", "completed", "Local file picker", `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`, `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.`);
+       await loadFiles(path);
         return;
       }
       for (let attempt = 0; attempt < 600; attempt += 1) {
@@ -1841,10 +1942,11 @@ function App() {
           0,
         );
         if (batch.status === "completed") {
-          notify(
-            `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`,
-          );
-          await loadFiles(path);
+           notify(
+             `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`,
+           );
+           writeOperationLog("upload", "completed", "Local file picker", `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`, `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`);
+           await loadFiles(path);
           return;
         }
         if (batch.status === "failed" || batch.status === "partial_fail")
@@ -1923,9 +2025,9 @@ function App() {
     run(async () => {
       if (
         !selectedItems.length ||
-        !window.confirm(
+        (desktopSettings.confirmations.delete && !window.confirm(
           `Delete ${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}?`,
-        )
+        ))
       )
         return;
       const response = await api("/api/files/delete", {
@@ -1941,6 +2043,7 @@ function App() {
       });
       if (!response.ok) throw new Error(await readError(response));
       await loadFiles(path);
+      writeOperationLog("delete", "completed", `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`, `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`, "Deleted through the API Remote.");
       notify("Deleted selected items.");
     });
 
@@ -2246,15 +2349,24 @@ function App() {
                     : "Standard user"}
                 </span>
               </div>
-              <button
-                onClick={() => {
+               <button
+                 onClick={() => {
+                    setAccountOpen(false);
+                    openSessionsModal();
+                 }}
+               >
+                 Sessions
+               </button>
+               <button
+                 onClick={() => {
                    setAccountOpen(false);
-                   openSessionsModal();
-                }}
-              >
-                Sessions
-              </button>
-              <button
+                   setSettingsOpen(true);
+                   refreshStorageInfo();
+                 }}
+               >
+                 Settings
+               </button>
+               <button
                 onClick={() => {
                   setAccountOpen(false);
                   setChangePasswordOpen(true);
@@ -2717,7 +2829,7 @@ function App() {
           </button>
         </div>
       )}
-      {changePasswordOpen && (
+       {changePasswordOpen && (
         <div
           className="modal-cover"
           onMouseDown={() => setChangePasswordOpen(false)}
@@ -2769,9 +2881,45 @@ function App() {
               </div>
             </form>
           </div>
-        </div>
-      )}
-      {sessionsOpen && (
+         </div>
+       )}
+       {settingsOpen && (
+         <div className="modal-cover" onMouseDown={() => setSettingsOpen(false)}>
+           <div className="modal settings-modal" onMouseDown={(event) => event.stopPropagation()}>
+             <h2>Desktop Settings</h2>
+             <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
+             <section className="settings-section">
+               <h3>Risk confirmations</h3>
+               {([
+                 ["delete", "Delete", "Deleting files or folders can permanently remove data."],
+                 ["overwrite", "Overwrite", "Replacing an existing destination can destroy its current contents."],
+                 ["recursive", "Recursive operations", "Applying an operation to a folder also affects its descendants."],
+                 ["crossSourceMove", "Cross-source move", "Moving between sources uses copy and verification before source deletion."],
+               ] as const).map(([key, label, description]) => (
+                 <label className="settings-check" key={key}>
+                   <input
+                     type="checkbox"
+                     checked={desktopSettings.confirmations[key]}
+                     onChange={(event) => setDesktopSettings((current) => ({ ...current, confirmations: { ...current.confirmations, [key]: event.target.checked } }))}
+                   />
+                   <span><strong>{label}</strong><small>{description}</small></span>
+                 </label>
+               ))}
+               <button type="button" onClick={() => setDesktopSettings((current) => ({ ...current, confirmations: { ...defaultDesktopSettings.confirmations } }))}>Restore safe confirmations</button>
+             </section>
+             <section className="settings-section">
+               <h3>History and operation log</h3>
+               <p>Both are enabled by default. Undo records are reserved for reliable, verifiable reversals. The operation log is append-only, excludes secrets, rotates at 10 MB, and retains at most three files total.</p>
+               <label className="settings-check"><input type="checkbox" checked={desktopSettings.undoHistoryEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, undoHistoryEnabled: event.target.checked }))} /><span><strong>Enable undo history</strong><small>Disabling this stops new undo records; it does not delete files.</small></span></label>
+               <label className="settings-check"><input type="checkbox" checked={desktopSettings.operationLogEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, operationLogEnabled: event.target.checked }))} /><span><strong>Enable operation log</strong><small>Disabling this stops new audit records; it does not delete unrelated data.</small></span></label>
+               {storageInfo && <div className="storage-info"><span>History: {storageInfo.historyPath} ({formatSize(storageInfo.historyBytes)})</span><span>Logs: {storageInfo.logPath} ({formatSize(storageInfo.logBytes)})</span><span>{storageInfo.logFiles.length} log file{storageInfo.logFiles.length === 1 ? "" : "s"} currently retained</span></div>}
+               <div className="modal-actions settings-actions"><button type="button" onClick={clearHistory}>Clear undo history</button><button type="button" className="danger" onClick={clearLogs}>Clear operation logs</button></div>
+             </section>
+             <div className="modal-actions"><button type="button" className="confirm" onClick={() => setSettingsOpen(false)}>Close</button></div>
+           </div>
+         </div>
+       )}
+       {sessionsOpen && (
         <div
           className="modal-cover"
           onMouseDown={() => setSessionsOpen(false)}
@@ -3015,7 +3163,8 @@ function App() {
                     ) : (
                       <button className="danger" onClick={stopRecording}>Stop Recording</button>
                     )}
-                    <button disabled={recording || !rawLogRef.current} onClick={saveSshLogs}>Save Log</button>
+                     <button disabled={recording || !recordingHasOutput} onClick={saveSshLogs}>Save Log</button>
+                     <span className="recording-log-location">Saved logs: current user&apos;s Downloads folder</span>
                     <div className="upload-session-select">
                       <span>Destination Session</span>
                       <PaletteSelect
@@ -3024,9 +3173,10 @@ function App() {
                         options={managedSessions.map((managedSession) => ({ value: managedSession.id, label: managedSession.name }))}
                         onChange={setUploadSessionId}
                       />
-                    </div>
-                    <button disabled={!savedLogPaths.length || recording} onClick={uploadSavedLog}>Upload Log</button>
-                    {recording && <span className="recording-indicator">Recording</span>}
+                     </div>
+                     <button disabled={!savedLogPaths.length || recording} onClick={uploadSavedLog}>Upload Log</button>
+                     {savedLogPaths.length > 0 && <details className="saved-log-paths"><summary>Saved log files</summary>{savedLogPaths.map((savedPath) => <code key={savedPath}>{savedPath}</code>)}</details>}
+                     {recording && <span className="recording-indicator">Recording</span>}
               </div>
             </div>
           )}
