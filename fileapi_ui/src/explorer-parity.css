@@ -39,7 +39,6 @@
 .session-entry small { overflow: hidden; color: #91a9c0; text-overflow: ellipsis; white-space: nowrap; }
 .sxp-modal { max-width: 680px; }
 .sxp-modal p { line-height: 1.5; }
-.sxp-output { min-height: 120px; max-height: 240px; overflow: auto; padding: 12px; color: #9be8ff; background: #061321; border: 1px solid #254764; white-space: pre-wrap; }
 .field-help { display: block; margin-top: 5px; color: #7f9bb5; font-size: 11px; font-weight: 400; }
 .link-button { padding: 0; border: 0; background: transparent; color: #47cdf1; font-size: 11px; text-decoration: underline; cursor: pointer; }
 .form-error { display: block; margin: 8px 0; padding: 8px; color: #ffb8ae; background: #3b1d28; border: 1px solid #813847; border-radius: 4px; }
@@ -65,17 +64,18 @@
 .ssh-tab .ssh-tab-close { min-width: 24px; padding: 4px 6px; border: 0; color: #91a9c0; }
 .ssh-tab .ssh-tab-close:hover { color: #ffb8ae; background: #3b1d28; }
 .terminal-content { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 8px; padding: 10px 12px 12px; }
-.terminal-content .sxp-output { flex: 1; min-height: 0; max-height: none; margin: 0; }
 .xterm-host { flex: 1; min-height: 0; overflow: hidden; padding: 8px; background: #020a12; border: 1px solid #254764; }
 .xterm-host .xterm { height: 100%; }
 .terminal-content { position: relative; }
-.sxp-terminal-controls { flex: 0 0 auto; }
-.sxp-terminal-controls .palette-select-control { min-width: 240px; }
-.terminal-help-button { position: absolute; right: 18px; bottom: 16px; z-index: 3; width: 26px; height: 26px; padding: 0; border: 1px solid #47cdf1; border-radius: 50%; color: #e6eefc; background: #123b58; font-weight: 700; line-height: 24px; }
-.terminal-help-button:hover { background: #1b5e80; }
-.terminal-help-popover { position: absolute; right: 50px; bottom: 12px; z-index: 2; max-width: min(620px, calc(100% - 70px)); max-height: 180px; overflow: auto; margin: 0; padding: 12px; color: #9be8ff; background: #07192a; border: 1px solid #315b7e; box-shadow: 0 8px 22px rgba(0, 0, 0, .45); white-space: pre-wrap; }
-.terminal-command { display: flex; gap: 8px; }
-.terminal-command input { flex: 1; margin: 0; color: #e6eefc; background: #091b2d; }
+.terminal-body { display: flex; flex: 1; min-height: 0; }
+.ssh-quick-list { flex: 0 0 200px; min-height: 0; overflow-y: auto; padding: 8px 6px; border-right: 1px solid #254764; background: #08192b; }
+.ssh-quick-list-heading { padding: 4px 8px 8px; color: #74a5c9; font-size: 10px; letter-spacing: .1em; font-weight: 700; text-transform: uppercase; }
+.ssh-quick-list-group { margin-bottom: 8px; }
+.ssh-quick-list-group-label { display: block; padding: 4px 8px; color: #6f9dc3; font-size: 11px; font-weight: 600; }
+.ssh-quick-list-entry { display: flex; align-items: center; width: 100%; padding: 6px 8px; border: 0; border-radius: 4px; background: transparent; color: #d9eafa; text-align: left; cursor: pointer; }
+.ssh-quick-list-entry:hover { background: #102d49; }
+.ssh-quick-list-entry.active { background: #174565; box-shadow: inset 2px 0 #47cdf1; }
+.terminal-maximized .terminal-resize-handle { background: #315b7e; }
 .terminal-placeholder { align-items: flex-start; justify-content: center; color: #a8c0d8; }
 .terminal-placeholder p { margin: 0; }
 .terminal-inline-note { margin: 0; color: #91a9c0; font-size: 12px; }
@@ -115,6 +115,7 @@
 .settings-actions { justify-content: flex-start; }
 .queue-status { justify-self: end; color: #6bf0ca; font-size: 11px; text-transform: uppercase; }
 .queue-status.failed { color: #ffb8ae; }
+.queue-status.cancelled { color: #f0c05a; }
 .queue-status.running { color: #9be8ff; }
 .queue-status.running::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border: 1px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: queue-spin .8s linear infinite; vertical-align: -1px; }
 @keyframes queue-spin { to { transform: rotate(360deg); } }
@@ -158,6 +159,8 @@
 .local-pane-heading .sidebar-label { padding: 0; color: #6bf0ca; }
 .local-pane-actions { display: flex; gap: 6px; padding: 0 14px 10px; border-bottom: 1px solid #1c3955; }
 .local-pane-actions button { padding: 5px 9px; color: #b9cee4; background: #102d49; border-color: #315b7e; }
+.local-pane-body { display: flex; flex: 1; min-height: 0; }
+.local-pane-tree { flex: 0 0 130px; min-height: 0; overflow-y: auto; padding: 6px; border-right: 1px solid #1c3955; }
 .local-file-list { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
 .local-file { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 7px; align-items: center; width: 100%; padding: 8px 7px; border: 1px solid transparent; border-radius: 4px; color: #d9eafa; background: transparent; text-align: left; cursor: pointer; }
 .local-file:hover, .local-file.selected { background: #133b5b; border-color: #2b6688; }
