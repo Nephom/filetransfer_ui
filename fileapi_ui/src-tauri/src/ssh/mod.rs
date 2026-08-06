@@ -145,6 +145,12 @@ async fn authenticate(
     Err("Authentication failed. Add a password or a private key to this SSH entry in the Session manager, then try again.".to_string())
 }
 
+/// Bound how long a connection attempt (TCP connect, key exchange, and
+/// authentication) may take before giving up. Without this, an unreachable
+/// or unresponsive host could hang the connect flow indefinitely with no way
+/// for the UI to recover.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub async fn connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, String> {
     validate_profile(&profile)?;
     let session_id = format!("ssh-{}", uuid::Uuid::new_v4());
@@ -153,11 +159,14 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile) -> Result<Strin
         port: profile.port,
     };
     let addr = format!("{}:{}", profile.host, profile.port);
-    let mut handle = client::connect(default_config(), addr, handler)
+    let mut handle = tokio::time::timeout(CONNECT_TIMEOUT, client::connect(default_config(), addr, handler))
         .await
+        .map_err(|_| format!("Connection to {}:{} timed out after {} seconds.", profile.host, profile.port, CONNECT_TIMEOUT.as_secs()))?
         .map_err(|error| format!("Unable to connect: {error}"))?;
 
-    authenticate(&mut handle, &profile).await?;
+    tokio::time::timeout(CONNECT_TIMEOUT, authenticate(&mut handle, &profile))
+        .await
+        .map_err(|_| "Authentication timed out.".to_string())??;
 
     let channel = handle
         .channel_open_session()
@@ -316,8 +325,9 @@ pub async fn install_key(profile: SshProfile) -> Result<String, String> {
         port: profile.port,
     };
     let addr = format!("{}:{}", profile.host, profile.port);
-    let mut handle = client::connect(default_config(), addr, handler)
+    let mut handle = tokio::time::timeout(CONNECT_TIMEOUT, client::connect(default_config(), addr, handler))
         .await
+        .map_err(|_| format!("Connection to {}:{} timed out.", profile.host, profile.port))?
         .map_err(|error| format!("Unable to connect: {error}"))?;
     let result = handle
         .authenticate_password(profile.username.clone(), stored_password)
