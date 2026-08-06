@@ -88,6 +88,9 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const [fileDropTarget, setFileDropTarget] = React.useState(null);
     const [viewMode, setViewMode] = React.useState(() => localStorage.getItem('file-view-mode') || 'details');
     const [archiveFormat, setArchiveFormat] = React.useState(() => localStorage.getItem('archive-format') || 'tar.gz');
+    const [downloadModeDraft, setDownloadModeDraft] = React.useState('tar.gz');
+    const [queueItems, setQueueItems] = React.useState([]);
+    const [queueOpen, setQueueOpen] = React.useState(false);
     const [accountOpen, setAccountOpen] = React.useState(false);
     const inputRef = React.useRef(null);
     const accountRef = React.useRef(null);
@@ -330,6 +333,86 @@ const FileBrowser = ({ token, user, onLogout }) => {
         finally { downloadInProgress.current = false; setDownloading(false); }
     };
 
+    // "Queue" download mode: fetch every individual file under the selection
+    // (via /api/files/flatten) and track each one in the Transfer Queue,
+    // instead of always bundling the selection into a single archive first.
+    const updateQueueItem = (id, patch) => setQueueItems((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
+    const supportsDirectoryPicker = () => typeof window.showDirectoryPicker === 'function';
+
+    const writeFileIntoDirectoryHandle = async (rootHandle, relativePath, blob) => {
+        const segments = relativePath.split('/').filter(Boolean);
+        const fileName = segments.pop();
+        let directoryHandle = rootHandle;
+        for (const segment of segments) {
+            directoryHandle = await directoryHandle.getDirectoryHandle(segment, { create: true });
+        }
+        const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+        const writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+    };
+
+    const enqueueQueueDownload = async (items) => {
+        const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const label = items.length === 1 ? items[0].name : `${items.length} selected items`;
+        setModal(null);
+        setQueueItems((current) => [...current, { id, label, status: 'running', detail: 'Preparing file list...' }]);
+        setQueueOpen(true);
+        try {
+            const flattenResponse = await fetch('/api/files/flatten', {
+                method: 'POST',
+                headers: { ...authHeaders, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath })
+            });
+            const flattenData = await flattenResponse.json().catch(() => ({}));
+            if (!flattenResponse.ok) throw new Error(flattenData.error || 'Unable to list files for the queue.');
+            const targetFiles = flattenData.files || [];
+            if (!targetFiles.length) throw new Error('The selection has no files to download.');
+
+            let directoryHandle = null;
+            const useFileSystemAccess = supportsDirectoryPicker();
+            if (useFileSystemAccess) {
+                try {
+                    directoryHandle = await window.showDirectoryPicker();
+                } catch (pickerError) {
+                    updateQueueItem(id, { status: 'failed', detail: 'Destination folder selection was cancelled.' });
+                    return;
+                }
+            }
+
+            let completed = 0;
+            for (const file of targetFiles) {
+                updateQueueItem(id, { detail: `Downloading ${completed}/${targetFiles.length} files...` });
+                const response = await fetch(`/api/files/download/${encodeURIComponent(file.remotePath)}`, { headers: authHeaders });
+                if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Failed to download ${file.relativePath}.`);
+                const blob = await response.blob();
+                if (directoryHandle) {
+                    await writeFileIntoDirectoryHandle(directoryHandle, file.relativePath, blob);
+                } else {
+                    // No File System Access API support (Firefox/Safari): fall
+                    // back to individual browser downloads. Folder structure
+                    // cannot be preserved this way, so flatten the name.
+                    downloadBlob(blob, file.relativePath.replace(/\//g, '_'));
+                    await new Promise((resolve) => window.setTimeout(resolve, 150));
+                }
+                completed += 1;
+            }
+            updateQueueItem(id, { status: 'completed', detail: directoryHandle ? `Downloaded ${completed} file(s) into the selected folder.` : `Downloaded ${completed} file(s) individually (folder structure not preserved in this browser).` });
+            showSuccess(`Queued download of ${completed} file(s) complete.`);
+        } catch (requestError) {
+            updateQueueItem(id, { status: 'failed', detail: requestError.message });
+        }
+    };
+
+    const startDownload = () => {
+        if (!selectedItems.length) return;
+        const isArchive = selectedItems.length > 1 || selectedItems[0].isDirectory;
+        if (!isArchive) return download(selectedItems);
+        setDownloadModeDraft(archiveFormat);
+        setModal('downloadMode');
+    };
+
+
     const isValidMoveTarget = (items, destination, destinationLocationId = locationId) => {
         const target = normalisePath(destination);
         if (destinationLocationId !== locationId) return items.length > 0;
@@ -526,7 +609,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
          <nav className="commandbar">
              <button className="primary" disabled={!hasCapability('upload')} onClick={() => inputRef.current.click()}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} />
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
-              <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={() => download()}>{downloading ? 'Preparing download...' : 'Download'}</button><label className="archive-format-control">Archive<select value={archiveFormat} onChange={(event) => setArchiveFormat(event.target.value)}><option value="tar.gz">tar.gz</option><option value="zip">zip</option></select></label><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
+              <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={startDownload}>{downloading ? 'Preparing download...' : 'Download'}</button><button className="optional" onClick={() => setQueueOpen((open) => !open)}>Transfer Queue{queueItems.some((item) => item.status === 'running') ? ' •' : ''}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
              <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
              <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
         </nav>
@@ -536,14 +619,31 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{files.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map(renderFileItem)}</tbody></table>}</div>
             </section></main>
         <footer className="statusbar"><span>{files.length} item{files.length === 1 ? '' : 's'}</span><span>{searching ? 'Search results' : currentPath ? `/${currentPath}` : '/'}</span></footer>
-         {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading || !hasCapability('read')} onClick={() => action(download)}>Download</button><button disabled={moving || !hasCapability('move')} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => action(() => { setShareLink(''); setModal('share'); })}>Share</button><hr /><button disabled={!hasCapability('delete')} onClick={() => action(remove)}>Delete</button></div>}
+         {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading || !hasCapability('read')} onClick={() => action(startDownload)}>Download</button><button disabled={moving || !hasCapability('move')} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => action(() => { setShareLink(''); setModal('share'); })}>Share</button><hr /><button disabled={!hasCapability('delete')} onClick={() => action(remove)}>Delete</button></div>}
         {modal === 'folder' && <Dialog title="New folder" onClose={() => setModal(null)}><form onSubmit={saveFolder}><p>Create a folder in {currentPath ? `/${currentPath}` : '/'}.</p><label>Folder name<input name="folderName" autoFocus required /></label><DialogActions onClose={() => setModal(null)} label="Create" /></form></Dialog>}
          {modal === 'move' && <Dialog title="Move selected items" onClose={() => setModal(null)}><p>Choose a destination. You cannot move an item into its current folder or one of its own subfolders.</p><div className="move-tree">{locations.map((location) => <section key={location.id}><strong>{location.displayName}</strong>{renderTree(location.id, (node) => moveItems(selectedItems, node.path, location.id))}</section>)}</div><div className="modal-actions"><button type="button" onClick={() => setModal(null)}>Cancel</button></div></Dialog>}
         {modal === 'password' && <Dialog title="Change password" onClose={() => setModal(null)}><form onSubmit={savePassword}><p>Changing your password signs this device out.</p><label>Current password<input name="currentPassword" type="password" autoFocus required /></label><label>New password<input name="newPassword" type="password" minLength="6" required /></label><label>Confirm new password<input name="confirmPassword" type="password" minLength="6" required /></label><DialogActions onClose={() => setModal(null)} label="Change password" /></form></Dialog>}
         {modal === 'rename' && selectedItems[0] && <Dialog title="Rename" onClose={() => setModal(null)}><form onSubmit={saveRename}><p>Rename {selectedItems[0].name}.</p><label>New name<input name="newName" defaultValue={selectedItems[0].name} autoFocus required /></label><DialogActions onClose={() => setModal(null)} label="Rename" /></form></Dialog>}
         {modal === 'share' && selectedItems[0] && <Dialog title="Share file" onClose={() => setModal(null)}>{shareLink ? <><p>Anyone with this link can download {selectedItems[0].name}.</p><input value={shareLink} readOnly onFocus={(event) => event.target.select()} /><div className="modal-actions"><button onClick={() => navigator.clipboard.writeText(shareLink)}>Copy link</button><button className="confirm" onClick={() => setModal(null)}>Done</button></div></> : <form onSubmit={createShare}><p>Create a download link for {selectedItems[0].name}.</p><label>Expires<select name="expiresIn" defaultValue="86400"><option value="3600">In 1 hour</option><option value="86400">In 1 day</option><option value="604800">In 7 days</option><option value="0">Never</option></select></label><label>Downloads<select name="maxDownloads" defaultValue="0"><option value="0">Unlimited</option><option value="1">1 download</option><option value="10">10 downloads</option><option value="100">100 downloads</option></select></label><DialogActions onClose={() => setModal(null)} label="Create link" /></form>}</Dialog>}
+        {modal === 'downloadMode' && <Dialog title="Choose download mode" onClose={() => setModal(null)}>
+            <p>Download {selectedItems.length} selected item{selectedItems.length === 1 ? '' : 's'} as a single archive, or queue every file individually (preserving the original folder structure where your browser supports it).</p>
+            <label className="archive-format-option"><input type="radio" name="downloadMode" checked={downloadModeDraft === 'tar.gz'} onChange={() => setDownloadModeDraft('tar.gz')} /><span><strong>tar.gz archive</strong></span></label>
+            <label className="archive-format-option"><input type="radio" name="downloadMode" checked={downloadModeDraft === 'zip'} onChange={() => setDownloadModeDraft('zip')} /><span><strong>zip archive</strong></span></label>
+            <label className="archive-format-option"><input type="radio" name="downloadMode" checked={downloadModeDraft === 'queue'} onChange={() => setDownloadModeDraft('queue')} /><span><strong>Queue (one file at a time)</strong>{!supportsDirectoryPicker() && <small> Your browser cannot preserve folder structure for queued downloads; files will download individually with flattened names.</small>}</span></label>
+            <div className="modal-actions">
+                <button type="button" className="confirm" onClick={() => {
+                    if (downloadModeDraft === 'queue') { setModal(null); void enqueueQueueDownload(selectedItems); return; }
+                    setArchiveFormat(downloadModeDraft);
+                    setModal(null);
+                    void download(selectedItems);
+                }}>Start download</button>
+                <button type="button" onClick={() => setModal(null)}>Cancel</button>
+            </div>
+        </Dialog>}
+        {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No queued downloads yet.</p> : <ul className="queue-panel-list">{queueItems.map((item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span>{item.detail}</span></li>)}</ul>}</div>}
     </div>;
 };
+
 
 const FolderTree = ({ node, currentPath, dragItems, dropTarget, onChooseDestination, onToggle, onNavigate, onDragOver, onDragLeave, onDrop }) => <div className="folder-tree"><div className={`tree-node ${currentPath === node.path ? 'active' : ''} ${dropTarget === node.path ? 'drop-target' : ''}`} onDragOver={(event) => onDragOver(event, node)} onDragLeave={onDragLeave} onDrop={(event) => onDrop(event, node)}><button className="tree-toggle" aria-label={`${node.expanded ? 'Collapse' : 'Expand'} ${node.name}`} onClick={() => onToggle(node)}>{node.expanded ? '−' : '+'}</button><button className="tree-folder" onClick={() => onChooseDestination ? onChooseDestination(node) : onNavigate(node.path)}><span className="folder-mini" />{node.name}</button>{dragItems.length > 0 && dropTarget === node.path && <span className="drop-label">Move here</span>}</div>{node.expanded && <div className="tree-children">{node.loaded ? node.children.map((child) => <FolderTree key={child.path} node={child} currentPath={currentPath} dragItems={dragItems} dropTarget={dropTarget} onChooseDestination={onChooseDestination} onToggle={onToggle} onNavigate={onNavigate} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} />) : <span className="tree-loading">Loading folders...</span>}</div>}</div>;
 
