@@ -159,7 +159,7 @@
 .local-pane-actions { display: flex; gap: 6px; padding: 0 14px 10px; border-bottom: 1px solid #1c3955; }
 .local-pane-actions button { padding: 5px 9px; color: #b9cee4; background: #102d49; border-color: #315b7e; }
 .local-pane-body { display: flex; flex: 1; min-height: 0; }
-.local-pane-tree { flex: 0 0 130px; min-height: 0; overflow-y: auto; padding: 6px; border-right: 1px solid #1c3955; }
+.local-pane-tree { flex: 0 0 auto; min-width: 80px; min-height: 0; overflow-y: auto; padding: 6px; }
 .local-file-list { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
 .local-file { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 7px; align-items: center; width: 100%; padding: 8px 7px; border: 1px solid transparent; border-radius: 4px; color: #d9eafa; background: transparent; text-align: left; cursor: pointer; }
 .local-file:hover, .local-file.selected { background: #133b5b; border-color: #2b6688; }

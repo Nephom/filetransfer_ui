@@ -525,6 +525,9 @@ function App() {
   const [localPaneWidth, setLocalPaneWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-local-pane-width")) || 380,
   );
+  const [localTreeWidth, setLocalTreeWidth] = useState(() =>
+    Number(localStorage.getItem("fileapi-local-tree-width")) || 130,
+  );
   const [columnWidths, setColumnWidths] = useState<Record<ColumnKey, number>>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("fileapi-column-widths") || "{}");
@@ -634,6 +637,7 @@ function App() {
   const locationRefreshInProgress = useRef(false);
   const terminalResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const paneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const localTreeResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnResizeRef = useRef<{
     key: ColumnKey;
     startX: number;
@@ -711,6 +715,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("fileapi-local-pane-width", String(localPaneWidth));
   }, [localPaneWidth]);
+
+  useEffect(() => {
+    localStorage.setItem("fileapi-local-tree-width", String(localTreeWidth));
+  }, [localTreeWidth]);
 
   useEffect(() => {
     localStorage.setItem("fileapi-column-widths", JSON.stringify(columnWidths));
@@ -1390,6 +1398,26 @@ function App() {
     paneResizeRef.current = { startX: event.clientX, startWidth: localPaneWidth };
     window.addEventListener("pointermove", resizePane);
     window.addEventListener("pointerup", stopPaneResize);
+  };
+
+  const stopLocalTreeResize = () => {
+    localTreeResizeRef.current = null;
+    window.removeEventListener("pointermove", resizeLocalTree);
+    window.removeEventListener("pointerup", stopLocalTreeResize);
+  };
+  const resizeLocalTree = (event: PointerEvent) => {
+    const start = localTreeResizeRef.current;
+    if (!start) return;
+    setLocalTreeWidth(
+      Math.max(80, Math.min(Math.max(160, localPaneWidth - 160), start.startWidth + (event.clientX - start.startX))),
+    );
+  };
+  const beginLocalTreeResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    localTreeResizeRef.current = { startX: event.clientX, startWidth: localTreeWidth };
+    window.addEventListener("pointermove", resizeLocalTree);
+    window.addEventListener("pointerup", stopLocalTreeResize);
   };
 
   const stopColumnResize = () => {
@@ -3020,7 +3048,14 @@ function App() {
         </button>
       </div>
       <div className="local-pane-body">
-        <div className="local-pane-tree">{renderLocalTreeNode(localFolderTree)}</div>
+        <div className="local-pane-tree" style={{ flexBasis: `${localTreeWidth}px` }}>{renderLocalTreeNode(localFolderTree)}</div>
+        <div
+          className="pane-resize-handle"
+          onPointerDown={beginLocalTreeResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize LOCAL folder tree"
+        />
         <div className="local-file-list">
           {localPath && (
             <button
