@@ -1442,6 +1442,61 @@ app.post('/api/archive', authenticate, async (req, res) => {
   }
 });
 
+// Recursively enumerate every individual file under a set of selected
+// files/folders, without archiving them. Used by the "queue" (one-by-one)
+// download mode as an alternative to the always-on archive download: the
+// client needs a flat file list up front so it can queue one transfer per
+// file and preserve the original folder structure at the destination.
+const flattenPathEntries = async (absolutePath, relativePrefix, remotePrefix, results) => {
+  const stats = await fs.stat(absolutePath);
+  if (stats.isDirectory()) {
+    const children = await fs.readdir(absolutePath);
+    for (const child of children) {
+      await flattenPathEntries(
+        path.join(absolutePath, child),
+        relativePrefix ? `${relativePrefix}/${child}` : child,
+        remotePrefix ? `${remotePrefix}/${child}` : child,
+        results
+      );
+    }
+  } else if (stats.isFile()) {
+    results.push({ relativePath: relativePrefix, remotePath: remotePrefix, size: stats.size });
+  }
+};
+
+app.post('/api/files/flatten', authenticate, async (req, res) => {
+  try {
+    const { items, currentPath = '' } = req.body;
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+    await getStorageContext(req, currentPath, 'read');
+
+    const results = [];
+    for (const item of items) {
+      if (!item || typeof item.name !== 'string' || item.name.trim() === '') {
+        return res.status(400).json({ error: 'Each item must have a name' });
+      }
+      const parentPath = typeof item.path === 'string' && item.path
+        ? path.dirname(item.path)
+        : currentPath;
+      const remotePath = typeof item.path === 'string' && item.path ? item.path : path.join(currentPath, item.name);
+      const itemContext = await getStorageContext(req, path.join(parentPath, item.name), 'read');
+      try {
+        await flattenPathEntries(itemContext.targetPath, item.name, remotePath, results);
+      } catch (error) {
+        return res.status(error.code === 'ENOENT' ? 404 : 400).json({
+          error: `Unable to read ${item.name}: ${error.code === 'ENOENT' ? 'item not found' : error.message}`
+        });
+      }
+    }
+
+    res.json({ files: results, totalFiles: results.length, totalBytes: results.reduce((sum, entry) => sum + entry.size, 0) });
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
+  }
+});
+
 // Progress tracking routes
 app.get('/api/progress/:transferId', authenticate, (req, res) => {
   try {
