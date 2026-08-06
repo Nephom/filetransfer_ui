@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "fileapi-desktop"
-version = "3.2.3+9d90f01"
+version = "3.2.3+20260806.043b037"
 dependencies = [
  "portable-pty",
  "reqwest 0.12.24",
