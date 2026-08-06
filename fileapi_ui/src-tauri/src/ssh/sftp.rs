@@ -278,17 +278,34 @@ pub async fn upload_path(
     let connection = sessions
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
-    let destination_root = remote_destination_folder.trim_end_matches('/');
+    let destination_root = connection
+        .sftp
+        .canonicalize(&remote_destination_folder)
+        .await
+        .map_err(|error| format!("Unable to resolve remote upload folder {remote_destination_folder:?}: {error}"))?;
+    let remote_path = |name: &str| {
+        if destination_root == "/" {
+            format!("/{name}")
+        } else {
+            format!("{}/{name}", destination_root.trim_end_matches('/'))
+        }
+    };
 
     if metadata.is_dir() {
         let (files, directories) = crate::collect_upload_paths(std::slice::from_ref(&local_path))?;
         for directory in &directories {
-            let remote_dir = format!("{destination_root}/{directory}");
-            let _ = connection.sftp.create_dir(remote_dir).await;
+            let remote_dir = remote_path(directory);
+            if connection.sftp.metadata(remote_dir.clone()).await.is_err() {
+                connection
+                    .sftp
+                    .create_dir(remote_dir.clone())
+                    .await
+                    .map_err(|error| format!("Unable to create remote folder {remote_dir:?}: {error}"))?;
+            }
         }
         for (local_file, relative) in &files {
             let data = std::fs::read(local_file).map_err(|error| error.to_string())?;
-            let remote_file = format!("{destination_root}/{relative}");
+            let remote_file = remote_path(relative);
             connection
                 .sftp
                 .write(remote_file, &data)
@@ -301,7 +318,7 @@ pub async fn upload_path(
             .and_then(|value| value.to_str())
             .ok_or_else(|| "Invalid local file name".to_string())?;
         let data = std::fs::read(local).map_err(|error| error.to_string())?;
-        let remote_file = format!("{destination_root}/{name}");
+        let remote_file = remote_path(name);
         connection
             .sftp
             .write(remote_file, &data)
@@ -310,7 +327,7 @@ pub async fn upload_path(
     } else {
         return Err("Unsupported local upload source".to_string());
     }
-    Ok(destination_root.to_string())
+    Ok(destination_root)
 }
 
 /// Download a remote file or an entire remote directory tree into
