@@ -188,6 +188,31 @@ fn local_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "Unable to locate the local home directory".to_string())
 }
 
+fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
+    let home = local_home()?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let input = Path::new(path);
+    if input
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Local transfer path must not contain '..'".to_string());
+    }
+    let candidate = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        home.join(input)
+    };
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !resolved.starts_with(&home) {
+        return Err("Local transfer path must remain inside the current user's home directory".to_string());
+    }
+    Ok(resolved)
+}
+
 #[tauri::command]
 fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
     let root = local_home()?
@@ -650,7 +675,8 @@ async fn ssh_rename_path(profile: ssh::SshProfile, old_path: String, new_path: S
 
 #[tauri::command]
 async fn ssh_upload_path(profile: ssh::SshProfile, local_path: String, remote_destination_folder: String) -> Result<String, String> {
-    ssh::sftp::upload_path(profile, local_path, remote_destination_folder).await
+    let local_path = resolve_local_transfer_path(&local_path)?;
+    ssh::sftp::upload_path(profile, local_path.display().to_string(), remote_destination_folder).await
 }
 
 #[tauri::command]
@@ -660,7 +686,8 @@ async fn ssh_download_path(
     is_directory: bool,
     local_destination_folder: String,
 ) -> Result<String, String> {
-    ssh::sftp::download_path(profile, remote_path, is_directory, local_destination_folder).await
+    let local_destination_folder = resolve_local_transfer_path(&local_destination_folder)?;
+    ssh::sftp::download_path(profile, remote_path, is_directory, local_destination_folder.display().to_string()).await
 }
 
 /// Download into the user's real Downloads folder, matching the API Remote
@@ -696,8 +723,19 @@ async fn ssh_download_to_drag_staging(
     let staging_directory = operation_storage_directory()?
         .join("drag-staging")
         .join(&safe_set_id);
+    let parent_staging_directory = staging_directory
+        .parent()
+        .ok_or_else(|| "Invalid drag staging directory".to_string())?;
+    std::fs::create_dir_all(parent_staging_directory).map_err(|error| error.to_string())?;
+    sweep_stale_drag_staging(parent_staging_directory);
     std::fs::create_dir_all(&staging_directory).map_err(|error| error.to_string())?;
-    ssh::sftp::download_path(profile, remote_path, is_directory, staging_directory.display().to_string()).await
+    match ssh::sftp::download_path(profile, remote_path, is_directory, staging_directory.display().to_string()).await {
+        Ok(path) => Ok(path),
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&staging_directory);
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]

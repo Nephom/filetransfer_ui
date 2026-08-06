@@ -400,6 +400,12 @@ const readError = async (response: {
 
 const parentPath = (path: string) =>
   path.split("/").filter(Boolean).slice(0, -1).join("/");
+const sshParentPath = (path: string) => {
+  const segments = path.split("/").filter(Boolean);
+  return segments.length > 1 ? `/${segments.slice(0, -1).join("/")}` : "/";
+};
+const joinSshPath = (directory: string, name: string) =>
+  directory === "/" ? `/${name}` : `${directory.replace(/\/+$/, "")}/${name}`;
 const downloadPath = (path: string) =>
   path.split("/").map(encodeURIComponent).join("/");
 const formatSize = (size: number) =>
@@ -623,6 +629,7 @@ function App() {
     children: [],
   });
   const [dragItems, setDragItems] = useState<FileItem[]>([]);
+  const [dragSource, setDragSource] = useState<"local" | "remote" | "">("");
   const [dropTarget, setDropTarget] = useState("");
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -1255,20 +1262,20 @@ function App() {
   const selectSshBrowse = (entryId: string) => {
     if (entryId === remoteSshEntryId) return;
     setRemoteSshEntryId(entryId);
-    setPath("");
+    setPath("/");
     setSelected([]);
     setSearch("");
     setSearching(false);
     setPathBeforeSearch("");
     setFolderTree({
-      path: "",
+      path: "/",
       name: "/",
       expanded: true,
       loaded: false,
       children: [],
     });
     void run(async () => {
-      await Promise.all([loadFiles("", entryId), loadTreeChildren("", true, entryId)]);
+      await Promise.all([loadFiles("/", entryId), loadTreeChildren("/", true, entryId)]);
     });
   };
 
@@ -2268,6 +2275,11 @@ function App() {
       );
     });
 
+  const canDropOnRemote = (destination: string) =>
+    dragSource === "local"
+      ? Boolean(remoteSshEntryId && dragItems.length)
+      : dragSource === "remote" && isValidMoveTarget(dragItems, destination);
+
   // Undo history is intentionally limited to operations that can be reliably
   // and verifiably reversed: rename and move (a move is just a rename that
   // also changes the parent folder). There is no remote Trash, so delete is
@@ -2320,8 +2332,12 @@ function App() {
       notify(`Undone: ${entry.description}`);
     });
 
-  const moveItems = (items: FileItem[], destination: string) =>
+  const moveItems = (items: FileItem[], destination: string, source = dragSource) =>
     run(async () => {
+      if (source === "local") {
+        uploadLocalItemsToRemote(items, destination);
+        return;
+      }
       if (!isValidMoveTarget(items, destination))
         throw new Error(
           "Choose a folder other than the current folder or a folder inside a selected folder.",
@@ -2330,7 +2346,7 @@ function App() {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
         for (const item of items) {
-          const newPath = `${destination.replace(/\/+$/, "")}/${item.name}`;
+          const newPath = joinSshPath(destination, item.name);
           await invoke("ssh_rename_path", { profile, oldPath: item.path, newPath });
           recordUndoableMove({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath });
         }
@@ -2382,7 +2398,16 @@ function App() {
     const items = selected.includes(file.path) ? selectedItems : [file];
     if (!selected.includes(file.path)) setSelected([file.path]);
     setDragItems(items);
+    setDragSource("remote");
     event.dataTransfer.effectAllowed = "move";
+  };
+
+  const beginLocalDrag = (event: React.DragEvent, file: FileItem) => {
+    const items = localSelected.includes(file.path) ? localFiles.filter((item) => localSelected.includes(item.path)) : [file];
+    if (!localSelected.includes(file.path)) setLocalSelected([file.path]);
+    setDragItems(items);
+    setDragSource("local");
+    event.dataTransfer.effectAllowed = "copy";
   };
 
   const resolveDragIcon = () => {
@@ -2394,6 +2419,12 @@ function App() {
 
   const beginRemoteDrag = (event: React.DragEvent, file: FileItem) => {
     beginDrag(event, file);
+    // Normal drags stay inside the app so LOCAL <-> SSH transfers can use the
+    // HTML5 drop targets. Hold Alt when an OS-level drag-out is wanted.
+    if (!event.altKey) {
+      event.dataTransfer.setData("application/x-filetransfer-source", "remote");
+      return;
+    }
     // The webview's native HTML5 drag-and-drop cannot drop files onto
     // external apps on Linux (webkit2gtk does not implement outbound file
     // drag via DownloadURL/text/uri-list). tauri-plugin-drag starts a real
@@ -2504,6 +2535,7 @@ function App() {
 
   const finishDrag = () => {
     setDragItems([]);
+    setDragSource("");
     setDropTarget("");
   };
 
@@ -2749,6 +2781,41 @@ function App() {
       void runQueuedUpload(item);
     });
 
+  const downloadRemoteItemsToLocal = (items: FileItem[]) =>
+    void run(async () => {
+      if (!remoteSshEntryId || !items.length) return;
+      const profile = findSshProfileById(remoteSshEntryId);
+      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      for (const item of items) {
+        await invoke("ssh_download_path", {
+          profile,
+          remotePath: item.path,
+          isDirectory: item.isDirectory,
+          localDestinationFolder: localPath,
+        });
+      }
+      finishDrag();
+      await loadLocalFiles(localPath);
+      notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
+    });
+
+  const uploadLocalItemsToRemote = (items: FileItem[], destination: string) =>
+    void run(async () => {
+      if (!remoteSshEntryId || !items.length) return;
+      const profile = findSshProfileById(remoteSshEntryId);
+      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      for (const item of items) {
+        await invoke("ssh_upload_path", {
+          profile,
+          localPath: item.path,
+          remoteDestinationFolder: destination,
+        });
+      }
+      finishDrag();
+      await loadFiles(path);
+      notify(`Uploaded ${items.length} item${items.length === 1 ? "" : "s"} to REMOTE.`);
+    });
+
   const upload = async () =>
     uploadPaths(await invoke<string[]>("pick_upload_files"));
 
@@ -2783,7 +2850,7 @@ function App() {
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        const fullPath = path ? `${path}/${name}` : name;
+         const fullPath = path ? joinSshPath(path, name) : `/${name}`;
         await invoke("ssh_create_directory", { profile, path: fullPath });
         await loadFiles(path);
         notify(`Created ${name}.`);
@@ -2812,8 +2879,7 @@ function App() {
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        const parentPath = item.path.split("/").slice(0, -1).join("/");
-        const newPath = parentPath ? `${parentPath}/${trimmedName}` : trimmedName;
+         const newPath = joinSshPath(sshParentPath(item.path), trimmedName);
         await invoke("ssh_rename_path", { profile, oldPath: item.path, newPath });
         recordUndoableRename({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath });
         await loadFiles(path);
@@ -2935,7 +3001,7 @@ function App() {
       <div
         className={`tree-node ${path === node.path ? "active" : ""} ${dropTarget === node.path ? "drop-target" : ""}`}
         onDragOver={(event) => {
-          if (isValidMoveTarget(dragItems, node.path)) {
+          if (canDropOnRemote(node.path)) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
             setDropTarget(node.path);
@@ -2949,10 +3015,12 @@ function App() {
         }}
         onDrop={(event) => {
           event.preventDefault();
+          event.stopPropagation();
           stopDragAutoScroll();
           const items = dragItems;
+          const source = dragSource;
           finishDrag();
-          void moveItems(items, node.path);
+          void moveItems(items, node.path, source);
         }}
       >
         <button
@@ -3047,7 +3115,22 @@ function App() {
           Home
         </button>
       </div>
-      <div className="local-pane-body">
+      <div
+        className={`local-pane-body ${dragSource === "remote" && remoteSshEntryId ? "drop-target" : ""}`}
+        onDragOver={(event) => {
+          if (dragSource === "remote" && remoteSshEntryId && dragItems.length) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }
+        }}
+        onDrop={(event) => {
+          if (dragSource === "remote" && remoteSshEntryId) {
+            event.preventDefault();
+            event.stopPropagation();
+            downloadRemoteItemsToLocal(dragItems);
+          }
+        }}
+      >
         <div className="local-pane-tree" style={{ flexBasis: `${localTreeWidth}px` }}>{renderLocalTreeNode(localFolderTree)}</div>
         <div
           className="pane-resize-handle"
@@ -3070,6 +3153,9 @@ function App() {
             <button
               key={file.path}
               className={`local-file ${localSelected.includes(file.path) ? "selected" : ""}`}
+              draggable
+              onDragStart={(event) => beginLocalDrag(event, file)}
+              onDragEnd={finishDrag}
               onClick={() => setLocalSelected([file.path])}
               onDoubleClick={() =>
                 file.isDirectory && void run(() => loadLocalFiles(file.path))
@@ -3464,7 +3550,9 @@ function App() {
           className="nav-button"
           onClick={() =>
             void run(() =>
-              loadFiles(searching ? pathBeforeSearch : parentPath(path)),
+              loadFiles(searching
+                ? pathBeforeSearch
+                : remoteSshEntryId ? sshParentPath(path) : parentPath(path)),
             )
           }
           disabled={busy || (!path && !searching)}
@@ -3472,7 +3560,7 @@ function App() {
           ↑
         </button>
         <div className="crumbs">
-          <button onClick={() => void run(() => loadFiles(""))}>/</button>
+          <button onClick={() => void run(() => loadFiles(remoteSshEntryId ? "/" : ""))}>/</button>
           {path
             .split("/")
             .filter(Boolean)
@@ -3482,7 +3570,9 @@ function App() {
                 <button
                   onClick={() =>
                     void run(() =>
-                      loadFiles(parts.slice(0, index + 1).join("/")),
+                      loadFiles(remoteSshEntryId
+                        ? `/${parts.slice(0, index + 1).join("/")}`
+                        : parts.slice(0, index + 1).join("/")),
                     )
                   }
                 >
@@ -3583,10 +3673,41 @@ function App() {
               id="files"
               ref={fileAreaRef}
               className="file-area"
-              onDragOver={(event) => handleDragAutoScroll(event, fileAreaRef.current)}
+              onDragOver={(event) => {
+                handleDragAutoScroll(event, fileAreaRef.current);
+                if (dragSource === "local" && remoteSshEntryId && dragItems.length) {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "copy";
+                }
+              }}
               onDragLeave={stopDragAutoScroll}
-              onDrop={stopDragAutoScroll}
+              onDrop={(event) => {
+                stopDragAutoScroll();
+                if (dragSource === "local" && remoteSshEntryId) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const items = dragItems;
+                  uploadLocalItemsToRemote(items, path);
+                }
+              }}
             >
+              {remoteSshEntryId && (
+                <div className="remote-navigation-items" aria-label="Remote directory navigation">
+                  <button
+                    type="button"
+                    onClick={() => void run(() => loadFiles(path))}
+                  >
+                    ./
+                  </button>
+                  <button
+                    type="button"
+                    disabled={path === "/"}
+                    onClick={() => void run(() => loadFiles(sshParentPath(path)))}
+                  >
+                    ../
+                  </button>
+                </div>
+              )}
               {viewMode === "grid" ? (
               <div className="file-grid">
                 {files.map((file) => (
@@ -3594,13 +3715,15 @@ function App() {
                     key={file.path}
                     className={`file-tile ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
                     draggable
-                    onPointerDown={() => prepareRemoteDrag(file)}
+                     onPointerDown={(event) => {
+                       if (event.altKey) prepareRemoteDrag(file);
+                     }}
                     onDragStart={(event) => beginRemoteDrag(event, file)}
                     onDragEnd={finishDrag}
                     onDragOver={(event) => {
                       if (
                         file.isDirectory &&
-                        isValidMoveTarget(dragItems, file.path)
+                        canDropOnRemote(file.path)
                       ) {
                         event.preventDefault();
                         setDropTarget(file.path);
@@ -3609,9 +3732,11 @@ function App() {
                     onDrop={(event) => {
                       if (file.isDirectory) {
                         event.preventDefault();
+                        event.stopPropagation();
                         const items = dragItems;
+                        const source = dragSource;
                         finishDrag();
-                        void moveItems(items, file.path);
+                        void moveItems(items, file.path, source);
                       }
                     }}
                      onClick={(event) => selectFile(file, event)}
@@ -3670,13 +3795,15 @@ function App() {
                       key={file.path}
                       draggable
                       className={`file-row ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
-                       onPointerDown={() => prepareRemoteDrag(file)}
+                        onPointerDown={(event) => {
+                          if (event.altKey) prepareRemoteDrag(file);
+                        }}
                        onDragStart={(event) => beginRemoteDrag(event, file)}
                       onDragEnd={finishDrag}
                       onDragOver={(event) => {
                         if (
                           file.isDirectory &&
-                          isValidMoveTarget(dragItems, file.path)
+                          canDropOnRemote(file.path)
                         ) {
                           event.preventDefault();
                           setDropTarget(file.path);
@@ -3685,9 +3812,11 @@ function App() {
                       onDrop={(event) => {
                         if (file.isDirectory) {
                           event.preventDefault();
+                          event.stopPropagation();
                           const items = dragItems;
+                          const source = dragSource;
                           finishDrag();
-                          void moveItems(items, file.path);
+                          void moveItems(items, file.path, source);
                         }
                       }}
                        onClick={(event) => selectFile(file, event)}

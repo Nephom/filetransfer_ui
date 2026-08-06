@@ -71,14 +71,18 @@ pub async fn list_directory(profile: SshProfile, path: String) -> Result<crate::
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
 
-    let remote_path = if path.trim().is_empty() {
+    let remote_path = if path.trim().is_empty() || path.trim() == "." {
         connection
             .sftp
             .canonicalize(".")
             .await
             .unwrap_or_else(|_| ".".to_string())
-    } else {
+    } else if path.trim() == "/" {
+        "/".to_string()
+    } else if path.starts_with('/') {
         path.clone()
+    } else {
+        format!("/{path}")
     };
 
     let entries = connection
