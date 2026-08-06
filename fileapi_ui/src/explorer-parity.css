@@ -125,6 +125,9 @@
 .destination-modal { width: min(560px, calc(100vw - 32px)); }
 .destination-modal label { display: grid; gap: 6px; color: #d9e8f7; }
 .destination-modal input { width: 100%; }
+.settings-level { display: grid; gap: 5px; color: #d9e8f7; }
+.settings-level select { color: #e6eefc; background: #0b2137; border: 1px solid #315b7e; border-radius: 4px; padding: 8px; }
+.settings-level small { color: #91a9c0; font-weight: 400; }
 .log-name-modal { width: min(520px, calc(100vw - 32px)); }
 .log-name-modal p { color: #a8c0d8; line-height: 1.5; }
 .log-name-modal input { width: 100%; margin-top: 5px; padding: 8px; color: #e6eefc; background: #091b2d; border: 1px solid #315b7e; border-radius: 4px; }

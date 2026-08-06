@@ -119,6 +119,7 @@ type DesktopSettings = {
   uiDensity: "auto" | "compact" | "standard" | "comfortable";
   undoHistoryEnabled: boolean;
   operationLogEnabled: boolean;
+  operationLogLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
   confirmations: {
     delete: boolean;
     overwrite: boolean;
@@ -375,6 +376,7 @@ const defaultDesktopSettings: DesktopSettings = {
   uiDensity: "auto",
   undoHistoryEnabled: true,
   operationLogEnabled: true,
+  operationLogLevel: "DEBUG",
   confirmations: { delete: true, overwrite: true, recursive: true, crossSourceMove: true },
 };
 
@@ -447,6 +449,7 @@ function App() {
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [path, setPath] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
+  const selectionAnchorRef = useRef<string | null>(null);
   const [notice, setNotice] = useState("");
   const [shareUrl, setShareUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -462,10 +465,14 @@ function App() {
       const uiDensity = ["auto", "compact", "standard", "comfortable"].includes(saved?.uiDensity)
         ? saved.uiDensity
         : defaultDesktopSettings.uiDensity;
+      const operationLogLevel = ["DEBUG", "INFO", "WARN", "ERROR"].includes(saved?.operationLogLevel)
+        ? saved.operationLogLevel
+        : defaultDesktopSettings.operationLogLevel;
       return {
         ...defaultDesktopSettings,
         ...saved,
         uiDensity,
+        operationLogLevel,
         confirmations: { ...defaultDesktopSettings.confirmations, ...(saved?.confirmations || {}) },
       };
     } catch {
@@ -971,6 +978,7 @@ function App() {
     setFiles(data.files || []);
     setPath(data.currentPath || "");
     setSearching(false);
+    selectionAnchorRef.current = null;
     setSelected([]);
   };
 
@@ -992,6 +1000,7 @@ function App() {
     setLocalSelected((current) => current.filter((item) =>
       (data.files || []).some((file) => file.path === item),
     ));
+    writeOperationLog("local_refresh", "completed", "LOCAL", `~/${data.path || ""}`, `Loaded ${data.files?.length || 0} local entries.`, "DEBUG");
   };
 
   const updateTreeNode = (
@@ -1647,8 +1656,9 @@ function App() {
        );
        setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, savedLogPaths: [paths.raw, paths.plain, paths.commands, paths.metadata] } : item));
        if (desktopSettings.operationLogEnabled) {
-         void invoke("append_operation_log", {
-           operation: "save_ssh_log",
+          void invoke("append_operation_log", {
+            level: "INFO",
+            operation: "save_ssh_log",
            status: "completed",
            sourceLabel: logName,
            destinationLabel: "Downloads",
@@ -1667,9 +1677,12 @@ function App() {
     setSaveLogNameOpen(true);
   };
 
-  const writeOperationLog = (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string) => {
+  const writeOperationLog = (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string, level: DesktopSettings["operationLogLevel"] = "INFO") => {
     if (!desktopSettings.operationLogEnabled) return;
+    const levels = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+    if (levels[level] < levels[desktopSettings.operationLogLevel]) return;
     void invoke("append_operation_log", {
+      level,
       operation,
       status,
       sourceLabel,
@@ -1683,6 +1696,7 @@ function App() {
   };
 
   const runQueuedUpload = async (item: TransferQueueItem) => {
+    writeOperationLog("upload", "started", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "Transfer queue upload started.", "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: "Inspecting files..." });
     try {
       const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths: item.paths });
@@ -1739,7 +1753,7 @@ function App() {
         status: "failed",
         detail,
       });
-      writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Upload failed: ${detail}`);
+      writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Upload failed: ${detail}`, "ERROR");
     }
   };
 
@@ -1859,12 +1873,36 @@ function App() {
   const selectedItems = files.filter((file) => selected.includes(file.path));
   const workspaceSessions = managedSessions.filter((item) => item.sshEntries.length > 0);
   const activeWorkspaceSession = workspaceSessions.find((item) => item.id === workspaceSessionId);
-  const toggle = (file: FileItem, checked: boolean) =>
+  const toggle = (file: FileItem, checked: boolean) => {
+    selectionAnchorRef.current = file.path;
     setSelected((current) =>
       checked
         ? [...new Set([...current, file.path])]
         : current.filter((value) => value !== file.path),
     );
+  };
+
+  const selectFile = (file: FileItem, event: React.MouseEvent) => {
+    const index = files.findIndex((item) => item.path === file.path);
+    const anchorIndex = selectionAnchorRef.current
+      ? files.findIndex((item) => item.path === selectionAnchorRef.current)
+      : -1;
+    if (event.shiftKey && anchorIndex >= 0 && index >= 0) {
+      const start = Math.min(anchorIndex, index);
+      const end = Math.max(anchorIndex, index);
+      setSelected(files.slice(start, end + 1).map((item) => item.path));
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) {
+      selectionAnchorRef.current = file.path;
+      setSelected((current) => current.includes(file.path)
+        ? current.filter((value) => value !== file.path)
+        : [...current, file.path]);
+      return;
+    }
+    selectionAnchorRef.current = file.path;
+    setSelected([file.path]);
+  };
 
   const searchFiles = () =>
     run(async () => {
@@ -1944,14 +1982,11 @@ function App() {
     if (!selected.includes(file.path)) setSelected([file.path]);
     setDragItems(items);
     event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData(
-      "text/plain",
-      items.map((item) => item.name).join(", "),
-    );
   };
 
   const beginRemoteDrag = (event: React.DragEvent, file: FileItem) => {
     beginDrag(event, file);
+    writeOperationLog("drag_out", "started", file.name, "External file manager", "Preparing a local file URI for external drag-out.", "DEBUG");
     event.dataTransfer.effectAllowed = "copyMove";
     if (file.isDirectory) return;
     void invoke<string>("download_to_disk", {
@@ -1967,8 +2002,10 @@ function App() {
       const fileUri = `file://${encodeURI(localPathForDrag)}`;
       event.dataTransfer.setData("text/uri-list", fileUri);
       event.dataTransfer.setData("DownloadURL", `application/octet-stream:${file.name}:${fileUri}`);
+      writeOperationLog("drag_out", "staged", file.name, "External file manager", "Local file URI prepared.", "DEBUG");
     }).catch((error) => {
       setNotice(error instanceof Error ? error.message : String(error));
+      writeOperationLog("drag_out", "failed", file.name, "External file manager", `Staging failed: ${error instanceof Error ? error.message : String(error)}`, "ERROR");
     });
   };
 
@@ -2859,10 +2896,7 @@ function App() {
                         void moveItems(items, file.path);
                       }
                     }}
-                    onClick={(event) => {
-                      if (event.ctrlKey || event.metaKey) toggle(file, true);
-                      else setSelected([file.path]);
-                    }}
+                     onClick={(event) => selectFile(file, event)}
                     onDoubleClick={() =>
                       file.isDirectory
                         ? void run(() => loadFiles(file.path))
@@ -2937,10 +2971,7 @@ function App() {
                           void moveItems(items, file.path);
                         }
                       }}
-                      onClick={(event) => {
-                        if (event.ctrlKey || event.metaKey) toggle(file, true);
-                        else setSelected([file.path]);
-                      }}
+                       onClick={(event) => selectFile(file, event)}
                       onDoubleClick={() =>
                         file.isDirectory
                           ? void run(() => loadFiles(file.path))
@@ -3182,8 +3213,17 @@ function App() {
                <h3>History and operation log</h3>
                <p>Both are enabled by default. Undo records are reserved for reliable, verifiable reversals. The operation log is append-only, excludes secrets, rotates at 10 MB, and retains at most three files total.</p>
                <label className="settings-check"><input type="checkbox" checked={desktopSettings.undoHistoryEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, undoHistoryEnabled: event.target.checked }))} /><span><strong>Enable undo history</strong><small>Disabling this stops new undo records; it does not delete files.</small></span></label>
-               <label className="settings-check"><input type="checkbox" checked={desktopSettings.operationLogEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, operationLogEnabled: event.target.checked }))} /><span><strong>Enable operation log</strong><small>Disabling this stops new audit records; it does not delete unrelated data.</small></span></label>
-               {storageInfo && <div className="storage-info"><span>History: {storageInfo.historyPath} ({formatSize(storageInfo.historyBytes)})</span><span>Logs: {storageInfo.logPath} ({formatSize(storageInfo.logBytes)})</span><span>{storageInfo.logFiles.length} log file{storageInfo.logFiles.length === 1 ? "" : "s"} currently retained</span></div>}
+                <label className="settings-check"><input type="checkbox" checked={desktopSettings.operationLogEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, operationLogEnabled: event.target.checked }))} /><span><strong>Enable operation log</strong><small>Disabling this stops new audit records; it does not delete unrelated data.</small></span></label>
+                <label className="settings-level">Log detail level
+                  <select value={desktopSettings.operationLogLevel} onChange={(event) => setDesktopSettings((current) => ({ ...current, operationLogLevel: event.target.value as DesktopSettings["operationLogLevel"] }))}>
+                    <option value="DEBUG">DEBUG - diagnostics and operations</option>
+                    <option value="INFO">INFO - normal operations</option>
+                    <option value="WARN">WARN - warnings and failures</option>
+                    <option value="ERROR">ERROR - failures only</option>
+                  </select>
+                  <small>DEBUG is enabled by default during development. Lower levels reduce diagnostic detail.</small>
+                </label>
+                {storageInfo && <div className="storage-info"><span>History: {storageInfo.historyPath} ({formatSize(storageInfo.historyBytes)})</span><span>Logs: {storageInfo.logPath} ({formatSize(storageInfo.logBytes)})</span><span>{storageInfo.logFiles.length} log file{storageInfo.logFiles.length === 1 ? "" : "s"} currently retained</span></div>}
                <div className="modal-actions settings-actions"><button type="button" onClick={clearHistory}>Clear undo history</button><button type="button" className="danger" onClick={clearLogs}>Clear operation logs</button></div>
              </section>
              <div className="modal-actions"><button type="button" className="confirm" onClick={() => setSettingsOpen(false)}>Close</button></div>

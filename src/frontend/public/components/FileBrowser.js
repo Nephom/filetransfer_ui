@@ -70,6 +70,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const [currentPath, setCurrentPath] = React.useState('');
     const [displayPath, setDisplayPath] = React.useState('/');
     const [selected, setSelected] = React.useState([]);
+    const selectionAnchor = React.useRef(null);
     const [search, setSearch] = React.useState('');
     const [searching, setSearching] = React.useState(false);
     const [pathBeforeSearch, setPathBeforeSearch] = React.useState('');
@@ -279,8 +280,23 @@ const FileBrowser = ({ token, user, onLogout }) => {
     };
     const choose = (file, event) => {
         const key = itemKey(file);
-        if (event.ctrlKey || event.metaKey) setSelected((items) => items.includes(key) ? items.filter((item) => item !== key) : [...items, key]);
-        else setSelected([key]);
+        const index = files.findIndex((item) => itemKey(item) === key);
+        const anchorIndex = selectionAnchor.current === null
+            ? -1
+            : files.findIndex((item) => itemKey(item) === selectionAnchor.current);
+        if (event.shiftKey && anchorIndex >= 0 && index >= 0) {
+            const start = Math.min(anchorIndex, index);
+            const end = Math.max(anchorIndex, index);
+            setSelected(files.slice(start, end + 1).map(itemKey));
+            return;
+        }
+        if (event.ctrlKey || event.metaKey) {
+            selectionAnchor.current = key;
+            setSelected((items) => items.includes(key) ? items.filter((item) => item !== key) : [...items, key]);
+            return;
+        }
+        selectionAnchor.current = key;
+        setSelected([key]);
     };
     const selectAll = () => setSelected(selected.length === files.length ? [] : files.map(itemKey));
 

@@ -840,6 +840,7 @@ fn clear_operation_logs() -> Result<(), String> {
 
 #[tauri::command]
 fn append_operation_log(
+    level: String,
     operation: String,
     status: String,
     source_label: String,
@@ -849,6 +850,7 @@ fn append_operation_log(
     let (_, log_path) = operation_paths()?;
     let record = serde_json::json!({
         "timestamp": chrono_like_timestamp(),
+        "level": sanitize_operation_value(level),
         "operation": sanitize_operation_value(operation),
         "status": sanitize_operation_value(status),
         "source": sanitize_operation_value(source_label),
