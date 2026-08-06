@@ -617,9 +617,8 @@ async fn ssh_sftp_disconnect(entry_id: String) -> Result<(), String> {
     ssh::sftp::disconnect(entry_id).await
 }
 
-/// `scp`-equivalent primitives for the SXP terminal, deliberately limited to
-/// LOCAL <-> SSH REMOTE (never the API Remote model), per the standard `scp`
-/// scope in the Session/SXP design.
+/// Single-file `scp`-equivalent transfer primitives, deliberately limited to
+/// LOCAL <-> SSH REMOTE (never the API Remote model).
 #[tauri::command]
 async fn scp_download(profile: ssh::SshProfile, remote_path: String, local_path: String) -> Result<String, String> {
     ssh::sftp::download_file(profile, remote_path, local_path).await
@@ -628,6 +627,77 @@ async fn scp_download(profile: ssh::SshProfile, remote_path: String, local_path:
 #[tauri::command]
 async fn scp_upload(profile: ssh::SshProfile, local_path: String, remote_path: String) -> Result<String, String> {
     ssh::sftp::upload_file(profile, local_path, remote_path).await
+}
+
+/// Write parity for the SSH SFTP browse pane: create/delete/rename/upload/
+/// download, matching the equivalent API Remote operations so the LOCATION
+/// dropdown's "SSH: <name>" source behaves the same as an API Remote for
+/// everyday file management (log retrieval, tool deployment, etc).
+#[tauri::command]
+async fn ssh_create_directory(profile: ssh::SshProfile, path: String) -> Result<(), String> {
+    ssh::sftp::create_directory(profile, path).await
+}
+
+#[tauri::command]
+async fn ssh_delete_path(profile: ssh::SshProfile, path: String, is_directory: bool) -> Result<(), String> {
+    ssh::sftp::delete_path(profile, path, is_directory).await
+}
+
+#[tauri::command]
+async fn ssh_rename_path(profile: ssh::SshProfile, old_path: String, new_path: String) -> Result<(), String> {
+    ssh::sftp::rename_path(profile, old_path, new_path).await
+}
+
+#[tauri::command]
+async fn ssh_upload_path(profile: ssh::SshProfile, local_path: String, remote_destination_folder: String) -> Result<String, String> {
+    ssh::sftp::upload_path(profile, local_path, remote_destination_folder).await
+}
+
+#[tauri::command]
+async fn ssh_download_path(
+    profile: ssh::SshProfile,
+    remote_path: String,
+    is_directory: bool,
+    local_destination_folder: String,
+) -> Result<String, String> {
+    ssh::sftp::download_path(profile, remote_path, is_directory, local_destination_folder).await
+}
+
+/// Download into the user's real Downloads folder, matching the API Remote
+/// download button's destination.
+#[tauri::command]
+async fn ssh_download_to_downloads(
+    profile: ssh::SshProfile,
+    remote_path: String,
+    is_directory: bool,
+) -> Result<String, String> {
+    let downloads = local_home()?.join("Downloads");
+    std::fs::create_dir_all(&downloads).map_err(|error| error.to_string())?;
+    ssh::sftp::download_path(profile, remote_path, is_directory, downloads.display().to_string()).await
+}
+
+/// Download into the drag-staging area so the result can be handed to the
+/// native OS drag (mirrors `download_to_drag_staging_at` for API Remote
+/// selections).
+#[tauri::command]
+async fn ssh_download_to_drag_staging(
+    profile: ssh::SshProfile,
+    remote_path: String,
+    is_directory: bool,
+    set_id: String,
+) -> Result<String, String> {
+    let safe_set_id: String = set_id
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-' || *character == '_')
+        .collect();
+    if safe_set_id.is_empty() {
+        return Err("Invalid drag staging set identifier".to_string());
+    }
+    let staging_directory = operation_storage_directory()?
+        .join("drag-staging")
+        .join(&safe_set_id);
+    std::fs::create_dir_all(&staging_directory).map_err(|error| error.to_string())?;
+    ssh::sftp::download_path(profile, remote_path, is_directory, staging_directory.display().to_string()).await
 }
 
 #[tauri::command]
@@ -894,6 +964,13 @@ fn main() {
             ssh_sftp_disconnect,
             scp_download,
             scp_upload,
+            ssh_create_directory,
+            ssh_delete_path,
+            ssh_rename_path,
+            ssh_upload_path,
+            ssh_download_path,
+            ssh_download_to_downloads,
+            ssh_download_to_drag_staging,
             save_ssh_logs,
             read_local_file,
             edit_local_file,
