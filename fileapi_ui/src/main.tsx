@@ -160,11 +160,6 @@ type OperationStorageInfo = {
   logFiles: string[];
 };
 
-const sessionEntries = (session: ManagedSession): SessionEntry[] => session.sxpEntries.flatMap((entry) => [
-  { id: `${entry.id}-local`, alias: entry.localAlias, kind: "LOCAL", path: entry.localPath },
-  { id: `${entry.id}-remote`, alias: entry.remoteAlias, kind: "REMOTE", path: entry.remotePath, locationId: entry.locationId, locationName: entry.locationName },
-]);
-
 const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
   if (!Array.isArray(value)) return [];
   return value.map((raw) => {
@@ -527,6 +522,9 @@ function App() {
   const [terminalHeight, setTerminalHeight] = useState(() =>
     Number(localStorage.getItem("fileapi-terminal-height")) || 260,
   );
+  const [localPaneWidth, setLocalPaneWidth] = useState(() =>
+    Number(localStorage.getItem("fileapi-local-pane-width")) || 380,
+  );
   const [columnWidths, setColumnWidths] = useState<Record<ColumnKey, number>>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("fileapi-column-widths") || "{}");
@@ -635,6 +633,7 @@ function App() {
   const locationsLoaded = useRef(false);
   const locationRefreshInProgress = useRef(false);
   const terminalResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const paneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnResizeRef = useRef<{
     key: ColumnKey;
     startX: number;
@@ -708,6 +707,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("fileapi-terminal-height", String(terminalHeight));
   }, [terminalHeight]);
+
+  useEffect(() => {
+    localStorage.setItem("fileapi-local-pane-width", String(localPaneWidth));
+  }, [localPaneWidth]);
 
   useEffect(() => {
     localStorage.setItem("fileapi-column-widths", JSON.stringify(columnWidths));
@@ -1320,40 +1323,6 @@ function App() {
     });
   };
 
-  const openSessionEntry = (entry: SessionEntry, managedSessionId?: string) => {
-    if (entry.kind === "LOCAL") {
-      setSplitMode(true);
-      void run(() => loadLocalFiles(entry.path));
-      return;
-    }
-    if (entry.kind === "SSH") {
-      const profile = entry.sshProfile || sshProfiles.find((item) => item.id === entry.profileId);
-      if (!profile) {
-        setNotice(`Session entry "${entry.alias}" is unavailable; SSH Profile was not found.`);
-        return;
-      }
-      setSshProfiles((current) => current.some((item) => item.id === profile.id)
-        ? current.map((item) => item.id === profile.id ? profile : item)
-        : [...current, profile]);
-      setSshProfileId(profile.id);
-      if (managedSessionId) setWorkspaceSessionId(managedSessionId);
-      setTerminalOpen(true);
-      setNotice(`Session SSH connection selected: ${entry.profileName || entry.profileId}. Connect when ready.`);
-      return;
-    }
-    const location = locations.find((candidate) => candidate.id === entry.locationId);
-    if (!location || location.status !== "online") {
-      setNotice(`Session entry "${entry.alias}" is unavailable; Location was not changed.`);
-      return;
-    }
-    if (location.id === session.locationId) {
-      void run(() => loadFiles(entry.path));
-      return;
-    }
-    setPendingRemotePath(entry.path);
-    setSession((current) => ({ ...current, locationId: location.id }));
-  };
-
   const removeSession = (sessionId: string) => {
     if (managedSessions.length === 1) {
       setManagedSessions((current) => current.map((item) => item.id === sessionId ? { ...item, name: "Default" } : item));
@@ -1401,6 +1370,26 @@ function App() {
     terminalResizeRef.current = { startY: event.clientY, startHeight: terminalHeight };
     window.addEventListener("pointermove", resizeTerminal);
     window.addEventListener("pointerup", stopTerminalResize);
+  };
+
+  const stopPaneResize = () => {
+    paneResizeRef.current = null;
+    window.removeEventListener("pointermove", resizePane);
+    window.removeEventListener("pointerup", stopPaneResize);
+  };
+  const resizePane = (event: PointerEvent) => {
+    const start = paneResizeRef.current;
+    if (!start) return;
+    const maxWidth = Math.min(720, window.innerWidth - 300);
+    setLocalPaneWidth(
+      Math.max(220, Math.min(maxWidth, start.startWidth + (event.clientX - start.startX))),
+    );
+  };
+  const beginPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    paneResizeRef.current = { startX: event.clientX, startWidth: localPaneWidth };
+    window.addEventListener("pointermove", resizePane);
+    window.addEventListener("pointerup", stopPaneResize);
   };
 
   const stopColumnResize = () => {
@@ -1745,13 +1734,6 @@ function App() {
     setSshProfiles((current) => current.filter((item) => item.id !== entry.id));
     void invoke("ssh_forget_password", { entryId: entry.id }).catch(() => {});
     startNewSshEntry();
-  };
-
-  const startNewSxpEntry = () => {
-    setSxpEntryDraftId("");
-    setSxpEntryNameDraft("New Transfer");
-    setLocalAliasDraft("Desktop");
-    setRemoteAliasDraft(activeLocation?.displayName || "Personal");
   };
 
   const connectSsh = () => {
@@ -3014,7 +2996,7 @@ function App() {
   );
 
   const renderLocalPane = () => (
-    <section className="local-pane" aria-label="Local files">
+    <section className="local-pane" aria-label="Local files" style={{ flexBasis: `${localPaneWidth}px` }}>
       <div className="local-pane-heading">
         <span className="sidebar-label">LOCAL</span>
         <strong>{localPath ? `~/${localPath}` : "~/"}</strong>
@@ -3173,7 +3155,7 @@ function App() {
         <span className="app-mark" />
         <span className="app-name">LAB File Manager</span>
         <span className="connection-status">SECURE STORAGE</span>
-        {activeLocation && (
+        {(activeLocation || connectedSshBrowseOptions().length > 0) && (
           <div className="location-control" ref={locationControl}>
             <span className="location-label">Location</span>
             {(locations.length > 1 || connectedSshBrowseOptions().length > 0) ? (
@@ -3188,12 +3170,14 @@ function App() {
                   setLocationMenuOpen((open) => !open);
                 }}
               >
-                {remoteSshEntryId ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}` : activeLocation.displayName}
+                {remoteSshEntryId
+                  ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}`
+                  : activeLocation ? activeLocation.displayName : "Browse via SSH"}
                 <span className="location-chevron" aria-hidden="true">⌄</span>
               </button>
             ) : (
               <span className="location-single">
-                {activeLocation.displayName}
+                {activeLocation!.displayName}
               </span>
             )}
             {(locations.length > 1 || connectedSshBrowseOptions().length > 0) && locationMenuOpen && (
@@ -3228,11 +3212,13 @@ function App() {
                 ))}
               </div>
             )}
-            <span
-              className={`health-dot ${activeLocation.status === "online" ? "online" : ""}`}
-              title={activeLocation.status || "unknown"}
-              aria-label={activeLocation.status || "unknown"}
-            />
+            {activeLocation && (
+              <span
+                className={`health-dot ${activeLocation.status === "online" ? "online" : ""}`}
+                title={activeLocation.status || "unknown"}
+                aria-label={activeLocation.status || "unknown"}
+              />
+            )}
           </div>
         )}
         <div className="account-control" ref={accountControl}>
@@ -3490,6 +3476,15 @@ function App() {
       </div>
       <div className={`desktop-workspace${splitMode ? " split-workspace" : ""}`}>
         {splitMode && renderLocalPane()}
+        {splitMode && (
+          <div
+            className="pane-resize-handle"
+            onPointerDown={beginPaneResize}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize LOCAL and REMOTE panes"
+          />
+        )}
         <aside className="desktop-folder-tree">
           <span className="sidebar-label">Folders</span>
           <div className="folder-pane">
@@ -3929,7 +3924,7 @@ function App() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <h2>Sessions</h2>
-             <p>Save LOCAL, API Remote, and SSH connection details as one Session shared by SXP and SSH.</p>
+             <p>Save LOCAL, API Remote, and SSH connection details together as one Session.</p>
             {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
             <div className="sessions-layout">
               <form
@@ -3950,41 +3945,6 @@ function App() {
                 />
                <small className="field-help">Name for this saved workspace.</small>
               </label>
-              <div className="sxp-entry-picker">
-                <span>SXP entries in this Workspace</span>
-                <div>
-                  {managedSessions.find((item) => item.id === workspaceSessionId)?.sxpEntries.map((entry) => (
-                    <button type="button" className={entry.id === sxpEntryDraftId ? "selected" : ""} key={entry.id} onClick={() => { setSxpEntryDraftId(entry.id); setSxpEntryNameDraft(entry.name); setLocalAliasDraft(entry.localAlias); setRemoteAliasDraft(entry.remoteAlias); }}>
-                      {entry.name}
-                    </button>
-                  ))}
-                  <button type="button" onClick={startNewSxpEntry}>+ Add SXP Entry</button>
-                </div>
-              </div>
-              <label>
-                SXP entry name
-                <input name="sxpEntryName" value={sxpEntryNameDraft} onChange={(event) => setSxpEntryNameDraft(event.target.value)} required />
-              </label>
-              <label>
-                Local folder name
-                <input
-                  name="localFolderName"
-                  value={localAliasDraft}
-                  onChange={(event) => setLocalAliasDraft(event.target.value)}
-                  required
-                />
-                <small className="field-help">Name used to identify the current LOCAL folder in this Session.</small>
-              </label>
-               <label>
-                 Remote folder name
-                <input
-                  name="remoteFolderName"
-                  value={remoteAliasDraft}
-                  onChange={(event) => setRemoteAliasDraft(event.target.value)}
-                  required
-                />
-                 <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
-               </label>
                 <fieldset className="session-ssh-fields">
                   <legend>SSH connection (optional)</legend>
                    <div className="ssh-entry-picker">
@@ -4035,6 +3995,33 @@ function App() {
                    <small className="field-help">Connect authenticates automatically with the private key or saved password. Use "Install SSH key" to push a key to the server using the saved password.</small>
                    <button type="button" className="confirm" onClick={saveSshEntry}>{sshEntryDraftId ? "Save SSH Entry" : "Add SSH Entry"}</button>
                 </fieldset>
+                <fieldset className="session-default-paths">
+                  <legend>Default paths</legend>
+                  <label>
+                    Preset name
+                    <input name="sxpEntryName" value={sxpEntryNameDraft} onChange={(event) => setSxpEntryNameDraft(event.target.value)} required />
+                  </label>
+                  <label>
+                    Local folder name
+                    <input
+                      name="localFolderName"
+                      value={localAliasDraft}
+                      onChange={(event) => setLocalAliasDraft(event.target.value)}
+                      required
+                    />
+                    <small className="field-help">Name used to identify the current LOCAL folder in this Session.</small>
+                  </label>
+                  <label>
+                    Remote folder name
+                    <input
+                      name="remoteFolderName"
+                      value={remoteAliasDraft}
+                      onChange={(event) => setRemoteAliasDraft(event.target.value)}
+                      required
+                    />
+                    <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
+                  </label>
+                </fieldset>
               <div className="modal-actions">
                 <button type="button" onClick={() => setSessionsOpen(false)}>
                   Close
@@ -4069,7 +4056,7 @@ function App() {
                   </div>
                   {managedSession.sxpEntries.map((entry) => (
                     <div className="session-entry" key={entry.id}>
-                      <span>SXP: {entry.name}</span>
+                      <span>Default paths: {entry.name}</span>
                       <small>LOCAL ~/{entry.localPath || ""} → {entry.locationName || entry.locationId}:{entry.remotePath || "/"}</small>
                     </div>
                   ))}
