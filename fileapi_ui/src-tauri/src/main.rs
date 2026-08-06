@@ -403,6 +403,30 @@ fn validate_ssh_profile(profile: &SshProfile) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn ssh_key_available(profile: SshProfile) -> Result<bool, String> {
+    validate_ssh_profile(&profile)?;
+    let mut command = std::process::Command::new("ssh");
+    command.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=5",
+        "-p",
+        &profile.port.to_string(),
+    ]);
+    if let Some(key_path) = profile.private_key_path {
+        command.args(["-i", &key_path]);
+    }
+    command.args([&format!("{}@{}", profile.username, profile.host), "true"]);
+    Ok(command
+        .status()
+        .map_err(|error| error.to_string())?
+        .success())
+}
+
+#[tauri::command]
 fn ssh_connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, String> {
     validate_ssh_profile(&profile)?;
     let session_id = format!("ssh-{}", uuid::Uuid::new_v4());
@@ -669,6 +693,7 @@ fn main() {
             download_to_disk,
             write_download,
             ssh_connect,
+            ssh_key_available,
             ssh_install_key,
             ssh_write,
             ssh_disconnect,
