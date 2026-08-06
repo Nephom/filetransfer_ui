@@ -262,6 +262,9 @@ class SystemLogger {
       if (details.fileCount !== undefined) {
         message += `, Files: ${details.fileCount}`;
       }
+      if (details.format) {
+        message += `, Format: ${details.format}`;
+      }
       if (details.error) {
         message += `, Error: ${details.error}`;
       }

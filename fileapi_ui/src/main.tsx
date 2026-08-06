@@ -108,12 +108,19 @@ type SshTerminalTab = {
 type TransferQueueItem = {
   id: string;
   label: string;
+  kind: "upload" | "download";
   paths: string[];
   destinationPath: string;
   locationId: string;
   locationName: string;
   status: "queued" | "running" | "completed" | "failed";
   detail: string;
+  downloadUrl?: string;
+  downloadMethod?: string;
+  downloadHeaders?: [string, string][];
+  downloadBody?: number[];
+  downloadFileName?: string;
+  archiveFormat?: "tar.gz";
 };
 type DesktopSettings = {
   uiDensity: "auto" | "compact" | "standard" | "comfortable";
@@ -1779,6 +1786,31 @@ function App() {
     }
   };
 
+  const runQueuedDownload = async (item: TransferQueueItem) => {
+    writeOperationLog("download", "started", item.label, "Local Downloads", "Transfer queue download started.", "DEBUG");
+    updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? "Preparing tar.gz archive..." : "Downloading..." });
+    try {
+      if (item.archiveFormat) {
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+        updateQueueItem(item.id, { detail: "Streaming tar.gz download..." });
+      }
+      const destination = await invoke<string>("download_to_disk", {
+        url: item.downloadUrl,
+        method: item.downloadMethod || "GET",
+        headers: item.downloadHeaders || [],
+        body: item.downloadBody,
+        fileName: item.downloadFileName || "download.bin",
+        ignoreTlsErrors: session.ignoreTlsErrors,
+      });
+      updateQueueItem(item.id, { status: "completed", detail: `Downloaded to ${destination}.` });
+      writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded to ${destination}.`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      updateQueueItem(item.id, { status: "failed", detail });
+      writeOperationLog("download", "failed", item.label, "Local Downloads", `Download failed: ${detail}`, "ERROR");
+    }
+  };
+
   const findDefaultRemoteUploadPath = async (locationId: string) => {
     const rootResponse = await apiForLocation("/api/files?path=", locationId);
     if (!rootResponse.ok) throw new Error(await readError(rootResponse));
@@ -1811,6 +1843,7 @@ function App() {
     const item: TransferQueueItem = {
       id,
       label: "SSH log package",
+      kind: "upload",
       paths: savedLogPaths,
       destinationPath,
       locationId: destination.locationId,
@@ -2010,14 +2043,15 @@ function App() {
     beginDrag(event, file);
     writeOperationLog("drag_out", "started", file.name, "External file manager", "Preparing a local file URI for external drag-out.", "DEBUG");
     event.dataTransfer.effectAllowed = "copyMove";
-    if (file.isDirectory) return;
-    const prepared = dragPreparationRef.current.get(file.path);
+    const items = selected.includes(file.path) ? selectedItems : [file];
+    const preparationKey = items.map((item) => item.path).join("\0");
+    const prepared = dragPreparationRef.current.get(preparationKey);
     if (!prepared) return;
     void prepared.then((localPathForDrag) => {
       const fileUri = `file://${encodeURI(localPathForDrag)}`;
       event.dataTransfer.setData("text/uri-list", fileUri);
       event.dataTransfer.setData("DownloadURL", `application/octet-stream:${file.name}:${fileUri}`);
-      writeOperationLog("drag_out", "staged", file.name, "External file manager", "Local file URI prepared.", "DEBUG");
+      writeOperationLog("drag_out", "staged", file.name, "External file manager", items.length > 1 || file.isDirectory ? "tar.gz archive URI prepared." : "Local file URI prepared.", "DEBUG");
     }).catch((error) => {
       setNotice(error instanceof Error ? error.message : String(error));
       writeOperationLog("drag_out", "failed", file.name, "External file manager", `Staging failed: ${error instanceof Error ? error.message : String(error)}`, "ERROR");
@@ -2025,18 +2059,29 @@ function App() {
   };
 
   const prepareRemoteDrag = (file: FileItem) => {
-    if (file.isDirectory || dragPreparationRef.current.has(file.path)) return;
+    const items = selected.includes(file.path) ? selectedItems : [file];
+    const preparationKey = items.map((item) => item.path).join("\0");
+    if (dragPreparationRef.current.has(preparationKey)) return;
+    const singleFile = items.length === 1 && !items[0].isDirectory;
+    const headers: [string, string][] = session.token
+      ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : []), ...(singleFile ? [] : [["Content-Type", "application/json"] as [string, string]])]
+      : [];
     const preparation = invoke<string>("download_to_disk", {
-      url: `${serverUrl(session)}/api/files/download/${downloadPath(file.path)}`,
-      method: "GET",
-      headers: session.token
-        ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId]] : [])]
-        : [],
-      body: undefined,
-      fileName: file.name,
+      url: singleFile
+        ? `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`
+        : `${serverUrl(session)}/api/archive`,
+      method: singleFile ? "GET" : "POST",
+      headers,
+      body: singleFile ? undefined : Array.from(new TextEncoder().encode(JSON.stringify({
+        items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })),
+        currentPath: path,
+        locationId: session.locationId,
+        format: "tar.gz",
+      }))),
+      fileName: singleFile ? items[0].name : "archive.tar.gz",
       ignoreTlsErrors: session.ignoreTlsErrors,
     });
-    dragPreparationRef.current.set(file.path, preparation);
+    dragPreparationRef.current.set(preparationKey, preparation);
   };
 
   const finishDrag = () => {
@@ -2044,54 +2089,47 @@ function App() {
     setDropTarget("");
   };
 
-  const download = () =>
-    run(async () => {
-      if (!selectedItems.length) return;
-      const singleFile =
-        selectedItems.length === 1 && !selectedItems[0].isDirectory;
-      const fileName = singleFile ? selectedItems[0].name : "archive.zip";
-      notify(
-        singleFile
-          ? `Preparing download: ${fileName}...`
-          : `Preparing archive for ${selectedItems.length} item${selectedItems.length === 1 ? "" : "s"}...`,
-        0,
-      );
-      const destination = await invoke<string>("download_to_disk", {
-        url: singleFile
-          ? `${serverUrl(session)}/api/files/download/${downloadPath(selectedItems[0].path)}`
-          : `${serverUrl(session)}/api/archive`,
-        method: singleFile ? "GET" : "POST",
-        headers: session.token
-          ? [
-              ["Authorization", `Bearer ${session.token}`],
-              ...(session.locationId
-                ? [["X-Location-ID", session.locationId]]
-                : []),
-              ...(singleFile ? [] : [["Content-Type", "application/json"]]),
-            ]
-          : [],
-        body: singleFile
-          ? undefined
-          : Array.from(
-              new TextEncoder().encode(
-                JSON.stringify({
-                  items: selectedItems.map(
-                    ({ name, isDirectory, path: itemPath }) => ({
-                      name,
-                      isDirectory,
-                      path: itemPath,
-                    }),
-                  ),
-                  currentPath: path,
-                  locationId: session.locationId,
-                }),
-              ),
-            ),
-        fileName,
-        ignoreTlsErrors: session.ignoreTlsErrors,
-      });
-      notify(`Downloaded to ${destination}`);
-    });
+  const download = () => {
+    if (!selectedItems.length) return;
+    const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
+    const fileName = singleFile ? selectedItems[0].name : "archive.tar.gz";
+    const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+    const headers: [string, string][] = session.token
+      ? [
+          ["Authorization", `Bearer ${session.token}`],
+          ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : []),
+          ...(singleFile ? [] : [["Content-Type", "application/json"] as [string, string]]),
+        ]
+      : [];
+    const body = singleFile ? undefined : Array.from(new TextEncoder().encode(JSON.stringify({
+      items: selectedItems.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
+      currentPath: path,
+      locationId: session.locationId,
+      format: "tar.gz",
+    })));
+    const item: TransferQueueItem = {
+      id,
+      label: singleFile ? selectedItems[0].name : `${selectedItems.length} selected items`,
+      kind: "download",
+      paths: [],
+      destinationPath: "Downloads",
+      locationId: session.locationId,
+      locationName: activeLocation?.displayName || session.locationId,
+      status: "queued",
+      detail: "Waiting to start",
+      downloadUrl: singleFile
+        ? `${serverUrl(session)}/api/files/download/${downloadPath(selectedItems[0].path)}`
+        : `${serverUrl(session)}/api/archive`,
+      downloadMethod: singleFile ? "GET" : "POST",
+      downloadHeaders: headers,
+      downloadBody: body,
+      downloadFileName: fileName,
+      archiveFormat: singleFile ? undefined : "tar.gz",
+    };
+    setTransferQueue((current) => [...current, item]);
+    setQueueOpen(true);
+    void runQueuedDownload(item);
+  };
 
   const openLocalViewer = (filePath: string) =>
     void run(async () => {
@@ -2140,10 +2178,6 @@ function App() {
   const uploadPaths = (paths: string[]) =>
     void run(async () => {
       if (!paths.length) return;
-      notify(
-        `Drop received: inspecting ${paths.length} path${paths.length === 1 ? "" : "s"}...`,
-        0,
-      );
       const summary = await invoke<UploadSummary>("inspect_upload_paths", {
         paths,
       });
@@ -2151,67 +2185,21 @@ function App() {
         `Upload ${summary.files} file${summary.files === 1 ? "" : "s"} and ${summary.directories} folder${summary.directories === 1 ? "" : "s"} to ${path ? `/${path}` : "/"}?`,
       );
       if (!accepted) return;
-      const headers = session.token
-        ? [
-            ["Authorization", `Bearer ${session.token}`],
-            ...(session.locationId
-              ? [["X-Location-ID", session.locationId]]
-              : []),
-          ]
-        : [];
-      notify(
-        `Uploading ${summary.files} file${summary.files === 1 ? "" : "s"}...`,
-        0,
-      );
-      const rawResponse = await invoke<NativeApiResponse>("api_upload_paths", {
-        url: `${serverUrl(session)}/api/upload/multiple`,
-        headers,
+      const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+      const item: TransferQueueItem = {
+        id,
+        label: `${summary.files} files, ${summary.directories} folders`,
+        kind: "upload",
         paths,
-        path,
-        ignoreTlsErrors: session.ignoreTlsErrors,
-      });
-      const response = new ApiResponse(rawResponse.status, rawResponse.body);
-      if (!response.ok) throw new Error(await readError(response));
-      const { batchId } = (await response.json()) as { batchId?: string };
-      if (!batchId) {
-       notify(
-         `Uploaded ${summary.directories} folder${summary.directories === 1 ? "" : "s"}.`,
-       );
-       writeOperationLog("upload", "completed", "Local file picker", `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`, `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.`);
-       await loadFiles(path);
-        return;
-      }
-      for (let attempt = 0; attempt < 600; attempt += 1) {
-        const progress = await api(
-          `/api/progress/batch/${encodeURIComponent(batchId)}`,
-        );
-        if (!progress.ok) throw new Error(await readError(progress));
-        const batch = (await progress.json()) as {
-          status: string;
-          progress: number;
-          successCount: number;
-          totalFiles: number;
-          failedCount: number;
-        };
-        notify(
-          `Uploading: ${batch.successCount}/${batch.totalFiles} files (${Math.round(batch.progress)}%)`,
-          0,
-        );
-        if (batch.status === "completed") {
-           notify(
-             `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`,
-           );
-           writeOperationLog("upload", "completed", "Local file picker", `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`, `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`);
-           await loadFiles(path);
-          return;
-        }
-        if (batch.status === "failed" || batch.status === "partial_fail")
-          throw new Error(
-            `Upload finished with ${batch.failedCount} failed file${batch.failedCount === 1 ? "" : "s"}.`,
-          );
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-      }
-      throw new Error("Upload progress timed out.");
+        destinationPath: path,
+        locationId: session.locationId,
+        locationName: activeLocation?.displayName || session.locationId,
+        status: "queued",
+        detail: "Waiting to start",
+      };
+      setTransferQueue((current) => [...current, item]);
+      setQueueOpen(true);
+      void runQueuedUpload(item);
     });
 
   const upload = async () =>
@@ -3565,7 +3553,8 @@ function App() {
                 {item.status === "failed" && (
                   <button type="button" onClick={() => {
                     updateQueueItem(item.id, { status: "queued", detail: "Retry queued" });
-                    void runQueuedUpload({ ...item, status: "queued", detail: "Retry queued" });
+                    const retryItem = { ...item, status: "queued" as const, detail: "Retry queued" };
+                    void (retryItem.kind === "download" ? runQueuedDownload(retryItem) : runQueuedUpload(retryItem));
                   }}>Retry</button>
                 )}
               </div>
