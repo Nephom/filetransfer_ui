@@ -830,7 +830,7 @@ function App() {
       terminal.dispose();
       terminalInstanceRef.current = null;
     };
-  }, [terminalOpen, terminalTab, activeSshTabId]);
+  }, [terminalOpen, terminalTab, activeSshTabId, sshTabs.find((item) => item.id === activeSshTabId)?.sessionId]);
 
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
