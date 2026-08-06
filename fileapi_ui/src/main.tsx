@@ -2545,6 +2545,12 @@ function App() {
     setDragSource("");
     setDropTarget("");
   };
+  const finishDragAfterDrop = () => {
+    // Windows WebView2 can emit dragend before React receives the target's
+    // drop callback. Keep the source payload alive for one event-loop turn so
+    // the drop handler can still start the SFTP transfer.
+    window.setTimeout(finishDrag, 0);
+  };
 
   const enqueueQueueDownload = () =>
     void run(async () => {
@@ -3216,7 +3222,7 @@ function App() {
               className={`local-file ${localSelected.includes(file.path) ? "selected" : ""}`}
               draggable
               onDragStart={(event) => beginLocalDrag(event, file)}
-              onDragEnd={finishDrag}
+              onDragEnd={finishDragAfterDrop}
               onClick={() => setLocalSelected([file.path])}
               onDoubleClick={() => {
                 if (file.isDirectory) void run(() => loadLocalFiles(file.path));
@@ -3799,7 +3805,7 @@ function App() {
                        if (event.altKey) prepareRemoteDrag(file);
                      }}
                     onDragStart={(event) => beginRemoteDrag(event, file)}
-                    onDragEnd={finishDrag}
+                    onDragEnd={finishDragAfterDrop}
                     onDragOver={(event) => {
                       if (
                         file.isDirectory &&
@@ -3879,7 +3885,7 @@ function App() {
                           if (event.altKey) prepareRemoteDrag(file);
                         }}
                        onDragStart={(event) => beginRemoteDrag(event, file)}
-                      onDragEnd={finishDrag}
+                      onDragEnd={finishDragAfterDrop}
                       onDragOver={(event) => {
                         if (
                           file.isDirectory &&
