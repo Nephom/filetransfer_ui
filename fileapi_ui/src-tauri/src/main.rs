@@ -213,6 +213,63 @@ fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+/// Resolve a local path that does not need to already exist (e.g. the
+/// destination of `mkdir`/`rename`). The path's *parent* must exist and
+/// stay inside the user's home directory; the leaf itself is not touched.
+fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
+    let home = local_home()?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let input = Path::new(path);
+    if input
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Local transfer path must not contain '..'".to_string());
+    }
+    let candidate = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        home.join(input)
+    };
+    let name = candidate
+        .file_name()
+        .ok_or_else(|| "Invalid local path".to_string())?
+        .to_os_string();
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| "Invalid local path".to_string())?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !parent.starts_with(&home) {
+        return Err("Local transfer path must remain inside the current user's home directory".to_string());
+    }
+    Ok(parent.join(name))
+}
+
+#[tauri::command]
+fn local_create_directory(path: String) -> Result<(), String> {
+    let resolved = resolve_local_new_path(&path)?;
+    std::fs::create_dir_all(&resolved).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn local_rename_path(old_path: String, new_path: String) -> Result<(), String> {
+    let old_resolved = resolve_local_transfer_path(&old_path)?;
+    let new_resolved = resolve_local_new_path(&new_path)?;
+    std::fs::rename(&old_resolved, &new_resolved).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn local_delete_path(path: String, is_directory: bool) -> Result<(), String> {
+    let resolved = resolve_local_transfer_path(&path)?;
+    if is_directory {
+        std::fs::remove_dir_all(&resolved).map_err(|error| error.to_string())
+    } else {
+        std::fs::remove_file(&resolved).map_err(|error| error.to_string())
+    }
+}
+
 #[tauri::command]
 fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
     let root = local_home()?
@@ -973,6 +1030,9 @@ fn main() {
             api_request,
             pick_upload_files,
             local_list_directory,
+            local_create_directory,
+            local_rename_path,
+            local_delete_path,
             inspect_upload_paths,
             hash_upload_paths,
             api_upload_paths,

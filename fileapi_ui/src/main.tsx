@@ -630,6 +630,12 @@ function App() {
   });
   const [dragItems, setDragItems] = useState<FileItem[]>([]);
   const [dragSource, setDragSource] = useState<"local" | "remote" | "">("");
+  // Which pane the toolbar (New folder/Rename/Delete/View/Select all) acts
+  // on when Split mode shows both LOCAL and REMOTE at once. Without this,
+  // the toolbar always silently acted on REMOTE even while the user was
+  // clicking around in LOCAL, with no indication of where an action would
+  // actually apply.
+  const [activePane, setActivePane] = useState<"local" | "remote">("remote");
   const [dropTarget, setDropTarget] = useState("");
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -2206,9 +2212,11 @@ function App() {
   };
 
   const selectedItems = files.filter((file) => selected.includes(file.path));
+  const localSelectedItems = localFiles.filter((file) => localSelected.includes(file.path));
   const workspaceSessions = managedSessions.filter((item) => item.sshEntries.length > 0);
   const activeWorkspaceSession = workspaceSessions.find((item) => item.id === workspaceSessionId);
   const toggle = (file: FileItem, checked: boolean) => {
+    setActivePane("remote");
     selectionAnchorRef.current = file.path;
     setSelected((current) =>
       checked
@@ -2218,6 +2226,7 @@ function App() {
   };
 
   const selectFile = (file: FileItem, event: React.MouseEvent) => {
+    setActivePane("remote");
     const index = files.findIndex((item) => item.path === file.path);
     const anchorIndex = selectionAnchorRef.current
       ? files.findIndex((item) => item.path === selectionAnchorRef.current)
@@ -2914,6 +2923,13 @@ function App() {
       const folderName = window.prompt("Folder name");
       if (!folderName?.trim()) return;
       const name = folderName.trim();
+      if (splitMode && activePane === "local") {
+        const fullPath = localPath ? `${localPath}/${name}` : name;
+        await invoke("local_create_directory", { path: fullPath });
+        await loadLocalFiles(localPath);
+        notify(`Created ${name} in LOCAL.`);
+        return;
+      }
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
@@ -2938,6 +2954,19 @@ function App() {
 
   const rename = () =>
     run(async () => {
+      if (splitMode && activePane === "local") {
+        if (localSelectedItems.length !== 1) return;
+        const item = localSelectedItems[0];
+        const newName = window.prompt("New name", item.name);
+        if (!newName?.trim() || newName === item.name) return;
+        const trimmedName = newName.trim();
+        const parent = item.path.split("/").slice(0, -1).join("/");
+        const newPath = parent ? `${parent}/${trimmedName}` : trimmedName;
+        await invoke("local_rename_path", { oldPath: item.path, newPath });
+        await loadLocalFiles(localPath);
+        notify(`Renamed ${item.name} in LOCAL.`);
+        return;
+      }
       if (selectedItems.length !== 1) return;
       const item = selectedItems[0];
       const newName = window.prompt("New name", item.name);
@@ -2970,6 +2999,21 @@ function App() {
 
   const remove = () =>
     run(async () => {
+      if (splitMode && activePane === "local") {
+        if (
+          !localSelectedItems.length ||
+          (desktopSettings.confirmations.delete && !window.confirm(
+            `Delete ${localSelectedItems.length} selected LOCAL item${localSelectedItems.length === 1 ? "" : "s"}? This cannot be undone.`,
+          ))
+        )
+          return;
+        for (const item of localSelectedItems) {
+          await invoke("local_delete_path", { path: item.path, isDirectory: item.isDirectory });
+        }
+        await loadLocalFiles(localPath);
+        notify("Deleted selected LOCAL items. This cannot be undone.");
+        return;
+      }
       if (
         !selectedItems.length ||
         (desktopSettings.confirmations.delete && !window.confirm(
@@ -3159,7 +3203,12 @@ function App() {
   );
 
   const renderLocalPane = () => (
-    <section className="local-pane" aria-label="Local files" style={{ flexBasis: `${localPaneWidth}px` }}>
+    <section
+      className={`local-pane ${activePane === "local" ? "active-pane" : ""}`}
+      aria-label="Local files"
+      style={{ flexBasis: `${localPaneWidth}px` }}
+      onMouseDownCapture={() => setActivePane("local")}
+    >
       <div className="local-pane-heading">
         <span className="sidebar-label">LOCAL</span>
         <strong>{localPath ? `~/${localPath}` : "~/"}</strong>
@@ -3473,6 +3522,11 @@ function App() {
         </div>
       </header>
       <nav className="commandbar" aria-label="File actions">
+        {splitMode && (
+          <span className="active-pane-indicator" title="New folder/Rename/Delete/View/Select all act on this pane">
+            Acting on: <strong>{activePane === "local" ? "LOCAL" : "REMOTE"}</strong>
+          </span>
+        )}
         <button
           className="primary"
           onClick={upload}
@@ -3490,7 +3544,7 @@ function App() {
               Download to LOCAL
             </button>
             <button
-              onClick={() => uploadLocalItemsToRemote(localFiles.filter((file) => localSelected.includes(file.path)), path)}
+              onClick={() => uploadLocalItemsToRemote(localSelectedItems, path)}
               disabled={busy || !localSelected.length}
               title="Upload selected LOCAL items into the current REMOTE folder"
             >
@@ -3500,7 +3554,11 @@ function App() {
         )}
         <button
           onClick={createFolder}
-          disabled={busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir"))}
+          disabled={
+            splitMode && activePane === "local"
+              ? busy
+              : busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir"))
+          }
         >
           New folder
         </button>
@@ -3508,6 +3566,7 @@ function App() {
         <button
           disabled={
             busy ||
+            (splitMode && activePane === "local") ||
             !selectedItems.length ||
             !(remoteSshEntryId ? true : locationOnline && hasCapability("read"))
           }
@@ -3517,20 +3576,27 @@ function App() {
         </button>
         <button
           disabled={
-            busy ||
-            !locationOnline ||
-            selectedItems.length !== 1 ||
-            selectedItems[0].isDirectory ||
-            !!remoteSshEntryId ||
-            !hasCapability("read")
+            splitMode && activePane === "local"
+              ? busy || localSelectedItems.length !== 1 || localSelectedItems[0].isDirectory
+              : busy ||
+                !locationOnline ||
+                selectedItems.length !== 1 ||
+                selectedItems[0].isDirectory ||
+                !!remoteSshEntryId ||
+                !hasCapability("read")
           }
-          onClick={() => openRemoteViewer(selectedItems[0])}
+          onClick={() =>
+            splitMode && activePane === "local"
+              ? openLocalViewer(localSelectedItems[0].path)
+              : openRemoteViewer(selectedItems[0])
+          }
         >
           View
         </button>
         <button
           disabled={
             busy ||
+            (splitMode && activePane === "local") ||
             !selectedItems.length ||
             !(remoteSshEntryId ? true : locationOnline && hasCapability("move"))
           }
@@ -3542,9 +3608,11 @@ function App() {
         </button>
         <button
           disabled={
-            busy ||
-            selectedItems.length !== 1 ||
-            !(remoteSshEntryId ? true : locationOnline && hasCapability("rename"))
+            splitMode && activePane === "local"
+              ? busy || localSelectedItems.length !== 1
+              : busy ||
+                selectedItems.length !== 1 ||
+                !(remoteSshEntryId ? true : locationOnline && hasCapability("rename"))
           }
           onClick={rename}
         >
@@ -3553,6 +3621,7 @@ function App() {
         <button
           disabled={
             busy ||
+            (splitMode && activePane === "local") ||
             !locationOnline ||
             selectedItems.length !== 1 ||
             selectedItems[0].isDirectory ||
@@ -3565,9 +3634,11 @@ function App() {
         </button>
         <button
           disabled={
-            busy ||
-            !selectedItems.length ||
-            !(remoteSshEntryId ? true : locationOnline && hasCapability("delete"))
+            splitMode && activePane === "local"
+              ? busy || !localSelectedItems.length
+              : busy ||
+                !selectedItems.length ||
+                !(remoteSshEntryId ? true : locationOnline && hasCapability("delete"))
           }
           onClick={remove}
         >
@@ -3583,11 +3654,17 @@ function App() {
         <span className="divider" />
         <button
           onClick={() =>
-            setSelected(
-              selected.length === files.length
-                ? []
-                : files.map((file) => file.path),
-            )
+            splitMode && activePane === "local"
+              ? setLocalSelected(
+                  localSelected.length === localFiles.length
+                    ? []
+                    : localFiles.map((file) => file.path),
+                )
+              : setSelected(
+                  selected.length === files.length
+                    ? []
+                    : files.map((file) => file.path),
+                )
           }
         >
           Select all
@@ -3696,7 +3773,7 @@ function App() {
             aria-label="Resize LOCAL and REMOTE panes"
           />
         )}
-        <aside className="desktop-folder-tree">
+        <aside className="desktop-folder-tree" onMouseDownCapture={() => setActivePane("remote")}>
           <span className="sidebar-label">Folders</span>
           <div className="folder-pane">
             <div
@@ -3712,7 +3789,10 @@ function App() {
             <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
           </div>
         </aside>
-        <section className="desktop-content">
+        <section
+          className={`desktop-content ${splitMode && activePane === "remote" ? "active-pane" : ""}`}
+          onMouseDownCapture={() => setActivePane("remote")}
+        >
           <div className="content-heading">
             <div>
               <span className="eyebrow">CURRENT DIRECTORY</span>

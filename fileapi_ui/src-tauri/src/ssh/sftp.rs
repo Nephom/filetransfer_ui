@@ -10,7 +10,25 @@ use russh::client;
 use russh_sftp::client::SftpSession;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AsyncMutex;
+
+/// Write `data` to `path` on the remote host, creating the file if it does
+/// not already exist (and truncating it if it does).
+///
+/// `SftpSession::write()` opens the target with `OpenFlags::WRITE` only --
+/// no `CREATE` flag -- so it requires the remote file to already exist and
+/// fails every new-file upload with "No such file". `SftpSession::create()`
+/// opens with `CREATE | TRUNCATE | WRITE`, which is what every upload path
+/// here actually needs.
+async fn write_remote_file(sftp: &SftpSession, path: String, data: &[u8]) -> Result<(), String> {
+    let mut file = sftp
+        .create(path)
+        .await
+        .map_err(|error| error.to_string())?;
+    file.write_all(data).await.map_err(|error| error.to_string())?;
+    Ok(())
+}
 
 struct SftpConnection {
     handle: client::Handle<ClientHandler>,
@@ -184,11 +202,7 @@ pub async fn upload_file(
     let connection = sessions
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
-    connection
-        .sftp
-        .write(remote_path.clone(), &data)
-        .await
-        .map_err(|error| error.to_string())?;
+    write_remote_file(&connection.sftp, remote_path.clone(), &data).await?;
     Ok(remote_path)
 }
 
@@ -306,11 +320,7 @@ pub async fn upload_path(
         for (local_file, relative) in &files {
             let data = std::fs::read(local_file).map_err(|error| error.to_string())?;
             let remote_file = remote_path(relative);
-            connection
-                .sftp
-                .write(remote_file, &data)
-                .await
-                .map_err(|error| error.to_string())?;
+            write_remote_file(&connection.sftp, remote_file, &data).await?;
         }
     } else if metadata.is_file() {
         let name = local
@@ -319,11 +329,7 @@ pub async fn upload_path(
             .ok_or_else(|| "Invalid local file name".to_string())?;
         let data = std::fs::read(local).map_err(|error| error.to_string())?;
         let remote_file = remote_path(name);
-        connection
-            .sftp
-            .write(remote_file, &data)
-            .await
-            .map_err(|error| error.to_string())?;
+        write_remote_file(&connection.sftp, remote_file, &data).await?;
     } else {
         return Err("Unsupported local upload source".to_string());
     }
