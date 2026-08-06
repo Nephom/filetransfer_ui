@@ -1,7 +1,7 @@
 {
   "name": "fileapi-desktop",
   "private": true,
-  "version": "3.2.3",
+  "version": "3.2.3+39358fe",
   "type": "module",
   "scripts": {
     "dev": "vite",
