@@ -119,6 +119,9 @@
 .recording-log-location { color: #91a9c0; font-size: 11px; }
 .saved-log-paths { display: grid; gap: 3px; flex-basis: 100%; color: #9be8ff; font-size: 11px; }
 .saved-log-paths code { color: #91a9c0; overflow-wrap: anywhere; }
+.saved-log-paths button { background: transparent; border: 0; color: inherit; cursor: pointer; text-align: left; padding: 0; }
+.viewer-modal { width: min(900px, calc(100vw - 32px)); }
+.file-viewer { width: 100%; min-height: min(65vh, 560px); resize: vertical; background: #071827; color: #e6eefc; border: 1px solid #315777; border-radius: 6px; padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .log-name-modal { width: min(520px, calc(100vw - 32px)); }
 .log-name-modal p { color: #a8c0d8; line-height: 1.5; }
 .log-name-modal input { width: 100%; margin-top: 5px; padding: 8px; color: #e6eefc; background: #091b2d; border: 1px solid #315b7e; border-radius: 4px; }

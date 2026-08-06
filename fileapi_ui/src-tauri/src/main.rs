@@ -745,6 +745,45 @@ fn save_ssh_logs(
     })
 }
 
+fn validate_local_user_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let home = local_home()?;
+    let candidate = std::path::Path::new(path);
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !canonical.starts_with(&home) {
+        return Err("File path must remain inside the current user's home directory".to_string());
+    }
+    Ok(canonical)
+}
+
+#[tauri::command]
+fn read_local_file(path: String) -> Result<String, String> {
+    let path = validate_local_user_path(&path)?;
+    let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Only regular files can be viewed".to_string());
+    }
+    if metadata.len() > 8 * 1024 * 1024 {
+        return Err("Files larger than 8 MB cannot be opened in the viewer".to_string());
+    }
+    std::fs::read_to_string(path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn edit_local_file(path: String) -> Result<(), String> {
+    let path = validate_local_user_path(&path)?;
+    let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Only regular files can be edited".to_string());
+    }
+    std::process::Command::new("gedit")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Unable to start gedit: {error}"))
+}
+
 #[tauri::command]
 fn operation_storage_info() -> Result<OperationStorageInfo, String> {
     let (history_path, log_path) = operation_paths()?;
@@ -883,6 +922,8 @@ fn main() {
             ssh_resize,
             ssh_disconnect,
             save_ssh_logs,
+            read_local_file,
+            edit_local_file,
             operation_storage_info,
             clear_operation_history,
             clear_operation_logs,
