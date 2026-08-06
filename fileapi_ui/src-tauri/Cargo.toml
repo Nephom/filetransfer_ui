@@ -1,6 +1,6 @@
 [package]
 name = "fileapi-desktop"
-version = "3.2.3+20260806.55d8e46"
+version = "3.2.3+20260806.9a9bdef"
 edition = "2021"
 
 [build-dependencies]
