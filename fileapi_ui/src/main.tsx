@@ -586,6 +586,7 @@ function App() {
   const pendingSshKeyInstallsRef = useRef<Record<string, { tabId: string; profile: SshProfile }>>({});
   const sshTabsRef = useRef<SshTerminalTab[]>([]);
   const shellInputRef = useRef("");
+  const dragPreparationRef = useRef(new Map<string, Promise<string>>());
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
   const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
@@ -718,6 +719,28 @@ function App() {
   useEffect(() => {
     localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings));
   }, [desktopSettings]);
+
+  useEffect(() => {
+    if (!desktopSettings.operationLogEnabled) return undefined;
+    void invoke("initialize_operation_log").then(() => invoke("append_operation_log", {
+      level: desktopSettings.operationLogLevel,
+      operation: "app",
+      status: "started",
+      sourceLabel: "Desktop",
+      destinationLabel: "",
+      detail: "File Transfer Desktop started.",
+    })).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+    return () => {
+      void invoke("append_operation_log", {
+        level: desktopSettings.operationLogLevel,
+        operation: "app",
+        status: "stopped",
+        sourceLabel: "Desktop",
+        destinationLabel: "",
+        detail: "File Transfer Desktop stopped.",
+      });
+    };
+  }, []);
 
   useEffect(() => {
     const updateViewport = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -1000,7 +1023,6 @@ function App() {
     setLocalSelected((current) => current.filter((item) =>
       (data.files || []).some((file) => file.path === item),
     ));
-    writeOperationLog("local_refresh", "completed", "LOCAL", `~/${data.path || ""}`, `Loaded ${data.files?.length || 0} local entries.`, "DEBUG");
   };
 
   const updateTreeNode = (
@@ -1989,16 +2011,9 @@ function App() {
     writeOperationLog("drag_out", "started", file.name, "External file manager", "Preparing a local file URI for external drag-out.", "DEBUG");
     event.dataTransfer.effectAllowed = "copyMove";
     if (file.isDirectory) return;
-    void invoke<string>("download_to_disk", {
-      url: `${serverUrl(session)}/api/files/download/${downloadPath(file.path)}`,
-      method: "GET",
-      headers: session.token
-        ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId]] : [])]
-        : [],
-      body: undefined,
-      fileName: file.name,
-      ignoreTlsErrors: session.ignoreTlsErrors,
-    }).then((localPathForDrag) => {
+    const prepared = dragPreparationRef.current.get(file.path);
+    if (!prepared) return;
+    void prepared.then((localPathForDrag) => {
       const fileUri = `file://${encodeURI(localPathForDrag)}`;
       event.dataTransfer.setData("text/uri-list", fileUri);
       event.dataTransfer.setData("DownloadURL", `application/octet-stream:${file.name}:${fileUri}`);
@@ -2007,6 +2022,21 @@ function App() {
       setNotice(error instanceof Error ? error.message : String(error));
       writeOperationLog("drag_out", "failed", file.name, "External file manager", `Staging failed: ${error instanceof Error ? error.message : String(error)}`, "ERROR");
     });
+  };
+
+  const prepareRemoteDrag = (file: FileItem) => {
+    if (file.isDirectory || dragPreparationRef.current.has(file.path)) return;
+    const preparation = invoke<string>("download_to_disk", {
+      url: `${serverUrl(session)}/api/files/download/${downloadPath(file.path)}`,
+      method: "GET",
+      headers: session.token
+        ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId]] : [])]
+        : [],
+      body: undefined,
+      fileName: file.name,
+      ignoreTlsErrors: session.ignoreTlsErrors,
+    });
+    dragPreparationRef.current.set(file.path, preparation);
   };
 
   const finishDrag = () => {
@@ -2877,6 +2907,7 @@ function App() {
                     key={file.path}
                     className={`file-tile ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
                     draggable
+                    onPointerDown={() => prepareRemoteDrag(file)}
                     onDragStart={(event) => beginRemoteDrag(event, file)}
                     onDragEnd={finishDrag}
                     onDragOver={(event) => {
@@ -2952,6 +2983,7 @@ function App() {
                       key={file.path}
                       draggable
                       className={`file-row ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
+                       onPointerDown={() => prepareRemoteDrag(file)}
                        onDragStart={(event) => beginRemoteDrag(event, file)}
                       onDragEnd={finishDrag}
                       onDragOver={(event) => {

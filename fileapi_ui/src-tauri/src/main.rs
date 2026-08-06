@@ -839,6 +839,30 @@ fn clear_operation_logs() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn initialize_operation_log() -> Result<(), String> {
+    let (_, log_path) = operation_paths()?;
+    let rotated_two = log_path.with_extension("log.2");
+    let rotated_one = log_path.with_extension("log.1");
+    let has_active_log = std::fs::metadata(&log_path)
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false);
+    if has_active_log {
+        let _ = std::fs::remove_file(&rotated_two);
+        if rotated_one.exists() {
+            std::fs::rename(&rotated_one, &rotated_two).map_err(|error| error.to_string())?;
+        }
+        std::fs::rename(&log_path, &rotated_one).map_err(|error| error.to_string())?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log_path)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn append_operation_log(
     level: String,
     operation: String,
@@ -929,6 +953,7 @@ fn main() {
             operation_storage_info,
             clear_operation_history,
             clear_operation_logs,
+            initialize_operation_log,
             append_operation_log
         ])
         .run(tauri::generate_context!())
