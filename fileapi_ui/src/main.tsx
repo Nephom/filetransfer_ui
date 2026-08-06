@@ -11,6 +11,7 @@ import "./location-control.css";
 import "./tls.css";
 import "./webui-shell.css";
 import "./explorer-parity.css";
+import "./desktop-ui.css";
 import "@xterm/xterm/css/xterm.css";
 
 type FileItem = {
@@ -115,6 +116,7 @@ type TransferQueueItem = {
   detail: string;
 };
 type DesktopSettings = {
+  uiDensity: "auto" | "compact" | "standard" | "comfortable";
   undoHistoryEnabled: boolean;
   operationLogEnabled: boolean;
   confirmations: {
@@ -370,6 +372,7 @@ const initialSession: Session = {
 const sessionRegistryKey = "fileapi-session-registry";
 const desktopSettingsKey = "fileapi-desktop-settings";
 const defaultDesktopSettings: DesktopSettings = {
+  uiDensity: "auto",
   undoHistoryEnabled: true,
   operationLogEnabled: true,
   confirmations: { delete: true, overwrite: true, recursive: true, crossSourceMove: true },
@@ -456,15 +459,23 @@ function App() {
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
+      const uiDensity = ["auto", "compact", "standard", "comfortable"].includes(saved?.uiDensity)
+        ? saved.uiDensity
+        : defaultDesktopSettings.uiDensity;
       return {
         ...defaultDesktopSettings,
         ...saved,
+        uiDensity,
         confirmations: { ...defaultDesktopSettings.confirmations, ...(saved?.confirmations || {}) },
       };
     } catch {
       return defaultDesktopSettings;
     }
   });
+  const [viewport, setViewport] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
   const [storageInfo, setStorageInfo] = useState<OperationStorageInfo | null>(null);
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
@@ -676,6 +687,17 @@ function App() {
   useEffect(() => {
     localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings));
   }, [desktopSettings]);
+
+  useEffect(() => {
+    const updateViewport = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", updateViewport);
+    return () => window.removeEventListener("resize", updateViewport);
+  }, []);
+
+  useEffect(() => {
+    const maxHeight = Math.max(160, viewport.height - 180);
+    setTerminalHeight((current) => Math.min(current, maxHeight));
+  }, [viewport.height]);
 
   useEffect(() => {
     if (managedSessions.length || !sshProfiles.length) return;
@@ -2287,8 +2309,18 @@ function App() {
       </main>
     );
 
+  const autoDensity = viewport.width <= 1100 || viewport.height <= 760 ? "compact" : "standard";
+  const densityLabel = desktopSettings.uiDensity === "auto"
+    ? `Auto (${autoDensity})`
+    : desktopSettings.uiDensity[0].toUpperCase() + desktopSettings.uiDensity.slice(1);
+  const densitySliderValue = desktopSettings.uiDensity === "compact"
+    ? "0"
+    : desktopSettings.uiDensity === "comfortable"
+      ? "2"
+      : "1";
+
   return (
-    <main className="explorer">
+    <main className={`explorer ui-density-${desktopSettings.uiDensity}`}>
       <header className="titlebar">
         <span className="app-mark" />
         <span className="app-name">LAB File Manager</span>
@@ -2929,9 +2961,32 @@ function App() {
        {settingsOpen && (
          <div className="modal-cover" onMouseDown={() => setSettingsOpen(false)}>
            <div className="modal settings-modal" onMouseDown={(event) => event.stopPropagation()}>
-             <h2>Desktop Settings</h2>
-             <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
-             <section className="settings-section">
+              <h2>Desktop Settings</h2>
+              <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
+              <section className="settings-section">
+                <h3>Interface size</h3>
+                <div className="settings-density">
+                  <div className="settings-density-heading">
+                    <strong>{densityLabel}</strong>
+                    <small>Buttons and spacing adapt without cutting text.</small>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="2"
+                    step="1"
+                    value={densitySliderValue}
+                    aria-label="Interface size"
+                    onChange={(event) => {
+                      const values = ["compact", "standard", "comfortable"] as const;
+                      setDesktopSettings((current) => ({ ...current, uiDensity: values[Number(event.target.value)] }));
+                    }}
+                  />
+                  <div className="settings-density-scale"><span>Compact</span><span>Standard</span><span>Comfortable</span></div>
+                  <button type="button" onClick={() => setDesktopSettings((current) => ({ ...current, uiDensity: "auto" }))}>Use automatic sizing</button>
+                </div>
+              </section>
+              <section className="settings-section">
                <h3>Risk confirmations</h3>
                {([
                  ["delete", "Delete", "Deleting files or folders can permanently remove data."],
