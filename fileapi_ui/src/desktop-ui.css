@@ -165,12 +165,31 @@
 }
 
 .settings-check {
+  min-width: 0;
   gap: var(--ui-control-gap);
   line-height: 1.25;
 }
 
+.settings-check input[type="checkbox"] {
+  flex: 0 0 15px;
+  width: 15px;
+  min-width: 15px;
+  height: 15px;
+  min-height: 15px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: #43c9ed;
+}
+
 .settings-check span {
   min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.settings-check strong,
+.settings-check small {
+  display: block;
 }
 
 .settings-check small {
