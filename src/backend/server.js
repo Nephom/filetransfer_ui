@@ -1757,6 +1757,10 @@ const ADMIN_CONFIG_SCHEMA = {
     httpsPort: { type: 'integer', label: 'HTTPS port', description: 'HTTPS listener port when certificates are configured. Requires a service restart.', example: '9443', requiresRestart: true },
     enableHttpsRedirect: { type: 'boolean', label: 'Redirect HTTP to HTTPS', description: 'Redirect HTTP requests when HTTPS is available.', requiresRestart: true },
     autoGenerateCerts: { type: 'boolean', label: 'Auto-generate certificates', description: 'Generate local certificates when none are available.', requiresRestart: true }
+  },
+  auth: {
+    username: { type: 'string', label: 'Administrator username', description: 'The single system administrator account. Managed here instead of User Management.', requiresRestart: false },
+    password: { type: 'secret', label: 'Administrator password', description: 'Enter a new password to replace the current administrator password. The stored value is bcrypt-hashed.', requiresRestart: false, sensitive: true }
   }
 };
 
@@ -1801,7 +1805,8 @@ const getAdminConfig = () => ({
     autoGenerateCerts: configManager.get('ssl.autoGenerateCerts') === true
   },
   auth: {
-    username: configManager.get('auth.username') ?? 'admin'
+    username: configManager.get('auth.username') ?? 'admin',
+    password: configManager.get('auth.password') ? '[SET]' : ''
   }
 });
 
@@ -1825,7 +1830,7 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
 
 app.put('/api/admin/config', requireAdmin, async (req, res) => {
   try {
-    const { server, fileSystem, locations, maintenance, logging, security, shareLinks, ssl } = req.body;
+    const { server, fileSystem, locations, maintenance, logging, security, shareLinks, ssl, auth } = req.body;
     const updatedFields = [];
 
     const integer = (value, label, minimum = 1, maximum = Number.MAX_SAFE_INTEGER) => {
@@ -1846,6 +1851,24 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
 
     const pending = [];
     const add = (key, value) => pending.push([key, value]);
+
+    if (auth) {
+      if (auth.username !== undefined) {
+        if (typeof auth.username !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(auth.username.trim())) {
+          throw new Error('auth.username must be 3-64 characters and contain only letters, numbers, dot, underscore, or hyphen');
+        }
+        add('auth.username', auth.username.trim());
+        updatedFields.push('auth.username');
+      }
+      if (auth.password !== undefined && auth.password !== '' && auth.password !== '[SET]') {
+        if (typeof auth.password !== 'string' || auth.password.length < 6) {
+          throw new Error('auth.password must be at least 6 characters long');
+        }
+        add('auth.password', await bcrypt.hash(auth.password, 12));
+        add('auth.passwordHashed', true);
+        updatedFields.push('auth.password', 'auth.passwordHashed');
+      }
+    }
 
     // Validate and update server settings
     if (server) {
@@ -1996,7 +2019,7 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to update config: ${error.message}`);
-    const statusCode = /must be|Unknown configuration|cannot exceed|non-empty|locations/.test(error.message) ? 400 : 500;
+    const statusCode = /must be|Unknown configuration|cannot exceed|non-empty|locations|auth\./.test(error.message) ? 400 : 500;
     res.status(statusCode).json({ error: error.message || 'Failed to update configuration' });
   }
 });

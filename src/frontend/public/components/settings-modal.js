@@ -464,10 +464,16 @@ const SettingsModal = ({ onClose, token }) => {
                                                             {user.lastLogin && ` | Last login: ${new Date(user.lastLogin).toLocaleDateString()}`}
                                                         </div>
                                                     </div>
-                                                    <div style={{ display: 'flex', gap: '8px' }}>
-                                                        <button onClick={() => setEditingUser(user)} style={{ background: 'rgba(59, 130, 246, 0.2)', border: '1px solid rgba(59, 130, 246, 0.5)', borderRadius: '6px', color: '#60a5fa', padding: '4px 8px', cursor: 'pointer', fontSize: '12px' }}>Edit</button>
-                                                        {user.username !== 'admin' && (<button onClick={() => deleteUser(user.username)} style={{ background: 'rgba(239, 68, 68, 0.2)', border: '1px solid rgba(239, 68, 68, 0.5)', borderRadius: '6px', color: '#f87171', padding: '4px 8px', cursor: 'pointer', fontSize: '12px' }}>Delete</button>)}
-                                                    </div>
+                                                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                                         {user.isConfigUser ? (
+                                                             <span style={{ color: 'rgba(255, 255, 255, 0.65)', fontSize: '11px' }}>Managed in Configuration</span>
+                                                         ) : (
+                                                             <>
+                                                                 <button onClick={() => setEditingUser(user)} style={{ background: 'rgba(59, 130, 246, 0.2)', border: '1px solid rgba(59, 130, 246, 0.5)', borderRadius: '6px', color: '#60a5fa', padding: '4px 8px', cursor: 'pointer', fontSize: '12px' }}>Edit</button>
+                                                                 <button onClick={() => deleteUser(user.username)} style={{ background: 'rgba(239, 68, 68, 0.2)', border: '1px solid rgba(239, 68, 68, 0.5)', borderRadius: '6px', color: '#f87171', padding: '4px 8px', cursor: 'pointer', fontSize: '12px' }}>Delete</button>
+                                                             </>
+                                                         )}
+                                                     </div>
                                                 </div>
                                             ))}</div>
                                         ) : (<div style={{ color: 'rgba(255, 255, 255, 0.7)', textAlign: 'center', padding: '40px' }}>No users found.</div>)}
@@ -523,7 +529,7 @@ const SettingsModal = ({ onClose, token }) => {
                                                         </div>
                                                     </label>
                                                 ) : (
-                                                    <input type={typeof value === 'number' ? 'number' : 'text'} value={value} onChange={(e) => handleConfigChange(configSection, key, typeof value === 'number' ? parseInt(e.target.value) : e.target.value)} style={{ width: '100%', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px' }} />
+                                                    <input type={configSection === 'auth' && key === 'password' ? 'password' : typeof value === 'number' ? 'number' : 'text'} value={configSection === 'auth' && key === 'password' && value === '[SET]' ? '' : value} placeholder={configSection === 'auth' && key === 'password' && value === '[SET]' ? 'Configured; enter a new password to replace it' : ''} onChange={(e) => handleConfigChange(configSection, key, typeof value === 'number' ? parseInt(e.target.value) : e.target.value)} style={{ width: '100%', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px' }} />
                                                 )}
                                             </div>
                                         )) : <div style={{ color: 'rgba(255, 255, 255, 0.7)', textAlign: 'center', padding: '40px' }}>No configuration for this section.</div>}
@@ -621,7 +627,6 @@ const CreateUserModal = ({ onClose, onSubmit, loading }) => {
                         <label style={{ color: 'white', display: 'block', marginBottom: '4px', fontSize: '14px' }}>Role:</label>
                         <select value={formData.role} onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))} style={{ width: '100%', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px' }}>
                             <option value="user">User</option>
-                            <option value="admin">Admin</option>
                         </select>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
@@ -636,7 +641,7 @@ const CreateUserModal = ({ onClose, onSubmit, loading }) => {
 
 // Edit User Modal Component
 const EditUserModal = ({ user, onClose, onSubmit, loading }) => {
-    const [formData, setFormData] = useState({ role: user.role, active: user.active, email: user.email || '', newPassword: '' });
+    const [formData, setFormData] = useState({ role: 'user', active: user.active, email: user.email || '', permissions: user.permissions || ['read', 'upload', 'delete'], newPassword: '' });
     const handleSubmit = (e) => {
         e.preventDefault();
         const updates = { ...formData };
@@ -659,10 +664,18 @@ const EditUserModal = ({ user, onClose, onSubmit, loading }) => {
                     </div>
                     <div style={{ marginBottom: '16px' }}>
                         <label style={{ color: 'white', display: 'block', marginBottom: '4px', fontSize: '14px' }}>Role:</label>
-                        <select value={formData.role} onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))} disabled={user.username === 'admin'} style={{ width: '100%', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px', opacity: user.username === 'admin' ? 0.5 : 1 }}>
-                            <option value="user">User</option>
-                            <option value="admin">Admin</option>
-                        </select>
+                        <div style={{ color: 'rgba(255, 255, 255, 0.8)', padding: '8px 12px', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '6px' }}>User (the single system administrator is managed in Configuration)</div>
+                    </div>
+                    <div style={{ marginBottom: '16px' }}>
+                        <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Permissions:</label>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+                            {['read', 'upload', 'delete'].map(permission => (
+                                <label key={permission} style={{ color: 'rgba(255, 255, 255, 0.85)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
+                                    <input type="checkbox" checked={formData.permissions.includes(permission)} onChange={(e) => setFormData(prev => ({ ...prev, permissions: e.target.checked ? [...prev.permissions, permission] : prev.permissions.filter(item => item !== permission) }))} />
+                                    {permission}
+                                </label>
+                            ))}
+                        </div>
                     </div>
                     <div style={{ marginBottom: '16px' }}>
                         <label style={{ color: 'white', display: 'flex', alignItems: 'center', gap: '8px' }}>

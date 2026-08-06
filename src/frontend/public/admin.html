@@ -560,6 +560,45 @@
         </div>
     </div>
 
+    <!-- Edit User Modal -->
+    <div id="editUserModal" class="modal-overlay">
+        <div class="modal-content" style="max-width: 520px;">
+            <div class="modal-header">
+                <h2>✏️ Edit User</h2>
+                <button class="modal-close" onclick="closeEditUser()">✕ Close</button>
+            </div>
+            <input type="hidden" id="editUsername">
+            <div class="form-group">
+                <label>Username:</label>
+                <input type="text" id="editUsernameDisplay" class="form-control" readonly>
+            </div>
+            <div class="form-group">
+                <label>Email:</label>
+                <input type="email" id="editEmail" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Permissions:</label>
+                <div class="checkbox-group">
+                    <label><input type="checkbox" id="editPermissionRead"> Read</label>
+                    <label><input type="checkbox" id="editPermissionUpload"> Upload</label>
+                    <label><input type="checkbox" id="editPermissionDelete"> Delete</label>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="checkbox-group"><input type="checkbox" id="editActive"> Active user</label>
+            </div>
+            <div class="form-group">
+                <label>New password:</label>
+                <input type="password" id="editPassword" class="form-control" placeholder="Leave blank to keep current password">
+            </div>
+            <p style="font-size: 0.9rem; opacity: 0.75; line-height: 1.45;">The single system administrator is managed through Manager Config and cannot be edited here.</p>
+            <div class="btn-group">
+                <button class="btn" onclick="saveEditedUser()">✓ Save User</button>
+                <button class="btn danger" onclick="closeEditUser()">✕ Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <!-- SSL Management Modal -->
     <div id="sslManagementModal" class="modal-overlay">
         <div class="modal-content">
@@ -951,7 +990,7 @@
                             html += `<input type="password" id="${inputId}" name="${fieldName}" class="form-control" value="" placeholder="${escapeHtml(value === '[SET]' ? 'Configured; enter a new value to replace it' : 'Generated at startup')}">`;
                         } else {
                             const inputType = metadata.type === 'integer' ? 'number' : 'text';
-                            html += `<input type="${inputType}" id="${inputId}" name="${fieldName}" class="form-control" value="${escapeHtml(value)}" ${inputType === 'number' ? 'step="1"' : ''} ${section === 'auth' ? 'readonly' : ''}>`;
+                             html += `<input type="${inputType}" id="${inputId}" name="${fieldName}" class="form-control" value="${escapeHtml(value)}" ${inputType === 'number' ? 'step="1"' : ''}>`;
                         }
                         html += `<p style="font-size:0.85rem; opacity:0.75; margin-top:5px; line-height:1.45;">${description}${example}</p></div>`;
                     });
@@ -1088,8 +1127,9 @@
                         <td>${lastLogin}</td>
                         <td>
                             ${isConfigUser
-                                ? '<span style="opacity: 0.5; font-size: 0.85rem;">🔒 System User</span>'
-                                : `<button class="btn btn-small danger" onclick="deleteUser('${user.username}')">🗑️ Delete</button>`
+                                ? '<span style="opacity: 0.5; font-size: 0.85rem;">🔒 Managed in Manager Config</span>'
+                                : `<button class="btn btn-small" onclick="openEditUser('${user.username}')">✏️ Edit</button>
+                                   <button class="btn btn-small danger" onclick="deleteUser('${user.username}')">🗑️ Delete</button>`
                             }
                         </td>
                     </tr>
@@ -1173,6 +1213,70 @@
                 fetchStats();
             } catch (error) {
                 console.error('Error deleting user:', error);
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        let editingUser = null;
+
+        async function openEditUser(username) {
+            try {
+                const response = await fetch(`/api/admin/users/${encodeURIComponent(username)}`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                });
+                if (!response.ok) throw new Error('Failed to load user');
+                const data = await response.json();
+                editingUser = data.user;
+                if (editingUser.isConfigUser) {
+                    alert('The system administrator is managed through Manager Config.');
+                    return;
+                }
+                document.getElementById('editUsername').value = editingUser.username;
+                document.getElementById('editUsernameDisplay').value = editingUser.username;
+                document.getElementById('editEmail').value = editingUser.email || '';
+                document.getElementById('editActive').checked = editingUser.active !== false;
+                const permissions = editingUser.permissions || [];
+                document.getElementById('editPermissionRead').checked = permissions.includes('read');
+                document.getElementById('editPermissionUpload').checked = permissions.includes('upload');
+                document.getElementById('editPermissionDelete').checked = permissions.includes('delete');
+                document.getElementById('editPassword').value = '';
+                openModal('editUserModal');
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        function closeEditUser() {
+            editingUser = null;
+            closeModal('editUserModal');
+        }
+
+        async function saveEditedUser() {
+            if (!editingUser) return;
+            const permissions = ['read', 'upload', 'delete'].filter(permission => document.getElementById(`editPermission${permission.charAt(0).toUpperCase() + permission.slice(1)}`).checked);
+            const updates = {
+                email: document.getElementById('editEmail').value.trim(),
+                active: document.getElementById('editActive').checked,
+                permissions
+            };
+            const password = document.getElementById('editPassword').value;
+            if (password) updates.password = password;
+            try {
+                const response = await fetch(`/api/admin/users/${encodeURIComponent(editingUser.username)}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(updates)
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Failed to update user');
+                alert(data.message || 'User updated successfully!');
+                closeEditUser();
+                loadUsers();
+                fetchStats();
+            } catch (error) {
                 alert(`Error: ${error.message}`);
             }
         }
