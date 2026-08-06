@@ -41,6 +41,7 @@
 .sxp-modal p { line-height: 1.5; }
 .sxp-output { min-height: 120px; max-height: 240px; overflow: auto; padding: 12px; color: #9be8ff; background: #061321; border: 1px solid #254764; white-space: pre-wrap; }
 .field-help { display: block; margin-top: 5px; color: #7f9bb5; font-size: 11px; font-weight: 400; }
+.link-button { padding: 0; border: 0; background: transparent; color: #47cdf1; font-size: 11px; text-decoration: underline; cursor: pointer; }
 .form-error { display: block; margin: 8px 0; padding: 8px; color: #ffb8ae; background: #3b1d28; border: 1px solid #813847; border-radius: 4px; }
 .file-table { table-layout: fixed; }
 .file-table .selection-column { width: 42px; }

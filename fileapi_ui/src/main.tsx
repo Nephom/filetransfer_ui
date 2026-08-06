@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { resolveResource } from "@tauri-apps/api/path";
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "./styles.css";
@@ -108,7 +110,7 @@ type SshTerminalTab = {
 type TransferQueueItem = {
   id: string;
   label: string;
-  kind: "upload" | "download";
+  kind: "upload" | "download" | "download-set";
   paths: string[];
   destinationPath: string;
   locationId: string;
@@ -121,6 +123,9 @@ type TransferQueueItem = {
   downloadBody?: number[];
   downloadFileName?: string;
   archiveFormat?: "tar.gz" | "zip";
+  setFiles?: { relativePath: string; remotePath: string; size: number }[];
+  setCompleted?: number;
+  setLabel?: string;
 };
 type DesktopSettings = {
   uiDensity: "auto" | "compact" | "standard" | "comfortable";
@@ -455,6 +460,7 @@ function App() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [path, setPath] = useState("");
+  const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const selectionAnchorRef = useRef<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -563,7 +569,9 @@ function App() {
     port: "22",
     username: "",
     privateKeyPath: "",
+    password: "",
   });
+  const [sshPasswordSaved, setSshPasswordSaved] = useState(false);
   const [sshEntryDraftId, setSshEntryDraftId] = useState("");
   const [recording, setRecording] = useState(false);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
@@ -572,7 +580,7 @@ function App() {
   const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
   const [archiveFormatOpen, setArchiveFormatOpen] = useState(false);
-  const [archiveFormatDraft, setArchiveFormatDraft] = useState<"tar.gz" | "zip">("tar.gz");
+  const [archiveFormatDraft, setArchiveFormatDraft] = useState<"tar.gz" | "zip" | "queue">("tar.gz");
   const [uploadDestinationOpen, setUploadDestinationOpen] = useState(false);
   const [uploadDestinationPath, setUploadDestinationPath] = useState("");
   const [uploadDestinationSessionId, setUploadDestinationSessionId] = useState("");
@@ -592,10 +600,10 @@ function App() {
   const sshSecretPromptRef = useRef(false);
   const activeSshTabIdRef = useRef("");
   const pendingSshTabIdsRef = useRef<string[]>([]);
-  const pendingSshKeyInstallsRef = useRef<Record<string, { tabId: string; profile: SshProfile }>>({});
   const sshTabsRef = useRef<SshTerminalTab[]>([]);
   const shellInputRef = useRef("");
   const dragPreparationRef = useRef(new Map<string, Promise<string>>());
+  const dragIconPathRef = useRef<Promise<string> | null>(null);
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
   const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
@@ -811,25 +819,6 @@ function App() {
     });
     const unlistenExit = listen<SshEvent>("ssh-exit", (event) => {
       if (disposed) return;
-      const pendingInstall = pendingSshKeyInstallsRef.current[event.payload.sessionId];
-      if (pendingInstall) {
-        delete pendingSshKeyInstallsRef.current[event.payload.sessionId];
-        const tab = sshTabsRef.current.find((item) => item.id === pendingInstall.tabId);
-        const profile = pendingInstall.profile;
-        if (tab) {
-          void run(async () => {
-            pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tab.id];
-            const id = await invoke<string>("ssh_connect", { profile: {
-              name: profile.name,
-              host: profile.host,
-              port: profile.port,
-              username: profile.username,
-              privateKeyPath: profile.privateKeyPath || null,
-            } });
-            setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, sessionId: id, connected: true, output: `${item.output}\nConnecting with the installed SSH key...\n` } : item));
-          });
-        }
-      }
       setSshTabs((current) => current.map((item) => item.sessionId !== event.payload.sessionId ? item : {
         ...item,
         connected: false,
@@ -1001,7 +990,35 @@ function App() {
     }
   };
 
+  const findSshProfileById = (entryId: string): SshProfile | undefined =>
+    managedSessions.flatMap((workspace) => workspace.sshEntries).find((entry) => entry.id === entryId);
+
+  const ensureApiRemote = () => {
+    if (remoteSshEntryId) {
+      throw new Error("This action is not available while browsing an SSH remote. Switch LOCATION back to an API Remote first.");
+    }
+  };
+
+  const connectedSshBrowseOptions = () =>
+    managedSessions
+      .flatMap((workspace) => workspace.sshEntries)
+      .filter((entry) => sshTabs.some((tab) => tab.sshEntryId === entry.id && tab.connected));
+
   const loadFiles = async (nextPath = path) => {
+    if (remoteSshEntryId) {
+      const profile = findSshProfileById(remoteSshEntryId);
+      if (!profile) {
+        setRemoteSshEntryId("");
+        throw new Error("The SSH connection for this remote view is no longer available.");
+      }
+      const data = await invoke<LocalDirectory>("ssh_list_directory", { profile, path: nextPath });
+      setFiles(data.files || []);
+      setPath(data.path || "");
+      setSearching(false);
+      selectionAnchorRef.current = null;
+      setSelected([]);
+      return;
+    }
     const response = await api(
       `/api/files?path=${encodeURIComponent(nextPath)}`,
     );
@@ -1133,6 +1150,7 @@ function App() {
   }, [session.token, session.locationId]);
 
   const selectLocation = (locationId: string) => {
+    setRemoteSshEntryId("");
     if (locationId === session.locationId) return;
     setSession((current) => ({ ...current, locationId }));
     setPath("");
@@ -1147,6 +1165,24 @@ function App() {
       loaded: false,
       children: [],
     });
+  };
+
+  const selectSshBrowse = (entryId: string) => {
+    if (entryId === remoteSshEntryId) return;
+    setRemoteSshEntryId(entryId);
+    setPath("");
+    setSelected([]);
+    setSearch("");
+    setSearching(false);
+    setPathBeforeSearch("");
+    setFolderTree({
+      path: "",
+      name: "/",
+      expanded: true,
+      loaded: false,
+      children: [],
+    });
+    void run(() => loadFiles(""));
   };
 
   const saveSession = (form?: HTMLFormElement) => {
@@ -1336,8 +1372,15 @@ function App() {
           port: String(profile.port),
           username: profile.username,
           privateKeyPath: profile.privateKeyPath,
+          password: "",
         }
-      : { id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "" });
+      : { id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+    setSshPasswordSaved(false);
+    if (profile?.id) {
+      void invoke<boolean>("ssh_has_password", { entryId: profile.id })
+        .then(setSshPasswordSaved)
+        .catch(() => setSshPasswordSaved(false));
+    }
   };
 
   const makeSshTabId = () => typeof crypto.randomUUID === "function"
@@ -1481,7 +1524,7 @@ function App() {
         } else {
           setSshEntryDraftId("");
           setSelectedSshEntryId("");
-          setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "" });
+          setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
         }
       }
       setSessionFormError("");
@@ -1497,14 +1540,15 @@ function App() {
     setSxpEntryDraftId("");
     setSxpEntryNameDraft("Default Transfer");
     setSshEntryDraftId("");
-    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "" });
+    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
     setSessionFormError("");
   };
 
   const startNewSshEntry = () => {
     setSshEntryDraftId("");
     setSelectedSshEntryId("");
-    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "" });
+    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+    setSshPasswordSaved(false);
   };
 
   const saveSshEntry = () => {
@@ -1532,9 +1576,25 @@ function App() {
     setSshEntryDraftId(entry.id);
     setSelectedSshEntryId(entry.id);
     setSshProfileId(entry.id);
+    const password = sshProfileDraft.password;
     loadSshProfileDraft(entry);
     setSessionFormError("");
+    if (password) {
+      void invoke("ssh_save_password", { entryId: entry.id, password })
+        .then(() => setSshPasswordSaved(true))
+        .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+    }
     notify(`${sshProfileDraft.id ? "Updated" : "Added"} SSH entry: ${entry.name}`);
+  };
+
+  const forgetSshPassword = () => {
+    if (!sshProfileDraft.id) return;
+    void invoke("ssh_forget_password", { entryId: sshProfileDraft.id })
+      .then(() => {
+        setSshPasswordSaved(false);
+        notify("Saved password removed for this SSH entry.");
+      })
+      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
   };
 
   const removeSshEntry = () => {
@@ -1544,6 +1604,7 @@ function App() {
     if (!entry || !window.confirm(`Remove SSH entry "${entry.name}"?`)) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, sshEntries: item.sshEntries.filter((candidate) => candidate.id !== entry.id) }));
     setSshProfiles((current) => current.filter((item) => item.id !== entry.id));
+    void invoke("ssh_forget_password", { entryId: entry.id }).catch(() => {});
     startNewSshEntry();
   };
 
@@ -1566,28 +1627,23 @@ function App() {
     }
     void run(async () => {
       sshConnectingRef.current = true;
+      pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tabId];
       try {
-        pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tabId];
         const nativeProfile = {
+          id: profile.id,
           name: profile.name,
           host: profile.host,
           port: profile.port,
           username: profile.username,
           privateKeyPath: profile.privateKeyPath || null,
         };
-        const keyAvailable = await invoke<boolean>("ssh_key_available", { profile: nativeProfile });
-        if (!keyAvailable) {
-          const installId = await invoke<string>("ssh_install_key", { profile: nativeProfile });
-          pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
-          pendingSshKeyInstallsRef.current[installId] = { tabId, profile };
-          const output = `No usable SSH key found for ${profile.username}@${profile.host}.\nInstalling the key now. Enter the remote password in this terminal.\n`;
-          setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: installId, connected: true, output: item.output + output }));
-          return;
-        }
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n` }));
         const id = await invoke<string>("ssh_connect", { profile: nativeProfile });
-        const output = `Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`;
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, output: item.output + output }));
-        pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true }));
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${detail}\n` }));
+        setNotice(detail);
       } finally {
         pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
         sshConnectingRef.current = false;
@@ -1606,21 +1662,25 @@ function App() {
       return;
     }
     void run(async () => {
-      sshConnectingRef.current = true;
-      pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tabId];
-      const id = await invoke<string>("ssh_install_key", {
-        profile: {
-          name: profile.name,
-          host: profile.host,
-          port: profile.port,
-          username: profile.username,
-          privateKeyPath: profile.privateKeyPath || null,
-        },
-      });
-      const output = `Installing SSH key for ${profile.username}@${profile.host}:${profile.port}...\nType the remote password in this terminal.\n`;
-      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, output: item.output + output }));
-      pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
-      sshConnectingRef.current = false;
+      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}Installing SSH key for ${profile.username}@${profile.host}:${profile.port} using the saved password...\n` }));
+      try {
+        const message = await invoke<string>("ssh_install_key", {
+          profile: {
+            id: profile.id,
+            name: profile.name,
+            host: profile.host,
+            port: profile.port,
+            username: profile.username,
+            privateKeyPath: profile.privateKeyPath || null,
+          },
+        });
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${message}\n` }));
+        notify(message);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${detail}\n` }));
+        setNotice(detail);
+      }
     });
   };
 
@@ -1813,6 +1873,39 @@ function App() {
     }
   };
 
+  const runQueuedDownloadSet = async (item: TransferQueueItem) => {
+    const files = item.setFiles || [];
+    writeOperationLog("download", "started", item.label, "Local Downloads", `Queued download of ${files.length} file(s) started.`, "DEBUG");
+    updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${files.length} files...`, setCompleted: 0 });
+    const headers: [string, string][] = session.token
+      ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
+      : [];
+    let completed = 0;
+    let lastDestinationRoot = "";
+    try {
+      for (const file of files) {
+        const relativePath = `${item.setLabel}/${file.relativePath}`;
+        const destination = await invoke<string>("download_to_disk_at", {
+          url: `${serverUrl(session)}/api/files/download/${downloadPath(file.remotePath)}`,
+          method: "GET",
+          headers,
+          body: undefined,
+          relativePath,
+          ignoreTlsErrors: session.ignoreTlsErrors,
+        });
+        completed += 1;
+        lastDestinationRoot = destination.slice(0, destination.length - (file.relativePath.length + 1));
+        updateQueueItem(item.id, { detail: `Downloading ${completed}/${files.length} files...`, setCompleted: completed });
+      }
+      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || "Downloads"}.` });
+      writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded ${completed} file(s).`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${files.length} completed before failing)` });
+      writeOperationLog("download", "failed", item.label, "Local Downloads", `Queued download failed: ${detail}`, "ERROR");
+    }
+  };
+
   const findDefaultRemoteUploadPath = async (locationId: string) => {
     const rootResponse = await apiForLocation("/api/files?path=", locationId);
     if (!rootResponse.ok) throw new Error(await readError(rootResponse));
@@ -2001,6 +2094,7 @@ function App() {
 
   const moveItems = (items: FileItem[], destination: string) =>
     run(async () => {
+      ensureApiRemote();
       if (!isValidMoveTarget(items, destination))
         throw new Error(
           "Choose a folder other than the current folder or a folder inside a selected folder.",
@@ -2041,10 +2135,21 @@ function App() {
     event.dataTransfer.effectAllowed = "move";
   };
 
+  const resolveDragIcon = () => {
+    if (!dragIconPathRef.current) {
+      dragIconPathRef.current = resolveResource("icons/32x32.png").catch(() => "");
+    }
+    return dragIconPathRef.current;
+  };
+
   const beginRemoteDrag = (event: React.DragEvent, file: FileItem) => {
     beginDrag(event, file);
-    writeOperationLog("drag_out", "started", file.name, "External file manager", "Preparing a local file URI for external drag-out.", "DEBUG");
-    event.dataTransfer.effectAllowed = "copyMove";
+    // The webview's native HTML5 drag-and-drop cannot drop files onto
+    // external apps on Linux (webkit2gtk does not implement outbound file
+    // drag via DownloadURL/text/uri-list). tauri-plugin-drag starts a real
+    // OS-level drag instead, so cancel the browser's own drag gesture here.
+    event.preventDefault();
+    writeOperationLog("drag_out", "started", file.name, "External file manager", "Preparing a local file for external drag-out.", "DEBUG");
     const items = selected.includes(file.path) ? selectedItems : [file];
     const preparationKey = items.map((item) => item.path).join("\0");
     const prepared = dragPreparationRef.current.get(preparationKey);
@@ -2054,11 +2159,13 @@ function App() {
         : "The file is still being prepared. Wait for staging to finish, then drag again.");
       return;
     }
-    void prepared.then((localPathForDrag) => {
-      const fileUri = `file://${encodeURI(localPathForDrag)}`;
-      event.dataTransfer.setData("text/uri-list", fileUri);
-      event.dataTransfer.setData("DownloadURL", `application/octet-stream:${file.name}:${fileUri}`);
-      writeOperationLog("drag_out", "staged", file.name, "External file manager", items.length > 1 || file.isDirectory ? "tar.gz archive URI prepared." : "Local file URI prepared.", "DEBUG");
+    void Promise.all([prepared, resolveDragIcon()]).then(([localPathForDrag, icon]) => {
+      writeOperationLog("drag_out", "staged", file.name, "External file manager", items.length > 1 || file.isDirectory ? "tar.gz archive ready; starting native drag." : "Local file ready; starting native drag.", "DEBUG");
+      void startDrag({ item: [localPathForDrag], icon: icon || localPathForDrag }, (payload) => {
+        dragPreparationRef.current.delete(preparationKey);
+        void invoke("cleanup_drag_staging", { path: localPathForDrag }).catch(() => {});
+        writeOperationLog("drag_out", payload.result === "Dropped" ? "completed" : "cancelled", file.name, "External file manager", `Native drag ${payload.result.toLowerCase()}.`, "DEBUG");
+      });
     }).catch((error) => {
       setNotice(error instanceof Error ? error.message : String(error));
       writeOperationLog("drag_out", "failed", file.name, "External file manager", `Staging failed: ${error instanceof Error ? error.message : String(error)}`, "ERROR");
@@ -2066,29 +2173,61 @@ function App() {
   };
 
   const prepareRemoteDrag = (file: FileItem) => {
+    if (remoteSshEntryId) return;
     const items = selected.includes(file.path) ? selectedItems : [file];
     const preparationKey = items.map((item) => item.path).join("\0");
     if (dragPreparationRef.current.has(preparationKey)) return;
     const singleFile = items.length === 1 && !items[0].isDirectory;
-    if (!singleFile) setNotice(`Preparing tar.gz archive for ${items.length} selected item${items.length === 1 ? "" : "s"}...`);
     const headers: [string, string][] = session.token
-      ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : []), ...(singleFile ? [] : [["Content-Type", "application/json"] as [string, string]])]
+      ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
       : [];
-    const preparation = invoke<string>("download_to_drag_staging", {
-      url: singleFile
-        ? `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`
-        : `${serverUrl(session)}/api/archive`,
-      method: singleFile ? "GET" : "POST",
-      headers,
-      body: singleFile ? undefined : Array.from(new TextEncoder().encode(JSON.stringify({
-        items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })),
-        currentPath: path,
-        locationId: session.locationId,
-        format: "tar.gz",
-      }))),
-      fileName: singleFile ? items[0].name : "archive.tar.gz",
-      ignoreTlsErrors: session.ignoreTlsErrors,
-    });
+    if (singleFile) {
+      const preparation = invoke<string>("download_to_drag_staging", {
+        url: `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`,
+        method: "GET",
+        headers,
+        body: undefined,
+        fileName: items[0].name,
+        ignoreTlsErrors: session.ignoreTlsErrors,
+      });
+      dragPreparationRef.current.set(preparationKey, preparation);
+      return;
+    }
+    // Multiple files and/or folders: drag out "queue style" -- download each
+    // file individually into a reconstructed folder tree in drag-staging,
+    // then drag that assembled folder as a single native item, instead of
+    // always forcing a tar.gz/zip archive step first.
+    setNotice(`Preparing ${items.length} selected item${items.length === 1 ? "" : "s"} for drag...`);
+    const setId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+    const setLabel = items.length === 1 ? items[0].name : `${items.length} selected items`;
+    const preparation = (async () => {
+      const response = await api("/api/files/flatten", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: items.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
+          currentPath: path,
+        }),
+      });
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json() as { files?: { relativePath: string; remotePath: string }[] };
+      const files = data.files || [];
+      if (!files.length) throw new Error("The selection has no files to drag out.");
+      let lastDestination = "";
+      for (const entry of files) {
+        lastDestination = await invoke<string>("download_to_drag_staging_at", {
+          url: `${serverUrl(session)}/api/files/download/${downloadPath(entry.remotePath)}`,
+          method: "GET",
+          headers,
+          body: undefined,
+          setId,
+          relativePath: `${setLabel}/${entry.relativePath}`,
+          ignoreTlsErrors: session.ignoreTlsErrors,
+        });
+      }
+      const suffixLength = files[files.length - 1].relativePath.length + 1;
+      return lastDestination.slice(0, lastDestination.length - suffixLength);
+    })();
     dragPreparationRef.current.set(preparationKey, preparation);
   };
 
@@ -2096,6 +2235,46 @@ function App() {
     setDragItems([]);
     setDropTarget("");
   };
+
+  const enqueueQueueDownload = () =>
+    void run(async () => {
+      if (!selectedItems.length) return;
+      const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+      const setLabel = selectedItems.length === 1 ? selectedItems[0].name : `${selectedItems.length} selected items`;
+      const response = await api("/api/files/flatten", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: selectedItems.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
+          currentPath: path,
+        }),
+      });
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json() as { files?: { relativePath: string; remotePath: string; size: number }[] };
+      const files = data.files || [];
+      if (!files.length) {
+        setNotice("The selection has no files to download.");
+        return;
+      }
+      const item: TransferQueueItem = {
+        id,
+        label: setLabel,
+        kind: "download-set",
+        paths: [],
+        destinationPath: "Downloads",
+        locationId: session.locationId,
+        locationName: activeLocation?.displayName || session.locationId,
+        status: "queued",
+        detail: `Waiting to start (${files.length} files)`,
+        setFiles: files,
+        setCompleted: 0,
+        setLabel,
+      };
+      setArchiveFormatOpen(false);
+      setTransferQueue((current) => [...current, item]);
+      setQueueOpen(true);
+      void runQueuedDownloadSet(item);
+    });
 
   const enqueueDownload = (archiveFormat: "tar.gz" | "zip") => {
     if (!selectedItems.length) return;
@@ -2141,6 +2320,10 @@ function App() {
   };
 
   const download = () => {
+    if (remoteSshEntryId) {
+      setNotice("Downloading from an SSH remote is not supported yet. Use the terminal, or switch LOCATION back to an API Remote.");
+      return;
+    }
     if (!selectedItems.length) return;
     const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
     if (!singleFile) {
@@ -2197,6 +2380,7 @@ function App() {
 
   const uploadPaths = (paths: string[]) =>
     void run(async () => {
+      ensureApiRemote();
       if (!paths.length) return;
       const summary = await invoke<UploadSummary>("inspect_upload_paths", {
         paths,
@@ -2250,6 +2434,7 @@ function App() {
 
   const createFolder = () =>
     run(async () => {
+      ensureApiRemote();
       const folderName = window.prompt("Folder name");
       if (!folderName?.trim()) return;
       const response = await api("/api/folders", {
@@ -2267,6 +2452,7 @@ function App() {
 
   const rename = () =>
     run(async () => {
+      ensureApiRemote();
       if (selectedItems.length !== 1) return;
       const item = selectedItems[0];
       const newName = window.prompt("New name", item.name);
@@ -2287,6 +2473,7 @@ function App() {
 
   const remove = () =>
     run(async () => {
+      ensureApiRemote();
       if (
         !selectedItems.length ||
         (desktopSettings.confirmations.delete && !window.confirm(
@@ -2313,6 +2500,7 @@ function App() {
 
   const share = () =>
     run(async () => {
+      ensureApiRemote();
       if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
       const response = await api("/api/files/share", {
         method: "POST",
@@ -2564,7 +2752,7 @@ function App() {
         {activeLocation && (
           <div className="location-control" ref={locationControl}>
             <span className="location-label">Location</span>
-            {locations.length > 1 ? (
+            {(locations.length > 1 || connectedSshBrowseOptions().length > 0) ? (
               <button
                 className="location-select"
                 aria-label="Location"
@@ -2576,7 +2764,7 @@ function App() {
                   setLocationMenuOpen((open) => !open);
                 }}
               >
-                {activeLocation.displayName}
+                {remoteSshEntryId ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}` : activeLocation.displayName}
                 <span className="location-chevron" aria-hidden="true">⌄</span>
               </button>
             ) : (
@@ -2584,20 +2772,34 @@ function App() {
                 {activeLocation.displayName}
               </span>
             )}
-            {locations.length > 1 && locationMenuOpen && (
+            {(locations.length > 1 || connectedSshBrowseOptions().length > 0) && locationMenuOpen && (
               <div className="location-menu" role="listbox" aria-label="Locations">
                 {locations.map((location) => (
                   <button
                     key={location.id}
-                    className={location.id === session.locationId ? "selected" : ""}
+                    className={!remoteSshEntryId && location.id === session.locationId ? "selected" : ""}
                     role="option"
-                    aria-selected={location.id === session.locationId}
+                    aria-selected={!remoteSshEntryId && location.id === session.locationId}
                     onClick={() => {
                       setLocationMenuOpen(false);
                       void selectLocation(location.id);
                     }}
                   >
                     {location.displayName}
+                  </button>
+                ))}
+                {connectedSshBrowseOptions().map((entry) => (
+                  <button
+                    key={entry.id}
+                    className={entry.id === remoteSshEntryId ? "selected" : ""}
+                    role="option"
+                    aria-selected={entry.id === remoteSshEntryId}
+                    onClick={() => {
+                      setLocationMenuOpen(false);
+                      selectSshBrowse(entry.id);
+                    }}
+                  >
+                    {`SSH: ${entry.name}`}
                   </button>
                 ))}
               </div>
@@ -3374,7 +3576,16 @@ function App() {
                     Private key path (optional)
                     <input name="sshPrivateKeyPath" value={sshProfileDraft.privateKeyPath} onChange={(event) => setSshProfileDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="/home/test/.ssh/id_ed25519" />
                   </label>
-                   <small className="field-help">Connect automatically checks for a usable key and starts key installation when one is not available.</small>
+                  <label>
+                    Password (optional)
+                    <input type="password" name="sshPassword" value={sshProfileDraft.password} onChange={(event) => setSshProfileDraft((current) => ({ ...current, password: event.target.value }))} placeholder={sshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" />
+                  </label>
+                  <small className="field-help">
+                    {sshPasswordSaved ? "A password is saved for this entry in the OS credential store (or a local fallback file outside the Session data)." : "No password saved yet. Add one here, or configure a private key, before connecting."}
+                    {" "}Used to authenticate and to auto-fill the terminal's password prompt; never written to Session data.
+                    {sshPasswordSaved && <> <button type="button" className="link-button" onClick={forgetSshPassword}>Forget saved password</button></>}
+                  </small>
+                   <small className="field-help">Connect authenticates automatically with the private key or saved password. Use "Install SSH key" to push a key to the server using the saved password.</small>
                    <button type="button" className="confirm" onClick={saveSshEntry}>{sshEntryDraftId ? "Save SSH Entry" : "Add SSH Entry"}</button>
                 </fieldset>
               <div className="modal-actions">
@@ -3542,18 +3753,22 @@ function App() {
       {archiveFormatOpen && (
         <div className="modal-cover" onMouseDown={() => setArchiveFormatOpen(false)}>
           <div className="modal archive-format-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <h2>Choose archive format</h2>
-            <p className="muted">Multiple files or folders will be packaged before entering the Transfer Queue. Choose a format supported by the tools on your system.</p>
+            <h2>Choose download mode</h2>
+            <p className="muted">Download as a single archive, or queue every file individually (preserving the original folder structure) like the Transfer Queue already does for uploads.</p>
             <label className="archive-format-option">
               <input type="radio" name="archiveFormat" checked={archiveFormatDraft === "tar.gz"} onChange={() => setArchiveFormatDraft("tar.gz")} />
-              <span><strong>tar.gz</strong><small>Common on Linux and available with the tar command.</small></span>
+              <span><strong>tar.gz archive</strong><small>Common on Linux and available with the tar command.</small></span>
             </label>
             <label className="archive-format-option">
               <input type="radio" name="archiveFormat" checked={archiveFormatDraft === "zip"} onChange={() => setArchiveFormatDraft("zip")} />
-              <span><strong>zip</strong><small>Widely supported by desktop archive tools and other operating systems.</small></span>
+              <span><strong>zip archive</strong><small>Widely supported by desktop archive tools and other operating systems.</small></span>
+            </label>
+            <label className="archive-format-option">
+              <input type="radio" name="archiveFormat" checked={archiveFormatDraft === "queue"} onChange={() => setArchiveFormatDraft("queue")} />
+              <span><strong>Queue (one file at a time)</strong><small>No archive step; each file is downloaded individually and tracked in the Transfer Queue.</small></span>
             </label>
             <div className="modal-actions">
-              <button type="button" className="confirm" onClick={() => enqueueDownload(archiveFormatDraft)}>Add to Transfer Queue</button>
+              <button type="button" className="confirm" onClick={() => archiveFormatDraft === "queue" ? enqueueQueueDownload() : enqueueDownload(archiveFormatDraft)}>Add to Transfer Queue</button>
               <button type="button" onClick={() => setArchiveFormatOpen(false)}>Cancel</button>
             </div>
           </div>
@@ -3594,7 +3809,7 @@ function App() {
                   <button type="button" onClick={() => {
                     updateQueueItem(item.id, { status: "queued", detail: "Retry queued" });
                     const retryItem = { ...item, status: "queued" as const, detail: "Retry queued" };
-                    void (retryItem.kind === "download" ? runQueuedDownload(retryItem) : runQueuedUpload(retryItem));
+                    void (retryItem.kind === "download" ? runQueuedDownload(retryItem) : retryItem.kind === "download-set" ? runQueuedDownloadSet(retryItem) : runQueuedUpload(retryItem));
                   }}>Retry</button>
                 )}
               </div>
