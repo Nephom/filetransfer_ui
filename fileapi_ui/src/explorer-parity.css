@@ -144,6 +144,69 @@ select:hover, select:focus { border-color: #47cdf1; outline: none; }
 .modal { width: min(900px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; box-shadow: 0 24px 70px rgba(0, 0, 0, .58); }
 .sessions-modal { width: min(980px, calc(100vw - 48px)); }
 
+/* Desktop buttons inherit the dark palette; semantic variants only opt into emphasis. */
+:where(.explorer) button {
+  border-color: #315b7e;
+  color: #d9eafa;
+  background: #102d49;
+}
+:where(.explorer) button:hover:not(:disabled) {
+  border-color: #47cdf1;
+  color: #ffffff;
+  background: #173e5f;
+}
+:where(.explorer) button:focus-visible {
+  outline: 2px solid #6be5ff;
+  outline-offset: 2px;
+}
+:where(.explorer) button:disabled {
+  border-color: #284966;
+  color: #66839d;
+  background: #0b2137;
+}
+:where(.explorer) button.confirm {
+  border-color: #43c9ed;
+  color: #ffffff;
+  background: linear-gradient(135deg, #1477c9, #168bb9);
+  box-shadow: 0 0 14px rgba(37, 185, 231, .16);
+}
+:where(.explorer) button.confirm:hover:not(:disabled) {
+  border-color: #8beaff;
+  background: linear-gradient(135deg, #1989df, #1aa7d1);
+}
+:where(.explorer) button.danger,
+:where(.explorer) button.session-delete {
+  border-color: #813847;
+  color: #ffb8ae;
+  background: #3b1d28;
+}
+:where(.explorer) button.danger:hover:not(:disabled),
+:where(.explorer) button.session-delete:hover:not(:disabled) {
+  border-color: #c55a68;
+  color: #ffe3df;
+  background: #542331;
+}
+:where(.explorer) button.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+:where(.explorer) .session-ssh-fields > button.confirm {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+:where(.explorer) .palette-select-menu button:hover,
+:where(.explorer) .palette-select-menu button:focus-visible {
+  border-color: #47cdf1;
+  color: #ffffff;
+  background: #1f5d7d;
+  font-weight: 700;
+}
+:where(.explorer) .palette-select-menu button.selected {
+  color: #9be8ff;
+  background: #174565;
+  font-weight: 600;
+}
+
 /* Keep actions inside the dark desktop surfaces instead of falling back to the global light button. */
 .modal-actions,
 .ssh-entry-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }

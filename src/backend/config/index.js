@@ -430,8 +430,11 @@ class ConfigManager {
    * @returns {Promise<void>}
    */
   async save() {
+    let tempFile;
     try {
       const configFile = this.options.configFile || './src/config.ini';
+      tempFile = `${configFile}.${process.pid}.tmp`;
+      let content;
 
       if (configFile.endsWith('.ini')) {
         // Build INI content with proper formatting and comments
@@ -519,14 +522,18 @@ class ConfigManager {
         iniContent += '# Automatically generate certificates on first run (default: false)\n';
         iniContent += `autoGenerateCerts=${this.config.ssl?.autoGenerateCerts === true ? 'true' : 'false'}\n`;
 
-        await fs.writeFile(configFile, iniContent, 'utf8');
+        content = iniContent;
       } else {
         // Save as JSON
-        await fs.writeFile(configFile, JSON.stringify(this.config, null, 2), 'utf8');
+        content = JSON.stringify(this.config, null, 2);
       }
+
+      await fs.writeFile(tempFile, content, 'utf8');
+      await fs.rename(tempFile, configFile);
 
       systemLogger.logSystem('INFO', `Configuration saved to ${configFile}`);
     } catch (error) {
+      if (tempFile) await fs.rm(tempFile, { force: true }).catch(() => {});
       systemLogger.logSystem('ERROR', `Error saving configuration: ${error.message}`);
       throw new Error('Failed to save configuration');
     }
