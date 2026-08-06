@@ -1310,9 +1310,11 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
 // Archive endpoint - create zip of multiple files/folders
 app.post('/api/archive', authenticate, async (req, res) => {
   let archiveFileName = 'archive.zip';
+  let archiveFormat = 'zip';
   let items = [];
   try {
-    ({ items, currentPath = '' } = req.body);
+    ({ items, currentPath = '', format = 'zip' } = req.body);
+    archiveFormat = format === 'tar.gz' ? 'tar.gz' : 'zip';
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Items array is required' });
@@ -1337,7 +1339,7 @@ app.post('/api/archive', authenticate, async (req, res) => {
     // Determine archive filename based on selection
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const sanitizeName = (name) => name.replace(/[\r\n]/g, '').trim();
-    archiveFileName = `archive_${timestamp}.zip`;
+    archiveFileName = `archive_${timestamp}.${archiveFormat}`;
 
     if (items.length === 1) {
       const singleItem = items[0];
@@ -1345,9 +1347,10 @@ app.post('/api/archive', authenticate, async (req, res) => {
       const baseName = safeName.replace(/[\\/]/g, '');
 
       if (singleItem.isDirectory) {
-        archiveFileName = `${baseName}.zip`;
+        archiveFileName = `${baseName}.${archiveFormat}`;
       } else {
-        archiveFileName = baseName.toLowerCase().endsWith('.zip') ? baseName : `${baseName}.zip`;
+        const extension = archiveFormat === 'tar.gz' ? '.tar.gz' : '.zip';
+        archiveFileName = baseName.toLowerCase().endsWith(extension) ? baseName : `${baseName}${extension}`;
       }
     }
 
@@ -1362,14 +1365,13 @@ app.post('/api/archive', authenticate, async (req, res) => {
       }
     }
 
-    // Set response headers for zip download
-    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Type', archiveFormat === 'tar.gz' ? 'application/gzip' : 'application/zip');
     res.setHeader('Content-Disposition', `attachment; filename="${archiveFileName}"`);
 
     // Create archiver instance
-    const archive = archiver('zip', {
-      zlib: { level: 9 } // Maximum compression
-    });
+    const archive = archiveFormat === 'tar.gz'
+      ? archiver('tar', { gzip: true, gzipOptions: { level: 9 } })
+      : archiver('zip', { zlib: { level: 9 } });
 
     // Pipe archive to response
     archive.pipe(res);
@@ -1424,12 +1426,14 @@ app.post('/api/archive', authenticate, async (req, res) => {
     // Log successful archive download
     systemLogger.logDownload(archiveFileName, 'archive', true, req, {
       fileCount: items.length,
+      format: archiveFormat,
       size: totalArchiveSize
     });
 
   } catch (error) {
     systemLogger.logDownload(archiveFileName || 'archive.zip', 'archive', false, req, {
       fileCount: items?.length || 0,
+      format: archiveFormat,
       error: error.message
     });
     if (!res.headersSent) {

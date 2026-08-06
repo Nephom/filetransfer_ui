@@ -318,10 +318,10 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 const file = items[0]; const response = await fetch(`/api/files/download/${encodeURIComponent(file.path)}`, { headers: authHeaders });
                 if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Download failed.'); downloadBlob(await response.blob(), file.name);
             } else {
-                const response = await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath }) });
+                const response = await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath, format: 'tar.gz' }) });
                 if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Archive download failed.');
                 const disposition = response.headers.get('Content-Disposition') || ''; const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
-                downloadBlob(await response.blob(), match ? decodeURIComponent(match[1]) : 'archive.zip');
+                downloadBlob(await response.blob(), match ? decodeURIComponent(match[1]) : 'archive.tar.gz');
             }
             showSuccess('Download started in your browser.');
         } catch (requestError) { setTransferStatus(''); setError(requestError.message); }
