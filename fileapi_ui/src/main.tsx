@@ -557,6 +557,9 @@ function App() {
   const [uploadSessionId, setUploadSessionId] = useState("");
   const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [uploadDestinationOpen, setUploadDestinationOpen] = useState(false);
+  const [uploadDestinationPath, setUploadDestinationPath] = useState("");
+  const [uploadDestinationSessionId, setUploadDestinationSessionId] = useState("");
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerTitle, setViewerTitle] = useState("");
   const [viewerContent, setViewerContent] = useState("");
@@ -682,7 +685,17 @@ function App() {
   }, [columnWidths]);
 
   useEffect(() => {
-    if (!splitMode || !localPath) return;
+    if (!splitMode) return;
+    if (!localPath) {
+      void run(async () => {
+        try {
+          await loadLocalFiles("Desktop");
+        } catch {
+          await loadLocalFiles("");
+        }
+      });
+      return;
+    }
     const refreshTimer = window.setInterval(() => {
       void refreshLocalFiles().catch((error) => {
         setNotice(error instanceof Error ? error.message : String(error));
@@ -899,6 +912,21 @@ function App() {
       method: init.method || "GET",
       headers: Array.from(headers.entries()),
       body,
+      ignoreTlsErrors: session.ignoreTlsErrors,
+    });
+    return new ApiResponse(response.status, response.body);
+  };
+
+  const apiForLocation = async (endpoint: string, locationId: string) => {
+    const headers: [string, string][] = [
+      ...(session.token ? [["Authorization", `Bearer ${session.token}`] as [string, string]] : []),
+      ["X-Location-ID", locationId],
+    ];
+    const response = await invoke<NativeApiResponse>("api_request", {
+      url: `${serverUrl(session)}${endpoint}`,
+      method: "GET",
+      headers,
+      body: null,
       ignoreTlsErrors: session.ignoreTlsErrors,
     });
     return new ApiResponse(response.status, response.body);
@@ -1710,26 +1738,38 @@ function App() {
       }
       throw new Error("Upload progress timed out.");
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
       updateQueueItem(item.id, {
         status: "failed",
-        detail: error instanceof Error ? error.message : String(error),
+        detail,
       });
-      writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "Upload failed.");
+      writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Upload failed: ${detail}`);
     }
   };
 
-  const uploadSavedLog = () => {
-    const managedSession = managedSessions.find((item) => item.id === uploadSessionId);
+  const findDefaultRemoteUploadPath = async (locationId: string) => {
+    const rootResponse = await apiForLocation("/api/files?path=", locationId);
+    if (!rootResponse.ok) throw new Error(await readError(rootResponse));
+    const root = await rootResponse.json() as { files?: FileItem[] };
+    const personal = (root.files || []).find((file) => file.isDirectory && file.name.toLowerCase() === "personal");
+    if (!personal) return "";
+    const personalResponse = await apiForLocation(`/api/files?path=${encodeURIComponent(personal.path)}`, locationId);
+    if (!personalResponse.ok) return personal.path;
+    const personalData = await personalResponse.json() as { files?: FileItem[] };
+    const username = session.username.trim().toLowerCase();
+    const userFolder = username
+      ? (personalData.files || []).find((file) => file.isDirectory && file.name.toLowerCase() === username)
+      : undefined;
+    return userFolder?.path || personal.path;
+  };
+
+  const queueSavedLogUpload = (destinationPath: string) => {
+    const managedSession = managedSessions.find((item) => item.id === uploadDestinationSessionId);
     const sxpEntry = managedSession?.sxpEntries[0];
     const destination = sxpEntry && {
-      path: sxpEntry.remotePath,
       locationId: sxpEntry.locationId,
       locationName: sxpEntry.locationName,
     };
-    if (!savedLogPaths.length) {
-      setNotice("Save the completed SSH log package before uploading it.");
-      return;
-    }
     if (!destination?.locationId) {
       setNotice("Select a Session with an API Remote destination before uploading the log.");
       setQueueOpen(true);
@@ -1740,15 +1780,36 @@ function App() {
       id,
       label: "SSH log package",
       paths: savedLogPaths,
-      destinationPath: destination.path,
+      destinationPath,
       locationId: destination.locationId,
       locationName: destination.locationName || destination.locationId,
       status: "queued",
       detail: "Waiting to start",
     };
+    setUploadDestinationOpen(false);
     setTransferQueue((current) => [...current, item]);
     setQueueOpen(true);
     void runQueuedUpload(item);
+  };
+
+  const uploadSavedLog = () => {
+    const managedSession = managedSessions.find((item) => item.id === uploadSessionId);
+    const sxpEntry = managedSession?.sxpEntries[0];
+    if (!savedLogPaths.length) {
+      setNotice("Save the completed SSH log package before uploading it.");
+      return;
+    }
+    if (!sxpEntry?.locationId) {
+      setNotice("Select a Session with an API Remote destination before uploading the log.");
+      setQueueOpen(true);
+      return;
+    }
+    setUploadDestinationSessionId(uploadSessionId);
+    void run(async () => {
+      const defaultPath = sxpEntry.remotePath || await findDefaultRemoteUploadPath(sxpEntry.locationId);
+      setUploadDestinationPath(defaultPath);
+      setUploadDestinationOpen(true);
+    });
   };
 
   const refreshStorageInfo = () => {
@@ -3407,6 +3468,26 @@ function App() {
         <button className="terminal-restore" onClick={() => setTerminalOpen(true)} aria-label="Restore terminal">
           Terminal ⌃
         </button>
+      )}
+      {uploadDestinationOpen && (
+        <div className="modal-cover" onMouseDown={() => setUploadDestinationOpen(false)}>
+          <div className="modal destination-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <h2>Upload Log destination</h2>
+            <p className="muted">Choose the API Remote folder for this log package. The default is Personal/{session.username || "username"} when available.</p>
+            <label>
+              Remote folder path
+              <input
+                value={uploadDestinationPath}
+                onChange={(event) => setUploadDestinationPath(event.target.value.replace(/^\/+/, ""))}
+                placeholder="Personal/username"
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="confirm" onClick={() => queueSavedLogUpload(uploadDestinationPath.trim())}>Upload here</button>
+              <button type="button" onClick={() => setUploadDestinationOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
       )}
       {queueOpen && (
         <div className="modal-cover" onMouseDown={() => setQueueOpen(false)}>
