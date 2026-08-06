@@ -294,11 +294,13 @@ function PaletteSelect({
   value,
   options,
   onChange,
+  menuPlacement = "down",
 }: {
   label: string;
   value: string;
   options: Array<{ value: string; label: string }>;
   onChange: (value: string) => void;
+  menuPlacement?: "down" | "up";
 }) {
   const [open, setOpen] = useState(false);
   const controlRef = useRef<HTMLDivElement>(null);
@@ -326,7 +328,7 @@ function PaletteSelect({
         <span className="location-chevron">⌄</span>
       </button>
       {open && (
-        <div className="location-menu palette-select-menu" role="listbox" aria-label={label}>
+        <div className={`location-menu palette-select-menu ${menuPlacement === "up" ? "menu-up" : ""}`} role="listbox" aria-label={label}>
           {options.map((option) => (
             <button
               type="button"
@@ -449,6 +451,8 @@ function App() {
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [saveLogNameOpen, setSaveLogNameOpen] = useState(false);
+  const [saveLogNameDraft, setSaveLogNameDraft] = useState("");
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
@@ -1537,6 +1541,7 @@ function App() {
   const saveSshLogs = () => {
     const tab = activeSshTab;
     const profile = managedSessions.find((item) => item.id === tab?.workspaceId)?.sshEntries.find((item) => item.id === tab?.sshEntryId);
+    const logName = saveLogNameDraft.trim();
     if (tab?.recording) {
       setNotice("Stop the SSH recording before saving the log package.");
       return;
@@ -1545,8 +1550,12 @@ function App() {
       setNotice("There is no completed SSH recording to save.");
       return;
     }
+    if (!logName) {
+      setNotice("Enter a name for the SSH log package.");
+      return;
+    }
     const metadata = JSON.stringify({
-      profileName: profile.name,
+           profileName: logName,
       host: profile.host,
       startedAt: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null,
       endedAt: new Date().toISOString(),
@@ -1569,14 +1578,22 @@ function App() {
          void invoke("append_operation_log", {
            operation: "save_ssh_log",
            status: "completed",
-           sourceLabel: profile.name,
+           sourceLabel: logName,
            destinationLabel: "Downloads",
            detail: "SSH output recording package saved.",
          });
        }
+       setSaveLogNameOpen(false);
        notify(`Saved SSH logs to ${paths.raw}`);
-     });
-   };
+      });
+    };
+
+  const openSaveLogDialog = () => {
+    if (!recordingHasOutput || recording) return;
+    const profile = managedSessions.find((item) => item.id === activeSshTab?.workspaceId)?.sshEntries.find((item) => item.id === activeSshTab?.sshEntryId);
+    setSaveLogNameDraft(profile?.name || "SSH session");
+    setSaveLogNameOpen(true);
+  };
 
   const writeOperationLog = (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string) => {
     if (!desktopSettings.operationLogEnabled) return;
@@ -2883,6 +2900,32 @@ function App() {
           </div>
          </div>
        )}
+       {saveLogNameOpen && (
+         <div className="modal-cover" onMouseDown={() => setSaveLogNameOpen(false)}>
+           <div className="modal log-name-modal" onMouseDown={(event) => event.stopPropagation()}>
+             <h2>Name SSH log package</h2>
+             <p>Choose the base name for the raw output, text, command, and metadata files. The application removes unsafe filename characters and adds the file extensions automatically.</p>
+             <form onSubmit={(event) => { event.preventDefault(); saveSshLogs(); }}>
+               <label>
+                 Log name
+                 <input
+                   autoFocus
+                   value={saveLogNameDraft}
+                   onChange={(event) => setSaveLogNameDraft(event.target.value)}
+                   placeholder="Production console 2026-08-06"
+                   maxLength={120}
+                   required
+                 />
+               </label>
+               <small className="field-help">Files will be saved under the current user&apos;s Downloads folder.</small>
+               <div className="modal-actions">
+                 <button type="button" onClick={() => setSaveLogNameOpen(false)}>Cancel</button>
+                 <button className="confirm" type="submit">Save Log</button>
+               </div>
+             </form>
+           </div>
+         </div>
+       )}
        {settingsOpen && (
          <div className="modal-cover" onMouseDown={() => setSettingsOpen(false)}>
            <div className="modal settings-modal" onMouseDown={(event) => event.stopPropagation()}>
@@ -3163,16 +3206,17 @@ function App() {
                     ) : (
                       <button className="danger" onClick={stopRecording}>Stop Recording</button>
                     )}
-                     <button disabled={recording || !recordingHasOutput} onClick={saveSshLogs}>Save Log</button>
+                     <button disabled={recording || !recordingHasOutput} onClick={openSaveLogDialog}>Save Log</button>
                      <span className="recording-log-location">Saved logs: current user&apos;s Downloads folder</span>
                     <div className="upload-session-select">
                       <span>Destination Session</span>
                       <PaletteSelect
                         label="Select Session"
                         value={uploadSessionId}
-                        options={managedSessions.map((managedSession) => ({ value: managedSession.id, label: managedSession.name }))}
-                        onChange={setUploadSessionId}
-                      />
+                       options={managedSessions.map((managedSession) => ({ value: managedSession.id, label: managedSession.name }))}
+                       onChange={setUploadSessionId}
+                       menuPlacement="up"
+                     />
                      </div>
                      <button disabled={!savedLogPaths.length || recording} onClick={uploadSavedLog}>Upload Log</button>
                      {savedLogPaths.length > 0 && <details className="saved-log-paths"><summary>Saved log files</summary>{savedLogPaths.map((savedPath) => <code key={savedPath}>{savedPath}</code>)}</details>}
