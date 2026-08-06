@@ -29,31 +29,130 @@ function Require-Command {
     }
 }
 
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Update-EnvironmentPath {
+    # Freshly installed tools (git/node/rustup/...) update the Machine and/or
+    # User registry PATH, but the *current* PowerShell process keeps its
+    # original $env:Path until something refreshes it. Rebuild it from every
+    # scope so newly installed commands are immediately discoverable in this
+    # same script run, without dropping whatever the process already had.
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $entries = @($machinePath, $userPath, $env:Path) |
+        Where-Object { $_ } |
+        ForEach-Object { $_ -split ";" } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $env:Path = ($entries | Select-Object -Unique) -join ";"
+}
+
 function Install-WingetPackage {
-    param([Parameter(Mandatory = $true)][string]$Id)
+    param(
+        [Parameter(Mandatory = $true)][string]$Id,
+        [string]$Override
+    )
 
     Require-Command "winget"
     Write-Host "Installing Windows build prerequisite: $Id"
-    Invoke-Native "winget" @(
+    $wingetArgs = @(
         "install", "--id", $Id, "--exact",
         "--accept-source-agreements", "--accept-package-agreements"
     )
+    if (-not [string]::IsNullOrWhiteSpace($Proxy)) { $wingetArgs += @("--proxy", $Proxy) }
+    if (-not [string]::IsNullOrWhiteSpace($Override)) { $wingetArgs += @("--override", $Override) }
+    Invoke-Native "winget" $wingetArgs
+    Update-EnvironmentPath
+}
+
+function Test-MsvcBuildTools {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path -LiteralPath $vswhere)) { return $false }
+    $installationPath = & $vswhere -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath 2>$null
+    return -not [string]::IsNullOrWhiteSpace($installationPath)
+}
+
+function Ensure-MsvcBuildTools {
+    # Rust cannot link native binaries on Windows without the MSVC linker
+    # (link.exe) and Windows SDK, which only ship with Visual Studio /
+    # Build Tools. This is the most common "it built on my machine but not
+    # on a fresh Windows box" failure for cargo/Tauri builds.
+    if (Test-MsvcBuildTools) {
+        Write-Host "MSVC C++ Build Tools found."
+        return
+    }
+
+    Write-Host "MSVC C++ Build Tools not found. Rust/Tauri cannot link native binaries without them."
+    Write-Host "Installing Visual Studio Build Tools (C++ workload) via winget. This can take 10-20 minutes..."
+    Install-WingetPackage -Id "Microsoft.VisualStudio.2022.BuildTools" `
+        -Override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+
+    if (-not (Test-MsvcBuildTools)) {
+        throw "MSVC C++ Build Tools installation did not complete. Open 'Visual Studio Installer' and add the 'Desktop development with C++' workload manually, then re-run '.\build.ps1 build'."
+    }
+    Write-Host "MSVC C++ Build Tools are ready."
+}
+
+function Ensure-WebView2Runtime {
+    # Required to *run* the built app (Tauri renders through WebView2), not
+    # strictly to build it. Ships with modern Edge/Windows 11 but can be
+    # missing on Windows Server / stripped-down images, so provision it
+    # best-effort and never fail the build over it.
+    $webview2Keys = @(
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+    )
+    if (Get-ItemProperty -Path $webview2Keys -ErrorAction SilentlyContinue) {
+        Write-Host "Microsoft Edge WebView2 Runtime found."
+        return
+    }
+    if (-not (Get-Command "winget" -ErrorAction SilentlyContinue)) { return }
+
+    Write-Host "Microsoft Edge WebView2 Runtime not detected. Installing (required to run the built app)..."
+    try {
+        Install-WingetPackage -Id "Microsoft.EdgeWebView2Runtime"
+    }
+    catch {
+        Write-Warning "Could not install Microsoft Edge WebView2 Runtime automatically. Install it manually before running the built app: https://developer.microsoft.com/microsoft-edge/webview2/"
+    }
+}
+
+function Ensure-RustToolchain {
+    if (-not (Get-Command "rustup" -ErrorAction SilentlyContinue)) {
+        Write-Host "rustup not found on PATH; assuming an existing Rust toolchain is already configured."
+        return
+    }
+    Invoke-Native "rustup" @("default", "stable-x86_64-pc-windows-msvc")
+    Invoke-Native "rustup" @("target", "add", "x86_64-pc-windows-msvc")
 }
 
 function Ensure-WindowsBuildTools {
-    if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) {
-        Install-WingetPackage "Git.Git"
-    }
-    if (-not (Get-Command "node" -ErrorAction SilentlyContinue) -or -not (Get-Command "npm.cmd" -ErrorAction SilentlyContinue)) {
-        Install-WingetPackage "OpenJS.NodeJS.LTS"
-    }
-    if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue) -or -not (Get-Command "rustc" -ErrorAction SilentlyContinue)) {
-        Install-WingetPackage "Rustlang.Rustup"
+    Update-EnvironmentPath
+
+    if (-not (Test-IsAdministrator)) {
+        Write-Warning "Not running as Administrator. If Visual Studio Build Tools or WebView2 Runtime need to be installed, re-run this script from an elevated PowerShell session (Run as Administrator) if winget reports permission errors."
     }
 
-    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($machinePath -and $userPath) { $env:Path = "$machinePath;$userPath" }
+    if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) {
+        Install-WingetPackage -Id "Git.Git"
+    }
+    if (-not (Get-Command "node" -ErrorAction SilentlyContinue) -or -not (Get-Command "npm.cmd" -ErrorAction SilentlyContinue)) {
+        Install-WingetPackage -Id "OpenJS.NodeJS.LTS"
+    }
+    if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue) -or -not (Get-Command "rustc" -ErrorAction SilentlyContinue)) {
+        Install-WingetPackage -Id "Rustlang.Rustup"
+    }
+
+    Ensure-RustToolchain
+    Ensure-MsvcBuildTools
+    Ensure-WebView2Runtime
+
+    Update-EnvironmentPath
     Write-Host "Windows build prerequisites are ready."
 }
 
@@ -91,6 +190,7 @@ function Get-AppVersion {
 }
 
 function Build-Desktop {
+    Write-Host "Building File Transfer Desktop v$(Get-AppVersion) for Windows..."
     Install-DesktopDependencies
     Invoke-Native "npm.cmd" @("run", "build", "--prefix", $DesktopRoot)
     Push-Location (Join-Path $DesktopRoot "src-tauri")
@@ -98,8 +198,28 @@ function Build-Desktop {
     finally { Pop-Location }
 
     Invoke-Native "npm.cmd" @("run", "tauri", "build", "--prefix", $DesktopRoot, "--", "--bundles", "nsis")
-    Write-Host "Portable EXE: $DesktopRoot\src-tauri\target\release\fileapi-desktop.exe"
-    Write-Host "NSIS package: $DesktopRoot\src-tauri\target\release\bundle\nsis\File Transfer Desktop_$(Get-AppVersion)_x64-setup.exe"
+
+    # Report whatever Tauri actually produced instead of guessing the
+    # installer filename (it embeds the app version, which can differ from
+    # the repo-level VERSION file and would otherwise go stale silently).
+    $releaseDir = Join-Path $DesktopRoot "src-tauri\target\release"
+    $exePath = Join-Path $releaseDir "fileapi-desktop.exe"
+    if (Test-Path -LiteralPath $exePath) {
+        Write-Host "Portable EXE: $exePath"
+    }
+    else {
+        Write-Warning "Expected EXE not found at $exePath"
+    }
+
+    $nsisDir = Join-Path $releaseDir "bundle\nsis"
+    $installer = Get-ChildItem -LiteralPath $nsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($installer) {
+        Write-Host "NSIS package: $($installer.FullName)"
+    }
+    else {
+        Write-Warning "NSIS installer not found under $nsisDir"
+    }
 }
 
 function Upgrade-Checkout {
@@ -162,12 +282,15 @@ function Show-Help {
     @"
 Usage: .\build.ps1 <build|upgrade|self-upgrade|help> [-Interactive] [-Proxy URL]
 
-build    Check Windows build tools and build the desktop Tauri package.
+build    Check/install Windows build tools (Git, Node.js, Rust, MSVC C++
+         Build Tools, WebView2 Runtime) and build the desktop Tauri package.
 upgrade  Fast-forward the checkout and update desktop dependencies.
 self-upgrade Update this PowerShell build script from the tracked upstream branch.
 
 This script is for the build machine. It may use winget to install missing
-build tools. End users only receive the generated portable EXE.
+build tools (some, like Visual Studio Build Tools, may require an elevated
+/ Administrator PowerShell session). End users only receive the generated
+portable EXE / NSIS installer.
 "@
 }
 
