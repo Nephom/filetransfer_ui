@@ -2048,7 +2048,12 @@ function App() {
     const items = selected.includes(file.path) ? selectedItems : [file];
     const preparationKey = items.map((item) => item.path).join("\0");
     const prepared = dragPreparationRef.current.get(preparationKey);
-    if (!prepared) return;
+    if (!prepared) {
+      setNotice(items.length > 1 || file.isDirectory
+        ? "The archive is still being prepared. Wait for staging to finish, then drag again."
+        : "The file is still being prepared. Wait for staging to finish, then drag again.");
+      return;
+    }
     void prepared.then((localPathForDrag) => {
       const fileUri = `file://${encodeURI(localPathForDrag)}`;
       event.dataTransfer.setData("text/uri-list", fileUri);
@@ -2065,10 +2070,11 @@ function App() {
     const preparationKey = items.map((item) => item.path).join("\0");
     if (dragPreparationRef.current.has(preparationKey)) return;
     const singleFile = items.length === 1 && !items[0].isDirectory;
+    if (!singleFile) setNotice(`Preparing tar.gz archive for ${items.length} selected item${items.length === 1 ? "" : "s"}...`);
     const headers: [string, string][] = session.token
       ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : []), ...(singleFile ? [] : [["Content-Type", "application/json"] as [string, string]])]
       : [];
-    const preparation = invoke<string>("download_to_disk", {
+    const preparation = invoke<string>("download_to_drag_staging", {
       url: singleFile
         ? `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`
         : `${serverUrl(session)}/api/archive`,
