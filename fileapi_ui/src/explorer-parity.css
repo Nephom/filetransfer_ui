@@ -78,13 +78,16 @@
 .terminal-placeholder { align-items: flex-start; justify-content: center; color: #a8c0d8; }
 .terminal-placeholder p { margin: 0; }
 .terminal-inline-note { margin: 0; color: #91a9c0; font-size: 12px; }
-.ssh-terminal-content { gap: 8px; }
-.ssh-controls { display: flex; align-items: end; gap: 8px; flex-wrap: wrap; }
+.ssh-terminal-content { gap: 5px; }
+.ssh-controls { display: flex; align-items: end; gap: 5px; flex-wrap: wrap; }
+.ssh-controls .palette-select-control { min-width: 165px; }
+.ssh-controls .palette-select { padding: 5px 7px; font-size: 12px; }
 .ssh-controls label { min-width: 220px; margin: 0; }
 .palette-select-control { position: relative; min-width: 220px; }
 .palette-select { width: 100%; min-width: 0; max-width: none; padding: 8px; border: 1px solid #315b7e; border-radius: 4px; background: #0b2137; font-size: 13px; font-weight: 400; }
 .palette-select:hover { border-color: #47cdf1; background: #133b5b; }
 .palette-select-menu { top: calc(100% + 5px); right: 0; left: 0; min-width: 100%; max-width: none; }
+.palette-select-menu.menu-up { top: auto; bottom: calc(100% + 5px); max-height: 180px; overflow-y: auto; }
 .ssh-controls select, .ssh-profile-form input { width: 100%; margin-top: 5px; padding: 8px; color: #e6eefc; background: #091b2d; border: 1px solid #315b7e; border-radius: 4px; }
 .ssh-output { flex: 1; min-height: 80px; overflow: auto; margin: 0; padding: 12px; color: #d9eafa; background: #020a12; border: 1px solid #254764; white-space: pre-wrap; font: 13px/1.45 monospace; }
 .ssh-profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; overflow: auto; }
@@ -116,6 +119,9 @@
 .recording-log-location { color: #91a9c0; font-size: 11px; }
 .saved-log-paths { display: grid; gap: 3px; flex-basis: 100%; color: #9be8ff; font-size: 11px; }
 .saved-log-paths code { color: #91a9c0; overflow-wrap: anywhere; }
+.log-name-modal { width: min(520px, calc(100vw - 32px)); }
+.log-name-modal p { color: #a8c0d8; line-height: 1.5; }
+.log-name-modal input { width: 100%; margin-top: 5px; padding: 8px; color: #e6eefc; background: #091b2d; border: 1px solid #315b7e; border-radius: 4px; }
 .terminal-restore { order: 10; flex: 0 0 28px; width: 100%; padding: 4px; border: 0; border-top: 1px solid #315b7e; border-radius: 0; color: #91a9c0; background: #091a2b; }
 .explorer > .statusbar { order: 20; }
 .terminal-restore:hover { color: #e6eefc; background: #102d49; }
