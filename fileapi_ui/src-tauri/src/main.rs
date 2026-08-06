@@ -786,15 +786,7 @@ fn save_ssh_logs(
 }
 
 fn validate_local_user_path(path: &str) -> Result<std::path::PathBuf, String> {
-    let home = local_home()?;
-    let candidate = std::path::Path::new(path);
-    let canonical = candidate
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    if !canonical.starts_with(&home) {
-        return Err("File path must remain inside the current user's home directory".to_string());
-    }
-    Ok(canonical)
+    resolve_local_transfer_path(path)
 }
 
 #[tauri::command]

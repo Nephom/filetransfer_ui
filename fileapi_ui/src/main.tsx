@@ -3474,6 +3474,24 @@ function App() {
         >
           Upload
         </button>
+        {splitMode && remoteSshEntryId && (
+          <>
+            <button
+              onClick={() => downloadRemoteItemsToLocal(selectedItems)}
+              disabled={busy || !selectedItems.length}
+              title="Download selected REMOTE items into the current LOCAL folder"
+            >
+              Download to LOCAL
+            </button>
+            <button
+              onClick={() => uploadLocalItemsToRemote(localFiles.filter((file) => localSelected.includes(file.path)), path)}
+              disabled={busy || !localSelected.length}
+              title="Upload selected LOCAL items into the current REMOTE folder"
+            >
+              Upload to REMOTE
+            </button>
+          </>
+        )}
         <button
           onClick={createFolder}
           disabled={busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir"))}
