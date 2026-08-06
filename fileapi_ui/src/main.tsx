@@ -639,6 +639,8 @@ function App() {
   const locationControl = useRef<HTMLDivElement>(null);
   const folderTreeRef = useRef<HTMLDivElement>(null);
   const fileAreaRef = useRef<HTMLDivElement>(null);
+  const dragItemsRef = useRef<FileItem[]>([]);
+  const dragSourceRef = useRef<"local" | "remote" | "">("");
   const noticeTimer = useRef<number | undefined>();
   const locationsLoaded = useRef(false);
   const locationRefreshInProgress = useRef(false);
@@ -2332,7 +2334,7 @@ function App() {
       notify(`Undone: ${entry.description}`);
     });
 
-  const moveItems = (items: FileItem[], destination: string, source = dragSource) =>
+  const moveItems = (items: FileItem[], destination: string, source = dragSourceRef.current) =>
     run(async () => {
       if (source === "local") {
         uploadLocalItemsToRemote(items, destination);
@@ -2397,6 +2399,8 @@ function App() {
   const beginDrag = (event: React.DragEvent, file: FileItem) => {
     const items = selected.includes(file.path) ? selectedItems : [file];
     if (!selected.includes(file.path)) setSelected([file.path]);
+    dragItemsRef.current = items;
+    dragSourceRef.current = "remote";
     setDragItems(items);
     setDragSource("remote");
     event.dataTransfer.effectAllowed = "move";
@@ -2405,6 +2409,8 @@ function App() {
   const beginLocalDrag = (event: React.DragEvent, file: FileItem) => {
     const items = localSelected.includes(file.path) ? localFiles.filter((item) => localSelected.includes(item.path)) : [file];
     if (!localSelected.includes(file.path)) setLocalSelected([file.path]);
+    dragItemsRef.current = items;
+    dragSourceRef.current = "local";
     setDragItems(items);
     setDragSource("local");
     event.dataTransfer.effectAllowed = "copy";
@@ -2534,6 +2540,8 @@ function App() {
   };
 
   const finishDrag = () => {
+    dragItemsRef.current = [];
+    dragSourceRef.current = "";
     setDragItems([]);
     setDragSource("");
     setDropTarget("");
@@ -2786,17 +2794,44 @@ function App() {
       if (!remoteSshEntryId || !items.length) return;
       const profile = findSshProfileById(remoteSshEntryId);
       if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-      for (const item of items) {
-        await invoke("ssh_download_path", {
-          profile,
-          remotePath: item.path,
-          isDirectory: item.isDirectory,
-          localDestinationFolder: localPath,
-        });
+      writeOperationLog(
+        "download",
+        "started",
+        `SSH: ${profile.name}`,
+        `LOCAL: ~/${localPath || ""}`,
+        `Drag-downloading ${items.length} item(s) from SSH to LOCAL.`,
+        "DEBUG",
+      );
+      try {
+        for (const item of items) {
+          await invoke("ssh_download_path", {
+            profile,
+            remotePath: item.path,
+            isDirectory: item.isDirectory,
+            localDestinationFolder: localPath,
+          });
+        }
+        finishDrag();
+        await loadLocalFiles(localPath);
+        writeOperationLog(
+          "download",
+          "completed",
+          `SSH: ${profile.name}`,
+          `LOCAL: ~/${localPath || ""}`,
+          `Drag-downloaded ${items.length} item(s) from SSH to LOCAL.`,
+        );
+        notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
+      } catch (error) {
+        writeOperationLog(
+          "download",
+          "failed",
+          `SSH: ${profile.name}`,
+          `LOCAL: ~/${localPath || ""}`,
+          `Drag download failed: ${error instanceof Error ? error.message : String(error)}`,
+          "ERROR",
+        );
+        throw error;
       }
-      finishDrag();
-      await loadLocalFiles(localPath);
-      notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
     });
 
   const uploadLocalItemsToRemote = (items: FileItem[], destination: string) =>
@@ -2804,16 +2839,43 @@ function App() {
       if (!remoteSshEntryId || !items.length) return;
       const profile = findSshProfileById(remoteSshEntryId);
       if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-      for (const item of items) {
-        await invoke("ssh_upload_path", {
-          profile,
-          localPath: item.path,
-          remoteDestinationFolder: destination,
-        });
+      writeOperationLog(
+        "upload",
+        "started",
+        `LOCAL: ~/${localPath || ""}`,
+        `SSH: ${profile.name}:${destination}`,
+        `Drag-uploading ${items.length} item(s) from LOCAL to SSH.`,
+        "DEBUG",
+      );
+      try {
+        for (const item of items) {
+          await invoke("ssh_upload_path", {
+            profile,
+            localPath: item.path,
+            remoteDestinationFolder: destination,
+          });
+        }
+        finishDrag();
+        await loadFiles(path);
+        writeOperationLog(
+          "upload",
+          "completed",
+          `LOCAL: ~/${localPath || ""}`,
+          `SSH: ${profile.name}:${destination}`,
+          `Drag-uploaded ${items.length} item(s) from LOCAL to SSH.`,
+        );
+        notify(`Uploaded ${items.length} item${items.length === 1 ? "" : "s"} to REMOTE.`);
+      } catch (error) {
+        writeOperationLog(
+          "upload",
+          "failed",
+          `LOCAL: ~/${localPath || ""}`,
+          `SSH: ${profile.name}:${destination}`,
+          `Drag upload failed: ${error instanceof Error ? error.message : String(error)}`,
+          "ERROR",
+        );
+        throw error;
       }
-      finishDrag();
-      await loadFiles(path);
-      notify(`Uploaded ${items.length} item${items.length === 1 ? "" : "s"} to REMOTE.`);
     });
 
   const upload = async () =>
@@ -3017,8 +3079,8 @@ function App() {
           event.preventDefault();
           event.stopPropagation();
           stopDragAutoScroll();
-          const items = dragItems;
-          const source = dragSource;
+          const items = dragItemsRef.current;
+          const source = dragSourceRef.current;
           finishDrag();
           void moveItems(items, node.path, source);
         }}
@@ -3127,7 +3189,7 @@ function App() {
           if (dragSource === "remote" && remoteSshEntryId) {
             event.preventDefault();
             event.stopPropagation();
-            downloadRemoteItemsToLocal(dragItems);
+            downloadRemoteItemsToLocal(dragItemsRef.current);
           }
         }}
       >
@@ -3686,7 +3748,7 @@ function App() {
                 if (dragSource === "local" && remoteSshEntryId) {
                   event.preventDefault();
                   event.stopPropagation();
-                  const items = dragItems;
+                  const items = dragItemsRef.current;
                   uploadLocalItemsToRemote(items, path);
                 }
               }}
@@ -3733,8 +3795,8 @@ function App() {
                       if (file.isDirectory) {
                         event.preventDefault();
                         event.stopPropagation();
-                        const items = dragItems;
-                        const source = dragSource;
+                        const items = dragItemsRef.current;
+                        const source = dragSourceRef.current;
                         finishDrag();
                         void moveItems(items, file.path, source);
                       }
@@ -3813,8 +3875,8 @@ function App() {
                         if (file.isDirectory) {
                           event.preventDefault();
                           event.stopPropagation();
-                          const items = dragItems;
-                          const source = dragSource;
+                          const items = dragItemsRef.current;
+                          const source = dragSourceRef.current;
                           finishDrag();
                           void moveItems(items, file.path, source);
                         }
