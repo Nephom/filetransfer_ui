@@ -87,6 +87,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const [dropTarget, setDropTarget] = React.useState(null);
     const [fileDropTarget, setFileDropTarget] = React.useState(null);
     const [viewMode, setViewMode] = React.useState(() => localStorage.getItem('file-view-mode') || 'details');
+    const [archiveFormat, setArchiveFormat] = React.useState(() => localStorage.getItem('archive-format') || 'tar.gz');
     const [accountOpen, setAccountOpen] = React.useState(false);
     const inputRef = React.useRef(null);
     const accountRef = React.useRef(null);
@@ -232,6 +233,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
         window.clearTimeout(notificationTimer.current);
     }, []);
     React.useEffect(() => { localStorage.setItem('file-view-mode', viewMode); }, [viewMode]);
+    React.useEffect(() => { localStorage.setItem('archive-format', archiveFormat); }, [archiveFormat]);
 
     const activeLocation = locations.find((location) => location.id === locationId);
     const hasCapability = (capability) => activeLocation?.capabilities?.includes(capability) === true;
@@ -318,10 +320,10 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 const file = items[0]; const response = await fetch(`/api/files/download/${encodeURIComponent(file.path)}`, { headers: authHeaders });
                 if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Download failed.'); downloadBlob(await response.blob(), file.name);
             } else {
-                const response = await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath, format: 'tar.gz' }) });
+                const response = await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath, format: archiveFormat }) });
                 if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Archive download failed.');
                 const disposition = response.headers.get('Content-Disposition') || ''; const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
-                downloadBlob(await response.blob(), match ? decodeURIComponent(match[1]) : 'archive.tar.gz');
+                downloadBlob(await response.blob(), match ? decodeURIComponent(match[1]) : `archive.${archiveFormat}`);
             }
             showSuccess('Download started in your browser.');
         } catch (requestError) { setTransferStatus(''); setError(requestError.message); }
@@ -524,7 +526,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
          <nav className="commandbar">
              <button className="primary" disabled={!hasCapability('upload')} onClick={() => inputRef.current.click()}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} />
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
-             <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={() => download()}>{downloading ? 'Preparing download...' : 'Download'}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
+              <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={() => download()}>{downloading ? 'Preparing download...' : 'Download'}</button><label className="archive-format-control">Archive<select value={archiveFormat} onChange={(event) => setArchiveFormat(event.target.value)}><option value="tar.gz">tar.gz</option><option value="zip">zip</option></select></label><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
              <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
              <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
         </nav>

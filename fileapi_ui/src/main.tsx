@@ -120,7 +120,7 @@ type TransferQueueItem = {
   downloadHeaders?: [string, string][];
   downloadBody?: number[];
   downloadFileName?: string;
-  archiveFormat?: "tar.gz";
+  archiveFormat?: "tar.gz" | "zip";
 };
 type DesktopSettings = {
   uiDensity: "auto" | "compact" | "standard" | "comfortable";
@@ -571,6 +571,8 @@ function App() {
   const [uploadSessionId, setUploadSessionId] = useState("");
   const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [archiveFormatOpen, setArchiveFormatOpen] = useState(false);
+  const [archiveFormatDraft, setArchiveFormatDraft] = useState<"tar.gz" | "zip">("tar.gz");
   const [uploadDestinationOpen, setUploadDestinationOpen] = useState(false);
   const [uploadDestinationPath, setUploadDestinationPath] = useState("");
   const [uploadDestinationSessionId, setUploadDestinationSessionId] = useState("");
@@ -1788,11 +1790,11 @@ function App() {
 
   const runQueuedDownload = async (item: TransferQueueItem) => {
     writeOperationLog("download", "started", item.label, "Local Downloads", "Transfer queue download started.", "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? "Preparing tar.gz archive..." : "Downloading..." });
+    updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? `Preparing ${item.archiveFormat} archive...` : "Downloading..." });
     try {
       if (item.archiveFormat) {
         await new Promise((resolve) => window.setTimeout(resolve, 100));
-        updateQueueItem(item.id, { detail: "Streaming tar.gz download..." });
+        updateQueueItem(item.id, { detail: `Streaming ${item.archiveFormat} download...` });
       }
       const destination = await invoke<string>("download_to_disk", {
         url: item.downloadUrl,
@@ -2089,10 +2091,10 @@ function App() {
     setDropTarget("");
   };
 
-  const download = () => {
+  const enqueueDownload = (archiveFormat: "tar.gz" | "zip") => {
     if (!selectedItems.length) return;
     const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
-    const fileName = singleFile ? selectedItems[0].name : "archive.tar.gz";
+    const fileName = singleFile ? selectedItems[0].name : `archive.${archiveFormat}`;
     const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
     const headers: [string, string][] = session.token
       ? [
@@ -2105,7 +2107,7 @@ function App() {
       items: selectedItems.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
       currentPath: path,
       locationId: session.locationId,
-      format: "tar.gz",
+      format: archiveFormat,
     })));
     const item: TransferQueueItem = {
       id,
@@ -2124,11 +2126,23 @@ function App() {
       downloadHeaders: headers,
       downloadBody: body,
       downloadFileName: fileName,
-      archiveFormat: singleFile ? undefined : "tar.gz",
+       archiveFormat: singleFile ? undefined : archiveFormat,
     };
+    setArchiveFormatOpen(false);
     setTransferQueue((current) => [...current, item]);
     setQueueOpen(true);
     void runQueuedDownload(item);
+  };
+
+  const download = () => {
+    if (!selectedItems.length) return;
+    const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
+    if (!singleFile) {
+      setArchiveFormatDraft("tar.gz");
+      setArchiveFormatOpen(true);
+      return;
+    }
+    enqueueDownload("tar.gz");
   };
 
   const openLocalViewer = (filePath: string) =>
@@ -3518,6 +3532,26 @@ function App() {
         <button className="terminal-restore" onClick={() => setTerminalOpen(true)} aria-label="Restore terminal">
           Terminal ⌃
         </button>
+      )}
+      {archiveFormatOpen && (
+        <div className="modal-cover" onMouseDown={() => setArchiveFormatOpen(false)}>
+          <div className="modal archive-format-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <h2>Choose archive format</h2>
+            <p className="muted">Multiple files or folders will be packaged before entering the Transfer Queue. Choose a format supported by the tools on your system.</p>
+            <label className="archive-format-option">
+              <input type="radio" name="archiveFormat" checked={archiveFormatDraft === "tar.gz"} onChange={() => setArchiveFormatDraft("tar.gz")} />
+              <span><strong>tar.gz</strong><small>Common on Linux and available with the tar command.</small></span>
+            </label>
+            <label className="archive-format-option">
+              <input type="radio" name="archiveFormat" checked={archiveFormatDraft === "zip"} onChange={() => setArchiveFormatDraft("zip")} />
+              <span><strong>zip</strong><small>Widely supported by desktop archive tools and other operating systems.</small></span>
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="confirm" onClick={() => enqueueDownload(archiveFormatDraft)}>Add to Transfer Queue</button>
+              <button type="button" onClick={() => setArchiveFormatOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
       )}
       {uploadDestinationOpen && (
         <div className="modal-cover" onMouseDown={() => setUploadDestinationOpen(false)}>
