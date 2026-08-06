@@ -1,0 +1,258 @@
+/* Shared Desktop UI sizing. Component styles should consume these tokens. */
+.explorer {
+  --ui-font-size: 13px;
+  --ui-small-font-size: 11px;
+  --ui-button-height: 30px;
+  --ui-control-height: 30px;
+  --ui-button-padding-x: 9px;
+  --ui-button-padding-y: 4px;
+  --ui-control-gap: 6px;
+  --ui-section-gap: 10px;
+  --ui-panel-padding: 12px;
+  --ui-terminal-min-height: 180px;
+  font-size: var(--ui-font-size);
+}
+
+.explorer.ui-density-compact {
+  --ui-font-size: 12px;
+  --ui-small-font-size: 10px;
+  --ui-button-height: 27px;
+  --ui-control-height: 27px;
+  --ui-button-padding-x: 7px;
+  --ui-button-padding-y: 3px;
+  --ui-control-gap: 5px;
+  --ui-section-gap: 7px;
+  --ui-panel-padding: 9px;
+  --ui-terminal-min-height: 170px;
+}
+
+.explorer.ui-density-comfortable {
+  --ui-font-size: 14px;
+  --ui-small-font-size: 12px;
+  --ui-button-height: 34px;
+  --ui-control-height: 34px;
+  --ui-button-padding-x: 11px;
+  --ui-button-padding-y: 6px;
+  --ui-control-gap: 8px;
+  --ui-section-gap: 13px;
+  --ui-panel-padding: 15px;
+  --ui-terminal-min-height: 200px;
+}
+
+@media (max-width: 1100px), (max-height: 760px) {
+  .explorer.ui-density-auto {
+    --ui-font-size: 12px;
+    --ui-small-font-size: 10px;
+    --ui-button-height: 27px;
+    --ui-control-height: 27px;
+    --ui-button-padding-x: 7px;
+    --ui-button-padding-y: 3px;
+    --ui-control-gap: 5px;
+    --ui-section-gap: 7px;
+    --ui-panel-padding: 9px;
+    --ui-terminal-min-height: 170px;
+  }
+}
+
+.explorer.ui-density-auto,
+.explorer.ui-density-standard {
+  --ui-density-mode: standard;
+}
+
+@media (max-width: 720px) {
+  .explorer {
+    --ui-font-size: 12px;
+    --ui-small-font-size: 10px;
+    --ui-button-height: 27px;
+    --ui-control-height: 27px;
+    --ui-button-padding-x: 7px;
+    --ui-button-padding-y: 3px;
+  }
+}
+
+:where(.explorer) button {
+  min-height: var(--ui-button-height);
+  padding: var(--ui-button-padding-y) var(--ui-button-padding-x);
+  font-size: var(--ui-font-size);
+  line-height: 1.2;
+}
+
+:where(.explorer) input,
+:where(.explorer) select,
+:where(.explorer) .palette-select {
+  min-height: var(--ui-control-height);
+  font-size: var(--ui-font-size);
+  line-height: 1.2;
+}
+
+.commandbar,
+.navigation {
+  gap: var(--ui-control-gap);
+}
+
+.commandbar {
+  min-height: calc(var(--ui-button-height) + 12px);
+  padding: 6px 12px;
+}
+
+.commandbar button,
+.navigation .nav-button {
+  min-height: var(--ui-button-height);
+  padding: var(--ui-button-padding-y) var(--ui-button-padding-x);
+  font-size: var(--ui-font-size);
+}
+
+.navigation {
+  padding: 7px 12px;
+}
+
+.terminal-dock {
+  min-height: var(--ui-terminal-min-height);
+}
+
+.terminal-content {
+  gap: var(--ui-control-gap);
+  padding: var(--ui-panel-padding);
+  overflow: auto;
+}
+
+.xterm-host {
+  min-height: 100px;
+}
+
+.sxp-terminal-controls,
+.ssh-controls,
+.ssh-recording-actions {
+  gap: var(--ui-control-gap);
+}
+
+.ssh-controls {
+  align-items: center;
+}
+
+.ssh-controls label,
+.upload-session-select {
+  line-height: 1.2;
+}
+
+.upload-session-select > span {
+  white-space: nowrap;
+}
+
+.ssh-recording-actions > button,
+.ssh-controls > button,
+.modal-actions button,
+.session-list-heading button,
+.session-card-heading button,
+.ssh-entry-actions button {
+  min-height: var(--ui-button-height);
+  padding: var(--ui-button-padding-y) var(--ui-button-padding-x);
+}
+
+.settings-modal {
+  padding: var(--ui-panel-padding);
+}
+
+.settings-intro,
+.settings-section p {
+  line-height: 1.35;
+}
+
+.settings-section {
+  gap: var(--ui-section-gap);
+  margin: var(--ui-section-gap) 0;
+  padding: var(--ui-panel-padding);
+}
+
+.settings-check {
+  gap: var(--ui-control-gap);
+  line-height: 1.25;
+}
+
+.settings-check span {
+  min-width: 0;
+}
+
+.settings-check small {
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.settings-density {
+  display: grid;
+  gap: var(--ui-control-gap);
+}
+
+.settings-density-heading,
+.settings-density-scale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-control-gap);
+}
+
+.settings-density-heading strong {
+  color: #e6eefc;
+}
+
+.settings-density-heading small,
+.settings-density-scale span {
+  color: #91a9c0;
+  font-size: var(--ui-small-font-size);
+}
+
+.settings-density input[type="range"] {
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-density-mode {
+  color: #9be8ff;
+  font-size: var(--ui-small-font-size);
+  font-weight: 700;
+}
+
+.settings-actions {
+  gap: var(--ui-control-gap);
+  margin-top: var(--ui-section-gap);
+}
+
+.modal-actions {
+  gap: var(--ui-control-gap);
+}
+
+.modal,
+.queue-modal,
+.sessions-modal,
+.settings-modal {
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+}
+
+.sessions-layout {
+  gap: var(--ui-section-gap);
+}
+
+@media (max-width: 720px) {
+  .sessions-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .terminal-actions {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .ssh-controls,
+  .ssh-recording-actions {
+    align-items: stretch;
+  }
+
+  .ssh-controls .palette-select-control,
+  .upload-session-select,
+  .upload-session-select .palette-select-control {
+    min-width: min(100%, 220px);
+  }
+}
