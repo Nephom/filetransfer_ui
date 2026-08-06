@@ -143,3 +143,85 @@ select:hover, select:focus { border-color: #47cdf1; outline: none; }
 .modal-cover { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(0, 6, 14, .72); }
 .modal { width: min(900px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; box-shadow: 0 24px 70px rgba(0, 0, 0, .58); }
 .sessions-modal { width: min(980px, calc(100vw - 48px)); }
+
+/* Keep actions inside the dark desktop surfaces instead of falling back to the global light button. */
+.modal-actions,
+.ssh-entry-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.modal-actions { margin-top: 14px; }
+.modal-actions button,
+.session-list-heading button,
+.session-card-heading button,
+.ssh-entry-actions button,
+.ssh-controls > button,
+.ssh-recording-actions > button {
+  padding: 6px 10px;
+  border: 1px solid #315b7e;
+  border-radius: 4px;
+  color: #d9eafa;
+  background: #102d49;
+  cursor: pointer;
+  font-size: 12px;
+}
+.modal-actions button:hover:not(:disabled),
+.session-list-heading button:hover:not(:disabled),
+.session-card-heading button:hover:not(:disabled),
+.ssh-entry-actions button:hover:not(:disabled),
+.ssh-controls > button:hover:not(:disabled),
+.ssh-recording-actions > button:hover:not(:disabled) {
+  border-color: #47cdf1;
+  color: #ffffff;
+  background: #173e5f;
+}
+.modal-actions .confirm,
+.session-list-heading .confirm,
+.ssh-entry-actions .confirm,
+.ssh-controls .confirm {
+  border-color: #43c9ed;
+  color: #ffffff;
+  background: linear-gradient(135deg, #1477c9, #168bb9);
+  box-shadow: 0 0 14px rgba(37, 185, 231, .16);
+}
+.modal-actions .confirm:hover:not(:disabled),
+.session-list-heading .confirm:hover:not(:disabled),
+.ssh-entry-actions .confirm:hover:not(:disabled),
+.ssh-controls .confirm:hover:not(:disabled) {
+  border-color: #8beaff;
+  background: linear-gradient(135deg, #1989df, #1aa7d1);
+}
+.modal-actions .danger,
+.session-card-heading .session-delete,
+.ssh-entry-actions .session-delete,
+.ssh-controls .danger,
+.ssh-recording-actions .danger {
+  border-color: #813847;
+  color: #ffb8ae;
+  background: #3b1d28;
+}
+.modal-actions .danger:hover:not(:disabled),
+.session-card-heading .session-delete:hover:not(:disabled),
+.ssh-entry-actions .session-delete:hover:not(:disabled),
+.ssh-controls .danger:hover:not(:disabled),
+.ssh-recording-actions .danger:hover:not(:disabled) {
+  border-color: #c55a68;
+  color: #ffe3df;
+  background: #542331;
+}
+.modal-actions button:focus-visible,
+.session-list-heading button:focus-visible,
+.session-card-heading button:focus-visible,
+.ssh-entry-actions button:focus-visible,
+.ssh-controls > button:focus-visible,
+.ssh-recording-actions > button:focus-visible {
+  outline: 2px solid #6be5ff;
+  outline-offset: 2px;
+}
+.modal-actions button:disabled,
+.session-list-heading button:disabled,
+.session-card-heading button:disabled,
+.ssh-entry-actions button:disabled,
+.ssh-controls > button:disabled,
+.ssh-recording-actions > button:disabled {
+  border-color: #284966;
+  color: #66839d;
+  background: #0b2137;
+}
