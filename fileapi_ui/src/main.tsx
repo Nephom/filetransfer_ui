@@ -557,6 +557,11 @@ function App() {
   const [uploadSessionId, setUploadSessionId] = useState("");
   const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerTitle, setViewerTitle] = useState("");
+  const [viewerContent, setViewerContent] = useState("");
+  const [viewerLocalPath, setViewerLocalPath] = useState("");
+  const [viewerRemotePath, setViewerRemotePath] = useState("");
   const rawLogRef = useRef("");
   const plainLogRef = useRef("");
   const commandLogRef = useRef("");
@@ -675,6 +680,16 @@ function App() {
   useEffect(() => {
     localStorage.setItem("fileapi-column-widths", JSON.stringify(columnWidths));
   }, [columnWidths]);
+
+  useEffect(() => {
+    if (!splitMode || !localPath) return;
+    const refreshTimer = window.setInterval(() => {
+      void refreshLocalFiles().catch((error) => {
+        setNotice(error instanceof Error ? error.message : String(error));
+      });
+    }, 2000);
+    return () => window.clearInterval(refreshTimer);
+  }, [splitMode, localPath]);
 
   useEffect(() => {
     localStorage.setItem(sessionRegistryKey, JSON.stringify(managedSessions));
@@ -942,6 +957,17 @@ function App() {
     setLocalFiles(data.files || []);
     setLocalPath(data.path || "");
     setLocalSelected([]);
+  };
+
+  const refreshLocalFiles = async () => {
+    const data = await invoke<LocalDirectory>("local_list_directory", {
+      path: localPath,
+    });
+    setLocalFiles(data.files || []);
+    setLocalPath(data.path || "");
+    setLocalSelected((current) => current.filter((item) =>
+      (data.files || []).some((file) => file.path === item),
+    ));
   };
 
   const updateTreeNode = (
@@ -1588,7 +1614,7 @@ function App() {
       const paths = await invoke<{ raw: string; plain: string; commands: string; metadata: string }>(
         "save_ssh_logs",
         {
-          profileName: profile.name,
+           profileName: logName,
           raw: tab.rawLog,
           plain: tab.plainLog,
           commands: tab.commandLog,
@@ -1671,10 +1697,11 @@ function App() {
         if (!progress.ok) throw new Error(await readError(progress));
         const batch = await progress.json() as { status: string; progress: number; successCount: number; totalFiles: number; failedCount: number };
         updateQueueItem(item.id, { detail: `${batch.successCount}/${batch.totalFiles} files (${Math.round(batch.progress)}%)` });
-        if (batch.status === "completed") {
-           updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.` });
-           writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`);
-           return;
+         if (batch.status === "completed") {
+            updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.` });
+            writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`);
+            await loadFiles(path);
+            return;
         }
         if (batch.status === "failed" || batch.status === "partial_fail") {
           throw new Error(`${batch.failedCount} file${batch.failedCount === 1 ? "" : "s"} failed.`);
@@ -1866,6 +1893,28 @@ function App() {
     );
   };
 
+  const beginRemoteDrag = (event: React.DragEvent, file: FileItem) => {
+    beginDrag(event, file);
+    event.dataTransfer.effectAllowed = "copyMove";
+    if (file.isDirectory) return;
+    void invoke<string>("download_to_disk", {
+      url: `${serverUrl(session)}/api/files/download/${downloadPath(file.path)}`,
+      method: "GET",
+      headers: session.token
+        ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId]] : [])]
+        : [],
+      body: undefined,
+      fileName: file.name,
+      ignoreTlsErrors: session.ignoreTlsErrors,
+    }).then((localPathForDrag) => {
+      const fileUri = `file://${encodeURI(localPathForDrag)}`;
+      event.dataTransfer.setData("text/uri-list", fileUri);
+      event.dataTransfer.setData("DownloadURL", `application/octet-stream:${file.name}:${fileUri}`);
+    }).catch((error) => {
+      setNotice(error instanceof Error ? error.message : String(error));
+    });
+  };
+
   const finishDrag = () => {
     setDragItems([]);
     setDropTarget("");
@@ -1918,6 +1967,50 @@ function App() {
         ignoreTlsErrors: session.ignoreTlsErrors,
       });
       notify(`Downloaded to ${destination}`);
+    });
+
+  const openLocalViewer = (filePath: string) =>
+    void run(async () => {
+      const content = await invoke<string>("read_local_file", { path: filePath });
+      setViewerTitle(filePath.split(/[\\/]/).pop() || filePath);
+      setViewerContent(content);
+      setViewerLocalPath(filePath);
+      setViewerRemotePath("");
+      setViewerOpen(true);
+    });
+
+  const openRemoteViewer = (file: FileItem) =>
+    void run(async () => {
+      if (file.isDirectory) return;
+      const response = await api(`/api/files/content/${downloadPath(file.path)}`);
+      if (!response.ok) throw new Error(await readError(response));
+      const data = (await response.json()) as { content?: string };
+      setViewerTitle(file.name);
+      setViewerContent(data.content || "");
+      setViewerLocalPath("");
+      setViewerRemotePath(file.path);
+      setViewerOpen(true);
+    });
+
+  const editViewerFile = () =>
+    void run(async () => {
+      let localPathForEdit = viewerLocalPath;
+      if (!localPathForEdit && viewerRemotePath) {
+        localPathForEdit = await invoke<string>("download_to_disk", {
+          url: `${serverUrl(session)}/api/files/download/${downloadPath(viewerRemotePath)}`,
+          method: "GET",
+          headers: session.token
+            ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId]] : [])]
+            : [],
+          body: undefined,
+          fileName: viewerTitle,
+          ignoreTlsErrors: session.ignoreTlsErrors,
+        });
+        setViewerLocalPath(localPathForEdit);
+      }
+      if (!localPathForEdit) throw new Error("No local file is available for editing.");
+      await invoke("edit_local_file", { path: localPathForEdit });
+      notify(`Opened ${viewerTitle} in gedit.`);
     });
 
   const uploadPaths = (paths: string[]) =>
@@ -2191,6 +2284,20 @@ function App() {
     </div>
   );
 
+  const toggleSplitMode = () => {
+    const nextMode = !splitMode;
+    setSplitMode(nextMode);
+    if (nextMode && !localPath) {
+      void run(async () => {
+        try {
+          await loadLocalFiles("Desktop");
+        } catch {
+          await loadLocalFiles("");
+        }
+      });
+    }
+  };
+
   const renderLocalPane = () => (
     <section className="local-pane" aria-label="Local files">
       <div className="local-pane-heading">
@@ -2198,6 +2305,9 @@ function App() {
         <strong>{localPath ? `~/${localPath}` : "~/"}</strong>
       </div>
       <div className="local-pane-actions">
+        <button onClick={() => void run(refreshLocalFiles)} disabled={busy}>
+          Refresh
+        </button>
         <button
           onClick={() =>
             void run(() =>
@@ -2453,9 +2563,21 @@ function App() {
             !selectedItems.length ||
             !hasCapability("read")
           }
-          onClick={download}
+         onClick={download}
         >
           Download
+        </button>
+        <button
+          disabled={
+            busy ||
+            !locationOnline ||
+            selectedItems.length !== 1 ||
+            selectedItems[0].isDirectory ||
+            !hasCapability("read")
+          }
+          onClick={() => openRemoteViewer(selectedItems[0])}
+        >
+          View
         </button>
         <button
           disabled={
@@ -2531,7 +2653,7 @@ function App() {
           </button>
           <button
             className={splitMode ? "active" : ""}
-            onClick={() => setSplitMode((enabled) => !enabled)}
+            onClick={toggleSplitMode}
             aria-pressed={splitMode}
           >
             Split
@@ -2667,7 +2789,7 @@ function App() {
                     key={file.path}
                     className={`file-tile ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
                     draggable
-                    onDragStart={(event) => beginDrag(event, file)}
+                    onDragStart={(event) => beginRemoteDrag(event, file)}
                     onDragEnd={finishDrag}
                     onDragOver={(event) => {
                       if (
@@ -2745,7 +2867,7 @@ function App() {
                       key={file.path}
                       draggable
                       className={`file-row ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
-                      onDragStart={(event) => beginDrag(event, file)}
+                       onDragStart={(event) => beginRemoteDrag(event, file)}
                       onDragEnd={finishDrag}
                       onDragOver={(event) => {
                         if (
@@ -3274,7 +3396,7 @@ function App() {
                      />
                      </div>
                      <button disabled={!savedLogPaths.length || recording} onClick={uploadSavedLog}>Upload Log</button>
-                     {savedLogPaths.length > 0 && <details className="saved-log-paths"><summary>Saved log files</summary>{savedLogPaths.map((savedPath) => <code key={savedPath}>{savedPath}</code>)}</details>}
+                      {savedLogPaths.length > 0 && <details className="saved-log-paths"><summary>Saved log files</summary>{savedLogPaths.map((savedPath) => <button type="button" key={savedPath} onClick={() => openLocalViewer(savedPath)}><code>{savedPath}</code></button>)}</details>}
                      {recording && <span className="recording-indicator">Recording</span>}
               </div>
             </div>
@@ -3307,6 +3429,20 @@ function App() {
             ))}
             <div className="modal-actions">
               <button type="button" onClick={() => setQueueOpen(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {viewerOpen && (
+        <div className="modal-cover" onMouseDown={() => setViewerOpen(false)}>
+          <div className="modal viewer-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <h2>{viewerTitle}</h2>
+            <p className="muted">Read-only viewer. Edit opens this file in gedit.</p>
+            <textarea className="file-viewer" value={viewerContent} readOnly spellCheck={false} />
+            <div className="modal-actions">
+              <button type="button" onClick={editViewerFile}>Edit in gedit</button>
+              <button type="button" onClick={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))}>Copy</button>
+              <button type="button" onClick={() => setViewerOpen(false)}>Close</button>
             </div>
           </div>
         </div>
