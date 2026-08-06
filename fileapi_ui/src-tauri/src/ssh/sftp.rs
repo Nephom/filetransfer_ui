@@ -215,10 +215,16 @@ pub async fn create_directory(profile: SshProfile, path: String) -> Result<(), S
     let connection = sessions
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
+    // Absolute paths must stay absolute while being rebuilt segment by
+    // segment -- losing the leading '/' here silently creates the folder
+    // relative to the SFTP session's default directory instead, so the
+    // later `metadata(&path)` check on the (still-absolute) original path
+    // reports "No such file" even though *a* directory was created.
+    let is_absolute = path.starts_with('/');
     let mut built = String::new();
     for segment in path.split('/').filter(|segment| !segment.is_empty()) {
         built = if built.is_empty() {
-            segment.to_string()
+            if is_absolute { format!("/{segment}") } else { segment.to_string() }
         } else {
             format!("{built}/{segment}")
         };
