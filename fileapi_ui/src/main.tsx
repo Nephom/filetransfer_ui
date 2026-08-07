@@ -2881,13 +2881,16 @@ function App() {
         "DEBUG",
       );
       try {
+        const resolvedPaths: string[] = [];
         for (const item of items) {
-          await invoke("ssh_download_path", {
-            profile,
-            remotePath: item.path,
-            isDirectory: item.isDirectory,
-            localDestinationFolder: localPath,
-          });
+          resolvedPaths.push(
+            await invoke<string>("ssh_download_path", {
+              profile,
+              remotePath: item.path,
+              isDirectory: item.isDirectory,
+              localDestinationFolder: localPath,
+            }),
+          );
         }
         finishDrag();
         await loadLocalFiles(localPath);
@@ -2896,7 +2899,7 @@ function App() {
           "completed",
           `SSH: ${profile.name}`,
           `LOCAL: ~/${localPath || ""}`,
-          `Drag-downloaded ${items.length} item(s) from SSH to LOCAL.`,
+          `Drag-downloaded ${items.length} item(s) from SSH to LOCAL. Resolved local path(s): ${resolvedPaths.join(", ")}`,
         );
         notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
       } catch (error) {
@@ -2949,12 +2952,15 @@ function App() {
         "DEBUG",
       );
       try {
+        const resolvedPaths: string[] = [];
         for (const item of items) {
-          await invoke("ssh_upload_path", {
-            profile,
-            localPath: item.path,
-            remoteDestinationFolder: destination,
-          });
+          resolvedPaths.push(
+            await invoke<string>("ssh_upload_path", {
+              profile,
+              localPath: item.path,
+              remoteDestinationFolder: destination,
+            }),
+          );
         }
         finishDrag();
         await loadFiles(path);
@@ -2963,7 +2969,7 @@ function App() {
           "completed",
           `LOCAL: ~/${localPath || ""}`,
           `SSH: ${profile.name}:${destination}`,
-          `Drag-uploaded ${items.length} item(s) from LOCAL to SSH.`,
+          `Drag-uploaded ${items.length} item(s) from LOCAL to SSH. Resolved remote folder: ${resolvedPaths[0] ?? destination}`,
         );
         notify(`Uploaded ${items.length} item${items.length === 1 ? "" : "s"} to REMOTE.`);
       } catch (error) {
@@ -2983,6 +2989,13 @@ function App() {
     uploadPaths(await invoke<string[]>("pick_upload_files"));
 
   useEffect(() => {
+    // NOTE: with `dragDropEnabled: false` set on the window (tauri.conf.json)
+    // to fix in-app LOCAL<->REMOTE HTML5 drag-and-drop on Windows WebView2
+    // (see that file for details), this OS-level "drop a file from Explorer
+    // onto the window" listener no longer receives events either -- both
+    // features share the same native drop-target registration. Dragging
+    // files in from outside the app is intentionally left non-functional;
+    // use the LOCAL pane / "Upload" picker instead.
     let unlisten: (() => void) | undefined;
     let disposed = false;
     getCurrentWebview()
@@ -3625,29 +3638,27 @@ function App() {
         )}
         <button
           className="primary"
-          onClick={upload}
-          disabled={busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("upload"))}
+          onClick={() => {
+            // Desktop is used from the LOCAL side: while a split SSH view has
+            // LOCAL active, Upload sends the LOCAL selection into the current
+            // REMOTE folder (mirrors dragging LOCAL -> REMOTE); otherwise it
+            // falls back to the plain file-picker upload.
+            if (splitMode && remoteSshEntryId && activePane === "local" && localSelected.length) {
+              uploadLocalItemsToRemote(localSelectedItems, path);
+            } else {
+              void upload();
+            }
+          }}
+          disabled={
+            busy ||
+            (splitMode && remoteSshEntryId
+              ? activePane !== "local"
+              : !(remoteSshEntryId ? true : locationOnline && hasCapability("upload")))
+          }
+          title={splitMode && remoteSshEntryId ? "Send the LOCAL selection to the current REMOTE folder" : undefined}
         >
           Upload
         </button>
-        {splitMode && remoteSshEntryId && (
-          <>
-            <button
-              onClick={() => downloadRemoteItemsToLocal(selectedItems)}
-              disabled={busy || !selectedItems.length}
-              title="Download selected REMOTE items into the current LOCAL folder"
-            >
-              Download to LOCAL
-            </button>
-            <button
-              onClick={() => uploadLocalItemsToRemote(localSelectedItems, path)}
-              disabled={busy || !localSelected.length}
-              title="Upload selected LOCAL items into the current REMOTE folder"
-            >
-              Upload to REMOTE
-            </button>
-          </>
-        )}
         <button
           onClick={createFolder}
           disabled={
@@ -3662,11 +3673,22 @@ function App() {
         <button
           disabled={
             busy ||
-            (splitMode && activePane === "local") ||
-            !selectedItems.length ||
-            !(remoteSshEntryId ? true : locationOnline && hasCapability("read"))
+            (splitMode && remoteSshEntryId
+              ? activePane !== "remote" || !selectedItems.length
+              : !selectedItems.length || !(remoteSshEntryId ? true : locationOnline && hasCapability("read")))
           }
-         onClick={download}
+          onClick={() => {
+            // Mirror the Upload button above: while a split SSH view has
+            // REMOTE active, Download brings the REMOTE selection straight
+            // into the current LOCAL folder (mirrors dragging REMOTE ->
+            // LOCAL) instead of queuing it to the Downloads folder.
+            if (splitMode && remoteSshEntryId && activePane === "remote" && selectedItems.length) {
+              downloadRemoteItemsToLocal(selectedItems);
+            } else {
+              download();
+            }
+          }}
+          title={splitMode && remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined}
         >
           Download
         </button>
