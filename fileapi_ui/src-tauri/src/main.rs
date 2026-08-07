@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod oplog;
 mod ssh;
 
 use reqwest::{multipart, Client};
@@ -964,63 +965,21 @@ fn append_operation_log(
     destination_label: String,
     detail: String,
 ) -> Result<(), String> {
-    let (_, log_path) = operation_paths()?;
-    let record = serde_json::json!({
-        "timestamp": chrono_like_timestamp(),
-        "level": sanitize_operation_value(level),
-        "operation": sanitize_operation_value(operation),
-        "status": sanitize_operation_value(status),
-        "source": sanitize_operation_value(source_label),
-        "destination": sanitize_operation_value(destination_label),
-        "detail": sanitize_operation_value(detail),
-    });
-    let line = format!(
-        "{}\n",
-        serde_json::to_string(&record).map_err(|error| error.to_string())?
-    );
-    if std::fs::metadata(&log_path)
-        .map(|meta| meta.len())
-        .unwrap_or(0)
-        + line.len() as u64
-        > 10 * 1024 * 1024
-    {
-        let rotated_two = log_path.with_extension("log.2");
-        let rotated_one = log_path.with_extension("log.1");
-        let _ = std::fs::remove_file(&rotated_two);
-        if rotated_one.exists() {
-            std::fs::rename(&rotated_one, &rotated_two).map_err(|error| error.to_string())?;
-        }
-        if log_path.exists() {
-            std::fs::rename(&log_path, &rotated_one).map_err(|error| error.to_string())?;
-        }
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .map_err(|error| error.to_string())?;
-    file.write_all(line.as_bytes())
-        .map_err(|error| error.to_string())
+    // The frontend's `writeOperationLog` already applied its own
+    // enabled/level filter before invoking this command, so this writes
+    // unconditionally rather than re-checking the mirrored config (see
+    // `oplog::write` for why).
+    oplog::write(&level, &operation, &status, &source_label, &destination_label, &detail)
 }
 
-fn sanitize_operation_value(value: String) -> String {
-    let normalized = value.replace(['\r', '\n'], " ");
-    let lower = normalized.to_ascii_lowercase();
-    if ["password", "token", "secret", "private key", "private_key"]
-        .iter()
-        .any(|marker| lower.contains(marker))
-    {
-        return "[REDACTED]".to_string();
-    }
-    normalized.chars().take(256).collect()
-}
-
-fn chrono_like_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
-        .unwrap_or_else(|_| "0".to_string())
+/// Mirror the frontend's "Enable operation log" / "Log detail level"
+/// Settings into this process, called once on startup and again whenever
+/// the user changes either setting, so Rust-originated log calls (SSH auth
+/// attempts, connect/disconnect, drag staging, etc.) respect the same
+/// configuration as everything the frontend itself logs.
+#[tauri::command]
+fn set_operation_log_config(enabled: bool, level: String) {
+    oplog::set_config(enabled, &level);
 }
 
 fn main() {
@@ -1068,7 +1027,8 @@ fn main() {
             clear_operation_history,
             clear_operation_logs,
             initialize_operation_log,
-            append_operation_log
+            append_operation_log,
+            set_operation_log_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running File Transfer desktop application");

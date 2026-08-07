@@ -42,16 +42,30 @@ fn sftp_sessions() -> &'static Arc<AsyncMutex<HashMap<String, SftpConnection>>> 
 }
 
 async fn open_connection(profile: &SshProfile) -> Result<SftpConnection, String> {
+    let label = super::profile_label(profile);
+    crate::oplog::log("DEBUG", "sftp_connect", "started", &label, "sftp", "Opening a new SFTP connection.");
     let handler = ClientHandler {
         host: profile.host.clone(),
         port: profile.port,
     };
     let addr = format!("{}:{}", profile.host, profile.port);
-    let mut handle = tokio::time::timeout(super::CONNECT_TIMEOUT, client::connect(default_config(), addr, handler))
-        .await
-        .map_err(|_| format!("Connection to {}:{} timed out.", profile.host, profile.port))?
-        .map_err(|error| format!("Unable to connect: {error}"))?;
-    authenticate(&mut handle, profile).await?;
+    let mut handle = match tokio::time::timeout(super::CONNECT_TIMEOUT, client::connect(default_config(), addr, handler)).await {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(error)) => {
+            let message = format!("Unable to connect: {error}");
+            crate::oplog::log("ERROR", "sftp_connect", "failed", &label, "sftp", &message);
+            return Err(message);
+        }
+        Err(_) => {
+            let message = format!("Connection to {}:{} timed out.", profile.host, profile.port);
+            crate::oplog::log("ERROR", "sftp_connect", "failed", &label, "sftp", &message);
+            return Err(message);
+        }
+    };
+    if let Err(error) = authenticate(&mut handle, profile).await {
+        crate::oplog::log("ERROR", "sftp_connect", "failed", &label, "sftp", &format!("Authentication failed: {error}"));
+        return Err(error);
+    }
     let channel = handle
         .channel_open_session()
         .await
@@ -63,6 +77,7 @@ async fn open_connection(profile: &SshProfile) -> Result<SftpConnection, String>
     let sftp = SftpSession::new(channel.into_stream())
         .await
         .map_err(|error| error.to_string())?;
+    crate::oplog::log("INFO", "sftp_connect", "connected", &label, "sftp", "SFTP session established.");
     Ok(SftpConnection { handle, sftp })
 }
 
@@ -148,6 +163,7 @@ pub async fn disconnect(entry_id: String) -> Result<(), String> {
             .handle
             .disconnect(russh::Disconnect::ByApplication, "", "en")
             .await;
+        crate::oplog::log("INFO", "sftp_connect", "disconnected", "sftp", "", &format!("SFTP session for entry {entry_id} was disconnected."));
     }
     Ok(())
 }
@@ -210,24 +226,43 @@ pub async fn upload_file(
 /// parent segments are created best-effort; an already-existing leaf
 /// directory is not treated as an error.
 pub async fn create_directory(profile: SshProfile, path: String) -> Result<(), String> {
+    let label = super::profile_label(&profile);
+    crate::oplog::log("DEBUG", "create_folder", "started", &format!("SSH: {label}"), &path, "Creating a remote folder over SFTP.");
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
+    // Absolute paths must stay absolute while being rebuilt segment by
+    // segment -- losing the leading '/' here silently creates the folder
+    // relative to the SFTP session's default directory instead, so the
+    // later `metadata(&path)` check on the (still-absolute) original path
+    // reports "No such file" even though *a* directory was created.
+    let is_absolute = path.starts_with('/');
     let mut built = String::new();
     for segment in path.split('/').filter(|segment| !segment.is_empty()) {
         built = if built.is_empty() {
-            segment.to_string()
+            if is_absolute { format!("/{segment}") } else { segment.to_string() }
         } else {
             format!("{built}/{segment}")
         };
         let _ = connection.sftp.create_dir(built.clone()).await;
     }
     match connection.sftp.metadata(path.clone()).await {
-        Ok(metadata) if metadata.is_dir() => Ok(()),
-        Ok(_) => Err(format!("{path} exists and is not a directory")),
-        Err(error) => Err(error.to_string()),
+        Ok(metadata) if metadata.is_dir() => {
+            crate::oplog::log("INFO", "create_folder", "completed", &format!("SSH: {label}"), &path, "Remote folder created.");
+            Ok(())
+        }
+        Ok(_) => {
+            let message = format!("{path} exists and is not a directory");
+            crate::oplog::log("ERROR", "create_folder", "failed", &format!("SSH: {label}"), &path, &message);
+            Err(message)
+        }
+        Err(error) => {
+            let message = error.to_string();
+            crate::oplog::log("ERROR", "create_folder", "failed", &format!("SSH: {label}"), &path, &message);
+            Err(message)
+        }
     }
 }
 
@@ -264,16 +299,23 @@ async fn delete_recursive(sftp: &SftpSession, path: &str, is_directory: bool) ->
 /// moves within the same SSH host (cross-source moves between SSH and API
 /// Remote are not attempted -- those are upload/download operations).
 pub async fn rename_path(profile: SshProfile, old_path: String, new_path: String) -> Result<(), String> {
+    let label = super::profile_label(&profile);
+    crate::oplog::log("DEBUG", "rename", "started", &format!("SSH: {label}:{old_path}"), &new_path, "Renaming/moving a remote path over SFTP.");
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
-    connection
+    let result = connection
         .sftp
-        .rename(old_path, new_path)
+        .rename(old_path.clone(), new_path.clone())
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+    match &result {
+        Ok(()) => crate::oplog::log("INFO", "rename", "completed", &format!("SSH: {label}:{old_path}"), &new_path, "Remote rename/move completed."),
+        Err(error) => crate::oplog::log("ERROR", "rename", "failed", &format!("SSH: {label}:{old_path}"), &new_path, error),
+    }
+    result
 }
 
 /// Upload a local file or an entire local directory tree into
