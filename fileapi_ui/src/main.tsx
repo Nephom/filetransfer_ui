@@ -505,6 +505,9 @@ function App() {
   const [viewMode, setViewMode] = useState<"details" | "grid">(() =>
     localStorage.getItem("file-view-mode") === "grid" ? "grid" : "details",
   );
+  const [localViewMode, setLocalViewMode] = useState<"details" | "grid">(() =>
+    localStorage.getItem("local-file-view-mode") === "grid" ? "grid" : "details",
+  );
   const [splitMode, setSplitMode] = useState(() =>
     localStorage.getItem("file-layout-mode") === "split",
   );
@@ -643,6 +646,20 @@ function App() {
   // actually apply.
   const [activePane, setActivePane] = useState<"local" | "remote">("remote");
   const [dropTarget, setDropTarget] = useState("");
+  // Rubber-band/marquee mouse-drag multi-select. `marqueeRect` (viewport/
+  // client coordinates, so no CSS containing-block dependency) drives the
+  // visible selection-box overlay; `marqueeStateRef` carries the drag's
+  // starting point, which pane it belongs to, whether it's additive
+  // (Ctrl/Cmd held at drag-start), and the selection to union with.
+  const [marqueeRect, setMarqueeRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const marqueeStateRef = useRef<{
+    pane: "local" | "remote";
+    startX: number;
+    startY: number;
+    additive: boolean;
+    baseSelection: string[];
+    container: HTMLElement;
+  } | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -650,7 +667,9 @@ function App() {
   const accountControl = useRef<HTMLDivElement>(null);
   const locationControl = useRef<HTMLDivElement>(null);
   const folderTreeRef = useRef<HTMLDivElement>(null);
+  const localFolderTreeRef = useRef<HTMLDivElement>(null);
   const fileAreaRef = useRef<HTMLDivElement>(null);
+  const localFileListRef = useRef<HTMLDivElement>(null);
   const dragItemsRef = useRef<FileItem[]>([]);
   const dragSourceRef = useRef<"local" | "remote" | "">("");
   const noticeTimer = useRef<number | undefined>();
@@ -724,6 +743,10 @@ function App() {
   useEffect(() => {
     localStorage.setItem("file-view-mode", viewMode);
   }, [viewMode]);
+
+  useEffect(() => {
+    localStorage.setItem("local-file-view-mode", localViewMode);
+  }, [localViewMode]);
 
   useEffect(() => {
     localStorage.setItem("file-layout-mode", splitMode ? "split" : "single");
@@ -1214,6 +1237,12 @@ function App() {
     if (node.expanded) return;
     window.clearTimeout(dragExpandTimerRef.current);
     dragExpandTimerRef.current = window.setTimeout(() => toggleFolder(node), 650);
+  };
+
+  const scheduleLocalTreeExpand = (node: FolderNode) => {
+    if (node.expanded) return;
+    window.clearTimeout(dragExpandTimerRef.current);
+    dragExpandTimerRef.current = window.setTimeout(() => toggleLocalFolder(node), 650);
   };
 
   useEffect(() => {
@@ -2289,6 +2318,78 @@ function App() {
     setLocalSelected([file.path]);
   };
 
+  // Rubber-band ("marquee") multi-select: click-drag on empty space inside
+  // a file list/grid draws a selection box and selects every item it
+  // intersects, mirroring the click-based Shift/Ctrl multi-select above.
+  // Deliberately ignores clicks that start on an item, a button, or a
+  // resize handle so it never fights with the existing row/tile
+  // `draggable` HTML5 drag-and-drop.
+  const beginMarqueeSelect = (
+    event: React.MouseEvent,
+    pane: "local" | "remote",
+    container: HTMLElement | null,
+  ) => {
+    if (event.button !== 0 || !container) return;
+    const target = event.target as HTMLElement;
+    if (
+      target.closest(
+        ".file-row, .file-tile, .local-file, button, input, a, .column-resize-handle, .pane-resize-handle",
+      )
+    )
+      return;
+    setActivePane(pane);
+    const additive = event.ctrlKey || event.metaKey;
+    marqueeStateRef.current = {
+      pane,
+      startX: event.clientX,
+      startY: event.clientY,
+      additive,
+      baseSelection: additive ? (pane === "local" ? localSelected : selected) : [],
+      container,
+    };
+    setMarqueeRect({ left: event.clientX, top: event.clientY, width: 0, height: 0 });
+  };
+
+  useEffect(() => {
+    const intersects = (a: DOMRect, b: { left: number; top: number; right: number; bottom: number }) =>
+      a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+
+    const handleMove = (event: MouseEvent) => {
+      const state = marqueeStateRef.current;
+      if (!state) return;
+      const left = Math.min(state.startX, event.clientX);
+      const top = Math.min(state.startY, event.clientY);
+      const right = Math.max(state.startX, event.clientX);
+      const bottom = Math.max(state.startY, event.clientY);
+      setMarqueeRect({ left, top, width: right - left, height: bottom - top });
+      const box = { left, top, right, bottom };
+      const nodes = state.container.querySelectorAll<HTMLElement>("[data-path]");
+      const hit: string[] = [];
+      nodes.forEach((node) => {
+        const path = node.getAttribute("data-path");
+        if (path && intersects(node.getBoundingClientRect(), box)) hit.push(path);
+      });
+      const next = state.additive
+        ? [...new Set([...state.baseSelection, ...hit])]
+        : hit;
+      if (state.pane === "local") setLocalSelected(next);
+      else setSelected(next);
+    };
+
+    const handleUp = () => {
+      if (!marqueeStateRef.current) return;
+      marqueeStateRef.current = null;
+      setMarqueeRect(null);
+    };
+
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, []);
+
   const searchFiles = () =>
     run(async () => {
       const query = search.trim();
@@ -2844,14 +2945,14 @@ function App() {
       void runQueuedUpload(item);
     });
 
-  const downloadRemoteItemsToLocal = (items: FileItem[]) =>
+  const downloadRemoteItemsToLocal = (items: FileItem[], destination: string = localPath) =>
     void run(async () => {
       if (!remoteSshEntryId) {
         writeOperationLog(
           "download",
           "skipped",
           "REMOTE",
-          `LOCAL: ~/${localPath || ""}`,
+          `LOCAL: ~/${destination || ""}`,
           "REMOTE is not an SSH connection, so a LOCAL/REMOTE drag transfer is not available here.",
           "WARN",
         );
@@ -2863,7 +2964,7 @@ function App() {
           "download",
           "skipped",
           "REMOTE",
-          `LOCAL: ~/${localPath || ""}`,
+          `LOCAL: ~/${destination || ""}`,
           "No items were detected in the drag payload; nothing was downloaded.",
           "WARN",
         );
@@ -2876,7 +2977,7 @@ function App() {
         "download",
         "started",
         `SSH: ${profile.name}`,
-        `LOCAL: ~/${localPath || ""}`,
+        `LOCAL: ~/${destination || ""}`,
         `Drag-downloading ${items.length} item(s) from SSH to LOCAL.`,
         "DEBUG",
       );
@@ -2888,17 +2989,23 @@ function App() {
               profile,
               remotePath: item.path,
               isDirectory: item.isDirectory,
-              localDestinationFolder: localPath,
+              localDestinationFolder: destination,
             }),
           );
         }
         finishDrag();
+        // Refresh whichever LOCAL folder is currently being browsed (it may
+        // differ from `destination` when dropping onto a folder-tree node
+        // that isn't the folder currently open in the LOCAL file list).
         await loadLocalFiles(localPath);
+        if (destination !== localPath) {
+          void loadLocalTreeChildren(destination, true);
+        }
         writeOperationLog(
           "download",
           "completed",
           `SSH: ${profile.name}`,
-          `LOCAL: ~/${localPath || ""}`,
+          `LOCAL: ~/${destination || ""}`,
           `Drag-downloaded ${items.length} item(s) from SSH to LOCAL. Resolved local path(s): ${resolvedPaths.join(", ")}`,
         );
         notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
@@ -2907,7 +3014,7 @@ function App() {
           "download",
           "failed",
           `SSH: ${profile.name}`,
-          `LOCAL: ~/${localPath || ""}`,
+          `LOCAL: ~/${destination || ""}`,
           `Drag download failed: ${error instanceof Error ? error.message : String(error)}`,
           "ERROR",
         );
@@ -3280,7 +3387,32 @@ function App() {
 
   const renderLocalTreeNode = (node: FolderNode): React.ReactNode => (
     <div className="folder-tree" key={node.path}>
-      <div className={`tree-node ${localPath === node.path ? "active" : ""}`}>
+      <div
+        className={`tree-node ${localPath === node.path ? "active" : ""} ${dropTarget === node.path ? "drop-target" : ""}`}
+        onDragOver={(event) => {
+          if (dragSourceRef.current === "remote" && remoteSshEntryId && dragItemsRef.current.length) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            setDropTarget(node.path);
+            scheduleLocalTreeExpand(node);
+            handleDragAutoScroll(event, localFolderTreeRef.current);
+          }
+        }}
+        onDragLeave={() => {
+          setDropTarget("");
+          window.clearTimeout(dragExpandTimerRef.current);
+        }}
+        onDropCapture={(event) => {
+          if (dragSourceRef.current === "remote" && remoteSshEntryId) {
+            event.preventDefault();
+            event.stopPropagation();
+            stopDragAutoScroll();
+            setDropTarget("");
+            const items = dragItemsRef.current;
+            downloadRemoteItemsToLocal(items, node.path);
+          }
+        }}
+      >
         <button
           className="tree-toggle"
           aria-label={`${node.expanded ? "Collapse" : "Expand"} ${node.name}`}
@@ -3295,6 +3427,9 @@ function App() {
           <span className="folder-mini" />
           {node.name}
         </button>
+        {dragItems.length > 0 && dragSource === "remote" && dropTarget === node.path && (
+          <span className="drop-label">Download here</span>
+        )}
       </div>
       {node.expanded && (
         <div className="tree-children">
@@ -3335,6 +3470,20 @@ function App() {
         >
           {localTreeOpen ? "‹" : "›"}
         </button>
+        <span className="view-switch">
+          <button
+            className={localViewMode === "details" ? "active" : ""}
+            onClick={() => setLocalViewMode("details")}
+          >
+            Details
+          </button>
+          <button
+            className={localViewMode === "grid" ? "active" : ""}
+            onClick={() => setLocalViewMode("grid")}
+          >
+            Grid
+          </button>
+        </span>
       </div>
       <div
         className={`local-pane-body ${dragSource === "remote" && remoteSshEntryId ? "drop-target" : ""}`}
@@ -3345,6 +3494,11 @@ function App() {
           }
         }}
         onDropCapture={(event) => {
+          // If the drop landed on a folder-tree node inside the LOCAL tree
+          // panel, let it fall through to that node's own onDropCapture
+          // (which downloads into that specific folder) instead of always
+          // downloading into the currently browsed `localPath` here.
+          if ((event.target as HTMLElement).closest(".local-pane-tree")) return;
           if (dragSourceRef.current === "remote" && remoteSshEntryId) {
             event.preventDefault();
             event.stopPropagation();
@@ -3354,7 +3508,15 @@ function App() {
       >
         {localTreeOpen && (
           <>
-            <div className="local-pane-tree" style={{ flexBasis: `${localTreeWidth}px` }}>{renderLocalTreeNode(localFolderTree)}</div>
+            <div
+              className="local-pane-tree"
+              ref={localFolderTreeRef}
+              style={{ flexBasis: `${localTreeWidth}px` }}
+              onDragLeave={stopDragAutoScroll}
+              onDrop={stopDragAutoScroll}
+            >
+              {renderLocalTreeNode(localFolderTree)}
+            </div>
             <div
               className="pane-resize-handle"
               onPointerDown={beginLocalTreeResize}
@@ -3364,7 +3526,56 @@ function App() {
             />
           </>
         )}
-        <div className="local-file-list">
+        {localViewMode === "grid" ? (
+          <div
+            className="file-grid local-file-grid"
+            ref={localFileListRef}
+            onMouseDown={(event) => beginMarqueeSelect(event, "local", localFileListRef.current)}
+          >
+            {localPath && (
+              <article
+                className="file-tile file-tile-dotdot"
+                onClick={() => void run(() => loadLocalFiles(parentPath(localPath)))}
+              >
+                <span className="tile-icon">📁</span>
+                <strong>../</strong>
+                <span>Parent folder</span>
+              </article>
+            )}
+            {localFiles.map((file) => (
+              <article
+                key={file.path}
+                data-path={file.path}
+                className={`file-tile ${localSelected.includes(file.path) ? "selected" : ""}`}
+                draggable
+                onDragStart={(event) => beginLocalDrag(event, file)}
+                onDragEnd={finishDragAfterDrop}
+                onClick={(event) => selectLocalFile(file, event)}
+                onDoubleClick={() => {
+                  if (file.isDirectory) void run(() => loadLocalFiles(file.path));
+                  else openLocalViewer(file.path);
+                }}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setActivePane("local");
+                  if (!localSelected.includes(file.path)) setLocalSelected([file.path]);
+                  setContextMenu({ x: event.clientX, y: event.clientY });
+                }}
+              >
+                <span className="tile-icon">{file.isDirectory ? "📁" : "📄"}</span>
+                <strong>{file.name}</strong>
+                <span>{file.isDirectory ? "File folder" : "File"}</span>
+                <small>{file.isDirectory ? "--" : formatSize(file.size)}</small>
+              </article>
+            ))}
+            {!localFiles.length && !localPath && <span className="muted">This folder is empty.</span>}
+          </div>
+        ) : (
+        <div
+          className="local-file-list"
+          ref={localFileListRef}
+          onMouseDown={(event) => beginMarqueeSelect(event, "local", localFileListRef.current)}
+        >
           {localPath && (
             <button
               className="local-file local-file-dotdot"
@@ -3377,6 +3588,7 @@ function App() {
           {localFiles.map((file) => (
             <button
               key={file.path}
+              data-path={file.path}
               className={`local-file ${localSelected.includes(file.path) ? "selected" : ""}`}
               draggable
               onDragStart={(event) => beginLocalDrag(event, file)}
@@ -3386,6 +3598,12 @@ function App() {
                 if (file.isDirectory) void run(() => loadLocalFiles(file.path));
                 else openLocalViewer(file.path);
               }}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setActivePane("local");
+                if (!localSelected.includes(file.path)) setLocalSelected([file.path]);
+                setContextMenu({ x: event.clientX, y: event.clientY });
+              }}
             >
               <span>{file.isDirectory ? "📁" : "📄"}</span>
               <span className="local-file-name">{file.name}</span>
@@ -3394,6 +3612,7 @@ function App() {
           ))}
           {!localFiles.length && !localPath && <span className="muted">This folder is empty.</span>}
         </div>
+        )}
       </div>
       <div className="local-pane-footer">{localFiles.length} items</div>
     </section>
@@ -3971,6 +4190,7 @@ function App() {
                 }
               }}
               onDragLeave={stopDragAutoScroll}
+              onMouseDown={(event) => beginMarqueeSelect(event, "remote", fileAreaRef.current)}
               onDropCapture={(event) => {
                 stopDragAutoScroll();
                 if (dragSourceRef.current === "local" && remoteSshEntryId) {
@@ -3996,6 +4216,7 @@ function App() {
                 {files.map((file) => (
                   <article
                     key={file.path}
+                    data-path={file.path}
                     className={`file-tile ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
                     draggable
                      onPointerDown={(event) => {
@@ -4082,6 +4303,7 @@ function App() {
                   {files.map((file) => (
                     <tr
                       key={file.path}
+                      data-path={file.path}
                       draggable
                       className={`file-row ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
                         onPointerDown={(event) => {
@@ -4161,62 +4383,119 @@ function App() {
         </span>
         <span>{searching ? "Search results" : path ? `/${path}` : "/"}</span>
       </footer>
+      {marqueeRect && (
+        <div
+          className="marquee-select"
+          style={{
+            position: "fixed",
+            left: marqueeRect.left,
+            top: marqueeRect.top,
+            width: marqueeRect.width,
+            height: marqueeRect.height,
+            pointerEvents: "none",
+            zIndex: 9999,
+          }}
+        />
+      )}
       {contextMenu && (
         <div
           className="context-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
-          <button
-            disabled={!selectedItems.length}
-            onClick={() => {
-              setContextMenu(null);
-              download();
-            }}
-          >
-            Download
-          </button>
-          <button
-            disabled={!selectedItems.length}
-            onClick={() => {
-              setContextMenu(null);
-              notify(
-                "Drag selected files to a destination folder to move them.",
-              );
-            }}
-          >
-            Move
-          </button>
-          <button
-            disabled={selectedItems.length !== 1}
-            onClick={() => {
-              setContextMenu(null);
-              rename();
-            }}
-          >
-            Rename
-          </button>
-          <button
-            disabled={
-              selectedItems.length !== 1 || selectedItems[0].isDirectory || !!remoteSshEntryId
-            }
-            onClick={() => {
-              setContextMenu(null);
-              share();
-            }}
-          >
-            Share
-          </button>
-          <hr />
-          <button
-            disabled={!selectedItems.length}
-            onClick={() => {
-              setContextMenu(null);
-              remove();
-            }}
-          >
-            Delete
-          </button>
+          {splitMode && activePane === "local" ? (
+            <>
+              <button
+                disabled={!remoteSshEntryId || !localSelectedItems.length}
+                onClick={() => {
+                  setContextMenu(null);
+                  uploadLocalItemsToRemote(localSelectedItems, path);
+                }}
+              >
+                Upload to REMOTE
+              </button>
+              <button
+                onClick={() => {
+                  setContextMenu(null);
+                  void createFolder();
+                }}
+              >
+                New folder
+              </button>
+              <button
+                disabled={localSelectedItems.length !== 1}
+                onClick={() => {
+                  setContextMenu(null);
+                  void rename();
+                }}
+              >
+                Rename
+              </button>
+              <hr />
+              <button
+                disabled={!localSelectedItems.length}
+                onClick={() => {
+                  setContextMenu(null);
+                  void remove();
+                }}
+              >
+                Delete
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                disabled={!selectedItems.length}
+                onClick={() => {
+                  setContextMenu(null);
+                  download();
+                }}
+              >
+                Download
+              </button>
+              <button
+                disabled={!selectedItems.length}
+                onClick={() => {
+                  setContextMenu(null);
+                  notify(
+                    "Drag selected files to a destination folder to move them.",
+                  );
+                }}
+              >
+                Move
+              </button>
+              <button
+                disabled={selectedItems.length !== 1}
+                onClick={() => {
+                  setContextMenu(null);
+                  rename();
+                }}
+              >
+                Rename
+              </button>
+              <button
+                disabled={
+                  selectedItems.length !== 1 || selectedItems[0].isDirectory || !!remoteSshEntryId
+                }
+                onClick={() => {
+                  setContextMenu(null);
+                  share();
+                }}
+              >
+                Share
+              </button>
+              <hr />
+              <button
+                disabled={!selectedItems.length}
+                onClick={() => {
+                  setContextMenu(null);
+                  remove();
+                }}
+              >
+                Delete
+              </button>
+            </>
+          )}
         </div>
       )}
        {changePasswordOpen && (

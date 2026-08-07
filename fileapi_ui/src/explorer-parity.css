@@ -11,6 +11,7 @@
 .context-menu button { display: block; width: 100%; border: 0; border-radius: 3px; padding: 8px 10px; background: transparent; color: #d9eafa; text-align: left; cursor: pointer; }
 .context-menu button:hover:not(:disabled) { background: #173653; }
 .context-menu hr { margin: 4px 0; border: 0; border-top: 1px solid #284966; }
+.marquee-select { border: 1px solid #4ad9f4; background: rgba(74, 217, 244, 0.15); }
 .sessions-modal { max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
 .sessions-modal p { line-height: 1.5; }
 .sessions-layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr); gap: 18px; align-items: start; }
