@@ -4,7 +4,7 @@
   "version": "3.2.3+20260806.9a9bdef",
   "identifier": "com.nephom.filetransfer",
   "build": { "frontendDist": "../dist", "devUrl": "http://localhost:1420", "beforeDevCommand": "npm run dev", "beforeBuildCommand": "npm run build" },
-  "app": { "windows": [{ "title": "File Transfer", "width": 1100, "height": 720, "minWidth": 760, "minHeight": 520 }] },
+  "app": { "windows": [{ "title": "File Transfer", "width": 1100, "height": 720, "minWidth": 760, "minHeight": 520, "dragDropEnabled": false }] },
   "bundle": {
     "active": true,
     "targets": "all",
