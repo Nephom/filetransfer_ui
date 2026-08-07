@@ -464,6 +464,7 @@ function App() {
   const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const selectionAnchorRef = useRef<string | null>(null);
+  const localSelectionAnchorRef = useRef<string | null>(null);
   const [notice, setNotice] = useState("");
   const [shareUrl, setShareUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -534,6 +535,11 @@ function App() {
   const [localTreeWidth, setLocalTreeWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-local-tree-width")) || 130,
   );
+  // The LOCAL mini folder-tree is collapsed by default: showing it and the
+  // file list side by side is a second split *within* the already-split
+  // LOCAL pane, which crowded the screen. A small toggle (mirroring the
+  // Terminal panel's show/hide button) lets it be opened on demand.
+  const [localTreeOpen, setLocalTreeOpen] = useState(false);
   const [columnWidths, setColumnWidths] = useState<Record<ColumnKey, number>>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("fileapi-column-widths") || "{}");
@@ -765,6 +771,15 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings));
+    // Mirror the enabled/level setting into the Rust process so
+    // Rust-originated log calls (SSH auth attempts, connect/disconnect,
+    // create/rename, drag staging, etc.) respect the same configuration the
+    // user set here instead of only ever using the process's startup
+    // defaults.
+    void invoke("set_operation_log_config", {
+      enabled: desktopSettings.operationLogEnabled,
+      level: desktopSettings.operationLogLevel,
+    }).catch(() => {});
   }, [desktopSettings]);
 
   useEffect(() => {
@@ -808,7 +823,7 @@ function App() {
     const migrated = sshProfiles.map((profile) => ({
       id: makeId(),
       name: profile.name,
-      sxpEntries: [{ id: makeId(), name: "Default Transfer", localAlias: "Desktop", localPath: "Desktop", remoteAlias: "Personal", remotePath: "", locationId: session.locationId, locationName: session.locationId }],
+      sxpEntries: [{ id: makeId(), name: "Default Transfer", localAlias: "Home", localPath: "", remoteAlias: "Personal", remotePath: "", locationId: session.locationId, locationName: session.locationId }],
       sshEntries: [profile],
     }));
     setManagedSessions(migrated);
@@ -1638,15 +1653,8 @@ function App() {
       let workspace = managedSessions.find((item) => item.id === requestedWorkspaceId);
       if (!workspace && !managedSessions.length) {
         const makeId = () => typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        let localPath = "";
-        let localAlias = "Home";
-        try {
-          const desktop = await invoke<LocalDirectory>("local_list_directory", { path: "Desktop" });
-          localPath = desktop.path;
-          localAlias = "Desktop";
-        } catch {
-          // Home root is the safe fallback when Desktop is unavailable.
-        }
+        const localPath = "";
+        const localAlias = "Home";
         let remotePath = "";
         let remoteAlias = activeLocation?.displayName || "Remote root";
         if (session.locationId) {
@@ -1706,7 +1714,7 @@ function App() {
   const startNewWorkspace = () => {
     setWorkspaceSessionId("");
     setSessionNameDraft("");
-    setLocalAliasDraft("Desktop");
+    setLocalAliasDraft("Home");
     setRemoteAliasDraft(activeLocation?.displayName || "Personal");
     setSxpEntryDraftId("");
     setSxpEntryNameDraft("Default Transfer");
@@ -2213,6 +2221,11 @@ function App() {
 
   const selectedItems = files.filter((file) => selected.includes(file.path));
   const localSelectedItems = localFiles.filter((file) => localSelected.includes(file.path));
+  // Whether the REMOTE file list should show an in-list "../" entry to go up
+  // one level, mirroring LOCAL's own in-list ".." row instead of a separate
+  // toolbar button. Root differs by source: SSH browsing is always
+  // absolute-path-rooted at "/", while API-backed Locations use "" as root.
+  const showRemoteUp = remoteSshEntryId ? path !== "/" : Boolean(path);
   const workspaceSessions = managedSessions.filter((item) => item.sshEntries.length > 0);
   const activeWorkspaceSession = workspaceSessions.find((item) => item.id === workspaceSessionId);
   const toggle = (file: FileItem, checked: boolean) => {
@@ -2246,6 +2259,34 @@ function App() {
     }
     selectionAnchorRef.current = file.path;
     setSelected([file.path]);
+  };
+
+  // Mirrors `selectFile` above (Shift range-select, Ctrl/Cmd toggle
+  // multi-select) for the LOCAL file list, which previously had no
+  // multi-select at all -- every click replaced the whole selection with a
+  // single item, so more than one LOCAL file could only ever be selected
+  // via the "Select all" button.
+  const selectLocalFile = (file: FileItem, event: React.MouseEvent) => {
+    setActivePane("local");
+    const index = localFiles.findIndex((item) => item.path === file.path);
+    const anchorIndex = localSelectionAnchorRef.current
+      ? localFiles.findIndex((item) => item.path === localSelectionAnchorRef.current)
+      : -1;
+    if (event.shiftKey && anchorIndex >= 0 && index >= 0) {
+      const start = Math.min(anchorIndex, index);
+      const end = Math.max(anchorIndex, index);
+      setLocalSelected(localFiles.slice(start, end + 1).map((item) => item.path));
+      return;
+    }
+    if (event.ctrlKey || event.metaKey) {
+      localSelectionAnchorRef.current = file.path;
+      setLocalSelected((current) => current.includes(file.path)
+        ? current.filter((value) => value !== file.path)
+        : [...current, file.path]);
+      return;
+    }
+    localSelectionAnchorRef.current = file.path;
+    setLocalSelected([file.path]);
   };
 
   const searchFiles = () =>
@@ -2805,7 +2846,30 @@ function App() {
 
   const downloadRemoteItemsToLocal = (items: FileItem[]) =>
     void run(async () => {
-      if (!remoteSshEntryId || !items.length) return;
+      if (!remoteSshEntryId) {
+        writeOperationLog(
+          "download",
+          "skipped",
+          "REMOTE",
+          `LOCAL: ~/${localPath || ""}`,
+          "REMOTE is not an SSH connection, so a LOCAL/REMOTE drag transfer is not available here.",
+          "WARN",
+        );
+        setNotice("This REMOTE view isn't an SSH connection, so drag transfer to LOCAL isn't available here.");
+        return;
+      }
+      if (!items.length) {
+        writeOperationLog(
+          "download",
+          "skipped",
+          "REMOTE",
+          `LOCAL: ~/${localPath || ""}`,
+          "No items were detected in the drag payload; nothing was downloaded.",
+          "WARN",
+        );
+        setNotice("No items were detected for this drag; nothing was downloaded.");
+        return;
+      }
       const profile = findSshProfileById(remoteSshEntryId);
       if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
       writeOperationLog(
@@ -2850,7 +2914,30 @@ function App() {
 
   const uploadLocalItemsToRemote = (items: FileItem[], destination: string) =>
     void run(async () => {
-      if (!remoteSshEntryId || !items.length) return;
+      if (!remoteSshEntryId) {
+        writeOperationLog(
+          "upload",
+          "skipped",
+          `LOCAL: ~/${localPath || ""}`,
+          "REMOTE",
+          "REMOTE is not an SSH connection, so a LOCAL/REMOTE drag transfer is not available here.",
+          "WARN",
+        );
+        setNotice("This REMOTE view isn't an SSH connection, so drag transfer from LOCAL isn't available here.");
+        return;
+      }
+      if (!items.length) {
+        writeOperationLog(
+          "upload",
+          "skipped",
+          `LOCAL: ~/${localPath || ""}`,
+          "REMOTE",
+          "No items were detected in the drag payload; nothing was uploaded.",
+          "WARN",
+        );
+        setNotice("No items were detected for this drag; nothing was uploaded.");
+        return;
+      }
       const profile = findSshProfileById(remoteSshEntryId);
       if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
       writeOperationLog(
@@ -3170,6 +3257,12 @@ function App() {
     if (nextMode && !localFolderTree.loaded) {
       void run(() => loadLocalTreeChildren("", true));
     }
+    if (!nextMode) {
+      // The LOCAL pane (and its breadcrumb) only exists while split mode is
+      // on; leaving split mode with activePane still "local" would strand
+      // the top breadcrumb showing an now-invisible LOCAL path.
+      setActivePane("remote");
+    }
   };
 
   const renderLocalTreeNode = (node: FolderNode): React.ReactNode => (
@@ -3217,18 +3310,17 @@ function App() {
         <button onClick={() => void run(refreshLocalFiles)} disabled={busy}>
           Refresh
         </button>
-        <button
-          onClick={() =>
-            void run(() =>
-              loadLocalFiles(parentPath(localPath)),
-            )
-          }
-          disabled={busy || !localPath}
-        >
-          Up
-        </button>
         <button onClick={() => void run(() => loadLocalFiles(""))} disabled={busy}>
           Home
+        </button>
+        <button
+          className={`local-tree-toggle ${localTreeOpen ? "active" : ""}`}
+          onClick={() => setLocalTreeOpen((open) => !open)}
+          aria-pressed={localTreeOpen}
+          aria-label={localTreeOpen ? "Hide folder tree" : "Show folder tree"}
+          title={localTreeOpen ? "Hide folder tree" : "Show folder tree"}
+        >
+          {localTreeOpen ? "‹" : "›"}
         </button>
       </div>
       <div
@@ -3247,14 +3339,18 @@ function App() {
           }
         }}
       >
-        <div className="local-pane-tree" style={{ flexBasis: `${localTreeWidth}px` }}>{renderLocalTreeNode(localFolderTree)}</div>
-        <div
-          className="pane-resize-handle"
-          onPointerDown={beginLocalTreeResize}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize LOCAL folder tree"
-        />
+        {localTreeOpen && (
+          <>
+            <div className="local-pane-tree" style={{ flexBasis: `${localTreeWidth}px` }}>{renderLocalTreeNode(localFolderTree)}</div>
+            <div
+              className="pane-resize-handle"
+              onPointerDown={beginLocalTreeResize}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize LOCAL folder tree"
+            />
+          </>
+        )}
         <div className="local-file-list">
           {localPath && (
             <button
@@ -3262,7 +3358,7 @@ function App() {
               onClick={() => void run(() => loadLocalFiles(parentPath(localPath)))}
             >
               <span>📁</span>
-              <span className="local-file-name">..</span>
+              <span className="local-file-name">../</span>
             </button>
           )}
           {localFiles.map((file) => (
@@ -3272,7 +3368,7 @@ function App() {
               draggable
               onDragStart={(event) => beginLocalDrag(event, file)}
               onDragEnd={finishDragAfterDrop}
-              onClick={() => setLocalSelected([file.path])}
+              onClick={(event) => selectLocalFile(file, event)}
               onDoubleClick={() => {
                 if (file.isDirectory) void run(() => loadLocalFiles(file.path));
                 else openLocalViewer(file.path);
@@ -3709,40 +3805,46 @@ function App() {
         </button>
       </nav>
       <div className="navigation">
-        <button
-          className="nav-button"
-          onClick={() =>
-            void run(() =>
-              loadFiles(searching
-                ? pathBeforeSearch
-                : remoteSshEntryId ? sshParentPath(path) : parentPath(path)),
-            )
-          }
-          disabled={busy || (!path && !searching)}
-        >
-          ↑
-        </button>
         <div className="crumbs">
-          <button onClick={() => void run(() => loadFiles(remoteSshEntryId ? "/" : ""))}>/</button>
-          {path
-            .split("/")
-            .filter(Boolean)
-            .map((part, index, parts) => (
-              <React.Fragment key={`${part}-${index}`}>
-                <span className="crumb-separator">›</span>
-                <button
-                  onClick={() =>
-                    void run(() =>
-                      loadFiles(remoteSshEntryId
-                        ? `/${parts.slice(0, index + 1).join("/")}`
-                        : parts.slice(0, index + 1).join("/")),
-                    )
-                  }
-                >
-                  {part}
-                </button>
-              </React.Fragment>
-            ))}
+          {activePane === "local" ? (
+            <>
+              <button onClick={() => void run(() => loadLocalFiles(""))}>~</button>
+              {localPath
+                .split("/")
+                .filter(Boolean)
+                .map((part, index, parts) => (
+                  <React.Fragment key={`local-${part}-${index}`}>
+                    <span className="crumb-separator">›</span>
+                    <button onClick={() => void run(() => loadLocalFiles(parts.slice(0, index + 1).join("/")))}>
+                      {part}
+                    </button>
+                  </React.Fragment>
+                ))}
+            </>
+          ) : (
+            <>
+              <button onClick={() => void run(() => loadFiles(remoteSshEntryId ? "/" : ""))}>/</button>
+              {path
+                .split("/")
+                .filter(Boolean)
+                .map((part, index, parts) => (
+                  <React.Fragment key={`${part}-${index}`}>
+                    <span className="crumb-separator">›</span>
+                    <button
+                      onClick={() =>
+                        void run(() =>
+                          loadFiles(remoteSshEntryId
+                            ? `/${parts.slice(0, index + 1).join("/")}`
+                            : parts.slice(0, index + 1).join("/")),
+                        )
+                      }
+                    >
+                      {part}
+                    </button>
+                  </React.Fragment>
+                ))}
+            </>
+          )}
         </div>
         <div className="search-control">
           <input
@@ -3838,7 +3940,7 @@ function App() {
             <div
               id="files"
               ref={fileAreaRef}
-              className="file-area"
+              className={`file-area ${dragSource === "local" && remoteSshEntryId ? "drop-target" : ""}`}
               onDragOver={(event) => {
                 handleDragAutoScroll(event, fileAreaRef.current);
                 if (dragSourceRef.current === "local" && remoteSshEntryId && dragItemsRef.current.length) {
@@ -3857,25 +3959,18 @@ function App() {
                 }
               }}
             >
-              {remoteSshEntryId && (
-                <div className="remote-navigation-items" aria-label="Remote directory navigation">
-                  <button
-                    type="button"
-                    onClick={() => void run(() => loadFiles(path))}
-                  >
-                    ./
-                  </button>
-                  <button
-                    type="button"
-                    disabled={path === "/"}
-                    onClick={() => void run(() => loadFiles(sshParentPath(path)))}
-                  >
-                    ../
-                  </button>
-                </div>
-              )}
               {viewMode === "grid" ? (
               <div className="file-grid">
+                {showRemoteUp && (
+                  <article
+                    className="file-tile file-tile-dotdot"
+                    onClick={() => void run(() => loadFiles(remoteSshEntryId ? sshParentPath(path) : parentPath(path)))}
+                  >
+                    <span className="tile-icon">📁</span>
+                    <strong>../</strong>
+                    <span>Parent folder</span>
+                  </article>
+                )}
                 {files.map((file) => (
                   <article
                     key={file.path}
@@ -3956,6 +4051,12 @@ function App() {
                   </tr>
                 </thead>
                 <tbody>
+                  {showRemoteUp && (
+                    <tr className="file-row file-row-dotdot" onClick={() => void run(() => loadFiles(remoteSshEntryId ? sshParentPath(path) : parentPath(path)))}>
+                      <td />
+                      <td colSpan={3}>📁 ../</td>
+                    </tr>
+                  )}
                   {files.map((file) => (
                     <tr
                       key={file.path}
