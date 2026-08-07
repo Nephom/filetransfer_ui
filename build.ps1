@@ -131,6 +131,28 @@ function Ensure-RustToolchain {
     Invoke-Native "rustup" @("target", "add", "x86_64-pc-windows-msvc")
 }
 
+function Ensure-Nasm {
+    # `russh` (the SSH backend) defaults to the `aws-lc-rs` crypto backend,
+    # whose `aws-lc-sys` build script compiles hand-written x86_64 assembly
+    # for its optimized primitives on Windows using NASM specifically (not
+    # the MSVC assembler `ml64.exe` that ships with the C++ Build Tools).
+    # Without it, `cargo check`/`cargo build` fails with "NASM command not
+    # found" the moment `aws-lc-sys` builds, even though every other native
+    # dependency links fine.
+    if (Get-Command "nasm" -ErrorAction SilentlyContinue) {
+        Write-Host "NASM found."
+        return
+    }
+
+    Write-Host "NASM not found. The aws-lc-sys crate (a russh SSH dependency) requires it to build its assembly-optimized crypto routines on Windows."
+    Install-WingetPackage -Id "NASM.NASM"
+
+    if (-not (Get-Command "nasm" -ErrorAction SilentlyContinue)) {
+        throw "NASM installation did not complete. Install it manually from https://www.nasm.us/, ensure it is on PATH, then re-run '.\build.ps1 build'."
+    }
+    Write-Host "NASM is ready."
+}
+
 function Ensure-WindowsBuildTools {
     Update-EnvironmentPath
 
@@ -147,6 +169,7 @@ function Ensure-WindowsBuildTools {
     if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue) -or -not (Get-Command "rustc" -ErrorAction SilentlyContinue)) {
         Install-WingetPackage -Id "Rustlang.Rustup"
     }
+    Ensure-Nasm
 
     Ensure-RustToolchain
     Ensure-MsvcBuildTools
