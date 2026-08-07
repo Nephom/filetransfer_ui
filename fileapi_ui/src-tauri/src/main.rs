@@ -182,6 +182,24 @@ async fn pick_upload_files() -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// Build the `name_(n).ext` candidate for the n-th collision-avoidance
+/// attempt on `name` (e.g. `video.mp4` -> `video_(1).mp4` -> `video_(2).mp4`).
+/// Matching Windows/macOS Explorer's own "keep both files" convention, this
+/// is applied automatically -- never by prompting the user -- everywhere a
+/// move/rename/upload/download could otherwise silently overwrite an
+/// unrelated file that happens to share its destination name.
+pub fn dedupe_candidate_name(name: &str, attempt: u32) -> String {
+    let path = Path::new(name);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(name);
+    match path.extension().and_then(|value| value.to_str()) {
+        Some(extension) => format!("{stem}_({attempt}).{extension}"),
+        None => format!("{stem}_({attempt})"),
+    }
+}
+
 fn local_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -255,10 +273,34 @@ fn local_create_directory(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn local_rename_path(old_path: String, new_path: String) -> Result<(), String> {
+fn local_rename_path(old_path: String, new_path: String) -> Result<String, String> {
     let old_resolved = resolve_local_transfer_path(&old_path)?;
-    let new_resolved = resolve_local_new_path(&new_path)?;
-    std::fs::rename(&old_resolved, &new_resolved).map_err(|error| error.to_string())
+    let mut new_resolved = resolve_local_new_path(&new_path)?;
+    if new_resolved != old_resolved && new_resolved.exists() {
+        let name = new_resolved
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "Invalid local path".to_string())?
+            .to_string();
+        let parent = new_resolved
+            .parent()
+            .ok_or_else(|| "Invalid local path".to_string())?
+            .to_path_buf();
+        let mut attempt = 1;
+        loop {
+            let candidate = parent.join(dedupe_candidate_name(&name, attempt));
+            if !candidate.exists() {
+                new_resolved = candidate;
+                break;
+            }
+            attempt += 1;
+        }
+    }
+    std::fs::rename(&old_resolved, &new_resolved).map_err(|error| error.to_string())?;
+    Ok(new_resolved
+        .strip_prefix(local_home()?.canonicalize().map_err(|error| error.to_string())?)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| new_resolved.display().to_string()))
 }
 
 #[tauri::command]
@@ -269,6 +311,125 @@ fn local_delete_path(path: String, is_directory: bool) -> Result<(), String> {
     } else {
         std::fs::remove_file(&resolved).map_err(|error| error.to_string())
     }
+}
+
+/// Recursively add `path` (a file or directory) to `writer` under `name`,
+/// preserving the folder structure of a directory tree.
+fn add_path_to_zip<W: std::io::Write + std::io::Seek>(
+    writer: &mut zip::ZipWriter<W>,
+    path: &std::path::Path,
+    name: &str,
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if metadata.is_dir() {
+        writer
+            .add_directory(format!("{name}/"), options)
+            .map_err(|error| error.to_string())?;
+        let mut entries = std::fs::read_dir(path)
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let child_name = entry
+                .file_name()
+                .to_str()
+                .ok_or_else(|| "Compress path contains a non-UTF-8 filename".to_string())?
+                .to_string();
+            add_path_to_zip(writer, &entry.path(), &format!("{name}/{child_name}"), options)?;
+        }
+    } else if metadata.is_file() {
+        writer
+            .start_file(name, options)
+            .map_err(|error| error.to_string())?;
+        let data = std::fs::read(path).map_err(|error| error.to_string())?;
+        std::io::Write::write_all(writer, &data).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Compress `paths` (each a file/folder already inside `destination_folder`)
+/// into a new `<archive_name>.zip` in `destination_folder`. Collision
+/// avoidance auto-appends "_(n)" to the archive name -- it never prompts.
+#[tauri::command]
+fn local_compress_paths(paths: Vec<String>, destination_folder: String, archive_name: String) -> Result<String, String> {
+    let destination_dir = resolve_local_transfer_path(&destination_folder)?;
+    if !destination_dir.is_dir() {
+        return Err("Destination is not a folder".to_string());
+    }
+    let items = paths
+        .iter()
+        .map(|item| {
+            let resolved = resolve_local_transfer_path(item)?;
+            let name = resolved
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "Invalid local path".to_string())?
+                .to_string();
+            Ok::<_, String>((resolved, name))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let base_name = if archive_name.trim().is_empty() { "Archive".to_string() } else { archive_name.trim().to_string() };
+    let zip_name = if base_name.to_lowercase().ends_with(".zip") { base_name } else { format!("{base_name}.zip") };
+    let mut final_name = zip_name.clone();
+    let mut attempt = 1;
+    while destination_dir.join(&final_name).exists() {
+        final_name = dedupe_candidate_name(&zip_name, attempt);
+        attempt += 1;
+    }
+
+    let archive_path = destination_dir.join(&final_name);
+    let file = std::fs::File::create(&archive_path).map_err(|error| error.to_string())?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for (resolved, name) in &items {
+        add_path_to_zip(&mut writer, resolved, name, options)?;
+    }
+    writer.finish().map_err(|error| error.to_string())?;
+    Ok(final_name)
+}
+
+/// Extract a local `.zip` archive into a new deduped subfolder of
+/// `destination_folder` (named after the archive) -- never overwriting an
+/// existing folder of that name, and never prompting the user about it.
+#[tauri::command]
+fn local_extract_archive(path: String, destination_folder: String) -> Result<String, String> {
+    let archive_path = resolve_local_transfer_path(&path)?;
+    let destination_dir = resolve_local_transfer_path(&destination_folder)?;
+    let file = std::fs::File::open(&archive_path).map_err(|error| error.to_string())?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| error.to_string())?;
+
+    let stem = archive_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("Extracted")
+        .to_string();
+    let mut final_name = stem.clone();
+    let mut attempt = 1;
+    while destination_dir.join(&final_name).exists() {
+        final_name = dedupe_candidate_name(&stem, attempt);
+        attempt += 1;
+    }
+    let target_root = destination_dir.join(&final_name);
+    std::fs::create_dir_all(&target_root).map_err(|error| error.to_string())?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        let Some(entry_path) = entry.enclosed_name() else { continue };
+        let out_path = target_root.join(entry_path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path).map_err(|error| error.to_string())?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            let mut out_file = std::fs::File::create(&out_path).map_err(|error| error.to_string())?;
+            std::io::copy(&mut entry, &mut out_file).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(final_name)
 }
 
 #[tauri::command]
@@ -727,7 +888,7 @@ async fn ssh_delete_path(profile: ssh::SshProfile, path: String, is_directory: b
 }
 
 #[tauri::command]
-async fn ssh_rename_path(profile: ssh::SshProfile, old_path: String, new_path: String) -> Result<(), String> {
+async fn ssh_rename_path(profile: ssh::SshProfile, old_path: String, new_path: String) -> Result<String, String> {
     ssh::sftp::rename_path(profile, old_path, new_path).await
 }
 
@@ -746,6 +907,16 @@ async fn ssh_download_path(
 ) -> Result<String, String> {
     let local_destination_folder = resolve_local_transfer_path(&local_destination_folder)?;
     ssh::sftp::download_path(profile, remote_path, is_directory, local_destination_folder.display().to_string()).await
+}
+
+#[tauri::command]
+async fn ssh_compress_paths(profile: ssh::SshProfile, paths: Vec<String>, destination_folder: String, archive_name: String) -> Result<String, String> {
+    ssh::sftp::compress_paths(profile, paths, destination_folder, archive_name).await
+}
+
+#[tauri::command]
+async fn ssh_extract_archive(profile: ssh::SshProfile, path: String, destination_folder: String) -> Result<String, String> {
+    ssh::sftp::extract_archive(profile, path, destination_folder).await
 }
 
 /// Download into the user's real Downloads folder, matching the API Remote
@@ -992,6 +1163,8 @@ fn main() {
             local_create_directory,
             local_rename_path,
             local_delete_path,
+            local_compress_paths,
+            local_extract_archive,
             inspect_upload_paths,
             hash_upload_paths,
             api_upload_paths,
@@ -1020,6 +1193,8 @@ fn main() {
             ssh_download_path,
             ssh_download_to_downloads,
             ssh_download_to_drag_staging,
+            ssh_compress_paths,
+            ssh_extract_archive,
             save_ssh_logs,
             read_local_file,
             edit_local_file,

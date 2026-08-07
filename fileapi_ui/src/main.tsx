@@ -2500,8 +2500,8 @@ function App() {
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
         for (const item of items) {
           const newPath = joinSshPath(destination, item.name);
-          await invoke("ssh_rename_path", { profile, oldPath: item.path, newPath });
-          recordUndoableMove({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath });
+          const finalPath = await invoke<string>("ssh_rename_path", { profile, oldPath: item.path, newPath });
+          recordUndoableMove({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath: finalPath });
         }
         setDragItems([]);
         setDropTarget("");
@@ -2545,6 +2545,35 @@ function App() {
         children: [],
       });
       await Promise.all([loadFiles(path), loadTreeChildren("", true)]);
+    });
+
+  // LOCAL -> LOCAL move, mirroring `moveItems`'s REMOTE -> REMOTE branch:
+  // dragging a LOCAL file/folder onto another LOCAL folder (in the file
+  // list/grid) or onto a LOCAL folder-tree node renames it into that
+  // folder. `local_rename_path` already avoids overwriting an existing
+  // same-named item by auto-appending "_(n)".
+  const moveLocalItems = (items: FileItem[], destination: string) =>
+    run(async () => {
+      if (!isValidMoveTarget(items, destination))
+        throw new Error(
+          "Choose a folder other than the current folder or a folder inside a selected folder.",
+        );
+      let lastFinalName = "";
+      for (const item of items) {
+        const newPath = destination ? `${destination}/${item.name}` : item.name;
+        const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
+        lastFinalName = finalPath.split("/").pop() || item.name;
+      }
+      setDragItems([]);
+      setDropTarget("");
+      setLocalSelected([]);
+      notify(
+        items.length === 1
+          ? `Moved ${lastFinalName} in LOCAL.`
+          : `Moved ${items.length} items in LOCAL.`,
+      );
+      await loadLocalFiles(localPath);
+      if (destination !== localPath) void loadLocalTreeChildren(destination, true);
     });
 
   const beginDrag = (event: React.DragEvent, file: FileItem) => {
@@ -3169,9 +3198,9 @@ function App() {
         const trimmedName = newName.trim();
         const parent = item.path.split("/").slice(0, -1).join("/");
         const newPath = parent ? `${parent}/${trimmedName}` : trimmedName;
-        await invoke("local_rename_path", { oldPath: item.path, newPath });
+        const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
         await loadLocalFiles(localPath);
-        notify(`Renamed ${item.name} in LOCAL.`);
+        notify(`Renamed ${item.name} to ${finalPath.split("/").pop()} in LOCAL.`);
         return;
       }
       if (selectedItems.length !== 1) return;
@@ -3183,10 +3212,10 @@ function App() {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
          const newPath = joinSshPath(sshParentPath(item.path), trimmedName);
-        await invoke("ssh_rename_path", { profile, oldPath: item.path, newPath });
-        recordUndoableRename({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath });
+        const finalPath = await invoke<string>("ssh_rename_path", { profile, oldPath: item.path, newPath });
+        recordUndoableRename({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath: finalPath });
         await loadFiles(path);
-        notify(`Renamed ${item.name}.`);
+        notify(`Renamed ${item.name} to ${finalPath.split("/").pop()}.`);
         return;
       }
       const response = await api("/api/files/rename", {
@@ -3279,6 +3308,75 @@ function App() {
       setShareUrl(url);
       notify("Share link created.");
     });
+
+  // .zip compression/extraction. Collision-avoidance on the archive/output
+  // name is handled entirely on the Rust side (auto "_(n)" suffix) -- never
+  // by prompting here -- only the archive *name itself* is ever prompted.
+  const compressLocalItems = () =>
+    run(async () => {
+      if (!localSelectedItems.length) return;
+      const defaultName = localSelectedItems.length === 1
+        ? localSelectedItems[0].name.replace(/\.[^./]+$/, "")
+        : "Archive";
+      const archiveName = window.prompt("Archive name", defaultName);
+      if (!archiveName?.trim()) return;
+      const finalName = await invoke<string>("local_compress_paths", {
+        paths: localSelectedItems.map((item) => item.path),
+        destinationFolder: localPath,
+        archiveName: archiveName.trim(),
+      });
+      await loadLocalFiles(localPath);
+      notify(`Created ${finalName} in LOCAL.`);
+    });
+
+  const extractLocalArchive = () =>
+    run(async () => {
+      if (localSelectedItems.length !== 1) return;
+      const item = localSelectedItems[0];
+      const finalName = await invoke<string>("local_extract_archive", {
+        path: item.path,
+        destinationFolder: localPath,
+      });
+      await loadLocalFiles(localPath);
+      notify(`Extracted to ${finalName} in LOCAL.`);
+    });
+
+  const compressRemoteItems = () =>
+    run(async () => {
+      if (!selectedItems.length || !remoteSshEntryId) return;
+      const profile = findSshProfileById(remoteSshEntryId);
+      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      const defaultName = selectedItems.length === 1
+        ? selectedItems[0].name.replace(/\.[^./]+$/, "")
+        : "Archive";
+      const archiveName = window.prompt("Archive name", defaultName);
+      if (!archiveName?.trim()) return;
+      const finalName = await invoke<string>("ssh_compress_paths", {
+        profile,
+        paths: selectedItems.map((item) => item.path),
+        destinationFolder: path,
+        archiveName: archiveName.trim(),
+      });
+      await loadFiles(path);
+      notify(`Created ${finalName}.`);
+    });
+
+  const extractRemoteArchive = () =>
+    run(async () => {
+      if (selectedItems.length !== 1 || !remoteSshEntryId) return;
+      const profile = findSshProfileById(remoteSshEntryId);
+      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      const item = selectedItems[0];
+      const finalName = await invoke<string>("ssh_extract_archive", {
+        profile,
+        path: item.path,
+        destinationFolder: path,
+      });
+      await loadFiles(path);
+      notify(`Extracted to ${finalName}.`);
+    });
+
+  const isZipFile = (item: FileItem) => !item.isDirectory && /\.zip$/i.test(item.name);
 
   const changePassword = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -3396,6 +3494,12 @@ function App() {
             setDropTarget(node.path);
             scheduleLocalTreeExpand(node);
             handleDragAutoScroll(event, localFolderTreeRef.current);
+          } else if (dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, node.path)) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setDropTarget(node.path);
+            scheduleLocalTreeExpand(node);
+            handleDragAutoScroll(event, localFolderTreeRef.current);
           }
         }}
         onDragLeave={() => {
@@ -3410,6 +3514,13 @@ function App() {
             setDropTarget("");
             const items = dragItemsRef.current;
             downloadRemoteItemsToLocal(items, node.path);
+          } else if (dragSourceRef.current === "local") {
+            event.preventDefault();
+            event.stopPropagation();
+            stopDragAutoScroll();
+            setDropTarget("");
+            const items = dragItemsRef.current;
+            void moveLocalItems(items, node.path);
           }
         }}
       >
@@ -3427,8 +3538,8 @@ function App() {
           <span className="folder-mini" />
           {node.name}
         </button>
-        {dragItems.length > 0 && dragSource === "remote" && dropTarget === node.path && (
-          <span className="drop-label">Download here</span>
+        {dragItems.length > 0 && dropTarget === node.path && (
+          <span className="drop-label">{dragSource === "remote" ? "Download here" : "Move here"}</span>
         )}
       </div>
       {node.expanded && (
@@ -3546,10 +3657,25 @@ function App() {
               <article
                 key={file.path}
                 data-path={file.path}
-                className={`file-tile ${localSelected.includes(file.path) ? "selected" : ""}`}
+                className={`file-tile ${localSelected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
                 draggable
                 onDragStart={(event) => beginLocalDrag(event, file)}
                 onDragEnd={finishDragAfterDrop}
+                onDragOver={(event) => {
+                  if (file.isDirectory && dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, file.path)) {
+                    event.preventDefault();
+                    setDropTarget(file.path);
+                  }
+                }}
+                onDrop={(event) => {
+                  if (file.isDirectory && dragSourceRef.current === "local") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const items = dragItemsRef.current;
+                    finishDrag();
+                    void moveLocalItems(items, file.path);
+                  }
+                }}
                 onClick={(event) => selectLocalFile(file, event)}
                 onDoubleClick={() => {
                   if (file.isDirectory) void run(() => loadLocalFiles(file.path));
@@ -3589,10 +3715,25 @@ function App() {
             <button
               key={file.path}
               data-path={file.path}
-              className={`local-file ${localSelected.includes(file.path) ? "selected" : ""}`}
+              className={`local-file ${localSelected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
               draggable
               onDragStart={(event) => beginLocalDrag(event, file)}
               onDragEnd={finishDragAfterDrop}
+              onDragOver={(event) => {
+                if (file.isDirectory && dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, file.path)) {
+                  event.preventDefault();
+                  setDropTarget(file.path);
+                }
+              }}
+              onDrop={(event) => {
+                if (file.isDirectory && dragSourceRef.current === "local") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const items = dragItemsRef.current;
+                  finishDrag();
+                  void moveLocalItems(items, file.path);
+                }
+              }}
               onClick={(event) => selectLocalFile(file, event)}
               onDoubleClick={() => {
                 if (file.isDirectory) void run(() => loadLocalFiles(file.path));
@@ -4436,6 +4577,25 @@ function App() {
                 disabled={!localSelectedItems.length}
                 onClick={() => {
                   setContextMenu(null);
+                  void compressLocalItems();
+                }}
+              >
+                Compress to .zip
+              </button>
+              <button
+                disabled={localSelectedItems.length !== 1 || !isZipFile(localSelectedItems[0])}
+                onClick={() => {
+                  setContextMenu(null);
+                  void extractLocalArchive();
+                }}
+              >
+                Extract here
+              </button>
+              <hr />
+              <button
+                disabled={!localSelectedItems.length}
+                onClick={() => {
+                  setContextMenu(null);
                   void remove();
                 }}
               >
@@ -4483,6 +4643,27 @@ function App() {
                 }}
               >
                 Share
+              </button>
+              <hr />
+              <button
+                disabled={!selectedItems.length || !remoteSshEntryId}
+                title={!remoteSshEntryId ? "Compression is only available for an SSH REMOTE connection." : undefined}
+                onClick={() => {
+                  setContextMenu(null);
+                  void compressRemoteItems();
+                }}
+              >
+                Compress to .zip
+              </button>
+              <button
+                disabled={selectedItems.length !== 1 || !remoteSshEntryId || !isZipFile(selectedItems[0])}
+                title={!remoteSshEntryId ? "Extraction is only available for an SSH REMOTE connection." : undefined}
+                onClick={() => {
+                  setContextMenu(null);
+                  void extractRemoteArchive();
+                }}
+              >
+                Extract here
               </button>
               <hr />
               <button
