@@ -14,7 +14,7 @@ pub mod secrets;
 pub mod sftp;
 
 use russh::client::{self, AuthResult};
-use russh::keys::agent::client::AgentClient;
+use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
 use russh::ChannelMsg;
 use serde::{Deserialize, Serialize};
@@ -120,31 +120,20 @@ fn profile_label(profile: &SshProfile) -> String {
     format!("{}@{}:{}", profile.username, profile.host, profile.port)
 }
 
-/// Try every identity the running SSH agent (OpenSSH agent protocol on Unix
-/// via `SSH_AUTH_SOCK`; Windows Pageant, via the same `AgentClient` API in
-/// `russh` 0.62) currently holds. Returns `Ok(true)` on success, `Ok(false)`
-/// if no identity worked (or no agent is running), and never treats "agent
-/// unavailable" as a hard error -- that is an expected, common case (no
-/// agent running at all) that should just fall through to the next method.
-async fn try_agent_auth(
+/// Try every identity held by an already-connected agent client. Shared by
+/// every platform's `try_agent_auth` below -- only *connecting* to an agent
+/// differs by platform (Unix domain socket vs. Windows Pageant/named pipe);
+/// listing identities and attempting each one is identical everywhere.
+/// Returns `true` on success.
+async fn try_agent_identities<S>(
     handle: &mut client::Handle<ClientHandler>,
     profile: &SshProfile,
-) -> bool {
+    mut agent: AgentClient<S>,
+) -> bool
+where
+    S: AgentStream + Send + Unpin,
+{
     let label = profile_label(profile);
-    let mut agent = match AgentClient::connect_env().await {
-        Ok(agent) => agent,
-        Err(error) => {
-            crate::oplog::log(
-                "DEBUG",
-                "ssh_auth",
-                "skipped",
-                &label,
-                "agent",
-                &format!("No SSH agent available: {error}"),
-            );
-            return false;
-        }
-    };
     let identities = match agent.request_identities().await {
         Ok(identities) => identities,
         Err(error) => {
@@ -218,6 +207,96 @@ async fn try_agent_auth(
             }
         }
     }
+    false
+}
+
+/// Try every identity the running SSH agent currently holds. Returns
+/// `true` on success, `false` if no identity worked (or no agent is
+/// running), and never treats "agent unavailable" as a hard error -- that
+/// is an expected, common case (no agent running at all) that should just
+/// fall through to the next auth method.
+///
+/// Unix (including macOS): connects via the OpenSSH agent protocol over
+/// the `SSH_AUTH_SOCK` Unix-domain socket, exactly like a normal `ssh`
+/// client.
+#[cfg(unix)]
+async fn try_agent_auth(
+    handle: &mut client::Handle<ClientHandler>,
+    profile: &SshProfile,
+) -> bool {
+    let label = profile_label(profile);
+    let agent = match AgentClient::connect_env().await {
+        Ok(agent) => agent,
+        Err(error) => {
+            crate::oplog::log(
+                "DEBUG",
+                "ssh_auth",
+                "skipped",
+                &label,
+                "agent",
+                &format!("No SSH agent available: {error}"),
+            );
+            return false;
+        }
+    };
+    try_agent_identities(handle, profile, agent).await
+}
+
+/// Windows has no `SSH_AUTH_SOCK` convention. Try, in order: a running
+/// Pageant instance (PuTTY's agent, also used by some Git-for-Windows/WSL
+/// bridges), then the well-known named pipe the "OpenSSH Authentication
+/// Agent" Windows service listens on. Either is optional; failing to
+/// connect to one falls through to the next, and failing both simply
+/// falls through to the next auth method entirely (default identity
+/// files, then the configured key, then the stored password).
+#[cfg(windows)]
+async fn try_agent_auth(
+    handle: &mut client::Handle<ClientHandler>,
+    profile: &SshProfile,
+) -> bool {
+    let label = profile_label(profile);
+
+    match AgentClient::connect_pageant().await {
+        Ok(agent) => {
+            if try_agent_identities(handle, profile, agent).await {
+                return true;
+            }
+        }
+        Err(error) => {
+            crate::oplog::log(
+                "DEBUG",
+                "ssh_auth",
+                "skipped",
+                &label,
+                "agent",
+                &format!("Pageant not available: {error}"),
+            );
+        }
+    }
+
+    match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+        Ok(agent) => try_agent_identities(handle, profile, agent).await,
+        Err(error) => {
+            crate::oplog::log(
+                "DEBUG",
+                "ssh_auth",
+                "skipped",
+                &label,
+                "agent",
+                &format!("OpenSSH Authentication Agent service not available: {error}"),
+            );
+            false
+        }
+    }
+}
+
+/// No known agent transport on any other target; fall straight through to
+/// the next auth method.
+#[cfg(not(any(unix, windows)))]
+async fn try_agent_auth(
+    _handle: &mut client::Handle<ClientHandler>,
+    _profile: &SshProfile,
+) -> bool {
     false
 }
 
