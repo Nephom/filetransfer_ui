@@ -50,6 +50,27 @@ function Update-EnvironmentPath {
     $env:Path = ($entries | Select-Object -Unique) -join ";"
 }
 
+function Add-UserPathEntry {
+    # Persist a directory onto the *User* PATH environment variable and make
+    # it immediately visible to this process. Writing to the Machine scope
+    # requires Administrator and is not reliably readable back in the same
+    # session either way, so User scope is what actually works here: some
+    # winget packages (NASM in particular) install the binary without
+    # registering *any* PATH entry, Machine or User, so relying on
+    # Update-EnvironmentPath picking up something the installer never wrote
+    # does not help -- the directory has to be added explicitly.
+    param([Parameter(Mandatory = $true)][string]$Directory)
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $entries = @($userPath -split ";") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    if (($entries | Where-Object { $_.TrimEnd('\') -eq $Directory.TrimEnd('\') }).Count -eq 0) {
+        $newUserPath = (@($entries) + $Directory) -join ";"
+        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+        Write-Host "Added '$Directory' to the User PATH environment variable."
+    }
+    Update-EnvironmentPath
+}
+
 function Install-WingetPackage {
     param(
         [Parameter(Mandatory = $true)][string]$Id,
@@ -131,6 +152,30 @@ function Ensure-RustToolchain {
     Invoke-Native "rustup" @("target", "add", "x86_64-pc-windows-msvc")
 }
 
+function Find-NasmExecutable {
+    # winget's NASM.NASM package has been observed to install the binary
+    # without registering *any* PATH entry (Machine or User), so
+    # Get-Command/Update-EnvironmentPath alone cannot find it afterward.
+    # Search the locations the official NASM installer and winget's
+    # per-user package store actually use.
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "NASM\nasm.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "NASM\nasm.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+
+    $wingetPackages = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
+    if (Test-Path -LiteralPath $wingetPackages) {
+        $found = Get-ChildItem -LiteralPath $wingetPackages -Filter "nasm.exe" -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($found) { return $found.FullName }
+    }
+
+    return $null
+}
+
 function Ensure-Nasm {
     # `russh` (the SSH backend) defaults to the `aws-lc-rs` crypto backend,
     # whose `aws-lc-sys` build script compiles hand-written x86_64 assembly
@@ -148,7 +193,20 @@ function Ensure-Nasm {
     Install-WingetPackage -Id "NASM.NASM"
 
     if (-not (Get-Command "nasm" -ErrorAction SilentlyContinue)) {
-        throw "NASM installation did not complete. Install it manually from https://www.nasm.us/, ensure it is on PATH, then re-run '.\build.ps1 build'."
+        # The winget install may have succeeded without adding NASM to
+        # PATH at all. Locate the installed binary ourselves and add its
+        # folder to the *User* PATH environment variable (this is the
+        # scope that actually persists and takes effect here -- see
+        # Add-UserPathEntry).
+        $nasmExe = Find-NasmExecutable
+        if ($nasmExe) {
+            Write-Host "Found NASM at '$nasmExe' but it was not registered on PATH by its installer; adding it now."
+            Add-UserPathEntry -Directory (Split-Path -Parent $nasmExe)
+        }
+    }
+
+    if (-not (Get-Command "nasm" -ErrorAction SilentlyContinue)) {
+        throw "NASM installation did not complete. Install it manually from https://www.nasm.us/, add its install folder to your User PATH environment variable (System Properties > Environment Variables > User variables > Path), open a new PowerShell window, then re-run '.\build.ps1 build'."
     }
     Write-Host "NASM is ready."
 }
