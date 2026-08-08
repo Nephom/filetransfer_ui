@@ -2702,7 +2702,7 @@ function App() {
     dragSourceRef.current = "local";
     setDragItems(items);
     setDragSource("local");
-    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData("application/x-filetransfer-source", "local");
   };
 
