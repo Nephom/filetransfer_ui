@@ -80,6 +80,9 @@ class LocationPermissionManager {
 
     // Preserve legacy users during migration, but never grant new Locations implicitly.
     const legacyCapabilities = this.normalizeCapabilities(user?.permissions || ['read']);
+    // Legacy users previously had normal folder operations; keep mkdir available
+    // until an explicit per-Location permission mapping is configured.
+    if (!legacyCapabilities.includes('mkdir')) legacyCapabilities.push('mkdir');
     if (this.locationManager.getLocation('default')?.enabled) {
       return { default: legacyCapabilities.includes('list') ? legacyCapabilities : ['list', ...legacyCapabilities] };
     }
