@@ -5,8 +5,15 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { resolveResource } from "@tauri-apps/api/path";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
-import { FitAddon } from "@xterm/addon-fit";
-import { Terminal } from "@xterm/xterm";
+// `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
+// imported inside the terminal-setup effect below instead of eagerly here:
+// they're only ever needed once the user actually opens the SSH terminal
+// panel, and eagerly bundling a terminal emulator into the app's critical
+// startup path measurably delays first paint for no benefit to everyone who
+// never opens a terminal in a given session. Only the *type* is imported
+// here, which TypeScript/esbuild erases entirely at build time (no runtime
+// cost, so it doesn't defeat the point of the dynamic import below).
+import type { Terminal } from "@xterm/xterm";
 import "./styles.css";
 import "./login.css";
 import "./location-control.css";
@@ -14,7 +21,6 @@ import "./tls.css";
 import "./webui-shell.css";
 import "./explorer-parity.css";
 import "./desktop-ui.css";
-import "@xterm/xterm/css/xterm.css";
 
 type FileItem = {
   name: string;
@@ -959,55 +965,70 @@ function App() {
 
   useEffect(() => {
     if (!terminalOpen || !terminalHostRef.current) return undefined;
-    const terminal = new Terminal({
-      cursorBlink: true,
-      convertEol: true,
-      fontFamily: "monospace",
-      fontSize: 13,
-      theme: { background: "#020a12", foreground: "#d9eafa", cursor: "#47cdf1" },
-    });
-    const fit = new FitAddon();
-    terminal.loadAddon(fit);
-    terminal.open(terminalHostRef.current);
-    fit.fit();
-    terminalInstanceRef.current = terminal;
-    shellInputRef.current = "";
-    terminal.write(sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n");
-    const resizeSshPty = () => {
-      const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
-      if (!tab?.sessionId) return;
-      void invoke("ssh_resize", { sessionId: tab.sessionId, cols: terminal.cols, rows: terminal.rows });
-    };
-    const resizeObserver = new ResizeObserver(() => {
+    let disposed = false;
+    let cleanup: (() => void) | undefined;
+    void Promise.all([
+      import("@xterm/xterm"),
+      import("@xterm/addon-fit"),
+      import("@xterm/xterm/css/xterm.css"),
+    ]).then(([{ Terminal }, { FitAddon }]) => {
+      // The effect (or the whole terminal panel) may have already been
+      // torn down by the time this dynamic import resolves.
+      if (disposed || !terminalHostRef.current) return;
+      const terminal = new Terminal({
+        cursorBlink: true,
+        convertEol: true,
+        fontFamily: "monospace",
+        fontSize: 13,
+        theme: { background: "#020a12", foreground: "#d9eafa", cursor: "#47cdf1" },
+      });
+      const fit = new FitAddon();
+      terminal.loadAddon(fit);
+      terminal.open(terminalHostRef.current);
       fit.fit();
+      terminalInstanceRef.current = terminal;
+      shellInputRef.current = "";
+      terminal.write(sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n");
+      const resizeSshPty = () => {
+        const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
+        if (!tab?.sessionId) return;
+        void invoke("ssh_resize", { sessionId: tab.sessionId, cols: terminal.cols, rows: terminal.rows });
+      };
+      const resizeObserver = new ResizeObserver(() => {
+        fit.fit();
+        resizeSshPty();
+      });
+      resizeObserver.observe(terminalHostRef.current);
       resizeSshPty();
-    });
-    resizeObserver.observe(terminalHostRef.current);
-    resizeSshPty();
-    const inputListener = terminal.onData((data: string) => {
-      const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
-      if (!tab?.sessionId) return;
-      void invoke("ssh_write", { sessionId: tab.sessionId, data });
-      if (recordingRef.current && !sshSecretPromptRef.current) {
-        if (data === "\r" || data === "\n") {
-          if (shellInputRef.current.trim()) {
-            const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
-            commandLogRef.current += command;
-            setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, commandLog: item.commandLog + command } : item));
+      const inputListener = terminal.onData((data: string) => {
+        const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
+        if (!tab?.sessionId) return;
+        void invoke("ssh_write", { sessionId: tab.sessionId, data });
+        if (recordingRef.current && !sshSecretPromptRef.current) {
+          if (data === "\r" || data === "\n") {
+            if (shellInputRef.current.trim()) {
+              const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
+              commandLogRef.current += command;
+              setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, commandLog: item.commandLog + command } : item));
+            }
+            shellInputRef.current = "";
+          } else if (data === "\u007f") {
+            shellInputRef.current = shellInputRef.current.slice(0, -1);
+          } else if (!data.startsWith("\u001b")) {
+            shellInputRef.current += data;
           }
-          shellInputRef.current = "";
-        } else if (data === "\u007f") {
-          shellInputRef.current = shellInputRef.current.slice(0, -1);
-        } else if (!data.startsWith("\u001b")) {
-          shellInputRef.current += data;
         }
-      }
+      });
+      cleanup = () => {
+        inputListener.dispose();
+        resizeObserver.disconnect();
+        terminal.dispose();
+        terminalInstanceRef.current = null;
+      };
     });
     return () => {
-      inputListener.dispose();
-      resizeObserver.disconnect();
-      terminal.dispose();
-      terminalInstanceRef.current = null;
+      disposed = true;
+      cleanup?.();
     };
   }, [terminalOpen, activeSshTabId, sshTabs.find((item) => item.id === activeSshTabId)?.sessionId]);
 
