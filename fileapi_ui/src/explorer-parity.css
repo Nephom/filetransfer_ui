@@ -173,6 +173,20 @@
 .local-pane-body { display: flex; flex: 1; min-height: 0; }
 .local-pane-body.drop-target { outline: 2px solid #4ad9f4; outline-offset: -2px; background: rgba(18, 81, 106, .25); }
 .file-area.drop-target { outline: 2px solid #4ad9f4; outline-offset: -2px; background: rgba(18, 81, 106, .25); }
+/* The LOCAL pane is no longer confined to HOME while running elevated
+   (root/Administrator) -- see `isLocalElevated` in main.tsx. Everything
+   about that pane turns red as a standing reminder that drag-and-drop moves
+   and deletes here can now reach anywhere on disk, not just HOME. */
+.local-pane.privileged { border-right-color: #ff4d6d; box-shadow: inset 0 0 0 1px rgba(255, 77, 109, .45); }
+.local-pane.privileged.active-pane { box-shadow: inset 0 0 0 2px #ff4d6d; }
+.local-pane.privileged .local-pane-heading { color: #ffd9e0; }
+.local-pane.privileged .local-pane-heading .sidebar-label { color: #ff8fa3; }
+.local-pane.privileged .local-pane-body.drop-target { outline-color: #ff4d6d; background: rgba(255, 77, 109, .25); }
+.local-pane.privileged .file-tile.drop-target,
+.local-pane.privileged .file-row.drop-target,
+.local-pane.privileged .local-file.drop-target { outline: 2px solid #ff4d6d; outline-offset: -2px; border-color: #ff4d6d; background: rgba(255, 77, 109, .2); box-shadow: none; }
+.local-pane.privileged .tree-node.drop-target { color: #fff0f2; background: #611f2c; border-color: #ff4d6d; box-shadow: inset 3px 0 #ff4d6d; }
+.privileged-badge { color: #ff4d6d; font-weight: 700; }
 .local-pane-tree { flex: 0 0 auto; min-width: 80px; min-height: 0; overflow-y: auto; padding: 6px; }
 .local-file-list { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
 .local-file { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 7px; align-items: center; width: 100%; padding: 8px 7px; border: 1px solid transparent; border-radius: 4px; color: #d9eafa; background: transparent; text-align: left; cursor: pointer; }

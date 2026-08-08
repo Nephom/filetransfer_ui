@@ -207,10 +207,79 @@ fn local_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "Unable to locate the local home directory".to_string())
 }
 
-fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
-    let home = local_home()?
+/// HOME's own real, absolute filesystem path. The frontend's LOCAL pane
+/// otherwise only ever deals in HOME-relative path strings ("" = HOME
+/// itself); an elevated session needs this to know where to go when
+/// stepping "up" past HOME towards the real root.
+#[tauri::command]
+fn local_home_path() -> Result<String, String> {
+    Ok(local_home()?
         .canonicalize()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+        .to_string_lossy()
+        .replace('\\', "/"))
+}
+
+/// Whether the desktop app is currently running with elevated privileges
+/// (root on Unix, an elevated Administrator token on Windows). This is the
+/// gate for lifting the "stay inside the user's home directory" jail that
+/// `resolve_local_transfer_path`/`resolve_local_new_path`/
+/// `local_list_directory` otherwise enforce -- a non-elevated process must
+/// never be trusted to browse or move files outside of HOME, so every path
+/// resolver below re-checks this itself rather than trusting a flag the
+/// frontend could pass in.
+#[cfg(unix)]
+fn is_elevated() -> bool {
+    extern "C" {
+        fn geteuid() -> u32;
+    }
+    unsafe { geteuid() == 0 }
+}
+
+#[cfg(windows)]
+fn is_elevated() -> bool {
+    unsafe { windows_sys::Win32::UI::Shell::IsUserAnAdmin() != 0 }
+}
+
+#[tauri::command]
+fn is_local_elevated() -> bool {
+    is_elevated()
+}
+
+/// The real filesystem roots a privileged user can browse from: the drive
+/// letters on Windows, or just "/" everywhere else. Only meaningful (and
+/// only returned) when `is_elevated()` is true -- a non-elevated caller gets
+/// an empty list, since it can never navigate above HOME anyway.
+#[cfg(windows)]
+fn local_roots() -> Vec<String> {
+    (b'A'..=b'Z')
+        .filter_map(|letter| {
+            let drive = format!("{}:\\", letter as char);
+            if Path::new(&drive).is_dir() {
+                Some(drive.replace('\\', "/"))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn local_roots() -> Vec<String> {
+    vec!["/".to_string()]
+}
+
+#[tauri::command]
+fn list_local_roots() -> Vec<String> {
+    if is_elevated() {
+        local_roots()
+    } else {
+        Vec::new()
+    }
+}
+
+
+fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
     let input = Path::new(path);
     if input
         .components()
@@ -218,11 +287,16 @@ fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
     {
         return Err("Local transfer path must not contain '..'".to_string());
     }
-    let candidate = if input.is_absolute() {
-        input.to_path_buf()
-    } else {
-        home.join(input)
-    };
+    if input.is_absolute() {
+        if !is_elevated() {
+            return Err("Local transfer path must remain inside the current user's home directory".to_string());
+        }
+        return input.canonicalize().map_err(|error| error.to_string());
+    }
+    let home = local_home()?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let candidate = home.join(input);
     let resolved = candidate
         .canonicalize()
         .map_err(|error| error.to_string())?;
@@ -234,11 +308,9 @@ fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
 
 /// Resolve a local path that does not need to already exist (e.g. the
 /// destination of `mkdir`/`rename`). The path's *parent* must exist and
-/// stay inside the user's home directory; the leaf itself is not touched.
+/// stay inside the user's home directory (or be anywhere on disk when
+/// running elevated); the leaf itself is not touched.
 fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
-    let home = local_home()?
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
     let input = Path::new(path);
     if input
         .components()
@@ -246,11 +318,25 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
     {
         return Err("Local transfer path must not contain '..'".to_string());
     }
-    let candidate = if input.is_absolute() {
-        input.to_path_buf()
-    } else {
-        home.join(input)
-    };
+    if input.is_absolute() {
+        if !is_elevated() {
+            return Err("Local transfer path must remain inside the current user's home directory".to_string());
+        }
+        let name = input
+            .file_name()
+            .ok_or_else(|| "Invalid local path".to_string())?
+            .to_os_string();
+        let parent = input
+            .parent()
+            .ok_or_else(|| "Invalid local path".to_string())?
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        return Ok(parent.join(name));
+    }
+    let home = local_home()?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let candidate = home.join(input);
     let name = candidate
         .file_name()
         .ok_or_else(|| "Invalid local path".to_string())?
@@ -300,7 +386,7 @@ fn local_rename_path(old_path: String, new_path: String) -> Result<String, Strin
     Ok(new_resolved
         .strip_prefix(local_home()?.canonicalize().map_err(|error| error.to_string())?)
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| new_resolved.display().to_string()))
+        .unwrap_or_else(|_| new_resolved.display().to_string().replace('\\', "/")))
 }
 
 #[tauri::command]
@@ -434,24 +520,41 @@ fn local_extract_archive(path: String, destination_folder: String) -> Result<Str
 
 #[tauri::command]
 fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
-    let root = local_home()?
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    let relative = Path::new(&path);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
+    let input = Path::new(&path);
+    if input
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
     {
-        return Err("Local path must stay inside the user home directory".to_string());
+        return Err("Local path must not contain '..'".to_string());
     }
-    let directory = root.join(relative);
-    let directory = directory
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    if !directory.starts_with(&root) || !directory.is_dir() {
-        return Err("Local path is outside the user home directory".to_string());
-    }
+    // `root` is `Some(home)` while browsing the HOME-relative jail (the
+    // normal, non-elevated case): every returned path is relative to it, as
+    // the rest of the frontend expects. When running elevated and given an
+    // absolute path, `root` is `None` and paths are absolute end-to-end
+    // instead -- see `is_elevated()` for why this is never trusted from an
+    // unprivileged process.
+    let (root, directory): (Option<PathBuf>, PathBuf) = if input.is_absolute() {
+        if !is_elevated() {
+            return Err("Local path must stay inside the user home directory".to_string());
+        }
+        let directory = input.canonicalize().map_err(|error| error.to_string())?;
+        if !directory.is_dir() {
+            return Err("Local path is not a directory".to_string());
+        }
+        (None, directory)
+    } else {
+        let home = local_home()?
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let directory = home
+            .join(input)
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if !directory.starts_with(&home) || !directory.is_dir() {
+            return Err("Local path is outside the user home directory".to_string());
+        }
+        (Some(home), directory)
+    };
 
     let mut files = std::fs::read_dir(&directory)
         .map_err(|error| error.to_string())?
@@ -463,11 +566,10 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
             }
             let name = entry.file_name().to_str()?.to_string();
             let child = directory.join(&name);
-            let child_relative = child
-                .strip_prefix(&root)
-                .ok()?
-                .to_string_lossy()
-                .replace('\\', "/");
+            let child_path = match &root {
+                Some(root) => child.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/"),
+                None => child.to_string_lossy().replace('\\', "/"),
+            };
             let modified = metadata
                 .modified()
                 .ok()
@@ -476,7 +578,7 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
                 .unwrap_or_default();
             Some(LocalFile {
                 name,
-                path: child_relative,
+                path: child_path,
                 is_directory: metadata.is_dir(),
                 size: metadata.len(),
                 modified,
@@ -486,11 +588,14 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
     files.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
 
     Ok(LocalDirectory {
-        path: directory
-            .strip_prefix(&root)
-            .map_err(|error| error.to_string())?
-            .to_string_lossy()
-            .replace('\\', "/"),
+        path: match &root {
+            Some(root) => directory
+                .strip_prefix(root)
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/"),
+            None => directory.to_string_lossy().replace('\\', "/"),
+        },
         files,
     })
 }
@@ -1163,6 +1268,9 @@ fn main() {
             local_create_directory,
             local_rename_path,
             local_delete_path,
+            is_local_elevated,
+            list_local_roots,
+            local_home_path,
             local_compress_paths,
             local_extract_archive,
             inspect_upload_paths,

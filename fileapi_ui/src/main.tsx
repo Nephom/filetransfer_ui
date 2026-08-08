@@ -134,7 +134,7 @@ type TransferQueueItem = {
 type UndoEntry = {
   id: string;
   description: string;
-  source: "api" | "ssh";
+  source: "api" | "ssh" | "local";
   locationId?: string;
   entryId?: string;
   oldPath: string;
@@ -400,6 +400,37 @@ const readError = async (response: {
 
 const parentPath = (path: string) =>
   path.split("/").filter(Boolean).slice(0, -1).join("/");
+// A LOCAL path is "absolute" once a privileged (root/Administrator) session
+// has broken out of the HOME jail: a real filesystem path (Unix "/...", or
+// a Windows drive like "C:/..."), as opposed to the normal HOME-relative
+// path strings ("", "Documents/foo") the Rust side otherwise always uses.
+const isAbsoluteLocalPath = (path: string) => path.startsWith("/") || /^[A-Za-z]:/.test(path);
+// Breadcrumb segments for the LOCAL path bar. Handles both HOME-relative
+// paths (the normal case) and real absolute paths (elevated-only), the
+// latter needing its own logic since naively splitting on "/" loses the
+// leading "/" (Unix) or the drive letter (Windows).
+const localBreadcrumbSegments = (path: string): { label: string; target: string }[] => {
+  if (!isAbsoluteLocalPath(path)) {
+    const parts = path.split("/").filter(Boolean);
+    return parts.map((part, index) => ({ label: part, target: parts.slice(0, index + 1).join("/") }));
+  }
+  if (path.startsWith("/")) {
+    const parts = path.split("/").filter(Boolean);
+    const segments = [{ label: "/", target: "/" }];
+    parts.forEach((part, index) => {
+      segments.push({ label: part, target: `/${parts.slice(0, index + 1).join("/")}` });
+    });
+    return segments;
+  }
+  const parts = path.split("/").filter(Boolean);
+  const drive = parts[0] || "";
+  const rest = parts.slice(1);
+  const segments = [{ label: `${drive}/`, target: `${drive}/` }];
+  rest.forEach((part, index) => {
+    segments.push({ label: part, target: `${drive}/${rest.slice(0, index + 1).join("/")}` });
+  });
+  return segments;
+};
 const sshParentPath = (path: string) => {
   const segments = path.split("/").filter(Boolean);
   return segments.length > 1 ? `/${segments.slice(0, -1).join("/")}` : "/";
@@ -451,13 +482,21 @@ function App() {
   const [localFiles, setLocalFiles] = useState<FileItem[]>([]);
   const [localPath, setLocalPath] = useState("");
   const [localSelected, setLocalSelected] = useState<string[]>([]);
-  const [localFolderTree, setLocalFolderTree] = useState<FolderNode>({
-    path: "",
-    name: "/",
-    expanded: true,
-    loaded: false,
-    children: [],
-  });
+  // The LOCAL folder-tree "forest": the first entry is always the HOME
+  // shortcut (path ""), matching the pane's own default view. When the app
+  // is running elevated (`isLocalElevated`), one extra top-level entry is
+  // appended per real filesystem root reported by `list_local_roots`
+  // (drive letters on Windows, "/" everywhere else) so a privileged user
+  // can actually reach the real root instead of being stuck inside HOME.
+  // Non-elevated users only ever see the HOME entry -- the jail enforced by
+  // the Rust side (`resolve_local_transfer_path`) is the real boundary;
+  // this is just keeping the tree's shape consistent with it.
+  const [localTrees, setLocalTrees] = useState<FolderNode[]>([
+    { path: "", name: "~", expanded: true, loaded: false, children: [] },
+  ]);
+  const [isLocalElevated, setIsLocalElevated] = useState(false);
+  const [localRoots, setLocalRoots] = useState<string[]>([]);
+  const [localHomeAbsolute, setLocalHomeAbsolute] = useState("");
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [path, setPath] = useState("");
@@ -646,6 +685,13 @@ function App() {
   // actually apply.
   const [activePane, setActivePane] = useState<"local" | "remote">("remote");
   const [dropTarget, setDropTarget] = useState("");
+  // Which pane the cursor is *actually* hovering over during a cross-pane
+  // drag. `dragSource` alone only tells us a drag started somewhere -- it
+  // does not track where the pointer currently is, so pane-wide "you can
+  // drop here" highlighting must not be derived from `dragSource` alone or
+  // the opposite pane lights up the instant the drag starts, before the
+  // cursor has moved there. See onDragEnter/onDragLeave on each pane body.
+  const [paneDragHover, setPaneDragHover] = useState<"local" | "remote" | "">("");
   // Rubber-band/marquee mouse-drag multi-select. `marqueeRect` (viewport/
   // client coordinates, so no CSS containing-block dependency) drives the
   // visible selection-box overlay; `marqueeStateRef` carries the drag's
@@ -1081,6 +1127,31 @@ function App() {
     setSelected([]);
   };
 
+  // Where "up" from `path` should go for the LOCAL pane. Non-elevated
+  // sessions never leave the HOME jail (existing `parentPath` behaviour).
+  // Elevated sessions can walk all the way up to the real filesystem root
+  // (or drive root on Windows) -- including up out of HOME itself, via
+  // `localHomeAbsolute` (HOME's own real absolute path, fetched once at
+  // startup) once `path` is the empty HOME shortcut.
+  const localParentPath = (path: string): string => {
+    const absolute = path === "" ? localHomeAbsolute : path;
+    if (!isLocalElevated || !absolute || !isAbsoluteLocalPath(absolute)) return parentPath(path);
+    if (absolute === "/") return "/";
+    const segments = absolute.split("/").filter(Boolean);
+    if (/^[A-Za-z]:$/.test(segments[0] || "")) {
+      return segments.length > 1 ? `${segments[0]}/${segments.slice(1, -1).join("/")}` : `${segments[0]}/`;
+    }
+    return segments.length > 1 ? `/${segments.slice(0, -1).join("/")}` : "/";
+  };
+  const showLocalUp = (): boolean => {
+    if (!isLocalElevated) return Boolean(localPath);
+    if (!localPath) return Boolean(localHomeAbsolute);
+    if (localPath === "/") return false;
+    const segments = localPath.split("/").filter(Boolean);
+    if (/^[A-Za-z]:$/.test(segments[0] || "") && segments.length <= 1) return false;
+    return true;
+  };
+
   const loadLocalFiles = async (nextPath = localPath) => {
     const data = await invoke<LocalDirectory>("local_list_directory", {
       path: nextPath,
@@ -1108,8 +1179,8 @@ function App() {
         .filter((file) => file.isDirectory)
         .map((file) => ({ path: file.path, name: file.name, expanded: false, loaded: false, children: [] }))
         .sort((left, right) => left.name.localeCompare(right.name));
-      setLocalFolderTree((tree) =>
-        updateTreeNode(tree, treePath, (node) => ({ ...node, expanded: true, loaded: true, children })),
+      setLocalTrees((trees) =>
+        trees.map((tree) => updateTreeNode(tree, treePath, (node) => ({ ...node, expanded: true, loaded: true, children }))),
       );
     } catch (error) {
       if (!force) throw error instanceof Error ? error : new Error(String(error));
@@ -1121,8 +1192,8 @@ function App() {
       void run(() => loadLocalTreeChildren(node.path));
       return;
     }
-    setLocalFolderTree((tree) =>
-      updateTreeNode(tree, node.path, (item) => ({ ...item, expanded: !item.expanded })),
+    setLocalTrees((trees) =>
+      trees.map((tree) => updateTreeNode(tree, node.path, (item) => ({ ...item, expanded: !item.expanded }))),
     );
   };
 
@@ -1269,6 +1340,33 @@ function App() {
         await loadLocalTreeChildren("", true);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : String(error));
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const elevated = await invoke<boolean>("is_local_elevated");
+        setIsLocalElevated(elevated);
+        if (!elevated) return;
+        const [roots, homePath] = await Promise.all([
+          invoke<string[]>("list_local_roots"),
+          invoke<string>("local_home_path"),
+        ]);
+        setLocalRoots(roots);
+        setLocalHomeAbsolute(homePath);
+        setLocalTrees((trees) => [
+          ...trees,
+          ...roots
+            .filter((root) => !trees.some((tree) => tree.path === root))
+            .map((root) => ({ path: root, name: root, expanded: false, loaded: false, children: [] })),
+        ]);
+        notify(
+          "Running with root/Administrator privileges: the LOCAL pane is no longer confined to your home directory. Be careful moving or deleting files outside it.",
+        );
+      } catch {
+        // Not fatal -- the LOCAL pane just stays confined to HOME as usual.
       }
     })();
   }, []);
@@ -2446,13 +2544,13 @@ function App() {
     setUndoStack((current) => [...current, { ...entry, id }].slice(-MAX_UNDO_ENTRIES));
   };
 
-  const recordUndoableRename = (options: { source: "api" | "ssh"; locationId?: string; entryId?: string; oldPath: string; newPath: string }) =>
+  const recordUndoableRename = (options: { source: "api" | "ssh" | "local"; locationId?: string; entryId?: string; oldPath: string; newPath: string }) =>
     recordUndoEntry({
       description: `Rename ${options.oldPath.split("/").pop()} back to ${options.newPath.split("/").pop()}`,
       ...options,
     });
 
-  const recordUndoableMove = (options: { source: "api" | "ssh"; locationId?: string; entryId?: string; oldPath: string; newPath: string }) =>
+  const recordUndoableMove = (options: { source: "api" | "ssh" | "local"; locationId?: string; entryId?: string; oldPath: string; newPath: string }) =>
     recordUndoEntry({
       description: `Move ${options.newPath} back to ${options.oldPath}`,
       ...options,
@@ -2466,6 +2564,9 @@ function App() {
         const profile = entry.entryId ? findSshProfileById(entry.entryId) : undefined;
         if (!profile) throw new Error("The SSH connection for this undo entry is no longer available.");
         await invoke("ssh_rename_path", { profile, oldPath: entry.newPath, newPath: entry.oldPath });
+      } else if (entry.source === "local") {
+        await invoke("local_rename_path", { oldPath: entry.newPath, newPath: entry.oldPath });
+        await loadLocalFiles(localPath);
       } else {
         if (entry.locationId && entry.locationId !== session.locationId) {
           throw new Error("Switch LOCATION back to the Remote this operation happened on before undoing it.");
@@ -2563,6 +2664,7 @@ function App() {
         const newPath = destination ? `${destination}/${item.name}` : item.name;
         const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
         lastFinalName = finalPath.split("/").pop() || item.name;
+        recordUndoableMove({ source: "local", oldPath: item.path, newPath: finalPath });
       }
       setDragItems([]);
       setDropTarget("");
@@ -2724,12 +2826,28 @@ function App() {
     setDragItems([]);
     setDragSource("");
     setDropTarget("");
+    setPaneDragHover("");
   };
   const finishDragAfterDrop = () => {
     // Windows WebView2 can emit dragend before React receives the target's
     // drop callback. Keep the source payload alive for one event-loop turn so
     // the drop handler can still start the SFTP transfer.
     window.setTimeout(finishDrag, 0);
+  };
+
+  // Pane-wide "drop here" highlighting must only turn on while the pointer
+  // is actually over that pane, not just because a compatible drag started
+  // somewhere else. `onDragLeave` fires for every child boundary crossed
+  // inside the pane too, so it only clears the hover flag once the related
+  // target (where the pointer is going) is no longer inside this pane's
+  // container -- otherwise the highlight would flicker off while moving
+  // over child elements.
+  const enterPaneDragHover = (pane: "local" | "remote") => () => {
+    setPaneDragHover((current) => (current === pane ? current : pane));
+  };
+  const leavePaneDragHover = (pane: "local" | "remote") => (event: React.DragEvent) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setPaneDragHover((current) => (current === pane ? "" : current));
   };
 
   const enqueueQueueDownload = () =>
@@ -3199,6 +3317,7 @@ function App() {
         const parent = item.path.split("/").slice(0, -1).join("/");
         const newPath = parent ? `${parent}/${trimmedName}` : trimmedName;
         const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
+        recordUndoableRename({ source: "local", oldPath: item.path, newPath: finalPath });
         await loadLocalFiles(localPath);
         notify(`Renamed ${item.name} to ${finalPath.split("/").pop()} in LOCAL.`);
         return;
@@ -3472,7 +3591,7 @@ function App() {
   const toggleSplitMode = () => {
     const nextMode = !splitMode;
     setSplitMode(nextMode);
-    if (nextMode && !localFolderTree.loaded) {
+    if (nextMode && !localTrees[0].loaded) {
       void run(() => loadLocalTreeChildren("", true));
     }
     if (!nextMode) {
@@ -3556,14 +3675,21 @@ function App() {
 
   const renderLocalPane = () => (
     <section
-      className={`local-pane ${activePane === "local" ? "active-pane" : ""}`}
+      className={`local-pane ${activePane === "local" ? "active-pane" : ""} ${isLocalElevated ? "privileged" : ""}`}
       aria-label="Local files"
       style={{ flexBasis: `${localPaneWidth}px` }}
       onMouseDownCapture={() => setActivePane("local")}
     >
       <div className="local-pane-heading">
-        <span className="sidebar-label">LOCAL</span>
-        <strong>{localPath ? `~/${localPath}` : "~/"}</strong>
+        <span className="sidebar-label">
+          LOCAL
+          {isLocalElevated && (
+            <span className="privileged-badge" title="Running elevated: LOCAL is not confined to your home directory.">
+              {" "}⚠ ROOT
+            </span>
+          )}
+        </span>
+        <strong>{isAbsoluteLocalPath(localPath) ? localPath : localPath ? `~/${localPath}` : "~/"}</strong>
       </div>
       <div className="local-pane-actions">
         <button onClick={() => void run(refreshLocalFiles)} disabled={busy}>
@@ -3597,13 +3723,15 @@ function App() {
         </span>
       </div>
       <div
-        className={`local-pane-body ${dragSource === "remote" && remoteSshEntryId ? "drop-target" : ""}`}
+        className={`local-pane-body ${dragSource === "remote" && remoteSshEntryId && paneDragHover === "local" ? "drop-target" : ""}`}
+        onDragEnter={enterPaneDragHover("local")}
         onDragOver={(event) => {
           if (dragSourceRef.current === "remote" && remoteSshEntryId && dragItemsRef.current.length) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
           }
         }}
+        onDragLeave={leavePaneDragHover("local")}
         onDropCapture={(event) => {
           // If the drop landed on a folder-tree node inside the LOCAL tree
           // panel, let it fall through to that node's own onDropCapture
@@ -3613,6 +3741,7 @@ function App() {
           if (dragSourceRef.current === "remote" && remoteSshEntryId) {
             event.preventDefault();
             event.stopPropagation();
+            setPaneDragHover("");
             downloadRemoteItemsToLocal(dragItemsRef.current);
           }
         }}
@@ -3626,7 +3755,7 @@ function App() {
               onDragLeave={stopDragAutoScroll}
               onDrop={stopDragAutoScroll}
             >
-              {renderLocalTreeNode(localFolderTree)}
+              {localTrees.map(renderLocalTreeNode)}
             </div>
             <div
               className="pane-resize-handle"
@@ -3643,16 +3772,32 @@ function App() {
             ref={localFileListRef}
             onMouseDown={(event) => beginMarqueeSelect(event, "local", localFileListRef.current)}
           >
-            {localPath && (
+            {showLocalUp() && (
               <article
-                className="file-tile file-tile-dotdot"
-                onClick={() => void run(() => loadLocalFiles(parentPath(localPath)))}
+                className={`file-tile file-tile-dotdot ${dropTarget === localParentPath(localPath) ? "drop-target" : ""}`}
+                onDragOver={(event) => {
+                  if (dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, localParentPath(localPath))) {
+                    event.preventDefault();
+                    setDropTarget(localParentPath(localPath));
+                  }
+                }}
+                onDrop={(event) => {
+                  if (dragSourceRef.current === "local") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const items = dragItemsRef.current;
+                    finishDrag();
+                    void moveLocalItems(items, localParentPath(localPath));
+                  }
+                }}
+                onClick={() => void run(() => loadLocalFiles(localParentPath(localPath)))}
               >
                 <span className="tile-icon">📁</span>
                 <strong>../</strong>
                 <span>Parent folder</span>
               </article>
             )}
+
             {localFiles.map((file) => (
               <article
                 key={file.path}
@@ -3702,15 +3847,31 @@ function App() {
           ref={localFileListRef}
           onMouseDown={(event) => beginMarqueeSelect(event, "local", localFileListRef.current)}
         >
-          {localPath && (
+          {showLocalUp() && (
             <button
-              className="local-file local-file-dotdot"
-              onClick={() => void run(() => loadLocalFiles(parentPath(localPath)))}
+              className={`local-file local-file-dotdot ${dropTarget === localParentPath(localPath) ? "drop-target" : ""}`}
+              onDragOver={(event) => {
+                if (dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, localParentPath(localPath))) {
+                  event.preventDefault();
+                  setDropTarget(localParentPath(localPath));
+                }
+              }}
+              onDrop={(event) => {
+                if (dragSourceRef.current === "local") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const items = dragItemsRef.current;
+                  finishDrag();
+                  void moveLocalItems(items, localParentPath(localPath));
+                }
+              }}
+              onClick={() => void run(() => loadLocalFiles(localParentPath(localPath)))}
             >
               <span>📁</span>
               <span className="local-file-name">../</span>
             </button>
           )}
+
           {localFiles.map((file) => (
             <button
               key={file.path}
@@ -4191,17 +4352,14 @@ function App() {
           {activePane === "local" ? (
             <>
               <button onClick={() => void run(() => loadLocalFiles(""))}>~</button>
-              {localPath
-                .split("/")
-                .filter(Boolean)
-                .map((part, index, parts) => (
-                  <React.Fragment key={`local-${part}-${index}`}>
-                    <span className="crumb-separator">›</span>
-                    <button onClick={() => void run(() => loadLocalFiles(parts.slice(0, index + 1).join("/")))}>
-                      {part}
-                    </button>
-                  </React.Fragment>
-                ))}
+              {localBreadcrumbSegments(localPath).map((segment, index) => (
+                <React.Fragment key={`local-${segment.target}-${index}`}>
+                  <span className="crumb-separator">›</span>
+                  <button onClick={() => void run(() => loadLocalFiles(segment.target))}>
+                    {segment.label}
+                  </button>
+                </React.Fragment>
+              ))}
             </>
           ) : (
             <>
@@ -4322,7 +4480,8 @@ function App() {
             <div
               id="files"
               ref={fileAreaRef}
-              className={`file-area ${dragSource === "local" && remoteSshEntryId ? "drop-target" : ""}`}
+              className={`file-area ${dragSource === "local" && remoteSshEntryId && paneDragHover === "remote" ? "drop-target" : ""}`}
+              onDragEnter={enterPaneDragHover("remote")}
               onDragOver={(event) => {
                 handleDragAutoScroll(event, fileAreaRef.current);
                 if (dragSourceRef.current === "local" && remoteSshEntryId && dragItemsRef.current.length) {
@@ -4330,13 +4489,17 @@ function App() {
                   event.dataTransfer.dropEffect = "copy";
                 }
               }}
-              onDragLeave={stopDragAutoScroll}
+              onDragLeave={(event) => {
+                stopDragAutoScroll();
+                leavePaneDragHover("remote")(event);
+              }}
               onMouseDown={(event) => beginMarqueeSelect(event, "remote", fileAreaRef.current)}
               onDropCapture={(event) => {
                 stopDragAutoScroll();
                 if (dragSourceRef.current === "local" && remoteSshEntryId) {
                   event.preventDefault();
                   event.stopPropagation();
+                  setPaneDragHover("");
                   const items = dragItemsRef.current;
                   uploadLocalItemsToRemote(items, path);
                 }
@@ -4346,7 +4509,23 @@ function App() {
               <div className="file-grid">
                 {showRemoteUp && (
                   <article
-                    className="file-tile file-tile-dotdot"
+                    className={`file-tile file-tile-dotdot ${dropTarget === (remoteSshEntryId ? sshParentPath(path) : parentPath(path)) ? "drop-target" : ""}`}
+                    onDragOver={(event) => {
+                      const destination = remoteSshEntryId ? sshParentPath(path) : parentPath(path);
+                      if (canDropOnRemote(destination)) {
+                        event.preventDefault();
+                        setDropTarget(destination);
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      const destination = remoteSshEntryId ? sshParentPath(path) : parentPath(path);
+                      const items = dragItemsRef.current;
+                      const source = dragSourceRef.current;
+                      finishDrag();
+                      void moveItems(items, destination, source);
+                    }}
                     onClick={() => void run(() => loadFiles(remoteSshEntryId ? sshParentPath(path) : parentPath(path)))}
                   >
                     <span className="tile-icon">📁</span>
@@ -4354,6 +4533,7 @@ function App() {
                     <span>Parent folder</span>
                   </article>
                 )}
+
                 {files.map((file) => (
                   <article
                     key={file.path}
@@ -4436,11 +4616,31 @@ function App() {
                 </thead>
                 <tbody>
                   {showRemoteUp && (
-                    <tr className="file-row file-row-dotdot" onClick={() => void run(() => loadFiles(remoteSshEntryId ? sshParentPath(path) : parentPath(path)))}>
+                    <tr
+                      className={`file-row file-row-dotdot ${dropTarget === (remoteSshEntryId ? sshParentPath(path) : parentPath(path)) ? "drop-target" : ""}`}
+                      onDragOver={(event) => {
+                        const destination = remoteSshEntryId ? sshParentPath(path) : parentPath(path);
+                        if (canDropOnRemote(destination)) {
+                          event.preventDefault();
+                          setDropTarget(destination);
+                        }
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const destination = remoteSshEntryId ? sshParentPath(path) : parentPath(path);
+                        const items = dragItemsRef.current;
+                        const source = dragSourceRef.current;
+                        finishDrag();
+                        void moveItems(items, destination, source);
+                      }}
+                      onClick={() => void run(() => loadFiles(remoteSshEntryId ? sshParentPath(path) : parentPath(path)))}
+                    >
                       <td />
                       <td colSpan={3}>📁 ../</td>
                     </tr>
                   )}
+
                   {files.map((file) => (
                     <tr
                       key={file.path}
