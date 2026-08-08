@@ -1589,6 +1589,7 @@ dependencies = [
  "tauri-plugin-drag",
  "tokio",
  "uuid",
+ "windows-sys 0.59.0",
  "zip",
 ]
 
