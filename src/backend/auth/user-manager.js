@@ -142,7 +142,7 @@ class UserManager {
     }
 
     if (permissions.length === 0) {
-      permissions = ['read', 'upload', 'delete'];
+      permissions = ['read', 'upload', 'delete', 'mkdir'];
     }
 
     const newUser = {
