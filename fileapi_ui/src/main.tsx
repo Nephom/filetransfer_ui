@@ -2063,6 +2063,11 @@ function App() {
       detail,
     });
   };
+  // Every file-mutating action below should log both how it finished, success
+  // or failure -- an on-screen `notify`/error banner disappears after a few
+  // seconds and is gone for good, so without a persisted log entry a failure
+  // (e.g. "builder error") leaves no trace to diagnose after the fact.
+  const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
   const updateQueueItem = (id: string, update: Partial<TransferQueueItem>) => {
     setTransferQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
@@ -2566,31 +2571,46 @@ function App() {
     run(async () => {
       const entry = undoStack[undoStack.length - 1];
       if (!entry) return;
-      if (entry.source === "ssh") {
-        const profile = entry.entryId ? findSshProfileById(entry.entryId) : undefined;
-        if (!profile) throw new Error("The SSH connection for this undo entry is no longer available.");
-        await invoke("ssh_rename_path", { profile, oldPath: entry.newPath, newPath: entry.oldPath });
-      } else if (entry.source === "local") {
-        await invoke("local_rename_path", { oldPath: entry.newPath, newPath: entry.oldPath });
-        await loadLocalFiles(localPath);
-      } else {
-        if (entry.locationId && entry.locationId !== session.locationId) {
-          throw new Error("Switch LOCATION back to the Remote this operation happened on before undoing it.");
+      const sourceLabel =
+        entry.source === "ssh" ? `SSH: ${entry.newPath}`
+        : entry.source === "local" ? `LOCAL: ~/${entry.newPath}`
+        : `${activeLocation?.displayName || entry.locationId || "Remote"}:${entry.newPath}`;
+      const destinationLabel =
+        entry.source === "ssh" ? `SSH: ${entry.oldPath}`
+        : entry.source === "local" ? `LOCAL: ~/${entry.oldPath}`
+        : `${activeLocation?.displayName || entry.locationId || "Remote"}:${entry.oldPath}`;
+      try {
+        if (entry.source === "ssh") {
+          const profile = entry.entryId ? findSshProfileById(entry.entryId) : undefined;
+          if (!profile) throw new Error("The SSH connection for this undo entry is no longer available.");
+          await invoke("ssh_rename_path", { profile, oldPath: entry.newPath, newPath: entry.oldPath });
+        } else if (entry.source === "local") {
+          await invoke("local_rename_path", { oldPath: entry.newPath, newPath: entry.oldPath });
+          await loadLocalFiles(localPath);
+        } else {
+          if (entry.locationId && entry.locationId !== session.locationId) {
+            throw new Error("Switch LOCATION back to the Remote this operation happened on before undoing it.");
+          }
+          const oldName = entry.oldPath.split("/").pop() || entry.oldPath;
+          const newParent = entry.newPath.split("/").slice(0, -1).join("/");
+          const newName = entry.newPath.split("/").pop() || entry.newPath;
+          const response = await api("/api/files/rename", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ oldName: newName, newName: oldName, currentPath: newParent }),
+          });
+          if (!response.ok) throw new Error(await readError(response));
         }
-        const oldName = entry.oldPath.split("/").pop() || entry.oldPath;
-        const newParent = entry.newPath.split("/").slice(0, -1).join("/");
-        const newName = entry.newPath.split("/").pop() || entry.newPath;
-        const response = await api("/api/files/rename", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldName: newName, newName: oldName, currentPath: newParent }),
-        });
-        if (!response.ok) throw new Error(await readError(response));
+        setUndoStack((current) => current.slice(0, -1));
+        await loadFiles(path);
+        writeOperationLog("undo", "completed", sourceLabel, destinationLabel, `Undone: ${entry.description}`);
+        notify(`Undone: ${entry.description}`);
+      } catch (error) {
+        writeOperationLog("undo", "failed", sourceLabel, destinationLabel, `Failed to undo "${entry.description}": ${describeError(error)}`, "ERROR");
+        throw error;
       }
-      setUndoStack((current) => current.slice(0, -1));
-      await loadFiles(path);
-      notify(`Undone: ${entry.description}`);
     });
+
 
   const moveItems = (items: FileItem[], destination: string, source = dragSourceRef.current) =>
     run(async () => {
@@ -2602,57 +2622,73 @@ function App() {
         throw new Error(
           "Choose a folder other than the current folder or a folder inside a selected folder.",
         );
+      const sourceLabel = `${items.length} item${items.length === 1 ? "" : "s"}`;
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+        const destinationLabel = `SSH: ${profile.name}:${destination}`;
+        try {
+          for (const item of items) {
+            const newPath = joinSshPath(destination, item.name);
+            const finalPath = await invoke<string>("ssh_rename_path", { profile, oldPath: item.path, newPath });
+            recordUndoableMove({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath: finalPath });
+          }
+          setDragItems([]);
+          setDropTarget(null);
+          setContextMenu(null);
+          await loadFiles(path);
+          writeOperationLog("move", "completed", sourceLabel, destinationLabel, `Moved ${items.length} item(s) through SFTP.`);
+          notify(`Moved ${items.length} item${items.length === 1 ? "" : "s"}.`);
+        } catch (error) {
+          writeOperationLog("move", "failed", sourceLabel, destinationLabel, `Failed to move through SFTP: ${describeError(error)}`, "ERROR");
+          throw error;
+        }
+        return;
+      }
+      const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${destination}`;
+      try {
+        const response = await api("/api/files/paste", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: items.map(({ name, isDirectory, path: itemPath }) => ({
+              name,
+              isDirectory,
+              path: itemPath,
+            })),
+            operation: "cut",
+            targetPath: destination,
+          }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        const data = await response.json();
         for (const item of items) {
-          const newPath = joinSshPath(destination, item.name);
-          const finalPath = await invoke<string>("ssh_rename_path", { profile, oldPath: item.path, newPath });
-          recordUndoableMove({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath: finalPath });
+          recordUndoableMove({
+            source: "api",
+            locationId: session.locationId,
+            oldPath: item.path,
+            newPath: `${destination.replace(/\/+$/, "")}/${item.name}`,
+          });
         }
         setDragItems([]);
         setDropTarget(null);
         setContextMenu(null);
-        notify(`Moved ${items.length} item${items.length === 1 ? "" : "s"}.`);
-        await loadFiles(path);
-        return;
-      }
-      const response = await api("/api/files/paste", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          items: items.map(({ name, isDirectory, path: itemPath }) => ({
-            name,
-            isDirectory,
-            path: itemPath,
-          })),
-          operation: "cut",
-          targetPath: destination,
-        }),
-      });
-      if (!response.ok) throw new Error(await readError(response));
-      const data = await response.json();
-      for (const item of items) {
-        recordUndoableMove({
-          source: "api",
-          locationId: session.locationId,
-          oldPath: item.path,
-          newPath: `${destination.replace(/\/+$/, "")}/${item.name}`,
+        writeOperationLog("move", "completed", sourceLabel, destinationLabel, `Moved ${items.length} item(s) through the API Remote.`);
+        notify(data.message || "Move complete.");
+        setFolderTree({
+          path: "",
+          name: "/",
+          expanded: true,
+          loaded: false,
+          children: [],
         });
+        await Promise.all([loadFiles(path), loadTreeChildren("", true)]);
+      } catch (error) {
+        writeOperationLog("move", "failed", sourceLabel, destinationLabel, `Failed to move through the API Remote: ${describeError(error)}`, "ERROR");
+        throw error;
       }
-      setDragItems([]);
-      setDropTarget(null);
-      setContextMenu(null);
-      notify(data.message || "Move complete.");
-      setFolderTree({
-        path: "",
-        name: "/",
-        expanded: true,
-        loaded: false,
-        children: [],
-      });
-      await Promise.all([loadFiles(path), loadTreeChildren("", true)]);
     });
+
 
   // LOCAL -> LOCAL move, mirroring `moveItems`'s REMOTE -> REMOTE branch:
   // dragging a LOCAL file/folder onto another LOCAL folder (in the file
@@ -2665,23 +2701,31 @@ function App() {
         throw new Error(
           "Choose a folder other than the current folder or a folder inside a selected folder.",
         );
-      let lastFinalName = "";
-      for (const item of items) {
-        const newPath = destination ? `${destination}/${item.name}` : item.name;
-        const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
-        lastFinalName = finalPath.split("/").pop() || item.name;
-        recordUndoableMove({ source: "local", oldPath: item.path, newPath: finalPath });
+      const sourceLabel = `${items.length} item${items.length === 1 ? "" : "s"} in LOCAL`;
+      const destinationLabel = `LOCAL: ~/${destination || ""}`;
+      try {
+        let lastFinalName = "";
+        for (const item of items) {
+          const newPath = destination ? `${destination}/${item.name}` : item.name;
+          const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
+          lastFinalName = finalPath.split("/").pop() || item.name;
+          recordUndoableMove({ source: "local", oldPath: item.path, newPath: finalPath });
+        }
+        setDragItems([]);
+        setDropTarget(null);
+        setLocalSelected([]);
+        writeOperationLog("move", "completed", sourceLabel, destinationLabel, `Moved ${items.length} item(s) in LOCAL.`);
+        notify(
+          items.length === 1
+            ? `Moved ${lastFinalName} in LOCAL.`
+            : `Moved ${items.length} items in LOCAL.`,
+        );
+        await loadLocalFiles(localPath);
+        if (destination !== localPath) void loadLocalTreeChildren(destination, true);
+      } catch (error) {
+        writeOperationLog("move", "failed", sourceLabel, destinationLabel, `Failed to move in LOCAL: ${describeError(error)}`, "ERROR");
+        throw error;
       }
-      setDragItems([]);
-      setDropTarget(null);
-      setLocalSelected([]);
-      notify(
-        items.length === 1
-          ? `Moved ${lastFinalName} in LOCAL.`
-          : `Moved ${items.length} items in LOCAL.`,
-      );
-      await loadLocalFiles(localPath);
-      if (destination !== localPath) void loadLocalTreeChildren(destination, true);
     });
 
   const beginDrag = (event: React.DragEvent, file: FileItem) => {
@@ -3285,32 +3329,52 @@ function App() {
       const name = folderName.trim();
       if (splitMode && activePane === "local") {
         const fullPath = localPath ? `${localPath}/${name}` : name;
-        await invoke("local_create_directory", { path: fullPath });
-        await loadLocalFiles(localPath);
-        notify(`Created ${name} in LOCAL.`);
+        try {
+          await invoke("local_create_directory", { path: fullPath });
+          await loadLocalFiles(localPath);
+          writeOperationLog("create_folder", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${fullPath}`, `Created folder ${name} in LOCAL.`);
+          notify(`Created ${name} in LOCAL.`);
+        } catch (error) {
+          writeOperationLog("create_folder", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${fullPath}`, `Failed to create folder ${name} in LOCAL: ${describeError(error)}`, "ERROR");
+          throw error;
+        }
         return;
       }
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-         const fullPath = path ? joinSshPath(path, name) : `/${name}`;
-        await invoke("ssh_create_directory", { profile, path: fullPath });
-        await loadFiles(path);
-        notify(`Created ${name}.`);
+        const fullPath = path ? joinSshPath(path, name) : `/${name}`;
+        try {
+          await invoke("ssh_create_directory", { profile, path: fullPath });
+          await loadFiles(path);
+          writeOperationLog("create_folder", "completed", `SSH: ${profile.name}:${path || "/"}`, `SSH: ${profile.name}:${fullPath}`, `Created folder ${name} through SFTP.`);
+          notify(`Created ${name}.`);
+        } catch (error) {
+          writeOperationLog("create_folder", "failed", `SSH: ${profile.name}:${path || "/"}`, `SSH: ${profile.name}:${fullPath}`, `Failed to create folder ${name} through SFTP: ${describeError(error)}`, "ERROR");
+          throw error;
+        }
         return;
       }
-      const response = await api("/api/folders", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          folderName: name,
-          currentPath: path,
-        }),
-      });
-      if (!response.ok) throw new Error(await readError(response));
-      await loadFiles(path);
-      notify(`Created ${name}.`);
+      const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`;
+      try {
+        const response = await api("/api/folders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            folderName: name,
+            currentPath: path,
+          }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        await loadFiles(path);
+        writeOperationLog("create_folder", "completed", destinationLabel, `${destinationLabel}/${name}`, `Created folder ${name} through the API Remote.`);
+        notify(`Created ${name}.`);
+      } catch (error) {
+        writeOperationLog("create_folder", "failed", destinationLabel, `${destinationLabel}/${name}`, `Failed to create folder ${name} through the API Remote: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
+
 
   const rename = () =>
     run(async () => {
@@ -3322,10 +3386,16 @@ function App() {
         const trimmedName = newName.trim();
         const parent = item.path.split("/").slice(0, -1).join("/");
         const newPath = parent ? `${parent}/${trimmedName}` : trimmedName;
-        const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
-        recordUndoableRename({ source: "local", oldPath: item.path, newPath: finalPath });
-        await loadLocalFiles(localPath);
-        notify(`Renamed ${item.name} to ${finalPath.split("/").pop()} in LOCAL.`);
+        try {
+          const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
+          recordUndoableRename({ source: "local", oldPath: item.path, newPath: finalPath });
+          await loadLocalFiles(localPath);
+          writeOperationLog("rename", "completed", `LOCAL: ~/${item.path}`, `LOCAL: ~/${finalPath}`, `Renamed ${item.name} to ${finalPath.split("/").pop()} in LOCAL.`);
+          notify(`Renamed ${item.name} to ${finalPath.split("/").pop()} in LOCAL.`);
+        } catch (error) {
+          writeOperationLog("rename", "failed", `LOCAL: ~/${item.path}`, `LOCAL: ~/${newPath}`, `Failed to rename ${item.name} in LOCAL: ${describeError(error)}`, "ERROR");
+          throw error;
+        }
         return;
       }
       if (selectedItems.length !== 1) return;
@@ -3336,26 +3406,40 @@ function App() {
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-         const newPath = joinSshPath(sshParentPath(item.path), trimmedName);
-        const finalPath = await invoke<string>("ssh_rename_path", { profile, oldPath: item.path, newPath });
-        recordUndoableRename({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath: finalPath });
-        await loadFiles(path);
-        notify(`Renamed ${item.name} to ${finalPath.split("/").pop()}.`);
+        const newPath = joinSshPath(sshParentPath(item.path), trimmedName);
+        try {
+          const finalPath = await invoke<string>("ssh_rename_path", { profile, oldPath: item.path, newPath });
+          recordUndoableRename({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath: finalPath });
+          await loadFiles(path);
+          writeOperationLog("rename", "completed", `SSH: ${profile.name}:${item.path}`, `SSH: ${profile.name}:${finalPath}`, `Renamed ${item.name} to ${finalPath.split("/").pop()} through SFTP.`);
+          notify(`Renamed ${item.name} to ${finalPath.split("/").pop()}.`);
+        } catch (error) {
+          writeOperationLog("rename", "failed", `SSH: ${profile.name}:${item.path}`, `SSH: ${profile.name}:${newPath}`, `Failed to rename ${item.name} through SFTP: ${describeError(error)}`, "ERROR");
+          throw error;
+        }
         return;
       }
-      const response = await api("/api/files/rename", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          oldName: item.name,
-          newName: trimmedName,
-          currentPath: path,
-        }),
-      });
-      if (!response.ok) throw new Error(await readError(response));
-      recordUndoableRename({ source: "api", locationId: session.locationId, oldPath: item.path, newPath: path ? `${path}/${trimmedName}` : trimmedName });
-      await loadFiles(path);
-      notify(`Renamed ${item.name}.`);
+      const sourceLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${item.path}`;
+      const newFullPath = path ? `${path}/${trimmedName}` : trimmedName;
+      try {
+        const response = await api("/api/files/rename", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            oldName: item.name,
+            newName: trimmedName,
+            currentPath: path,
+          }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        recordUndoableRename({ source: "api", locationId: session.locationId, oldPath: item.path, newPath: newFullPath });
+        await loadFiles(path);
+        writeOperationLog("rename", "completed", sourceLabel, `${activeLocation?.displayName || session.locationId || "Remote"}:${newFullPath}`, `Renamed ${item.name} to ${trimmedName} through the API Remote.`);
+        notify(`Renamed ${item.name}.`);
+      } catch (error) {
+        writeOperationLog("rename", "failed", sourceLabel, `${activeLocation?.displayName || session.locationId || "Remote"}:${newFullPath}`, `Failed to rename ${item.name} through the API Remote: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
 
   const remove = () =>
@@ -3368,11 +3452,19 @@ function App() {
           ))
         )
           return;
-        for (const item of localSelectedItems) {
-          await invoke("local_delete_path", { path: item.path, isDirectory: item.isDirectory });
+        const sourceLabel = `${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"}`;
+        const destinationLabel = `LOCAL: ~/${localPath || ""}`;
+        try {
+          for (const item of localSelectedItems) {
+            await invoke("local_delete_path", { path: item.path, isDirectory: item.isDirectory });
+          }
+          await loadLocalFiles(localPath);
+          writeOperationLog("delete", "completed", sourceLabel, destinationLabel, "Deleted in LOCAL. This cannot be undone.");
+          notify("Deleted selected LOCAL items. This cannot be undone.");
+        } catch (error) {
+          writeOperationLog("delete", "failed", sourceLabel, destinationLabel, `Failed to delete in LOCAL: ${describeError(error)}`, "ERROR");
+          throw error;
         }
-        await loadLocalFiles(localPath);
-        notify("Deleted selected LOCAL items. This cannot be undone.");
         return;
       }
       if (
@@ -3382,57 +3474,79 @@ function App() {
         ))
       )
         return;
+      const sourceLabel = `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`;
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        for (const item of selectedItems) {
-          await invoke("ssh_delete_path", { profile, path: item.path, isDirectory: item.isDirectory });
+        const destinationLabel = `SSH: ${profile.name}:${path || "/"}`;
+        try {
+          for (const item of selectedItems) {
+            await invoke("ssh_delete_path", { profile, path: item.path, isDirectory: item.isDirectory });
+          }
+          await loadFiles(path);
+          writeOperationLog("delete", "completed", sourceLabel, destinationLabel, "Deleted through SFTP. This cannot be undone.");
+          notify("Deleted selected items. This cannot be undone.");
+        } catch (error) {
+          writeOperationLog("delete", "failed", sourceLabel, destinationLabel, `Failed to delete through SFTP: ${describeError(error)}`, "ERROR");
+          throw error;
         }
-        await loadFiles(path);
-        writeOperationLog("delete", "completed", `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`, `SSH: ${profile.name}:${path || "/"}`, "Deleted through SFTP. This cannot be undone.");
-        notify("Deleted selected items. This cannot be undone.");
         return;
       }
-      const response = await api("/api/files/delete", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          items: selectedItems.map(({ name, isDirectory }) => ({
-            name,
-            isDirectory,
-          })),
-          currentPath: path,
-        }),
-      });
-      if (!response.ok) throw new Error(await readError(response));
-      await loadFiles(path);
-      writeOperationLog("delete", "completed", `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`, `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`, "Deleted through the API Remote. This cannot be undone.");
-      notify("Deleted selected items. This cannot be undone.");
+      const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`;
+      try {
+        const response = await api("/api/files/delete", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: selectedItems.map(({ name, isDirectory }) => ({
+              name,
+              isDirectory,
+            })),
+            currentPath: path,
+          }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        await loadFiles(path);
+        writeOperationLog("delete", "completed", sourceLabel, destinationLabel, "Deleted through the API Remote. This cannot be undone.");
+        notify("Deleted selected items. This cannot be undone.");
+      } catch (error) {
+        writeOperationLog("delete", "failed", sourceLabel, destinationLabel, `Failed to delete through the API Remote: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
 
   const share = () =>
     run(async () => {
       ensureApiRemote();
       if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
-      const response = await api("/api/files/share", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          locationId: session.locationId,
-          filePath: selectedItems[0].path,
-        }),
-      });
-      if (!response.ok) throw new Error(await readError(response));
-      const data = (await response.json()) as ShareResponse;
-      const url =
-        data.data?.fullUrl ||
-        (data.data?.shareUrl
-          ? `${serverUrl(session)}${data.data.shareUrl}`
-          : "");
-      if (!url) throw new Error("The server did not return a share link.");
-      setShareUrl(url);
-      notify("Share link created.");
+      const item = selectedItems[0];
+      const sourceLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${item.path}`;
+      try {
+        const response = await api("/api/files/share", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            locationId: session.locationId,
+            filePath: item.path,
+          }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        const data = (await response.json()) as ShareResponse;
+        const url =
+          data.data?.fullUrl ||
+          (data.data?.shareUrl
+            ? `${serverUrl(session)}${data.data.shareUrl}`
+            : "");
+        if (!url) throw new Error("The server did not return a share link.");
+        setShareUrl(url);
+        writeOperationLog("share", "completed", sourceLabel, "Public share link", `Created a share link for ${item.name}.`);
+        notify("Share link created.");
+      } catch (error) {
+        writeOperationLog("share", "failed", sourceLabel, "Public share link", `Failed to create a share link for ${item.name}: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
+
 
   // .zip compression/extraction. Collision-avoidance on the archive/output
   // name is handled entirely on the Rust side (auto "_(n)" suffix) -- never
@@ -3445,25 +3559,41 @@ function App() {
         : "Archive";
       const archiveName = window.prompt("Archive name", defaultName);
       if (!archiveName?.trim()) return;
-      const finalName = await invoke<string>("local_compress_paths", {
-        paths: localSelectedItems.map((item) => item.path),
-        destinationFolder: localPath,
-        archiveName: archiveName.trim(),
-      });
-      await loadLocalFiles(localPath);
-      notify(`Created ${finalName} in LOCAL.`);
+      const sourceLabel = `${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"} in LOCAL`;
+      const destinationLabel = `LOCAL: ~/${localPath || ""}`;
+      try {
+        const finalName = await invoke<string>("local_compress_paths", {
+          paths: localSelectedItems.map((item) => item.path),
+          destinationFolder: localPath,
+          archiveName: archiveName.trim(),
+        });
+        await loadLocalFiles(localPath);
+        writeOperationLog("compress", "completed", sourceLabel, destinationLabel, `Created ${finalName} in LOCAL.`);
+        notify(`Created ${finalName} in LOCAL.`);
+      } catch (error) {
+        writeOperationLog("compress", "failed", sourceLabel, destinationLabel, `Failed to create archive in LOCAL: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
 
   const extractLocalArchive = () =>
     run(async () => {
       if (localSelectedItems.length !== 1) return;
       const item = localSelectedItems[0];
-      const finalName = await invoke<string>("local_extract_archive", {
-        path: item.path,
-        destinationFolder: localPath,
-      });
-      await loadLocalFiles(localPath);
-      notify(`Extracted to ${finalName} in LOCAL.`);
+      const sourceLabel = `LOCAL: ~/${item.path}`;
+      const destinationLabel = `LOCAL: ~/${localPath || ""}`;
+      try {
+        const finalName = await invoke<string>("local_extract_archive", {
+          path: item.path,
+          destinationFolder: localPath,
+        });
+        await loadLocalFiles(localPath);
+        writeOperationLog("extract", "completed", sourceLabel, destinationLabel, `Extracted ${item.name} to ${finalName} in LOCAL.`);
+        notify(`Extracted to ${finalName} in LOCAL.`);
+      } catch (error) {
+        writeOperationLog("extract", "failed", sourceLabel, destinationLabel, `Failed to extract ${item.name} in LOCAL: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
 
   const compressRemoteItems = () =>
@@ -3476,14 +3606,22 @@ function App() {
         : "Archive";
       const archiveName = window.prompt("Archive name", defaultName);
       if (!archiveName?.trim()) return;
-      const finalName = await invoke<string>("ssh_compress_paths", {
-        profile,
-        paths: selectedItems.map((item) => item.path),
-        destinationFolder: path,
-        archiveName: archiveName.trim(),
-      });
-      await loadFiles(path);
-      notify(`Created ${finalName}.`);
+      const sourceLabel = `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`;
+      const destinationLabel = `SSH: ${profile.name}:${path || "/"}`;
+      try {
+        const finalName = await invoke<string>("ssh_compress_paths", {
+          profile,
+          paths: selectedItems.map((item) => item.path),
+          destinationFolder: path,
+          archiveName: archiveName.trim(),
+        });
+        await loadFiles(path);
+        writeOperationLog("compress", "completed", sourceLabel, destinationLabel, `Created ${finalName} through SFTP.`);
+        notify(`Created ${finalName}.`);
+      } catch (error) {
+        writeOperationLog("compress", "failed", sourceLabel, destinationLabel, `Failed to create archive through SFTP: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
 
   const extractRemoteArchive = () =>
@@ -3492,14 +3630,23 @@ function App() {
       const profile = findSshProfileById(remoteSshEntryId);
       if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
       const item = selectedItems[0];
-      const finalName = await invoke<string>("ssh_extract_archive", {
-        profile,
-        path: item.path,
-        destinationFolder: path,
-      });
-      await loadFiles(path);
-      notify(`Extracted to ${finalName}.`);
+      const sourceLabel = `SSH: ${profile.name}:${item.path}`;
+      const destinationLabel = `SSH: ${profile.name}:${path || "/"}`;
+      try {
+        const finalName = await invoke<string>("ssh_extract_archive", {
+          profile,
+          path: item.path,
+          destinationFolder: path,
+        });
+        await loadFiles(path);
+        writeOperationLog("extract", "completed", sourceLabel, destinationLabel, `Extracted ${item.name} to ${finalName} through SFTP.`);
+        notify(`Extracted to ${finalName}.`);
+      } catch (error) {
+        writeOperationLog("extract", "failed", sourceLabel, destinationLabel, `Failed to extract ${item.name} through SFTP: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
+
 
   const isZipFile = (item: FileItem) => !item.isDirectory && /\.zip$/i.test(item.name);
 
