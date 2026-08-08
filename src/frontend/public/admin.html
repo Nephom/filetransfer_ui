@@ -476,6 +476,12 @@
             </div>
 
             <div class="control-card">
+                <h3>🎭 Role Management</h3>
+                <p>Define reusable permission matrices and assign them to users</p>
+                <button class="btn" onclick="openRoleManagement()">Manage Roles</button>
+            </div>
+
+            <div class="control-card">
                 <h3>🔒 SSL Certificate Management</h3>
                 <p>Manage HTTPS certificates and security settings</p>
                 <button class="btn" onclick="openSSLManagement()">Manage SSL</button>
@@ -544,6 +550,12 @@
                     <input type="password" id="newPassword" class="form-control" placeholder="Enter password (min 6 characters)">
                 </div>
                 <div class="form-group">
+                    <label>Role (optional):</label>
+                    <select id="newUserRole" class="form-control">
+                        <option value="">No role (individually managed permissions)</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <p style="font-size: 0.9rem; opacity: 0.7; margin: 0;">
                         ℹ️ New users will be created with 'User' role and standard permissions (read, upload, delete).
                         Admin accounts are managed in config.ini only.
@@ -583,6 +595,14 @@
                     <label><input type="checkbox" id="editPermissionUpload"> Upload</label>
                     <label><input type="checkbox" id="editPermissionDelete"> Delete</label>
                 </div>
+                <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Used only while no Role is assigned below.</p>
+            </div>
+            <div class="form-group">
+                <label>Role (optional):</label>
+                <select id="editUserRole" class="form-control">
+                    <option value="">No role (use Permissions above)</option>
+                </select>
+                <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Assigning a Role grants that Role's per-Location permission matrix. Manage Roles from the main console.</p>
             </div>
             <div class="form-group">
                 <label class="checkbox-group"><input type="checkbox" id="editActive"> Active user</label>
@@ -595,6 +615,48 @@
             <div class="btn-group">
                 <button class="btn" onclick="saveEditedUser()">✓ Save User</button>
                 <button class="btn danger" onclick="closeEditUser()">✕ Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Role Management Modal -->
+    <div id="roleManagementModal" class="modal-overlay">
+        <div class="modal-content" style="max-width: 900px;">
+            <div class="modal-header">
+                <h2>🎭 Role Management</h2>
+                <button class="modal-close" onclick="closeModal('roleManagementModal')">✕ Close</button>
+            </div>
+            <p style="font-size: 0.9rem; opacity: 0.8; margin-bottom: 16px;">
+                A Role is a named, reusable permission matrix (per-Location capabilities). Assign a Role to a user
+                from the Edit User dialog instead of managing that user's permissions individually.
+            </p>
+            <div class="btn-group">
+                <button class="btn" onclick="showAddRoleForm()">➕ Add New Role</button>
+                <button class="btn" onclick="loadRoles()">🔄 Refresh</button>
+            </div>
+            <div id="roleEditorForm" style="display: none; margin-top: 20px;">
+                <input type="hidden" id="editingRoleId">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Role name:</label>
+                        <input type="text" id="roleName" class="form-control" placeholder="e.g. Editor">
+                    </div>
+                    <div class="form-group">
+                        <label>Description:</label>
+                        <input type="text" id="roleDescription" class="form-control" placeholder="Optional description">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Permission matrix:</label>
+                    <div id="roleMatrixContainer" style="overflow-x: auto;"></div>
+                </div>
+                <div class="btn-group">
+                    <button class="btn" onclick="saveRole()">✓ Save Role</button>
+                    <button class="btn danger" onclick="hideRoleForm()">✕ Cancel</button>
+                </div>
+            </div>
+            <div id="rolesList" style="margin-top: 20px;">
+                <p style="text-align: center; margin-top: 40px; opacity: 0.7;">Loading roles...</p>
             </div>
         </div>
     </div>
@@ -1070,6 +1132,7 @@
         function openUserManagement() {
             openModal('userManagementModal');
             loadUsers();
+            loadRoles({ silent: true });
         }
 
         function showAddUserForm() {
@@ -1081,6 +1144,7 @@
             document.getElementById('newUsername').value = '';
             document.getElementById('newEmail').value = '';
             document.getElementById('newPassword').value = '';
+            document.getElementById('newUserRole').value = '';
         }
 
         async function loadUsers() {
@@ -1144,6 +1208,7 @@
             const username = document.getElementById('newUsername').value.trim();
             const email = document.getElementById('newEmail').value.trim();
             const password = document.getElementById('newPassword').value;
+            const roleId = document.getElementById('newUserRole').value || undefined;
 
             if (!username || !password) {
                 alert('Username and password are required');
@@ -1171,7 +1236,8 @@
                         username,
                         email,
                         password,
-                        role: 'user'
+                        role: 'user',
+                        roleId
                     })
                 });
 
@@ -1240,6 +1306,8 @@
                 document.getElementById('editPermissionUpload').checked = permissions.includes('upload');
                 document.getElementById('editPermissionDelete').checked = permissions.includes('delete');
                 document.getElementById('editPassword').value = '';
+                if (!rolesCache.length) await loadRoles({ silent: true });
+                document.getElementById('editUserRole').value = editingUser.roleId || '';
                 openModal('editUserModal');
             } catch (error) {
                 alert(`Error: ${error.message}`);
@@ -1257,7 +1325,8 @@
             const updates = {
                 email: document.getElementById('editEmail').value.trim(),
                 active: document.getElementById('editActive').checked,
-                permissions
+                permissions,
+                roleId: document.getElementById('editUserRole').value || ''
             };
             const password = document.getElementById('editPassword').value;
             if (password) updates.password = password;
@@ -1276,6 +1345,185 @@
                 closeEditUser();
                 loadUsers();
                 fetchStats();
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        // Role Management Modal Functions
+        let rolesCache = [];
+        let locationsCache = [];
+        let capabilitiesCache = [];
+        let editingRoleId = null;
+
+        function openRoleManagement() {
+            openModal('roleManagementModal');
+            loadRoles();
+        }
+
+        function populateRoleSelects() {
+            const selects = [document.getElementById('newUserRole'), document.getElementById('editUserRole')];
+            selects.forEach((select) => {
+                if (!select) return;
+                const previousValue = select.value;
+                const placeholder = select.options[0];
+                select.innerHTML = '';
+                select.appendChild(placeholder);
+                rolesCache.forEach((role) => {
+                    const option = document.createElement('option');
+                    option.value = role.id;
+                    option.textContent = role.name;
+                    select.appendChild(option);
+                });
+                select.value = previousValue;
+            });
+        }
+
+        async function loadRoles(options = {}) {
+            try {
+                const response = await fetch('/api/admin/roles', {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                });
+                if (!response.ok) throw new Error('Failed to load roles');
+                const data = await response.json();
+                rolesCache = data.roles || [];
+                locationsCache = data.locations || [];
+                capabilitiesCache = data.capabilities || [];
+                populateRoleSelects();
+                if (!options.silent) displayRoles(rolesCache);
+            } catch (error) {
+                console.error('Error loading roles:', error);
+                if (!options.silent) {
+                    document.getElementById('rolesList').innerHTML = '<p style="color: #ef4444; text-align: center;">Failed to load roles</p>';
+                }
+            }
+        }
+
+        function displayRoles(roles) {
+            const rolesList = document.getElementById('rolesList');
+            if (!roles.length) {
+                rolesList.innerHTML = '<p style="text-align: center; opacity: 0.7;">No roles defined yet. Click "Add New Role" to create one.</p>';
+                return;
+            }
+
+            let html = '<table class="user-table"><thead><tr><th>Name</th><th>Description</th><th>Locations granted</th><th>Actions</th></tr></thead><tbody>';
+            roles.forEach((role) => {
+                const grantedLocations = Object.keys(role.locationPermissions || {}).length;
+                html += `
+                    <tr>
+                        <td>${role.name}</td>
+                        <td>${role.description || '<span style="opacity:0.6;">—</span>'}</td>
+                        <td>${grantedLocations}</td>
+                        <td>
+                            <button class="btn btn-small" onclick="editRole('${role.id}')">✏️ Edit</button>
+                            <button class="btn btn-small danger" onclick="deleteRole('${role.id}')">🗑️ Delete</button>
+                        </td>
+                    </tr>
+                `;
+            });
+            html += '</tbody></table>';
+            rolesList.innerHTML = html;
+        }
+
+        function renderRoleMatrix(existingPermissions = {}) {
+            const container = document.getElementById('roleMatrixContainer');
+            if (!locationsCache.length) {
+                container.innerHTML = '<p style="opacity: 0.7;">No Locations configured yet. Add a Location under System Configuration first.</p>';
+                return;
+            }
+
+            let html = '<table class="locations-table"><thead><tr><th>Location</th>';
+            capabilitiesCache.forEach((capability) => { html += `<th style="text-align:center;">${capability}</th>`; });
+            html += '</tr></thead><tbody>';
+            locationsCache.forEach((location) => {
+                const granted = existingPermissions[location.id] || [];
+                html += `<tr><td>${location.displayName} (${location.id})</td>`;
+                capabilitiesCache.forEach((capability) => {
+                    const checked = granted.includes(capability) ? 'checked' : '';
+                    html += `<td style="text-align:center;"><input type="checkbox" class="role-matrix-cell" data-location="${location.id}" data-capability="${capability}" ${checked}></td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function showAddRoleForm() {
+            editingRoleId = null;
+            document.getElementById('editingRoleId').value = '';
+            document.getElementById('roleName').value = '';
+            document.getElementById('roleDescription').value = '';
+            renderRoleMatrix();
+            document.getElementById('roleEditorForm').style.display = 'block';
+        }
+
+        function editRole(id) {
+            const role = rolesCache.find((candidate) => candidate.id === id);
+            if (!role) return;
+            editingRoleId = id;
+            document.getElementById('editingRoleId').value = id;
+            document.getElementById('roleName').value = role.name;
+            document.getElementById('roleDescription').value = role.description || '';
+            renderRoleMatrix(role.locationPermissions || {});
+            document.getElementById('roleEditorForm').style.display = 'block';
+        }
+
+        function hideRoleForm() {
+            editingRoleId = null;
+            document.getElementById('roleEditorForm').style.display = 'none';
+        }
+
+        function collectRoleMatrix() {
+            const locationPermissions = {};
+            document.querySelectorAll('.role-matrix-cell:checked').forEach((checkbox) => {
+                const locationId = checkbox.dataset.location;
+                const capability = checkbox.dataset.capability;
+                if (!locationPermissions[locationId]) locationPermissions[locationId] = [];
+                locationPermissions[locationId].push(capability);
+            });
+            return locationPermissions;
+        }
+
+        async function saveRole() {
+            const name = document.getElementById('roleName').value.trim();
+            if (!name) {
+                alert('Role name is required');
+                return;
+            }
+            const description = document.getElementById('roleDescription').value.trim();
+            const locationPermissions = collectRoleMatrix();
+            const id = document.getElementById('editingRoleId').value;
+
+            try {
+                const response = await fetch(id ? `/api/admin/roles/${encodeURIComponent(id)}` : '/api/admin/roles', {
+                    method: id ? 'PUT' : 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ name, description, locationPermissions })
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Failed to save role');
+                alert(data.message || 'Role saved successfully!');
+                hideRoleForm();
+                loadRoles();
+            } catch (error) {
+                alert(`Error: ${error.message}`);
+            }
+        }
+
+        async function deleteRole(id) {
+            if (!confirm('Delete this Role? Users assigned to it will fall back to their individual permissions.')) return;
+            try {
+                const response = await fetch(`/api/admin/roles/${encodeURIComponent(id)}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Failed to delete role');
+                alert(data.message || 'Role deleted successfully!');
+                loadRoles();
             } catch (error) {
                 alert(`Error: ${error.message}`);
             }

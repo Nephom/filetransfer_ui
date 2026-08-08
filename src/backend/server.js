@@ -13,9 +13,10 @@ const archiver = require('archiver');
 const crypto = require('crypto');
 const configManager = require('./config');
 const { EnhancedMemoryFileSystem } = require('./file-system');
-const { LocationManager, LocationPermissionManager } = require('./location');
+const { LocationManager, LocationPermissionManager, CAPABILITIES } = require('./location');
 const AuthManager = require('./auth');
 const UserManager = require('./auth/user-manager');
+const RoleManager = require('./auth/role-manager');
 const UploadAPI = require('./api/upload.js');
 const shareRoutes = require('./api/share');
 const sslRoutes = require('./api/ssl');
@@ -34,6 +35,9 @@ const { getVersion } = require('../../scripts/version');
 
 // Initialize user manager
 const userManager = new UserManager();
+
+// Initialize role manager (named, reusable per-Location permission matrices)
+const roleManager = new RoleManager();
 
 // Initialize app
 const app = express();
@@ -239,6 +243,8 @@ const configureLocationRuntime = () => {
   locationManager = new LocationManager(configManager.getConfig());
   locationPermissionManager = new LocationPermissionManager(locationManager);
   locationPermissionManager.setUserResolver((username) => userManager.getUser(username));
+  locationPermissionManager.setRoleResolver((roleId) => roleManager.getRole(roleId));
+  roleManager.setLocationPermissionManager(locationPermissionManager);
   shareRoutes.setLocationPermissionManager?.(locationPermissionManager);
 
   const defaultLocation = locationManager.getLocation('default');
@@ -1645,10 +1651,14 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/users', requireAdmin, async (req, res) => {
   try {
-    const { username, password, email, role = 'user', permissions, locationPermissions } = req.body;
+    const { username, password, email, role = 'user', permissions, locationPermissions, roleId } = req.body;
     
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
+    }
+
+    if (roleId && !roleManager.getRole(roleId)) {
+      return res.status(400).json({ error: `Role '${roleId}' not found` });
     }
 
     const normalizedLocationPermissions = locationPermissionManager.validateMapping(locationPermissions);
@@ -1658,7 +1668,8 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
       email,
       role,
       permissions,
-      locationPermissions: normalizedLocationPermissions
+      locationPermissions: normalizedLocationPermissions,
+      roleId: roleId || undefined
     });
 
     systemLogger.logSystem('INFO', `User '${username}' created by admin: ${req.user?.username}`);
@@ -1704,6 +1715,10 @@ app.put('/api/admin/users/:username', requireAdmin, async (req, res) => {
     if (updates.locationPermissions !== undefined) {
       updates.locationPermissions = locationPermissionManager.validateMapping(updates.locationPermissions);
     }
+    if (updates.roleId !== undefined && updates.roleId !== null && updates.roleId !== '' && !roleManager.getRole(updates.roleId)) {
+      return res.status(400).json({ error: `Role '${updates.roleId}' not found` });
+    }
+    if (updates.roleId === '') updates.roleId = null;
     
     const updatedUser = await userManager.updateUser(username, updates);
 
@@ -1774,6 +1789,60 @@ app.get('/api/admin/users/:username', requireAdmin, async (req, res) => {
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to fetch user: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch user' });
+  }
+});
+
+// Admin Role Management Endpoints
+// A Role is a named, reusable Location permission matrix (see RoleManager)
+// that can be assigned to users via `roleId`, giving admins a single place
+// to edit shared capability grants instead of repeating them per user.
+app.get('/api/admin/roles', requireAdmin, async (req, res) => {
+  try {
+    const roles = roleManager.getAllRoles();
+    const locations = locationManager.getLocations({ includeDisabled: true })
+      .map(({ id, displayName, enabled, readOnly, order }) => ({ id, displayName, enabled, readOnly, order }));
+    res.json({ success: true, roles, locations, capabilities: CAPABILITIES });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to fetch roles: ${error.message}`);
+    res.status(500).json({ error: 'Failed to fetch roles' });
+  }
+});
+
+app.post('/api/admin/roles', requireAdmin, async (req, res) => {
+  try {
+    const { name, description, locationPermissions } = req.body;
+    const role = await roleManager.createRole({ name, description, locationPermissions });
+    systemLogger.logSystem('INFO', `Role '${role.name}' created by admin: ${req.user?.username}`);
+    res.status(201).json({ success: true, message: `Role '${role.name}' created successfully`, role });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to create role: ${error.message}`);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.put('/api/admin/roles/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, locationPermissions } = req.body;
+    const role = await roleManager.updateRole(id, { name, description, locationPermissions });
+    systemLogger.logSystem('INFO', `Role '${role.name}' updated by admin: ${req.user?.username}`);
+    res.json({ success: true, message: `Role '${role.name}' updated successfully`, role });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to update role: ${error.message}`);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/admin/roles/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await roleManager.deleteRole(id);
+    const { changed } = await userManager.clearRoleFromUsers(id);
+    systemLogger.logSystem('INFO', `Role '${id}' deleted by admin: ${req.user?.username}${changed ? ` (unassigned from ${changed} user(s))` : ''}`);
+    res.json({ success: true, message: result.message, unassignedUsers: changed });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to delete role: ${error.message}`);
+    res.status(400).json({ error: error.message });
   }
 });
 
@@ -2356,6 +2425,9 @@ async function startServer() {
 
     // Initialize user manager
     await userManager.initialize();
+
+    // Initialize role manager
+    await roleManager.initialize();
 
     // Set JWT secret for middleware
     setJwtSecret(jwtSecret);

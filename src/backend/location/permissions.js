@@ -21,10 +21,18 @@ class LocationPermissionManager {
   constructor(locationManager) {
     this.locationManager = locationManager;
     this.userResolver = null;
+    this.roleResolver = null;
   }
 
   setUserResolver(userResolver) {
     this.userResolver = userResolver;
+  }
+
+  // Resolver: (roleId) => Role | null. Lets a user's `roleId` supply a
+  // shared, reusable Location permission matrix (see RoleManager) instead of
+  // (or as a base for) their own ad-hoc `locationPermissions`.
+  setRoleResolver(roleResolver) {
+    this.roleResolver = roleResolver;
   }
 
   normalizeCapabilities(capabilities) {
@@ -49,10 +57,25 @@ class LocationPermissionManager {
         .map((location) => [location.id, [...CAPABILITIES]]));
     }
 
+    // A role supplies a shared, reusable baseline matrix. Per-user
+    // `locationPermissions` (if present) still override individual
+    // Locations on top of the role, so an admin can grant a role for the
+    // common case and hand-tune exceptions per user without touching the
+    // shared role definition.
+    const role = user?.roleId && this.roleResolver ? this.roleResolver(user.roleId) : null;
+    const roleBase = role?.locationPermissions && typeof role.locationPermissions === 'object'
+      ? Object.fromEntries(Object.entries(role.locationPermissions)
+          .map(([locationId, capabilities]) => [locationId, this.normalizeCapabilities(capabilities)]))
+      : null;
+
     const configured = user?.locationPermissions;
-    if (configured && typeof configured === 'object') {
-      return Object.fromEntries(Object.entries(configured)
-        .map(([locationId, capabilities]) => [locationId, this.normalizeCapabilities(capabilities)]));
+    const userOverrides = configured && typeof configured === 'object'
+      ? Object.fromEntries(Object.entries(configured)
+          .map(([locationId, capabilities]) => [locationId, this.normalizeCapabilities(capabilities)]))
+      : null;
+
+    if (roleBase || userOverrides) {
+      return { ...(roleBase || {}), ...(userOverrides || {}) };
     }
 
     // Preserve legacy users during migration, but never grant new Locations implicitly.

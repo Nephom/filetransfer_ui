@@ -105,7 +105,7 @@ class UserManager {
   /**
    * Create a new user
    */
-  async createUser({ username, password, email, role = 'user', permissions = [], locationPermissions }) {
+  async createUser({ username, password, email, role = 'user', permissions = [], locationPermissions, roleId }) {
     if (!this.initialized) {
       throw new Error('User manager not initialized');
     }
@@ -152,6 +152,7 @@ class UserManager {
       email: email || `${username}@localhost`,
       role: 'user', // Force role to be 'user'
       permissions,
+      ...(roleId === undefined ? {} : { roleId }),
       ...(locationPermissions === undefined ? {} : { locationPermissions }),
       active: true,
       created: new Date().toISOString(),
@@ -408,6 +409,28 @@ class UserManager {
     await this.saveUsers();
 
     return { message: 'Password changed successfully' };
+  }
+
+  /**
+   * Detach a deleted role from any users still referencing it, reverting
+   * them to their legacy/per-user permissions instead of silently keeping
+   * a dangling roleId.
+   */
+  async clearRoleFromUsers(roleId) {
+    if (!this.initialized) {
+      throw new Error('User manager not initialized');
+    }
+
+    let changed = 0;
+    for (const [username, user] of this.users.entries()) {
+      if (user.roleId === roleId) {
+        const { roleId: _removed, ...rest } = user;
+        this.users.set(username, rest);
+        changed += 1;
+      }
+    }
+    if (changed > 0) await this.saveUsers();
+    return { changed };
   }
 
   /**
