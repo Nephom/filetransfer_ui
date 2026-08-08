@@ -377,7 +377,7 @@ const initialSession: Session = {
   onlyTerminalMode: false,
 };
 const sessionRegistryKey = "fileapi-session-registry";
-const desktopSettingsKey = "fileapi-desktop-settings";
+const desktopSettingsKey = "nfterm-settings";
 const defaultDesktopSettings: DesktopSettings = {
   uiDensity: "auto",
   undoHistoryEnabled: true,
@@ -777,7 +777,7 @@ function App() {
 
   useEffect(() => {
     try {
-      const saved = localStorage.getItem("fileapi-desktop-session");
+      const saved = localStorage.getItem("nfterm-session");
       if (saved) {
         const parsed = JSON.parse(saved) as Partial<Session>;
         setSession((current) => ({
@@ -795,7 +795,7 @@ function App() {
   useEffect(() => () => window.clearTimeout(noticeTimer.current), []);
 
   useEffect(() => {
-    localStorage.setItem("fileapi-desktop-session", JSON.stringify(session));
+    localStorage.setItem("nfterm-session", JSON.stringify(session));
   }, [session]);
 
   useEffect(() => {
@@ -871,7 +871,7 @@ function App() {
       status: "started",
       sourceLabel: "Desktop",
       destinationLabel: "",
-      detail: "File Transfer Desktop started.",
+      detail: "nFterm started.",
     })).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
     return () => {
       void invoke("append_operation_log", {
@@ -880,7 +880,7 @@ function App() {
         status: "stopped",
         sourceLabel: "Desktop",
         destinationLabel: "",
-        detail: "File Transfer Desktop stopped.",
+        detail: "nFterm stopped.",
       });
     };
   }, []);
@@ -2330,7 +2330,7 @@ function App() {
   };
 
   const clearLogs = () => {
-    if (!window.confirm("Clear operation logs? This removes only File Transfer operation logs, not user files or transfer staging data.")) return;
+    if (!window.confirm("Clear operation logs? This removes only nFterm operation logs, not user files or transfer staging data.")) return;
     void run(async () => {
       await invoke("clear_operation_logs");
       refreshStorageInfo();
@@ -4120,8 +4120,8 @@ function App() {
           <div className="login-mark" aria-hidden="true">
             <span />
           </div>
-          <h1>File Transfer</h1>
-          <p>Sign in to your file server over HTTPS.</p>
+          <h1>nFterm {appVersion && <small className="login-version">{appVersion}</small>}</h1>
+          <p>Sign in to your API server over HTTPS.</p>
           <label>
             Server address
             <input
@@ -4184,7 +4184,6 @@ function App() {
           </label>
           <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
           {notice && <output role="alert">{notice}</output>}
-          {appVersion && <small className="login-version">{appVersion}</small>}
         </form>
         {onlyTerminalAvailable && (
           <button
@@ -4214,8 +4213,9 @@ function App() {
     <main className={`explorer ui-density-${desktopSettings.uiDensity}`}>
       <header className="titlebar">
         <span className="app-mark" />
-        <span className="app-name">LAB File Manager</span>
-        <span className="connection-status">SECURE STORAGE</span>
+        <span className="app-name">
+          Nephom <span className="connection-status">File manager</span> cross <span className="connection-status">Terminal</span>
+        </span>
         {(activeLocation || connectedSshBrowseOptions().length > 0) && (
           <div className="location-control" ref={locationControl}>
             <span className="location-label">Location</span>

@@ -61,7 +61,11 @@ fn operation_storage_directory() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("FILEAPI_DATA_DIR") {
         return Ok(PathBuf::from(path));
     }
-    Ok(local_home()?.join(".fileapi-desktop"))
+    // Renamed from the legacy ".fileapi-desktop" as part of the nFterm
+    // rebrand. Upgrading users keep their history by running
+    // upgrade_tools/migrate-desktop-data.ps1, which copies the legacy
+    // directory over before the app is relaunched under the new name.
+    Ok(local_home()?.join(".nFterm"))
 }
 
 fn operation_paths() -> Result<(PathBuf, PathBuf), String> {
@@ -1331,5 +1335,5 @@ fn main() {
             set_operation_log_config
         ])
         .run(tauri::generate_context!())
-        .expect("error while running File Transfer desktop application");
+        .expect("error while running nFterm desktop application");
 }

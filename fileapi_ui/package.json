@@ -1,7 +1,7 @@
 {
-  "name": "fileapi-desktop",
+  "name": "nFterm",
   "private": true,
-  "version": "3.3.0+20260808.85d1e7f",
+  "version": "3.3.0-6035024",
   "type": "module",
   "scripts": {
     "dev": "vite",

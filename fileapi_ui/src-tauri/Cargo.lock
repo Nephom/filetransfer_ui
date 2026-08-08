@@ -1572,28 +1572,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fileapi-desktop"
-version = "3.3.0+20260808.85d1e7f"
-dependencies = [
- "dirs",
- "keyring",
- "reqwest 0.12.24",
- "rfd",
- "russh",
- "russh-sftp",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tauri",
- "tauri-build",
- "tauri-plugin-drag",
- "tokio",
- "uuid",
- "windows-sys 0.59.0",
- "zip",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2902,6 +2880,28 @@ dependencies = [
  "serde",
  "thiserror 2.0.19",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nFterm"
+version = "3.3.0-6035024"
+dependencies = [
+ "dirs",
+ "keyring",
+ "reqwest 0.12.24",
+ "rfd",
+ "russh",
+ "russh-sftp",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-drag",
+ "tokio",
+ "uuid",
+ "windows-sys 0.59.0",
+ "zip",
 ]
 
 [[package]]
