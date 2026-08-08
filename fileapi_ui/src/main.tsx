@@ -684,7 +684,13 @@ function App() {
   // clicking around in LOCAL, with no indication of where an action would
   // actually apply.
   const [activePane, setActivePane] = useState<"local" | "remote">("remote");
-  const [dropTarget, setDropTarget] = useState("");
+  // `null` means "no active drop target". This must be distinct from `""`,
+  // which is a legitimate real path (HOME for LOCAL, and the API-remote
+  // storage root) -- using `""` as the sentinel made the HOME/root tree row
+  // look permanently "drop-target"-styled any time `dropTarget` was reset,
+  // since `dropTarget === node.path` (`"" === ""`) was true even with no
+  // drag in progress.
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   // Which pane the cursor is *actually* hovering over during a cross-pane
   // drag. `dragSource` alone only tells us a drag started somewhere -- it
   // does not track where the pointer currently is, so pane-wide "you can
@@ -2605,7 +2611,7 @@ function App() {
           recordUndoableMove({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath: finalPath });
         }
         setDragItems([]);
-        setDropTarget("");
+        setDropTarget(null);
         setContextMenu(null);
         notify(`Moved ${items.length} item${items.length === 1 ? "" : "s"}.`);
         await loadFiles(path);
@@ -2635,7 +2641,7 @@ function App() {
         });
       }
       setDragItems([]);
-      setDropTarget("");
+      setDropTarget(null);
       setContextMenu(null);
       notify(data.message || "Move complete.");
       setFolderTree({
@@ -2667,7 +2673,7 @@ function App() {
         recordUndoableMove({ source: "local", oldPath: item.path, newPath: finalPath });
       }
       setDragItems([]);
-      setDropTarget("");
+      setDropTarget(null);
       setLocalSelected([]);
       notify(
         items.length === 1
@@ -2825,7 +2831,7 @@ function App() {
     dragSourceRef.current = "";
     setDragItems([]);
     setDragSource("");
-    setDropTarget("");
+    setDropTarget(null);
     setPaneDragHover("");
   };
   const finishDragAfterDrop = () => {
@@ -3544,8 +3550,15 @@ function App() {
             handleDragAutoScroll(event, folderTreeRef.current);
           }
         }}
-        onDragLeave={() => {
-          setDropTarget("");
+        onDragLeave={(event) => {
+          // `dragleave` fires the instant the pointer crosses onto this
+          // row's own child buttons (tree-toggle/tree-folder), which live
+          // inside this same `tree-node` div -- without this check
+          // `dropTarget` (and the "Move here" label) would flicker off
+          // almost immediately while hovering, since the row is mostly
+          // covered by those buttons.
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          setDropTarget(null);
           window.clearTimeout(dragExpandTimerRef.current);
         }}
         onDropCapture={(event) => {
@@ -3621,8 +3634,12 @@ function App() {
             handleDragAutoScroll(event, localFolderTreeRef.current);
           }
         }}
-        onDragLeave={() => {
-          setDropTarget("");
+        onDragLeave={(event) => {
+          // Same fix as the REMOTE tree above: don't clear `dropTarget`
+          // when the pointer only moved onto this row's own tree-toggle/
+          // tree-folder buttons.
+          if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+          setDropTarget(null);
           window.clearTimeout(dragExpandTimerRef.current);
         }}
         onDropCapture={(event) => {
@@ -3630,14 +3647,14 @@ function App() {
             event.preventDefault();
             event.stopPropagation();
             stopDragAutoScroll();
-            setDropTarget("");
+            setDropTarget(null);
             const items = dragItemsRef.current;
             downloadRemoteItemsToLocal(items, node.path);
           } else if (dragSourceRef.current === "local") {
             event.preventDefault();
             event.stopPropagation();
             stopDragAutoScroll();
-            setDropTarget("");
+            setDropTarget(null);
             const items = dragItemsRef.current;
             void moveLocalItems(items, node.path);
           }
