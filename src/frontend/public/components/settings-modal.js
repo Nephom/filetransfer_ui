@@ -36,6 +36,22 @@ const SettingsModal = ({ onClose, token }) => {
     const [showCreateUser, setShowCreateUser] = useState(false);
     const [editingUser, setEditingUser] = useState(null);
     const [configSection, setConfigSection] = useState('server');
+    const [roles, setRoles] = useState([]);
+
+    const fetchRoles = async () => {
+        try {
+            const response = await fetch('/api/admin/roles', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (response.ok) {
+                const data = await response.json();
+                setRoles(data.roles || []);
+            }
+        } catch (err) {
+            console.warn('Failed to load roles:', err);
+        }
+    };
+
 
     useEffect(() => {
         const loadInitialData = async () => {
@@ -53,6 +69,7 @@ const SettingsModal = ({ onClose, token }) => {
 
         if (activeTab === 'users' && users.length === 0) {
             fetchUsers();
+            fetchRoles();
         }
         if (activeTab === 'config' && Object.keys(config).length === 0) {
             fetchConfig();
@@ -596,16 +613,16 @@ const SettingsModal = ({ onClose, token }) => {
                 </div>
             </div>
 
-            {showCreateUser && (<CreateUserModal onClose={() => setShowCreateUser(false)} onSubmit={createUser} loading={saving} />)}
-            {editingUser && (<EditUserModal user={editingUser} onClose={() => setEditingUser(null)} onSubmit={updateUser} loading={saving} />)}
+            {showCreateUser && (<CreateUserModal onClose={() => setShowCreateUser(false)} onSubmit={createUser} loading={saving} roles={roles} />)}
+            {editingUser && (<EditUserModal user={editingUser} onClose={() => setEditingUser(null)} onSubmit={updateUser} loading={saving} roles={roles} />)}
         </div>
     );
 };
 
 // Create User Modal Component
-const CreateUserModal = ({ onClose, onSubmit, loading }) => {
-    const [formData, setFormData] = useState({ username: '', password: '', email: '', role: 'user', permissions: [] });
-    const handleSubmit = (e) => { e.preventDefault(); onSubmit(formData); };
+const CreateUserModal = ({ onClose, onSubmit, loading, roles = [] }) => {
+    const [formData, setFormData] = useState({ username: '', password: '', email: '', role: 'user', permissions: [], roleId: '' });
+    const handleSubmit = (e) => { e.preventDefault(); const payload = { ...formData }; if (!payload.roleId) delete payload.roleId; onSubmit(payload); };
     return (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}>
             <div style={{ background: 'rgba(255, 255, 255, 0.1)', backdropFilter: 'blur(20px)', borderRadius: '16px', border: '1px solid rgba(255, 255, 255, 0.2)', padding: '24px', width: '400px', maxWidth: '90vw' }}>
@@ -629,6 +646,14 @@ const CreateUserModal = ({ onClose, onSubmit, loading }) => {
                             <option value="user">User</option>
                         </select>
                     </div>
+                    <div style={{ marginBottom: '20px' }}>
+                        <label style={{ color: 'white', display: 'block', marginBottom: '4px', fontSize: '14px' }}>Permission Role (optional):</label>
+                        <select value={formData.roleId} onChange={(e) => setFormData(prev => ({ ...prev, roleId: e.target.value }))} style={{ width: '100%', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px' }}>
+                            <option value="">No role (individually managed permissions)</option>
+                            {roles.map((role) => (<option key={role.id} value={role.id}>{role.name}</option>))}
+                        </select>
+                        <p style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: '11px', margin: '4px 0 0' }}>Manage the available Roles and their per-Location permission matrix from the Admin Console.</p>
+                    </div>
                     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
                         <button type="button" onClick={onClose} style={{ background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 16px', cursor: 'pointer' }}>Cancel</button>
                         <button type="submit" disabled={loading} style={{ background: 'linear-gradient(135deg, #34d399, #10b981)', border: 'none', borderRadius: '6px', color: 'white', padding: '8px 16px', cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.7 : 1 }}>{loading ? 'Creating...' : 'Create User'}</button>
@@ -640,11 +665,12 @@ const CreateUserModal = ({ onClose, onSubmit, loading }) => {
 };
 
 // Edit User Modal Component
-const EditUserModal = ({ user, onClose, onSubmit, loading }) => {
-    const [formData, setFormData] = useState({ role: 'user', active: user.active, email: user.email || '', permissions: user.permissions || ['read', 'upload', 'delete'], newPassword: '' });
+const EditUserModal = ({ user, onClose, onSubmit, loading, roles = [] }) => {
+    const [formData, setFormData] = useState({ role: 'user', active: user.active, email: user.email || '', permissions: user.permissions || ['read', 'upload', 'delete'], roleId: user.roleId || '', newPassword: '' });
     const handleSubmit = (e) => {
         e.preventDefault();
         const updates = { ...formData };
+        if (!updates.roleId) updates.roleId = '';
         if (!updates.newPassword) {
             delete updates.newPassword;
         } else {
@@ -676,6 +702,14 @@ const EditUserModal = ({ user, onClose, onSubmit, loading }) => {
                                 </label>
                             ))}
                         </div>
+                        <p style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: '11px', margin: '6px 0 0' }}>Used only while no Permission Role is assigned below.</p>
+                    </div>
+                    <div style={{ marginBottom: '16px' }}>
+                        <label style={{ color: 'white', display: 'block', marginBottom: '4px', fontSize: '14px' }}>Permission Role (optional):</label>
+                        <select value={formData.roleId} onChange={(e) => setFormData(prev => ({ ...prev, roleId: e.target.value }))} style={{ width: '100%', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px' }}>
+                            <option value="">No role (use Permissions above)</option>
+                            {roles.map((role) => (<option key={role.id} value={role.id}>{role.name}</option>))}
+                        </select>
                     </div>
                     <div style={{ marginBottom: '16px' }}>
                         <label style={{ color: 'white', display: 'flex', alignItems: 'center', gap: '8px' }}>
