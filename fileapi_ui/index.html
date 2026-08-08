@@ -4,9 +4,45 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>File Transfer</title>
+    <style>
+      /* Inlined (not an external stylesheet) so this paints immediately,
+         with zero dependency on the app bundle finishing download/parse/
+         execute. React's first render replaces #root's children entirely,
+         so this is automatically swapped out the moment the app mounts --
+         see the removal of the #app-loading node at the bottom of body. */
+      html, body { height: 100%; margin: 0; background: #04101c; }
+      #root { height: 100%; }
+      #app-loading {
+        display: flex;
+        height: 100%;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 14px;
+        color: #b9cee4;
+        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      #app-loading .spinner {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        border: 3px solid #1c3955;
+        border-top-color: #47cdf1;
+        animation: app-loading-spin 0.8s linear infinite;
+      }
+      #app-loading .label { font-size: 13px; letter-spacing: 0.02em; }
+      @keyframes app-loading-spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="app-loading">
+        <div class="spinner" aria-hidden="true"></div>
+        <div class="label">Loading File Transfer&hellip;</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
