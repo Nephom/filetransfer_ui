@@ -1,8 +1,8 @@
 [正體中文](README.md)
 
-# Web-Based File Management System 3.2.3
+# Web-Based File Management System 3.3.0
 
-A local file management system with a Windows Explorer-style web interface and a Tauri v2 desktop client for Ubuntu and Windows.
+A local file management system with a Windows Explorer-style web interface and a Tauri v2 desktop client (**nFterm**) for Ubuntu and Windows.
 
 ## Install And Upgrade
 
@@ -79,7 +79,9 @@ Windows build machines use the PowerShell workflow. It only handles the Tauri de
 .\build.ps1 self-upgrade
 ```
 
-The Windows build creates a portable EXE at `fileapi_ui/src-tauri/target/release/fileapi-desktop.exe` and an NSIS package under `fileapi_ui/src-tauri/target/release/bundle/nsis/`. The local file pane defaults to the current user's Desktop.
+The Windows build creates a portable EXE at `fileapi_ui/src-tauri/target/release/nFterm.exe` and an NSIS package under `fileapi_ui/src-tauri/target/release/bundle/nsis/`. The local file pane defaults to the current user's Desktop.
+
+The desktop client was renamed to **nFterm** (formerly "File Transfer Desktop" / fileapi-desktop). Upgrading users can move their legacy data directory (`~/.fileapi-desktop`) to the new one (`~/.nFterm`) with `upgrade_tools/migrate-desktop-data.ps1`.
 
 ## Documentation
 
