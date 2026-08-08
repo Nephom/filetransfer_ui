@@ -1,6 +1,6 @@
-# File Transfer Desktop 3.2.3
+# nFterm 3.3.0
 
-This is a mouse-first Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11.
+This is a mouse-first Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11, formerly named "File Transfer Desktop" (package name `fileapi-desktop`). The repository folder remains `fileapi_ui` for continuity with existing checkouts and tooling.
 
 ## Build
 
@@ -18,7 +18,9 @@ On a Windows build machine, run the repository-level PowerShell workflow. It che
 .\build.ps1 build
 ```
 
-The portable EXE is created at `src-tauri/target/release/fileapi-desktop.exe`. The NSIS installer is created in `src-tauri/target/release/bundle/nsis/`.
+The portable EXE is created at `src-tauri/target/release/nFterm.exe`. The NSIS installer is created in `src-tauri/target/release/bundle/nsis/`.
+
+Upgrading from a pre-rename install? The app's local data directory moved from `~/.fileapi-desktop` to `~/.nFterm`; run `../upgrade_tools/migrate-desktop-data.ps1` (Windows) to carry over undo history and operation logs. Saved SSH credentials are unaffected -- they are kept under the unchanged keyring service name.
 
 For development only:
 

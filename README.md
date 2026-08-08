@@ -1,14 +1,15 @@
 [English](README_EN.md)
 
-# Web-Based File Management System 3.2.3
+# Web-Based File Management System 3.3.0
 
 提供檔案總管式網頁介面，以及可在 Ubuntu 與 Windows 執行的 Tauri v2 桌面客戶端。
 
 ## 功能
 
 - 瀏覽器檔案總管：瀏覽、上傳、下載、重新命名、刪除、分享與資料夾 ZIP 下載。
+- 具名、可重複使用的角色權限矩陣（每個 Location 各自的權限），可指派給使用者，並可在個別使用者身上覆寫。
 - JWT 驗證、TLS 管理、可設定的安全功能與檔案快取。
-- Ubuntu 22.04+ 與 Windows 10/11 Tauri v2 桌面客戶端：滑鼠導向的檔案總管介面。
+- Ubuntu 22.04+ 與 Windows 10/11 Tauri v2 桌面客戶端（**nFterm**）：滑鼠導向的檔案總管介面。
 - `build.sh`：Linux 的安裝、首次設定、更新、測試與 DEB 建置。
 - `build.ps1`：Windows 建置機的桌面相依性檢查、更新建置與腳本自我更新。
 
@@ -93,7 +94,9 @@ Windows 使用 `build.ps1` 建置 NSIS 安裝包與不需安裝的 portable EXE�
 .\build.ps1 build
 ```
 
-portable EXE 位於 `fileapi_ui/src-tauri/target/release/fileapi-desktop.exe`；NSIS 產物位於 `fileapi_ui/src-tauri/target/release/bundle/nsis/`。Windows 執行檔使用目前使用者的 Desktop 作為本機檔案區預設目錄。
+portable EXE 位於 `fileapi_ui/src-tauri/target/release/nFterm.exe`；NSIS 產物位於 `fileapi_ui/src-tauri/target/release/bundle/nsis/`。Windows 執行檔使用目前使用者的 Desktop 作為本機檔案區預設目錄。
+
+桌面客戶端已更名為 **nFterm**（原名 File Transfer Desktop / fileapi-desktop）；升級使用者可用 `upgrade_tools/migrate-desktop-data.ps1` 將舊資料目錄（`~/.fileapi-desktop`）搬移到新目錄（`~/.nFterm`）。
 
 ## 文件
 
