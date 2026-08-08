@@ -1,10 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "File Transfer Desktop",
-  "version": "3.3.0+20260808.85d1e7f",
-  "identifier": "com.nephom.filetransfer",
+  "productName": "nFterm",
+  "version": "3.3.0-6035024",
+  "identifier": "com.nephom.nfterm",
   "build": { "frontendDist": "../dist", "devUrl": "http://localhost:1420", "beforeDevCommand": "npm run dev", "beforeBuildCommand": "npm run build" },
-  "app": { "windows": [{ "title": "File Transfer", "width": 1100, "height": 720, "minWidth": 760, "minHeight": 520, "dragDropEnabled": false }] },
+  "app": { "windows": [{ "title": "nFterm", "width": 1100, "height": 720, "minWidth": 760, "minHeight": 520, "dragDropEnabled": false }] },
   "bundle": {
     "active": true,
     "targets": "all",

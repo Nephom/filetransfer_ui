@@ -270,21 +270,36 @@ function Get-AppVersion {
     return (Get-Content -LiteralPath (Join-Path $Root "VERSION") -Raw).Trim()
 }
 
+function Get-AppVersionInfo {
+    # Mirrors build.sh's application_version()/application_version_display():
+    # derive the release-metadata version (VERSION + RELEASE_DATE + current
+    # commit) once via scripts/version.js, so the Windows desktop build gets
+    # the exact same "VERSION-commit (RELEASE_DATE)" identity as the WebUI
+    # and the Linux/Mac Tauri build instead of drifting from whatever was
+    # last hand-typed into fileapi_ui's own package.json/Cargo.toml/tauri.conf.json.
+    $json = node (Join-Path $Root "scripts\version.js") | Out-String
+    return $json | ConvertFrom-Json
+}
+
 function Build-Desktop {
-    Write-Host "Building File Transfer Desktop v$(Get-AppVersion) for Windows..."
+    Write-Host "Building nFterm v$(Get-AppVersion) for Windows..."
     Install-DesktopDependencies
+    $versionInfo = Get-AppVersionInfo
+    Write-Host "Desktop build identity: $($versionInfo.display)"
+    $env:VITE_APP_VERSION = $versionInfo.version
+    $env:VITE_APP_VERSION_DISPLAY = $versionInfo.display
     Invoke-Native "npm.cmd" @("run", "build", "--prefix", $DesktopRoot)
     Push-Location (Join-Path $DesktopRoot "src-tauri")
     try { Invoke-Native "cargo" @("check", "--locked") }
     finally { Pop-Location }
 
-    Invoke-Native "npm.cmd" @("run", "tauri", "build", "--prefix", $DesktopRoot, "--", "--bundles", "nsis")
+    Invoke-Native "npm.cmd" @("run", "tauri", "build", "--prefix", $DesktopRoot, "--", "--bundles", "nsis", "--config", "{`"version`":`"$($versionInfo.version)`"}")
 
     # Report whatever Tauri actually produced instead of guessing the
     # installer filename (it embeds the app version, which can differ from
     # the repo-level VERSION file and would otherwise go stale silently).
     $releaseDir = Join-Path $DesktopRoot "src-tauri\target\release"
-    $exePath = Join-Path $releaseDir "fileapi-desktop.exe"
+    $exePath = Join-Path $releaseDir "nFterm.exe"
     if (Test-Path -LiteralPath $exePath) {
         Write-Host "Portable EXE: $exePath"
     }

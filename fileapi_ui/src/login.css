@@ -48,7 +48,7 @@ body {
 .login input { color: #e6eefc; background: #07192a; border-color: #315b7e; }
 .login input:focus { outline: none; border-color: #47cdf1; box-shadow: 0 0 0 1px #47cdf1; }
 .login button { margin-top: 8px; background: linear-gradient(135deg, #1477c9, #168bb9); border-color: #47cdf1; }
-.login-version { display: block; margin-top: 20px; color: #7f9bb5; font-size: 12px; text-align: center; }
+.login-version { display: inline-block; margin-left: 8px; color: #7f9bb5; font-size: 12px; font-weight: 400; vertical-align: middle; }
 .tls-option small { color: #8fa8bf; }
 
 /* "Only Terminal" is a dev-only escape hatch (skips login + API server).
