@@ -123,13 +123,30 @@ fn collect_upload_paths(paths: &[String]) -> Result<(Vec<(PathBuf, String)>, Vec
     Ok((files, directories))
 }
 
+/// `error.to_string()` on a `reqwest::Error` only prints its own top-level
+/// message (e.g. just "builder error" for a malformed URL or an invalid
+/// header value) -- the actual reason lives in `.source()` and is silently
+/// dropped unless it is walked explicitly. That leaves a genuinely useless
+/// message on screen and in the operation log with no way to diagnose what
+/// actually went wrong, so every reqwest-facing `.map_err()` below chains
+/// the full `source()` chain into the message instead of a bare `to_string()`.
+fn describe_error<E: std::error::Error>(error: E) -> String {
+    let mut message = error.to_string();
+    let mut source = std::error::Error::source(&error);
+    while let Some(cause) = source {
+        message.push_str(&format!(": {cause}"));
+        source = cause.source();
+    }
+    message
+}
+
 fn api_client(ignore_tls_errors: bool) -> Result<Client, String> {
     Client::builder()
         // This is intentionally opt-in for private, self-signed servers.
         .danger_accept_invalid_certs(ignore_tls_errors)
         .danger_accept_invalid_hostnames(ignore_tls_errors)
         .build()
-        .map_err(|error| error.to_string())
+        .map_err(describe_error)
 }
 
 fn apply_headers(
@@ -146,7 +163,7 @@ async fn response_from(response: reqwest::Response) -> Result<ApiResponse, Strin
     let body = response
         .bytes()
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(describe_error)?
         .to_vec();
     Ok(ApiResponse { status, body })
 }
@@ -168,7 +185,7 @@ async fn api_request(
     } else {
         request
     };
-    response_from(request.send().await.map_err(|error| error.to_string())?).await
+    response_from(request.send().await.map_err(describe_error)?).await
 }
 
 #[tauri::command]
@@ -651,7 +668,7 @@ async fn api_upload_paths(
         api_client(ignore_tls_errors)?.post(url).multipart(form),
         headers,
     );
-    response_from(request.send().await.map_err(|error| error.to_string())?).await
+    response_from(request.send().await.map_err(describe_error)?).await
 }
 
 #[tauri::command]
@@ -672,7 +689,7 @@ async fn download_to_disk(
     } else {
         request
     };
-    let mut response = request.send().await.map_err(|error| error.to_string())?;
+    let mut response = request.send().await.map_err(describe_error)?;
     if !response.status().is_success() {
         return Err(response
             .text()
@@ -717,7 +734,7 @@ async fn download_to_disk_at(
     } else {
         request
     };
-    let mut response = request.send().await.map_err(|error| error.to_string())?;
+    let mut response = request.send().await.map_err(describe_error)?;
     if !response.status().is_success() {
         return Err(response
             .text()
@@ -762,7 +779,7 @@ async fn download_to_drag_staging(
     } else {
         request
     };
-    let mut response = request.send().await.map_err(|error| error.to_string())?;
+    let mut response = request.send().await.map_err(describe_error)?;
     if !response.status().is_success() {
         return Err(response
             .text()
@@ -814,7 +831,7 @@ async fn download_to_drag_staging_at(
     } else {
         request
     };
-    let mut response = request.send().await.map_err(|error| error.to_string())?;
+    let mut response = request.send().await.map_err(describe_error)?;
     if !response.status().is_success() {
         return Err(response
             .text()
