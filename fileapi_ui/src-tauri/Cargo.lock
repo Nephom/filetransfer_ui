@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "fileapi-desktop"
-version = "3.2.3+20260806.9a9bdef"
+version = "3.3.0+20260808.305f522"
 dependencies = [
  "dirs",
  "keyring",
