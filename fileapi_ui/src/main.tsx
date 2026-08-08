@@ -2623,7 +2623,15 @@ function App() {
           if (!response.ok) throw new Error(await readError(response));
         }
         setUndoStack((current) => current.slice(0, -1));
-        await loadFiles(path);
+        // Only refresh the REMOTE listing for entries that actually
+        // happened on REMOTE (ssh/api) -- the "local" branch above already
+        // refreshed LOCAL itself via loadLocalFiles(). Calling loadFiles()
+        // unconditionally here used to throw ("builder error: empty host")
+        // whenever there was no active API-Remote session, which made a
+        // LOCAL undo that had *already succeeded* get logged and reported
+        // as "failed" purely because of this unrelated, unnecessary REMOTE
+        // refresh.
+        if (entry.source !== "local") await loadFiles(path);
         writeOperationLog("undo", "completed", sourceLabel, destinationLabel, `Undone: ${entry.description}`);
         notify(`Undone: ${entry.description}`);
       } catch (error) {
