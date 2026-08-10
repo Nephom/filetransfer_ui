@@ -1180,23 +1180,33 @@ function App() {
   };
 
   const loadLocalFiles = async (nextPath = localPath) => {
-    const data = await invoke<LocalDirectory>("local_list_directory", {
-      path: nextPath,
-    });
-    setLocalFiles(data.files || []);
-    setLocalPath(data.path || "");
-    setLocalSelected([]);
+    try {
+      const data = await invoke<LocalDirectory>("local_list_directory", {
+        path: nextPath,
+      });
+      setLocalFiles(data.files || []);
+      setLocalPath(data.path || "");
+      setLocalSelected([]);
+    } catch (error) {
+      writeOperationLog("browse", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${nextPath || ""}`, `Failed to list LOCAL directory: ${describeError(error)}`, "ERROR");
+      throw error;
+    }
   };
 
   const refreshLocalFiles = async () => {
-    const data = await invoke<LocalDirectory>("local_list_directory", {
-      path: localPath,
-    });
-    setLocalFiles(data.files || []);
-    setLocalPath(data.path || "");
-    setLocalSelected((current) => current.filter((item) =>
-      (data.files || []).some((file) => file.path === item),
-    ));
+    try {
+      const data = await invoke<LocalDirectory>("local_list_directory", {
+        path: localPath,
+      });
+      setLocalFiles(data.files || []);
+      setLocalPath(data.path || "");
+      setLocalSelected((current) => current.filter((item) =>
+        (data.files || []).some((file) => file.path === item),
+      ));
+    } catch (error) {
+      writeOperationLog("browse", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${localPath || ""}`, `Failed to refresh LOCAL directory: ${describeError(error)}`, "ERROR");
+      throw error;
+    }
   };
 
   const loadLocalTreeChildren = async (treePath: string, force = false) => {
@@ -1210,9 +1220,15 @@ function App() {
         trees.map((tree) => updateTreeNode(tree, treePath, (node) => ({ ...node, expanded: true, loaded: true, children }))),
       );
     } catch (error) {
+      // `force` is used for background/prefetch expansion where a failure
+      // (e.g. a permission-denied subfolder) is tolerated and the tree node
+      // is just left collapsed - but it must still be logged, not silently
+      // dropped, so ERROR-level browse failures always show up somewhere.
+      writeOperationLog("browse", "failed", "LOCAL folder tree", `LOCAL: ~/${treePath || ""}`, `Failed to expand LOCAL folder tree node: ${describeError(error)}`, "ERROR");
       if (!force) throw error instanceof Error ? error : new Error(String(error));
     }
   };
+
 
   const toggleLocalFolder = (node: FolderNode) => {
     if (!node.expanded && !node.loaded) {
@@ -2190,12 +2206,28 @@ function App() {
   const runQueuedDownload = async (item: TransferQueueItem) => {
     writeOperationLog("download", "started", item.label, "Local Downloads", "Transfer queue download started.", "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? `Preparing ${item.archiveFormat} archive...` : "Downloading..." });
+    // download_to_disk streams the response and emits "download-progress"
+    // events tagged with this item's id so the queue can show byte-level
+    // progress for single-file and archive downloads (previously just a
+    // static "Downloading..." label for the whole transfer).
+    const unlistenProgress = await listen<{ transferId: string; bytesCompleted: number; bytesTotal?: number }>(
+      "download-progress",
+      (event) => {
+        if (event.payload.transferId !== item.id) return;
+        const { bytesCompleted, bytesTotal } = event.payload;
+        const detail = bytesTotal
+          ? `Downloading ${formatSize(bytesCompleted)} / ${formatSize(bytesTotal)} (${Math.min(100, Math.round((bytesCompleted / bytesTotal) * 100))}%)`
+          : `Downloading ${formatSize(bytesCompleted)}...`;
+        updateQueueItem(item.id, { detail });
+      },
+    );
     try {
       if (item.archiveFormat) {
         await new Promise((resolve) => window.setTimeout(resolve, 100));
         updateQueueItem(item.id, { detail: `Streaming ${item.archiveFormat} download...` });
       }
       const destination = await invoke<string>("download_to_disk", {
+        transferId: item.id,
         url: item.downloadUrl,
         method: item.downloadMethod || "GET",
         headers: item.downloadHeaders || [],
@@ -2209,6 +2241,8 @@ function App() {
       const detail = error instanceof Error ? error.message : String(error);
       updateQueueItem(item.id, { status: "failed", detail });
       writeOperationLog("download", "failed", item.label, "Local Downloads", `Download failed: ${detail}`, "ERROR");
+    } finally {
+      unlistenProgress();
     }
   };
 
@@ -2467,6 +2501,13 @@ function App() {
       )
     )
       return;
+    // Without this, dragging from empty space also starts the browser's
+    // native text/drag selection (since the mousedown lands on a text node
+    // inside a row/header), highlighting filenames underneath the marquee
+    // box instead of just drawing it. The CSS `user-select: none` on
+    // .file-table/.file-grid/.local-file-list (see explorer-parity.css)
+    // covers clicks that land exactly on text; this covers the drag itself.
+    event.preventDefault();
     setActivePane(pane);
     const additive = event.ctrlKey || event.metaKey;
     marqueeStateRef.current = {
@@ -3108,6 +3149,7 @@ function App() {
       let localPathForEdit = viewerLocalPath;
       if (!localPathForEdit && viewerRemotePath) {
         localPathForEdit = await invoke<string>("download_to_disk", {
+          transferId: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `edit-${Date.now()}`,
           url: `${serverUrl(session)}/api/files/download/${downloadPath(viewerRemotePath)}`,
           method: "GET",
           headers: session.token

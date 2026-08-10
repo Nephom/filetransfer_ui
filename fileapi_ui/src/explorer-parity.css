@@ -12,6 +12,17 @@
 .context-menu button:hover:not(:disabled) { background: #173653; }
 .context-menu hr { margin: 4px 0; border: 0; border-top: 1px solid #284966; }
 .marquee-select { border: 1px solid #4ad9f4; background: rgba(74, 217, 244, 0.15); }
+/* Rubber-band marquee select (see beginMarqueeSelect in main.tsx) drags
+   from empty space inside these containers; without user-select:none the
+   browser's native text/drag selection fires at the same time, highlighting
+   filenames underneath the marquee box instead of just drawing it. Scoped
+   to the list containers themselves (not shared ancestors) so real text
+   inputs (search box, terminal, file viewer) are never affected. */
+.file-table, .file-grid, .local-file-list, .marquee-select {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+}
 .sessions-modal { max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
 .sessions-modal p { line-height: 1.5; }
 .sessions-layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr); gap: 18px; align-items: start; }
