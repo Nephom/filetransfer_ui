@@ -40,6 +40,19 @@ pub struct SshProfile {
 pub struct SshEvent {
     pub session_id: String,
     pub data: String,
+    /// Echoes back the frontend-generated id of the connection attempt this
+    /// event belongs to (see `connect`'s `request_id` parameter). The
+    /// frontend uses this to bind an `ssh-output`/`ssh-exit` event to the
+    /// terminal tab that initiated the connection *before* the `ssh_connect`
+    /// invoke() call resolves with the real `session_id` -- output can start
+    /// streaming immediately once the shell is ready, which is before the
+    /// frontend has any other way to know which tab a given `session_id`
+    /// belongs to. Relying on invocation order instead (e.g. a FIFO of
+    /// "pending" tabs) is unsound: when several SSH entries connect close
+    /// together, event arrival order is not guaranteed to match the order
+    /// `ssh_connect` was invoked in, which cross-wires tabs (one tab's
+    /// output/session state overwrites another's).
+    pub request_id: String,
 }
 
 pub struct ClientHandler {
@@ -461,7 +474,7 @@ async fn authenticate(
 /// for the UI to recover.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-pub async fn connect(app: tauri::AppHandle, profile: SshProfile) -> Result<String, String> {
+pub async fn connect(app: tauri::AppHandle, profile: SshProfile, request_id: String) -> Result<String, String> {
     validate_profile(&profile)?;
     let label = profile_label(&profile);
     let session_id = format!("ssh-{}", uuid::Uuid::new_v4());
@@ -519,6 +532,7 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile) -> Result<Strin
 
     let reader_session = session_id.clone();
     let reader_label = label.clone();
+    let reader_request_id = request_id.clone();
     tokio::spawn(async move {
         loop {
             match read_half.wait().await {
@@ -529,6 +543,7 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile) -> Result<Strin
                         SshEvent {
                             session_id: reader_session.clone(),
                             data: text,
+                            request_id: reader_request_id.clone(),
                         },
                     );
                 }
@@ -539,6 +554,7 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile) -> Result<Strin
                         SshEvent {
                             session_id: reader_session.clone(),
                             data: text,
+                            request_id: reader_request_id.clone(),
                         },
                     );
                 }
@@ -552,6 +568,7 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile) -> Result<Strin
             SshEvent {
                 session_id: reader_session.clone(),
                 data: "SSH process ended.".to_string(),
+                request_id: reader_request_id.clone(),
             },
         );
         crate::oplog::log("INFO", "ssh_connect", "ended", &reader_label, "terminal", &format!("Shell session {reader_session} ended."));
