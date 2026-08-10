@@ -15,15 +15,16 @@ const configManager = require('./config');
 const { EnhancedMemoryFileSystem } = require('./file-system');
 const { LocationManager, LocationPermissionManager, CAPABILITIES } = require('./location');
 const AuthManager = require('./auth');
-const UserManager = require('./auth/user-manager');
+const userManager = require('./auth/user-manager');
 const RoleManager = require('./auth/role-manager');
 const UploadAPI = require('./api/upload.js');
 const shareRoutes = require('./api/share');
 const sslRoutes = require('./api/ssl');
 const database = require('./database/db');
 const shareManager = require('./auth/share-manager');
+const bulkUserJobManager = require('./auth/bulk-user-job');
 const { transferManager } = require('./transfer');
-const { authenticate, setJwtSecret, requireAdmin } = require('./middleware/auth');
+const { authenticate, setJwtSecret, requireAdmin, requireStaffRole } = require('./middleware/auth');
 const { initializeSecurity } = require('./middleware/security');
 const { createLogger, systemLogger } = require('./utils/logger');
 const certificateManager = require('./ssl/certificate-manager');
@@ -33,8 +34,9 @@ const { getVersion } = require('../../scripts/version');
 
 
 
-// Initialize user manager
-const userManager = new UserManager();
+// User manager is a shared singleton (see auth/user-manager.js) so
+// middleware/auth.js can re-check a caller's current role/active status on
+// every admin/superuser-gated request without a circular require.
 
 // Initialize role manager (named, reusable per-Location permission matrices)
 const roleManager = new RoleManager();
@@ -376,7 +378,7 @@ app.post('/auth/login', (req, res, next) => {
   }
 });
 
-app.post('/auth/browser-handoff', authenticate, requireAdmin, (req, res) => {
+app.post('/auth/browser-handoff', authenticate, requireStaffRole, (req, res) => {
   const authorization = req.get('Authorization');
   const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Authorization token missing' });
@@ -1633,7 +1635,30 @@ app.put('/api/settings', authenticate, async (req, res) => {
 });
 
 // Admin User Management Endpoints
-app.get('/api/admin/users', requireAdmin, async (req, res) => {
+//
+// System roles: 'admin' (config.ini, full control), 'superuser' (manages
+// regular 'user' accounts and Permission Roles only), and 'user' (no admin
+// access). A superuser actor must never be able to view/create/modify/
+// delete an admin or superuser account, or grant the superuser role -
+// enforced below regardless of what the frontend sends.
+function assertActorCanManageTargetUser(actorRole, targetUser) {
+  const targetRole = targetUser?.role || 'user';
+  if ((targetRole === 'admin' || targetRole === 'superuser') && actorRole !== 'admin') {
+    const error = new Error('Forbidden: only an admin can manage admin or superuser accounts');
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+function assertActorCanAssignRole(actorRole, role) {
+  if (role === 'superuser' && actorRole !== 'admin') {
+    const error = new Error('Forbidden: only an admin can grant the superuser role');
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
+app.get('/api/admin/users', requireStaffRole, async (req, res) => {
   try {
     const users = await userManager.getAllUsers();
     const stats = await userManager.getUserStats();
@@ -1649,13 +1674,15 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/admin/users', requireAdmin, async (req, res) => {
+app.post('/api/admin/users', requireStaffRole, async (req, res) => {
   try {
     const { username, password, email, role = 'user', permissions, locationPermissions, roleId } = req.body;
     
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
     }
+
+    assertActorCanAssignRole(req.user.role, role);
 
     if (roleId && !roleManager.getRole(roleId)) {
       return res.status(400).json({ error: `Role '${roleId}' not found` });
@@ -1672,7 +1699,7 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
       roleId: roleId || undefined
     });
 
-    systemLogger.logSystem('INFO', `User '${username}' created by admin: ${req.user?.username}`);
+    systemLogger.logSystem('INFO', `User '${username}' (role: ${role}) created by ${req.user.role}: ${req.user?.username}`);
 
     res.status(201).json({
       success: true,
@@ -1681,37 +1708,50 @@ app.post('/api/admin/users', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to create user: ${error.message}`);
-    res.status(400).json({ error: error.message });
+    res.status(error.statusCode || 400).json({ error: error.message });
   }
 });
 
-app.get('/api/admin/users/:username/locations', requireAdmin, async (req, res) => {
+app.get('/api/admin/users/:username/locations', requireStaffRole, async (req, res) => {
   try {
     const user = req.params.username === (configManager.get('auth.username') || 'admin')
       ? { role: 'admin', username: req.params.username, permissions: ['all'] }
       : await userManager.getUser(req.params.username);
     if (!user) return res.status(404).json({ error: 'User not found' });
+    assertActorCanManageTargetUser(req.user.role, user);
     res.json({ success: true, username: req.params.username, locationPermissions: locationPermissionManager.getPublicPermissions(user) });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.statusCode || 400).json({ error: error.message });
   }
 });
 
-app.put('/api/admin/users/:username/locations', requireAdmin, async (req, res) => {
+app.put('/api/admin/users/:username/locations', requireStaffRole, async (req, res) => {
   try {
     const { locationPermissions } = req.body;
+    const existingUser = req.params.username === (configManager.get('auth.username') || 'admin')
+      ? { role: 'admin' }
+      : await userManager.getUser(req.params.username);
+    if (!existingUser) return res.status(404).json({ error: 'User not found' });
+    assertActorCanManageTargetUser(req.user.role, existingUser);
     const normalized = locationPermissionManager.validateMapping(locationPermissions);
     const updatedUser = await userManager.updateUser(req.params.username, { locationPermissions: normalized });
     res.json({ success: true, username: req.params.username, user: updatedUser, locationPermissions: normalized });
   } catch (error) {
-    res.status(400).json({ error: error.message });
+    res.status(error.statusCode || 400).json({ error: error.message });
   }
 });
 
-app.put('/api/admin/users/:username', requireAdmin, async (req, res) => {
+app.put('/api/admin/users/:username', requireStaffRole, async (req, res) => {
   try {
     const { username } = req.params;
+    const existingUser = await userManager.getUser(username);
+    if (!existingUser) return res.status(404).json({ error: 'User not found' });
+    assertActorCanManageTargetUser(req.user.role, existingUser);
+
     const updates = { ...req.body };
+    if (updates.role !== undefined) {
+      assertActorCanAssignRole(req.user.role, updates.role);
+    }
     if (updates.locationPermissions !== undefined) {
       updates.locationPermissions = locationPermissionManager.validateMapping(updates.locationPermissions);
     }
@@ -1722,7 +1762,7 @@ app.put('/api/admin/users/:username', requireAdmin, async (req, res) => {
     
     const updatedUser = await userManager.updateUser(username, updates);
 
-    systemLogger.logSystem('INFO', `User '${username}' updated by admin: ${req.user?.username}`);
+    systemLogger.logSystem('INFO', `User '${username}' updated by ${req.user.role}: ${req.user?.username}`);
 
     res.json({
       success: true,
@@ -1731,17 +1771,20 @@ app.put('/api/admin/users/:username', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to update user: ${error.message}`);
-    res.status(400).json({ error: error.message });
+    res.status(error.statusCode || 400).json({ error: error.message });
   }
 });
 
-app.delete('/api/admin/users/:username', requireAdmin, async (req, res) => {
+app.delete('/api/admin/users/:username', requireStaffRole, async (req, res) => {
   try {
     const { username } = req.params;
-    
+    const existingUser = await userManager.getUser(username);
+    if (!existingUser) return res.status(404).json({ error: 'User not found' });
+    assertActorCanManageTargetUser(req.user.role, existingUser);
+
     const result = await userManager.deleteUser(username);
 
-    systemLogger.logSystem('INFO', `User '${username}' deleted by admin: ${req.user?.username}`);
+    systemLogger.logSystem('INFO', `User '${username}' deleted by ${req.user.role}: ${req.user?.username}`);
 
     res.json({
       success: true,
@@ -1749,11 +1792,11 @@ app.delete('/api/admin/users/:username', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to delete user: ${error.message}`);
-    res.status(400).json({ error: error.message });
+    res.status(error.statusCode || 400).json({ error: error.message });
   }
 });
 
-app.post('/api/admin/users/:username/change-password', requireAdmin, async (req, res) => {
+app.post('/api/admin/users/:username/change-password', requireStaffRole, async (req, res) => {
   try {
     const { username } = req.params;
     const { newPassword } = req.body;
@@ -1762,9 +1805,13 @@ app.post('/api/admin/users/:username/change-password', requireAdmin, async (req,
       return res.status(400).json({ error: 'New password must be at least 6 characters long' });
     }
 
+    const existingUser = await userManager.getUser(username);
+    if (!existingUser) return res.status(404).json({ error: 'User not found' });
+    assertActorCanManageTargetUser(req.user.role, existingUser);
+
     await userManager.updateUser(username, { password: newPassword });
 
-    systemLogger.logSystem('INFO', `Password changed for user '${username}' by admin: ${req.user?.username}`);
+    systemLogger.logSystem('INFO', `Password changed for user '${username}' by ${req.user.role}: ${req.user?.username}`);
 
     res.json({
       success: true,
@@ -1772,11 +1819,11 @@ app.post('/api/admin/users/:username/change-password', requireAdmin, async (req,
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to change password: ${error.message}`);
-    res.status(400).json({ error: error.message });
+    res.status(error.statusCode || 400).json({ error: error.message });
   }
 });
 
-app.get('/api/admin/users/:username', requireAdmin, async (req, res) => {
+app.get('/api/admin/users/:username', requireStaffRole, async (req, res) => {
   try {
     const { username } = req.params;
     const user = await userManager.getUser(username);
@@ -1784,19 +1831,139 @@ app.get('/api/admin/users/:username', requireAdmin, async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
+    assertActorCanManageTargetUser(req.user.role, user);
     
     res.json({ user, success: true });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to fetch user: ${error.message}`);
-    res.status(500).json({ error: 'Failed to fetch user' });
+    res.status(error.statusCode || 500).json({ error: 'Failed to fetch user' });
   }
+});
+
+// Bulk User Management
+//
+// Applies system role / Permission Role / active state / Location
+// permission changes to many accounts at once. Runs as a background job
+// (see auth/bulk-user-job.js) so the request returns immediately with a
+// jobId; the frontend polls GET .../bulk/:jobId for live progress and a
+// final per-user succeeded/failed/skipped breakdown. No bulk password
+// reset is offered. The config admin account can never be a target.
+function mergeLocationPermissionsForBulk(existingPermissions, incomingPermissions, mode) {
+  const merged = { ...(existingPermissions || {}) };
+  for (const [locationId, capabilities] of Object.entries(incomingPermissions || {})) {
+    if (mode === 'replace') {
+      merged[locationId] = [...capabilities];
+    } else {
+      merged[locationId] = [...new Set([...(existingPermissions?.[locationId] || []), ...capabilities])];
+    }
+  }
+  return merged;
+}
+
+app.post('/api/admin/users/bulk', requireStaffRole, async (req, res) => {
+  try {
+    const { usernames, changes = {} } = req.body || {};
+    if (!Array.isArray(usernames) || usernames.length === 0) {
+      return res.status(400).json({ error: 'usernames must be a non-empty array' });
+    }
+    const uniqueUsernames = [...new Set(usernames.filter((name) => typeof name === 'string' && name))];
+    if (uniqueUsernames.length === 0) {
+      return res.status(400).json({ error: 'usernames must be a non-empty array' });
+    }
+
+    const hasRoleChange = Object.prototype.hasOwnProperty.call(changes, 'role');
+    const hasRoleIdChange = Object.prototype.hasOwnProperty.call(changes, 'roleId');
+    const hasActiveChange = Object.prototype.hasOwnProperty.call(changes, 'active');
+    const hasLocationChange = changes.locationPermissions !== undefined
+      && typeof changes.locationPermissions === 'object';
+    const locationMode = changes.locationPermissionsMode === 'replace' ? 'replace' : 'merge';
+
+    if (!hasRoleChange && !hasRoleIdChange && !hasActiveChange && !hasLocationChange) {
+      return res.status(400).json({ error: 'changes must include at least one of: role, roleId, active, locationPermissions' });
+    }
+    if (hasRoleChange && !userManager.ASSIGNABLE_SYSTEM_ROLES.includes(changes.role)) {
+      return res.status(400).json({ error: `Invalid role '${changes.role}'. Must be one of: ${userManager.ASSIGNABLE_SYSTEM_ROLES.join(', ')}` });
+    }
+    let normalizedIncomingLocationPermissions;
+    if (hasLocationChange) {
+      normalizedIncomingLocationPermissions = locationPermissionManager.validateMapping(changes.locationPermissions) || {};
+    }
+    if (hasRoleIdChange && changes.roleId && !roleManager.getRole(changes.roleId)) {
+      return res.status(400).json({ error: `Role '${changes.roleId}' not found` });
+    }
+
+    const configUsername = configManager.get('auth.username') || 'admin';
+    const job = bulkUserJobManager.createJob({
+      actorUsername: req.user.username,
+      actorRole: req.user.role,
+      usernames: uniqueUsernames
+    });
+
+    // Respond immediately with the jobId; processing continues in the background.
+    res.status(202).json({ success: true, jobId: job.id, total: job.total });
+
+    bulkUserJobManager.run(job, uniqueUsernames, async (username) => {
+      if (username === configUsername) {
+        return { outcome: 'skipped', reason: 'The config administrator account cannot be a bulk target.' };
+      }
+
+      const targetUser = await userManager.getUser(username);
+      if (!targetUser) {
+        return { outcome: 'skipped', reason: 'User not found.' };
+      }
+
+      try {
+        assertActorCanManageTargetUser(req.user.role, targetUser);
+        if (hasRoleChange) assertActorCanAssignRole(req.user.role, changes.role);
+      } catch (error) {
+        return { outcome: 'skipped', reason: error.message };
+      }
+
+      const updates = {};
+      const appliedFields = [];
+      if (hasRoleChange) { updates.role = changes.role; appliedFields.push(`role=${changes.role}`); }
+      if (hasRoleIdChange) { updates.roleId = changes.roleId || ''; appliedFields.push(`roleId=${changes.roleId || '(cleared)'}`); }
+      if (hasActiveChange) { updates.active = !!changes.active; appliedFields.push(`active=${!!changes.active}`); }
+      if (hasLocationChange) {
+        updates.locationPermissions = mergeLocationPermissionsForBulk(
+          targetUser.locationPermissions,
+          normalizedIncomingLocationPermissions,
+          locationMode
+        );
+        appliedFields.push(`locationPermissions(${locationMode})`);
+      }
+
+      try {
+        await userManager.updateUser(username, updates);
+        systemLogger.logSystem(
+          'INFO',
+          `Bulk update applied to user '${username}' by ${req.user.role} '${req.user.username}': ${appliedFields.join(', ')}`
+        );
+        return { outcome: 'succeeded' };
+      } catch (error) {
+        systemLogger.logSystem('ERROR', `Bulk update failed for user '${username}': ${error.message}`);
+        return { outcome: 'failed', reason: error.message };
+      }
+    }).catch((error) => {
+      systemLogger.logSystem('ERROR', `Bulk user job ${job.id} crashed: ${error.message}`);
+    });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to start bulk user update: ${error.message}`);
+    res.status(error.statusCode || 400).json({ error: error.message });
+  }
+});
+
+app.get('/api/admin/users/bulk/:jobId', requireStaffRole, async (req, res) => {
+  const job = bulkUserJobManager.getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Bulk job not found (it may have finished more than 30 minutes ago, or the server restarted).' });
+  res.json({ success: true, job: bulkUserJobManager.toPublicJson(job) });
 });
 
 // Admin Role Management Endpoints
 // A Role is a named, reusable Location permission matrix (see RoleManager)
 // that can be assigned to users via `roleId`, giving admins a single place
 // to edit shared capability grants instead of repeating them per user.
-app.get('/api/admin/roles', requireAdmin, async (req, res) => {
+app.get('/api/admin/roles', requireStaffRole, async (req, res) => {
   try {
     const roles = roleManager.getAllRoles();
     const locations = locationManager.getLocations({ includeDisabled: true })
@@ -1808,11 +1975,11 @@ app.get('/api/admin/roles', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/admin/roles', requireAdmin, async (req, res) => {
+app.post('/api/admin/roles', requireStaffRole, async (req, res) => {
   try {
     const { name, description, locationPermissions } = req.body;
     const role = await roleManager.createRole({ name, description, locationPermissions });
-    systemLogger.logSystem('INFO', `Role '${role.name}' created by admin: ${req.user?.username}`);
+    systemLogger.logSystem('INFO', `Role '${role.name}' created by ${req.user.role}: ${req.user?.username}`);
     res.status(201).json({ success: true, message: `Role '${role.name}' created successfully`, role });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to create role: ${error.message}`);
@@ -1820,12 +1987,12 @@ app.post('/api/admin/roles', requireAdmin, async (req, res) => {
   }
 });
 
-app.put('/api/admin/roles/:id', requireAdmin, async (req, res) => {
+app.put('/api/admin/roles/:id', requireStaffRole, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, description, locationPermissions } = req.body;
     const role = await roleManager.updateRole(id, { name, description, locationPermissions });
-    systemLogger.logSystem('INFO', `Role '${role.name}' updated by admin: ${req.user?.username}`);
+    systemLogger.logSystem('INFO', `Role '${role.name}' updated by ${req.user.role}: ${req.user?.username}`);
     res.json({ success: true, message: `Role '${role.name}' updated successfully`, role });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to update role: ${error.message}`);
@@ -1833,12 +2000,12 @@ app.put('/api/admin/roles/:id', requireAdmin, async (req, res) => {
   }
 });
 
-app.delete('/api/admin/roles/:id', requireAdmin, async (req, res) => {
+app.delete('/api/admin/roles/:id', requireStaffRole, async (req, res) => {
   try {
     const { id } = req.params;
     const result = await roleManager.deleteRole(id);
     const { changed } = await userManager.clearRoleFromUsers(id);
-    systemLogger.logSystem('INFO', `Role '${id}' deleted by admin: ${req.user?.username}${changed ? ` (unassigned from ${changed} user(s))` : ''}`);
+    systemLogger.logSystem('INFO', `Role '${id}' deleted by ${req.user.role}: ${req.user?.username}${changed ? ` (unassigned from ${changed} user(s))` : ''}`);
     res.json({ success: true, message: result.message, unassignedUsers: changed });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to delete role: ${error.message}`);

@@ -425,7 +425,7 @@
         <div class="admin-header">
             <div>
                 <h1>Admin Console</h1>
-                <p>Manage LAB File Manager services and users</p>
+                <p>Manage LAB File Manager services and users<span id="currentRoleBadge"></span></p>
             </div>
             <button class="back-to-files" type="button" onclick="window.location.assign('/')">← Back to File Manager</button>
         </div>
@@ -443,24 +443,24 @@
                 <div class="number" id="cacheStatus">Loading...</div>
                 <div class="label">Cache Status</div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card" data-admin-only="true">
                 <div class="number" id="httpPort">9400</div>
                 <div class="label">HTTP Port</div>
             </div>
-            <div class="stat-card">
+            <div class="stat-card" data-admin-only="true">
                 <div class="number" id="httpsPort">-</div>
                 <div class="label">HTTPS Port</div>
             </div>
         </div>
 
         <div class="panel-grid">
-            <div class="control-card">
+            <div class="control-card" data-admin-only="true">
                 <h3>🔧 System Configuration</h3>
                 <p>Modify system-wide settings and parameters</p>
                 <button class="btn" onclick="openConfigModal()">Manage Configuration</button>
             </div>
 
-            <div class="control-card">
+            <div class="control-card" data-admin-only="true">
                 <h3>🔄 System Operations</h3>
                 <p>Perform system maintenance tasks</p>
                 <div class="action-buttons">
@@ -481,20 +481,20 @@
                 <button class="btn" onclick="openRoleManagement()">Manage Roles</button>
             </div>
 
-            <div class="control-card">
+            <div class="control-card" data-admin-only="true">
                 <h3>🔒 SSL Certificate Management</h3>
                 <p>Manage HTTPS certificates and security settings</p>
                 <button class="btn" onclick="openSSLManagement()">Manage SSL</button>
             </div>
 
-            <div class="control-card">
+            <div class="control-card" data-admin-only="true">
                 <h3>🔄 Service Control</h3>
                 <p>Restart backend service to apply configuration changes</p>
                 <button class="btn danger" onclick="restartService()">Restart Service</button>
             </div>
         </div>
 
-        <div class="glass-panel">
+        <div class="glass-panel" data-admin-only="true">
             <h2>⚡ Quick Actions</h2>
             <div class="form-group">
                 <label for="adminAction">Select Action:</label>
@@ -550,21 +550,37 @@
                     <input type="password" id="newPassword" class="form-control" placeholder="Enter password (min 6 characters)">
                 </div>
                 <div class="form-group">
-                    <label>Role (optional):</label>
+                    <label>System Role:</label>
+                    <select id="newUserSystemRole" class="form-control">
+                        <option value="user">User (Location permissions only, no Admin Console access)</option>
+                        <option value="superuser" id="newUserSystemRoleSuperuserOption" data-admin-only="true">Superuser (can manage User accounts and Permission Roles)</option>
+                    </select>
+                    <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Only an admin may grant Superuser. The single system administrator is always managed in config.ini, never here.</p>
+                </div>
+                <div class="form-group">
+                    <label>Permission Role (optional):</label>
                     <select id="newUserRole" class="form-control">
                         <option value="">No role (individually managed permissions)</option>
                     </select>
+                    <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">A per-Location capability matrix. Manage available Permission Roles from the Role Management card.</p>
                 </div>
                 <div class="form-group">
                     <p style="font-size: 0.9rem; opacity: 0.7; margin: 0;">
-                        ℹ️ New users will be created with 'User' role and standard permissions (read, upload, delete).
-                        Admin accounts are managed in config.ini only.
+                        ℹ️ New users get standard permissions (read, upload, delete) unless a Permission Role is assigned.
+                        The system administrator account is managed in config.ini only.
                     </p>
                 </div>
                 <div class="btn-group">
                     <button class="btn" onclick="createUser()">✓ Create User</button>
                     <button class="btn danger" onclick="hideAddUserForm()">✕ Cancel</button>
                 </div>
+            </div>
+            <div class="form-group" style="margin-top: 16px;">
+                <input type="text" id="userSearchInput" class="form-control" placeholder="Filter by username or email..." oninput="renderUsersList()">
+            </div>
+            <div class="btn-group" style="align-items: center;">
+                <span style="font-size: 0.9rem; opacity: 0.85;"><span id="bulkSelectedCount">0</span> selected</span>
+                <button id="bulkEditButton" class="btn" disabled onclick="openBulkEditModal()">✏️ Bulk Edit Selected</button>
             </div>
             <div id="usersList">
                 <p style="text-align: center; margin-top: 40px; opacity: 0.7;">Loading users...</p>
@@ -589,20 +605,28 @@
                 <input type="email" id="editEmail" class="form-control">
             </div>
             <div class="form-group">
+                <label>System Role:</label>
+                <select id="editUserSystemRole" class="form-control">
+                    <option value="user">User (Location permissions only, no Admin Console access)</option>
+                    <option value="superuser" id="editUserSystemRoleSuperuserOption" data-admin-only="true">Superuser (can manage User accounts and Permission Roles)</option>
+                </select>
+                <p id="editUserSystemRoleHint" style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Only an admin may grant or revoke Superuser.</p>
+            </div>
+            <div class="form-group">
                 <label>Permissions:</label>
                 <div class="checkbox-group">
                     <label><input type="checkbox" id="editPermissionRead"> Read</label>
                     <label><input type="checkbox" id="editPermissionUpload"> Upload</label>
                     <label><input type="checkbox" id="editPermissionDelete"> Delete</label>
                 </div>
-                <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Used only while no Role is assigned below.</p>
+                <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Used only while no Permission Role is assigned below.</p>
             </div>
             <div class="form-group">
-                <label>Role (optional):</label>
+                <label>Permission Role (optional):</label>
                 <select id="editUserRole" class="form-control">
                     <option value="">No role (use Permissions above)</option>
                 </select>
-                <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Assigning a Role grants that Role's per-Location permission matrix. Manage Roles from the main console.</p>
+                <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Assigning a Permission Role grants that Role's per-Location capability matrix. Manage Permission Roles from the Role Management card.</p>
             </div>
             <div class="form-group">
                 <label class="checkbox-group"><input type="checkbox" id="editActive"> Active user</label>
@@ -615,6 +639,61 @@
             <div class="btn-group">
                 <button class="btn" onclick="saveEditedUser()">✓ Save User</button>
                 <button class="btn danger" onclick="closeEditUser()">✕ Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bulk User Edit Modal -->
+    <div id="bulkEditModal" class="modal-overlay">
+        <div class="modal-content" style="max-width: 760px;">
+            <div class="modal-header">
+                <h2>✏️ Bulk Edit Users</h2>
+                <button class="modal-close" onclick="closeBulkEditModal()">✕ Close</button>
+            </div>
+            <p id="bulkEditTargetSummary" style="font-size: 0.9rem; opacity: 0.85;"></p>
+
+            <div id="bulkEditForm">
+                <div class="form-group" id="bulkRoleGroup" data-admin-only="true">
+                    <label class="checkbox-group"><input type="checkbox" id="bulkChangeRole" onchange="document.getElementById('bulkRoleValue').disabled = !this.checked"> Change System Role</label>
+                    <select id="bulkRoleValue" class="form-control" disabled>
+                        <option value="user">User</option>
+                        <option value="superuser">Superuser</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-group"><input type="checkbox" id="bulkChangeRoleId" onchange="document.getElementById('bulkRoleIdValue').disabled = !this.checked"> Change Permission Role</label>
+                    <select id="bulkRoleIdValue" class="form-control" disabled>
+                        <option value="">No role (clear Permission Role)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-group"><input type="checkbox" id="bulkChangeActive" onchange="document.getElementById('bulkActiveValue').disabled = !this.checked"> Change Active Status</label>
+                    <select id="bulkActiveValue" class="form-control" disabled>
+                        <option value="true">Active</option>
+                        <option value="false">Inactive</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-group"><input type="checkbox" id="bulkChangeLocations" onchange="toggleBulkLocationEditor(this.checked)"> Change Location Permissions</label>
+                    <div id="bulkLocationEditor" style="display: none; margin-top: 10px;">
+                        <label style="font-weight: 400;">
+                            <input type="radio" name="bulkLocationMode" value="merge" checked> Merge (add these capabilities, keep everything else the user already has)
+                        </label><br>
+                        <label style="font-weight: 400;">
+                            <input type="radio" name="bulkLocationMode" value="replace"> Replace (for the Locations checked below, use exactly this capability set)
+                        </label>
+                        <div id="bulkLocationMatrixContainer" style="overflow-x: auto; margin-top: 10px;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="bulkEditPreview" style="display: none; margin-top: 10px; padding: 12px; background: rgba(255,255,255,0.05); border: 1px solid #254764; border-radius: 6px;"></div>
+            <div id="bulkEditProgress" style="display: none; margin-top: 10px; padding: 12px; background: rgba(255,255,255,0.05); border: 1px solid #254764; border-radius: 6px;"></div>
+
+            <div class="btn-group">
+                <button id="bulkPreviewBtn" class="btn" onclick="previewBulkEdit()">👁️ Preview</button>
+                <button id="bulkConfirmBtn" class="btn danger" style="display: none;" onclick="confirmBulkEdit()">✓ Confirm &amp; Apply</button>
+                <button class="btn" onclick="closeBulkEditModal()">✕ Cancel</button>
             </div>
         </div>
     </div>
@@ -1145,6 +1224,17 @@
             document.getElementById('newEmail').value = '';
             document.getElementById('newPassword').value = '';
             document.getElementById('newUserRole').value = '';
+            document.getElementById('newUserSystemRole').value = 'user';
+        }
+
+        let usersCache = [];
+        let selectedUsernames = new Set();
+
+        function canActorManageUser(user) {
+            const isConfigUser = user.isConfigUser || user.created === 'System Default';
+            if (isConfigUser) return false;
+            if (currentUserRole === 'admin') return true;
+            return user.role !== 'admin' && user.role !== 'superuser';
         }
 
         async function loadUsers() {
@@ -1160,10 +1250,54 @@
                 }
 
                 const data = await response.json();
-                displayUsers(data.users || []);
+                usersCache = data.users || [];
+                // Drop any selection that no longer exists or that this actor can no longer manage.
+                const manageable = new Set(usersCache.filter(canActorManageUser).map(u => u.username));
+                selectedUsernames = new Set([...selectedUsernames].filter(name => manageable.has(name)));
+                renderUsersList();
             } catch (error) {
                 console.error('Error loading users:', error);
                 document.getElementById('usersList').innerHTML = '<p style="color: #ef4444; text-align: center;">Failed to load users</p>';
+            }
+        }
+
+        function getFilteredUsers() {
+            const query = (document.getElementById('userSearchInput')?.value || '').trim().toLowerCase();
+            if (!query) return usersCache;
+            return usersCache.filter(user =>
+                (user.username || '').toLowerCase().includes(query) ||
+                (user.email || '').toLowerCase().includes(query)
+            );
+        }
+
+        function renderUsersList() {
+            displayUsers(getFilteredUsers());
+        }
+
+        function toggleUserSelection(username, checked) {
+            if (checked) selectedUsernames.add(username);
+            else selectedUsernames.delete(username);
+            updateBulkToolbar();
+        }
+
+        function toggleSelectAllVisible(checked) {
+            getFilteredUsers().filter(canActorManageUser).forEach(user => {
+                if (checked) selectedUsernames.add(user.username);
+                else selectedUsernames.delete(user.username);
+            });
+            renderUsersList();
+        }
+
+        function updateBulkToolbar() {
+            const countEl = document.getElementById('bulkSelectedCount');
+            if (countEl) countEl.textContent = String(selectedUsernames.size);
+            const bulkBtn = document.getElementById('bulkEditButton');
+            if (bulkBtn) bulkBtn.disabled = selectedUsernames.size === 0;
+            const selectAllCheckbox = document.getElementById('selectAllVisible');
+            if (selectAllCheckbox) {
+                const visibleManageable = getFilteredUsers().filter(canActorManageUser);
+                selectAllCheckbox.checked = visibleManageable.length > 0 && visibleManageable.every(u => selectedUsernames.has(u.username));
+                selectAllCheckbox.disabled = visibleManageable.length === 0;
             }
         }
 
@@ -1171,19 +1305,25 @@
             const usersList = document.getElementById('usersList');
             if (users.length === 0) {
                 usersList.innerHTML = '<p style="text-align: center; opacity: 0.7;">No users found</p>';
+                updateBulkToolbar();
                 return;
             }
 
-            let html = '<table class="user-table"><thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Source</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+            let html = `<table class="user-table"><thead><tr>
+                <th style="width: 34px;"><input type="checkbox" id="selectAllVisible" onchange="toggleSelectAllVisible(this.checked)"></th>
+                <th>Username</th><th>Email</th><th>System Role</th><th>Source</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>`;
 
             users.forEach(user => {
                 const lastLogin = user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never';
                 const isConfigUser = user.isConfigUser || user.created === 'System Default';
                 const source = isConfigUser ? '<span style="background: rgba(147, 51, 234, 0.3); padding: 4px 8px; border-radius: 4px; font-size: 0.85rem;">config.ini</span>' : '<span style="background: rgba(59, 130, 246, 0.3); padding: 4px 8px; border-radius: 4px; font-size: 0.85rem;">users.json</span>';
-                const roleColor = user.role === 'admin' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(34, 197, 94, 0.3)';
+                const roleColor = user.role === 'admin' ? 'rgba(239, 68, 68, 0.3)' : (user.role === 'superuser' ? 'rgba(245, 158, 11, 0.3)' : 'rgba(34, 197, 94, 0.3)');
+                const manageable = canActorManageUser(user);
+                const checked = selectedUsernames.has(user.username) ? 'checked' : '';
 
                 html += `
                     <tr>
+                        <td>${manageable ? `<input type="checkbox" ${checked} onchange="toggleUserSelection('${user.username}', this.checked)">` : ''}</td>
                         <td>${user.username}</td>
                         <td>${user.email || 'N/A'}</td>
                         <td><span style="background: ${roleColor}; padding: 4px 8px; border-radius: 4px;">${user.role}</span></td>
@@ -1192,8 +1332,10 @@
                         <td>
                             ${isConfigUser
                                 ? '<span style="opacity: 0.5; font-size: 0.85rem;">🔒 Managed in Manager Config</span>'
-                                : `<button class="btn btn-small" onclick="openEditUser('${user.username}')">✏️ Edit</button>
-                                   <button class="btn btn-small danger" onclick="deleteUser('${user.username}')">🗑️ Delete</button>`
+                                : manageable
+                                    ? `<button class="btn btn-small" onclick="openEditUser('${user.username}')">✏️ Edit</button>
+                                       <button class="btn btn-small danger" onclick="deleteUser('${user.username}')">🗑️ Delete</button>`
+                                    : '<span style="opacity: 0.5; font-size: 0.85rem;">🔒 Admin only</span>'
                             }
                         </td>
                     </tr>
@@ -1202,6 +1344,7 @@
 
             html += '</tbody></table>';
             usersList.innerHTML = html;
+            updateBulkToolbar();
         }
 
         async function createUser() {
@@ -1209,6 +1352,7 @@
             const email = document.getElementById('newEmail').value.trim();
             const password = document.getElementById('newPassword').value;
             const roleId = document.getElementById('newUserRole').value || undefined;
+            const role = document.getElementById('newUserSystemRole').value || 'user';
 
             if (!username || !password) {
                 alert('Username and password are required');
@@ -1236,7 +1380,7 @@
                         username,
                         email,
                         password,
-                        role: 'user',
+                        role,
                         roleId
                     })
                 });
@@ -1308,6 +1452,13 @@
                 document.getElementById('editPassword').value = '';
                 if (!rolesCache.length) await loadRoles({ silent: true });
                 document.getElementById('editUserRole').value = editingUser.roleId || '';
+                const systemRoleSelect = document.getElementById('editUserSystemRole');
+                systemRoleSelect.value = editingUser.role === 'superuser' ? 'superuser' : 'user';
+                // Only an admin may grant/revoke Superuser; a superuser actor only ever
+                // reaches this dialog for a 'user' target (canActorManageUser filters the
+                // Edit button otherwise), so locking the select here is a safe no-op for them.
+                systemRoleSelect.disabled = currentUserRole !== 'admin';
+                document.getElementById('editUserSystemRoleHint').style.display = currentUserRole === 'admin' ? 'none' : 'block';
                 openModal('editUserModal');
             } catch (error) {
                 alert(`Error: ${error.message}`);
@@ -1326,7 +1477,8 @@
                 email: document.getElementById('editEmail').value.trim(),
                 active: document.getElementById('editActive').checked,
                 permissions,
-                roleId: document.getElementById('editUserRole').value || ''
+                roleId: document.getElementById('editUserRole').value || '',
+                role: document.getElementById('editUserSystemRole').value
             };
             const password = document.getElementById('editPassword').value;
             if (password) updates.password = password;
@@ -1350,6 +1502,163 @@
             }
         }
 
+        // Bulk User Edit Modal Functions
+        //
+        // Selection, the field toggles, and the Location permission matrix are
+        // only a *preview* built client-side; the server re-validates every
+        // target and the actor's own permissions again per-user (see
+        // POST /api/admin/users/bulk in server.js) and reports success/failed/
+        // skipped explicitly instead of collapsing partial results into a
+        // single pass/fail.
+        let pendingBulkChanges = null;
+        let pendingBulkUsernames = [];
+        let bulkJobPollTimer = null;
+
+        async function openBulkEditModal() {
+            if (selectedUsernames.size === 0) return;
+            if (!rolesCache.length && !locationsCache.length) await loadRoles({ silent: true });
+            document.getElementById('bulkEditTargetSummary').textContent = `Applying to ${selectedUsernames.size} selected user(s): ${[...selectedUsernames].join(', ')}`;
+            document.getElementById('bulkChangeRole').checked = false;
+            document.getElementById('bulkRoleValue').disabled = true;
+            document.getElementById('bulkRoleValue').value = 'user';
+            document.getElementById('bulkChangeRoleId').checked = false;
+            document.getElementById('bulkRoleIdValue').disabled = true;
+            document.getElementById('bulkRoleIdValue').value = '';
+            document.getElementById('bulkChangeActive').checked = false;
+            document.getElementById('bulkActiveValue').disabled = true;
+            document.getElementById('bulkActiveValue').value = 'true';
+            document.getElementById('bulkChangeLocations').checked = false;
+            toggleBulkLocationEditor(false);
+            document.getElementById('bulkEditForm').style.display = 'block';
+            document.getElementById('bulkEditPreview').style.display = 'none';
+            document.getElementById('bulkEditProgress').style.display = 'none';
+            document.getElementById('bulkPreviewBtn').style.display = 'inline-block';
+            document.getElementById('bulkConfirmBtn').style.display = 'none';
+            openModal('bulkEditModal');
+        }
+
+        function closeBulkEditModal() {
+            if (bulkJobPollTimer) { clearTimeout(bulkJobPollTimer); bulkJobPollTimer = null; }
+            closeModal('bulkEditModal');
+        }
+
+        function toggleBulkLocationEditor(checked) {
+            document.getElementById('bulkLocationEditor').style.display = checked ? 'block' : 'none';
+            if (checked) renderRoleMatrix({}, 'bulkLocationMatrixContainer', 'bulk-location-matrix-cell');
+        }
+
+        function previewBulkEdit() {
+            const changes = {};
+            const summaryLines = [];
+
+            if (document.getElementById('bulkChangeRole').checked) {
+                changes.role = document.getElementById('bulkRoleValue').value;
+                summaryLines.push(`System Role → ${changes.role}`);
+            }
+            if (document.getElementById('bulkChangeRoleId').checked) {
+                changes.roleId = document.getElementById('bulkRoleIdValue').value || '';
+                summaryLines.push(`Permission Role → ${changes.roleId ? (rolesCache.find(r => r.id === changes.roleId)?.name || changes.roleId) : '(cleared)'}`);
+            }
+            if (document.getElementById('bulkChangeActive').checked) {
+                changes.active = document.getElementById('bulkActiveValue').value === 'true';
+                summaryLines.push(`Active status → ${changes.active ? 'Active' : 'Inactive'}`);
+            }
+            if (document.getElementById('bulkChangeLocations').checked) {
+                changes.locationPermissions = collectMatrixPermissions('bulk-location-matrix-cell');
+                changes.locationPermissionsMode = document.querySelector('input[name="bulkLocationMode"]:checked').value;
+                const locationCount = Object.keys(changes.locationPermissions).length;
+                summaryLines.push(`Location permissions (${changes.locationPermissionsMode}) for ${locationCount} Location(s)`);
+            }
+
+            if (summaryLines.length === 0) {
+                alert('Select at least one field to change.');
+                return;
+            }
+
+            pendingBulkChanges = changes;
+            pendingBulkUsernames = [...selectedUsernames];
+
+            const preview = document.getElementById('bulkEditPreview');
+            preview.innerHTML = `
+                <strong>Preview: this will affect ${pendingBulkUsernames.length} user(s)</strong>
+                <ul style="margin: 8px 0 0; padding-left: 20px;">${summaryLines.map(line => `<li>${escapeHtml(line)}</li>`).join('')}</ul>
+                <p style="margin: 8px 0 0; opacity: 0.75; font-size: 0.85rem;">Users: ${escapeHtml(pendingBulkUsernames.join(', '))}</p>
+                <p style="margin: 8px 0 0; opacity: 0.85; font-size: 0.85rem;">The server re-checks every target and reports success/failed/skipped individually - nothing here is applied until you confirm below.</p>
+            `;
+            preview.style.display = 'block';
+            document.getElementById('bulkPreviewBtn').style.display = 'none';
+            document.getElementById('bulkConfirmBtn').style.display = 'inline-block';
+        }
+
+        async function confirmBulkEdit() {
+            if (!pendingBulkChanges || pendingBulkUsernames.length === 0) return;
+            if (!confirm(`Apply these changes to ${pendingBulkUsernames.length} user(s)? This cannot be undone automatically.`)) return;
+
+            document.getElementById('bulkConfirmBtn').disabled = true;
+            const progress = document.getElementById('bulkEditProgress');
+            progress.style.display = 'block';
+            progress.innerHTML = '<p>Starting bulk update…</p>';
+
+            try {
+                const response = await fetch('/api/admin/users/bulk', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ usernames: pendingBulkUsernames, changes: pendingBulkChanges })
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Failed to start bulk update');
+                pollBulkJob(data.jobId);
+            } catch (error) {
+                progress.innerHTML = `<p style="color: #ef4444;">Error: ${escapeHtml(error.message)}</p>`;
+                document.getElementById('bulkConfirmBtn').disabled = false;
+            }
+        }
+
+        function renderBulkJobProgress(job) {
+            const progress = document.getElementById('bulkEditProgress');
+            const pct = job.total > 0 ? Math.round((job.completed / job.total) * 100) : 100;
+            let html = `
+                <p><strong>${job.completed} / ${job.total} completed</strong> (${pct}%)${job.status === 'running' && job.currentUser ? ` — processing '${escapeHtml(job.currentUser)}'` : ''}</p>
+                <p>✅ Succeeded: ${job.succeeded} &nbsp; ⚠️ Skipped: ${job.skipped} &nbsp; ❌ Failed: ${job.failed}</p>
+            `;
+            if (job.status === 'completed') {
+                const problems = job.results.filter(r => r.outcome !== 'succeeded');
+                if (problems.length > 0) {
+                    html += '<p style="margin-top:8px;"><strong>Skipped / failed:</strong></p><ul style="margin:4px 0 0; padding-left:20px;">';
+                    problems.forEach((r) => { html += `<li>${escapeHtml(r.username)}: ${r.outcome} — ${escapeHtml(r.reason || '')}</li>`; });
+                    html += '</ul>';
+                }
+                html += '<p style="margin-top:8px; opacity:0.75;">Bulk update finished. You can close this dialog now.</p>';
+            }
+            progress.innerHTML = html;
+        }
+
+        function pollBulkJob(jobId) {
+            const poll = async () => {
+                try {
+                    const response = await fetch(`/api/admin/users/bulk/${encodeURIComponent(jobId)}`, {
+                        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                    });
+                    if (!response.ok) throw new Error((await response.json()).error || 'Failed to fetch bulk job status');
+                    const data = await response.json();
+                    renderBulkJobProgress(data.job);
+                    if (data.job.status === 'completed') {
+                        bulkJobPollTimer = null;
+                        loadUsers();
+                        fetchStats();
+                        return;
+                    }
+                    bulkJobPollTimer = setTimeout(poll, 700);
+                } catch (error) {
+                    document.getElementById('bulkEditProgress').innerHTML += `<p style="color:#ef4444;">Lost track of job progress: ${escapeHtml(error.message)}</p>`;
+                }
+            };
+            poll();
+        }
+
         // Role Management Modal Functions
         let rolesCache = [];
         let locationsCache = [];
@@ -1362,7 +1671,7 @@
         }
 
         function populateRoleSelects() {
-            const selects = [document.getElementById('newUserRole'), document.getElementById('editUserRole')];
+            const selects = [document.getElementById('newUserRole'), document.getElementById('editUserRole'), document.getElementById('bulkRoleIdValue')];
             selects.forEach((select) => {
                 if (!select) return;
                 const previousValue = select.value;
@@ -1425,8 +1734,8 @@
             rolesList.innerHTML = html;
         }
 
-        function renderRoleMatrix(existingPermissions = {}) {
-            const container = document.getElementById('roleMatrixContainer');
+        function renderRoleMatrix(existingPermissions = {}, containerId = 'roleMatrixContainer', cellClass = 'role-matrix-cell') {
+            const container = document.getElementById(containerId);
             if (!locationsCache.length) {
                 container.innerHTML = '<p style="opacity: 0.7;">No Locations configured yet. Add a Location under System Configuration first.</p>';
                 return;
@@ -1440,7 +1749,7 @@
                 html += `<tr><td>${location.displayName} (${location.id})</td>`;
                 capabilitiesCache.forEach((capability) => {
                     const checked = granted.includes(capability) ? 'checked' : '';
-                    html += `<td style="text-align:center;"><input type="checkbox" class="role-matrix-cell" data-location="${location.id}" data-capability="${capability}" ${checked}></td>`;
+                    html += `<td style="text-align:center;"><input type="checkbox" class="${cellClass}" data-location="${location.id}" data-capability="${capability}" ${checked}></td>`;
                 });
                 html += '</tr>';
             });
@@ -1473,15 +1782,19 @@
             document.getElementById('roleEditorForm').style.display = 'none';
         }
 
-        function collectRoleMatrix() {
+        function collectMatrixPermissions(cellClass = 'role-matrix-cell') {
             const locationPermissions = {};
-            document.querySelectorAll('.role-matrix-cell:checked').forEach((checkbox) => {
+            document.querySelectorAll(`.${cellClass}:checked`).forEach((checkbox) => {
                 const locationId = checkbox.dataset.location;
                 const capability = checkbox.dataset.capability;
                 if (!locationPermissions[locationId]) locationPermissions[locationId] = [];
                 locationPermissions[locationId].push(capability);
             });
             return locationPermissions;
+        }
+
+        function collectRoleMatrix() {
+            return collectMatrixPermissions('role-matrix-cell');
         }
 
         async function saveRole() {
@@ -1579,7 +1892,13 @@
             return localStorage.getItem('token');
         }
 
-        // Check if user is authenticated and is admin
+        // Check if user is authenticated and is admin or superuser. This is
+        // only a UX redirect: every admin/superuser API call below is
+        // re-authorized server-side against the account's *current* role
+        // (see requireAdmin/requireStaffRole in middleware/auth.js), so a
+        // stale or forged claim here can't grant real access.
+        let currentUserRole = null;
+
         function checkAuth() {
             const token = getToken();
             if (!token) {
@@ -1591,18 +1910,31 @@
             // Decode JWT to check role
             try {
                 const payload = JSON.parse(atob(token.split('.')[1]));
-                if (payload.role !== 'admin') {
-                    alert('Access denied: Admin privileges required');
+                if (payload.role !== 'admin' && payload.role !== 'superuser') {
+                    alert('Access denied: Admin or Superuser privileges required');
                     window.location.href = '/';
                     return false;
                 }
+                currentUserRole = payload.role;
             } catch (e) {
                 alert('Invalid token');
                 window.location.href = '/';
                 return false;
             }
 
+            applyRoleBasedUI();
             return true;
+        }
+
+        // Superuser may only manage regular 'user' accounts and Permission
+        // Roles - hide every config/service/SSL control it cannot use
+        // (the underlying API routes reject these for a superuser anyway).
+        function applyRoleBasedUI() {
+            const badge = document.getElementById('currentRoleBadge');
+            if (badge) badge.textContent = currentUserRole === 'superuser' ? ' · Signed in as Superuser' : ' · Signed in as Admin';
+            if (currentUserRole !== 'admin') {
+                document.querySelectorAll('[data-admin-only]').forEach((el) => { el.style.display = 'none'; });
+            }
         }
 
         // SSL Management Functions
