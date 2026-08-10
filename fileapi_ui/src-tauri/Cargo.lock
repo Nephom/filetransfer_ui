@@ -2884,7 +2884,7 @@ dependencies = [
 
 [[package]]
 name = "nFterm"
-version = "3.3.1-91124d2"
+version = "3.3.1-78aac48"
 dependencies = [
  "dirs",
  "keyring",
