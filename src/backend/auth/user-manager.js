@@ -10,6 +10,15 @@ const crypto = require('crypto');
 const configManager = require('../config');
 const { systemLogger } = require('../utils/logger');
 
+// System roles that may be stored in users.json. 'admin' is intentionally
+// excluded: the single system administrator is always sourced from
+// config.ini (see authenticateUser/getAllUsers) and can never be created,
+// promoted to, or stored as a users.json record. 'superuser' may manage
+// regular 'user' accounts and Permission Roles, but not other
+// admin/superuser accounts, config, or the service - see middleware/auth.js
+// and the /api/admin/users routes in server.js for the enforcement.
+const ASSIGNABLE_SYSTEM_ROLES = ['user', 'superuser'];
+
 class UserManager {
   constructor() {
     this.usersFilePath = process.env.USERS_FILE_PATH || path.join(__dirname, '../../users.json');
@@ -136,9 +145,13 @@ class UserManager {
     const id = this.users.size + 1;
 
     // Set default permissions based on role
-    // Note: Only 'user' role is allowed for users.json accounts
+    // Note: only 'user' and 'superuser' may be stored in users.json; the
+    // single system administrator always comes from config.ini.
     if (role === 'admin') {
       throw new Error('Cannot create admin users through this interface. Admin is managed in config.ini');
+    }
+    if (!ASSIGNABLE_SYSTEM_ROLES.includes(role)) {
+      throw new Error(`Invalid role '${role}'. Must be one of: ${ASSIGNABLE_SYSTEM_ROLES.join(', ')}`);
     }
 
     if (permissions.length === 0) {
@@ -150,7 +163,7 @@ class UserManager {
       username,
       password: hashedPassword,
       email: email || `${username}@localhost`,
-      role: 'user', // Force role to be 'user'
+      role,
       permissions,
       ...(roleId === undefined ? {} : { roleId }),
       ...(locationPermissions === undefined ? {} : { locationPermissions }),
@@ -186,9 +199,13 @@ class UserManager {
       throw new Error(`User '${username}' not found`);
     }
 
-    // Prevent role escalation to admin
+    // Prevent role escalation to admin; the single system administrator is
+    // always sourced from config.ini and can never be stored in users.json.
     if (updates.role === 'admin') {
       throw new Error('Cannot change user role to admin. Admin is managed in config.ini');
+    }
+    if (updates.role !== undefined && !ASSIGNABLE_SYSTEM_ROLES.includes(updates.role)) {
+      throw new Error(`Invalid role '${updates.role}'. Must be one of: ${ASSIGNABLE_SYSTEM_ROLES.join(', ')}`);
     }
 
     // Handle password change
@@ -203,7 +220,7 @@ class UserManager {
     const updatedUser = {
       ...user,
       ...updates,
-      role: 'user', // Ensure role stays as 'user'
+      role: updates.role !== undefined ? updates.role : (user.role || 'user'),
       updated: new Date().toISOString()
     };
 
@@ -448,7 +465,8 @@ class UserManager {
       active: users.filter(u => u.active).length,
       inactive: users.filter(u => !u.active).length,
       admins: users.filter(u => u.role === 'admin').length,
-      regularUsers: users.filter(u => u.role === 'user').length,
+      superusers: users.filter(u => u.role === 'superuser').length,
+      regularUsers: users.filter(u => u.role === 'user' || !u.role).length,
       recentLogins: users.filter(u => {
         if (!u.lastLogin) return false;
         const lastLogin = new Date(u.lastLogin);
@@ -459,4 +477,13 @@ class UserManager {
   }
 }
 
-module.exports = UserManager;
+// Singleton instance: the whole application shares one in-memory view of
+// users.json (mirrors the ConfigManager pattern in ../config). This also
+// lets middleware/auth.js re-check a caller's *current* role/active status
+// on every admin/superuser-gated request without a circular require on
+// server.js, so a role change or deactivation takes effect immediately
+// instead of only after the caller's existing JWT expires.
+const userManager = new UserManager();
+userManager.ASSIGNABLE_SYSTEM_ROLES = ASSIGNABLE_SYSTEM_ROLES;
+
+module.exports = userManager;
