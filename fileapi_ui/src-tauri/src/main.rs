@@ -1234,11 +1234,22 @@ fn edit_local_file(path: String) -> Result<(), String> {
     if !metadata.is_file() {
         return Err("Only regular files can be edited".to_string());
     }
-    std::process::Command::new("gedit")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Unable to start gedit: {error}"))
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("notepad")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Unable to start Notepad: {error}"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("gedit")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Unable to start gedit: {error}"))
+    }
 }
 
 #[tauri::command]

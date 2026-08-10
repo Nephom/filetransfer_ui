@@ -108,6 +108,8 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
         shareToken: shareLink.shareToken,
         shareUrl: shareLink.shareUrl,
         fullUrl: `${req.protocol}://${req.get('host')}${shareLink.shareUrl}`,
+        directDownloadUrl: shareLink.directDownloadUrl,
+        directDownloadFullUrl: `${req.protocol}://${req.get('host')}${shareLink.directDownloadUrl}`,
         expiresAt: shareLink.expiresAt,
         maxDownloads: shareLink.maxDownloads,
         locationId: context.locationId,

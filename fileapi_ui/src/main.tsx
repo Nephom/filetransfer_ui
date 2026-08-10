@@ -48,7 +48,14 @@ type Session = {
   ignoreTlsErrors: boolean;
   onlyTerminalMode: boolean;
 };
-type ShareResponse = { data?: { fullUrl?: string; shareUrl?: string } };
+type ShareResponse = {
+  data?: {
+    fullUrl?: string;
+    shareUrl?: string;
+    directDownloadUrl?: string;
+    directDownloadFullUrl?: string;
+  };
+};
 type NativeApiResponse = { status: number; body: number[] };
 type UploadSummary = { files: number; directories: number };
 type FolderNode = {
@@ -156,6 +163,12 @@ type DesktopSettings = {
   undoHistoryEnabled: boolean;
   operationLogEnabled: boolean;
   operationLogLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
+  shareLinkExpirationDays: number;
+  // "secure": share.html page link (can be password-protected, matches the
+  // web UI's share flow). "direct": a plain, unauthenticated file URL meant
+  // for tools that only accept a bare link (e.g. a BMC firmware page) and
+  // cannot open a web page or send an Authorization header.
+  shareLinkMode: "secure" | "direct";
   confirmations: {
     delete: boolean;
     overwrite: boolean;
@@ -414,6 +427,13 @@ const defaultDesktopSettings: DesktopSettings = {
   undoHistoryEnabled: true,
   operationLogEnabled: true,
   operationLogLevel: "DEBUG",
+  // 0 = server default (currently 1 day); the server also enforces its own
+  // configured maximum (shareLinks.maxExpiration), so values here that
+  // exceed it are rejected server-side with a clear error.
+  shareLinkExpirationDays: 0,
+  // Defaults to the safer, page-based link (matches the web UI's default
+  // behaviour). Users who need a bare URL for BMC/tooling must opt in.
+  shareLinkMode: "secure",
   confirmations: { delete: true, overwrite: true, recursive: true, crossSourceMove: true },
 };
 
@@ -543,6 +563,8 @@ function App() {
   const localSelectionAnchorRef = useRef<string | null>(null);
   const [notice, setNotice] = useState("");
   const [shareUrl, setShareUrl] = useState("");
+  const [sharePasswordOpen, setSharePasswordOpen] = useState(false);
+  const [sharePasswordDraft, setSharePasswordDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
@@ -559,11 +581,20 @@ function App() {
       const operationLogLevel = ["DEBUG", "INFO", "WARN", "ERROR"].includes(saved?.operationLogLevel)
         ? saved.operationLogLevel
         : defaultDesktopSettings.operationLogLevel;
+      const shareLinkExpirationDays =
+        Number.isFinite(saved?.shareLinkExpirationDays) && saved.shareLinkExpirationDays >= 0
+          ? saved.shareLinkExpirationDays
+          : defaultDesktopSettings.shareLinkExpirationDays;
+      const shareLinkMode = ["secure", "direct"].includes(saved?.shareLinkMode)
+        ? saved.shareLinkMode
+        : defaultDesktopSettings.shareLinkMode;
       return {
         ...defaultDesktopSettings,
         ...saved,
         uiDensity,
         operationLogLevel,
+        shareLinkExpirationDays,
+        shareLinkMode,
         confirmations: { ...defaultDesktopSettings.confirmations, ...(saved?.confirmations || {}) },
       };
     } catch {
@@ -3248,7 +3279,7 @@ function App() {
       }
       if (!localPathForEdit) throw new Error("No local file is available for editing.");
       await invoke("edit_local_file", { path: localPathForEdit });
-      notify(`Opened ${viewerTitle} in gedit.`);
+      notify(`Opened ${viewerTitle} in the default text editor.`);
     });
 
   const uploadPaths = (paths: string[]) =>
@@ -3793,30 +3824,43 @@ function App() {
       }
     });
 
-  const share = () =>
+  const createShareLink = (password?: string) =>
     run(async () => {
       ensureApiRemote();
       if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
       const item = selectedItems[0];
       const sourceLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${item.path}`;
       try {
+        const expiresIn = desktopSettings.shareLinkExpirationDays > 0
+          ? desktopSettings.shareLinkExpirationDays * 86400
+          : undefined;
         const response = await api("/api/files/share", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             locationId: session.locationId,
             filePath: item.path,
+            ...(expiresIn ? { expiresIn } : {}),
+            ...(password ? { password } : {}),
           }),
         });
         if (!response.ok) throw new Error(await readError(response));
         const data = (await response.json()) as ShareResponse;
+        // "direct" mode returns a plain URL that streams the file straight
+        // from the server with no page in between and no Authorization/JWT
+        // header required, for tools that only accept a bare link (e.g. a
+        // BMC firmware page). "secure" mode returns the share.html page
+        // link, which supports the optional password set above.
         const url =
-          data.data?.fullUrl ||
-          (data.data?.shareUrl
-            ? `${serverUrl(session)}${data.data.shareUrl}`
-            : "");
+          desktopSettings.shareLinkMode === "direct"
+            ? data.data?.directDownloadFullUrl ||
+              (data.data?.directDownloadUrl ? `${serverUrl(session)}${data.data.directDownloadUrl}` : "")
+            : data.data?.fullUrl ||
+              (data.data?.shareUrl ? `${serverUrl(session)}${data.data.shareUrl}` : "");
         if (!url) throw new Error("The server did not return a share link.");
         setShareUrl(url);
+        setSharePasswordOpen(false);
+        setSharePasswordDraft("");
         writeOperationLog("share", "completed", sourceLabel, "Public share link", `Created a share link for ${item.name}.`);
         notify("Share link created.");
       } catch (error) {
@@ -3824,6 +3868,19 @@ function App() {
         throw error;
       }
     });
+
+  const share = () => {
+    if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
+    if (desktopSettings.shareLinkMode === "secure") {
+      // The web UI's equivalent flow also lets the user set a password at
+      // share time (it's per-link, not a global default), so ask here too
+      // instead of always sharing without one.
+      setSharePasswordDraft("");
+      setSharePasswordOpen(true);
+      return;
+    }
+    void createShareLink();
+  };
 
 
   // .zip compression/extraction. Collision-avoidance on the archive/output
@@ -4445,7 +4502,31 @@ function App() {
             🧪 Only Terminal
           </button>
         )}
-      </main>
+      {sharePasswordOpen && (
+        <div className="modal-cover" onMouseDown={() => setSharePasswordOpen(false)}>
+          <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
+            <h2>Secure share link</h2>
+            <p className="muted">Optional: protect the link with a password. Leave blank to share without one.</p>
+            <label>
+              Password (optional)
+              <input
+                type="password"
+                autoFocus
+                value={sharePasswordDraft}
+                onChange={(event) => setSharePasswordDraft(event.target.value)}
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="confirm" onClick={() => void createShareLink(sharePasswordDraft.trim() || undefined)}>
+                Create link
+              </button>
+              <button type="button" onClick={() => setSharePasswordOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+
     );
 
   const autoDensity = viewport.width <= 1100 || viewport.height <= 760 ? "compact" : "standard";
@@ -5449,6 +5530,40 @@ function App() {
                <button type="button" onClick={() => setDesktopSettings((current) => ({ ...current, confirmations: { ...defaultDesktopSettings.confirmations } }))}>Restore safe confirmations</button>
              </section>
              <section className="settings-section">
+               <h3>Sharing</h3>
+               <label className="settings-check">
+                 <input
+                   type="radio"
+                   name="shareLinkMode"
+                   checked={desktopSettings.shareLinkMode === "secure"}
+                   onChange={() => setDesktopSettings((current) => ({ ...current, shareLinkMode: "secure" }))}
+                 />
+                 <span><strong>Secure share (web page link)</strong><small>Opens the share.html page; supports an optional password. Use for sharing with people.</small></span>
+               </label>
+               <label className="settings-check">
+                 <input
+                   type="radio"
+                   name="shareLinkMode"
+                   checked={desktopSettings.shareLinkMode === "direct"}
+                   onChange={() => setDesktopSettings((current) => ({ ...current, shareLinkMode: "direct" }))}
+                 />
+                 <span><strong>Direct link (for tools like BMC)</strong><small>A plain file URL with no page and no Authorization header, for pasting into tools that only accept a bare link. No password protection.</small></span>
+               </label>
+               <label className="settings-level">Default share link expiration
+                 <select
+                   value={desktopSettings.shareLinkExpirationDays}
+                   onChange={(event) => setDesktopSettings((current) => ({ ...current, shareLinkExpirationDays: Number(event.target.value) }))}
+                 >
+                   <option value={0}>Server default</option>
+                   <option value={1}>1 day</option>
+                   <option value={7}>7 days</option>
+                   <option value={30}>30 days</option>
+                   <option value={90}>90 days</option>
+                 </select>
+                 <small>Applied to every new share link created from this desktop app. The server also enforces its own configured maximum, so longer values may be rejected.</small>
+               </label>
+             </section>
+             <section className="settings-section">
                <h3>History and operation log</h3>
                <p>Both are enabled by default. Undo records are reserved for reliable, verifiable reversals. The operation log is append-only, excludes secrets, rotates at 10 MB, and retains at most three files total.</p>
                <label className="settings-check"><input type="checkbox" checked={desktopSettings.undoHistoryEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, undoHistoryEnabled: event.target.checked }))} /><span><strong>Enable undo history</strong><small>Disabling this stops new undo records; it does not delete files.</small></span></label>
@@ -5837,10 +5952,10 @@ function App() {
         <div className="modal-cover" onMouseDown={() => setViewerOpen(false)}>
           <div className="modal viewer-modal" onMouseDown={(event) => event.stopPropagation()}>
             <h2>{viewerTitle}</h2>
-            <p className="muted">Read-only viewer. Edit opens this file in gedit.</p>
+            <p className="muted">Read-only viewer. Edit opens this file in the default text editor.</p>
             <textarea className="file-viewer" value={viewerContent} readOnly spellCheck={false} />
             <div className="modal-actions">
-              <button type="button" onClick={editViewerFile}>Edit in gedit</button>
+              <button type="button" onClick={editViewerFile}>Edit in text editor</button>
               <button type="button" onClick={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))}>Copy</button>
               <button type="button" onClick={() => setViewerOpen(false)}>Close</button>
             </div>
