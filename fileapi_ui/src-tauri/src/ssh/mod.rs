@@ -35,6 +35,119 @@ pub struct SshProfile {
     pub private_key_path: Option<String>,
 }
 
+/// Incrementally decodes SSH channel bytes to UTF-8, buffering a trailing
+/// incomplete multi-byte sequence in `carry` across calls instead of
+/// replacing it with `U+FFFD` the way `String::from_utf8_lossy` does when
+/// applied to a single chunk in isolation. Genuinely invalid byte sequences
+/// (not just "incomplete because more is coming") are still replaced with
+/// `U+FFFD`, matching `from_utf8_lossy`'s own behavior -- only sequences
+/// that are valid *so far* and could be completed by the next chunk are
+/// held back. ASCII bytes (0x00-0x7F), which is every byte of every ANSI/
+/// VT escape and control sequence, are single-byte in UTF-8 and are never
+/// affected by this either way.
+fn decode_ssh_chunk(carry: &mut Vec<u8>, data: &[u8]) -> String {
+    carry.extend_from_slice(data);
+    let mut output = String::new();
+    let mut offset = 0usize;
+    loop {
+        match std::str::from_utf8(&carry[offset..]) {
+            Ok(text) => {
+                output.push_str(text);
+                offset = carry.len();
+                break;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                output.push_str(
+                    std::str::from_utf8(&carry[offset..offset + valid_up_to])
+                        .expect("bytes up to valid_up_to are guaranteed valid UTF-8"),
+                );
+                offset += valid_up_to;
+                match error.error_len() {
+                    // Incomplete tail: might be completed by the next
+                    // chunk, so stop here and keep it buffered.
+                    None => break,
+                    // Genuinely invalid (not just incomplete): nothing to
+                    // wait for, so drop it like `from_utf8_lossy` would and
+                    // keep decoding whatever follows in this same chunk.
+                    Some(len) => {
+                        output.push('\u{FFFD}');
+                        offset += len;
+                    }
+                }
+            }
+        }
+    }
+    carry.drain(..offset);
+    output
+}
+
+#[cfg(test)]
+mod chunk_decoding_tests {
+    use super::decode_ssh_chunk;
+
+    #[test]
+    fn passes_through_ascii_and_ansi_escapes_unchanged() {
+        let mut carry = Vec::new();
+        let input = b"\x1b[31mHello\x1b[0m\r\n\x1b]0;title\x07";
+        let out = decode_ssh_chunk(&mut carry, input);
+        assert_eq!(out, String::from_utf8(input.to_vec()).unwrap());
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn reassembles_a_multibyte_character_split_across_chunks() {
+        // "─" (U+2500, box drawing) is E2 94 80 in UTF-8.
+        let full = "─".as_bytes().to_vec();
+        assert_eq!(full.len(), 3);
+        let mut carry = Vec::new();
+        let first = decode_ssh_chunk(&mut carry, &full[..1]);
+        assert_eq!(first, "", "an incomplete sequence must not be emitted yet");
+        assert_eq!(carry.len(), 1);
+        let second = decode_ssh_chunk(&mut carry, &full[1..2]);
+        assert_eq!(second, "");
+        assert_eq!(carry.len(), 2);
+        let third = decode_ssh_chunk(&mut carry, &full[2..3]);
+        assert_eq!(third, "─");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn reassembles_a_split_character_surrounded_by_ansi_and_ascii() {
+        let mut input = Vec::new();
+        input.extend_from_slice(b"\x1b[1mfoo ");
+        input.extend_from_slice("─".as_bytes());
+        input.extend_from_slice(b" bar\x1b[0m");
+        // Split right inside the 3-byte "─" sequence.
+        let split_at = input.len() - 5;
+        let mut carry = Vec::new();
+        let mut out = decode_ssh_chunk(&mut carry, &input[..split_at]);
+        out.push_str(&decode_ssh_chunk(&mut carry, &input[split_at..]));
+        assert_eq!(out, String::from_utf8(input).unwrap());
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn replaces_genuinely_invalid_bytes_without_blocking_later_valid_text() {
+        let mut carry = Vec::new();
+        // 0xFF is never valid as a UTF-8 lead byte.
+        let input = [b'a', 0xFF, b'b'];
+        let out = decode_ssh_chunk(&mut carry, &input);
+        assert_eq!(out, "a\u{FFFD}b");
+        assert!(carry.is_empty());
+    }
+
+    #[test]
+    fn multiple_chunks_of_plain_ascii_never_buffer_anything() {
+        let mut carry = Vec::new();
+        for chunk in [b"first ".as_slice(), b"second ".as_slice(), b"third".as_slice()] {
+            let out = decode_ssh_chunk(&mut carry, chunk);
+            assert_eq!(out.as_bytes(), chunk);
+            assert!(carry.is_empty());
+        }
+    }
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SshEvent {
@@ -534,10 +647,26 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile, request_id: Str
     let reader_label = label.clone();
     let reader_request_id = request_id.clone();
     tokio::spawn(async move {
+        // Bytes read from the SSH channel arrive in arbitrary TCP-sized
+        // chunks, with no guarantee a chunk boundary lines up with a
+        // character boundary. `String::from_utf8_lossy` applied
+        // independently to *each* chunk (the previous behavior here) turns
+        // any multi-byte UTF-8 character split across two reads (box-drawing
+        // glyphs, many prompt icons, non-ASCII filenames, etc.) into a
+        // `U+FFFD` replacement character on both sides of the split. `carry`
+        // buffers a trailing incomplete sequence across reads so it decodes
+        // correctly once the rest of it arrives. ASCII text and every ANSI/
+        // VT escape/control sequence are unaffected either way -- their
+        // bytes are always < 0x80 and therefore never span multiple bytes.
+        let mut carry: Vec<u8> = Vec::new();
+        let mut stderr_carry: Vec<u8> = Vec::new();
         loop {
             match read_half.wait().await {
                 Some(ChannelMsg::Data { data }) => {
-                    let text = String::from_utf8_lossy(&data).into_owned();
+                    let text = decode_ssh_chunk(&mut carry, &data);
+                    if text.is_empty() {
+                        continue;
+                    }
                     let _ = app.emit(
                         "ssh-output",
                         SshEvent {
@@ -548,7 +677,14 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile, request_id: Str
                     );
                 }
                 Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    let text = String::from_utf8_lossy(&data).into_owned();
+                    // Stderr is a logically distinct byte stream from the
+                    // main Data channel above, so it gets its own carry
+                    // buffer -- a split multi-byte sequence on one stream
+                    // has nothing to do with the other.
+                    let text = decode_ssh_chunk(&mut stderr_carry, &data);
+                    if text.is_empty() {
+                        continue;
+                    }
                     let _ = app.emit(
                         "ssh-output",
                         SshEvent {
@@ -561,6 +697,23 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile, request_id: Str
                 Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => break,
                 None => break,
                 _ => {}
+            }
+        }
+        // Flush any trailing incomplete sequence left in either buffer when
+        // the connection ends (rather than silently dropping it) so the
+        // very last bytes of a session are never lost -- there is no "next
+        // chunk" coming to complete them, so this is the one place a lossy
+        // decode of the remainder is correct.
+        for leftover in [&carry, &stderr_carry] {
+            if !leftover.is_empty() {
+                let _ = app.emit(
+                    "ssh-output",
+                    SshEvent {
+                        session_id: reader_session.clone(),
+                        data: String::from_utf8_lossy(leftover).into_owned(),
+                        request_id: reader_request_id.clone(),
+                    },
+                );
             }
         }
         let _ = app.emit(
