@@ -293,7 +293,25 @@ function Build-Desktop {
     try { Invoke-Native "cargo" @("check", "--locked") }
     finally { Pop-Location }
 
-    Invoke-Native "npm.cmd" @("run", "tauri", "build", "--prefix", $DesktopRoot, "--", "--bundles", "nsis", "--config", "{`"version`":`"$($versionInfo.version)`"}")
+    # Passing the version override as an inline JSON string (e.g.
+    # --config "{`"version`":`"...`"}") reliably fails on Windows with
+    # "failed to parse config as JSON": npm.cmd is a batch file, so
+    # PowerShell's `&` call operator has to re-marshal every argument through
+    # cmd.exe before node/the Tauri CLI ever see it, and cmd.exe's own
+    # quoting rules mangle the embedded double quotes along the way (this is
+    # a long-standing PowerShell/cmd.exe interop issue, not something Tauri
+    # itself does wrong). `tauri build --config` also accepts a *path* to a
+    # JSON file, which never has to survive that extra quoting layer, so
+    # write the override to a temp file instead of trying to out-escape it.
+    $tauriConfigOverride = [ordered]@{ version = $versionInfo.version } | ConvertTo-Json -Compress
+    $tauriConfigPath = Join-Path ([System.IO.Path]::GetTempPath()) "nfterm-tauri-config-$([guid]::NewGuid().ToString('N')).json"
+    Set-Content -LiteralPath $tauriConfigPath -Value $tauriConfigOverride -Encoding ascii -NoNewline
+    try {
+        Invoke-Native "npm.cmd" @("run", "tauri", "build", "--prefix", $DesktopRoot, "--", "--bundles", "nsis", "--config", $tauriConfigPath)
+    }
+    finally {
+        Remove-Item -LiteralPath $tauriConfigPath -ErrorAction SilentlyContinue
+    }
 
     # Report whatever Tauri actually produced instead of guessing the
     # installer filename (it embeds the app version, which can differ from
