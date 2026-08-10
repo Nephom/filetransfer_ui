@@ -293,6 +293,20 @@ function Build-Desktop {
     try { Invoke-Native "cargo" @("check", "--locked") }
     finally { Pop-Location }
 
+    # The NSIS installer's filename embeds the app version (e.g.
+    # "nFterm_3.3.1-<commit>_x64-setup.exe"), which is recomputed on every
+    # build from the current commit. Tauri never cleans this folder itself,
+    # so installers from earlier builds at other commits/versions are left
+    # sitting next to the new one. Clear it before building so the *only*
+    # NSIS installer present afterward is the one this build just produced
+    # -- otherwise the report below can silently pick up a stale leftover
+    # file with the wrong version in its name.
+    $releaseDir = Join-Path $DesktopRoot "src-tauri\target\release"
+    $nsisDir = Join-Path $releaseDir "bundle\nsis"
+    if (Test-Path -LiteralPath $nsisDir) {
+        Remove-Item -LiteralPath $nsisDir -Recurse -Force
+    }
+
     # Passing the version override as an inline JSON string (e.g.
     # --config "{`"version`":`"...`"}") reliably fails on Windows with
     # "failed to parse config as JSON": npm.cmd is a batch file, so
@@ -314,9 +328,10 @@ function Build-Desktop {
     }
 
     # Report whatever Tauri actually produced instead of guessing the
-    # installer filename (it embeds the app version, which can differ from
-    # the repo-level VERSION file and would otherwise go stale silently).
-    $releaseDir = Join-Path $DesktopRoot "src-tauri\target\release"
+    # installer filename, but require it to actually contain the version we
+    # just told Tauri to build (rather than trusting file ordering/mtime):
+    # that is the only way to guarantee this message never reports a
+    # different build's installer as this build's result.
     $exePath = Join-Path $releaseDir "nFterm.exe"
     if (Test-Path -LiteralPath $exePath) {
         Write-Host "Portable EXE: $exePath"
@@ -325,14 +340,22 @@ function Build-Desktop {
         Write-Warning "Expected EXE not found at $exePath"
     }
 
-    $nsisDir = Join-Path $releaseDir "bundle\nsis"
-    $installer = Get-ChildItem -LiteralPath $nsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+    $installer = Get-ChildItem -LiteralPath $nsisDir -Filter "*_$($versionInfo.version)_*-setup.exe" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if ($installer) {
         Write-Host "NSIS package: $($installer.FullName)"
     }
     else {
-        Write-Warning "NSIS installer not found under $nsisDir"
+        $anyInstaller = Get-ChildItem -LiteralPath $nsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($anyInstaller) {
+            Write-Warning "NSIS installer under $nsisDir does not match the built version ($($versionInfo.version)); found '$($anyInstaller.Name)' instead. Not reporting it as the build result."
+        }
+        else {
+            Write-Warning "NSIS installer not found under $nsisDir"
+        }
     }
 }
 
