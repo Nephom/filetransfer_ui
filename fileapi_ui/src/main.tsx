@@ -743,6 +743,11 @@ function App() {
   const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
   const [sxpEntryDraftId, setSxpEntryDraftId] = useState("");
   const [sxpEntryNameDraft, setSxpEntryNameDraft] = useState("Default Transfer");
+  // Session Manager only shows the Workspace list/summary; adding or
+  // editing an SSH entry or a Session Path entry happens in its own
+  // floating dialog on top of the Sessions modal.
+  const [sshEntryDialogOpen, setSshEntryDialogOpen] = useState(false);
+  const [sxpEntryDialogOpen, setSxpEntryDialogOpen] = useState(false);
   const [pendingRemotePath, setPendingRemotePath] = useState<string | null>(null);
   const [folderTree, setFolderTree] = useState<FolderNode>({
     path: "",
@@ -1551,36 +1556,94 @@ function App() {
     });
   };
 
-  const saveSession = (form?: HTMLFormElement) => {
+  // Creates or renames a Workspace. This only manages the Workspace's name;
+  // SSH entries and Session Path entries are added/edited afterwards, each
+  // in their own floating dialog (see `saveSshEntry` and `saveSxpEntry`),
+  // so a brand-new Workspace does not need a Location or a Path entry
+  // selected up front just to exist.
+  const saveWorkspaceName = (form?: HTMLFormElement) => {
     const values = form ? new FormData(form) : null;
     const name = String(values?.get("sessionName") || sessionNameDraft).trim();
-    const localAlias = String(values?.get("localFolderName") || localAliasDraft).trim();
-    const remoteAlias = String(values?.get("remoteFolderName") || remoteAliasDraft).trim();
-    if (!name || !localAlias || !remoteAlias) {
-      setSessionFormError("Session name and folder names are required.");
+    if (!name) {
+      setSessionFormError("Workspace name is required.");
       return;
     }
-    if ([name, localAlias, remoteAlias].some((value) => /\s/.test(value))) {
-      setSessionFormError("Session names and folder names cannot contain spaces.");
-      return;
-    }
-    if (!session.locationId) {
-      setSessionFormError("Select an available API Remote Location before saving this Session.");
+    if (/\s/.test(name)) {
+      setSessionFormError("Workspace names cannot contain spaces.");
       return;
     }
     const existingWorkspace = managedSessions.find((item) => item.id === workspaceSessionId);
     if (managedSessions.some((item) => item.id !== existingWorkspace?.id && item.name.toLowerCase() === name.toLowerCase())) {
-      setSessionFormError(`A Session named "${name}" already exists.`);
+      setSessionFormError(`A Workspace named "${name}" already exists.`);
       return;
     }
     const makeId = () =>
       typeof crypto.randomUUID === "function"
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const existingSxpEntry = existingWorkspace?.sxpEntries.find((entry) => entry.id === sxpEntryDraftId);
-    const sxpEntry: SxpEntry = {
-      id: existingSxpEntry?.id || makeId(),
-      name: String(values?.get("sxpEntryName") || existingSxpEntry?.name || "Default Transfer").trim(),
+    const managedSession: ManagedSession = existingWorkspace
+      ? { ...existingWorkspace, name }
+      : { id: makeId(), name, sxpEntries: [], sshEntries: [] };
+    setManagedSessions((current) => existingWorkspace
+      ? current.map((item) => item.id === existingWorkspace.id ? managedSession : item)
+      : [...current, managedSession]);
+    setWorkspaceSessionId(managedSession.id);
+    setSessionNameDraft(name);
+    setSessionFormError("");
+    setLastSavedSessionId(managedSession.id);
+    notify(`Saved Workspace: ${name}`);
+  };
+
+  const openAddSxpEntryDialog = () => {
+    setSxpEntryDraftId("");
+    setSxpEntryNameDraft("Default Transfer");
+    setLocalAliasDraft("Home");
+    setRemoteAliasDraft(activeLocation?.displayName || "Personal");
+    setSessionFormError("");
+    setSxpEntryDialogOpen(true);
+  };
+
+  const openEditSxpEntryDialog = (entry: SxpEntry) => {
+    setSxpEntryDraftId(entry.id);
+    setSxpEntryNameDraft(entry.name);
+    setLocalAliasDraft(entry.localAlias);
+    setRemoteAliasDraft(entry.remoteAlias);
+    setSessionFormError("");
+    setSxpEntryDialogOpen(true);
+  };
+
+  // Saves the current LOCAL and API Remote browser paths (not free-typed
+  // paths) under the given aliases as one Session Path entry on the active
+  // Workspace, then closes the floating dialog and returns to the Sessions
+  // modal's Workspace view.
+  const saveSxpEntry = () => {
+    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
+    const name = sxpEntryNameDraft.trim();
+    const localAlias = localAliasDraft.trim();
+    const remoteAlias = remoteAliasDraft.trim();
+    if (!workspace) {
+      setSessionFormError("Save the Workspace name first, then add a Path entry to it.");
+      return;
+    }
+    if (!name || !localAlias || !remoteAlias) {
+      setSessionFormError("Preset name, local folder name, and remote folder name are required.");
+      return;
+    }
+    if ([name, localAlias, remoteAlias].some((value) => /\s/.test(value))) {
+      setSessionFormError("Path entry names cannot contain spaces.");
+      return;
+    }
+    if (!session.locationId) {
+      setSessionFormError("Select an available API Remote Location before saving this Path entry.");
+      return;
+    }
+    const makeId = () =>
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const entry: SxpEntry = {
+      id: sxpEntryDraftId || makeId(),
+      name,
       localAlias,
       localPath,
       remoteAlias,
@@ -1588,26 +1651,29 @@ function App() {
       locationId: session.locationId,
       locationName: activeLocation?.displayName || session.locationId,
     };
-    const managedSession: ManagedSession = {
-      id: existingWorkspace?.id || makeId(),
-      name,
-      sxpEntries: existingWorkspace?.sxpEntries.length
-        ? existingSxpEntry
-          ? existingWorkspace.sxpEntries.map((entry) => entry.id === existingSxpEntry.id ? sxpEntry : entry)
-          : [...existingWorkspace.sxpEntries, sxpEntry]
-        : [sxpEntry],
-      sshEntries: existingWorkspace?.sshEntries || [],
-    };
-    void run(async () => {
-      setManagedSessions((current) => existingWorkspace
-        ? current.map((item) => item.id === existingWorkspace.id ? managedSession : item)
-        : [...current, managedSession]);
-      setWorkspaceSessionId(managedSession.id);
-      setSessionNameDraft(name);
-      setSessionFormError("");
-      setLastSavedSessionId(managedSession.id);
-      notify(`Saved Session: ${name}`);
-    });
+    setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : {
+      ...item,
+      sxpEntries: item.sxpEntries.some((candidate) => candidate.id === entry.id)
+        ? item.sxpEntries.map((candidate) => candidate.id === entry.id ? entry : candidate)
+        : [...item.sxpEntries, entry],
+    }));
+    setSessionFormError("");
+    setSxpEntryDialogOpen(false);
+    notify(`${sxpEntryDraftId ? "Updated" : "Added"} Path entry: ${entry.name}`);
+  };
+
+  const removeSxpEntry = () => {
+    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
+    if (!workspace || !sxpEntryDraftId) return;
+    const entry = workspace.sxpEntries.find((item) => item.id === sxpEntryDraftId);
+    if (!entry) return;
+    if (workspace.sxpEntries.length === 1) {
+      setNotice("Add another Path entry before removing this one; a Workspace used for transfers needs at least one.");
+      return;
+    }
+    if (!window.confirm(`Remove Path entry "${entry.name}"?`)) return;
+    setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, sxpEntries: item.sxpEntries.filter((candidate) => candidate.id !== entry.id) }));
+    setSxpEntryDialogOpen(false);
   };
 
   const removeSession = (sessionId: string) => {
@@ -1983,6 +2049,20 @@ function App() {
     setSshPasswordSaved(false);
   };
 
+  const openAddSshEntryDialog = () => {
+    startNewSshEntry();
+    setSessionFormError("");
+    setSshEntryDialogOpen(true);
+  };
+
+  const openEditSshEntryDialog = (entry: SshProfile) => {
+    setSshEntryDraftId(entry.id);
+    setSshProfileId(entry.id);
+    loadSshProfileDraft(entry);
+    setSessionFormError("");
+    setSshEntryDialogOpen(true);
+  };
+
   const saveSshEntry = () => {
     const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
     const name = sshProfileDraft.name.trim();
@@ -1990,13 +2070,14 @@ function App() {
     const username = sshProfileDraft.username.trim();
     const port = Number(sshProfileDraft.port);
     if (!workspace) {
-      setSessionFormError("Save the Workspace paths first, then add an SSH entry to it.");
+      setSessionFormError("Save the Workspace name first, then add an SSH entry to it.");
       return;
     }
     if (!name || !host || !username || !Number.isInteger(port) || port < 1 || port > 65535) {
       setSessionFormError("Connection name, host, username, and a valid port are required.");
       return;
     }
+    const wasEditing = Boolean(sshProfileDraft.id);
     const entry: SshProfile = { id: sshProfileDraft.id || makeSshTabId(), name, host, port, username, privateKeyPath: sshProfileDraft.privateKeyPath.trim() };
     setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : {
       ...item,
@@ -2005,18 +2086,25 @@ function App() {
         : [...item.sshEntries, entry],
     }));
     setSshProfiles((current) => current.some((item) => item.id === entry.id) ? current.map((item) => item.id === entry.id ? entry : item) : [...current, entry]);
-    setSshEntryDraftId(entry.id);
+    // Keep the just-saved entry as the "active" SSH selection for connecting
+    // outside this dialog, but clear the draft/form and close the floating
+    // SSH Entry dialog, returning to the Sessions modal's Workspace view.
+    // This applies to both creating a new entry and updating an existing
+    // one -- either way, Save returns to the Workspace.
     setSelectedSshEntryId(entry.id);
     setSshProfileId(entry.id);
     const password = sshProfileDraft.password;
-    loadSshProfileDraft(entry);
+    setSshEntryDraftId("");
+    setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
+    setSshPasswordSaved(false);
     setSessionFormError("");
+    setSshEntryDialogOpen(false);
     if (password) {
       void invoke("ssh_save_password", { entryId: entry.id, password })
         .then(() => setSshPasswordSaved(true))
         .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
     }
-    notify(`${sshProfileDraft.id ? "Updated" : "Added"} SSH entry: ${entry.name}`);
+    notify(`${wasEditing ? "Updated" : "Added"} SSH entry: ${entry.name}`);
   };
 
   const forgetSshPassword = () => {
@@ -2038,6 +2126,7 @@ function App() {
     setSshProfiles((current) => current.filter((item) => item.id !== entry.id));
     void invoke("ssh_forget_password", { entryId: entry.id }).catch(() => {});
     startNewSshEntry();
+    setSshEntryDialogOpen(false);
   };
 
   const connectSsh = () => {
@@ -2512,6 +2601,11 @@ function App() {
   const showRemoteUp = remoteSshEntryId ? path !== "/" : Boolean(path);
   const workspaceSessions = managedSessions.filter((item) => item.sshEntries.length > 0);
   const activeWorkspaceSession = workspaceSessions.find((item) => item.id === workspaceSessionId);
+  // The Sessions modal's Workspace panel shows this regardless of whether it
+  // has any SSH entries yet (unlike `activeWorkspaceSession` above, which is
+  // scoped to the SSH terminal selector and only considers workspaces that
+  // already have at least one SSH entry).
+  const activeManagedWorkspace = managedSessions.find((item) => item.id === workspaceSessionId);
   const toggle = (file: FileItem, checked: boolean) => {
     setActivePane("remote");
     selectionAnchorRef.current = file.path;
@@ -5594,18 +5688,18 @@ function App() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <h2>Sessions</h2>
-             <p>Save LOCAL, API Remote, and SSH connection details together as one Session.</p>
+             <p>A Workspace groups SSH entries and Session Path entries together for quick reconnecting.</p>
             {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
             <div className="sessions-layout">
+              <div className="session-form">
               <form
-                className="session-form"
                 onSubmit={(event) => {
                   event.preventDefault();
-                  saveSession(event.currentTarget);
+                  saveWorkspaceName(event.currentTarget);
                 }}
               >
               <label>
-                Session name
+                Workspace name
                 <input
                   name="sessionName"
                   value={sessionNameDraft}
@@ -5613,94 +5707,55 @@ function App() {
                   placeholder="ReleaseWorkspace"
                   required
                 />
-               <small className="field-help">Name for this saved workspace.</small>
+               <small className="field-help">Name for this saved Workspace.</small>
               </label>
-                <fieldset className="session-ssh-fields">
-                  <legend>SSH connection (optional)</legend>
-                   <div className="ssh-entry-picker">
-                     <span>SSH entries in this Workspace</span>
-                     <div>
-                       {managedSessions.find((item) => item.id === workspaceSessionId)?.sshEntries.map((entry) => (
-                         <button type="button" className={entry.id === sshEntryDraftId ? "selected" : ""} key={entry.id} onClick={() => { setSshEntryDraftId(entry.id); setSshProfileId(entry.id); loadSshProfileDraft(entry); }}>
-                           {entry.name}
-                         </button>
-                       ))}
-                     </div>
-                   </div>
-                   <small className="field-help">To edit or remove an entry, click its Connection name below.</small>
-                   <div className="ssh-entry-actions">
-                     <button type="button" onClick={startNewSshEntry}>Add</button>
-                     <button type="button" onClick={() => sshEntryDraftId && loadSshProfileDraft(managedSessions.find((item) => item.id === workspaceSessionId)?.sshEntries.find((entry) => entry.id === sshEntryDraftId))} disabled={!sshEntryDraftId}>Edit</button>
-                     <button type="button" className="session-delete" onClick={removeSshEntry} disabled={!sshEntryDraftId}>Remove</button>
-                   </div>
-                  <label>
-                    Connection name
-                    <input name="sshName" value={sshProfileDraft.name} onChange={(event) => setSshProfileDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Production shell" />
-                  </label>
-                  <label>
-                    Host
-                    <input name="sshHost" value={sshProfileDraft.host} onChange={(event) => setSshProfileDraft((current) => ({ ...current, host: event.target.value }))} placeholder="server.example.com" />
-                  </label>
-                  <label>
-                    Port
-                    <input name="sshPort" inputMode="numeric" value={sshProfileDraft.port} onChange={(event) => setSshProfileDraft((current) => ({ ...current, port: event.target.value }))} />
-                  </label>
-                  <label>
-                    Username
-                    <input name="sshUsername" value={sshProfileDraft.username} onChange={(event) => setSshProfileDraft((current) => ({ ...current, username: event.target.value }))} />
-                  </label>
-                  <label>
-                    Private key path (optional)
-                    <input name="sshPrivateKeyPath" value={sshProfileDraft.privateKeyPath} onChange={(event) => setSshProfileDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="/home/test/.ssh/id_ed25519" />
-                  </label>
-                  <label>
-                    Password (optional)
-                    <input type="password" name="sshPassword" value={sshProfileDraft.password} onChange={(event) => setSshProfileDraft((current) => ({ ...current, password: event.target.value }))} placeholder={sshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" />
-                  </label>
-                  <small className="field-help">
-                    {sshPasswordSaved ? "A password is saved for this entry in the OS credential store (or a local fallback file outside the Session data)." : "No password saved yet. Add one here, or configure a private key, before connecting."}
-                    {" "}Used to authenticate and to auto-fill the terminal's password prompt; never written to Session data.
-                    {sshPasswordSaved && <> <button type="button" className="link-button" onClick={forgetSshPassword}>Forget saved password</button></>}
-                  </small>
-                   <small className="field-help">Connect authenticates automatically with the private key or saved password. Use "Install SSH key" to push a key to the server using the saved password.</small>
-                   <button type="button" className="confirm" onClick={saveSshEntry}>{sshEntryDraftId ? "Save SSH Entry" : "Add SSH Entry"}</button>
-                </fieldset>
-                <fieldset className="session-default-paths">
-                  <legend>Default paths</legend>
-                  <label>
-                    Preset name
-                    <input name="sxpEntryName" value={sxpEntryNameDraft} onChange={(event) => setSxpEntryNameDraft(event.target.value)} required />
-                  </label>
-                  <label>
-                    Local folder name
-                    <input
-                      name="localFolderName"
-                      value={localAliasDraft}
-                      onChange={(event) => setLocalAliasDraft(event.target.value)}
-                      required
-                    />
-                    <small className="field-help">Name used to identify the current LOCAL folder in this Session.</small>
-                  </label>
-                  <label>
-                    Remote folder name
-                    <input
-                      name="remoteFolderName"
-                      value={remoteAliasDraft}
-                      onChange={(event) => setRemoteAliasDraft(event.target.value)}
-                      required
-                    />
-                    <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
-                  </label>
-                </fieldset>
               <div className="modal-actions">
                 <button type="button" onClick={() => setSessionsOpen(false)}>
                   Close
                 </button>
                 <button className="confirm" type="submit">
-                   Save workspace paths
+                   Save Workspace name
                 </button>
               </div>
               </form>
+              <div className="workspace-entries">
+                <div className="workspace-entries-heading">
+                  <strong>SSH entries</strong>
+                </div>
+                {!activeManagedWorkspace?.sshEntries.length && (
+                  <span className="muted">No SSH entries yet.</span>
+                )}
+                <div className="ssh-entry-picker">
+                  {activeManagedWorkspace?.sshEntries.map((entry) => (
+                    <button type="button" key={entry.id} onClick={() => openEditSshEntryDialog(entry)}>
+                      {entry.name}
+                      <small>{entry.username}@{entry.host}:{entry.port}</small>
+                    </button>
+                  ))}
+                </div>
+                <div className="workspace-entries-heading">
+                  <strong>Session Path entries</strong>
+                </div>
+                {!activeManagedWorkspace?.sxpEntries.length && (
+                  <span className="muted">No Path entries yet.</span>
+                )}
+                <div className="ssh-entry-picker">
+                  {activeManagedWorkspace?.sxpEntries.map((entry) => (
+                    <button type="button" key={entry.id} onClick={() => openEditSxpEntryDialog(entry)}>
+                      {entry.name}
+                      <small>LOCAL ~/{entry.localPath || ""} → {entry.locationName || entry.locationId}:{entry.remotePath || "/"}</small>
+                    </button>
+                  ))}
+                </div>
+                <div className="workspace-entry-actions">
+                  <button type="button" className="confirm" onClick={openAddSshEntryDialog} disabled={!activeManagedWorkspace}>Add SSH Entry</button>
+                  <button type="button" className="confirm" onClick={openAddSxpEntryDialog} disabled={!activeManagedWorkspace}>Add Session Path Entry</button>
+                </div>
+                {!activeManagedWorkspace && (
+                  <small className="field-help">Save a Workspace name first, then add SSH and Path entries to it.</small>
+                )}
+              </div>
+              </div>
               <div className="session-list">
                 <div className="session-list-heading">
                   <strong>Workspaces</strong>
@@ -5711,10 +5766,9 @@ function App() {
                 <span className="muted">No Sessions saved yet.</span>
               )}
               {managedSessions.map((managedSession) => (
-                <div className="session-card" key={managedSession.id}>
+                <div className={`session-card${managedSession.id === workspaceSessionId ? " selected" : ""}`} key={managedSession.id}>
                   <div className="session-card-heading">
-                    <strong>{managedSession.name}</strong>
-                    <button type="button" onClick={() => openSessionsModal(managedSession.id)}>Edit</button>
+                    <button type="button" className="link-button" onClick={() => openSessionsModal(managedSession.id)}>{managedSession.name}</button>
                     <button
                       type="button"
                       className="session-delete"
@@ -5724,18 +5778,9 @@ function App() {
                       Remove
                     </button>
                   </div>
-                  {managedSession.sxpEntries.map((entry) => (
-                    <div className="session-entry" key={entry.id}>
-                      <span>Default paths: {entry.name}</span>
-                      <small>LOCAL ~/{entry.localPath || ""} → {entry.locationName || entry.locationId}:{entry.remotePath || "/"}</small>
-                    </div>
-                  ))}
-                  {managedSession.sshEntries.map((entry) => (
-                    <div className="session-entry" key={entry.id}>
-                      <span>SSH: {entry.name}</span>
-                      <small>{entry.username}@{entry.host}:{entry.port}</small>
-                    </div>
-                  ))}
+                  <small className="muted">
+                    {managedSession.sxpEntries.length} Path entr{managedSession.sxpEntries.length === 1 ? "y" : "ies"}, {managedSession.sshEntries.length} SSH entr{managedSession.sshEntries.length === 1 ? "y" : "ies"}
+                  </small>
                 </div>
               ))}
               </div>
@@ -5743,8 +5788,104 @@ function App() {
           </div>
         </div>
       )}
+      {sshEntryDialogOpen && (
+        <div
+          className="modal-cover"
+          onMouseDown={() => setSshEntryDialogOpen(false)}
+        >
+          <div
+            className="modal ssh-entry-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2>{sshEntryDraftId ? "Edit SSH Entry" : "Add SSH Entry"}</h2>
+            <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
+            {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
+            <label>
+              Connection name
+              <input name="sshName" value={sshProfileDraft.name} onChange={(event) => setSshProfileDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Production shell" />
+            </label>
+            <label>
+              Host
+              <input name="sshHost" value={sshProfileDraft.host} onChange={(event) => setSshProfileDraft((current) => ({ ...current, host: event.target.value }))} placeholder="server.example.com" />
+            </label>
+            <label>
+              Port
+              <input name="sshPort" inputMode="numeric" value={sshProfileDraft.port} onChange={(event) => setSshProfileDraft((current) => ({ ...current, port: event.target.value }))} />
+            </label>
+            <label>
+              Username
+              <input name="sshUsername" value={sshProfileDraft.username} onChange={(event) => setSshProfileDraft((current) => ({ ...current, username: event.target.value }))} />
+            </label>
+            <label>
+              Private key path (optional)
+              <input name="sshPrivateKeyPath" value={sshProfileDraft.privateKeyPath} onChange={(event) => setSshProfileDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="/home/test/.ssh/id_ed25519" />
+            </label>
+            <label>
+              Password (optional)
+              <input type="password" name="sshPassword" value={sshProfileDraft.password} onChange={(event) => setSshProfileDraft((current) => ({ ...current, password: event.target.value }))} placeholder={sshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" />
+            </label>
+            <small className="field-help">
+              {sshPasswordSaved ? "A password is saved for this entry in the OS credential store (or a local fallback file outside the Session data)." : "No password saved yet. Add one here, or configure a private key, before connecting."}
+              {" "}Used to authenticate and to auto-fill the terminal's password prompt; never written to Session data.
+              {sshPasswordSaved && <> <button type="button" className="link-button" onClick={forgetSshPassword}>Forget saved password</button></>}
+            </small>
+             <small className="field-help">Connect authenticates automatically with the private key or saved password. Use "Install SSH key" to push a key to the server using the saved password.</small>
+            <div className="modal-actions">
+              <button type="button" onClick={() => setSshEntryDialogOpen(false)}>Cancel</button>
+              {sshEntryDraftId && <button type="button" className="session-delete" onClick={removeSshEntry}>Remove</button>}
+              <button type="button" className="confirm" onClick={saveSshEntry}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {sxpEntryDialogOpen && (
+        <div
+          className="modal-cover"
+          onMouseDown={() => setSxpEntryDialogOpen(false)}
+        >
+          <div
+            className="modal sxp-entry-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <h2>{sxpEntryDraftId ? "Edit Session Path Entry" : "Add Session Path Entry"}</h2>
+            <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
+            {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
+            <label>
+              Preset name
+              <input name="sxpEntryName" value={sxpEntryNameDraft} onChange={(event) => setSxpEntryNameDraft(event.target.value)} required />
+            </label>
+            <label>
+              Local folder name
+              <input
+                name="localFolderName"
+                value={localAliasDraft}
+                onChange={(event) => setLocalAliasDraft(event.target.value)}
+                required
+              />
+              <small className="field-help">Name used to identify the current LOCAL folder in this Session.</small>
+            </label>
+            <label>
+              Remote folder name
+              <input
+                name="remoteFolderName"
+                value={remoteAliasDraft}
+                onChange={(event) => setRemoteAliasDraft(event.target.value)}
+                required
+              />
+              <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
+            </label>
+            <small className="field-help">Saves the LOCAL and API Remote folders you are currently browsing, under these names.</small>
+            <div className="modal-actions">
+              <button type="button" onClick={() => setSxpEntryDialogOpen(false)}>Cancel</button>
+              {sxpEntryDraftId && <button type="button" className="session-delete" onClick={removeSxpEntry}>Remove</button>}
+              <button type="button" className="confirm" onClick={saveSxpEntry}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
       {terminalOpen && (
         <section className={`terminal-dock${terminalMaximized ? " terminal-maximized" : ""}`} style={{ height: `${terminalHeight}px` }} aria-label="Terminal panel">
+
           <div className="terminal-resize-handle" onPointerDown={beginTerminalResize} role="separator" aria-label="Resize terminal" />
           <header className="terminal-header">
             <div className="terminal-tabs">
