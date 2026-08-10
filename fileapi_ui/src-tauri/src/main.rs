@@ -343,6 +343,43 @@ fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+/// Resolve a download *destination* directory, creating it (and any missing
+/// parents) first if it does not already exist yet. This differs from
+/// `resolve_local_transfer_path`, which requires the target to already
+/// exist -- appropriate for a move/upload *source*, but not for a download
+/// destination such as the LOCAL pane's active directory (already real) or
+/// a first-time literal folder name that simply hasn't been created yet.
+/// Only ever used for destinations, never for a path whose non-existence
+/// should itself be an error.
+fn resolve_local_download_destination(path: &str) -> Result<PathBuf, String> {
+    let input = Path::new(path);
+    if input
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Local transfer path must not contain '..'".to_string());
+    }
+    if input.is_absolute() {
+        if !is_elevated() {
+            return Err("Local transfer path must remain inside the current user's home directory".to_string());
+        }
+        std::fs::create_dir_all(input).map_err(|error| error.to_string())?;
+        return input.canonicalize().map_err(|error| error.to_string());
+    }
+    let home = local_home()?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let candidate = home.join(input);
+    std::fs::create_dir_all(&candidate).map_err(|error| error.to_string())?;
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !resolved.starts_with(&home) {
+        return Err("Local transfer path must remain inside the current user's home directory".to_string());
+    }
+    Ok(resolved)
+}
+
 /// Resolve a local path that does not need to already exist (e.g. the
 /// destination of `mkdir`/`rename`). The path's *parent* must exist and
 /// stay inside the user's home directory (or be anywhere on disk when
@@ -700,6 +737,7 @@ async fn download_to_disk(
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
     file_name: String,
+    destination_folder: String,
     ignore_tls_errors: bool,
 ) -> Result<String, String> {
     let method = method
@@ -724,9 +762,14 @@ async fn download_to_disk(
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| "Invalid download filename".to_string())?;
-    let downloads = local_home()?.join("Downloads");
-    std::fs::create_dir_all(&downloads).map_err(|error| error.to_string())?;
-    let destination = downloads.join(safe_name);
+    // `destination_folder` is the LOCAL pane's active directory at the time
+    // the download was queued (HOME-relative, matching `local_list_directory`),
+    // resolved through the same jail as every other LOCAL write so a download
+    // can never land outside HOME (or, elevated, wherever the caller chose).
+    // Unlike `resolve_local_transfer_path`, this creates the folder first if
+    // it doesn't exist yet (e.g. a first-time literal "Downloads").
+    let destination_root = resolve_local_download_destination(&destination_folder)?;
+    let destination = destination_root.join(safe_name);
     let mut file = std::fs::File::create(&destination).map_err(|error| error.to_string())?;
     let mut bytes_completed: u64 = 0;
     let mut last_emit = Instant::now();
@@ -748,17 +791,24 @@ async fn download_to_disk(
     Ok(destination.display().to_string())
 }
 
-/// Download a single file into `~/Downloads/<relative_path>`, creating any
-/// intermediate folders so a whole selection (multiple files/folders) can be
-/// downloaded "queue style" -- one HTTP request per file -- while still
-/// landing on disk with the original folder structure intact, as an
-/// alternative to the always-available single-archive download.
+/// Download a single file into `<destination_folder>/<relative_path>`,
+/// creating any intermediate folders so a whole selection (multiple
+/// files/folders) can be downloaded "queue style" -- one HTTP request per
+/// file -- while still landing on disk with the original folder structure
+/// intact, as an alternative to the always-available single-archive
+/// download. `destination_folder` is the LOCAL pane's active directory at
+/// the time the download was queued and `relative_path` is expected to
+/// already start with the selection's own top-level name(s) (as returned by
+/// the flatten endpoint) -- callers must not additionally wrap it in a
+/// synthetic "<n> selected items" segment, which would otherwise nest a
+/// single selected directory inside a duplicate copy of its own name.
 #[tauri::command]
 async fn download_to_disk_at(
     url: String,
     method: String,
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
+    destination_folder: String,
     relative_path: String,
     ignore_tls_errors: bool,
 ) -> Result<String, String> {
@@ -786,8 +836,8 @@ async fn download_to_disk_at(
     {
         return Err("Invalid destination path for queued download".to_string());
     }
-    let downloads = local_home()?.join("Downloads");
-    let destination = downloads.join(relative);
+    let destination_root = resolve_local_download_destination(&destination_folder)?;
+    let destination = destination_root.join(relative);
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -966,8 +1016,8 @@ fn cleanup_drag_staging(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn ssh_connect(app: tauri::AppHandle, profile: ssh::SshProfile) -> Result<String, String> {
-    ssh::connect(app, profile).await
+async fn ssh_connect(app: tauri::AppHandle, profile: ssh::SshProfile, request_id: String) -> Result<String, String> {
+    ssh::connect(app, profile, request_id).await
 }
 
 #[tauri::command]
@@ -1078,19 +1128,6 @@ async fn ssh_extract_archive(profile: ssh::SshProfile, path: String, destination
     ssh::sftp::extract_archive(profile, path, destination_folder).await
 }
 
-/// Download into the user's real Downloads folder, matching the API Remote
-/// download button's destination.
-#[tauri::command]
-async fn ssh_download_to_downloads(
-    profile: ssh::SshProfile,
-    remote_path: String,
-    is_directory: bool,
-) -> Result<String, String> {
-    let downloads = local_home()?.join("Downloads");
-    std::fs::create_dir_all(&downloads).map_err(|error| error.to_string())?;
-    ssh::sftp::download_path(profile, remote_path, is_directory, downloads.display().to_string()).await
-}
-
 /// Download into the drag-staging area so the result can be handed to the
 /// native OS drag (mirrors `download_to_drag_staging_at` for API Remote
 /// selections).
@@ -1197,11 +1234,22 @@ fn edit_local_file(path: String) -> Result<(), String> {
     if !metadata.is_file() {
         return Err("Only regular files can be edited".to_string());
     }
-    std::process::Command::new("gedit")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("Unable to start gedit: {error}"))
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("notepad")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Unable to start Notepad: {error}"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("gedit")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Unable to start gedit: {error}"))
+    }
 }
 
 #[tauri::command]
@@ -1353,7 +1401,6 @@ fn main() {
             ssh_rename_path,
             ssh_upload_path,
             ssh_download_path,
-            ssh_download_to_downloads,
             ssh_download_to_drag_staging,
             ssh_compress_paths,
             ssh_extract_archive,

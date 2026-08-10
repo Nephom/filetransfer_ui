@@ -146,10 +146,46 @@ function Ensure-WebView2Runtime {
 function Ensure-RustToolchain {
     if (-not (Get-Command "rustup" -ErrorAction SilentlyContinue)) {
         Write-Host "rustup not found on PATH; assuming an existing Rust toolchain is already configured."
+        # We cannot install the target ourselves without rustup, but the
+        # build must still fail loudly (rather than silently producing a
+        # 32-bit EXE) if the x86_64 target genuinely isn't available.
+        Assert-WindowsX64TargetInstalled
         return
     }
     Invoke-Native "rustup" @("default", "stable-x86_64-pc-windows-msvc")
     Invoke-Native "rustup" @("target", "add", "x86_64-pc-windows-msvc")
+    Assert-WindowsX64TargetInstalled
+}
+
+# Explicit target triple every Windows build must produce. Passed to both
+# `cargo check` and `tauri build` below -- relying on the rustup *default*
+# toolchain alone (as this script used to) is not enough: if the default
+# ever drifts to a 32-bit toolchain (stale machine state, prior manual
+# `rustup default stable-i686-...`, a stripped-down CI image, etc.) the
+# build silently produces a 32-bit EXE with no error, which is exactly what
+# was observed as "nFterm (32bit)" in Task Manager on a real target machine.
+$WindowsTarget = "x86_64-pc-windows-msvc"
+
+function Assert-WindowsX64TargetInstalled {
+    # `rustc --print target-list` always succeeds; check the *installed*
+    # target list instead so a missing target fails the build immediately
+    # with a clear message rather than surfacing as an obscure linker error
+    # deep inside `cargo build`.
+    if (Get-Command "rustup" -ErrorAction SilentlyContinue) {
+        $installed = @(rustup target list --installed)
+        if ($installed -notcontains $WindowsTarget) {
+            throw "Rust target '$WindowsTarget' is not installed. Run 'rustup target add $WindowsTarget' and re-run '.\build.ps1 build'."
+        }
+        Write-Host "Rust target '$WindowsTarget' is installed."
+        return
+    }
+    # No rustup: best-effort check via `cargo -V`/`rustc --print cfg` isn't
+    # reliable for target *installation* state, so just confirm the active
+    # toolchain's host is the one we need.
+    $hostLine = (rustc -vV) -split "`n" | Where-Object { $_ -match "^host:\s*(.+)$" }
+    if ($hostLine -and $hostLine -notmatch [regex]::Escape($WindowsTarget)) {
+        throw "Active Rust toolchain host does not match '$WindowsTarget' ($hostLine). Install a Rust toolchain targeting $WindowsTarget before running '.\build.ps1 build'."
+    }
 }
 
 function Find-NasmExecutable {
@@ -281,17 +317,72 @@ function Get-AppVersionInfo {
     return $json | ConvertFrom-Json
 }
 
+function Get-PEMachineType {
+    # Reads the PE header "machine type" field directly from the EXE bytes
+    # (offset to the PE header is at 0x3C, then the machine type is the
+    # first 2 bytes right after the "PE\0\0" signature) so the build can
+    # verify the actual architecture of what it just produced instead of
+    # trusting the target triple alone -- this is the same check Task
+    # Manager's "(32bit)" suffix is ultimately derived from.
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $reader = New-Object System.IO.BinaryReader($stream)
+        $stream.Seek(0x3C, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $peOffset = $reader.ReadInt32()
+        $stream.Seek($peOffset + 4, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $machine = $reader.ReadUInt16()
+        switch ($machine) {
+            0x8664 { return "x64" }
+            0x14c { return "x86" }
+            0xAA64 { return "arm64" }
+            default { return "0x{0:X}" -f $machine }
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 function Build-Desktop {
     Write-Host "Building nFterm v$(Get-AppVersion) for Windows..."
     Install-DesktopDependencies
     $versionInfo = Get-AppVersionInfo
     Write-Host "Desktop build identity: $($versionInfo.display)"
+    Write-Host "Target triple: $WindowsTarget"
     $env:VITE_APP_VERSION = $versionInfo.version
     $env:VITE_APP_VERSION_DISPLAY = $versionInfo.display
     Invoke-Native "npm.cmd" @("run", "build", "--prefix", $DesktopRoot)
     Push-Location (Join-Path $DesktopRoot "src-tauri")
-    try { Invoke-Native "cargo" @("check", "--locked") }
+    try { Invoke-Native "cargo" @("check", "--locked", "--target", $WindowsTarget) }
     finally { Pop-Location }
+
+    # With an explicit `--target`, Cargo/Tauri place output under
+    # target\<triple>\release instead of target\release. Report against
+    # that path so this build never accidentally picks up a stale artifact
+    # left behind by an older, non-targeted (potentially 32-bit) build.
+    $releaseDir = Join-Path $DesktopRoot "src-tauri\target\$WindowsTarget\release"
+    $nsisDir = Join-Path $releaseDir "bundle\nsis"
+    if (Test-Path -LiteralPath $nsisDir) {
+        Remove-Item -LiteralPath $nsisDir -Recurse -Force
+    }
+
+    # Older builds of this script (before target was pinned) produced
+    # output straight under target\release, which may still hold a 32-bit
+    # EXE/installer. Purge it so it can never be mistaken for this build's
+    # result if someone looks in the "wrong" (legacy) folder afterward.
+    $legacyReleaseDir = Join-Path $DesktopRoot "src-tauri\target\release"
+    $legacyNsisDir = Join-Path $legacyReleaseDir "bundle\nsis"
+    if (Test-Path -LiteralPath $legacyNsisDir) {
+        Write-Host "Removing stale non-targeted build output at $legacyNsisDir"
+        Remove-Item -LiteralPath $legacyNsisDir -Recurse -Force
+    }
+    $legacyExe = Join-Path $legacyReleaseDir "nFterm.exe"
+    if (Test-Path -LiteralPath $legacyExe) {
+        Write-Host "Removing stale non-targeted build output at $legacyExe"
+        Remove-Item -LiteralPath $legacyExe -Force
+    }
 
     # Passing the version override as an inline JSON string (e.g.
     # --config "{`"version`":`"...`"}") reliably fails on Windows with
@@ -307,32 +398,45 @@ function Build-Desktop {
     $tauriConfigPath = Join-Path ([System.IO.Path]::GetTempPath()) "nfterm-tauri-config-$([guid]::NewGuid().ToString('N')).json"
     Set-Content -LiteralPath $tauriConfigPath -Value $tauriConfigOverride -Encoding ascii -NoNewline
     try {
-        Invoke-Native "npm.cmd" @("run", "tauri", "build", "--prefix", $DesktopRoot, "--", "--bundles", "nsis", "--config", $tauriConfigPath)
+        Invoke-Native "npm.cmd" @("run", "tauri", "build", "--prefix", $DesktopRoot, "--", "--target", $WindowsTarget, "--bundles", "nsis", "--config", $tauriConfigPath)
     }
     finally {
         Remove-Item -LiteralPath $tauriConfigPath -ErrorAction SilentlyContinue
     }
 
     # Report whatever Tauri actually produced instead of guessing the
-    # installer filename (it embeds the app version, which can differ from
-    # the repo-level VERSION file and would otherwise go stale silently).
-    $releaseDir = Join-Path $DesktopRoot "src-tauri\target\release"
+    # installer filename, but require it to actually contain the version we
+    # just told Tauri to build (rather than trusting file ordering/mtime):
+    # that is the only way to guarantee this message never reports a
+    # different build's installer as this build's result.
     $exePath = Join-Path $releaseDir "nFterm.exe"
     if (Test-Path -LiteralPath $exePath) {
-        Write-Host "Portable EXE: $exePath"
+        $machineType = Get-PEMachineType -Path $exePath
+        if ($machineType -ne "x64") {
+            throw "Built EXE at $exePath is '$machineType', not x64. This must never ship -- check for a stale/incorrect Rust target or toolchain."
+        }
+        Write-Host "Portable EXE: $exePath (PE machine type: $machineType)"
     }
     else {
         Write-Warning "Expected EXE not found at $exePath"
     }
 
-    $nsisDir = Join-Path $releaseDir "bundle\nsis"
-    $installer = Get-ChildItem -LiteralPath $nsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+    $installer = Get-ChildItem -LiteralPath $nsisDir -Filter "*_$($versionInfo.version)_*-setup.exe" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if ($installer) {
         Write-Host "NSIS package: $($installer.FullName)"
     }
     else {
-        Write-Warning "NSIS installer not found under $nsisDir"
+        $anyInstaller = Get-ChildItem -LiteralPath $nsisDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($anyInstaller) {
+            Write-Warning "NSIS installer under $nsisDir does not match the built version ($($versionInfo.version)); found '$($anyInstaller.Name)' instead. Not reporting it as the build result."
+        }
+        else {
+            Write-Warning "NSIS installer not found under $nsisDir"
+        }
     }
 }
 

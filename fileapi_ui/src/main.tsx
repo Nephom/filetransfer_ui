@@ -48,7 +48,14 @@ type Session = {
   ignoreTlsErrors: boolean;
   onlyTerminalMode: boolean;
 };
-type ShareResponse = { data?: { fullUrl?: string; shareUrl?: string } };
+type ShareResponse = {
+  data?: {
+    fullUrl?: string;
+    shareUrl?: string;
+    directDownloadUrl?: string;
+    directDownloadFullUrl?: string;
+  };
+};
 type NativeApiResponse = { status: number; body: number[] };
 type UploadSummary = { files: number; directories: number };
 type FolderNode = {
@@ -98,7 +105,7 @@ type SshProfile = {
   username: string;
   privateKeyPath: string;
 };
-type SshEvent = { sessionId: string; data: string };
+type SshEvent = { sessionId: string; data: string; requestId: string };
 type SshTerminalTab = {
   id: string;
   title: string;
@@ -131,9 +138,14 @@ type TransferQueueItem = {
   downloadBody?: number[];
   downloadFileName?: string;
   archiveFormat?: "tar.gz" | "zip";
+  // HOME-relative LOCAL destination directory (matches `localPath`'s own
+  // format), captured when a REMOTE -> LOCAL download is queued so it keeps
+  // targeting that folder even if the user navigates the LOCAL pane
+  // elsewhere afterwards. Only meaningful for "download"/"download-set"
+  // items; upload items keep using `destinationPath` for the REMOTE side.
+  localDestinationFolder?: string;
   setFiles?: { relativePath: string; remotePath: string; size: number }[];
   setCompleted?: number;
-  setLabel?: string;
   sshEntryId?: string;
   sshItems?: FileItem[];
 };
@@ -151,6 +163,12 @@ type DesktopSettings = {
   undoHistoryEnabled: boolean;
   operationLogEnabled: boolean;
   operationLogLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
+  shareLinkExpirationDays: number;
+  // "secure": share.html page link (can be password-protected, matches the
+  // web UI's share flow). "direct": a plain, unauthenticated file URL meant
+  // for tools that only accept a bare link (e.g. a BMC firmware page) and
+  // cannot open a web page or send an Authorization header.
+  shareLinkMode: "secure" | "direct";
   confirmations: {
     delete: boolean;
     overwrite: boolean;
@@ -186,6 +204,32 @@ const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
 
 const stripAnsi = (value: string) =>
   value.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:][\d;]*)*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
+
+// Prepended to an SSH tab's `output` (the buffer replayed into xterm.js on
+// every tab switch/terminal recreation, see the `terminalOpen`/
+// `activeSshTabId` effect below) whenever a *new* connection generation is
+// about to start writing into it -- i.e. on reconnect, and when a session
+// ends. Session output is normally appended across reconnects so the
+// terminal keeps showing prior scrollback, but if the previous connection
+// was cut off mid-escape-sequence (a truncated OSC/DCS/APC/PM/SOS string --
+// e.g. a shell's own OSC 10/11 "what are your colors?" query/response that
+// never got its terminator before the socket closed), xterm.js's VT parser
+// is left in an unterminated "collecting a control string" state. Replayed
+// from a *fresh* Terminal instance, that dangling state swallows every
+// following byte -- including the entire next session's output -- as
+// literal control-string payload until it happens to hit a stray BEL/ST, at
+// which point the swallowed bytes (which look exactly like the reported
+// "^[" / "[110;rgb:...]" symptom) get surfaced instead of rendered as text.
+// `ESC \` (ST) unconditionally closes any such open string first (OSC also
+// accepts BEL, but ST closes all five string-based sequence types and is a
+// harmless no-op if nothing was actually open), and a plain SGR reset
+// (`ESC [0m`) then clears any bold/color/underline state so it can't bleed
+// across the boundary either -- deliberately *not* a full terminal reset
+// (`ESC c`), which would also wipe the visible scrollback the user still
+// expects to see across a reconnect. This is only ever inserted into
+// `output` (xterm's replay buffer) -- never into `rawLog`/`plainLog`, which
+// must stay a faithful transcript of only the bytes actually received.
+const VT_SESSION_BOUNDARY_GUARD = "\u001b\\\u001b[0m";
 
 type ScrollMetrics = {
   scrollTop: number;
@@ -383,6 +427,13 @@ const defaultDesktopSettings: DesktopSettings = {
   undoHistoryEnabled: true,
   operationLogEnabled: true,
   operationLogLevel: "DEBUG",
+  // 0 = server default (currently 1 day); the server also enforces its own
+  // configured maximum (shareLinks.maxExpiration), so values here that
+  // exceed it are rejected server-side with a clear error.
+  shareLinkExpirationDays: 0,
+  // Defaults to the safer, page-based link (matches the web UI's default
+  // behaviour). Users who need a bare URL for BMC/tooling must opt in.
+  shareLinkMode: "secure",
   confirmations: { delete: true, overwrite: true, recursive: true, crossSourceMove: true },
 };
 
@@ -512,6 +563,8 @@ function App() {
   const localSelectionAnchorRef = useRef<string | null>(null);
   const [notice, setNotice] = useState("");
   const [shareUrl, setShareUrl] = useState("");
+  const [sharePasswordOpen, setSharePasswordOpen] = useState(false);
+  const [sharePasswordDraft, setSharePasswordDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
@@ -528,11 +581,20 @@ function App() {
       const operationLogLevel = ["DEBUG", "INFO", "WARN", "ERROR"].includes(saved?.operationLogLevel)
         ? saved.operationLogLevel
         : defaultDesktopSettings.operationLogLevel;
+      const shareLinkExpirationDays =
+        Number.isFinite(saved?.shareLinkExpirationDays) && saved.shareLinkExpirationDays >= 0
+          ? saved.shareLinkExpirationDays
+          : defaultDesktopSettings.shareLinkExpirationDays;
+      const shareLinkMode = ["secure", "direct"].includes(saved?.shareLinkMode)
+        ? saved.shareLinkMode
+        : defaultDesktopSettings.shareLinkMode;
       return {
         ...defaultDesktopSettings,
         ...saved,
         uiDensity,
         operationLogLevel,
+        shareLinkExpirationDays,
+        shareLinkMode,
         confirmations: { ...defaultDesktopSettings.confirmations, ...(saved?.confirmations || {}) },
       };
     } catch {
@@ -661,7 +723,14 @@ function App() {
   const recordingRef = useRef(false);
   const sshSecretPromptRef = useRef(false);
   const activeSshTabIdRef = useRef("");
-  const pendingSshTabIdsRef = useRef<string[]>([]);
+  // Maps a connection attempt's `requestId` (see `performSshConnect`) to the
+  // tab id that initiated it. The Rust side starts streaming `ssh-output`
+  // for a new session before the `ssh_connect` invoke() call resolves in
+  // this frontend, so `requestId` -- echoed back on every event -- is the
+  // only reliable way to bind that early output to the right tab. A tab is
+  // looked up primarily by `sessionId` (set once `ssh_connect` resolves);
+  // this map only matters for the brief window before that.
+  const pendingSshConnectRequestsRef = useRef<Record<string, string>>({});
   const connectAttemptRef = useRef<Record<string, string>>({});
   const sshTabsRef = useRef<SshTerminalTab[]>([]);
   const shellInputRef = useRef("");
@@ -913,18 +982,26 @@ function App() {
 
   useEffect(() => {
     let disposed = false;
+    // Resolve which tab an `ssh-output`/`ssh-exit` event belongs to.
+    // `sessionId` is authoritative once known; `requestId` (set by
+    // `performSshConnect` before `ssh_connect` is invoked) is the only way
+    // to bind an event to a tab *before* that -- output can start streaming
+    // from the backend before the invoke() promise resolves with the real
+    // session id, and with several tabs connecting close together, event
+    // arrival order is not guaranteed to match invocation order.
+    const resolveTab = (payload: SshEvent) => {
+      const bySession = sshTabsRef.current.find((item) => item.sessionId === payload.sessionId);
+      if (bySession) return bySession;
+      const pendingTabId = pendingSshConnectRequestsRef.current[payload.requestId];
+      return pendingTabId ? sshTabsRef.current.find((item) => item.id === pendingTabId) : undefined;
+    };
     const unlistenOutput = listen<SshEvent>("ssh-output", (event) => {
       if (disposed) return;
-      let tab = sshTabsRef.current.find((item) => item.sessionId === event.payload.sessionId);
-      if (!tab && pendingSshTabIdsRef.current.length) {
-        const pendingTab = sshTabsRef.current.find((item) => item.id === pendingSshTabIdsRef.current[0]);
-        if (pendingTab) {
-          tab = { ...pendingTab, sessionId: event.payload.sessionId, connected: true };
-          setSshTabs((current) => current.map((item) => item.id === tab?.id ? { ...item, sessionId: event.payload.sessionId, connected: true } : item));
-          pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.slice(1);
-        }
-      }
+      const tab = resolveTab(event.payload);
       if (!tab) return;
+      if (tab.sessionId !== event.payload.sessionId) {
+        setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, sessionId: event.payload.sessionId, connected: true } : item));
+      }
       const data = event.payload.data;
       setSshTabs((current) => current.map((item) => {
         if (item.id !== tab.id) return item;
@@ -945,13 +1022,15 @@ function App() {
     });
     const unlistenExit = listen<SshEvent>("ssh-exit", (event) => {
       if (disposed) return;
-      setSshTabs((current) => current.map((item) => item.sessionId !== event.payload.sessionId ? item : {
+      const tab = resolveTab(event.payload);
+      if (!tab) return;
+      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : {
         ...item,
         connected: false,
         sessionId: "",
-        output: `${item.output}\n${event.payload.data}\n`,
+        output: `${item.output}${VT_SESSION_BOUNDARY_GUARD}\n${event.payload.data}\n`,
       }));
-      if (event.payload.sessionId === sshSessionIdRef.current) {
+      if (tab.id === activeSshTabIdRef.current) {
         setSshConnected(false);
         sshConnectingRef.current = false;
       }
@@ -1745,7 +1824,11 @@ function App() {
     setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: true }));
     void run(async () => {
       sshConnectingRef.current = true;
-      pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tabId];
+      // `attemptId` doubles as the backend `requestId`: it uniquely
+      // identifies this connection attempt, and the backend echoes it back
+      // on every `ssh-output`/`ssh-exit` event so those events can be bound
+      // to this tab even if they arrive before this invoke() call resolves.
+      pendingSshConnectRequestsRef.current[attemptId] = tabId;
       try {
         const nativeProfile = {
           id: profile.id,
@@ -1755,8 +1838,8 @@ function App() {
           username: profile.username,
           privateKeyPath: profile.privateKeyPath || null,
         };
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n` }));
-        const id = await invoke<string>("ssh_connect", { profile: nativeProfile });
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${VT_SESSION_BOUNDARY_GUARD}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n` }));
+        const id = await invoke<string>("ssh_connect", { profile: nativeProfile, requestId: attemptId });
         if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
         setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, connecting: false }));
       } catch (error) {
@@ -1765,7 +1848,7 @@ function App() {
         setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${detail}\n`, connecting: false }));
         setNotice(detail);
       } finally {
-        pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
+        delete pendingSshConnectRequestsRef.current[attemptId];
         sshConnectingRef.current = false;
       }
     });
@@ -2204,7 +2287,8 @@ function App() {
   };
 
   const runQueuedDownload = async (item: TransferQueueItem) => {
-    writeOperationLog("download", "started", item.label, "Local Downloads", "Transfer queue download started.", "DEBUG");
+    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    writeOperationLog("download", "started", item.label, destinationLabel, "Transfer queue download started.", "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? `Preparing ${item.archiveFormat} archive...` : "Downloading..." });
     // download_to_disk streams the response and emits "download-progress"
     // events tagged with this item's id so the queue can show byte-level
@@ -2233,14 +2317,15 @@ function App() {
         headers: item.downloadHeaders || [],
         body: item.downloadBody,
         fileName: item.downloadFileName || "download.bin",
+        destinationFolder: item.localDestinationFolder || "",
         ignoreTlsErrors: session.ignoreTlsErrors,
       });
       updateQueueItem(item.id, { status: "completed", detail: `Downloaded to ${destination}.` });
-      writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded to ${destination}.`);
+      writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded to ${destination}.`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       updateQueueItem(item.id, { status: "failed", detail });
-      writeOperationLog("download", "failed", item.label, "Local Downloads", `Download failed: ${detail}`, "ERROR");
+      writeOperationLog("download", "failed", item.label, destinationLabel, `Download failed: ${detail}`, "ERROR");
     } finally {
       unlistenProgress();
     }
@@ -2248,7 +2333,8 @@ function App() {
 
   const runQueuedDownloadSet = async (item: TransferQueueItem) => {
     const files = item.setFiles || [];
-    writeOperationLog("download", "started", item.label, "Local Downloads", `Queued download of ${files.length} file(s) started.`, "DEBUG");
+    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    writeOperationLog("download", "started", item.label, destinationLabel, `Queued download of ${files.length} file(s) started.`, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${files.length} files...`, setCompleted: 0 });
     const headers: [string, string][] = session.token
       ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
@@ -2258,26 +2344,31 @@ function App() {
     try {
       for (const file of files) {
         if (isQueueItemCancelled(item.id)) return;
-        const relativePath = `${item.setLabel}/${file.relativePath}`;
+        // `file.relativePath` already starts with the selected item's own
+        // top-level name (the flatten endpoint prefixes it with each
+        // selected item's name) -- it must not also be nested under an
+        // extra synthetic "<n> selected items" segment here, or a single
+        // selected directory would end up duplicated inside itself.
         const destination = await invoke<string>("download_to_disk_at", {
           url: `${serverUrl(session)}/api/files/download/${downloadPath(file.remotePath)}`,
           method: "GET",
           headers,
           body: undefined,
-          relativePath,
+          destinationFolder: item.localDestinationFolder || "",
+          relativePath: file.relativePath,
           ignoreTlsErrors: session.ignoreTlsErrors,
         });
         completed += 1;
         lastDestinationRoot = destination.slice(0, destination.length - (file.relativePath.length + 1));
         updateQueueItem(item.id, { detail: `Downloading ${completed}/${files.length} files...`, setCompleted: completed });
       }
-      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || "Downloads"}.` });
-      writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded ${completed} file(s).`);
+      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || destinationLabel}.` });
+      writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded ${completed} file(s).`);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
       const detail = error instanceof Error ? error.message : String(error);
       updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${files.length} completed before failing)` });
-      writeOperationLog("download", "failed", item.label, "Local Downloads", `Queued download failed: ${detail}`, "ERROR");
+      writeOperationLog("download", "failed", item.label, destinationLabel, `Queued download failed: ${detail}`, "ERROR");
     }
   };
 
@@ -2601,8 +2692,17 @@ function App() {
 
   const canDropOnRemote = (destination: string) =>
     dragSource === "local"
-      ? Boolean(remoteSshEntryId && dragItems.length)
+      ? Boolean(dragItems.length && (remoteSshEntryId ? true : locationOnline && hasCapability("upload")))
       : dragSource === "remote" && isValidMoveTarget(dragItems, destination);
+
+  // Whether the current REMOTE view (SSH or API) allows dragging its items
+  // out to LOCAL. SSH always can (SFTP download); an API Remote can only if
+  // it's online and the active Location grants read access.
+  const canDragRemoteToLocal = Boolean(remoteSshEntryId) || (locationOnline && hasCapability("read"));
+  // Mirror of the above for the opposite direction (LOCAL -> REMOTE
+  // upload), used to gate drag-over/drop-target feedback consistently with
+  // `canDropOnRemote`'s own "local" branch.
+  const canDragLocalToRemote = Boolean(remoteSshEntryId) || (locationOnline && hasCapability("upload"));
 
   // Undo history is intentionally limited to operations that can be reliably
   // and verifiably reversed: rename and move (a move is just a rename that
@@ -2909,6 +3009,12 @@ function App() {
     setNotice(`Preparing ${items.length} selected item${items.length === 1 ? "" : "s"} for drag...`);
     const setId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
     const setLabel = items.length === 1 ? items[0].name : `${items.length} selected items`;
+    // A synthetic wrapper folder is only needed to bundle multiple
+    // top-level selections under one draggable item. For a single
+    // directory, `entry.relativePath` from /api/files/flatten already
+    // starts with that directory's own name -- adding `setLabel` (the same
+    // name) on top would nest it inside a duplicate copy of itself.
+    const needsWrapper = items.length > 1;
     const preparation = (async () => {
       const response = await api("/api/files/flatten", {
         method: "POST",
@@ -2923,18 +3029,21 @@ function App() {
       const files = data.files || [];
       if (!files.length) throw new Error("The selection has no files to drag out.");
       let lastDestination = "";
+      let lastRelativePath = "";
       for (const entry of files) {
+        lastRelativePath = needsWrapper ? `${setLabel}/${entry.relativePath}` : entry.relativePath;
         lastDestination = await invoke<string>("download_to_drag_staging_at", {
           url: `${serverUrl(session)}/api/files/download/${downloadPath(entry.remotePath)}`,
           method: "GET",
           headers,
           body: undefined,
           setId,
-          relativePath: `${setLabel}/${entry.relativePath}`,
+          relativePath: lastRelativePath,
           ignoreTlsErrors: session.ignoreTlsErrors,
         });
       }
-      const suffixLength = files[files.length - 1].relativePath.length + 1;
+      const topName = needsWrapper ? setLabel : items[0].name;
+      const suffixLength = lastRelativePath.length - topName.length;
       return lastDestination.slice(0, lastDestination.length - suffixLength);
     })();
     dragPreparationRef.current.set(preparationKey, preparation);
@@ -2995,14 +3104,14 @@ function App() {
         label: setLabel,
         kind: "download-set",
         paths: [],
-        destinationPath: "Downloads",
+        destinationPath: localPath ? `~/${localPath}` : "~",
         locationId: session.locationId,
         locationName: activeLocation?.displayName || session.locationId,
         status: "queued",
         detail: `Waiting to start (${files.length} files)`,
         setFiles: files,
         setCompleted: 0,
-        setLabel,
+        localDestinationFolder: localPath,
       };
       setArchiveFormatOpen(false);
       setTransferQueue((current) => [...current, item]);
@@ -3033,7 +3142,7 @@ function App() {
       label: singleFile ? selectedItems[0].name : `${selectedItems.length} selected items`,
       kind: "download",
       paths: [],
-      destinationPath: "Downloads",
+      destinationPath: localPath ? `~/${localPath}` : "~",
       locationId: session.locationId,
       locationName: activeLocation?.displayName || session.locationId,
       status: "queued",
@@ -3046,6 +3155,7 @@ function App() {
       downloadBody: body,
       downloadFileName: fileName,
        archiveFormat: singleFile ? undefined : archiveFormat,
+      localDestinationFolder: localPath,
     };
     setArchiveFormatOpen(false);
     setTransferQueue((current) => [...current, item]);
@@ -3054,28 +3164,30 @@ function App() {
   };
 
   const runQueuedSshDownload = async (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => {
-    writeOperationLog("download", "started", item.label, "Local Downloads", `SSH queued download of ${items.length} item(s) started.`, "DEBUG");
+    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    writeOperationLog("download", "started", item.label, destinationLabel, `SSH queued download of ${items.length} item(s) started.`, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${items.length} items...` });
     let completed = 0;
     let lastDestination = "";
     try {
       for (const file of items) {
         if (isQueueItemCancelled(item.id)) return;
-        lastDestination = await invoke<string>("ssh_download_to_downloads", {
+        lastDestination = await invoke<string>("ssh_download_path", {
           profile,
           remotePath: file.path,
           isDirectory: file.isDirectory,
+          localDestinationFolder: item.localDestinationFolder || "",
         });
         completed += 1;
         updateQueueItem(item.id, { detail: `Downloading ${completed}/${items.length} items...` });
       }
-      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} item(s) to ${lastDestination.split("/").slice(0, -1).join("/") || "Downloads"}.` });
-      writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded ${completed} item(s) via SFTP.`);
+      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} item(s) to ${lastDestination.split("/").slice(0, -1).join("/") || destinationLabel}.` });
+      writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded ${completed} item(s) via SFTP.`);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
       const detail = error instanceof Error ? error.message : String(error);
       updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${items.length} completed before failing)` });
-      writeOperationLog("download", "failed", item.label, "Local Downloads", `SSH queued download failed: ${detail}`, "ERROR");
+      writeOperationLog("download", "failed", item.label, destinationLabel, `SSH queued download failed: ${detail}`, "ERROR");
     }
   };
 
@@ -3093,13 +3205,14 @@ function App() {
       label,
       kind: "download",
       paths: [],
-      destinationPath: "Downloads",
+      destinationPath: localPath ? `~/${localPath}` : "~",
       locationId: "",
       locationName: `SSH: ${profile.name}`,
       status: "queued",
       detail: "Waiting to start",
       sshEntryId: remoteSshEntryId,
       sshItems: selectedItems,
+      localDestinationFolder: localPath,
     };
     setTransferQueue((current) => [...current, item]);
     setQueueOpen(true);
@@ -3157,13 +3270,16 @@ function App() {
             : [],
           body: undefined,
           fileName: viewerTitle,
+          // A scratch copy for editing is independent of wherever the LOCAL
+          // pane happens to be browsing; keep it in Downloads as before.
+          destinationFolder: "Downloads",
           ignoreTlsErrors: session.ignoreTlsErrors,
         });
         setViewerLocalPath(localPathForEdit);
       }
       if (!localPathForEdit) throw new Error("No local file is available for editing.");
       await invoke("edit_local_file", { path: localPathForEdit });
-      notify(`Opened ${viewerTitle} in gedit.`);
+      notify(`Opened ${viewerTitle} in the default text editor.`);
     });
 
   const uploadPaths = (paths: string[]) =>
@@ -3215,18 +3331,6 @@ function App() {
 
   const downloadRemoteItemsToLocal = (items: FileItem[], destination: string = localPath) =>
     void run(async () => {
-      if (!remoteSshEntryId) {
-        writeOperationLog(
-          "download",
-          "skipped",
-          "REMOTE",
-          `LOCAL: ~/${destination || ""}`,
-          "REMOTE is not an SSH connection, so a LOCAL/REMOTE drag transfer is not available here.",
-          "WARN",
-        );
-        setNotice("This REMOTE view isn't an SSH connection, so drag transfer to LOCAL isn't available here.");
-        return;
-      }
       if (!items.length) {
         writeOperationLog(
           "download",
@@ -3239,51 +3343,150 @@ function App() {
         setNotice("No items were detected for this drag; nothing was downloaded.");
         return;
       }
-      const profile = findSshProfileById(remoteSshEntryId);
-      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-      writeOperationLog(
-        "download",
-        "started",
-        `SSH: ${profile.name}`,
-        `LOCAL: ~/${destination || ""}`,
-        `Drag-downloading ${items.length} item(s) from SSH to LOCAL.`,
-        "DEBUG",
-      );
-      try {
-        const resolvedPaths: string[] = [];
-        for (const item of items) {
-          resolvedPaths.push(
-            await invoke<string>("ssh_download_path", {
-              profile,
-              remotePath: item.path,
-              isDirectory: item.isDirectory,
-              localDestinationFolder: destination,
-            }),
-          );
-        }
-        finishDrag();
-        // Refresh whichever LOCAL folder is currently being browsed (it may
-        // differ from `destination` when dropping onto a folder-tree node
-        // that isn't the folder currently open in the LOCAL file list).
-        await loadLocalFiles(localPath);
-        if (destination !== localPath) {
-          void loadLocalTreeChildren(destination, true);
-        }
+      if (remoteSshEntryId) {
+        const profile = findSshProfileById(remoteSshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
         writeOperationLog(
           "download",
-          "completed",
+          "started",
           `SSH: ${profile.name}`,
           `LOCAL: ~/${destination || ""}`,
-          `Drag-downloaded ${items.length} item(s) from SSH to LOCAL. Resolved local path(s): ${resolvedPaths.join(", ")}`,
+          `Drag-downloading ${items.length} item(s) from SSH to LOCAL.`,
+          "DEBUG",
         );
-        notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
+        try {
+          const resolvedPaths: string[] = [];
+          for (const item of items) {
+            resolvedPaths.push(
+              await invoke<string>("ssh_download_path", {
+                profile,
+                remotePath: item.path,
+                isDirectory: item.isDirectory,
+                localDestinationFolder: destination,
+              }),
+            );
+          }
+          finishDrag();
+          // Refresh whichever LOCAL folder is currently being browsed (it may
+          // differ from `destination` when dropping onto a folder-tree node
+          // that isn't the folder currently open in the LOCAL file list).
+          await loadLocalFiles(localPath);
+          if (destination !== localPath) {
+            void loadLocalTreeChildren(destination, true);
+          }
+          writeOperationLog(
+            "download",
+            "completed",
+            `SSH: ${profile.name}`,
+            `LOCAL: ~/${destination || ""}`,
+            `Drag-downloaded ${items.length} item(s) from SSH to LOCAL. Resolved local path(s): ${resolvedPaths.join(", ")}`,
+          );
+          notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
+        } catch (error) {
+          writeOperationLog(
+            "download",
+            "failed",
+            `SSH: ${profile.name}`,
+            `LOCAL: ~/${destination || ""}`,
+            `Drag download failed: ${error instanceof Error ? error.message : String(error)}`,
+            "ERROR",
+          );
+          throw error;
+        }
+        return;
+      }
+      // API Remote (not SSH): reuse the same flatten + queued-download
+      // machinery the "Download" button/queue already relies on
+      // (`runQueuedDownload`/`runQueuedDownloadSet`), so single files,
+      // folders, and multi-selects all preserve relative directory
+      // structure and get the same progress/collision handling as a
+      // button-triggered download, just targeting the drop destination
+      // instead of whatever the LOCAL pane happens to be browsing.
+      const destinationLabel = `LOCAL: ~/${destination || ""}`;
+      if (!locationOnline || !hasCapability("read")) {
+        writeOperationLog(
+          "download",
+          "skipped",
+          `${activeLocation?.displayName || session.locationId || "Remote"}`,
+          destinationLabel,
+          "The active API Remote is offline or does not allow downloads.",
+          "WARN",
+        );
+        setNotice("The active REMOTE is offline or doesn't allow downloads right now.");
+        return;
+      }
+      const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+      const singleFile = items.length === 1 && !items[0].isDirectory;
+      if (singleFile) {
+        const headers: [string, string][] = session.token
+          ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
+          : [];
+        const queueItem: TransferQueueItem = {
+          id,
+          label: items[0].name,
+          kind: "download",
+          paths: [],
+          destinationPath: destination ? `~/${destination}` : "~",
+          locationId: session.locationId,
+          locationName: activeLocation?.displayName || session.locationId,
+          status: "queued",
+          detail: "Waiting to start",
+          downloadUrl: `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`,
+          downloadMethod: "GET",
+          downloadHeaders: headers,
+          downloadFileName: items[0].name,
+          localDestinationFolder: destination,
+        };
+        setTransferQueue((current) => [...current, queueItem]);
+        setQueueOpen(true);
+        finishDrag();
+        writeOperationLog("download", "started", `${activeLocation?.displayName || session.locationId || "Remote"}`, destinationLabel, `Drag-downloading ${items[0].name} from the API Remote to LOCAL.`, "DEBUG");
+        void runQueuedDownload(queueItem);
+        return;
+      }
+      const setLabel = items.length === 1 ? items[0].name : `${items.length} selected items`;
+      try {
+        const response = await api("/api/files/flatten", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: items.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
+            currentPath: path,
+          }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        const data = await response.json() as { files?: { relativePath: string; remotePath: string; size: number }[] };
+        const files = data.files || [];
+        if (!files.length) {
+          setNotice("The selection has no files to download.");
+          return;
+        }
+        const queueItem: TransferQueueItem = {
+          id,
+          label: setLabel,
+          kind: "download-set",
+          paths: [],
+          destinationPath: destination ? `~/${destination}` : "~",
+          locationId: session.locationId,
+          locationName: activeLocation?.displayName || session.locationId,
+          status: "queued",
+          detail: `Waiting to start (${files.length} files)`,
+          setFiles: files,
+          setCompleted: 0,
+          localDestinationFolder: destination,
+        };
+        setTransferQueue((current) => [...current, queueItem]);
+        setQueueOpen(true);
+        finishDrag();
+        writeOperationLog("download", "started", `${activeLocation?.displayName || session.locationId || "Remote"}`, destinationLabel, `Drag-downloading ${files.length} file(s) from the API Remote to LOCAL.`, "DEBUG");
+        void runQueuedDownloadSet(queueItem);
       } catch (error) {
         writeOperationLog(
           "download",
           "failed",
-          `SSH: ${profile.name}`,
-          `LOCAL: ~/${destination || ""}`,
-          `Drag download failed: ${error instanceof Error ? error.message : String(error)}`,
+          `${activeLocation?.displayName || session.locationId || "Remote"}`,
+          destinationLabel,
+          `Failed to prepare drag download from the API Remote: ${describeError(error)}`,
           "ERROR",
         );
         throw error;
@@ -3292,18 +3495,6 @@ function App() {
 
   const uploadLocalItemsToRemote = (items: FileItem[], destination: string) =>
     void run(async () => {
-      if (!remoteSshEntryId) {
-        writeOperationLog(
-          "upload",
-          "skipped",
-          `LOCAL: ~/${localPath || ""}`,
-          "REMOTE",
-          "REMOTE is not an SSH connection, so a LOCAL/REMOTE drag transfer is not available here.",
-          "WARN",
-        );
-        setNotice("This REMOTE view isn't an SSH connection, so drag transfer from LOCAL isn't available here.");
-        return;
-      }
       if (!items.length) {
         writeOperationLog(
           "upload",
@@ -3316,48 +3507,95 @@ function App() {
         setNotice("No items were detected for this drag; nothing was uploaded.");
         return;
       }
-      const profile = findSshProfileById(remoteSshEntryId);
-      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      if (remoteSshEntryId) {
+        const profile = findSshProfileById(remoteSshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+        writeOperationLog(
+          "upload",
+          "started",
+          `LOCAL: ~/${localPath || ""}`,
+          `SSH: ${profile.name}:${destination}`,
+          `Drag-uploading ${items.length} item(s) from LOCAL to SSH.`,
+          "DEBUG",
+        );
+        try {
+          const resolvedPaths: string[] = [];
+          for (const item of items) {
+            resolvedPaths.push(
+              await invoke<string>("ssh_upload_path", {
+                profile,
+                localPath: item.path,
+                remoteDestinationFolder: destination,
+              }),
+            );
+          }
+          finishDrag();
+          await loadFiles(path);
+          writeOperationLog(
+            "upload",
+            "completed",
+            `LOCAL: ~/${localPath || ""}`,
+            `SSH: ${profile.name}:${destination}`,
+            `Drag-uploaded ${items.length} item(s) from LOCAL to SSH. Resolved remote folder: ${resolvedPaths[0] ?? destination}`,
+          );
+          notify(`Uploaded ${items.length} item${items.length === 1 ? "" : "s"} to REMOTE.`);
+        } catch (error) {
+          writeOperationLog(
+            "upload",
+            "failed",
+            `LOCAL: ~/${localPath || ""}`,
+            `SSH: ${profile.name}:${destination}`,
+            `Drag upload failed: ${error instanceof Error ? error.message : String(error)}`,
+            "ERROR",
+          );
+          throw error;
+        }
+        return;
+      }
+      // API Remote (not SSH): reuse the exact same queued-upload machinery
+      // the button-based Upload already relies on (`runQueuedUpload`) so
+      // drag transfer gets the same multipart batching, progress polling,
+      // and collision handling instead of a second, divergent code path.
+      const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${destination || "/"}`;
+      if (!locationOnline || !hasCapability("upload")) {
+        writeOperationLog(
+          "upload",
+          "skipped",
+          `LOCAL: ~/${localPath || ""}`,
+          destinationLabel,
+          "The active API Remote is offline or does not allow uploads.",
+          "WARN",
+        );
+        setNotice("The active REMOTE is offline or doesn't allow uploads right now.");
+        return;
+      }
+      const summary = await invoke<UploadSummary>("inspect_upload_paths", {
+        paths: items.map((item) => item.path),
+      });
+      const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+      const queueItem: TransferQueueItem = {
+        id,
+        label: `${summary.files} files, ${summary.directories} folders`,
+        kind: "upload",
+        paths: items.map((item) => item.path),
+        destinationPath: destination,
+        locationId: session.locationId,
+        locationName: activeLocation?.displayName || session.locationId,
+        status: "queued",
+        detail: "Waiting to start",
+      };
+      setTransferQueue((current) => [...current, queueItem]);
+      setQueueOpen(true);
+      finishDrag();
       writeOperationLog(
         "upload",
         "started",
         `LOCAL: ~/${localPath || ""}`,
-        `SSH: ${profile.name}:${destination}`,
-        `Drag-uploading ${items.length} item(s) from LOCAL to SSH.`,
+        destinationLabel,
+        `Drag-uploading ${items.length} item(s) from LOCAL to the API Remote.`,
         "DEBUG",
       );
-      try {
-        const resolvedPaths: string[] = [];
-        for (const item of items) {
-          resolvedPaths.push(
-            await invoke<string>("ssh_upload_path", {
-              profile,
-              localPath: item.path,
-              remoteDestinationFolder: destination,
-            }),
-          );
-        }
-        finishDrag();
-        await loadFiles(path);
-        writeOperationLog(
-          "upload",
-          "completed",
-          `LOCAL: ~/${localPath || ""}`,
-          `SSH: ${profile.name}:${destination}`,
-          `Drag-uploaded ${items.length} item(s) from LOCAL to SSH. Resolved remote folder: ${resolvedPaths[0] ?? destination}`,
-        );
-        notify(`Uploaded ${items.length} item${items.length === 1 ? "" : "s"} to REMOTE.`);
-      } catch (error) {
-        writeOperationLog(
-          "upload",
-          "failed",
-          `LOCAL: ~/${localPath || ""}`,
-          `SSH: ${profile.name}:${destination}`,
-          `Drag upload failed: ${error instanceof Error ? error.message : String(error)}`,
-          "ERROR",
-        );
-        throw error;
-      }
+      void runQueuedUpload(queueItem);
     });
 
   const upload = async () =>
@@ -3586,30 +3824,43 @@ function App() {
       }
     });
 
-  const share = () =>
+  const createShareLink = (password?: string) =>
     run(async () => {
       ensureApiRemote();
       if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
       const item = selectedItems[0];
       const sourceLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${item.path}`;
       try {
+        const expiresIn = desktopSettings.shareLinkExpirationDays > 0
+          ? desktopSettings.shareLinkExpirationDays * 86400
+          : undefined;
         const response = await api("/api/files/share", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             locationId: session.locationId,
             filePath: item.path,
+            ...(expiresIn ? { expiresIn } : {}),
+            ...(password ? { password } : {}),
           }),
         });
         if (!response.ok) throw new Error(await readError(response));
         const data = (await response.json()) as ShareResponse;
+        // "direct" mode returns a plain URL that streams the file straight
+        // from the server with no page in between and no Authorization/JWT
+        // header required, for tools that only accept a bare link (e.g. a
+        // BMC firmware page). "secure" mode returns the share.html page
+        // link, which supports the optional password set above.
         const url =
-          data.data?.fullUrl ||
-          (data.data?.shareUrl
-            ? `${serverUrl(session)}${data.data.shareUrl}`
-            : "");
+          desktopSettings.shareLinkMode === "direct"
+            ? data.data?.directDownloadFullUrl ||
+              (data.data?.directDownloadUrl ? `${serverUrl(session)}${data.data.directDownloadUrl}` : "")
+            : data.data?.fullUrl ||
+              (data.data?.shareUrl ? `${serverUrl(session)}${data.data.shareUrl}` : "");
         if (!url) throw new Error("The server did not return a share link.");
         setShareUrl(url);
+        setSharePasswordOpen(false);
+        setSharePasswordDraft("");
         writeOperationLog("share", "completed", sourceLabel, "Public share link", `Created a share link for ${item.name}.`);
         notify("Share link created.");
       } catch (error) {
@@ -3617,6 +3868,19 @@ function App() {
         throw error;
       }
     });
+
+  const share = () => {
+    if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
+    if (desktopSettings.shareLinkMode === "secure") {
+      // The web UI's equivalent flow also lets the user set a password at
+      // share time (it's per-link, not a global default), so ask here too
+      // instead of always sharing without one.
+      setSharePasswordDraft("");
+      setSharePasswordOpen(true);
+      return;
+    }
+    void createShareLink();
+  };
 
 
   // .zip compression/extraction. Collision-avoidance on the archive/output
@@ -3838,7 +4102,7 @@ function App() {
       <div
         className={`tree-node ${localPath === node.path ? "active" : ""} ${dropTarget === node.path ? "drop-target" : ""}`}
         onDragOver={(event) => {
-          if (dragSourceRef.current === "remote" && remoteSshEntryId && dragItemsRef.current.length) {
+          if (dragSourceRef.current === "remote" && canDragRemoteToLocal && dragItemsRef.current.length) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
             setDropTarget(node.path);
@@ -3861,7 +4125,7 @@ function App() {
           window.clearTimeout(dragExpandTimerRef.current);
         }}
         onDropCapture={(event) => {
-          if (dragSourceRef.current === "remote" && remoteSshEntryId) {
+          if (dragSourceRef.current === "remote" && canDragRemoteToLocal) {
             event.preventDefault();
             event.stopPropagation();
             stopDragAutoScroll();
@@ -3958,10 +4222,10 @@ function App() {
         </span>
       </div>
       <div
-        className={`local-pane-body ${dragSource === "remote" && remoteSshEntryId && paneDragHover === "local" ? "drop-target" : ""}`}
+        className={`local-pane-body ${dragSource === "remote" && canDragRemoteToLocal && paneDragHover === "local" ? "drop-target" : ""}`}
         onDragEnter={enterPaneDragHover("local")}
         onDragOver={(event) => {
-          if (dragSourceRef.current === "remote" && remoteSshEntryId && dragItemsRef.current.length) {
+          if (dragSourceRef.current === "remote" && canDragRemoteToLocal && dragItemsRef.current.length) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
           }
@@ -3973,7 +4237,7 @@ function App() {
           // (which downloads into that specific folder) instead of always
           // downloading into the currently browsed `localPath` here.
           if ((event.target as HTMLElement).closest(".local-pane-tree")) return;
-          if (dragSourceRef.current === "remote" && remoteSshEntryId) {
+          if (dragSourceRef.current === "remote" && canDragRemoteToLocal) {
             event.preventDefault();
             event.stopPropagation();
             setPaneDragHover("");
@@ -4238,7 +4502,31 @@ function App() {
             🧪 Only Terminal
           </button>
         )}
-      </main>
+      {sharePasswordOpen && (
+        <div className="modal-cover" onMouseDown={() => setSharePasswordOpen(false)}>
+          <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
+            <h2>Secure share link</h2>
+            <p className="muted">Optional: protect the link with a password. Leave blank to share without one.</p>
+            <label>
+              Password (optional)
+              <input
+                type="password"
+                autoFocus
+                value={sharePasswordDraft}
+                onChange={(event) => setSharePasswordDraft(event.target.value)}
+              />
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="confirm" onClick={() => void createShareLink(sharePasswordDraft.trim() || undefined)}>
+                Create link
+              </button>
+              <button type="button" onClick={() => setSharePasswordOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </main>
+
     );
 
   const autoDensity = viewport.width <= 1100 || viewport.height <= 760 ? "compact" : "standard";
@@ -4715,11 +5003,11 @@ function App() {
             <div
               id="files"
               ref={fileAreaRef}
-              className={`file-area ${dragSource === "local" && remoteSshEntryId && paneDragHover === "remote" ? "drop-target" : ""}`}
+              className={`file-area ${dragSource === "local" && canDragLocalToRemote && paneDragHover === "remote" ? "drop-target" : ""}`}
               onDragEnter={enterPaneDragHover("remote")}
               onDragOver={(event) => {
                 handleDragAutoScroll(event, fileAreaRef.current);
-                if (dragSourceRef.current === "local" && remoteSshEntryId && dragItemsRef.current.length) {
+                if (dragSourceRef.current === "local" && canDragLocalToRemote && dragItemsRef.current.length) {
                   event.preventDefault();
                   event.dataTransfer.dropEffect = "copy";
                 }
@@ -4731,7 +5019,7 @@ function App() {
               onMouseDown={(event) => beginMarqueeSelect(event, "remote", fileAreaRef.current)}
               onDropCapture={(event) => {
                 stopDragAutoScroll();
-                if (dragSourceRef.current === "local" && remoteSshEntryId) {
+                if (dragSourceRef.current === "local" && canDragLocalToRemote) {
                   event.preventDefault();
                   event.stopPropagation();
                   setPaneDragHover("");
@@ -4982,7 +5270,7 @@ function App() {
           {splitMode && activePane === "local" ? (
             <>
               <button
-                disabled={!remoteSshEntryId || !localSelectedItems.length}
+                disabled={!canDragLocalToRemote || !localSelectedItems.length}
                 onClick={() => {
                   setContextMenu(null);
                   uploadLocalItemsToRemote(localSelectedItems, path);
@@ -5240,6 +5528,40 @@ function App() {
                  </label>
                ))}
                <button type="button" onClick={() => setDesktopSettings((current) => ({ ...current, confirmations: { ...defaultDesktopSettings.confirmations } }))}>Restore safe confirmations</button>
+             </section>
+             <section className="settings-section">
+               <h3>Sharing</h3>
+               <label className="settings-check">
+                 <input
+                   type="radio"
+                   name="shareLinkMode"
+                   checked={desktopSettings.shareLinkMode === "secure"}
+                   onChange={() => setDesktopSettings((current) => ({ ...current, shareLinkMode: "secure" }))}
+                 />
+                 <span><strong>Secure share (web page link)</strong><small>Opens the share.html page; supports an optional password. Use for sharing with people.</small></span>
+               </label>
+               <label className="settings-check">
+                 <input
+                   type="radio"
+                   name="shareLinkMode"
+                   checked={desktopSettings.shareLinkMode === "direct"}
+                   onChange={() => setDesktopSettings((current) => ({ ...current, shareLinkMode: "direct" }))}
+                 />
+                 <span><strong>Direct link (for tools like BMC)</strong><small>A plain file URL with no page and no Authorization header, for pasting into tools that only accept a bare link. No password protection.</small></span>
+               </label>
+               <label className="settings-level">Default share link expiration
+                 <select
+                   value={desktopSettings.shareLinkExpirationDays}
+                   onChange={(event) => setDesktopSettings((current) => ({ ...current, shareLinkExpirationDays: Number(event.target.value) }))}
+                 >
+                   <option value={0}>Server default</option>
+                   <option value={1}>1 day</option>
+                   <option value={7}>7 days</option>
+                   <option value={30}>30 days</option>
+                   <option value={90}>90 days</option>
+                 </select>
+                 <small>Applied to every new share link created from this desktop app. The server also enforces its own configured maximum, so longer values may be rejected.</small>
+               </label>
              </section>
              <section className="settings-section">
                <h3>History and operation log</h3>
@@ -5630,10 +5952,10 @@ function App() {
         <div className="modal-cover" onMouseDown={() => setViewerOpen(false)}>
           <div className="modal viewer-modal" onMouseDown={(event) => event.stopPropagation()}>
             <h2>{viewerTitle}</h2>
-            <p className="muted">Read-only viewer. Edit opens this file in gedit.</p>
+            <p className="muted">Read-only viewer. Edit opens this file in the default text editor.</p>
             <textarea className="file-viewer" value={viewerContent} readOnly spellCheck={false} />
             <div className="modal-actions">
-              <button type="button" onClick={editViewerFile}>Edit in gedit</button>
+              <button type="button" onClick={editViewerFile}>Edit in text editor</button>
               <button type="button" onClick={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))}>Copy</button>
               <button type="button" onClick={() => setViewerOpen(false)}>Close</button>
             </div>
