@@ -131,9 +131,14 @@ type TransferQueueItem = {
   downloadBody?: number[];
   downloadFileName?: string;
   archiveFormat?: "tar.gz" | "zip";
+  // HOME-relative LOCAL destination directory (matches `localPath`'s own
+  // format), captured when a REMOTE -> LOCAL download is queued so it keeps
+  // targeting that folder even if the user navigates the LOCAL pane
+  // elsewhere afterwards. Only meaningful for "download"/"download-set"
+  // items; upload items keep using `destinationPath` for the REMOTE side.
+  localDestinationFolder?: string;
   setFiles?: { relativePath: string; remotePath: string; size: number }[];
   setCompleted?: number;
-  setLabel?: string;
   sshEntryId?: string;
   sshItems?: FileItem[];
 };
@@ -2225,7 +2230,8 @@ function App() {
   };
 
   const runQueuedDownload = async (item: TransferQueueItem) => {
-    writeOperationLog("download", "started", item.label, "Local Downloads", "Transfer queue download started.", "DEBUG");
+    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    writeOperationLog("download", "started", item.label, destinationLabel, "Transfer queue download started.", "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? `Preparing ${item.archiveFormat} archive...` : "Downloading..." });
     // download_to_disk streams the response and emits "download-progress"
     // events tagged with this item's id so the queue can show byte-level
@@ -2254,14 +2260,15 @@ function App() {
         headers: item.downloadHeaders || [],
         body: item.downloadBody,
         fileName: item.downloadFileName || "download.bin",
+        destinationFolder: item.localDestinationFolder || "",
         ignoreTlsErrors: session.ignoreTlsErrors,
       });
       updateQueueItem(item.id, { status: "completed", detail: `Downloaded to ${destination}.` });
-      writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded to ${destination}.`);
+      writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded to ${destination}.`);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       updateQueueItem(item.id, { status: "failed", detail });
-      writeOperationLog("download", "failed", item.label, "Local Downloads", `Download failed: ${detail}`, "ERROR");
+      writeOperationLog("download", "failed", item.label, destinationLabel, `Download failed: ${detail}`, "ERROR");
     } finally {
       unlistenProgress();
     }
@@ -2269,7 +2276,8 @@ function App() {
 
   const runQueuedDownloadSet = async (item: TransferQueueItem) => {
     const files = item.setFiles || [];
-    writeOperationLog("download", "started", item.label, "Local Downloads", `Queued download of ${files.length} file(s) started.`, "DEBUG");
+    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    writeOperationLog("download", "started", item.label, destinationLabel, `Queued download of ${files.length} file(s) started.`, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${files.length} files...`, setCompleted: 0 });
     const headers: [string, string][] = session.token
       ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
@@ -2279,26 +2287,31 @@ function App() {
     try {
       for (const file of files) {
         if (isQueueItemCancelled(item.id)) return;
-        const relativePath = `${item.setLabel}/${file.relativePath}`;
+        // `file.relativePath` already starts with the selected item's own
+        // top-level name (the flatten endpoint prefixes it with each
+        // selected item's name) -- it must not also be nested under an
+        // extra synthetic "<n> selected items" segment here, or a single
+        // selected directory would end up duplicated inside itself.
         const destination = await invoke<string>("download_to_disk_at", {
           url: `${serverUrl(session)}/api/files/download/${downloadPath(file.remotePath)}`,
           method: "GET",
           headers,
           body: undefined,
-          relativePath,
+          destinationFolder: item.localDestinationFolder || "",
+          relativePath: file.relativePath,
           ignoreTlsErrors: session.ignoreTlsErrors,
         });
         completed += 1;
         lastDestinationRoot = destination.slice(0, destination.length - (file.relativePath.length + 1));
         updateQueueItem(item.id, { detail: `Downloading ${completed}/${files.length} files...`, setCompleted: completed });
       }
-      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || "Downloads"}.` });
-      writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded ${completed} file(s).`);
+      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || destinationLabel}.` });
+      writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded ${completed} file(s).`);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
       const detail = error instanceof Error ? error.message : String(error);
       updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${files.length} completed before failing)` });
-      writeOperationLog("download", "failed", item.label, "Local Downloads", `Queued download failed: ${detail}`, "ERROR");
+      writeOperationLog("download", "failed", item.label, destinationLabel, `Queued download failed: ${detail}`, "ERROR");
     }
   };
 
@@ -2930,6 +2943,12 @@ function App() {
     setNotice(`Preparing ${items.length} selected item${items.length === 1 ? "" : "s"} for drag...`);
     const setId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
     const setLabel = items.length === 1 ? items[0].name : `${items.length} selected items`;
+    // A synthetic wrapper folder is only needed to bundle multiple
+    // top-level selections under one draggable item. For a single
+    // directory, `entry.relativePath` from /api/files/flatten already
+    // starts with that directory's own name -- adding `setLabel` (the same
+    // name) on top would nest it inside a duplicate copy of itself.
+    const needsWrapper = items.length > 1;
     const preparation = (async () => {
       const response = await api("/api/files/flatten", {
         method: "POST",
@@ -2944,18 +2963,21 @@ function App() {
       const files = data.files || [];
       if (!files.length) throw new Error("The selection has no files to drag out.");
       let lastDestination = "";
+      let lastRelativePath = "";
       for (const entry of files) {
+        lastRelativePath = needsWrapper ? `${setLabel}/${entry.relativePath}` : entry.relativePath;
         lastDestination = await invoke<string>("download_to_drag_staging_at", {
           url: `${serverUrl(session)}/api/files/download/${downloadPath(entry.remotePath)}`,
           method: "GET",
           headers,
           body: undefined,
           setId,
-          relativePath: `${setLabel}/${entry.relativePath}`,
+          relativePath: lastRelativePath,
           ignoreTlsErrors: session.ignoreTlsErrors,
         });
       }
-      const suffixLength = files[files.length - 1].relativePath.length + 1;
+      const topName = needsWrapper ? setLabel : items[0].name;
+      const suffixLength = lastRelativePath.length - topName.length;
       return lastDestination.slice(0, lastDestination.length - suffixLength);
     })();
     dragPreparationRef.current.set(preparationKey, preparation);
@@ -3016,14 +3038,14 @@ function App() {
         label: setLabel,
         kind: "download-set",
         paths: [],
-        destinationPath: "Downloads",
+        destinationPath: localPath ? `~/${localPath}` : "~",
         locationId: session.locationId,
         locationName: activeLocation?.displayName || session.locationId,
         status: "queued",
         detail: `Waiting to start (${files.length} files)`,
         setFiles: files,
         setCompleted: 0,
-        setLabel,
+        localDestinationFolder: localPath,
       };
       setArchiveFormatOpen(false);
       setTransferQueue((current) => [...current, item]);
@@ -3054,7 +3076,7 @@ function App() {
       label: singleFile ? selectedItems[0].name : `${selectedItems.length} selected items`,
       kind: "download",
       paths: [],
-      destinationPath: "Downloads",
+      destinationPath: localPath ? `~/${localPath}` : "~",
       locationId: session.locationId,
       locationName: activeLocation?.displayName || session.locationId,
       status: "queued",
@@ -3067,6 +3089,7 @@ function App() {
       downloadBody: body,
       downloadFileName: fileName,
        archiveFormat: singleFile ? undefined : archiveFormat,
+      localDestinationFolder: localPath,
     };
     setArchiveFormatOpen(false);
     setTransferQueue((current) => [...current, item]);
@@ -3075,28 +3098,30 @@ function App() {
   };
 
   const runQueuedSshDownload = async (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => {
-    writeOperationLog("download", "started", item.label, "Local Downloads", `SSH queued download of ${items.length} item(s) started.`, "DEBUG");
+    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    writeOperationLog("download", "started", item.label, destinationLabel, `SSH queued download of ${items.length} item(s) started.`, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${items.length} items...` });
     let completed = 0;
     let lastDestination = "";
     try {
       for (const file of items) {
         if (isQueueItemCancelled(item.id)) return;
-        lastDestination = await invoke<string>("ssh_download_to_downloads", {
+        lastDestination = await invoke<string>("ssh_download_path", {
           profile,
           remotePath: file.path,
           isDirectory: file.isDirectory,
+          localDestinationFolder: item.localDestinationFolder || "",
         });
         completed += 1;
         updateQueueItem(item.id, { detail: `Downloading ${completed}/${items.length} items...` });
       }
-      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} item(s) to ${lastDestination.split("/").slice(0, -1).join("/") || "Downloads"}.` });
-      writeOperationLog("download", "completed", item.label, "Local Downloads", `Downloaded ${completed} item(s) via SFTP.`);
+      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} item(s) to ${lastDestination.split("/").slice(0, -1).join("/") || destinationLabel}.` });
+      writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded ${completed} item(s) via SFTP.`);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
       const detail = error instanceof Error ? error.message : String(error);
       updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${items.length} completed before failing)` });
-      writeOperationLog("download", "failed", item.label, "Local Downloads", `SSH queued download failed: ${detail}`, "ERROR");
+      writeOperationLog("download", "failed", item.label, destinationLabel, `SSH queued download failed: ${detail}`, "ERROR");
     }
   };
 
@@ -3114,13 +3139,14 @@ function App() {
       label,
       kind: "download",
       paths: [],
-      destinationPath: "Downloads",
+      destinationPath: localPath ? `~/${localPath}` : "~",
       locationId: "",
       locationName: `SSH: ${profile.name}`,
       status: "queued",
       detail: "Waiting to start",
       sshEntryId: remoteSshEntryId,
       sshItems: selectedItems,
+      localDestinationFolder: localPath,
     };
     setTransferQueue((current) => [...current, item]);
     setQueueOpen(true);
@@ -3178,6 +3204,9 @@ function App() {
             : [],
           body: undefined,
           fileName: viewerTitle,
+          // A scratch copy for editing is independent of wherever the LOCAL
+          // pane happens to be browsing; keep it in Downloads as before.
+          destinationFolder: "Downloads",
           ignoreTlsErrors: session.ignoreTlsErrors,
         });
         setViewerLocalPath(localPathForEdit);
