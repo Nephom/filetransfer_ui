@@ -32,21 +32,20 @@
 .session-list-heading button { padding: 5px 8px; font-size: 11px; }
 .session-saved-note { color: #6bf0ca; font-size: 12px; }
 .session-card { display: grid; gap: 5px; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; background: #07192a; }
+.session-card.selected { border-color: #47cdf1; box-shadow: inset 0 0 0 1px #47cdf1; }
 .session-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .session-delete { padding: 3px 7px; color: #ffb8ae; background: transparent; border-color: #813847; font-size: 11px; }
 .session-entry { display: grid; gap: 2px; width: 100%; padding: 7px 8px; border: 1px solid transparent; border-radius: 4px; color: #d9eafa; background: #102d49; text-align: left; cursor: pointer; }
 .session-entry:hover { border-color: #47cdf1; background: #173e5f; }
-.session-ssh-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0 0; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; }
-.session-ssh-fields legend { padding: 0 5px; color: #78c9ee; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.session-ssh-fields label { margin: 0; }
-.session-ssh-fields label:last-of-type { grid-column: 1 / -1; }
-.ssh-entry-picker { grid-column: 1 / -1; display: grid; gap: 5px; color: #91a9c0; font-size: 11px; }
-.ssh-entry-picker > div { display: flex; flex-wrap: wrap; gap: 5px; }
-.ssh-entry-picker button { padding: 5px 8px; color: #e6eefc; background: #102d49; border-color: #315b7e; font-size: 11px; }
+.workspace-entries { display: grid; gap: 6px; margin: 12px 0 0; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; }
+.workspace-entries-heading { color: #78c9ee; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.workspace-entry-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+.ssh-entry-picker { display: grid; gap: 5px; color: #91a9c0; font-size: 11px; }
+.ssh-entry-picker button { display: grid; gap: 2px; padding: 6px 8px; color: #e6eefc; background: #102d49; border-color: #315b7e; font-size: 11px; text-align: left; }
 .ssh-entry-picker button:hover, .ssh-entry-picker button.selected { color: #ffffff; background: #174565; border-color: #47cdf1; }
-.session-default-paths { display: grid; gap: 8px; margin: 10px 0 0; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; }
-.session-default-paths legend { padding: 0 5px; color: #78c9ee; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.session-default-paths label { margin: 0; }
+.ssh-entry-picker button small { overflow: hidden; color: #91a9c0; text-overflow: ellipsis; white-space: nowrap; }
+.ssh-entry-modal, .sxp-entry-modal { width: min(480px, calc(100vw - 48px)); display: grid; gap: 10px; }
+.ssh-entry-modal label, .sxp-entry-modal label { margin: 0; }
 .session-entry small { overflow: hidden; color: #91a9c0; text-overflow: ellipsis; white-space: nowrap; }
 .field-help { display: block; margin-top: 5px; color: #7f9bb5; font-size: 11px; font-weight: 400; }
 .link-button { padding: 0; border: 0; background: transparent; color: #47cdf1; font-size: 11px; text-decoration: underline; cursor: pointer; }
@@ -207,7 +206,6 @@
 .local-pane-footer { padding: 7px 14px; color: #7f9bb5; border-top: 1px solid #1c3955; font-size: 12px; }
 @media (max-width: 720px) { .sessions-layout { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .terminal-header { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 12px; }.terminal-tabs { max-width: 100%; overflow-x: auto; }.terminal-actions { width: 100%; justify-content: flex-end; } }
-@media (max-width: 720px) { .session-ssh-fields { grid-template-columns: 1fr; } }
 @media (max-width: 720px) { .split-workspace { overflow: auto; }.split-workspace .local-pane { flex: 0 0 100%; min-height: 260px; }.split-workspace .desktop-folder-tree { flex: 0 0 100%; } }
 
 /* Match native controls to the LOCATION menu palette. */
@@ -266,10 +264,6 @@ select:hover, select:focus { border-color: #47cdf1; outline: none; }
 :where(.explorer) button.ghost {
   border-color: transparent;
   background: transparent;
-}
-:where(.explorer) .session-ssh-fields > button.confirm {
-  grid-column: 1 / -1;
-  justify-self: start;
 }
 :where(.explorer) .palette-select-menu button:hover,
 :where(.explorer) .palette-select-menu button:focus-visible {
