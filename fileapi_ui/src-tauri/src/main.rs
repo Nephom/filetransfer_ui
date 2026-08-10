@@ -966,8 +966,8 @@ fn cleanup_drag_staging(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn ssh_connect(app: tauri::AppHandle, profile: ssh::SshProfile) -> Result<String, String> {
-    ssh::connect(app, profile).await
+async fn ssh_connect(app: tauri::AppHandle, profile: ssh::SshProfile, request_id: String) -> Result<String, String> {
+    ssh::connect(app, profile, request_id).await
 }
 
 #[tauri::command]

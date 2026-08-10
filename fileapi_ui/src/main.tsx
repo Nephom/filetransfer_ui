@@ -98,7 +98,7 @@ type SshProfile = {
   username: string;
   privateKeyPath: string;
 };
-type SshEvent = { sessionId: string; data: string };
+type SshEvent = { sessionId: string; data: string; requestId: string };
 type SshTerminalTab = {
   id: string;
   title: string;
@@ -661,7 +661,14 @@ function App() {
   const recordingRef = useRef(false);
   const sshSecretPromptRef = useRef(false);
   const activeSshTabIdRef = useRef("");
-  const pendingSshTabIdsRef = useRef<string[]>([]);
+  // Maps a connection attempt's `requestId` (see `performSshConnect`) to the
+  // tab id that initiated it. The Rust side starts streaming `ssh-output`
+  // for a new session before the `ssh_connect` invoke() call resolves in
+  // this frontend, so `requestId` -- echoed back on every event -- is the
+  // only reliable way to bind that early output to the right tab. A tab is
+  // looked up primarily by `sessionId` (set once `ssh_connect` resolves);
+  // this map only matters for the brief window before that.
+  const pendingSshConnectRequestsRef = useRef<Record<string, string>>({});
   const connectAttemptRef = useRef<Record<string, string>>({});
   const sshTabsRef = useRef<SshTerminalTab[]>([]);
   const shellInputRef = useRef("");
@@ -913,18 +920,26 @@ function App() {
 
   useEffect(() => {
     let disposed = false;
+    // Resolve which tab an `ssh-output`/`ssh-exit` event belongs to.
+    // `sessionId` is authoritative once known; `requestId` (set by
+    // `performSshConnect` before `ssh_connect` is invoked) is the only way
+    // to bind an event to a tab *before* that -- output can start streaming
+    // from the backend before the invoke() promise resolves with the real
+    // session id, and with several tabs connecting close together, event
+    // arrival order is not guaranteed to match invocation order.
+    const resolveTab = (payload: SshEvent) => {
+      const bySession = sshTabsRef.current.find((item) => item.sessionId === payload.sessionId);
+      if (bySession) return bySession;
+      const pendingTabId = pendingSshConnectRequestsRef.current[payload.requestId];
+      return pendingTabId ? sshTabsRef.current.find((item) => item.id === pendingTabId) : undefined;
+    };
     const unlistenOutput = listen<SshEvent>("ssh-output", (event) => {
       if (disposed) return;
-      let tab = sshTabsRef.current.find((item) => item.sessionId === event.payload.sessionId);
-      if (!tab && pendingSshTabIdsRef.current.length) {
-        const pendingTab = sshTabsRef.current.find((item) => item.id === pendingSshTabIdsRef.current[0]);
-        if (pendingTab) {
-          tab = { ...pendingTab, sessionId: event.payload.sessionId, connected: true };
-          setSshTabs((current) => current.map((item) => item.id === tab?.id ? { ...item, sessionId: event.payload.sessionId, connected: true } : item));
-          pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.slice(1);
-        }
-      }
+      const tab = resolveTab(event.payload);
       if (!tab) return;
+      if (tab.sessionId !== event.payload.sessionId) {
+        setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, sessionId: event.payload.sessionId, connected: true } : item));
+      }
       const data = event.payload.data;
       setSshTabs((current) => current.map((item) => {
         if (item.id !== tab.id) return item;
@@ -945,13 +960,15 @@ function App() {
     });
     const unlistenExit = listen<SshEvent>("ssh-exit", (event) => {
       if (disposed) return;
-      setSshTabs((current) => current.map((item) => item.sessionId !== event.payload.sessionId ? item : {
+      const tab = resolveTab(event.payload);
+      if (!tab) return;
+      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : {
         ...item,
         connected: false,
         sessionId: "",
         output: `${item.output}\n${event.payload.data}\n`,
       }));
-      if (event.payload.sessionId === sshSessionIdRef.current) {
+      if (tab.id === activeSshTabIdRef.current) {
         setSshConnected(false);
         sshConnectingRef.current = false;
       }
@@ -1745,7 +1762,11 @@ function App() {
     setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: true }));
     void run(async () => {
       sshConnectingRef.current = true;
-      pendingSshTabIdsRef.current = [...pendingSshTabIdsRef.current, tabId];
+      // `attemptId` doubles as the backend `requestId`: it uniquely
+      // identifies this connection attempt, and the backend echoes it back
+      // on every `ssh-output`/`ssh-exit` event so those events can be bound
+      // to this tab even if they arrive before this invoke() call resolves.
+      pendingSshConnectRequestsRef.current[attemptId] = tabId;
       try {
         const nativeProfile = {
           id: profile.id,
@@ -1756,7 +1777,7 @@ function App() {
           privateKeyPath: profile.privateKeyPath || null,
         };
         setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n` }));
-        const id = await invoke<string>("ssh_connect", { profile: nativeProfile });
+        const id = await invoke<string>("ssh_connect", { profile: nativeProfile, requestId: attemptId });
         if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
         setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, connecting: false }));
       } catch (error) {
@@ -1765,7 +1786,7 @@ function App() {
         setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${detail}\n`, connecting: false }));
         setNotice(detail);
       } finally {
-        pendingSshTabIdsRef.current = pendingSshTabIdsRef.current.filter((item) => item !== tabId);
+        delete pendingSshConnectRequestsRef.current[attemptId];
         sshConnectingRef.current = false;
       }
     });
