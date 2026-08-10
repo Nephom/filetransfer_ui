@@ -1,6 +1,6 @@
 [package]
 name = "nFterm"
-version = "3.3.0-6035024"
+version = "3.3.1-91124d2"
 edition = "2021"
 
 [build-dependencies]
