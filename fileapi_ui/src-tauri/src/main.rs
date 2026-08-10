@@ -9,11 +9,27 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+use tauri::Emitter;
 
 #[derive(Serialize)]
 struct ApiResponse {
     status: u16,
     body: Vec<u8>,
+}
+
+// Emitted from download_to_disk while streaming a single-file (or archive)
+// download, so the Transfer Queue can show byte-level progress instead of a
+// static "Downloading..." label. `transfer_id` matches the frontend's
+// TransferQueueItem.id so the listener can route the event to the right
+// queue row. Emission is throttled to once per 200ms so a fast local
+// network / big file doesn't flood the event loop.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct DownloadProgressEvent {
+    transfer_id: String,
+    bytes_completed: u64,
+    bytes_total: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -677,6 +693,8 @@ async fn api_upload_paths(
 
 #[tauri::command]
 async fn download_to_disk(
+    app: tauri::AppHandle,
+    transfer_id: String,
     url: String,
     method: String,
     headers: Vec<(String, String)>,
@@ -700,6 +718,7 @@ async fn download_to_disk(
             .await
             .unwrap_or_else(|_| "Download failed".to_string()));
     }
+    let bytes_total = response.content_length();
     let safe_name = std::path::Path::new(&file_name)
         .file_name()
         .and_then(|name| name.to_str())
@@ -709,9 +728,23 @@ async fn download_to_disk(
     std::fs::create_dir_all(&downloads).map_err(|error| error.to_string())?;
     let destination = downloads.join(safe_name);
     let mut file = std::fs::File::create(&destination).map_err(|error| error.to_string())?;
+    let mut bytes_completed: u64 = 0;
+    let mut last_emit = Instant::now();
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
         file.write_all(&chunk).map_err(|error| error.to_string())?;
+        bytes_completed += chunk.len() as u64;
+        if last_emit.elapsed().as_millis() >= 200 {
+            let _ = app.emit(
+                "download-progress",
+                DownloadProgressEvent { transfer_id: transfer_id.clone(), bytes_completed, bytes_total },
+            );
+            last_emit = Instant::now();
+        }
     }
+    let _ = app.emit(
+        "download-progress",
+        DownloadProgressEvent { transfer_id, bytes_completed, bytes_total },
+    );
     Ok(destination.display().to_string())
 }
 
