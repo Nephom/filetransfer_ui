@@ -1,7 +1,7 @@
 {
   "name": "nFterm",
   "private": true,
-  "version": "3.3.0-6035024",
+  "version": "3.3.1-91124d2",
   "type": "module",
   "scripts": {
     "dev": "vite",

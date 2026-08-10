@@ -1,6 +1,6 @@
 [正體中文](README.md)
 
-# Web-Based File Management System 3.3.0
+# Web-Based File Management System 3.3.1
 
 A local file management system with a Windows Explorer-style web interface and a Tauri v2 desktop client (**nFterm**) for Ubuntu and Windows.
 
