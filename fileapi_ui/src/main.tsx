@@ -192,6 +192,32 @@ const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
 const stripAnsi = (value: string) =>
   value.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:][\d;]*)*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
 
+// Prepended to an SSH tab's `output` (the buffer replayed into xterm.js on
+// every tab switch/terminal recreation, see the `terminalOpen`/
+// `activeSshTabId` effect below) whenever a *new* connection generation is
+// about to start writing into it -- i.e. on reconnect, and when a session
+// ends. Session output is normally appended across reconnects so the
+// terminal keeps showing prior scrollback, but if the previous connection
+// was cut off mid-escape-sequence (a truncated OSC/DCS/APC/PM/SOS string --
+// e.g. a shell's own OSC 10/11 "what are your colors?" query/response that
+// never got its terminator before the socket closed), xterm.js's VT parser
+// is left in an unterminated "collecting a control string" state. Replayed
+// from a *fresh* Terminal instance, that dangling state swallows every
+// following byte -- including the entire next session's output -- as
+// literal control-string payload until it happens to hit a stray BEL/ST, at
+// which point the swallowed bytes (which look exactly like the reported
+// "^[" / "[110;rgb:...]" symptom) get surfaced instead of rendered as text.
+// `ESC \` (ST) unconditionally closes any such open string first (OSC also
+// accepts BEL, but ST closes all five string-based sequence types and is a
+// harmless no-op if nothing was actually open), and a plain SGR reset
+// (`ESC [0m`) then clears any bold/color/underline state so it can't bleed
+// across the boundary either -- deliberately *not* a full terminal reset
+// (`ESC c`), which would also wipe the visible scrollback the user still
+// expects to see across a reconnect. This is only ever inserted into
+// `output` (xterm's replay buffer) -- never into `rawLog`/`plainLog`, which
+// must stay a faithful transcript of only the bytes actually received.
+const VT_SESSION_BOUNDARY_GUARD = "\u001b\\\u001b[0m";
+
 type ScrollMetrics = {
   scrollTop: number;
   clientHeight: number;
@@ -971,7 +997,7 @@ function App() {
         ...item,
         connected: false,
         sessionId: "",
-        output: `${item.output}\n${event.payload.data}\n`,
+        output: `${item.output}${VT_SESSION_BOUNDARY_GUARD}\n${event.payload.data}\n`,
       }));
       if (tab.id === activeSshTabIdRef.current) {
         setSshConnected(false);
@@ -1781,7 +1807,7 @@ function App() {
           username: profile.username,
           privateKeyPath: profile.privateKeyPath || null,
         };
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n` }));
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${VT_SESSION_BOUNDARY_GUARD}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n` }));
         const id = await invoke<string>("ssh_connect", { profile: nativeProfile, requestId: attemptId });
         if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
         setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, connecting: false }));
@@ -2635,8 +2661,17 @@ function App() {
 
   const canDropOnRemote = (destination: string) =>
     dragSource === "local"
-      ? Boolean(remoteSshEntryId && dragItems.length)
+      ? Boolean(dragItems.length && (remoteSshEntryId ? true : locationOnline && hasCapability("upload")))
       : dragSource === "remote" && isValidMoveTarget(dragItems, destination);
+
+  // Whether the current REMOTE view (SSH or API) allows dragging its items
+  // out to LOCAL. SSH always can (SFTP download); an API Remote can only if
+  // it's online and the active Location grants read access.
+  const canDragRemoteToLocal = Boolean(remoteSshEntryId) || (locationOnline && hasCapability("read"));
+  // Mirror of the above for the opposite direction (LOCAL -> REMOTE
+  // upload), used to gate drag-over/drop-target feedback consistently with
+  // `canDropOnRemote`'s own "local" branch.
+  const canDragLocalToRemote = Boolean(remoteSshEntryId) || (locationOnline && hasCapability("upload"));
 
   // Undo history is intentionally limited to operations that can be reliably
   // and verifiably reversed: rename and move (a move is just a rename that
@@ -3265,18 +3300,6 @@ function App() {
 
   const downloadRemoteItemsToLocal = (items: FileItem[], destination: string = localPath) =>
     void run(async () => {
-      if (!remoteSshEntryId) {
-        writeOperationLog(
-          "download",
-          "skipped",
-          "REMOTE",
-          `LOCAL: ~/${destination || ""}`,
-          "REMOTE is not an SSH connection, so a LOCAL/REMOTE drag transfer is not available here.",
-          "WARN",
-        );
-        setNotice("This REMOTE view isn't an SSH connection, so drag transfer to LOCAL isn't available here.");
-        return;
-      }
       if (!items.length) {
         writeOperationLog(
           "download",
@@ -3289,51 +3312,150 @@ function App() {
         setNotice("No items were detected for this drag; nothing was downloaded.");
         return;
       }
-      const profile = findSshProfileById(remoteSshEntryId);
-      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-      writeOperationLog(
-        "download",
-        "started",
-        `SSH: ${profile.name}`,
-        `LOCAL: ~/${destination || ""}`,
-        `Drag-downloading ${items.length} item(s) from SSH to LOCAL.`,
-        "DEBUG",
-      );
-      try {
-        const resolvedPaths: string[] = [];
-        for (const item of items) {
-          resolvedPaths.push(
-            await invoke<string>("ssh_download_path", {
-              profile,
-              remotePath: item.path,
-              isDirectory: item.isDirectory,
-              localDestinationFolder: destination,
-            }),
-          );
-        }
-        finishDrag();
-        // Refresh whichever LOCAL folder is currently being browsed (it may
-        // differ from `destination` when dropping onto a folder-tree node
-        // that isn't the folder currently open in the LOCAL file list).
-        await loadLocalFiles(localPath);
-        if (destination !== localPath) {
-          void loadLocalTreeChildren(destination, true);
-        }
+      if (remoteSshEntryId) {
+        const profile = findSshProfileById(remoteSshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
         writeOperationLog(
           "download",
-          "completed",
+          "started",
           `SSH: ${profile.name}`,
           `LOCAL: ~/${destination || ""}`,
-          `Drag-downloaded ${items.length} item(s) from SSH to LOCAL. Resolved local path(s): ${resolvedPaths.join(", ")}`,
+          `Drag-downloading ${items.length} item(s) from SSH to LOCAL.`,
+          "DEBUG",
         );
-        notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
+        try {
+          const resolvedPaths: string[] = [];
+          for (const item of items) {
+            resolvedPaths.push(
+              await invoke<string>("ssh_download_path", {
+                profile,
+                remotePath: item.path,
+                isDirectory: item.isDirectory,
+                localDestinationFolder: destination,
+              }),
+            );
+          }
+          finishDrag();
+          // Refresh whichever LOCAL folder is currently being browsed (it may
+          // differ from `destination` when dropping onto a folder-tree node
+          // that isn't the folder currently open in the LOCAL file list).
+          await loadLocalFiles(localPath);
+          if (destination !== localPath) {
+            void loadLocalTreeChildren(destination, true);
+          }
+          writeOperationLog(
+            "download",
+            "completed",
+            `SSH: ${profile.name}`,
+            `LOCAL: ~/${destination || ""}`,
+            `Drag-downloaded ${items.length} item(s) from SSH to LOCAL. Resolved local path(s): ${resolvedPaths.join(", ")}`,
+          );
+          notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
+        } catch (error) {
+          writeOperationLog(
+            "download",
+            "failed",
+            `SSH: ${profile.name}`,
+            `LOCAL: ~/${destination || ""}`,
+            `Drag download failed: ${error instanceof Error ? error.message : String(error)}`,
+            "ERROR",
+          );
+          throw error;
+        }
+        return;
+      }
+      // API Remote (not SSH): reuse the same flatten + queued-download
+      // machinery the "Download" button/queue already relies on
+      // (`runQueuedDownload`/`runQueuedDownloadSet`), so single files,
+      // folders, and multi-selects all preserve relative directory
+      // structure and get the same progress/collision handling as a
+      // button-triggered download, just targeting the drop destination
+      // instead of whatever the LOCAL pane happens to be browsing.
+      const destinationLabel = `LOCAL: ~/${destination || ""}`;
+      if (!locationOnline || !hasCapability("read")) {
+        writeOperationLog(
+          "download",
+          "skipped",
+          `${activeLocation?.displayName || session.locationId || "Remote"}`,
+          destinationLabel,
+          "The active API Remote is offline or does not allow downloads.",
+          "WARN",
+        );
+        setNotice("The active REMOTE is offline or doesn't allow downloads right now.");
+        return;
+      }
+      const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+      const singleFile = items.length === 1 && !items[0].isDirectory;
+      if (singleFile) {
+        const headers: [string, string][] = session.token
+          ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
+          : [];
+        const queueItem: TransferQueueItem = {
+          id,
+          label: items[0].name,
+          kind: "download",
+          paths: [],
+          destinationPath: destination ? `~/${destination}` : "~",
+          locationId: session.locationId,
+          locationName: activeLocation?.displayName || session.locationId,
+          status: "queued",
+          detail: "Waiting to start",
+          downloadUrl: `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`,
+          downloadMethod: "GET",
+          downloadHeaders: headers,
+          downloadFileName: items[0].name,
+          localDestinationFolder: destination,
+        };
+        setTransferQueue((current) => [...current, queueItem]);
+        setQueueOpen(true);
+        finishDrag();
+        writeOperationLog("download", "started", `${activeLocation?.displayName || session.locationId || "Remote"}`, destinationLabel, `Drag-downloading ${items[0].name} from the API Remote to LOCAL.`, "DEBUG");
+        void runQueuedDownload(queueItem);
+        return;
+      }
+      const setLabel = items.length === 1 ? items[0].name : `${items.length} selected items`;
+      try {
+        const response = await api("/api/files/flatten", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: items.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
+            currentPath: path,
+          }),
+        });
+        if (!response.ok) throw new Error(await readError(response));
+        const data = await response.json() as { files?: { relativePath: string; remotePath: string; size: number }[] };
+        const files = data.files || [];
+        if (!files.length) {
+          setNotice("The selection has no files to download.");
+          return;
+        }
+        const queueItem: TransferQueueItem = {
+          id,
+          label: setLabel,
+          kind: "download-set",
+          paths: [],
+          destinationPath: destination ? `~/${destination}` : "~",
+          locationId: session.locationId,
+          locationName: activeLocation?.displayName || session.locationId,
+          status: "queued",
+          detail: `Waiting to start (${files.length} files)`,
+          setFiles: files,
+          setCompleted: 0,
+          localDestinationFolder: destination,
+        };
+        setTransferQueue((current) => [...current, queueItem]);
+        setQueueOpen(true);
+        finishDrag();
+        writeOperationLog("download", "started", `${activeLocation?.displayName || session.locationId || "Remote"}`, destinationLabel, `Drag-downloading ${files.length} file(s) from the API Remote to LOCAL.`, "DEBUG");
+        void runQueuedDownloadSet(queueItem);
       } catch (error) {
         writeOperationLog(
           "download",
           "failed",
-          `SSH: ${profile.name}`,
-          `LOCAL: ~/${destination || ""}`,
-          `Drag download failed: ${error instanceof Error ? error.message : String(error)}`,
+          `${activeLocation?.displayName || session.locationId || "Remote"}`,
+          destinationLabel,
+          `Failed to prepare drag download from the API Remote: ${describeError(error)}`,
           "ERROR",
         );
         throw error;
@@ -3342,18 +3464,6 @@ function App() {
 
   const uploadLocalItemsToRemote = (items: FileItem[], destination: string) =>
     void run(async () => {
-      if (!remoteSshEntryId) {
-        writeOperationLog(
-          "upload",
-          "skipped",
-          `LOCAL: ~/${localPath || ""}`,
-          "REMOTE",
-          "REMOTE is not an SSH connection, so a LOCAL/REMOTE drag transfer is not available here.",
-          "WARN",
-        );
-        setNotice("This REMOTE view isn't an SSH connection, so drag transfer from LOCAL isn't available here.");
-        return;
-      }
       if (!items.length) {
         writeOperationLog(
           "upload",
@@ -3366,48 +3476,95 @@ function App() {
         setNotice("No items were detected for this drag; nothing was uploaded.");
         return;
       }
-      const profile = findSshProfileById(remoteSshEntryId);
-      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      if (remoteSshEntryId) {
+        const profile = findSshProfileById(remoteSshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+        writeOperationLog(
+          "upload",
+          "started",
+          `LOCAL: ~/${localPath || ""}`,
+          `SSH: ${profile.name}:${destination}`,
+          `Drag-uploading ${items.length} item(s) from LOCAL to SSH.`,
+          "DEBUG",
+        );
+        try {
+          const resolvedPaths: string[] = [];
+          for (const item of items) {
+            resolvedPaths.push(
+              await invoke<string>("ssh_upload_path", {
+                profile,
+                localPath: item.path,
+                remoteDestinationFolder: destination,
+              }),
+            );
+          }
+          finishDrag();
+          await loadFiles(path);
+          writeOperationLog(
+            "upload",
+            "completed",
+            `LOCAL: ~/${localPath || ""}`,
+            `SSH: ${profile.name}:${destination}`,
+            `Drag-uploaded ${items.length} item(s) from LOCAL to SSH. Resolved remote folder: ${resolvedPaths[0] ?? destination}`,
+          );
+          notify(`Uploaded ${items.length} item${items.length === 1 ? "" : "s"} to REMOTE.`);
+        } catch (error) {
+          writeOperationLog(
+            "upload",
+            "failed",
+            `LOCAL: ~/${localPath || ""}`,
+            `SSH: ${profile.name}:${destination}`,
+            `Drag upload failed: ${error instanceof Error ? error.message : String(error)}`,
+            "ERROR",
+          );
+          throw error;
+        }
+        return;
+      }
+      // API Remote (not SSH): reuse the exact same queued-upload machinery
+      // the button-based Upload already relies on (`runQueuedUpload`) so
+      // drag transfer gets the same multipart batching, progress polling,
+      // and collision handling instead of a second, divergent code path.
+      const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${destination || "/"}`;
+      if (!locationOnline || !hasCapability("upload")) {
+        writeOperationLog(
+          "upload",
+          "skipped",
+          `LOCAL: ~/${localPath || ""}`,
+          destinationLabel,
+          "The active API Remote is offline or does not allow uploads.",
+          "WARN",
+        );
+        setNotice("The active REMOTE is offline or doesn't allow uploads right now.");
+        return;
+      }
+      const summary = await invoke<UploadSummary>("inspect_upload_paths", {
+        paths: items.map((item) => item.path),
+      });
+      const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+      const queueItem: TransferQueueItem = {
+        id,
+        label: `${summary.files} files, ${summary.directories} folders`,
+        kind: "upload",
+        paths: items.map((item) => item.path),
+        destinationPath: destination,
+        locationId: session.locationId,
+        locationName: activeLocation?.displayName || session.locationId,
+        status: "queued",
+        detail: "Waiting to start",
+      };
+      setTransferQueue((current) => [...current, queueItem]);
+      setQueueOpen(true);
+      finishDrag();
       writeOperationLog(
         "upload",
         "started",
         `LOCAL: ~/${localPath || ""}`,
-        `SSH: ${profile.name}:${destination}`,
-        `Drag-uploading ${items.length} item(s) from LOCAL to SSH.`,
+        destinationLabel,
+        `Drag-uploading ${items.length} item(s) from LOCAL to the API Remote.`,
         "DEBUG",
       );
-      try {
-        const resolvedPaths: string[] = [];
-        for (const item of items) {
-          resolvedPaths.push(
-            await invoke<string>("ssh_upload_path", {
-              profile,
-              localPath: item.path,
-              remoteDestinationFolder: destination,
-            }),
-          );
-        }
-        finishDrag();
-        await loadFiles(path);
-        writeOperationLog(
-          "upload",
-          "completed",
-          `LOCAL: ~/${localPath || ""}`,
-          `SSH: ${profile.name}:${destination}`,
-          `Drag-uploaded ${items.length} item(s) from LOCAL to SSH. Resolved remote folder: ${resolvedPaths[0] ?? destination}`,
-        );
-        notify(`Uploaded ${items.length} item${items.length === 1 ? "" : "s"} to REMOTE.`);
-      } catch (error) {
-        writeOperationLog(
-          "upload",
-          "failed",
-          `LOCAL: ~/${localPath || ""}`,
-          `SSH: ${profile.name}:${destination}`,
-          `Drag upload failed: ${error instanceof Error ? error.message : String(error)}`,
-          "ERROR",
-        );
-        throw error;
-      }
+      void runQueuedUpload(queueItem);
     });
 
   const upload = async () =>
@@ -3888,7 +4045,7 @@ function App() {
       <div
         className={`tree-node ${localPath === node.path ? "active" : ""} ${dropTarget === node.path ? "drop-target" : ""}`}
         onDragOver={(event) => {
-          if (dragSourceRef.current === "remote" && remoteSshEntryId && dragItemsRef.current.length) {
+          if (dragSourceRef.current === "remote" && canDragRemoteToLocal && dragItemsRef.current.length) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
             setDropTarget(node.path);
@@ -3911,7 +4068,7 @@ function App() {
           window.clearTimeout(dragExpandTimerRef.current);
         }}
         onDropCapture={(event) => {
-          if (dragSourceRef.current === "remote" && remoteSshEntryId) {
+          if (dragSourceRef.current === "remote" && canDragRemoteToLocal) {
             event.preventDefault();
             event.stopPropagation();
             stopDragAutoScroll();
@@ -4008,10 +4165,10 @@ function App() {
         </span>
       </div>
       <div
-        className={`local-pane-body ${dragSource === "remote" && remoteSshEntryId && paneDragHover === "local" ? "drop-target" : ""}`}
+        className={`local-pane-body ${dragSource === "remote" && canDragRemoteToLocal && paneDragHover === "local" ? "drop-target" : ""}`}
         onDragEnter={enterPaneDragHover("local")}
         onDragOver={(event) => {
-          if (dragSourceRef.current === "remote" && remoteSshEntryId && dragItemsRef.current.length) {
+          if (dragSourceRef.current === "remote" && canDragRemoteToLocal && dragItemsRef.current.length) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
           }
@@ -4023,7 +4180,7 @@ function App() {
           // (which downloads into that specific folder) instead of always
           // downloading into the currently browsed `localPath` here.
           if ((event.target as HTMLElement).closest(".local-pane-tree")) return;
-          if (dragSourceRef.current === "remote" && remoteSshEntryId) {
+          if (dragSourceRef.current === "remote" && canDragRemoteToLocal) {
             event.preventDefault();
             event.stopPropagation();
             setPaneDragHover("");
@@ -4765,11 +4922,11 @@ function App() {
             <div
               id="files"
               ref={fileAreaRef}
-              className={`file-area ${dragSource === "local" && remoteSshEntryId && paneDragHover === "remote" ? "drop-target" : ""}`}
+              className={`file-area ${dragSource === "local" && canDragLocalToRemote && paneDragHover === "remote" ? "drop-target" : ""}`}
               onDragEnter={enterPaneDragHover("remote")}
               onDragOver={(event) => {
                 handleDragAutoScroll(event, fileAreaRef.current);
-                if (dragSourceRef.current === "local" && remoteSshEntryId && dragItemsRef.current.length) {
+                if (dragSourceRef.current === "local" && canDragLocalToRemote && dragItemsRef.current.length) {
                   event.preventDefault();
                   event.dataTransfer.dropEffect = "copy";
                 }
@@ -4781,7 +4938,7 @@ function App() {
               onMouseDown={(event) => beginMarqueeSelect(event, "remote", fileAreaRef.current)}
               onDropCapture={(event) => {
                 stopDragAutoScroll();
-                if (dragSourceRef.current === "local" && remoteSshEntryId) {
+                if (dragSourceRef.current === "local" && canDragLocalToRemote) {
                   event.preventDefault();
                   event.stopPropagation();
                   setPaneDragHover("");
@@ -5032,7 +5189,7 @@ function App() {
           {splitMode && activePane === "local" ? (
             <>
               <button
-                disabled={!remoteSshEntryId || !localSelectedItems.length}
+                disabled={!canDragLocalToRemote || !localSelectedItems.length}
                 onClick={() => {
                   setContextMenu(null);
                   uploadLocalItemsToRemote(localSelectedItems, path);
