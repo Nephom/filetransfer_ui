@@ -169,7 +169,8 @@
   line-height: 1.25;
 }
 
-.settings-check input[type="checkbox"] {
+.settings-check input[type="checkbox"],
+.settings-check input[type="radio"] {
   flex: 0 0 15px;
   width: 15px;
   min-width: 15px;
