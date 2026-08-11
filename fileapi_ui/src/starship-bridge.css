@@ -73,11 +73,15 @@ body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif
   backdrop-filter: blur(18px) saturate(135%);
 }
 
-.explorer > * { position: relative; z-index: 1; }
+.explorer > *:not(.modal-cover) { position: relative; z-index: 1; }
 .explorer > .titlebar { z-index: 30; }
 .explorer > .commandbar { z-index: 20; }
 .explorer > .navigation { z-index: 10; }
-.explorer > .modal-cover { z-index: 100; }
+.explorer > .modal-cover {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
 .account-control,
 .location-control { z-index: 2; }
 .account-menu,
