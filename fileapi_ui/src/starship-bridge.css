@@ -78,6 +78,7 @@ body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif
 .commandbar .sort-control button { padding: 6px 8px; }
 
 .explorer > *:not(.modal-cover) { position: relative; z-index: 1; }
+.explorer > .context-menu { position: fixed; z-index: 100; }
 .explorer > .titlebar { z-index: 30; }
 .explorer > .commandbar { z-index: 20; }
 .explorer > .navigation { z-index: 10; }
