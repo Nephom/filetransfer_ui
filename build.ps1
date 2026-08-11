@@ -8,6 +8,11 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $DesktopRoot = Join-Path $Root "fileapi_ui"
+$WebView2FixedRuntimeUrl = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/355004fc-ebbc-42d3-b319-d43be39f8d39/Microsoft.WebView2.FixedVersionRuntime.151.0.4129.78.x64.cab"
+$WebView2FixedRuntimeSha256 = "d4c8864a764bc3ff015f7b644e1f9d022ba8a73ab470447398dda0cc9e75ab92"
+$WebView2FixedRuntimeAssetRoot = Join-Path $Root "build-assets\webview2"
+$WebView2FixedRuntimeArchive = Join-Path $WebView2FixedRuntimeAssetRoot "downloads\Microsoft.WebView2.FixedVersionRuntime.151.0.4129.78.x64.cab"
+$WebView2FixedRuntimeExtractRoot = Join-Path $WebView2FixedRuntimeAssetRoot "fixed\x64"
 
 function Invoke-Native {
     param(
@@ -119,28 +124,40 @@ function Ensure-MsvcBuildTools {
     Write-Host "MSVC C++ Build Tools are ready."
 }
 
-function Ensure-WebView2Runtime {
-    # Required to *run* the built app (Tauri renders through WebView2), not
-    # strictly to build it. Ships with modern Edge/Windows 11 but can be
-    # missing on Windows Server / stripped-down images, so provision it
-    # best-effort and never fail the build over it.
-    $webview2Keys = @(
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
-        "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
-    )
-    if (Get-ItemProperty -Path $webview2Keys -ErrorAction SilentlyContinue) {
-        Write-Host "Microsoft Edge WebView2 Runtime found."
-        return
+function Ensure-WebView2FixedRuntime {
+    $runtime = Get-ChildItem -LiteralPath $WebView2FixedRuntimeExtractRoot -Filter "msedgewebview2.exe" -File -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($runtime) {
+        Write-Host "Using local WebView2 Fixed Version runtime: $($runtime.Directory.FullName)"
+        return $runtime.Directory.FullName
     }
-    if (-not (Get-Command "winget" -ErrorAction SilentlyContinue)) { return }
 
-    Write-Host "Microsoft Edge WebView2 Runtime not detected. Installing (required to run the built app)..."
-    try {
-        Install-WingetPackage -Id "Microsoft.EdgeWebView2Runtime"
+    New-Item -ItemType Directory -Path (Split-Path -Parent $WebView2FixedRuntimeArchive) -Force | Out-Null
+    New-Item -ItemType Directory -Path $WebView2FixedRuntimeExtractRoot -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $WebView2FixedRuntimeArchive)) {
+        Write-Host "Downloading WebView2 Fixed Version runtime once for future offline builds..."
+        $downloadArgs = @{
+            Uri = $WebView2FixedRuntimeUrl
+            OutFile = $WebView2FixedRuntimeArchive
+            UseBasicParsing = $true
+        }
+        if (-not [string]::IsNullOrWhiteSpace($Proxy)) { $downloadArgs.Proxy = $Proxy }
+        Invoke-WebRequest @downloadArgs
     }
-    catch {
-        Write-Warning "Could not install Microsoft Edge WebView2 Runtime automatically. Install it manually before running the built app: https://developer.microsoft.com/microsoft-edge/webview2/"
+    $archiveHash = (Get-FileHash -LiteralPath $WebView2FixedRuntimeArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($archiveHash -ne $WebView2FixedRuntimeSha256) {
+        throw "WebView2 Fixed Version archive hash mismatch. Expected $WebView2FixedRuntimeSha256, got $archiveHash. Delete '$WebView2FixedRuntimeArchive' and re-run the build."
     }
+
+    Write-Host "Extracting WebView2 Fixed Version runtime..."
+    Invoke-Native "expand.exe" @("-F:*", $WebView2FixedRuntimeArchive, $WebView2FixedRuntimeExtractRoot)
+    $runtime = Get-ChildItem -LiteralPath $WebView2FixedRuntimeExtractRoot -Filter "msedgewebview2.exe" -File -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $runtime) {
+        throw "WebView2 Fixed Version archive did not contain msedgewebview2.exe. Delete '$WebView2FixedRuntimeArchive' and re-run the build."
+    }
+    Write-Host "WebView2 Fixed Version runtime ready: $($runtime.Directory.FullName)"
+    return $runtime.Directory.FullName
 }
 
 function Ensure-RustToolchain {
@@ -267,10 +284,8 @@ function Ensure-WindowsBuildTools {
 
     Ensure-RustToolchain
     Ensure-MsvcBuildTools
-    Ensure-WebView2Runtime
-
     Update-EnvironmentPath
-    Write-Host "Windows build prerequisites are ready."
+    Write-Host "Windows build prerequisites are ready. WebView2 is provided by the local fixed runtime during packaging."
 }
 
 function Set-ProxyEnvironment {
@@ -354,6 +369,7 @@ function Build-Desktop {
     $env:VITE_APP_VERSION = $versionInfo.version
     $env:VITE_APP_VERSION_DISPLAY = $versionInfo.display
     Invoke-Native "npm.cmd" @("run", "build", "--prefix", $DesktopRoot)
+    $webview2RuntimePath = Ensure-WebView2FixedRuntime
     Push-Location (Join-Path $DesktopRoot "src-tauri")
     try { Invoke-Native "cargo" @("check", "--locked", "--target", $WindowsTarget) }
     finally { Pop-Location }
@@ -394,7 +410,17 @@ function Build-Desktop {
     # itself does wrong). `tauri build --config` also accepts a *path* to a
     # JSON file, which never has to survive that extra quoting layer, so
     # write the override to a temp file instead of trying to out-escape it.
-    $tauriConfigOverride = [ordered]@{ version = $versionInfo.version } | ConvertTo-Json -Compress
+    $tauriConfigOverride = [ordered]@{
+        version = $versionInfo.version
+        bundle = [ordered]@{
+            windows = [ordered]@{
+                webviewInstallMode = [ordered]@{
+                    type = "fixedRuntime"
+                    path = $webview2RuntimePath
+                }
+            }
+        }
+    } | ConvertTo-Json -Compress -Depth 6
     $tauriConfigPath = Join-Path ([System.IO.Path]::GetTempPath()) "nfterm-tauri-config-$([guid]::NewGuid().ToString('N')).json"
     Set-Content -LiteralPath $tauriConfigPath -Value $tauriConfigOverride -Encoding ascii -NoNewline
     try {
@@ -500,8 +526,9 @@ function Show-Help {
     @"
 Usage: .\build.ps1 <build|upgrade|self-upgrade|help> [-Interactive] [-Proxy URL]
 
-build    Check/install Windows build tools (Git, Node.js, Rust, MSVC C++
-         Build Tools, WebView2 Runtime) and build the desktop Tauri package.
+build    Check/install Windows build tools (Git, Node.js, Rust, and MSVC C++
+         Build Tools), prepare the local WebView2 Fixed Version runtime, and
+         build the desktop Tauri package.
 upgrade  Fast-forward the checkout and update desktop dependencies.
 self-upgrade Update this PowerShell build script from the tracked upstream branch.
 
