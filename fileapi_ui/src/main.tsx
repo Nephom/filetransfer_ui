@@ -646,6 +646,7 @@ function App() {
     }
   });
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [workspaceNameDialogOpen, setWorkspaceNameDialogOpen] = useState(false);
   const [sessionFormError, setSessionFormError] = useState("");
   const [lastSavedSessionId, setLastSavedSessionId] = useState("");
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -1609,7 +1610,16 @@ function App() {
     setSessionNameDraft(name);
     setSessionFormError("");
     setLastSavedSessionId(managedSession.id);
+    setWorkspaceNameDialogOpen(false);
     notify(`Saved Workspace: ${name}`);
+  };
+
+  const openWorkspaceNameDialog = (workspace?: ManagedSession) => {
+    const target = workspace || managedSessions.find((item) => item.id === workspaceSessionId);
+    setWorkspaceSessionId(target?.id || "");
+    setSessionNameDraft(target?.name || "");
+    setSessionFormError("");
+    setWorkspaceNameDialogOpen(true);
   };
 
   const openAddSxpEntryDialog = () => {
@@ -1695,12 +1705,7 @@ function App() {
   };
 
   const removeSession = (sessionId: string) => {
-    if (managedSessions.length === 1) {
-      setManagedSessions((current) => current.map((item) => item.id === sessionId ? { ...item, name: "Default" } : item));
-      setSessionNameDraft("Default");
-      notify("The last Workspace is kept as Default.");
-      return;
-    }
+    if (managedSessions.length === 1) return;
     setManagedSessions((current) => current.filter((item) => item.id !== sessionId));
     if (workspaceSessionId === sessionId) setWorkspaceSessionId("");
   };
@@ -2058,6 +2063,7 @@ function App() {
     setSshEntryDraftId("");
     setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
     setSessionFormError("");
+    setWorkspaceNameDialogOpen(true);
   };
 
   const startNewSshEntry = () => {
@@ -5765,109 +5771,89 @@ function App() {
             </div>
           </div>
         )}
-        {sessionsOpen && (
-        <div
-          className="modal-cover"
-          onMouseDown={() => setSessionsOpen(false)}
-        >
-          <div
-            className="modal sessions-modal"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-             <h2>Workspace Manager</h2>
-              <p>A Workspace groups SSH entries and Session Entries together for quick reconnecting.</p>
-            {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
-            <div className="sessions-layout">
-              <div className="session-form">
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  saveWorkspaceName(event.currentTarget);
-                }}
-              >
-              <label>
-                Workspace name
-                <input
-                  name="sessionName"
-                  value={sessionNameDraft}
-                  onChange={(event) => setSessionNameDraft(event.target.value)}
-                  placeholder="ReleaseWorkspace"
-                  required
-                />
-               <small className="field-help">Name for this saved Workspace.</small>
-              </label>
-              <div className="modal-actions">
-                 <button className="confirm" type="submit">
-                    Save
-                </button>
+         {sessionsOpen && (
+          <div className="modal-cover" onMouseDown={() => setSessionsOpen(false)}>
+            <div className="modal sessions-modal" onMouseDown={(event) => event.stopPropagation()}>
+              <div className="workspace-manager-heading">
+                <h2>Workspace Manager</h2>
+                <div className="workspace-list-heading">
+                  <strong>Workspaces</strong>
+                  <button type="button" className="confirm" onClick={startNewWorkspace}>Add</button>
+                </div>
               </div>
-              </form>
-              <div className="workspace-entries">
-                <div className="workspace-entries-heading">
-                  <strong>SSH entries</strong>
-                </div>
-                {!activeManagedWorkspace?.sshEntries.length && (
-                  <span className="muted">No SSH entries yet.</span>
-                )}
-                <div className="ssh-entry-picker">
-                  {activeManagedWorkspace?.sshEntries.map((entry) => (
-                    <button type="button" key={entry.id} onClick={() => openEditSshEntryDialog(entry)}>
-                      {entry.name}
-                      <small>{entry.username}@{entry.host}:{entry.port}</small>
-                    </button>
-                  ))}
-                </div>
-                <div className="workspace-entries-heading">
-                   <strong>Session Entries</strong>
-                </div>
-                {!activeManagedWorkspace?.sxpEntries.length && (
-                  <span className="muted">No Path entries yet.</span>
-                )}
-                <div className="ssh-entry-picker">
-                  {activeManagedWorkspace?.sxpEntries.map((entry) => (
-                    <button type="button" key={entry.id} onClick={() => openEditSxpEntryDialog(entry)}>
-                      {entry.name}
-                      <small className="session-entry-summary"><span>LOCAL: ~/{entry.localPath || ""}</span><span>LOCATIONID: {entry.locationName || entry.locationId}</span><span>REMOTE PATH: {entry.remotePath || "/"}</span></small>
-                    </button>
-                  ))}
-                </div>
-                <div className="workspace-entry-actions">
-                  <button type="button" className="confirm" onClick={openAddSshEntryDialog} disabled={!activeManagedWorkspace}>Add SSH Entry</button>
-                   <button type="button" className="confirm" onClick={openAddSxpEntryDialog} disabled={!activeManagedWorkspace}>Add Session Entry</button>
-                </div>
-                {!activeManagedWorkspace && (
-                  <small className="field-help">Save a Workspace name first, then add SSH and Path entries to it.</small>
-                )}
+              {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
+              {lastSavedSessionId && <span className="session-saved-note">Saved successfully.</span>}
+              {!managedSessions.length && <p className="muted workspace-empty">No Workspaces saved yet. Use Add to create one.</p>}
+              <div className="workspace-card-list">
+                {managedSessions.map((managedSession) => (
+                  <article className={`workspace-card${managedSession.id === workspaceSessionId ? " selected" : ""}`} key={managedSession.id}>
+                    <div className="workspace-card-heading">
+                      <button type="button" className="workspace-name" onClick={() => openWorkspaceNameDialog(managedSession)}>{managedSession.name}</button>
+                      <button type="button" onClick={() => openWorkspaceNameDialog(managedSession)}>Edit</button>
+                    </div>
+                    <section className="workspace-entry-section">
+                      <h3>SSH Entries</h3>
+                      {!managedSession.sshEntries.length && <span className="muted">No SSH entries yet.</span>}
+                      <ol className="workspace-entry-list">
+                        {managedSession.sshEntries.map((entry) => (
+                          <li key={entry.id}>
+                            <button type="button" className="workspace-entry-button" onClick={() => { setWorkspaceSessionId(managedSession.id); openEditSshEntryDialog(entry); }}>
+                              <strong>{entry.name}</strong>
+                              <span>{entry.username}@{entry.host}:{entry.port}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    </section>
+                    <section className="workspace-entry-section">
+                      <h3>Session Entries</h3>
+                      {!managedSession.sxpEntries.length && <span className="muted">No Session Entries yet.</span>}
+                      <ol className="workspace-entry-list">
+                        {managedSession.sxpEntries.map((entry) => (
+                          <li key={entry.id}>
+                            <button type="button" className="workspace-entry-button session-entry-summary" onClick={() => { setWorkspaceSessionId(managedSession.id); openEditSxpEntryDialog(entry); }}>
+                              <strong>{entry.name}</strong>
+                              <span>LOCAL: ~/{entry.localPath || ""}</span>
+                              <span>LOCATIONID: {entry.locationName || entry.locationId}</span>
+                              <span>REMOTE PATH: {entry.remotePath || "/"}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    </section>
+                    <div className="workspace-entry-actions">
+                      <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>Add SSH Entry</button>
+                      <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSxpEntryDialog(); }}>Add Session Entry</button>
+                    </div>
+                  </article>
+                ))}
               </div>
-              </div>
-              <div className="session-list">
-                <div className="session-list-heading">
-                   <strong>Workspaces</strong>
-                   <button type="button" className="confirm" onClick={startNewWorkspace}>Add</button>
-                </div>
-                {lastSavedSessionId && <span className="session-saved-note">Saved successfully.</span>}
-              {!managedSessions.length && (
-                 <span className="muted">No Workspaces saved yet.</span>
-              )}
-              {managedSessions.map((managedSession) => (
-                <div className={`session-card${managedSession.id === workspaceSessionId ? " selected" : ""}`} key={managedSession.id}>
-                   <div className="session-card-heading">
-                     <button type="button" className="link-button" onClick={() => openSessionsModal(managedSession.id)}>{managedSession.name}</button>
-                   </div>
-                  <small className="muted">
-                   {managedSession.sxpEntries.length} Session entr{managedSession.sxpEntries.length === 1 ? "y" : "ies"}, {managedSession.sshEntries.length} SSH entr{managedSession.sshEntries.length === 1 ? "y" : "ies"}
-                  </small>
-                </div>
-              ))}
+              <div className="workspace-modal-footer">
+                <button type="button" className="danger" disabled={!activeManagedWorkspace || managedSessions.length === 1} onClick={() => activeManagedWorkspace && removeSession(activeManagedWorkspace.id)}>Remove</button>
+                <button type="button" className="confirm" onClick={() => setSessionsOpen(false)}>Close</button>
               </div>
             </div>
-            <div className="workspace-modal-footer"><button type="button" className="danger" disabled={!activeManagedWorkspace || managedSessions.length === 1} onClick={() => activeManagedWorkspace && removeSession(activeManagedWorkspace.id)}>Remove</button><button type="button" className="confirm" onClick={() => setSessionsOpen(false)}>Close</button></div>
           </div>
-        </div>
-      )}
+        )}
+        {workspaceNameDialogOpen && (
+          <div className="modal-cover modal-layer-top" onMouseDown={() => setWorkspaceNameDialogOpen(false)}>
+            <form className="modal workspace-name-modal" onSubmit={(event) => { event.preventDefault(); saveWorkspaceName(event.currentTarget); }} onMouseDown={(event) => event.stopPropagation()}>
+              <h2>{workspaceSessionId ? "Edit Workspace" : "Add Workspace"}</h2>
+              {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
+              <label>
+                Workspace name
+                <input name="sessionName" value={sessionNameDraft} onChange={(event) => setSessionNameDraft(event.target.value)} placeholder="Default" required autoFocus />
+              </label>
+              <div className="modal-actions">
+                <button type="button" onClick={() => setWorkspaceNameDialogOpen(false)}>Cancel</button>
+                <button type="submit" className="confirm">Save</button>
+              </div>
+            </form>
+          </div>
+        )}
       {sshEntryDialogOpen && (
         <div
-          className="modal-cover"
+          className="modal-cover modal-layer-top"
           onMouseDown={() => setSshEntryDialogOpen(false)}
         >
           <div
@@ -5917,7 +5903,7 @@ function App() {
       )}
       {sxpEntryDialogOpen && (
         <div
-          className="modal-cover"
+          className="modal-cover modal-layer-top"
           onMouseDown={() => setSxpEntryDialogOpen(false)}
         >
           <div
