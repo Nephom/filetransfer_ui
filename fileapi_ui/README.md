@@ -1,4 +1,4 @@
-# nFterm 3.3.1
+# nFterm 3.3.2
 
 This is a mouse-first Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11, formerly named "File Transfer Desktop" (package name `fileapi-desktop`). The repository folder remains `fileapi_ui` for continuity with existing checkouts and tooling.
 

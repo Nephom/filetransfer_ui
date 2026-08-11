@@ -144,7 +144,9 @@ fn base64_decode(value: &str) -> Option<String> {
         if character == '=' {
             break;
         }
-        let index = ALPHABET.iter().position(|candidate| *candidate == character as u8)?;
+        let index = ALPHABET
+            .iter()
+            .position(|candidate| *candidate == character as u8)?;
         buffer = (buffer << 6) | index as u32;
         bits += 6;
         if bits >= 8 {

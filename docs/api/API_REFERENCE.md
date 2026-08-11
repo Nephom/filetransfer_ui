@@ -25,7 +25,7 @@ This is the contract reference for the Node.js service. Client changes must foll
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/api/files?path=&offset=&limit=` | List one directory. Returns `{ success, files, currentPath, pagination? }`. A file has `name`, `path`, `isDirectory`, `size`, and `modified`. |
+| GET | `/api/files?path=&offset=&limit=&sort=&order=` | List one directory. Returns `{ success, files, currentPath, pagination? }`. A file has `name`, `path`, `isDirectory`, `size`, and `modified`. `sort` accepts `name`, `modified`, `size`, or `directory`; `order` accepts `asc` or `desc`. Directory-first is always applied before the selected field, names use case-insensitive natural ordering, and sorting occurs before pagination. The default is `sort=name&order=asc`. |
 | POST or GET | `/api/files/search` | Search indexed files. POST body is `{ "query" }`; GET uses `?query=`. |
 | GET | `/api/files/content/*` | Read text file content. |
 | GET | `/api/files/cache-stats` | Retrieve cache statistics. |
@@ -44,16 +44,26 @@ Use `POST /api/upload/multiple` for all new client uploads. It streams the multi
 | GET | `/api/progress/:transferId` | None | One transfer's status and byte progress |
 | GET | `/api/progress/batch/:batchId` | None | `{ batchId, status, totalFiles, successCount, failedCount, pendingCount, totalSize, transferredSize, progress, files }` |
 
+Progress records are in-memory telemetry, not durable transfer sessions.
+Clients should poll only while an operation is active and must tolerate a
+terminal record disappearing after the server retention window. Client Queue
+history cleanup and server progress cleanup are separate concerns.
+
 `filePaths[]` preserves folder hierarchy. Each value must correspond to a submitted `files` part and must be relative to the selected local folder. Terminal batch states are `completed`, `partial_fail`, and `failed`.
 
 ## Downloads and Archives
 
+Authenticated clients must enqueue upload and download operations before
+starting them. Browser fallback downloads are not resumable. Public
+`/api/share/:shareToken/download` requests from `share.html` are intentionally
+outside the authenticated Queue and expose only that page's local status.
+
 | Method | Endpoint | Request | Success |
 |---|---|---|---|
 | GET | `/api/files/download/*` | Relative file path in wildcard segment | Binary single-file stream |
-| POST | `/api/archive` | `{ "items": [{ "name", "isDirectory", "path"? }], "currentPath": "relative/path" }` | ZIP stream |
+| POST | `/api/archive` | `{ "items": [{ "name", "isDirectory", "path"? }], "currentPath": "relative/path", "format": "zip" | "tar.gz", "sessionName"? }` | ZIP or TAR.GZ stream. `sessionName` is supplied by nFterm only for archives downloaded into LOCAL; WebUI does not use it. |
 
-Use `/api/files/download/*` only for exactly one regular file. Use `/api/archive` for a directory or more than one item. `items[].path` is optional and is the full relative item path returned by search; it lets an archive request include search results from their actual parent directory. If a client mistakenly sends a directory to the single-file endpoint, the server returns `400` with an actionable message directing it to the archive route. Clients must surface the returned JSON error message, not only `HTTP 400`.
+Use `/api/files/download/*` only for exactly one regular file. Use `/api/archive` for a directory or more than one item. `items[].path` is optional and is the full relative item path returned by search; it lets an archive request include search results from their actual parent directory. If a client mistakenly sends a directory to the single-file endpoint, the server returns `400` with an actionable message directing it to the archive route. Clients must surface the returned JSON error message, not only `HTTP 400`. Archive filenames use local server time in `YYYY-MM-DD_HH_mm_ss` form and are returned through both `filename` and UTF-8 `filename*` in `Content-Disposition`.
 
 ## File Mutations
 

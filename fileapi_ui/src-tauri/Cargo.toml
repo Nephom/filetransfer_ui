@@ -1,6 +1,6 @@
 [package]
 name = "nFterm"
-version = "3.3.1-78aac48"
+version = "3.3.2"
 edition = "2021"
 
 [build-dependencies]
@@ -15,7 +15,8 @@ tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-drag = "2.1.1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "io-util", "time", "fs"] }
+tokio-util = { version = "0.7", features = ["io"] }
 russh = "0.62"
 russh-sftp = "2.4"
 keyring = "4"

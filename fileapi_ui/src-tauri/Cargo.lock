@@ -2884,7 +2884,7 @@ dependencies = [
 
 [[package]]
 name = "nFterm"
-version = "3.3.1-78aac48"
+version = "3.3.2"
 dependencies = [
  "dirs",
  "keyring",
@@ -2899,6 +2899,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-drag",
  "tokio",
+ "tokio-util",
  "uuid",
  "windows-sys 0.59.0",
  "zip",

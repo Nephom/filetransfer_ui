@@ -107,6 +107,8 @@ src/config.ini
 .opencode/
 .opencode/skills/project-testing/
 test/
+!test/
+!test/*.test.js
 
 # OS generated files
 Thumbs.db

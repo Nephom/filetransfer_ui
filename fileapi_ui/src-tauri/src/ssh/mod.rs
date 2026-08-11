@@ -140,7 +140,11 @@ mod chunk_decoding_tests {
     #[test]
     fn multiple_chunks_of_plain_ascii_never_buffer_anything() {
         let mut carry = Vec::new();
-        for chunk in [b"first ".as_slice(), b"second ".as_slice(), b"third".as_slice()] {
+        for chunk in [
+            b"first ".as_slice(),
+            b"second ".as_slice(),
+            b"third".as_slice(),
+        ] {
             let out = decode_ssh_chunk(&mut carry, chunk);
             assert_eq!(out.as_bytes(), chunk);
             assert!(carry.is_empty());
@@ -225,7 +229,7 @@ fn validate_profile(profile: &SshProfile) -> Result<(), String> {
                     .any(|component| matches!(component, std::path::Component::ParentDir))
             {
                 return Err(
-                    "SSH private key path must be an absolute path without '..'".to_string(),
+                    "SSH private key path must be an absolute path without '..'".to_string()
                 );
             }
             if !key.is_file() {
@@ -297,7 +301,12 @@ where
             &format!("Trying agent identity \"{comment}\"."),
         );
         let result = handle
-            .authenticate_publickey_with(profile.username.clone(), public_key, Some(HashAlg::Sha256), &mut agent)
+            .authenticate_publickey_with(
+                profile.username.clone(),
+                public_key,
+                Some(HashAlg::Sha256),
+                &mut agent,
+            )
             .await;
         match result {
             Ok(AuthResult::Success) => {
@@ -346,10 +355,7 @@ where
 /// the `SSH_AUTH_SOCK` Unix-domain socket, exactly like a normal `ssh`
 /// client.
 #[cfg(unix)]
-async fn try_agent_auth(
-    handle: &mut client::Handle<ClientHandler>,
-    profile: &SshProfile,
-) -> bool {
+async fn try_agent_auth(handle: &mut client::Handle<ClientHandler>, profile: &SshProfile) -> bool {
     let label = profile_label(profile);
     let agent = match AgentClient::connect_env().await {
         Ok(agent) => agent,
@@ -376,10 +382,7 @@ async fn try_agent_auth(
 /// falls through to the next auth method entirely (default identity
 /// files, then the configured key, then the stored password).
 #[cfg(windows)]
-async fn try_agent_auth(
-    handle: &mut client::Handle<ClientHandler>,
-    profile: &SshProfile,
-) -> bool {
+async fn try_agent_auth(handle: &mut client::Handle<ClientHandler>, profile: &SshProfile) -> bool {
     let label = profile_label(profile);
 
     match AgentClient::connect_pageant().await {
@@ -533,7 +536,14 @@ async fn authenticate(
     profile: &SshProfile,
 ) -> Result<(), String> {
     let label = profile_label(profile);
-    crate::oplog::log("DEBUG", "ssh_auth", "started", &label, "", "Beginning authentication attempts.");
+    crate::oplog::log(
+        "DEBUG",
+        "ssh_auth",
+        "started",
+        &label,
+        "",
+        "Beginning authentication attempts.",
+    );
     let stored_password = secrets::load_password(&profile.id)?;
 
     if try_agent_auth(handle, profile).await {
@@ -552,7 +562,15 @@ async fn authenticate(
         .filter(|path| !path.is_empty());
 
     if let Some(key_path) = key_path {
-        match try_key_file(handle, profile, Path::new(key_path), stored_password.as_deref(), "configured_key").await {
+        match try_key_file(
+            handle,
+            profile,
+            Path::new(key_path),
+            stored_password.as_deref(),
+            "configured_key",
+        )
+        .await
+        {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(error) => {
@@ -562,16 +580,37 @@ async fn authenticate(
     }
 
     if let Some(password) = stored_password {
-        crate::oplog::log("DEBUG", "ssh_auth", "attempting", &label, "password", "Trying the stored password.");
+        crate::oplog::log(
+            "DEBUG",
+            "ssh_auth",
+            "attempting",
+            &label,
+            "password",
+            "Trying the stored password.",
+        );
         let result = handle
             .authenticate_password(profile.username.clone(), password)
             .await
             .map_err(|error| error.to_string())?;
         if matches!(result, AuthResult::Success) {
-            crate::oplog::log("INFO", "ssh_auth", "succeeded", &label, "password", "Authenticated using the stored password.");
+            crate::oplog::log(
+                "INFO",
+                "ssh_auth",
+                "succeeded",
+                &label,
+                "password",
+                "Authenticated using the stored password.",
+            );
             return Ok(());
         }
-        crate::oplog::log("WARN", "ssh_auth", "failed", &label, "password", "The stored password was rejected.");
+        crate::oplog::log(
+            "WARN",
+            "ssh_auth",
+            "failed",
+            &label,
+            "password",
+            "The stored password was rejected.",
+        );
     }
 
     let message = key_error.unwrap_or_else(|| {
@@ -587,36 +626,85 @@ async fn authenticate(
 /// for the UI to recover.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-pub async fn connect(app: tauri::AppHandle, profile: SshProfile, request_id: String) -> Result<String, String> {
+pub async fn connect(
+    app: tauri::AppHandle,
+    profile: SshProfile,
+    request_id: String,
+) -> Result<String, String> {
     validate_profile(&profile)?;
     let label = profile_label(&profile);
     let session_id = format!("ssh-{}", uuid::Uuid::new_v4());
-    crate::oplog::log("INFO", "ssh_connect", "started", &label, "terminal", &format!("Connecting (session {session_id})."));
+    crate::oplog::log(
+        "INFO",
+        "ssh_connect",
+        "started",
+        &label,
+        "terminal",
+        &format!("Connecting (session {session_id})."),
+    );
     let handler = ClientHandler {
         host: profile.host.clone(),
         port: profile.port,
     };
     let addr = format!("{}:{}", profile.host, profile.port);
-    let mut handle = match tokio::time::timeout(CONNECT_TIMEOUT, client::connect(default_config(), addr, handler)).await {
+    let mut handle = match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        client::connect(default_config(), addr, handler),
+    )
+    .await
+    {
         Ok(Ok(handle)) => handle,
         Ok(Err(error)) => {
             let message = format!("Unable to connect: {error}");
-            crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &message);
+            crate::oplog::log(
+                "ERROR",
+                "ssh_connect",
+                "failed",
+                &label,
+                "terminal",
+                &message,
+            );
             return Err(message);
         }
         Err(_) => {
-            let message = format!("Connection to {}:{} timed out after {} seconds.", profile.host, profile.port, CONNECT_TIMEOUT.as_secs());
-            crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &message);
+            let message = format!(
+                "Connection to {}:{} timed out after {} seconds.",
+                profile.host,
+                profile.port,
+                CONNECT_TIMEOUT.as_secs()
+            );
+            crate::oplog::log(
+                "ERROR",
+                "ssh_connect",
+                "failed",
+                &label,
+                "terminal",
+                &message,
+            );
             return Err(message);
         }
     };
-    crate::oplog::log("DEBUG", "ssh_connect", "tcp_connected", &label, "terminal", "TCP/key-exchange completed; starting authentication.");
+    crate::oplog::log(
+        "DEBUG",
+        "ssh_connect",
+        "tcp_connected",
+        &label,
+        "terminal",
+        "TCP/key-exchange completed; starting authentication.",
+    );
 
     if let Err(error) = tokio::time::timeout(CONNECT_TIMEOUT, authenticate(&mut handle, &profile))
         .await
         .unwrap_or_else(|_| Err("Authentication timed out.".to_string()))
     {
-        crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &format!("Authentication failed: {error}"));
+        crate::oplog::log(
+            "ERROR",
+            "ssh_connect",
+            "failed",
+            &label,
+            "terminal",
+            &format!("Authentication failed: {error}"),
+        );
         return Err(error);
     }
 
@@ -641,7 +729,14 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile, request_id: Str
             write: write_half,
         },
     );
-    crate::oplog::log("INFO", "ssh_connect", "connected", &label, "terminal", &format!("Shell session {session_id} is ready."));
+    crate::oplog::log(
+        "INFO",
+        "ssh_connect",
+        "connected",
+        &label,
+        "terminal",
+        &format!("Shell session {session_id} is ready."),
+    );
 
     let reader_session = session_id.clone();
     let reader_label = label.clone();
@@ -724,7 +819,14 @@ pub async fn connect(app: tauri::AppHandle, profile: SshProfile, request_id: Str
                 request_id: reader_request_id.clone(),
             },
         );
-        crate::oplog::log("INFO", "ssh_connect", "ended", &reader_label, "terminal", &format!("Shell session {reader_session} ended."));
+        crate::oplog::log(
+            "INFO",
+            "ssh_connect",
+            "ended",
+            &reader_label,
+            "terminal",
+            &format!("Shell session {reader_session} ended."),
+        );
         sessions().lock().await.remove(&reader_session);
     });
 
@@ -765,7 +867,14 @@ pub async fn disconnect(session_id: String) -> Result<(), String> {
             .handle
             .disconnect(russh::Disconnect::ByApplication, "", "en")
             .await;
-        crate::oplog::log("INFO", "ssh_connect", "disconnected", "terminal", "", &format!("Shell session {session_id} was disconnected by the app."));
+        crate::oplog::log(
+            "INFO",
+            "ssh_connect",
+            "disconnected",
+            "terminal",
+            "",
+            &format!("Shell session {session_id} was disconnected by the app."),
+        );
     }
     Ok(())
 }
@@ -790,7 +899,14 @@ pub fn key_available(profile: &SshProfile) -> Result<bool, String> {
 pub async fn install_key(profile: SshProfile) -> Result<String, String> {
     validate_profile(&profile)?;
     let label = profile_label(&profile);
-    crate::oplog::log("INFO", "ssh_install_key", "started", &label, "authorized_keys", "Installing a local public key on the remote host.");
+    crate::oplog::log(
+        "INFO",
+        "ssh_install_key",
+        "started",
+        &label,
+        "authorized_keys",
+        "Installing a local public key on the remote host.",
+    );
     let home = crate::local_home()?;
     let key_path = profile
         .private_key_path
@@ -827,17 +943,27 @@ pub async fn install_key(profile: SshProfile) -> Result<String, String> {
         port: profile.port,
     };
     let addr = format!("{}:{}", profile.host, profile.port);
-    let mut handle = tokio::time::timeout(CONNECT_TIMEOUT, client::connect(default_config(), addr, handler))
-        .await
-        .map_err(|_| format!("Connection to {}:{} timed out.", profile.host, profile.port))?
-        .map_err(|error| format!("Unable to connect: {error}"))?;
+    let mut handle = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        client::connect(default_config(), addr, handler),
+    )
+    .await
+    .map_err(|_| format!("Connection to {}:{} timed out.", profile.host, profile.port))?
+    .map_err(|error| format!("Unable to connect: {error}"))?;
     let result = handle
         .authenticate_password(profile.username.clone(), stored_password)
         .await
         .map_err(|error| error.to_string())?;
     if !matches!(result, AuthResult::Success) {
         let message = "Password authentication failed while installing the SSH key.".to_string();
-        crate::oplog::log("ERROR", "ssh_install_key", "failed", &label, "authorized_keys", &message);
+        crate::oplog::log(
+            "ERROR",
+            "ssh_install_key",
+            "failed",
+            &label,
+            "authorized_keys",
+            &message,
+        );
         return Err(message);
     }
 
@@ -862,7 +988,9 @@ pub async fn install_key(profile: SshProfile) -> Result<String, String> {
     let mut channel = channel;
     loop {
         match channel.wait().await {
-            Some(ChannelMsg::ExitStatus { exit_status: status }) => {
+            Some(ChannelMsg::ExitStatus {
+                exit_status: status,
+            }) => {
                 exit_status = Some(status);
             }
             Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
@@ -875,18 +1003,42 @@ pub async fn install_key(profile: SshProfile) -> Result<String, String> {
 
     match exit_status {
         Some(0) => {
-            let message = format!("SSH key installed for {}@{}.", profile.username, profile.host);
-            crate::oplog::log("INFO", "ssh_install_key", "completed", &label, "authorized_keys", &message);
+            let message = format!(
+                "SSH key installed for {}@{}.",
+                profile.username, profile.host
+            );
+            crate::oplog::log(
+                "INFO",
+                "ssh_install_key",
+                "completed",
+                &label,
+                "authorized_keys",
+                &message,
+            );
             Ok(message)
         }
         Some(code) => {
             let message = format!("Key installation command exited with status {code}.");
-            crate::oplog::log("ERROR", "ssh_install_key", "failed", &label, "authorized_keys", &message);
+            crate::oplog::log(
+                "ERROR",
+                "ssh_install_key",
+                "failed",
+                &label,
+                "authorized_keys",
+                &message,
+            );
             Err(message)
         }
         None => {
             let message = "Key installation did not complete.".to_string();
-            crate::oplog::log("ERROR", "ssh_install_key", "failed", &label, "authorized_keys", &message);
+            crate::oplog::log(
+                "ERROR",
+                "ssh_install_key",
+                "failed",
+                &label,
+                "authorized_keys",
+                &message,
+            );
             Err(message)
         }
     }

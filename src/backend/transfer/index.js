@@ -40,6 +40,7 @@ class TransferManager extends EventEmitter {
       error: null,
       batchId: options.batchId || null
     };
+    transfer.updatedAt = transfer.startTime;
 
     this.transfers.set(transferId, transfer);
 
@@ -67,7 +68,10 @@ class TransferManager extends EventEmitter {
     }
 
     // Update transferred bytes
-    transfer.transferredSize = Math.min(transferredBytes, transfer.totalSize);
+    transfer.transferredSize = Math.max(0, transfer.totalSize > 0
+      ? Math.min(Number(transferredBytes) || 0, transfer.totalSize)
+      : Number(transferredBytes) || 0);
+    transfer.updatedAt = Date.now();
 
     // Calculate progress percentage
     if (transfer.totalSize > 0) {
@@ -108,6 +112,7 @@ class TransferManager extends EventEmitter {
     }
 
     transfer.status = status;
+    transfer.updatedAt = Date.now();
     this.emit('statusUpdate', transfer);
 
     return transfer;
@@ -164,6 +169,7 @@ class TransferManager extends EventEmitter {
 
     transfer.status = 'failed';
     transfer.error = error;
+    transfer.updatedAt = Date.now();
     transfer.endTime = Date.now();
     transfer.duration = transfer.endTime - transfer.startTime;
 
@@ -363,6 +369,52 @@ class TransferManager extends EventEmitter {
    */
   removeBatch(batchId) {
     return this.batches.delete(batchId);
+  }
+
+  /**
+   * Remove terminal transfer and batch records after the retention window.
+   * Active records remain available to progress endpoints.
+   */
+  cleanup(retentionMs = 24 * 60 * 60 * 1000, now = Date.now(), staleActiveMs = 24 * 60 * 60 * 1000) {
+    const activeStatuses = new Set(['pending', 'uploading', 'processing']);
+    let transfersRemoved = 0;
+    for (const [transferId, transfer] of this.transfers) {
+      if (activeStatuses.has(transfer.status)) {
+        const lastActivity = transfer.updatedAt || transfer.startTime;
+        if (now - lastActivity >= staleActiveMs) {
+          transfer.status = 'failed';
+          transfer.error = { category: 'server_error', message: 'Transfer record became stale without progress.' };
+          transfer.endTime = now;
+          transfer.updatedAt = now;
+        } else {
+          continue;
+        }
+      }
+      const terminalAt = transfer.endTime || transfer.updatedAt || transfer.startTime;
+      if (now - terminalAt < retentionMs) continue;
+      this.transfers.delete(transferId);
+      transfersRemoved += 1;
+    }
+
+    let batchesRemoved = 0;
+    for (const [batchId, batch] of this.batches) {
+      if (batch.status === 'uploading') {
+        const lastActivity = batch.updatedAt || batch.createdAt;
+        if (now - lastActivity >= staleActiveMs) {
+          batch.status = 'failed';
+          batch.updatedAt = now;
+          batch.error = 'Batch record became stale without progress.';
+        } else {
+          continue;
+        }
+      }
+      const terminalAt = batch.updatedAt || batch.createdAt;
+      if (now - terminalAt < retentionMs) continue;
+      this.batches.delete(batchId);
+      batchesRemoved += 1;
+    }
+
+    return { transfersRemoved, batchesRemoved };
   }
 }
 

@@ -1,6 +1,6 @@
 [English](README_EN.md)
 
-# Web-Based File Management System 3.3.1
+# Web-Based File Management System 3.3.2
 
 提供檔案總管式網頁介面，以及可在 Ubuntu 與 Windows 執行的 Tauri v2 桌面客戶端。
 

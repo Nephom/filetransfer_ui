@@ -80,6 +80,21 @@ class TransferProgress {
   removeTransfer(transferId) {
     this.transfers.delete(transferId);
   }
+
+  // Keep this short-lived store bounded independently from TransferManager.
+  cleanup(retentionMs = 24 * 60 * 60 * 1000, now = Date.now()) {
+    const activeStatuses = new Set(['pending', 'uploading', 'processing']);
+    let removed = 0;
+    for (const [transferId, transfer] of this.transfers) {
+      if (activeStatuses.has(transfer.status)) continue;
+      const terminalAt = transfer.completedAt || transfer.failedAt || transfer.updatedAt || transfer.startTime;
+      if (now - terminalAt >= retentionMs) {
+        this.transfers.delete(transferId);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
 }
 
 module.exports = new TransferProgress();
