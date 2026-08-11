@@ -186,6 +186,8 @@ class ShareManager {
 
       return shareLinks.map(link => ({
         ...link,
+        shareUrl: `/share.html?token=${link.shareToken}`,
+        directDownloadUrl: `/api/share/${link.shareToken}/download`,
         remainingDownloads: link.maxDownloads > 0 ? Math.max(0, link.maxDownloads - link.downloadCount) : null,
         isExpired: link.expiresAt && Date.now() > link.expiresAt,
         isExhausted: link.maxDownloads > 0 && link.downloadCount >= link.maxDownloads

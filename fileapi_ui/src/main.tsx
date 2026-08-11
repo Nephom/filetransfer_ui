@@ -56,6 +56,21 @@ type ShareResponse = {
     directDownloadFullUrl?: string;
   };
 };
+type ShareLink = {
+  shareToken: string;
+  fileName: string;
+  locationId?: string;
+  createdAt?: number;
+  expiresAt?: number | null;
+  maxDownloads: number;
+  downloadCount: number;
+  remainingDownloads?: number | null;
+  isActive: boolean;
+  isExpired?: boolean;
+  isExhausted?: boolean;
+  shareUrl?: string;
+  directDownloadUrl?: string;
+};
 type NativeApiResponse = { status: number; body: number[] };
 type UploadSummary = { files: number; directories: number };
 type FolderNode = {
@@ -563,6 +578,9 @@ function App() {
   const localSelectionAnchorRef = useRef<string | null>(null);
   const [notice, setNotice] = useState("");
   const [shareUrl, setShareUrl] = useState("");
+  const [shareLinksOpen, setShareLinksOpen] = useState(false);
+  const [shareLinks, setShareLinks] = useState<ShareLink[]>([]);
+  const [shareLinksLoading, setShareLinksLoading] = useState(false);
   const [sharePasswordOpen, setSharePasswordOpen] = useState(false);
   const [sharePasswordDraft, setSharePasswordDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -3963,6 +3981,45 @@ function App() {
       }
     });
 
+  const loadShareLinks = async () => {
+    if (!session.token || session.onlyTerminalMode) return;
+    setShareLinksLoading(true);
+    try {
+      const response = await api("/api/files/shares");
+      if (!response.ok) throw new Error(await readError(response));
+      const data = (await response.json()) as { data?: ShareLink[] };
+      setShareLinks(data.data || []);
+    } finally {
+      setShareLinksLoading(false);
+    }
+  };
+
+  const openShareLinks = () => {
+    setShareLinksOpen(true);
+    void loadShareLinks();
+  };
+
+  const shareLinkUrl = (link: ShareLink, kind: "secure" | "direct") => {
+    const relative = kind === "direct" ? link.directDownloadUrl : link.shareUrl;
+    return relative ? `${serverUrl(session)}${relative}` : "";
+  };
+
+  const copyManagedShareLink = async (link: ShareLink, kind: "secure" | "direct") => {
+    const url = shareLinkUrl(link, kind);
+    if (!url) throw new Error("The server did not return this share link URL.");
+    await navigator.clipboard.writeText(url);
+    notify(`${kind === "direct" ? "Direct" : "Secure"} link copied.`);
+  };
+
+  const revokeManagedShareLink = (shareToken: string) =>
+    run(async () => {
+      if (!window.confirm("Revoke this share link? Existing downloads will stop working.")) return;
+      const response = await api(`/api/files/share/${encodeURIComponent(shareToken)}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(await readError(response));
+      await loadShareLinks();
+      notify("Share link revoked.");
+    });
+
   const share = () => {
     if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
     if (desktopSettings.shareLinkMode === "secure") {
@@ -4739,7 +4796,7 @@ function App() {
                     openSessionsModal();
                  }}
                >
-                 Sessions
+                  Workspace Manager
                </button>
                <button
                  onClick={() => {
@@ -5643,7 +5700,7 @@ function App() {
                  />
                  <span><strong>Direct link (for tools like BMC)</strong><small>A plain file URL with no page and no Authorization header, for pasting into tools that only accept a bare link. No password protection.</small></span>
                </label>
-               <label className="settings-level">Default share link expiration
+                <label className="settings-level">Default share link expiration
                  <select
                    value={desktopSettings.shareLinkExpirationDays}
                    onChange={(event) => setDesktopSettings((current) => ({ ...current, shareLinkExpirationDays: Number(event.target.value) }))}
@@ -5654,9 +5711,13 @@ function App() {
                    <option value={30}>30 days</option>
                    <option value={90}>90 days</option>
                  </select>
-                 <small>Applied to every new share link created from this desktop app. The server also enforces its own configured maximum, so longer values may be rejected.</small>
-               </label>
-             </section>
+                  <small>Applied to every new share link created from this desktop app. The server also enforces its own configured maximum, so longer values may be rejected.</small>
+                </label>
+                <div className="settings-inline-action">
+                  <div><strong>Share link management</strong><small>Review, copy, or revoke links created by this desktop client.</small></div>
+                  <button type="button" onClick={openShareLinks} disabled={!session.token || session.onlyTerminalMode}>Manage Share Links</button>
+                </div>
+              </section>
              <section className="settings-section">
                <h3>History and operation log</h3>
                <p>Both are enabled by default. Undo records are reserved for reliable, verifiable reversals. The operation log is append-only, excludes secrets, rotates at 10 MB, and retains at most three files total.</p>
@@ -5678,7 +5739,33 @@ function App() {
            </div>
          </div>
        )}
-       {sessionsOpen && (
+        {shareLinksOpen && (
+          <div className="modal-cover modal-layer-top" onMouseDown={() => setShareLinksOpen(false)}>
+            <div className="modal share-links-modal" onMouseDown={(event) => event.stopPropagation()}>
+              <div className="modal-heading-row"><div><h2>Share Links</h2><p>Links created by this desktop client.</p></div><button type="button" onClick={() => setShareLinksOpen(false)} aria-label="Close Share Links">×</button></div>
+              <div className="share-links-toolbar"><span>{shareLinks.length} link{shareLinks.length === 1 ? "" : "s"}</span><button type="button" onClick={() => void loadShareLinks()} disabled={shareLinksLoading}>{shareLinksLoading ? "Refreshing..." : "Refresh"}</button></div>
+              {shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : (
+                <div className="share-links-list">
+                  {shareLinks.map((link) => {
+                    const secureUrl = shareLinkUrl(link, "secure");
+                    const directUrl = shareLinkUrl(link, "direct");
+                    const status = link.isExpired ? "Expired" : link.isExhausted ? "Exhausted" : link.isActive ? "Active" : "Revoked";
+                    return <article className="share-link-card" key={link.shareToken}>
+                      <div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div>
+                      <small>Location: {link.locationId || "--"} · Created: {link.createdAt ? new Date(link.createdAt).toLocaleString() : "--"}</small>
+                      <small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : " / unlimited"} · Expires: {link.expiresAt ? new Date(link.expiresAt).toLocaleString() : "never"}</small>
+                      <label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.currentTarget.select()} /></label>
+                      <label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.currentTarget.select()} /></label>
+                      <div className="modal-actions"><button type="button" onClick={() => void copyManagedShareLink(link, "secure")} disabled={!secureUrl}>Copy secure</button><button type="button" onClick={() => void copyManagedShareLink(link, "direct")} disabled={!directUrl}>Copy direct</button><button type="button" className="danger" onClick={() => revokeManagedShareLink(link.shareToken)} disabled={!link.isActive}>Revoke</button></div>
+                    </article>;
+                  })}
+                </div>
+              )}
+              <div className="modal-actions modal-actions-end"><button type="button" className="confirm" onClick={() => setShareLinksOpen(false)}>Close</button></div>
+            </div>
+          </div>
+        )}
+        {sessionsOpen && (
         <div
           className="modal-cover"
           onMouseDown={() => setSessionsOpen(false)}
@@ -5687,8 +5774,8 @@ function App() {
             className="modal sessions-modal"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <h2>Sessions</h2>
-             <p>A Workspace groups SSH entries and Session Path entries together for quick reconnecting.</p>
+             <h2>Workspace Manager</h2>
+              <p>A Workspace groups SSH entries and Session Entries together for quick reconnecting.</p>
             {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
             <div className="sessions-layout">
               <div className="session-form">
@@ -5710,11 +5797,8 @@ function App() {
                <small className="field-help">Name for this saved Workspace.</small>
               </label>
               <div className="modal-actions">
-                <button type="button" onClick={() => setSessionsOpen(false)}>
-                  Close
-                </button>
-                <button className="confirm" type="submit">
-                   Save Workspace name
+                 <button className="confirm" type="submit">
+                    Save
                 </button>
               </div>
               </form>
@@ -5734,7 +5818,7 @@ function App() {
                   ))}
                 </div>
                 <div className="workspace-entries-heading">
-                  <strong>Session Path entries</strong>
+                   <strong>Session Entries</strong>
                 </div>
                 {!activeManagedWorkspace?.sxpEntries.length && (
                   <span className="muted">No Path entries yet.</span>
@@ -5743,13 +5827,13 @@ function App() {
                   {activeManagedWorkspace?.sxpEntries.map((entry) => (
                     <button type="button" key={entry.id} onClick={() => openEditSxpEntryDialog(entry)}>
                       {entry.name}
-                      <small>LOCAL ~/{entry.localPath || ""} → {entry.locationName || entry.locationId}:{entry.remotePath || "/"}</small>
+                      <small className="session-entry-summary"><span>LOCAL: ~/{entry.localPath || ""}</span><span>LOCATIONID: {entry.locationName || entry.locationId}</span><span>REMOTE PATH: {entry.remotePath || "/"}</span></small>
                     </button>
                   ))}
                 </div>
                 <div className="workspace-entry-actions">
                   <button type="button" className="confirm" onClick={openAddSshEntryDialog} disabled={!activeManagedWorkspace}>Add SSH Entry</button>
-                  <button type="button" className="confirm" onClick={openAddSxpEntryDialog} disabled={!activeManagedWorkspace}>Add Session Path Entry</button>
+                   <button type="button" className="confirm" onClick={openAddSxpEntryDialog} disabled={!activeManagedWorkspace}>Add Session Entry</button>
                 </div>
                 {!activeManagedWorkspace && (
                   <small className="field-help">Save a Workspace name first, then add SSH and Path entries to it.</small>
@@ -5758,33 +5842,26 @@ function App() {
               </div>
               <div className="session-list">
                 <div className="session-list-heading">
-                  <strong>Workspaces</strong>
-                  <button type="button" className="confirm" onClick={startNewWorkspace}>+ New Workspace</button>
+                   <strong>Workspaces</strong>
+                   <button type="button" className="confirm" onClick={startNewWorkspace}>Add</button>
                 </div>
                 {lastSavedSessionId && <span className="session-saved-note">Saved successfully.</span>}
               {!managedSessions.length && (
-                <span className="muted">No Sessions saved yet.</span>
+                 <span className="muted">No Workspaces saved yet.</span>
               )}
               {managedSessions.map((managedSession) => (
                 <div className={`session-card${managedSession.id === workspaceSessionId ? " selected" : ""}`} key={managedSession.id}>
-                  <div className="session-card-heading">
-                    <button type="button" className="link-button" onClick={() => openSessionsModal(managedSession.id)}>{managedSession.name}</button>
-                    <button
-                      type="button"
-                      className="session-delete"
-                      disabled={managedSessions.length === 1}
-                      onClick={() => removeSession(managedSession.id)}
-                    >
-                      Remove
-                    </button>
-                  </div>
+                   <div className="session-card-heading">
+                     <button type="button" className="link-button" onClick={() => openSessionsModal(managedSession.id)}>{managedSession.name}</button>
+                   </div>
                   <small className="muted">
-                    {managedSession.sxpEntries.length} Path entr{managedSession.sxpEntries.length === 1 ? "y" : "ies"}, {managedSession.sshEntries.length} SSH entr{managedSession.sshEntries.length === 1 ? "y" : "ies"}
+                   {managedSession.sxpEntries.length} Session entr{managedSession.sxpEntries.length === 1 ? "y" : "ies"}, {managedSession.sshEntries.length} SSH entr{managedSession.sshEntries.length === 1 ? "y" : "ies"}
                   </small>
                 </div>
               ))}
               </div>
             </div>
+            <div className="workspace-modal-footer"><button type="button" className="danger" disabled={!activeManagedWorkspace || managedSessions.length === 1} onClick={() => activeManagedWorkspace && removeSession(activeManagedWorkspace.id)}>Remove</button><button type="button" className="confirm" onClick={() => setSessionsOpen(false)}>Close</button></div>
           </div>
         </div>
       )}
@@ -5847,7 +5924,7 @@ function App() {
             className="modal sxp-entry-modal"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <h2>{sxpEntryDraftId ? "Edit Session Path Entry" : "Add Session Path Entry"}</h2>
+             <h2>{sxpEntryDraftId ? "Edit Session Entry" : "Add Session Entry"}</h2>
             <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
             {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
             <label>
@@ -5890,7 +5967,7 @@ function App() {
           <header className="terminal-header">
             <div className="terminal-tabs">
               <button className={sshQuickListOpen ? "active" : ""} aria-pressed={sshQuickListOpen} onClick={() => setSshQuickListOpen((open) => !open)}>
-                Sessions
+                 Workspaces
               </button>
               {sshTabs.map((tab) => (
                 <span className={`ssh-tab ${tab.id === activeSshTabId ? "active" : ""}`} key={tab.id}>
@@ -5908,7 +5985,7 @@ function App() {
               <button type="button" aria-label="New SSH terminal tab" onClick={() => createSshTab()}>+</button>
             </div>
             <div className="terminal-actions">
-              <button onClick={() => openSessionsModal()}>Open Sessions</button>
+               <button onClick={() => openSessionsModal()}>Workspace Manager</button>
               <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => item.status === "queued" || item.status === "running").length})</button>
               <button aria-label={terminalMaximized ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMaximized} onClick={toggleTerminalMaximized}>{terminalMaximized ? "⤡" : "⤢"}</button>
               <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
@@ -5917,8 +5994,8 @@ function App() {
           <div className="terminal-body">
             {sshQuickListOpen && (
               <aside className="ssh-quick-list" aria-label="Saved SSH sessions">
-                <div className="ssh-quick-list-heading">Sessions</div>
-                {workspaceSessions.length === 0 && <p className="terminal-inline-note">No saved SSH entries yet. Use Open Sessions to add one.</p>}
+                 <div className="ssh-quick-list-heading">Workspaces</div>
+                 {workspaceSessions.length === 0 && <p className="terminal-inline-note">No saved SSH entries yet. Use Workspace Manager to add one.</p>}
                 {workspaceSessions.map((workspace) => (
                   <div className="ssh-quick-list-group" key={workspace.id}>
                     <span className="ssh-quick-list-group-label">{workspace.name}</span>
@@ -5944,7 +6021,7 @@ function App() {
             <div className="terminal-content ssh-terminal-content">
               <div className="ssh-controls">
                 <PaletteSelect
-                  label="Select a Session"
+                   label="Select a Workspace"
                   value={workspaceSessionId}
                   options={workspaceSessions.map((workspace) => ({ value: workspace.id, label: workspace.name }))}
                   onChange={selectWorkspaceSession}

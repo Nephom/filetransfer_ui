@@ -415,7 +415,7 @@
         .back-to-files { border: 1px solid #315b7e; border-radius: 5px; padding: 9px 12px; color: #d9eafa; background: #0d2942; cursor: pointer; font: inherit; }.back-to-files:hover { border-color: #47cdf1; background: #173653; }
         .glass-panel, .stat-card, .control-card { background: #0b2137; border-color: #254764; box-shadow: 0 12px 30px rgba(0,0,0,.22); }.glass-panel { border-radius: 7px; }.control-card { border-radius: 6px; }.control-card:hover { background: #102d49; border-color: #3b7097; transform: translateY(-2px); }.glass-panel h2, .control-card h3 { color: #e9fbff; }.control-card p, .stat-card .label { color: #91a9c0; opacity: 1; }
         .stat-card .number { color: #6bf0ca; }.btn { background: #102d49; border-color: #315b7e; border-radius: 5px; }.btn:hover { background: #173653; border-color: #47cdf1; transform: none; }.btn.danger { background: #3b1d28; border-color: #813847; }.btn.danger:hover { background: #512332; }
-        .form-control { color: #e6eefc; background: #07192a; border-color: #315b7e; }.form-control:focus { border-color: #47cdf1; box-shadow: 0 0 0 1px #47cdf1; }.modal-overlay { background: rgba(0,6,14,.75); }.modal-content { background: #0b2137; border-color: #315b7e; border-radius: 7px; }.modal-header { border-color: #284966; }
+         .form-control { color: #e6eefc; background: #07192a; border-color: #315b7e; }.form-control:focus { border-color: #47cdf1; box-shadow: 0 0 0 1px #47cdf1; }.modal-overlay { background: rgba(0,6,14,.78); backdrop-filter: blur(8px); }.modal-content { background: rgba(11,33,55,.94); border-color: #315b7e; border-radius: 10px; box-shadow: 0 24px 70px rgba(0,0,0,.58), 0 0 34px rgba(38,155,210,.12); }.modal-header { border-color: #284966; }
         @media (max-width: 768px) { .admin-container { width: min(100% - 20px, 1200px); padding-top: 10px; }.admin-header { align-items: flex-start; gap: 14px; flex-direction: column; }.back-to-files { width: 100%; } }
 
     </style>
@@ -455,13 +455,13 @@
 
         <div class="panel-grid">
             <div class="control-card" data-admin-only="true">
-                <h3>🔧 System Configuration</h3>
+                <h3>🔧 Configuration</h3>
                 <p>Modify system-wide settings and parameters</p>
                 <button class="btn" onclick="openConfigModal()">Manage Configuration</button>
             </div>
 
             <div class="control-card" data-admin-only="true">
-                <h3>🔄 System Operations</h3>
+                <h3>🔄 Operations</h3>
                 <p>Perform system maintenance tasks</p>
                 <div class="action-buttons">
                     <button class="btn" onclick="refreshCache()">Refresh Cache</button>
@@ -482,7 +482,7 @@
             </div>
 
             <div class="control-card" data-admin-only="true">
-                <h3>🔒 SSL Certificate Management</h3>
+                <h3>🔒 SSL / TLS</h3>
                 <p>Manage HTTPS certificates and security settings</p>
                 <button class="btn" onclick="openSSLManagement()">Manage SSL</button>
             </div>
@@ -495,7 +495,7 @@
         </div>
 
         <div class="glass-panel" data-admin-only="true">
-            <h2>⚡ Quick Actions</h2>
+                <h2>⚡ Quick Actions</h2>
             <div class="form-group">
                 <label for="adminAction">Select Action:</label>
                 <select id="adminAction" class="form-control">
@@ -514,7 +514,7 @@
     <div id="configModal" class="modal-overlay">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>⚙️ System Configuration</h2>
+                <h2>⚙️ Configuration</h2>
                 <button class="modal-close" onclick="closeModal('configModal')">✕ Close</button>
             </div>
             <div id="configContent">
@@ -744,7 +744,7 @@
     <div id="sslManagementModal" class="modal-overlay">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>🔒 SSL Certificate Management</h2>
+                <h2>🔒 SSL / TLS</h2>
                 <button class="modal-close" onclick="closeModal('sslManagementModal')">✕ Close</button>
             </div>
 
@@ -805,7 +805,7 @@
     <div id="logViewerModal" class="modal-overlay">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>📋 Server Logs</h2>
+                <h2>📋 Logs</h2>
                 <button class="modal-close" onclick="closeModal('logViewerModal')">✕ Close</button>
             </div>
             <div class="btn-group">

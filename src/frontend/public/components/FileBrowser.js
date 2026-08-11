@@ -82,6 +82,8 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const [modal, setModal] = React.useState(null);
     const [context, setContext] = React.useState(null);
     const [shareLink, setShareLink] = React.useState('');
+    const [shareLinks, setShareLinks] = React.useState([]);
+    const [shareLinksLoading, setShareLinksLoading] = React.useState(false);
     const [locationTrees, setLocationTrees] = React.useState({});
     const [dragItems, setDragItems] = React.useState([]);
     const [dropTarget, setDropTarget] = React.useState(null);
@@ -260,6 +262,48 @@ const FileBrowser = ({ token, user, onLogout }) => {
         window.clearTimeout(notificationTimer.current);
         setTransferStatus(message);
         notificationTimer.current = window.setTimeout(() => setTransferStatus(''), 3500);
+    };
+
+    const loadShareLinks = async () => {
+        setShareLinksLoading(true);
+        setError('');
+        try {
+            const response = await fetch('/api/files/shares', { headers: { Authorization: `Bearer ${token}` } });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.message || 'Unable to load share links.');
+            setShareLinks(data.data || []);
+        } catch (requestError) {
+            setError(requestError.message);
+        } finally {
+            setShareLinksLoading(false);
+        }
+    };
+
+    const openShareLinks = () => {
+        setModal('shareLinks');
+        void loadShareLinks();
+    };
+
+    const revokeShareLink = async (shareToken) => {
+        if (!window.confirm('Revoke this share link? Existing downloads will stop working.')) return;
+        try {
+            const response = await fetch(`/api/files/share/${encodeURIComponent(shareToken)}`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.message || 'Unable to revoke share link.');
+            showSuccess('Share link revoked.');
+            await loadShareLinks();
+        } catch (requestError) {
+            setError(requestError.message);
+        }
+    };
+
+    const shareLinkUrl = (link, kind) => `${window.location.origin}${kind === 'direct' ? link.directDownloadUrl : link.shareUrl}`;
+    const copyShareLink = async (link, kind) => {
+        await navigator.clipboard.writeText(shareLinkUrl(link, kind));
+        showSuccess(`${kind === 'direct' ? 'Direct' : 'Secure'} link copied.`);
     };
 
     const searchFiles = async () => {
@@ -611,7 +655,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
               <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={startDownload}>{downloading ? 'Preparing download...' : 'Download'}</button><button className="optional" onClick={() => setQueueOpen((open) => !open)}>Transfer Queue{queueItems.some((item) => item.status === 'running') ? ' •' : ''}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
              <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
-             <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
+              <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button className="optional" onClick={openShareLinks}>Share Links</button><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
         </nav>
          <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
           <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{locationsLoading && locations.length === 0 ? <span className="tree-loading">Loading Locations...</span> : locations.map((location) => <section className="location-section" key={location.id}><div className={`tree-node ${location.id === locationId ? 'active' : ''}`} onDragOver={(event) => { if (isExternalFileDrag(event)) return; if (isValidMoveTarget(dragItems, '', location.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(`${location.id}:`); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event) => { if (isExternalFileDrag(event)) return; event.preventDefault(); endDrag(); moveItems(dragItems, '', location.id); }}><button className="tree-toggle" aria-label={`${expandedLocations[location.id] ? 'Collapse' : 'Expand'} ${location.displayName}`} onClick={() => toggleLocation(location.id)}>{expandedLocations[location.id] ? '−' : '+'}</button><button className={`tree-folder ${dropTarget === `${location.id}:` ? 'drop-target' : ''}`} onClick={() => selectLocation(location.id)}><span className="folder-mini" />{location.displayName}</button><span className={`location-status-dot ${location.status === 'online' ? 'online' : ''}`} title={location.status || 'unknown'} aria-label={location.status || 'unknown'} /></div>{expandedLocations[location.id] && renderLocationTree(location.id)}</section>)}</aside>
@@ -640,7 +684,8 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 <button type="button" onClick={() => setModal(null)}>Cancel</button>
             </div>
         </Dialog>}
-        {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No queued downloads yet.</p> : <ul className="queue-panel-list">{queueItems.map((item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span>{item.detail}</span></li>)}</ul>}</div>}
+         {modal === 'shareLinks' && <Dialog title="Share Links" onClose={() => setModal(null)}><div className="share-links-dialog"><div className="share-links-toolbar"><p>Links created by {user.username}.</p><button type="button" onClick={loadShareLinks} disabled={shareLinksLoading}>{shareLinksLoading ? 'Refreshing...' : 'Refresh'}</button></div>{shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : <div className="share-links-list">{shareLinks.map((link) => { const secureUrl = shareLinkUrl(link, 'secure'); const directUrl = shareLinkUrl(link, 'direct'); const status = link.isExpired ? 'Expired' : link.isExhausted ? 'Exhausted' : link.isActive ? 'Active' : 'Revoked'; return <article className="share-link-card" key={link.shareToken}><div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div><small>Location: {link.locationId || '--'} · Created: {formatDate(link.createdAt)}</small><small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : ' / unlimited'} · Expires: {link.expiresAt ? formatDate(link.expiresAt) : 'never'}</small><label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.target.select()} /></label><label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.target.select()} /></label><div className="modal-actions"><button type="button" onClick={() => void copyShareLink(link, 'secure')}>Copy secure</button><button type="button" onClick={() => void copyShareLink(link, 'direct')}>Copy direct</button><button type="button" className="danger" onClick={() => void revokeShareLink(link.shareToken)} disabled={!link.isActive}>Revoke</button></div></article>; })}</div>}</div></Dialog>}
+         {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No queued downloads yet.</p> : <ul className="queue-panel-list">{queueItems.map((item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span>{item.detail}</span></li>)}</ul>}</div>}
     </div>;
 };
 

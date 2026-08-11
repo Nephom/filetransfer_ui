@@ -167,6 +167,12 @@ router.get('/share/:shareToken/download', downloadFailLimiter, async (req, res) 
     // Get file size
     const stats = await fs.stat(fullPath);
 
+    // Keep the public endpoint useful to appliance clients (BMC/iLO) that
+    // consume the response as a raw file rather than as a browser download.
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Length', stats.size);
+    res.type(path.extname(shareLink.fileName) || 'application/octet-stream');
+
     // Log download (using new logDownload method)
     systemLogger.logDownload(shareLink.fileName, 'share-link', true, req, {
       shareToken,

@@ -37,6 +37,19 @@ const GlobalStyles = () => {
                     outline: 2px solid rgba(59, 130, 246, 0.8);
                     outline-offset: 2px;
                 }
+
+                .share-links-dialog { display: grid; gap: 14px; max-height: 62vh; overflow: auto; }
+                .share-links-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+                .share-links-toolbar p { margin: 0; color: rgba(255, 255, 255, 0.75); }
+                .share-links-list { display: grid; gap: 12px; }
+                .share-link-card { display: grid; gap: 7px; padding: 14px; border: 1px solid rgba(103, 207, 255, 0.3); border-radius: 12px; background: rgba(4, 22, 42, 0.62); box-shadow: inset 0 0 24px rgba(45, 177, 255, 0.05), 0 10px 25px rgba(0, 0, 0, 0.18); }
+                .share-link-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+                .share-link-card small { color: rgba(255, 255, 255, 0.62); overflow-wrap: anywhere; }
+                .share-link-card label { margin: 4px 0 0; color: rgba(255, 255, 255, 0.78); }
+                .share-link-card input { min-width: 0; color: #e8f7ff; background: rgba(0, 10, 24, 0.58); }
+                .share-link-status { padding: 3px 8px; border: 1px solid rgba(103, 207, 255, 0.3); border-radius: 999px; color: #9eeaff; font-size: 11px; }
+                .share-link-status.expired, .share-link-status.exhausted, .share-link-status.revoked { color: #ffb7af; border-color: rgba(255, 111, 111, 0.45); }
+                @media (max-width: 600px) { .share-links-toolbar, .share-link-card-heading { align-items: flex-start; flex-direction: column; } }
                 
                 /* Selection styles */
                 ::selection {
