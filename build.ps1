@@ -150,7 +150,7 @@ function Ensure-WebView2FixedRuntime {
     }
 
     Write-Host "Extracting WebView2 Fixed Version runtime..."
-    Invoke-Native "expand.exe" @("-F:*", $WebView2FixedRuntimeArchive, $WebView2FixedRuntimeExtractRoot)
+    Invoke-Native "expand.exe" @("-F:*", $WebView2FixedRuntimeArchive, $WebView2FixedRuntimeExtractRoot) | Out-Null
     $runtime = Get-ChildItem -LiteralPath $WebView2FixedRuntimeExtractRoot -Filter "msedgewebview2.exe" -File -Recurse -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $runtime) {
