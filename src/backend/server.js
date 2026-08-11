@@ -24,7 +24,7 @@ const database = require('./database/db');
 const shareManager = require('./auth/share-manager');
 const bulkUserJobManager = require('./auth/bulk-user-job');
 const { transferManager } = require('./transfer');
-const { authenticate, setJwtSecret, requireAdmin, requireStaffRole } = require('./middleware/auth');
+const { authenticate, setJwtSecret, requireAdmin, requireStaffRole, resolveCurrentAccount } = require('./middleware/auth');
 const { initializeSecurity } = require('./middleware/security');
 const { createLogger, systemLogger } = require('./utils/logger');
 const certificateManager = require('./ssl/certificate-manager');
@@ -276,11 +276,51 @@ app.use('/api', shareRoutes);
 app.use('/api', sslRoutes);
 
 // Routes
-// The document itself contains no protected data. Its requests remain guarded by
-// requireAdmin, while loading it without a header permits normal browser navigation.
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/public/admin.html'));
-});
+//
+// Admin / Super Panel shells
+// -------------------------------------------------------------------------
+// Both pages are plain static shells with no embedded data: every piece of
+// real information (users, roles, config, SSL, logs...) is fetched via
+// authenticated API calls that are independently re-authorized server-side
+// against the account's *current* role (requireAdmin/requireStaffRole, which
+// call resolveCurrentAccount), never against a client-decoded JWT claim.
+// A Bearer token - not a server session cookie - is what proves who is
+// calling, and a plain browser navigation to these URLs carries no such
+// token, so the server cannot reject the page *load* itself without
+// breaking normal SPA navigation (e.g. reloading /admin after already
+// signing in). What we do here to keep these paths from being handed out
+// "for free" to anyone who guesses the URL:
+//  - The HTML files live outside `frontend/public` (which express.static
+//    serves in full), so they are unreachable at any static path/filename
+//    and are ONLY reachable through these two explicit routes.
+//  - Responses are marked no-store/no-index and disallow framing, so
+//    proxies, browser caches, and clickjacking attempts can't reuse or
+//    embed a captured response.
+//  - Each page's own script calls /auth/verify immediately (which
+//    re-resolves the caller's live role/active state) before rendering
+//    anything, and redirects away otherwise, so a stale token or one whose
+//    role was downgraded/deactivated since it was issued is rejected the
+//    same way the underlying admin/staff APIs already are.
+const PRIVATE_PAGES_DIR = path.join(__dirname, '../frontend/private');
+
+const sendPrivatePage = (fileName) => (req, res) => {
+  res.set({
+    'Cache-Control': 'no-store, no-cache, must-revalidate',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'X-Robots-Tag': 'noindex, nofollow'
+  });
+  res.sendFile(path.join(PRIVATE_PAGES_DIR, fileName));
+};
+
+// Admin-only console: system configuration, SSL, cache, service restart,
+// server log, plus everything requireStaffRole also allows.
+app.get('/admin', sendPrivatePage('admin.html'));
+
+// Superuser console: user (non-admin/superuser) account management and
+// Permission Role management only - no config/SSL/cache/log/service
+// controls exist on this page at all (not just hidden by CSS).
+app.get('/super', sendPrivatePage('super.html'));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/public/index.html'));
@@ -478,13 +518,25 @@ app.post('/auth/verify', (req, res, next) => {
     try {
       const decoded = jwt.verify(token, jwtSecret);
 
+      // Re-resolve the account's *current* role/active state instead of
+      // trusting the JWT's role claim, which is frozen at login time for up
+      // to 24h. Without this, a user promoted to superuser (or demoted /
+      // deactivated) would keep seeing their stale role on every page
+      // reload until the old token expired - this is also what backs the
+      // account menu's "Standard user" / "Superuser" / "Admin" label and
+      // the /admin and /super entry points.
+      const current = await resolveCurrentAccount(decoded);
+      if (!current.exists || !current.active) {
+        return res.status(401).json({ error: 'Account no longer exists or is inactive' });
+      }
+
       // Return user information without sensitive data
       res.json({
         success: true,
         user: {
           id: decoded.id,
           username: decoded.username,
-          role: decoded.role
+          role: current.role
         }
       });
     } catch (jwtError) {
