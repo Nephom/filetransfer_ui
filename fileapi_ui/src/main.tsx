@@ -1987,8 +1987,6 @@ function App() {
     paneResizeRef.current = null;
     window.removeEventListener("pointermove", resizePane);
     window.removeEventListener("pointerup", stopPaneResize);
-    window.removeEventListener("pointercancel", stopPaneResize);
-    window.removeEventListener("blur", stopPaneResize);
   };
   const resizePane = (event: PointerEvent) => {
     const start = paneResizeRef.current;
@@ -1999,22 +1997,16 @@ function App() {
     );
   };
   const beginPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
     event.preventDefault();
-    event.stopPropagation();
     paneResizeRef.current = { startX: event.clientX, startWidth: localPaneWidth };
     window.addEventListener("pointermove", resizePane);
     window.addEventListener("pointerup", stopPaneResize);
-    window.addEventListener("pointercancel", stopPaneResize);
-    window.addEventListener("blur", stopPaneResize);
   };
 
   const stopLocalTreeResize = () => {
     localTreeResizeRef.current = null;
     window.removeEventListener("pointermove", resizeLocalTree);
     window.removeEventListener("pointerup", stopLocalTreeResize);
-    window.removeEventListener("pointercancel", stopLocalTreeResize);
-    window.removeEventListener("blur", stopLocalTreeResize);
   };
   const resizeLocalTree = (event: PointerEvent) => {
     const start = localTreeResizeRef.current;
@@ -2024,14 +2016,11 @@ function App() {
     );
   };
   const beginLocalTreeResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     localTreeResizeRef.current = { startX: event.clientX, startWidth: localTreeWidth };
     window.addEventListener("pointermove", resizeLocalTree);
     window.addEventListener("pointerup", stopLocalTreeResize);
-    window.addEventListener("pointercancel", stopLocalTreeResize);
-    window.addEventListener("blur", stopLocalTreeResize);
   };
 
   const stopColumnResize = () => {
