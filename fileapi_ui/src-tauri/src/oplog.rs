@@ -151,7 +151,14 @@ pub fn log(
     if !should_write(level) {
         return;
     }
-    let _ = write_record(level, operation, status, source_label, destination_label, detail);
+    let _ = write_record(
+        level,
+        operation,
+        status,
+        source_label,
+        destination_label,
+        detail,
+    );
 }
 
 /// Write a record without re-checking the enabled/level filter. Used by the
@@ -168,5 +175,12 @@ pub fn write(
     destination_label: &str,
     detail: &str,
 ) -> Result<(), String> {
-    write_record(level, operation, status, source_label, destination_label, detail)
+    write_record(
+        level,
+        operation,
+        status,
+        source_label,
+        destination_label,
+        detail,
+    )
 }

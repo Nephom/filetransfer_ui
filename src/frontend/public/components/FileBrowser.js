@@ -9,6 +9,28 @@ const formatDate = (value) => value ? new Date(value).toLocaleString() : '--';
 const itemKey = (item) => item.path || item.name;
 const fileIcon = (item) => item.isDirectory ? '📁' : '📄';
 const normalisePath = (value) => (value || '').replace(/^\/+|\/+$/g, '');
+const fileTimestamp = (value) => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim()) {
+        const numeric = Number(value);
+        if (Number.isFinite(numeric)) return numeric;
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return 0;
+};
+const compareFileNames = (left, right) => String(left || '').localeCompare(String(right || ''), undefined, { numeric: true, sensitivity: 'base' });
+const compareFiles = (left, right, key, direction) => {
+    if (Boolean(left.isDirectory) !== Boolean(right.isDirectory)) return left.isDirectory ? -1 : 1;
+    let result = key === 'modified'
+        ? fileTimestamp(left.modified) - fileTimestamp(right.modified)
+        : key === 'size'
+            ? (Number(left.size) || 0) - (Number(right.size) || 0)
+            : compareFileNames(left.name, right.name);
+    if (!result) result = compareFileNames(left.name, right.name) || String(left.path || '').localeCompare(String(right.path || ''));
+    return direction === 'desc' ? -result : result;
+};
+const sortFiles = (items, key = 'name', direction = 'asc') => [...items].sort((left, right) => compareFiles(left, right, key, direction));
 const fileType = (item) => {
     if (item.isDirectory) return 'File folder';
     const extension = item.name?.split('.').pop();
@@ -90,6 +112,8 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const [fileDropTarget, setFileDropTarget] = React.useState(null);
     const [viewMode, setViewMode] = React.useState(() => localStorage.getItem('file-view-mode') || 'details');
     const [archiveFormat, setArchiveFormat] = React.useState(() => localStorage.getItem('archive-format') || 'tar.gz');
+    const [sortKey, setSortKey] = React.useState('name');
+    const [sortDirection, setSortDirection] = React.useState('asc');
     const [downloadModeDraft, setDownloadModeDraft] = React.useState('tar.gz');
     const [queueItems, setQueueItems] = React.useState([]);
     const [queueOpen, setQueueOpen] = React.useState(false);
@@ -110,6 +134,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
         Authorization: `Bearer ${token}`,
         ...(requestedLocationId ? { 'X-Location-ID': requestedLocationId } : {})
     });
+    const sortedFiles = sortFiles(files, sortKey, sortDirection);
     const selectedItems = files.filter((file) => selected.includes(itemKey(file)));
     const pathForItem = (item) => normalisePath(item.path || (currentPath ? `${currentPath}/${item.name}` : item.name));
 
@@ -140,7 +165,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const loadFiles = async (path = currentPath, requestedLocationId = locationId) => {
         setLoading(true); setError(''); setContext(null);
         try {
-            const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, { headers: headersForLocation(requestedLocationId) });
+            const response = await fetch(`/api/files?path=${encodeURIComponent(path)}&sort=${encodeURIComponent(sortKey)}&order=${sortDirection}`, { headers: headersForLocation(requestedLocationId) });
             if (!response.ok) throw new Error('Unable to load this folder.');
             const data = await response.json();
             setFiles((data.files || []).filter((file) => file && file.name));
@@ -165,7 +190,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             const children = (data.files || [])
                 .filter((file) => file && file.name && file.isDirectory)
                 .map((file) => ({ path: normalisePath(file.path), name: file.name, expanded: false, loaded: false, children: [] }))
-                .sort((left, right) => left.name.localeCompare(right.name));
+                .sort((left, right) => compareFileNames(left.name, right.name));
             setLocationTrees((current) => ({
                 ...current,
                 [requestedLocationId]: updateTreeNode(
@@ -219,6 +244,10 @@ const FileBrowser = ({ token, user, onLogout }) => {
         loadFiles('');
         loadTreeChildren(locationId, '');
     }, [locationId]);
+    React.useEffect(() => {
+        if (!locationId || searching) return;
+        loadFiles(currentPath);
+    }, [sortKey, sortDirection]);
     React.useEffect(() => {
         if (modal !== 'move') return;
         locations.forEach((location) => {
@@ -316,7 +345,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             const data = await response.json();
             if (!response.ok || data.indexing) throw new Error(data.message || 'Search is not available yet.');
             const results = (data.files || []).filter((file) => file && typeof file.name === 'string' && file.name.trim() && typeof file.path === 'string' && file.path.trim());
-            setFiles(results); setDisplayPath(`Search results for "${query}"`); setSearching(true); setSelected([]);
+            setFiles(sortFiles(results, sortKey, sortDirection)); setDisplayPath(`Search results for "${query}"`); setSearching(true); setSelected([]);
         } catch (requestError) { setError(requestError.message); setFiles([]); }
         finally { setLoading(false); }
     };
@@ -329,14 +358,14 @@ const FileBrowser = ({ token, user, onLogout }) => {
     };
     const choose = (file, event) => {
         const key = itemKey(file);
-        const index = files.findIndex((item) => itemKey(item) === key);
+        const index = sortedFiles.findIndex((item) => itemKey(item) === key);
         const anchorIndex = selectionAnchor.current === null
             ? -1
-            : files.findIndex((item) => itemKey(item) === selectionAnchor.current);
+            : sortedFiles.findIndex((item) => itemKey(item) === selectionAnchor.current);
         if (event.shiftKey && anchorIndex >= 0 && index >= 0) {
             const start = Math.min(anchorIndex, index);
             const end = Math.max(anchorIndex, index);
-            setSelected(files.slice(start, end + 1).map(itemKey));
+            setSelected(sortedFiles.slice(start, end + 1).map(itemKey));
             return;
         }
         if (event.ctrlKey || event.metaKey) {
@@ -655,12 +684,12 @@ const FileBrowser = ({ token, user, onLogout }) => {
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
               <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={startDownload}>{downloading ? 'Preparing download...' : 'Download'}</button><button className="optional" onClick={() => setQueueOpen((open) => !open)}>Transfer Queue{queueItems.some((item) => item.status === 'running') ? ' •' : ''}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
              <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
-              <button className="optional" onClick={selectAll}>Select all</button><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button className="optional" onClick={openShareLinks}>Share Links</button><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
+               <button className="optional" onClick={selectAll}>Select all</button><label className="sort-control">Sort<select value={sortKey} onChange={(event) => setSortKey(event.target.value)} aria-label="Sort files"><option value="name">Name</option><option value="modified">Modified</option><option value="size">Size</option><option value="directory">Directory first</option></select><button type="button" onClick={() => setSortDirection((current) => current === 'asc' ? 'desc' : 'asc')} aria-label={`Sort ${sortDirection === 'asc' ? 'descending' : 'ascending'}`}>{sortDirection === 'asc' ? 'Ascending' : 'Descending'}</button></label><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button className="optional" onClick={openShareLinks}>Share Links</button><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
         </nav>
          <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
           <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{locationsLoading && locations.length === 0 ? <span className="tree-loading">Loading Locations...</span> : locations.map((location) => <section className="location-section" key={location.id}><div className={`tree-node ${location.id === locationId ? 'active' : ''}`} onDragOver={(event) => { if (isExternalFileDrag(event)) return; if (isValidMoveTarget(dragItems, '', location.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(`${location.id}:`); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event) => { if (isExternalFileDrag(event)) return; event.preventDefault(); endDrag(); moveItems(dragItems, '', location.id); }}><button className="tree-toggle" aria-label={`${expandedLocations[location.id] ? 'Collapse' : 'Expand'} ${location.displayName}`} onClick={() => toggleLocation(location.id)}>{expandedLocations[location.id] ? '−' : '+'}</button><button className={`tree-folder ${dropTarget === `${location.id}:` ? 'drop-target' : ''}`} onClick={() => selectLocation(location.id)}><span className="folder-mini" />{location.displayName}</button><span className={`location-status-dot ${location.status === 'online' ? 'online' : ''}`} title={location.status || 'unknown'} aria-label={location.status || 'unknown'} /></div>{expandedLocations[location.id] && renderLocationTree(location.id)}</section>)}</aside>
              <section className="content" onDragOver={handleExternalDragOver} onDrop={handleExternalDrop}><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{displayPath}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{error && <div className="notice error-notice">{error}</div>}{transferStatus && <div className="notice transfer-notice"><span className={downloading || moving ? 'activity-dot' : ''} />{transferStatus}</div>}
-                <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{files.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{files.map(renderFileItem)}</tbody></table>}</div>
+                 <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{sortedFiles.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{sortedFiles.map(renderFileItem)}</tbody></table>}</div>
             </section></main>
         <footer className="statusbar"><span>{files.length} item{files.length === 1 ? '' : 's'}</span><span>{searching ? 'Search results' : currentPath ? `/${currentPath}` : '/'}</span></footer>
          {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading || !hasCapability('read')} onClick={() => action(startDownload)}>Download</button><button disabled={moving || !hasCapability('move')} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => action(() => { setShareLink(''); setModal('share'); })}>Share</button><hr /><button disabled={!hasCapability('delete')} onClick={() => action(remove)}>Delete</button></div>}

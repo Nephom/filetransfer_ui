@@ -113,6 +113,8 @@ type ManagedSession = {
   sshEntries: SshProfile[];
 };
 type ColumnKey = "name" | "modified" | "size";
+type SortKey = ColumnKey | "directory";
+type SortDirection = "asc" | "desc";
 type SshProfile = {
   id: string;
   name: string;
@@ -533,6 +535,72 @@ const formatSize = (size: number) =>
     : size < 1024 ** 2
       ? `${(size / 1024).toFixed(1)} KB`
       : `${(size / 1024 ** 2).toFixed(1)} MB`;
+const fileTimestamp = (value: number | string | undefined) => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+};
+const compareFileNames = (left: string, right: string) =>
+  left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
+const compareFileItems = (
+  left: FileItem,
+  right: FileItem,
+  sortKey: SortKey,
+  direction: SortDirection,
+) => {
+  if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
+  let result = sortKey === "modified"
+    ? fileTimestamp(left.modified) - fileTimestamp(right.modified)
+    : sortKey === "size"
+      ? left.size - right.size
+      : compareFileNames(left.name, right.name);
+  if (result === 0) {
+    result = compareFileNames(left.name, right.name) || left.path.localeCompare(right.path);
+  }
+  return direction === "desc" ? -result : result;
+};
+const sortFileItems = (items: FileItem[], sortKey: SortKey, direction: SortDirection) =>
+  [...items].sort((left, right) => compareFileItems(left, right, sortKey, direction));
+const sanitizeArchiveName = (value: string) => {
+  const cleaned = value
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
+    .replace(/[. ]+$/g, "")
+    .trim();
+  return cleaned || "nFterm";
+};
+const localArchiveTimestamp = (date = new Date()) => {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}_${pad(date.getMinutes())}_${pad(date.getSeconds())}`;
+};
+const sessionArchiveName = (sessionName: string) =>
+  `${sanitizeArchiveName(sessionName)}_${localArchiveTimestamp()}`;
+
+type SortControlsProps = {
+  label: string;
+  sortKey: SortKey;
+  direction: SortDirection;
+  onSortKeyChange: (value: SortKey) => void;
+  onDirectionChange: () => void;
+};
+const SortControls = ({ label, sortKey, direction, onSortKeyChange, onDirectionChange }: SortControlsProps) => (
+  <label className="sort-control">
+    {label}
+    <select value={sortKey} onChange={(event) => onSortKeyChange(event.target.value as SortKey)} aria-label={`${label} field`}>
+      <option value="name">Name</option>
+      <option value="modified">Modified</option>
+      <option value="size">Size</option>
+      <option value="directory">Directory first</option>
+    </select>
+    <button type="button" onClick={onDirectionChange} aria-label={`${label} ${direction === "asc" ? "descending" : "ascending"}`}>
+      {direction === "asc" ? "Ascending" : "Descending"}
+    </button>
+  </label>
+);
 const serverUrl = (session: Session) =>
   `https://${session.host.trim()}:${session.port.trim()}`;
 
@@ -697,6 +765,10 @@ function App() {
       return { name: 50, modified: 30, size: 20 };
     }
   });
+  const [remoteSortKey, setRemoteSortKey] = useState<SortKey>("name");
+  const [remoteSortDirection, setRemoteSortDirection] = useState<SortDirection>("asc");
+  const [localSortKey, setLocalSortKey] = useState<SortKey>("name");
+  const [localSortDirection, setLocalSortDirection] = useState<SortDirection>("asc");
   const [sshProfiles, setSshProfiles] = useState<SshProfile[]>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("fileapi-ssh-profiles") || "[]");
@@ -1409,7 +1481,7 @@ function App() {
       return;
     }
     const response = await api(
-      `/api/files?path=${encodeURIComponent(nextPath)}`,
+      `/api/files?path=${encodeURIComponent(nextPath)}&sort=${remoteSortKey}&order=${remoteSortDirection}`,
     );
     if (!response.ok) throw new Error(await readError(response));
     const data = await response.json();
@@ -1481,7 +1553,7 @@ function App() {
       const children = (data.files || [])
         .filter((file) => file.isDirectory)
         .map((file) => ({ path: file.path, name: file.name, expanded: false, loaded: false, children: [] }))
-        .sort((left, right) => left.name.localeCompare(right.name));
+        .sort((left, right) => compareFileNames(left.name, right.name));
       setLocalTrees((trees) =>
         trees.map((tree) => updateTreeNode(tree, treePath, (node) => ({ ...node, expanded: true, loaded: true, children }))),
       );
@@ -1538,7 +1610,7 @@ function App() {
       }
     } else {
       const response = await api(
-        `/api/files?path=${encodeURIComponent(treePath)}`,
+        `/api/files?path=${encodeURIComponent(treePath)}&sort=name&order=asc`,
       );
       if (!response.ok) {
         if (!force) throw new Error(await readError(response));
@@ -1557,7 +1629,7 @@ function App() {
         children: [],
       }))
       .sort((left: FolderNode, right: FolderNode) =>
-        left.name.localeCompare(right.name),
+        compareFileNames(left.name, right.name),
       );
     setFolderTree((tree) =>
       updateTreeNode(tree, treePath, (node) => ({
@@ -1915,6 +1987,8 @@ function App() {
     paneResizeRef.current = null;
     window.removeEventListener("pointermove", resizePane);
     window.removeEventListener("pointerup", stopPaneResize);
+    window.removeEventListener("pointercancel", stopPaneResize);
+    window.removeEventListener("blur", stopPaneResize);
   };
   const resizePane = (event: PointerEvent) => {
     const start = paneResizeRef.current;
@@ -1925,16 +1999,22 @@ function App() {
     );
   };
   const beginPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
     event.preventDefault();
+    event.stopPropagation();
     paneResizeRef.current = { startX: event.clientX, startWidth: localPaneWidth };
     window.addEventListener("pointermove", resizePane);
     window.addEventListener("pointerup", stopPaneResize);
+    window.addEventListener("pointercancel", stopPaneResize);
+    window.addEventListener("blur", stopPaneResize);
   };
 
   const stopLocalTreeResize = () => {
     localTreeResizeRef.current = null;
     window.removeEventListener("pointermove", resizeLocalTree);
     window.removeEventListener("pointerup", stopLocalTreeResize);
+    window.removeEventListener("pointercancel", stopLocalTreeResize);
+    window.removeEventListener("blur", stopLocalTreeResize);
   };
   const resizeLocalTree = (event: PointerEvent) => {
     const start = localTreeResizeRef.current;
@@ -1944,11 +2024,14 @@ function App() {
     );
   };
   const beginLocalTreeResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     localTreeResizeRef.current = { startX: event.clientX, startWidth: localTreeWidth };
     window.addEventListener("pointermove", resizeLocalTree);
     window.addEventListener("pointerup", stopLocalTreeResize);
+    window.addEventListener("pointercancel", stopLocalTreeResize);
+    window.addEventListener("blur", stopLocalTreeResize);
   };
 
   const stopColumnResize = () => {
@@ -2779,6 +2862,8 @@ function App() {
     );
   };
 
+  const sortedFiles = sortFileItems(files, remoteSortKey, remoteSortDirection);
+  const sortedLocalFiles = sortFileItems(localFiles, localSortKey, localSortDirection);
   const selectedItems = files.filter((file) => selected.includes(file.path));
   const localSelectedItems = localFiles.filter((file) => localSelected.includes(file.path));
   // Whether the REMOTE file list should show an in-list "../" entry to go up
@@ -2805,14 +2890,14 @@ function App() {
 
   const selectFile = (file: FileItem, event: React.MouseEvent) => {
     setActivePane("remote");
-    const index = files.findIndex((item) => item.path === file.path);
+    const index = sortedFiles.findIndex((item) => item.path === file.path);
     const anchorIndex = selectionAnchorRef.current
-      ? files.findIndex((item) => item.path === selectionAnchorRef.current)
+      ? sortedFiles.findIndex((item) => item.path === selectionAnchorRef.current)
       : -1;
     if (event.shiftKey && anchorIndex >= 0 && index >= 0) {
       const start = Math.min(anchorIndex, index);
       const end = Math.max(anchorIndex, index);
-      setSelected(files.slice(start, end + 1).map((item) => item.path));
+      setSelected(sortedFiles.slice(start, end + 1).map((item) => item.path));
       return;
     }
     if (event.ctrlKey || event.metaKey) {
@@ -2833,14 +2918,14 @@ function App() {
   // via the "Select all" button.
   const selectLocalFile = (file: FileItem, event: React.MouseEvent) => {
     setActivePane("local");
-    const index = localFiles.findIndex((item) => item.path === file.path);
+    const index = sortedLocalFiles.findIndex((item) => item.path === file.path);
     const anchorIndex = localSelectionAnchorRef.current
-      ? localFiles.findIndex((item) => item.path === localSelectionAnchorRef.current)
+      ? sortedLocalFiles.findIndex((item) => item.path === localSelectionAnchorRef.current)
       : -1;
     if (event.shiftKey && anchorIndex >= 0 && index >= 0) {
       const start = Math.min(anchorIndex, index);
       const end = Math.max(anchorIndex, index);
-      setLocalSelected(localFiles.slice(start, end + 1).map((item) => item.path));
+      setLocalSelected(sortedLocalFiles.slice(start, end + 1).map((item) => item.path));
       return;
     }
     if (event.ctrlKey || event.metaKey) {
@@ -3417,6 +3502,7 @@ function App() {
       currentPath: path,
       locationId: session.locationId,
       format: archiveFormat,
+      sessionName: activeManagedWorkspace?.name || "nFterm",
     })));
     const item: TransferQueueItem = {
       id,
@@ -4203,24 +4289,19 @@ function App() {
   };
 
 
-  // .zip compression/extraction. Collision-avoidance on the archive/output
-  // name is handled entirely on the Rust side (auto "_(n)" suffix) -- never
-  // by prompting here -- only the archive *name itself* is ever prompted.
+  // .zip compression/extraction. LOCAL archives use the active Session name
+  // and local timestamp; Rust adds the collision suffix without prompting.
   const compressLocalItems = () =>
     run(async () => {
       if (!localSelectedItems.length) return;
-      const defaultName = localSelectedItems.length === 1
-        ? localSelectedItems[0].name.replace(/\.[^./]+$/, "")
-        : "Archive";
-      const archiveName = window.prompt("Archive name", defaultName);
-      if (!archiveName?.trim()) return;
+      const archiveName = sessionArchiveName(activeManagedWorkspace?.name || "nFterm");
       const sourceLabel = `${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"} in LOCAL`;
       const destinationLabel = `LOCAL: ~/${localPath || ""}`;
       try {
         const finalName = await invoke<string>("local_compress_paths", {
           paths: localSelectedItems.map((item) => item.path),
           destinationFolder: localPath,
-          archiveName: archiveName.trim(),
+          archiveName,
         });
         await loadLocalFiles(localPath);
         writeOperationLog("compress", "completed", sourceLabel, destinationLabel, `Created ${finalName} in LOCAL.`);
@@ -4617,7 +4698,7 @@ function App() {
               </article>
             )}
 
-            {localFiles.map((file) => (
+            {sortedLocalFiles.map((file) => (
               <article
                 key={file.path}
                 data-path={file.path}
@@ -4691,7 +4772,7 @@ function App() {
             </button>
           )}
 
-          {localFiles.map((file) => (
+          {sortedLocalFiles.map((file) => (
             <button
               key={file.path}
               data-path={file.path}
@@ -5140,12 +5221,12 @@ function App() {
               ? setLocalSelected(
                   localSelected.length === localFiles.length
                     ? []
-                    : localFiles.map((file) => file.path),
+                    : sortedLocalFiles.map((file) => file.path),
                 )
               : setSelected(
                   selected.length === files.length
                     ? []
-                    : files.map((file) => file.path),
+                    : sortedFiles.map((file) => file.path),
                 )
           }
         >
@@ -5172,6 +5253,15 @@ function App() {
             Split
           </button>
         </span>
+        <SortControls
+          label={activePane === "local" ? "LOCAL sort" : "REMOTE sort"}
+          sortKey={activePane === "local" ? localSortKey : remoteSortKey}
+          direction={activePane === "local" ? localSortDirection : remoteSortDirection}
+          onSortKeyChange={activePane === "local" ? setLocalSortKey : setRemoteSortKey}
+          onDirectionChange={() => activePane === "local"
+            ? setLocalSortDirection((current) => current === "asc" ? "desc" : "asc")
+            : setRemoteSortDirection((current) => current === "asc" ? "desc" : "asc")}
+        />
         <button
           onClick={() => {
             void loadLocations();
@@ -5377,7 +5467,7 @@ function App() {
                   </article>
                 )}
 
-                {files.map((file) => (
+                {sortedFiles.map((file) => (
                   <article
                     key={file.path}
                     data-path={file.path}
@@ -5484,7 +5574,7 @@ function App() {
                     </tr>
                   )}
 
-                  {files.map((file) => (
+                  {sortedFiles.map((file) => (
                     <tr
                       key={file.path}
                       data-path={file.path}

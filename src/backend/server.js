@@ -30,6 +30,8 @@ const { createLogger, systemLogger } = require('./utils/logger');
 const certificateManager = require('./ssl/certificate-manager');
 const sanManager = require('./ssl/san-manager');
 const pidManager = require('./utils/pid-manager');
+const { modifiedTimestamp, normalizeSort, sortFiles } = require('./utils/file-sorting');
+const { archiveFilename, contentDisposition } = require('./utils/archive-filename');
 const { getVersion } = require('../../scripts/version');
 
 
@@ -981,7 +983,9 @@ app.get('/api/files', authenticate, async (req, res) => {
   const requestStartTime = Date.now(); // Performance monitoring
 
   try {
-    const { path: requestPath, offset, limit } = req.query;
+    const { path: requestPath, offset, limit, sort, order } = req.query;
+    const hasPagination = offset !== undefined || limit !== undefined;
+    const normalizedSort = normalizeSort(sort, order);
     const context = await getStorageContext(req, requestPath || '', 'list');
     const { locationId, rootPath: storageRoot, targetPath, fileSystem: locationFileSystem } = context;
 
@@ -1007,54 +1011,41 @@ app.get('/api/files', authenticate, async (req, res) => {
       setTimeout(() => reject(new Error('Request timeout')), 30000);
     });
 
-    // OPTIMIZATION: Support pagination parameters
+    // Fetch the complete directory before sorting so pagination cannot cut the
+    // result set in the wrong order. The cache already stores full directories;
+    // slicing is performed below after the shared comparator runs.
     const listOptions = {};
-    if (offset !== undefined) {
-      listOptions.offset = parseInt(offset) || 0;
-    }
-    if (limit !== undefined) {
-      listOptions.limit = parseInt(limit) || 1000;
-    }
-
     const rawFiles = await Promise.race([
       locationFileSystem.list(targetPath, listOptions),
       timeoutPromise
     ]);
 
-    // Handle paginated response
-    let transformedFiles, paginationInfo;
-    if (rawFiles && rawFiles.files !== undefined) {
-      // Paginated response
-      transformedFiles = rawFiles.files.map(file => {
-        const relativePath = path.relative(storageRoot, file.path);
-        return {
-          ...file,
-          name: path.basename(file.path),
-          path: relativePath,
-          isDirectory: file.isDirectory === 'true' || file.isDirectory === true,
-          size: parseInt(file.size) || 0,
-          modified: parseInt(file.modified) || 0
-        };
-      });
-      paginationInfo = {
-        total: rawFiles.total,
-        offset: rawFiles.offset,
-        limit: rawFiles.limit,
-        hasMore: rawFiles.hasMore
+    const rawList = rawFiles && rawFiles.files !== undefined ? rawFiles.files : rawFiles;
+    const transformedAllFiles = rawList.map(file => {
+      const relativePath = path.relative(storageRoot, file.path);
+      return {
+        ...file,
+        name: path.basename(file.path),
+        path: relativePath,
+        isDirectory: file.isDirectory === 'true' || file.isDirectory === true,
+        size: Number(file.size) || 0,
+        modified: modifiedTimestamp(file.modified)
       };
-    } else {
-      // Non-paginated response (legacy)
-      transformedFiles = rawFiles.map(file => {
-        const relativePath = path.relative(storageRoot, file.path);
-        return {
-          ...file,
-          name: path.basename(file.path),
-          path: relativePath,
-          isDirectory: file.isDirectory === 'true' || file.isDirectory === true,
-          size: parseInt(file.size) || 0,
-          modified: parseInt(file.modified) || 0
-        };
-      });
+    });
+    const sortedFiles = sortFiles(transformedAllFiles, normalizedSort.sort, normalizedSort.order);
+    let transformedFiles = sortedFiles;
+    let paginationInfo;
+    if (hasPagination) {
+      const requestedOffset = Math.max(0, parseInt(offset) || 0);
+      const requestedLimit = parseInt(limit);
+      const effectiveLimit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : sortedFiles.length;
+      transformedFiles = sortedFiles.slice(requestedOffset, requestedOffset + effectiveLimit);
+      paginationInfo = {
+        total: sortedFiles.length,
+        offset: requestedOffset,
+        limit: effectiveLimit,
+        hasMore: requestedOffset + effectiveLimit < sortedFiles.length
+      };
     }
 
     // Return in the format expected by FileBrowser
@@ -1373,7 +1364,7 @@ app.post('/api/archive', authenticate, async (req, res) => {
   let archiveFormat = 'zip';
   let items = [];
   try {
-    ({ items, currentPath = '', format = 'zip' } = req.body);
+    ({ items, currentPath = '', format = 'zip', sessionName = '' } = req.body);
     archiveFormat = format === 'tar.gz' ? 'tar.gz' : 'zip';
 
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -1396,23 +1387,9 @@ app.post('/api/archive', authenticate, async (req, res) => {
       resolvedItems.push({ item, itemPath: itemContext.targetPath });
     }
 
-    // Determine archive filename based on selection
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const sanitizeName = (name) => name.replace(/[\r\n]/g, '').trim();
-    archiveFileName = `archive_${timestamp}.${archiveFormat}`;
-
-    if (items.length === 1) {
-      const singleItem = items[0];
-      const safeName = sanitizeName(singleItem.name || 'archive');
-      const baseName = safeName.replace(/[\\/]/g, '');
-
-      if (singleItem.isDirectory) {
-        archiveFileName = `${baseName}.${archiveFormat}`;
-      } else {
-        const extension = archiveFormat === 'tar.gz' ? '.tar.gz' : '.zip';
-        archiveFileName = baseName.toLowerCase().endsWith(extension) ? baseName : `${baseName}${extension}`;
-      }
-    }
+    // WebUI does not provide a Session name; nFterm supplies one only when
+    // an archive is being downloaded into its LOCAL pane.
+    archiveFileName = archiveFilename(sessionName, archiveFormat);
 
     // Validate every source before sending headers so clients receive useful JSON errors.
     for (const { item, itemPath } of resolvedItems) {
@@ -1426,7 +1403,7 @@ app.post('/api/archive', authenticate, async (req, res) => {
     }
 
     res.setHeader('Content-Type', archiveFormat === 'tar.gz' ? 'application/gzip' : 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="${archiveFileName}"`);
+    res.setHeader('Content-Disposition', contentDisposition(archiveFileName));
 
     // Create archiver instance
     const archive = archiveFormat === 'tar.gz'

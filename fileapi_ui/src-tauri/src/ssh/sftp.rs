@@ -23,11 +23,10 @@ use tokio::sync::Mutex as AsyncMutex;
 /// opens with `CREATE | TRUNCATE | WRITE`, which is what every upload path
 /// here actually needs.
 async fn write_remote_file(sftp: &SftpSession, path: String, data: &[u8]) -> Result<(), String> {
-    let mut file = sftp
-        .create(path)
+    let mut file = sftp.create(path).await.map_err(|error| error.to_string())?;
+    file.write_all(data)
         .await
         .map_err(|error| error.to_string())?;
-    file.write_all(data).await.map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -44,13 +43,25 @@ fn sftp_sessions() -> &'static Arc<AsyncMutex<HashMap<String, SftpConnection>>> 
 
 async fn open_connection(profile: &SshProfile) -> Result<SftpConnection, String> {
     let label = super::profile_label(profile);
-    crate::oplog::log("DEBUG", "sftp_connect", "started", &label, "sftp", "Opening a new SFTP connection.");
+    crate::oplog::log(
+        "DEBUG",
+        "sftp_connect",
+        "started",
+        &label,
+        "sftp",
+        "Opening a new SFTP connection.",
+    );
     let handler = ClientHandler {
         host: profile.host.clone(),
         port: profile.port,
     };
     let addr = format!("{}:{}", profile.host, profile.port);
-    let mut handle = match tokio::time::timeout(super::CONNECT_TIMEOUT, client::connect(default_config(), addr, handler)).await {
+    let mut handle = match tokio::time::timeout(
+        super::CONNECT_TIMEOUT,
+        client::connect(default_config(), addr, handler),
+    )
+    .await
+    {
         Ok(Ok(handle)) => handle,
         Ok(Err(error)) => {
             let message = format!("Unable to connect: {error}");
@@ -64,7 +75,14 @@ async fn open_connection(profile: &SshProfile) -> Result<SftpConnection, String>
         }
     };
     if let Err(error) = authenticate(&mut handle, profile).await {
-        crate::oplog::log("ERROR", "sftp_connect", "failed", &label, "sftp", &format!("Authentication failed: {error}"));
+        crate::oplog::log(
+            "ERROR",
+            "sftp_connect",
+            "failed",
+            &label,
+            "sftp",
+            &format!("Authentication failed: {error}"),
+        );
         return Err(error);
     }
     let channel = handle
@@ -78,7 +96,14 @@ async fn open_connection(profile: &SshProfile) -> Result<SftpConnection, String>
     let sftp = SftpSession::new(channel.into_stream())
         .await
         .map_err(|error| error.to_string())?;
-    crate::oplog::log("INFO", "sftp_connect", "connected", &label, "sftp", "SFTP session established.");
+    crate::oplog::log(
+        "INFO",
+        "sftp_connect",
+        "connected",
+        &label,
+        "sftp",
+        "SFTP session established.",
+    );
     Ok(SftpConnection { handle, sftp })
 }
 
@@ -98,7 +123,10 @@ pub async fn ensure_connected(profile: &SshProfile) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn list_directory(profile: SshProfile, path: String) -> Result<crate::LocalDirectory, String> {
+pub async fn list_directory(
+    profile: SshProfile,
+    path: String,
+) -> Result<crate::LocalDirectory, String> {
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
@@ -164,7 +192,14 @@ pub async fn disconnect(entry_id: String) -> Result<(), String> {
             .handle
             .disconnect(russh::Disconnect::ByApplication, "", "en")
             .await;
-        crate::oplog::log("INFO", "sftp_connect", "disconnected", "sftp", "", &format!("SFTP session for entry {entry_id} was disconnected."));
+        crate::oplog::log(
+            "INFO",
+            "sftp_connect",
+            "disconnected",
+            "sftp",
+            "",
+            &format!("SFTP session for entry {entry_id} was disconnected."),
+        );
     }
     Ok(())
 }
@@ -228,7 +263,14 @@ pub async fn upload_file(
 /// directory is not treated as an error.
 pub async fn create_directory(profile: SshProfile, path: String) -> Result<(), String> {
     let label = super::profile_label(&profile);
-    crate::oplog::log("DEBUG", "create_folder", "started", &format!("SSH: {label}"), &path, "Creating a remote folder over SFTP.");
+    crate::oplog::log(
+        "DEBUG",
+        "create_folder",
+        "started",
+        &format!("SSH: {label}"),
+        &path,
+        "Creating a remote folder over SFTP.",
+    );
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
@@ -243,7 +285,11 @@ pub async fn create_directory(profile: SshProfile, path: String) -> Result<(), S
     let mut built = String::new();
     for segment in path.split('/').filter(|segment| !segment.is_empty()) {
         built = if built.is_empty() {
-            if is_absolute { format!("/{segment}") } else { segment.to_string() }
+            if is_absolute {
+                format!("/{segment}")
+            } else {
+                segment.to_string()
+            }
         } else {
             format!("{built}/{segment}")
         };
@@ -251,18 +297,39 @@ pub async fn create_directory(profile: SshProfile, path: String) -> Result<(), S
     }
     match connection.sftp.metadata(path.clone()).await {
         Ok(metadata) if metadata.is_dir() => {
-            crate::oplog::log("INFO", "create_folder", "completed", &format!("SSH: {label}"), &path, "Remote folder created.");
-    Ok(())
-}
+            crate::oplog::log(
+                "INFO",
+                "create_folder",
+                "completed",
+                &format!("SSH: {label}"),
+                &path,
+                "Remote folder created.",
+            );
+            Ok(())
+        }
 
         Ok(_) => {
             let message = format!("{path} exists and is not a directory");
-            crate::oplog::log("ERROR", "create_folder", "failed", &format!("SSH: {label}"), &path, &message);
+            crate::oplog::log(
+                "ERROR",
+                "create_folder",
+                "failed",
+                &format!("SSH: {label}"),
+                &path,
+                &message,
+            );
             Err(message)
         }
         Err(error) => {
             let message = error.to_string();
-            crate::oplog::log("ERROR", "create_folder", "failed", &format!("SSH: {label}"), &path, &message);
+            crate::oplog::log(
+                "ERROR",
+                "create_folder",
+                "failed",
+                &format!("SSH: {label}"),
+                &path,
+                &message,
+            );
             Err(message)
         }
     }
@@ -271,7 +338,11 @@ pub async fn create_directory(profile: SshProfile, path: String) -> Result<(), S
 /// Recursively delete a remote file or directory. There is no remote Trash,
 /// so this operation cannot be undone -- callers must warn the user before
 /// invoking it (see the desktop UI's delete confirmation).
-pub async fn delete_path(profile: SshProfile, path: String, is_directory: bool) -> Result<(), String> {
+pub async fn delete_path(
+    profile: SshProfile,
+    path: String,
+    is_directory: bool,
+) -> Result<(), String> {
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
@@ -280,11 +351,21 @@ pub async fn delete_path(profile: SshProfile, path: String, is_directory: bool) 
     delete_recursive(&connection.sftp, &path, is_directory).await
 }
 
-async fn delete_recursive(sftp: &SftpSession, path: &str, is_directory: bool) -> Result<(), String> {
+async fn delete_recursive(
+    sftp: &SftpSession,
+    path: &str,
+    is_directory: bool,
+) -> Result<(), String> {
     if !is_directory {
-        return sftp.remove_file(path).await.map_err(|error| error.to_string());
+        return sftp
+            .remove_file(path)
+            .await
+            .map_err(|error| error.to_string());
     }
-    let entries = sftp.read_dir(path).await.map_err(|error| error.to_string())?;
+    let entries = sftp
+        .read_dir(path)
+        .await
+        .map_err(|error| error.to_string())?;
     for entry in entries {
         let name = entry.file_name();
         if name == "." || name == ".." {
@@ -294,15 +375,28 @@ async fn delete_recursive(sftp: &SftpSession, path: &str, is_directory: bool) ->
         let child_is_dir = entry.metadata().is_dir();
         Box::pin(delete_recursive(sftp, &child_path, child_is_dir)).await?;
     }
-    sftp.remove_dir(path).await.map_err(|error| error.to_string())
+    sftp.remove_dir(path)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Rename/move a remote path. Used both for plain renames and for drag-drop
 /// moves within the same SSH host (cross-source moves between SSH and API
 /// Remote are not attempted -- those are upload/download operations).
-pub async fn rename_path(profile: SshProfile, old_path: String, new_path: String) -> Result<String, String> {
+pub async fn rename_path(
+    profile: SshProfile,
+    old_path: String,
+    new_path: String,
+) -> Result<String, String> {
     let label = super::profile_label(&profile);
-    crate::oplog::log("DEBUG", "rename", "started", &format!("SSH: {label}:{old_path}"), &new_path, "Renaming/moving a remote path over SFTP.");
+    crate::oplog::log(
+        "DEBUG",
+        "rename",
+        "started",
+        &format!("SSH: {label}:{old_path}"),
+        &new_path,
+        "Renaming/moving a remote path over SFTP.",
+    );
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
@@ -316,15 +410,15 @@ pub async fn rename_path(profile: SshProfile, old_path: String, new_path: String
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "Invalid remote path".to_string())?
             .to_string();
-        let parent = final_path
-            .rsplitn(2, '/')
-            .nth(1)
-            .unwrap_or("")
-            .to_string();
+        let parent = final_path.rsplitn(2, '/').nth(1).unwrap_or("").to_string();
         let mut attempt = 1;
         loop {
             let candidate_name = crate::dedupe_candidate_name(&name, attempt);
-            let candidate = if parent.is_empty() { format!("/{candidate_name}") } else { format!("{parent}/{candidate_name}") };
+            let candidate = if parent.is_empty() {
+                format!("/{candidate_name}")
+            } else {
+                format!("{parent}/{candidate_name}")
+            };
             if connection.sftp.metadata(candidate.clone()).await.is_err() {
                 final_path = candidate;
                 break;
@@ -338,8 +432,22 @@ pub async fn rename_path(profile: SshProfile, old_path: String, new_path: String
         .await
         .map_err(|error| error.to_string());
     match &result {
-        Ok(()) => crate::oplog::log("INFO", "rename", "completed", &format!("SSH: {label}:{old_path}"), &final_path, "Remote rename/move completed."),
-        Err(error) => crate::oplog::log("ERROR", "rename", "failed", &format!("SSH: {label}:{old_path}"), &final_path, error),
+        Ok(()) => crate::oplog::log(
+            "INFO",
+            "rename",
+            "completed",
+            &format!("SSH: {label}:{old_path}"),
+            &final_path,
+            "Remote rename/move completed.",
+        ),
+        Err(error) => crate::oplog::log(
+            "ERROR",
+            "rename",
+            "failed",
+            &format!("SSH: {label}:{old_path}"),
+            &final_path,
+            error,
+        ),
     }
     result.map(|()| final_path)
 }
@@ -364,7 +472,9 @@ pub async fn upload_path(
         .sftp
         .canonicalize(&remote_destination_folder)
         .await
-        .map_err(|error| format!("Unable to resolve remote upload folder {remote_destination_folder:?}: {error}"))?;
+        .map_err(|error| {
+            format!("Unable to resolve remote upload folder {remote_destination_folder:?}: {error}")
+        })?;
     let remote_path = |name: &str| {
         if destination_root == "/" {
             format!("/{name}")
@@ -381,7 +491,12 @@ pub async fn upload_path(
         let mut candidate_name = initial_name;
         let mut attempt = 1;
         loop {
-            if connection.sftp.metadata(remote_path(&candidate_name)).await.is_err() {
+            if connection
+                .sftp
+                .metadata(remote_path(&candidate_name))
+                .await
+                .is_err()
+            {
                 return candidate_name;
             }
             candidate_name = crate::dedupe_candidate_name(&candidate_name, attempt);
@@ -411,7 +526,9 @@ pub async fn upload_path(
                     .sftp
                     .create_dir(remote_dir.clone())
                     .await
-                    .map_err(|error| format!("Unable to create remote folder {remote_dir:?}: {error}"))?;
+                    .map_err(|error| {
+                        format!("Unable to create remote folder {remote_dir:?}: {error}")
+                    })?;
             }
         }
         for (local_file, relative) in &files {
@@ -497,7 +614,10 @@ async fn download_recursive(
 ) -> Result<(), String> {
     let local_dir = destination_root.join(relative_prefix);
     std::fs::create_dir_all(&local_dir).map_err(|error| error.to_string())?;
-    let entries = sftp.read_dir(remote_path).await.map_err(|error| error.to_string())?;
+    let entries = sftp
+        .read_dir(remote_path)
+        .await
+        .map_err(|error| error.to_string())?;
     for entry in entries {
         let name = entry.file_name();
         if name == "." || name == ".." {
@@ -506,9 +626,18 @@ async fn download_recursive(
         let child_remote = format!("{}/{}", remote_path.trim_end_matches('/'), name);
         let child_relative = format!("{relative_prefix}/{name}");
         if entry.metadata().is_dir() {
-            Box::pin(download_recursive(sftp, &child_remote, destination_root, &child_relative)).await?;
+            Box::pin(download_recursive(
+                sftp,
+                &child_remote,
+                destination_root,
+                &child_relative,
+            ))
+            .await?;
         } else {
-            let data = sftp.read(child_remote).await.map_err(|error| error.to_string())?;
+            let data = sftp
+                .read(child_remote)
+                .await
+                .map_err(|error| error.to_string())?;
             let local_file = destination_root.join(&child_relative);
             if let Some(parent) = local_file.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -528,7 +657,10 @@ fn shell_quote(value: &str) -> String {
 /// Run `command` on the remote host over a fresh exec channel on the same
 /// already-authenticated connection (no second handshake), returning its
 /// exit status and anything written to stderr.
-async fn exec_command(handle: &client::Handle<ClientHandler>, command: &str) -> Result<(Option<u32>, String), String> {
+async fn exec_command(
+    handle: &client::Handle<ClientHandler>,
+    command: &str,
+) -> Result<(Option<u32>, String), String> {
     let channel = handle
         .channel_open_session()
         .await
@@ -542,7 +674,9 @@ async fn exec_command(handle: &client::Handle<ClientHandler>, command: &str) -> 
     let mut channel = channel;
     loop {
         match channel.wait().await {
-            Some(ChannelMsg::ExitStatus { exit_status: status }) => exit_status = Some(status),
+            Some(ChannelMsg::ExitStatus {
+                exit_status: status,
+            }) => exit_status = Some(status),
             Some(ChannelMsg::ExtendedData { data, .. }) => {
                 stderr_text.push_str(&String::from_utf8_lossy(&data));
             }
@@ -572,11 +706,11 @@ pub async fn compress_paths(
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
 
-    let base_name = if archive_name.trim().is_empty() {
-        "Archive".to_string()
+    let base_name = crate::sanitize_archive_name(if archive_name.trim().is_empty() {
+        "Archive"
     } else {
-        archive_name.trim().to_string()
-    };
+        archive_name.trim()
+    });
     let zip_name = if base_name.to_lowercase().ends_with(".zip") {
         base_name
     } else {
@@ -591,7 +725,12 @@ pub async fn compress_paths(
     };
     let mut final_name = zip_name.clone();
     let mut attempt = 1;
-    while connection.sftp.metadata(dest_path_for(&final_name)).await.is_ok() {
+    while connection
+        .sftp
+        .metadata(dest_path_for(&final_name))
+        .await
+        .is_ok()
+    {
         final_name = crate::dedupe_candidate_name(&zip_name, attempt);
         attempt += 1;
     }
@@ -612,18 +751,41 @@ pub async fn compress_paths(
         shell_quote(&final_name),
         relative_names.join(" "),
     );
-    crate::oplog::log("DEBUG", "compress", "started", &format!("SSH: {label}:{destination_folder}"), &final_name, "Compressing remote item(s) with zip.");
+    crate::oplog::log(
+        "DEBUG",
+        "compress",
+        "started",
+        &format!("SSH: {label}:{destination_folder}"),
+        &final_name,
+        "Compressing remote item(s) with zip.",
+    );
     let (exit_status, stderr) = exec_command(&connection.handle, &remote_command).await?;
     if exit_status != Some(0) {
         let message = format!(
             "Remote zip command failed (exit {}). Is 'zip' installed on the remote host? {}",
-            exit_status.map(|code| code.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            exit_status
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
             stderr.trim(),
         );
-        crate::oplog::log("ERROR", "compress", "failed", &format!("SSH: {label}:{destination_folder}"), &final_name, &message);
+        crate::oplog::log(
+            "ERROR",
+            "compress",
+            "failed",
+            &format!("SSH: {label}:{destination_folder}"),
+            &final_name,
+            &message,
+        );
         return Err(message);
     }
-    crate::oplog::log("INFO", "compress", "completed", &format!("SSH: {label}:{destination_folder}"), &final_name, "Remote compression completed.");
+    crate::oplog::log(
+        "INFO",
+        "compress",
+        "completed",
+        &format!("SSH: {label}:{destination_folder}"),
+        &final_name,
+        "Remote compression completed.",
+    );
     Ok(final_name)
 }
 
@@ -660,7 +822,12 @@ pub async fn extract_archive(
     };
     let mut final_name = stem.clone();
     let mut attempt = 1;
-    while connection.sftp.metadata(dest_path_for(&final_name)).await.is_ok() {
+    while connection
+        .sftp
+        .metadata(dest_path_for(&final_name))
+        .await
+        .is_ok()
+    {
         final_name = crate::dedupe_candidate_name(&stem, attempt);
         attempt += 1;
     }
@@ -671,17 +838,39 @@ pub async fn extract_archive(
         shell_quote(&dest_path_for(&final_name)),
         shell_quote(&archive_path),
     );
-    crate::oplog::log("DEBUG", "extract", "started", &format!("SSH: {label}:{archive_path}"), &final_name, "Extracting remote archive with unzip.");
+    crate::oplog::log(
+        "DEBUG",
+        "extract",
+        "started",
+        &format!("SSH: {label}:{archive_path}"),
+        &final_name,
+        "Extracting remote archive with unzip.",
+    );
     let (exit_status, stderr) = exec_command(&connection.handle, &remote_command).await?;
     if exit_status != Some(0) {
-        let message = format!(
+        let message =
+            format!(
             "Remote unzip command failed (exit {}). Is 'unzip' installed on the remote host? {}",
             exit_status.map(|code| code.to_string()).unwrap_or_else(|| "unknown".to_string()),
             stderr.trim(),
         );
-        crate::oplog::log("ERROR", "extract", "failed", &format!("SSH: {label}:{archive_path}"), &final_name, &message);
+        crate::oplog::log(
+            "ERROR",
+            "extract",
+            "failed",
+            &format!("SSH: {label}:{archive_path}"),
+            &final_name,
+            &message,
+        );
         return Err(message);
     }
-    crate::oplog::log("INFO", "extract", "completed", &format!("SSH: {label}:{archive_path}"), &final_name, "Remote extraction completed.");
+    crate::oplog::log(
+        "INFO",
+        "extract",
+        "completed",
+        &format!("SSH: {label}:{archive_path}"),
+        &final_name,
+        "Remote extraction completed.",
+    );
     Ok(final_name)
 }

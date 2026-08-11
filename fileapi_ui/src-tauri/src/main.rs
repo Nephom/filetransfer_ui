@@ -180,11 +180,7 @@ fn apply_headers(
 
 async fn response_from(response: reqwest::Response) -> Result<ApiResponse, String> {
     let status = response.status().as_u16();
-    let body = response
-        .bytes()
-        .await
-        .map_err(describe_error)?
-        .to_vec();
+    let body = response.bytes().await.map_err(describe_error)?.to_vec();
     Ok(ApiResponse { status, body })
 }
 
@@ -227,6 +223,13 @@ async fn pick_upload_files() -> Result<Vec<String>, String> {
 /// unrelated file that happens to share its destination name.
 pub fn dedupe_candidate_name(name: &str, attempt: u32) -> String {
     let path = Path::new(name);
+    let value = path.to_string_lossy();
+    if let Some(stem) = value
+        .strip_suffix(".tar.gz")
+        .or_else(|| value.strip_suffix(".TAR.GZ"))
+    {
+        return format!("{stem}_({attempt}).tar.gz");
+    }
     let stem = path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -235,6 +238,100 @@ pub fn dedupe_candidate_name(name: &str, attempt: u32) -> String {
         Some(extension) => format!("{stem}_({attempt}).{extension}"),
         None => format!("{stem}_({attempt})"),
     }
+}
+
+pub fn sanitize_archive_name(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+            {
+                '-'
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .trim_end_matches([' ', '.'])
+        .to_string();
+    if sanitized.is_empty() {
+        "nFterm".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn create_unique_file(path: &Path) -> Result<(PathBuf, std::fs::File), String> {
+    let mut candidate = path.to_path_buf();
+    let mut attempt = 1;
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                candidate =
+                    path.parent()
+                        .unwrap_or_else(|| Path::new(""))
+                        .join(dedupe_candidate_name(
+                            path.file_name()
+                                .and_then(|value| value.to_str())
+                                .unwrap_or("download"),
+                            attempt,
+                        ));
+                attempt += 1;
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let high = (bytes[index + 1] as char).to_digit(16);
+            let low = (bytes[index + 2] as char).to_digit(16);
+            if let (Some(high), Some(low)) = (high, low) {
+                decoded.push(((high << 4) | low) as u8);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+fn content_disposition_filename(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let value = headers
+        .get(reqwest::header::CONTENT_DISPOSITION)?
+        .to_str()
+        .ok()?;
+    let mut fallback = None;
+    for part in value.split(';').map(str::trim) {
+        let Some((key, raw)) = part.split_once('=') else {
+            continue;
+        };
+        let candidate = raw.trim().trim_matches('"');
+        if key.eq_ignore_ascii_case("filename*") {
+            let encoded = candidate.strip_prefix("UTF-8''").unwrap_or(candidate);
+            return Some(percent_decode(encoded));
+        }
+        if key.eq_ignore_ascii_case("filename") {
+            fallback = Some(candidate.to_string());
+        }
+    }
+    fallback
 }
 
 fn local_home() -> Result<PathBuf, String> {
@@ -293,13 +390,19 @@ mod verbatim_prefix_tests {
     #[test]
     fn strips_the_plain_verbatim_drive_prefix() {
         let input = PathBuf::from(r"\\?\C:\Users\Administrator");
-        assert_eq!(strip_verbatim_prefix(input), PathBuf::from(r"C:\Users\Administrator"));
+        assert_eq!(
+            strip_verbatim_prefix(input),
+            PathBuf::from(r"C:\Users\Administrator")
+        );
     }
 
     #[test]
     fn rewrites_the_verbatim_unc_prefix_to_a_plain_unc_path() {
         let input = PathBuf::from(r"\\?\UNC\server\share\folder");
-        assert_eq!(strip_verbatim_prefix(input), PathBuf::from(r"\\server\share\folder"));
+        assert_eq!(
+            strip_verbatim_prefix(input),
+            PathBuf::from(r"\\server\share\folder")
+        );
     }
 
     #[test]
@@ -384,7 +487,6 @@ fn list_local_roots() -> Vec<String> {
     }
 }
 
-
 fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
     let input = Path::new(path);
     if input
@@ -395,7 +497,10 @@ fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
     }
     if input.is_absolute() {
         if !is_elevated() {
-            return Err("Local transfer path must remain inside the current user's home directory".to_string());
+            return Err(
+                "Local transfer path must remain inside the current user's home directory"
+                    .to_string(),
+            );
         }
         return canonicalize(input);
     }
@@ -403,7 +508,9 @@ fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
     let candidate = home.join(input);
     let resolved = canonicalize(&candidate)?;
     if !resolved.starts_with(&home) {
-        return Err("Local transfer path must remain inside the current user's home directory".to_string());
+        return Err(
+            "Local transfer path must remain inside the current user's home directory".to_string(),
+        );
     }
     Ok(resolved)
 }
@@ -426,7 +533,10 @@ fn resolve_local_download_destination(path: &str) -> Result<PathBuf, String> {
     }
     if input.is_absolute() {
         if !is_elevated() {
-            return Err("Local transfer path must remain inside the current user's home directory".to_string());
+            return Err(
+                "Local transfer path must remain inside the current user's home directory"
+                    .to_string(),
+            );
         }
         std::fs::create_dir_all(input).map_err(|error| error.to_string())?;
         return canonicalize(input);
@@ -436,7 +546,9 @@ fn resolve_local_download_destination(path: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&candidate).map_err(|error| error.to_string())?;
     let resolved = canonicalize(&candidate)?;
     if !resolved.starts_with(&home) {
-        return Err("Local transfer path must remain inside the current user's home directory".to_string());
+        return Err(
+            "Local transfer path must remain inside the current user's home directory".to_string(),
+        );
     }
     Ok(resolved)
 }
@@ -455,7 +567,10 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
     }
     if input.is_absolute() {
         if !is_elevated() {
-            return Err("Local transfer path must remain inside the current user's home directory".to_string());
+            return Err(
+                "Local transfer path must remain inside the current user's home directory"
+                    .to_string(),
+            );
         }
         let name = input
             .file_name()
@@ -480,7 +595,9 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
             .ok_or_else(|| "Invalid local path".to_string())?,
     )?;
     if !parent.starts_with(&home) {
-        return Err("Local transfer path must remain inside the current user's home directory".to_string());
+        return Err(
+            "Local transfer path must remain inside the current user's home directory".to_string(),
+        );
     }
     Ok(parent.join(name))
 }
@@ -556,7 +673,12 @@ fn add_path_to_zip<W: std::io::Write + std::io::Seek>(
                 .to_str()
                 .ok_or_else(|| "Compress path contains a non-UTF-8 filename".to_string())?
                 .to_string();
-            add_path_to_zip(writer, &entry.path(), &format!("{name}/{child_name}"), options)?;
+            add_path_to_zip(
+                writer,
+                &entry.path(),
+                &format!("{name}/{child_name}"),
+                options,
+            )?;
         }
     } else if metadata.is_file() {
         writer
@@ -572,7 +694,11 @@ fn add_path_to_zip<W: std::io::Write + std::io::Seek>(
 /// into a new `<archive_name>.zip` in `destination_folder`. Collision
 /// avoidance auto-appends "_(n)" to the archive name -- it never prompts.
 #[tauri::command]
-fn local_compress_paths(paths: Vec<String>, destination_folder: String, archive_name: String) -> Result<String, String> {
+fn local_compress_paths(
+    paths: Vec<String>,
+    destination_folder: String,
+    archive_name: String,
+) -> Result<String, String> {
     let destination_dir = resolve_local_transfer_path(&destination_folder)?;
     if !destination_dir.is_dir() {
         return Err("Destination is not a folder".to_string());
@@ -590,8 +716,16 @@ fn local_compress_paths(paths: Vec<String>, destination_folder: String, archive_
         })
         .collect::<Result<Vec<_>, String>>()?;
 
-    let base_name = if archive_name.trim().is_empty() { "Archive".to_string() } else { archive_name.trim().to_string() };
-    let zip_name = if base_name.to_lowercase().ends_with(".zip") { base_name } else { format!("{base_name}.zip") };
+    let base_name = sanitize_archive_name(if archive_name.trim().is_empty() {
+        "Archive"
+    } else {
+        archive_name.trim()
+    });
+    let zip_name = if base_name.to_lowercase().ends_with(".zip") {
+        base_name
+    } else {
+        format!("{base_name}.zip")
+    };
     let mut final_name = zip_name.clone();
     let mut attempt = 1;
     while destination_dir.join(&final_name).exists() {
@@ -602,7 +736,8 @@ fn local_compress_paths(paths: Vec<String>, destination_folder: String, archive_
     let archive_path = destination_dir.join(&final_name);
     let file = std::fs::File::create(&archive_path).map_err(|error| error.to_string())?;
     let mut writer = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
     for (resolved, name) in &items {
         add_path_to_zip(&mut writer, resolved, name, options)?;
     }
@@ -636,7 +771,9 @@ fn local_extract_archive(path: String, destination_folder: String) -> Result<Str
 
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
-        let Some(entry_path) = entry.enclosed_name() else { continue };
+        let Some(entry_path) = entry.enclosed_name() else {
+            continue;
+        };
         let out_path = target_root.join(entry_path);
         if entry.is_dir() {
             std::fs::create_dir_all(&out_path).map_err(|error| error.to_string())?;
@@ -644,7 +781,8 @@ fn local_extract_archive(path: String, destination_folder: String) -> Result<Str
             if let Some(parent) = out_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
             }
-            let mut out_file = std::fs::File::create(&out_path).map_err(|error| error.to_string())?;
+            let mut out_file =
+                std::fs::File::create(&out_path).map_err(|error| error.to_string())?;
             std::io::copy(&mut entry, &mut out_file).map_err(|error| error.to_string())?;
         }
     }
@@ -695,7 +833,11 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
             let name = entry.file_name().to_str()?.to_string();
             let child = directory.join(&name);
             let child_path = match &root {
-                Some(root) => child.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/"),
+                Some(root) => child
+                    .strip_prefix(root)
+                    .ok()?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
                 None => child.to_string_lossy().replace('\\', "/"),
             };
             let modified = metadata
@@ -811,7 +953,8 @@ async fn download_to_disk(
             .unwrap_or_else(|_| "Download failed".to_string()));
     }
     let bytes_total = response.content_length();
-    let safe_name = std::path::Path::new(&file_name)
+    let response_name = content_disposition_filename(response.headers()).unwrap_or(file_name);
+    let safe_name = std::path::Path::new(&response_name)
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
@@ -823,8 +966,8 @@ async fn download_to_disk(
     // Unlike `resolve_local_transfer_path`, this creates the folder first if
     // it doesn't exist yet (e.g. a first-time literal "Downloads").
     let destination_root = resolve_local_download_destination(&destination_folder)?;
-    let destination = destination_root.join(safe_name);
-    let mut file = std::fs::File::create(&destination).map_err(|error| error.to_string())?;
+    let requested_destination = destination_root.join(safe_name);
+    let (destination, mut file) = create_unique_file(&requested_destination)?;
     let mut bytes_completed: u64 = 0;
     let mut last_emit = Instant::now();
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
@@ -833,14 +976,22 @@ async fn download_to_disk(
         if last_emit.elapsed().as_millis() >= 200 {
             let _ = app.emit(
                 "download-progress",
-                DownloadProgressEvent { transfer_id: transfer_id.clone(), bytes_completed, bytes_total },
+                DownloadProgressEvent {
+                    transfer_id: transfer_id.clone(),
+                    bytes_completed,
+                    bytes_total,
+                },
             );
             last_emit = Instant::now();
         }
     }
     let _ = app.emit(
         "download-progress",
-        DownloadProgressEvent { transfer_id, bytes_completed, bytes_total },
+        DownloadProgressEvent {
+            transfer_id,
+            bytes_completed,
+            bytes_total,
+        },
     );
     Ok(destination.display().to_string())
 }
@@ -891,11 +1042,11 @@ async fn download_to_disk_at(
         return Err("Invalid destination path for queued download".to_string());
     }
     let destination_root = resolve_local_download_destination(&destination_folder)?;
-    let destination = destination_root.join(relative);
-    if let Some(parent) = destination.parent() {
+    let requested_destination = destination_root.join(relative);
+    if let Some(parent) = requested_destination.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let mut file = std::fs::File::create(&destination).map_err(|error| error.to_string())?;
+    let (destination, mut file) = create_unique_file(&requested_destination)?;
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
         file.write_all(&chunk).map_err(|error| error.to_string())?;
     }
@@ -981,7 +1132,9 @@ async fn download_to_drag_staging_at(
     }
     let safe_set_id: String = set_id
         .chars()
-        .filter(|character| character.is_ascii_alphanumeric() || *character == '-' || *character == '_')
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || *character == '-' || *character == '_'
+        })
         .collect();
     if safe_set_id.is_empty() {
         return Err("Invalid drag staging set identifier".to_string());
@@ -1021,8 +1174,12 @@ fn sweep_stale_drag_staging(staging_directory: &Path) {
     let now = std::time::SystemTime::now();
     for entry in entries.flatten() {
         let path = entry.path();
-        let Ok(metadata) = entry.metadata() else { continue };
-        let Ok(modified) = metadata.modified() else { continue };
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
         let Ok(age) = now.duration_since(modified) else {
             continue;
         };
@@ -1070,7 +1227,11 @@ fn cleanup_drag_staging(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn ssh_connect(app: tauri::AppHandle, profile: ssh::SshProfile, request_id: String) -> Result<String, String> {
+async fn ssh_connect(
+    app: tauri::AppHandle,
+    profile: ssh::SshProfile,
+    request_id: String,
+) -> Result<String, String> {
     ssh::connect(app, profile, request_id).await
 }
 
@@ -1115,7 +1276,10 @@ fn ssh_has_password(entry_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-async fn ssh_list_directory(profile: ssh::SshProfile, path: String) -> Result<LocalDirectory, String> {
+async fn ssh_list_directory(
+    profile: ssh::SshProfile,
+    path: String,
+) -> Result<LocalDirectory, String> {
     ssh::sftp::list_directory(profile, path).await
 }
 
@@ -1127,12 +1291,20 @@ async fn ssh_sftp_disconnect(entry_id: String) -> Result<(), String> {
 /// Single-file `scp`-equivalent transfer primitives, deliberately limited to
 /// LOCAL <-> SSH REMOTE (never the API Remote model).
 #[tauri::command]
-async fn scp_download(profile: ssh::SshProfile, remote_path: String, local_path: String) -> Result<String, String> {
+async fn scp_download(
+    profile: ssh::SshProfile,
+    remote_path: String,
+    local_path: String,
+) -> Result<String, String> {
     ssh::sftp::download_file(profile, remote_path, local_path).await
 }
 
 #[tauri::command]
-async fn scp_upload(profile: ssh::SshProfile, local_path: String, remote_path: String) -> Result<String, String> {
+async fn scp_upload(
+    profile: ssh::SshProfile,
+    local_path: String,
+    remote_path: String,
+) -> Result<String, String> {
     ssh::sftp::upload_file(profile, local_path, remote_path).await
 }
 
@@ -1146,19 +1318,36 @@ async fn ssh_create_directory(profile: ssh::SshProfile, path: String) -> Result<
 }
 
 #[tauri::command]
-async fn ssh_delete_path(profile: ssh::SshProfile, path: String, is_directory: bool) -> Result<(), String> {
+async fn ssh_delete_path(
+    profile: ssh::SshProfile,
+    path: String,
+    is_directory: bool,
+) -> Result<(), String> {
     ssh::sftp::delete_path(profile, path, is_directory).await
 }
 
 #[tauri::command]
-async fn ssh_rename_path(profile: ssh::SshProfile, old_path: String, new_path: String) -> Result<String, String> {
+async fn ssh_rename_path(
+    profile: ssh::SshProfile,
+    old_path: String,
+    new_path: String,
+) -> Result<String, String> {
     ssh::sftp::rename_path(profile, old_path, new_path).await
 }
 
 #[tauri::command]
-async fn ssh_upload_path(profile: ssh::SshProfile, local_path: String, remote_destination_folder: String) -> Result<String, String> {
+async fn ssh_upload_path(
+    profile: ssh::SshProfile,
+    local_path: String,
+    remote_destination_folder: String,
+) -> Result<String, String> {
     let local_path = resolve_local_transfer_path(&local_path)?;
-    ssh::sftp::upload_path(profile, local_path.display().to_string(), remote_destination_folder).await
+    ssh::sftp::upload_path(
+        profile,
+        local_path.display().to_string(),
+        remote_destination_folder,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1169,16 +1358,31 @@ async fn ssh_download_path(
     local_destination_folder: String,
 ) -> Result<String, String> {
     let local_destination_folder = resolve_local_transfer_path(&local_destination_folder)?;
-    ssh::sftp::download_path(profile, remote_path, is_directory, local_destination_folder.display().to_string()).await
+    ssh::sftp::download_path(
+        profile,
+        remote_path,
+        is_directory,
+        local_destination_folder.display().to_string(),
+    )
+    .await
 }
 
 #[tauri::command]
-async fn ssh_compress_paths(profile: ssh::SshProfile, paths: Vec<String>, destination_folder: String, archive_name: String) -> Result<String, String> {
+async fn ssh_compress_paths(
+    profile: ssh::SshProfile,
+    paths: Vec<String>,
+    destination_folder: String,
+    archive_name: String,
+) -> Result<String, String> {
     ssh::sftp::compress_paths(profile, paths, destination_folder, archive_name).await
 }
 
 #[tauri::command]
-async fn ssh_extract_archive(profile: ssh::SshProfile, path: String, destination_folder: String) -> Result<String, String> {
+async fn ssh_extract_archive(
+    profile: ssh::SshProfile,
+    path: String,
+    destination_folder: String,
+) -> Result<String, String> {
     ssh::sftp::extract_archive(profile, path, destination_folder).await
 }
 
@@ -1194,7 +1398,9 @@ async fn ssh_download_to_drag_staging(
 ) -> Result<String, String> {
     let safe_set_id: String = set_id
         .chars()
-        .filter(|character| character.is_ascii_alphanumeric() || *character == '-' || *character == '_')
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || *character == '-' || *character == '_'
+        })
         .collect();
     if safe_set_id.is_empty() {
         return Err("Invalid drag staging set identifier".to_string());
@@ -1208,7 +1414,14 @@ async fn ssh_download_to_drag_staging(
     std::fs::create_dir_all(parent_staging_directory).map_err(|error| error.to_string())?;
     sweep_stale_drag_staging(parent_staging_directory);
     std::fs::create_dir_all(&staging_directory).map_err(|error| error.to_string())?;
-    match ssh::sftp::download_path(profile, remote_path, is_directory, staging_directory.display().to_string()).await {
+    match ssh::sftp::download_path(
+        profile,
+        remote_path,
+        is_directory,
+        staging_directory.display().to_string(),
+    )
+    .await
+    {
         Ok(path) => Ok(path),
         Err(error) => {
             let _ = std::fs::remove_dir_all(&staging_directory);
@@ -1401,7 +1614,14 @@ fn append_operation_log(
     // enabled/level filter before invoking this command, so this writes
     // unconditionally rather than re-checking the mirrored config (see
     // `oplog::write` for why).
-    oplog::write(&level, &operation, &status, &source_label, &destination_label, &detail)
+    oplog::write(
+        &level,
+        &operation,
+        &status,
+        &source_label,
+        &destination_label,
+        &detail,
+    )
 }
 
 /// Mirror the frontend's "Enable operation log" / "Log detail level"
@@ -1412,6 +1632,26 @@ fn append_operation_log(
 #[tauri::command]
 fn set_operation_log_config(enabled: bool, level: String) {
     oplog::set_config(enabled, &level);
+}
+
+#[cfg(test)]
+mod phase1_filename_tests {
+    use super::{dedupe_candidate_name, sanitize_archive_name};
+
+    #[test]
+    fn dedupe_preserves_compound_archive_extensions() {
+        assert_eq!(
+            dedupe_candidate_name("session_2026-08-11_10_20_30.tar.gz", 1),
+            "session_2026-08-11_10_20_30_(1).tar.gz"
+        );
+        assert_eq!(dedupe_candidate_name("report.zip", 2), "report_(2).zip");
+    }
+
+    #[test]
+    fn archive_names_cannot_escape_the_destination() {
+        assert_eq!(sanitize_archive_name("machine:/logs?"), "machine--logs-");
+        assert_eq!(sanitize_archive_name("..."), "nFterm");
+    }
 }
 
 fn main() {
