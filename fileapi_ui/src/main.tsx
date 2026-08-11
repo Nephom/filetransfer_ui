@@ -192,6 +192,21 @@ type DesktopSettings = {
     crossSourceMove: boolean;
   };
 };
+
+type ModalDragId =
+  | "settings"
+  | "sessions"
+  | "workspace-name"
+  | "ssh-entry"
+  | "sxp-entry"
+  | "share-links"
+  | "queue"
+  | "viewer";
+type ModalOffset = { x: number; y: number };
+type ModalDragSession = {
+  onMove: (event: MouseEvent) => void;
+  onUp: () => void;
+};
 type OperationStorageInfo = {
   historyPath: string;
   logPath: string;
@@ -835,6 +850,88 @@ function App() {
     startX: number;
     startWidth: number;
   } | null>(null);
+  const [modalOffsets, setModalOffsets] = useState<Partial<Record<ModalDragId, ModalOffset>>>({});
+  const modalDragRef = useRef<ModalDragSession | null>(null);
+
+  const stopModalDrag = () => {
+    const active = modalDragRef.current;
+    if (!active) return;
+    window.removeEventListener("mousemove", active.onMove);
+    window.removeEventListener("mouseup", active.onUp);
+    modalDragRef.current = null;
+  };
+
+  const beginModalDrag = (id: ModalDragId) => (event: React.MouseEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("button, input, select, textarea, a")) return;
+
+    const modal = event.currentTarget.closest<HTMLElement>(".modal");
+    if (!modal) return;
+    event.preventDefault();
+    event.stopPropagation();
+    stopModalDrag();
+
+    const rect = modal.getBoundingClientRect();
+    const handleHeight = event.currentTarget.getBoundingClientRect().height;
+    const startingOffset = modalOffsets[id] || { x: 0, y: 0 };
+    const minVisibleWidth = Math.min(160, rect.width);
+    const minLeft = -rect.width + minVisibleWidth;
+    const maxLeft = window.innerWidth - minVisibleWidth;
+    const minTop = 8;
+    const maxTop = Math.max(minTop, window.innerHeight - handleHeight - 8);
+    let dragStarted = false;
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const deltaX = moveEvent.clientX - event.clientX;
+      const deltaY = moveEvent.clientY - event.clientY;
+      if (!dragStarted && Math.hypot(deltaX, deltaY) < 5) return;
+      dragStarted = true;
+      const nextLeft = Math.max(minLeft, Math.min(maxLeft, rect.left + moveEvent.clientX - event.clientX));
+      const nextTop = Math.max(minTop, Math.min(maxTop, rect.top + moveEvent.clientY - event.clientY));
+      setModalOffsets((current) => ({
+        ...current,
+        [id]: {
+          x: startingOffset.x + nextLeft - rect.left,
+          y: startingOffset.y + nextTop - rect.top,
+        },
+      }));
+    };
+    const onUp = () => stopModalDrag();
+    modalDragRef.current = { onMove, onUp };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const modalStyle = (id: ModalDragId): React.CSSProperties => {
+    const offset = modalOffsets[id];
+    return offset ? { left: `${offset.x}px`, top: `${offset.y}px` } : {};
+  };
+
+  useEffect(() => () => stopModalDrag(), []);
+
+  useEffect(() => {
+    const openIds: Partial<Record<ModalDragId, boolean>> = {
+      settings: settingsOpen,
+      sessions: sessionsOpen,
+      "workspace-name": workspaceNameDialogOpen,
+      "ssh-entry": sshEntryDialogOpen,
+      "sxp-entry": sxpEntryDialogOpen,
+      "share-links": shareLinksOpen,
+      queue: queueOpen,
+      viewer: viewerOpen,
+    };
+    setModalOffsets((current) => {
+      const next = { ...current };
+      let changed = false;
+      (Object.keys(next) as ModalDragId[]).forEach((id) => {
+        if (!openIds[id]) {
+          delete next[id];
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [queueOpen, sessionsOpen, settingsOpen, shareLinksOpen, sshEntryDialogOpen, sxpEntryDialogOpen, viewerOpen, workspaceNameDialogOpen]);
 
   useEffect(() => {
     const closeTopmostOverlay = (event: KeyboardEvent) => {
@@ -5707,8 +5804,8 @@ function App() {
        )}
        {settingsOpen && (
          <div className="modal-cover" onMouseDown={() => setSettingsOpen(false)}>
-           <div className="modal settings-modal" onMouseDown={(event) => event.stopPropagation()}>
-              <h2>Desktop Settings</h2>
+            <div className="modal settings-modal" style={modalStyle("settings")} onMouseDown={(event) => event.stopPropagation()}>
+               <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("settings")}>Desktop Settings</h2>
               <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
               <section className="settings-section">
                 <h3>Interface size</h3>
@@ -5813,8 +5910,8 @@ function App() {
        )}
         {shareLinksOpen && (
           <div className="modal-cover modal-layer-top" onMouseDown={() => setShareLinksOpen(false)}>
-            <div className="modal share-links-modal" onMouseDown={(event) => event.stopPropagation()}>
-              <div className="modal-heading-row"><div><h2>Share Links</h2><p>Links created by this desktop client.</p></div><button type="button" onClick={() => setShareLinksOpen(false)} aria-label="Close Share Links">×</button></div>
+             <div className="modal share-links-modal" style={modalStyle("share-links")} onMouseDown={(event) => event.stopPropagation()}>
+               <div className="modal-heading-row modal-drag-handle" onMouseDown={beginModalDrag("share-links")}><div><h2>Share Links</h2><p>Links created by this desktop client.</p></div><button type="button" onClick={() => setShareLinksOpen(false)} aria-label="Close Share Links">×</button></div>
               <div className="share-links-toolbar"><span>{shareLinks.length} link{shareLinks.length === 1 ? "" : "s"}</span><button type="button" onClick={() => void loadShareLinks()} disabled={shareLinksLoading}>{shareLinksLoading ? "Refreshing..." : "Refresh"}</button></div>
               {shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : (
                 <div className="share-links-list">
@@ -5839,8 +5936,8 @@ function App() {
         )}
          {sessionsOpen && (
           <div className="modal-cover" onMouseDown={() => setSessionsOpen(false)}>
-            <div className="modal sessions-modal" onMouseDown={(event) => event.stopPropagation()}>
-              <div className="workspace-manager-heading">
+             <div className="modal sessions-modal" style={modalStyle("sessions")} onMouseDown={(event) => event.stopPropagation()}>
+               <div className="workspace-manager-heading modal-drag-handle" onMouseDown={beginModalDrag("sessions")}>
                 <h2>Workspace Manager</h2>
                 <div className="workspace-list-heading">
                   <strong>Workspaces</strong>
@@ -5903,8 +6000,8 @@ function App() {
         )}
         {workspaceNameDialogOpen && (
           <div className="modal-cover modal-layer-top" onMouseDown={() => setWorkspaceNameDialogOpen(false)}>
-            <form className="modal workspace-name-modal" onSubmit={(event) => { event.preventDefault(); saveWorkspaceName(event.currentTarget); }} onMouseDown={(event) => event.stopPropagation()}>
-              <h2>{workspaceSessionId ? "Edit Workspace" : "Add Workspace"}</h2>
+            <form className="modal workspace-name-modal" style={modalStyle("workspace-name")} onSubmit={(event) => { event.preventDefault(); saveWorkspaceName(event.currentTarget); }} onMouseDown={(event) => event.stopPropagation()}>
+              <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("workspace-name")}>{workspaceSessionId ? "Edit Workspace" : "Add Workspace"}</h2>
               {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
               <label>
                 Workspace name
@@ -5924,9 +6021,10 @@ function App() {
         >
           <div
             className="modal ssh-entry-modal"
+            style={modalStyle("ssh-entry")}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <h2>{sshEntryDraftId ? "Edit SSH Entry" : "Add SSH Entry"}</h2>
+            <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("ssh-entry")}>{sshEntryDraftId ? "Edit SSH Entry" : "Add SSH Entry"}</h2>
             <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
             {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
             <label>
@@ -5974,9 +6072,10 @@ function App() {
         >
           <div
             className="modal sxp-entry-modal"
+            style={modalStyle("sxp-entry")}
             onMouseDown={(event) => event.stopPropagation()}
           >
-             <h2>{sxpEntryDraftId ? "Edit Session Entry" : "Add Session Entry"}</h2>
+             <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("sxp-entry")}>{sxpEntryDraftId ? "Edit Session Entry" : "Add Session Entry"}</h2>
             <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
             {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
             <label>
@@ -6181,8 +6280,8 @@ function App() {
       )}
       {queueOpen && (
         <div className="modal-cover" onMouseDown={() => setQueueOpen(false)}>
-          <div className="modal queue-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <h2>Transfer Queue</h2>
+          <div className="modal queue-modal" style={modalStyle("queue")} onMouseDown={(event) => event.stopPropagation()}>
+            <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("queue")}>Transfer Queue</h2>
             {!transferQueue.length && <p className="muted">No transfers queued.</p>}
             {transferQueue.map((item) => (
               <div className="queue-item" key={item.id}>
@@ -6220,8 +6319,8 @@ function App() {
       )}
       {viewerOpen && (
         <div className="modal-cover" onMouseDown={() => setViewerOpen(false)}>
-          <div className="modal viewer-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <h2>{viewerTitle}</h2>
+          <div className="modal viewer-modal" style={modalStyle("viewer")} onMouseDown={(event) => event.stopPropagation()}>
+            <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("viewer")}>{viewerTitle}</h2>
             <p className="muted">Read-only viewer. Edit opens this file in the default text editor.</p>
             <textarea className="file-viewer" value={viewerContent} readOnly spellCheck={false} />
             <div className="modal-actions">
