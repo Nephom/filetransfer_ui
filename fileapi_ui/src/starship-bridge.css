@@ -349,6 +349,67 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
   background: linear-gradient(120deg, rgba(171, 245, 255, .08), transparent 22%, transparent 72%, rgba(64, 147, 255, .08));
 }
 
+/* True transparent glass: the page behind the surface must remain visible. */
+.titlebar,
+.commandbar,
+.navigation,
+.statusbar {
+  background: linear-gradient(110deg, rgba(20, 76, 104, .38), rgba(3, 16, 30, .28) 52%, rgba(16, 69, 98, .34));
+}
+.desktop-folder-tree,
+.desktop-content,
+.local-pane {
+  background:
+    linear-gradient(135deg, rgba(112, 226, 246, .12), transparent 30%),
+    linear-gradient(315deg, rgba(49, 139, 255, .12), transparent 46%),
+    rgba(8, 27, 46, .28);
+}
+.file-tile { background: rgba(8, 34, 55, .28); }
+.file-tile:hover { background: rgba(24, 76, 105, .36); }
+.terminal-dock { background: linear-gradient(135deg, rgba(9, 45, 67, .5), rgba(2, 13, 24, .72)); }
+.account-menu,
+.location-menu,
+.context-menu {
+  background: linear-gradient(135deg, rgba(22, 79, 105, .42), rgba(3, 18, 32, .3));
+  backdrop-filter: blur(26px) saturate(160%);
+  box-shadow: 0 20px 55px rgba(0, 0, 0, .38), inset 0 1px 0 rgba(185, 244, 255, .16), inset 0 0 24px rgba(99, 230, 255, .08);
+}
+.modal-cover {
+  align-items: start;
+  justify-items: center;
+  overflow-y: auto;
+  padding-top: clamp(48px, 8vh, 96px);
+  padding-bottom: 32px;
+  background: rgba(0, 5, 13, .32);
+  backdrop-filter: blur(5px) saturate(115%);
+}
+.modal,
+.queue-modal,
+.sessions-modal,
+.settings-modal,
+.viewer-modal,
+.destination-modal,
+.archive-format-modal,
+.log-name-modal,
+.ssh-entry-modal,
+.sxp-entry-modal,
+.workspace-name-modal {
+  background: linear-gradient(145deg, rgba(22, 77, 101, .48), rgba(3, 18, 32, .34));
+  backdrop-filter: blur(30px) saturate(155%);
+}
+.settings-modal {
+  max-height: calc(100dvh - clamp(80px, 12vh, 128px));
+  overflow-y: auto;
+}
+.settings-section,
+.workspace-card,
+.share-link-card,
+.queue-item,
+.session-card,
+.archive-format-option {
+  background: rgba(3, 19, 33, .28);
+}
+
 @keyframes bridge-panel-in { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }

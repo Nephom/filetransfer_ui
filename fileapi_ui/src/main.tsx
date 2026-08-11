@@ -837,6 +837,71 @@ function App() {
   } | null>(null);
 
   useEffect(() => {
+    const closeTopmostOverlay = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+
+      if (sshEntryDialogOpen) {
+        setSshEntryDialogOpen(false);
+      } else if (sxpEntryDialogOpen) {
+        setSxpEntryDialogOpen(false);
+      } else if (workspaceNameDialogOpen) {
+        setWorkspaceNameDialogOpen(false);
+      } else if (sharePasswordOpen) {
+        setSharePasswordOpen(false);
+      } else if (changePasswordOpen) {
+        setChangePasswordOpen(false);
+      } else if (saveLogNameOpen) {
+        setSaveLogNameOpen(false);
+      } else if (shareLinksOpen) {
+        setShareLinksOpen(false);
+      } else if (sessionsOpen) {
+        setSessionsOpen(false);
+      } else if (settingsOpen) {
+        setSettingsOpen(false);
+      } else if (archiveFormatOpen) {
+        setArchiveFormatOpen(false);
+      } else if (uploadDestinationOpen) {
+        setUploadDestinationOpen(false);
+      } else if (queueOpen) {
+        setQueueOpen(false);
+      } else if (viewerOpen) {
+        setViewerOpen(false);
+      } else if (contextMenu) {
+        setContextMenu(null);
+      } else if (locationMenuOpen) {
+        setLocationMenuOpen(false);
+      } else if (accountOpen) {
+        setAccountOpen(false);
+      } else {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    window.addEventListener("keydown", closeTopmostOverlay);
+    return () => window.removeEventListener("keydown", closeTopmostOverlay);
+  }, [
+    accountOpen,
+    archiveFormatOpen,
+    changePasswordOpen,
+    contextMenu,
+    locationMenuOpen,
+    queueOpen,
+    saveLogNameOpen,
+    sessionsOpen,
+    settingsOpen,
+    shareLinksOpen,
+    sharePasswordOpen,
+    sshEntryDialogOpen,
+    sxpEntryDialogOpen,
+    uploadDestinationOpen,
+    viewerOpen,
+    workspaceNameDialogOpen,
+  ]);
+
+  useEffect(() => {
     sshTabsRef.current = sshTabs;
   }, [sshTabs]);
 
