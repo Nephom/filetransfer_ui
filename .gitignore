@@ -81,6 +81,7 @@ fileapi_ui/src-tauri/gen/
 fileapi_ui/src-tauri/target/
 fileapi_ui/Backup/
 build-assets/webview2/
+fileapi_ui/src-tauri/webview2-fixed-runtime/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
