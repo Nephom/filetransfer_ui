@@ -2,6 +2,11 @@
 
 This document describes progress endpoint details. The current API contract is [API_REFERENCE.md](./API_REFERENCE.md). New clients uploading through `/api/upload/multiple` must poll the batch endpoint.
 
+Progress records are in-memory diagnostics, not durable transfer sessions.
+Terminal records are retained for up to 24 hours by the server cleanup timer;
+active records are never removed by cleanup. Client Queue history cleanup is a
+separate concern. No endpoint implies resumability after a client restart.
+
 ---
 
 ## Get Single Transfer Progress

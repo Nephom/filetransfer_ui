@@ -44,9 +44,19 @@ Use `POST /api/upload/multiple` for all new client uploads. It streams the multi
 | GET | `/api/progress/:transferId` | None | One transfer's status and byte progress |
 | GET | `/api/progress/batch/:batchId` | None | `{ batchId, status, totalFiles, successCount, failedCount, pendingCount, totalSize, transferredSize, progress, files }` |
 
+Progress records are in-memory telemetry, not durable transfer sessions.
+Clients should poll only while an operation is active and must tolerate a
+terminal record disappearing after the server retention window. Client Queue
+history cleanup and server progress cleanup are separate concerns.
+
 `filePaths[]` preserves folder hierarchy. Each value must correspond to a submitted `files` part and must be relative to the selected local folder. Terminal batch states are `completed`, `partial_fail`, and `failed`.
 
 ## Downloads and Archives
+
+Authenticated clients must enqueue upload and download operations before
+starting them. Browser fallback downloads are not resumable. Public
+`/api/share/:shareToken/download` requests from `share.html` are intentionally
+outside the authenticated Queue and expose only that page's local status.
 
 | Method | Endpoint | Request | Success |
 |---|---|---|---|

@@ -4,13 +4,39 @@ mod oplog;
 mod ssh;
 
 use reqwest::{multipart, Client};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
-use std::io::Write;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::{Mutex, OnceLock};
+use std::task::{Context, Poll};
 use std::time::Instant;
 use tauri::Emitter;
+use tokio::io::{AsyncRead, ReadBuf};
+
+static CANCELLED_TRANSFER_IDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn cancelled_transfer_ids() -> &'static Mutex<HashSet<String>> {
+    CANCELLED_TRANSFER_IDS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn is_transfer_cancelled(id: &str) -> bool {
+    cancelled_transfer_ids()
+        .lock()
+        .map(|ids| ids.contains(id))
+        .unwrap_or(true)
+}
+
+#[tauri::command]
+fn cancel_transfer(transfer_id: String) -> Result<(), String> {
+    cancelled_transfer_ids()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(transfer_id);
+    Ok(())
+}
 
 #[derive(Serialize)]
 struct ApiResponse {
@@ -32,10 +58,100 @@ struct DownloadProgressEvent {
     bytes_total: Option<u64>,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UploadProgressEvent {
+    transfer_id: String,
+    bytes_completed: u64,
+    bytes_total: u64,
+}
+
+struct UploadProgressReader<R> {
+    inner: R,
+    app: tauri::AppHandle,
+    transfer_id: String,
+    completed_before: u64,
+    completed: u64,
+    total: u64,
+    last_emit: Instant,
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for UploadProgressReader<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if is_transfer_cancelled(&self.transfer_id) {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "Transfer cancelled",
+            )));
+        }
+        let before = buffer.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buffer);
+        if let Poll::Ready(Ok(())) = &result {
+            let read = (buffer.filled().len() - before) as u64;
+            self.completed += read;
+            if read > 0 && self.last_emit.elapsed().as_millis() >= 200 {
+                let _ = self.app.emit(
+                    "upload-progress",
+                    UploadProgressEvent {
+                        transfer_id: self.transfer_id.clone(),
+                        bytes_completed: self.completed_before + self.completed,
+                        bytes_total: self.total,
+                    },
+                );
+                self.last_emit = Instant::now();
+            }
+        }
+        result
+    }
+}
+
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct UploadSummary {
     files: usize,
     directories: usize,
+    total_size: u64,
+    sources: Vec<UploadSource>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UploadSource {
+    path: String,
+    size: u64,
+    modified: u128,
+}
+
+fn upload_source_snapshot(path: &Path) -> Result<UploadSource, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    Ok(UploadSource {
+        path: path.to_string_lossy().to_string(),
+        size: metadata.len(),
+        modified,
+    })
+}
+
+fn validate_upload_sources(expected: &[UploadSource]) -> Result<(), String> {
+    for source in expected {
+        let current = upload_source_snapshot(Path::new(&source.path))?;
+        if current.size != source.size || current.modified != source.modified {
+            return Err(format!(
+                "Upload source changed before transfer: {}",
+                source.path
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -99,13 +215,28 @@ fn collect_upload_path(
     files: &mut Vec<(PathBuf, String)>,
     directories: &mut Vec<String>,
 ) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        format!(
+            "Unable to inspect upload path '{}': {error}",
+            path.display()
+        )
+    })?;
     if metadata.is_dir() {
         directories.push(relative_path.clone());
         let mut children = std::fs::read_dir(path)
-            .map_err(|error| error.to_string())?
+            .map_err(|error| {
+                format!(
+                    "Unable to read upload directory '{}': {error}",
+                    path.display()
+                )
+            })?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                format!(
+                    "Unable to enumerate upload directory '{}': {error}",
+                    path.display()
+                )
+            })?;
         children.sort_by_key(|entry| entry.path());
         for child in children {
             let name = child
@@ -132,13 +263,27 @@ fn collect_upload_paths(paths: &[String]) -> Result<(Vec<(PathBuf, String)>, Vec
     let mut files = Vec::new();
     let mut directories = Vec::new();
     for path in paths {
-        let path = Path::new(path);
-        let name = path
+        let input = Path::new(path);
+        if input
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            return Err(format!("Upload path must not contain '..': {path}"));
+        }
+        let source = if input.is_absolute() {
+            input.to_path_buf()
+        } else {
+            // LOCAL pane entries are HOME-relative; file-picker entries are
+            // absolute. Resolve only the former against the same HOME jail
+            // used by local_list_directory.
+            local_home()?.join(input)
+        };
+        let name = source
             .file_name()
             .and_then(|name| name.to_str())
             .filter(|name| !name.is_empty())
             .ok_or_else(|| "Invalid upload filename".to_string())?;
-        collect_upload_path(path, name.to_string(), &mut files, &mut directories)?;
+        collect_upload_path(&source, name.to_string(), &mut files, &mut directories)?;
     }
     Ok((files, directories))
 }
@@ -213,6 +358,33 @@ async fn pick_upload_files() -> Result<Vec<String>, String> {
         .into_iter()
         .map(|file| file.path().display().to_string())
         .collect())
+}
+
+#[tauri::command]
+async fn pick_local_directory(path: String) -> Result<Option<String>, String> {
+    let initial_directory = resolve_local_download_destination(&path)?;
+    let selected = rfd::AsyncFileDialog::new()
+        .set_directory(initial_directory)
+        .pick_folder()
+        .await;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    let selected_path = canonicalize(selected.path())?;
+    let home = canonicalize(local_home()?)?;
+    if selected_path.starts_with(&home) {
+        return Ok(Some(
+            selected_path
+                .strip_prefix(&home)
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/"),
+        ));
+    }
+    if is_elevated() {
+        return Ok(Some(selected_path.to_string_lossy().replace('\\', "/")));
+    }
+    Err("Selected directory must remain inside the current user's home directory".to_string())
 }
 
 /// Build the `name_(n).ext` candidate for the n-th collision-avoidance
@@ -873,9 +1045,16 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
 #[tauri::command]
 fn inspect_upload_paths(paths: Vec<String>) -> Result<UploadSummary, String> {
     let (files, directories) = collect_upload_paths(&paths)?;
+    let sources = files
+        .iter()
+        .map(|(path, _)| upload_source_snapshot(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let total_size = sources.iter().map(|source| source.size).sum();
     Ok(UploadSummary {
         files: files.len(),
         directories: directories.len(),
+        total_size,
+        sources,
     })
 }
 
@@ -885,8 +1064,21 @@ fn hash_upload_paths(paths: Vec<String>) -> Result<HashMap<String, String>, Stri
     files
         .into_iter()
         .map(|(path, relative_path)| {
-            let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
-            let digest = Sha256::digest(bytes);
+            let mut file = std::fs::File::open(&path).map_err(|error| {
+                format!("Unable to hash upload path '{}': {error}", path.display())
+            })?;
+            let mut digest = Sha256::new();
+            let mut buffer = [0_u8; 1024 * 1024];
+            loop {
+                let read = file.read(&mut buffer).map_err(|error| {
+                    format!("Unable to stream hash for '{}': {error}", path.display())
+                })?;
+                if read == 0 {
+                    break;
+                }
+                digest.update(&buffer[..read]);
+            }
+            let digest = digest.finalize();
             Ok((relative_path, format!("{digest:x}")))
         })
         .collect()
@@ -894,14 +1086,29 @@ fn hash_upload_paths(paths: Vec<String>) -> Result<HashMap<String, String>, Stri
 
 #[tauri::command]
 async fn api_upload_paths(
+    app: tauri::AppHandle,
+    transfer_id: String,
+    expected_sources: Vec<UploadSource>,
     url: String,
     headers: Vec<(String, String)>,
     paths: Vec<String>,
     path: String,
     ignore_tls_errors: bool,
 ) -> Result<ApiResponse, String> {
+    if is_transfer_cancelled(&transfer_id) {
+        return Err("Transfer cancelled".to_string());
+    }
+    validate_upload_sources(&expected_sources)?;
     let (files, directories) = collect_upload_paths(&paths)?;
+    let total_size = files
+        .iter()
+        .map(|(file_path, _)| std::fs::metadata(file_path).map(|metadata| metadata.len()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .sum::<u64>();
     let mut form = multipart::Form::new().text("path", path);
+    let mut completed_before = 0;
     for directory in directories {
         form = form.text("directoryPaths[]", directory);
     }
@@ -910,18 +1117,46 @@ async fn api_upload_paths(
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| "Invalid upload filename".to_string())?;
-        let part = multipart::Part::file(&file_path)
-            .await
+        let file_size = std::fs::metadata(&file_path)
             .map_err(|error| error.to_string())?
-            .file_name(file_name.to_string());
+            .len();
+        let file = tokio::fs::File::open(&file_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        let reader = UploadProgressReader {
+            inner: file,
+            app: app.clone(),
+            transfer_id: transfer_id.clone(),
+            completed_before,
+            completed: 0,
+            total: total_size,
+            last_emit: Instant::now() - std::time::Duration::from_secs(1),
+        };
+        let stream = tokio_util::io::ReaderStream::new(reader);
+        let part =
+            multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), file_size)
+                .file_name(file_name.to_string());
         form = form.text("filePaths[]", relative_path);
         form = form.part("files", part);
+        completed_before += file_size;
     }
     let request = apply_headers(
         api_client(ignore_tls_errors)?.post(url).multipart(form),
         headers,
     );
-    response_from(request.send().await.map_err(describe_error)?).await
+    let response = response_from(request.send().await.map_err(describe_error)?).await?;
+    if is_transfer_cancelled(&transfer_id) {
+        return Err("Transfer cancelled".to_string());
+    }
+    let _ = app.emit(
+        "upload-progress",
+        UploadProgressEvent {
+            transfer_id,
+            bytes_completed: total_size,
+            bytes_total: total_size,
+        },
+    );
+    Ok(response)
 }
 
 #[tauri::command]
@@ -936,6 +1171,9 @@ async fn download_to_disk(
     destination_folder: String,
     ignore_tls_errors: bool,
 ) -> Result<String, String> {
+    if is_transfer_cancelled(&transfer_id) {
+        return Err("Transfer cancelled".to_string());
+    }
     let method = method
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
@@ -971,6 +1209,9 @@ async fn download_to_disk(
     let mut bytes_completed: u64 = 0;
     let mut last_emit = Instant::now();
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if is_transfer_cancelled(&transfer_id) {
+            return Err("Transfer cancelled".to_string());
+        }
         file.write_all(&chunk).map_err(|error| error.to_string())?;
         bytes_completed += chunk.len() as u64;
         if last_emit.elapsed().as_millis() >= 200 {
@@ -1009,6 +1250,7 @@ async fn download_to_disk(
 /// single selected directory inside a duplicate copy of its own name.
 #[tauri::command]
 async fn download_to_disk_at(
+    transfer_id: String,
     url: String,
     method: String,
     headers: Vec<(String, String)>,
@@ -1017,6 +1259,9 @@ async fn download_to_disk_at(
     relative_path: String,
     ignore_tls_errors: bool,
 ) -> Result<String, String> {
+    if is_transfer_cancelled(&transfer_id) {
+        return Err("Transfer cancelled".to_string());
+    }
     let method = method
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
@@ -1048,6 +1293,9 @@ async fn download_to_disk_at(
     }
     let (destination, mut file) = create_unique_file(&requested_destination)?;
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if is_transfer_cancelled(&transfer_id) {
+            return Err("Transfer cancelled".to_string());
+        }
         file.write_all(&chunk).map_err(|error| error.to_string())?;
     }
     Ok(destination.display().to_string())
@@ -1433,6 +1681,7 @@ async fn ssh_download_to_drag_staging(
 #[tauri::command]
 fn save_ssh_logs(
     profile_name: String,
+    destination_path: String,
     raw: String,
     plain: String,
     commands: String,
@@ -1457,8 +1706,7 @@ fn save_ssh_logs(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_secs();
-    let home = local_home()?;
-    let directory = home.join("Downloads");
+    let directory = resolve_local_download_destination(&destination_path)?;
     std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let stem = directory.join(format!("{safe_name}-{timestamp}"));
     let raw_path = stem.with_extension("raw.log");
@@ -1660,6 +1908,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             api_request,
             pick_upload_files,
+            pick_local_directory,
             local_list_directory,
             local_create_directory,
             local_rename_path,
@@ -1672,6 +1921,7 @@ fn main() {
             inspect_upload_paths,
             hash_upload_paths,
             api_upload_paths,
+            cancel_transfer,
             download_to_disk,
             download_to_disk_at,
             download_to_drag_staging,
@@ -1710,4 +1960,34 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running nFterm desktop application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dedupe_candidate_name, UploadProgressEvent};
+
+    #[test]
+    fn upload_progress_event_keeps_normalized_queue_fields() {
+        let event = UploadProgressEvent {
+            transfer_id: "queue-1".to_string(),
+            bytes_completed: 512,
+            bytes_total: 1024,
+        };
+        let value = serde_json::to_value(event).expect("event should serialize");
+        assert_eq!(value["transferId"], "queue-1");
+        assert_eq!(value["bytesCompleted"], 512);
+        assert_eq!(value["bytesTotal"], 1024);
+    }
+
+    #[test]
+    fn download_collision_naming_is_distinct_from_upload_progress() {
+        assert_eq!(
+            dedupe_candidate_name("installer.exe", 1),
+            "installer_(1).exe"
+        );
+        assert_eq!(
+            dedupe_candidate_name("archive.tar.gz", 2),
+            "archive_(2).tar.gz"
+        );
+    }
 }

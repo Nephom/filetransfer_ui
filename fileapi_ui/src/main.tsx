@@ -4,7 +4,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { resolveResource } from "@tauri-apps/api/path";
-import { startDrag } from "@crabnebula/tauri-plugin-drag";
+import {
+  formatQueueProgress,
+  initialQueueProgress,
+  pruneQueueHistory,
+  updateQueueProgress as calculateQueueProgress,
+  type QueueProgress,
+} from "./queue/progress";
+import { classifyQueueError, retryDelayMs, type QueueErrorCategory } from "./queue/recovery";
+import { assertQueueTransition } from "./queue/state";
+import { QueueScheduler } from "./queue/scheduler";
+import { QueueStore } from "./queue/store";
 // `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
 // imported inside the terminal-setup effect below instead of eagerly here:
 // they're only ever needed once the user actually opens the SSH terminal
@@ -73,7 +83,7 @@ type ShareLink = {
   directDownloadUrl?: string;
 };
 type NativeApiResponse = { status: number; body: number[] };
-type UploadSummary = { files: number; directories: number };
+type UploadSummary = { files: number; directories: number; totalSize: number; sources: { path: string; size: number; modified: number }[] };
 type FolderNode = {
   path: string;
   name: string;
@@ -148,8 +158,20 @@ type TransferQueueItem = {
   destinationPath: string;
   locationId: string;
   locationName: string;
-  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  status: "queued" | "running" | "retrying" | "completed" | "failed" | "cancelled" | "needs_user_action";
   detail: string;
+  progress?: QueueProgress;
+  errorCategory?: QueueErrorCategory;
+  error?: {
+    category: QueueErrorCategory;
+    message: string;
+    itemId: string;
+    path?: string;
+    attempt: number;
+    timestamp: number;
+  };
+  retryCount?: number;
+  finishedAt?: number;
   downloadUrl?: string;
   downloadMethod?: string;
   downloadHeaders?: [string, string][];
@@ -674,6 +696,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [saveLogNameOpen, setSaveLogNameOpen] = useState(false);
   const [saveLogNameDraft, setSaveLogNameDraft] = useState("");
+  const [saveLogDestinationPath, setSaveLogDestinationPath] = useState("");
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
@@ -808,13 +831,16 @@ function App() {
   const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
   const [uploadSessionId, setUploadSessionId] = useState("");
   const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>([]);
+  const queueStoreRef = useRef(new QueueStore<TransferQueueItem>((items) => pruneQueueHistory(items, Date.now())));
+  useEffect(() => {
+    queueStoreRef.current.replace(transferQueue);
+  }, [transferQueue]);
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
   const [archiveFormatOpen, setArchiveFormatOpen] = useState(false);
   const [archiveFormatDraft, setArchiveFormatDraft] = useState<"tar.gz" | "zip" | "queue">("tar.gz");
   const [uploadDestinationOpen, setUploadDestinationOpen] = useState(false);
   const [uploadDestinationPath, setUploadDestinationPath] = useState("");
-  const [uploadDestinationSessionId, setUploadDestinationSessionId] = useState("");
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerTitle, setViewerTitle] = useState("");
   const [viewerContent, setViewerContent] = useState("");
@@ -842,6 +868,8 @@ function App() {
   const sshTabsRef = useRef<SshTerminalTab[]>([]);
   const shellInputRef = useRef("");
   const dragPreparationRef = useRef(new Map<string, Promise<string>>());
+  const queueProgressSamplesRef = useRef(new Map<string, { bytes: number; at: number }[]>());
+  const queueCompletionHandlersRef = useRef(new Map<string, (destination: string) => Promise<void>>());
   const dragExpandTimerRef = useRef<number | undefined>(undefined);
   const dragScrollIntervalRef = useRef<number | null>(null);
   const dragIconPathRef = useRef<Promise<string> | null>(null);
@@ -2487,9 +2515,10 @@ function App() {
     void run(async () => {
       const paths = await invoke<{ raw: string; plain: string; commands: string; metadata: string }>(
         "save_ssh_logs",
-        {
-           profileName: logName,
-          raw: tab.rawLog,
+         {
+            profileName: logName,
+           destinationPath: saveLogDestinationPath,
+           raw: tab.rawLog,
           plain: tab.plainLog,
           commands: tab.commandLog,
           metadata,
@@ -2502,7 +2531,7 @@ function App() {
             operation: "save_ssh_log",
            status: "completed",
            sourceLabel: logName,
-           destinationLabel: "Downloads",
+            destinationLabel: `LOCAL: ~/${saveLogDestinationPath || ""}`,
            detail: "SSH output recording package saved.",
          });
        }
@@ -2515,7 +2544,12 @@ function App() {
     if (!recordingHasOutput || recording) return;
     const profile = managedSessions.find((item) => item.id === activeSshTab?.workspaceId)?.sshEntries.find((item) => item.id === activeSshTab?.sshEntryId);
     setSaveLogNameDraft(profile?.name || "SSH session");
-    setSaveLogNameOpen(true);
+    void run(async () => {
+      const selectedPath = await invoke<string | null>("pick_local_directory", { path: localPath });
+      if (selectedPath === null) return;
+      setSaveLogDestinationPath(selectedPath);
+      setSaveLogNameOpen(true);
+    });
   };
 
   const writeOperationLog = (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string, level: DesktopSettings["operationLogLevel"] = "INFO") => {
@@ -2538,17 +2572,89 @@ function App() {
   const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
   const updateQueueItem = (id: string, update: Partial<TransferQueueItem>) => {
-    setTransferQueue((current) => current.map((item) => item.id === id ? { ...item, ...update } : item));
+    setTransferQueue((current) => {
+      const now = Date.now();
+      const updated = current.map((item) => {
+        if (item.id !== id) return item;
+        // A late invoke/listener callback must not resurrect a cancelled item.
+        if (item.status === "cancelled" && update.status && update.status !== "cancelled") return item;
+        const terminal = update.status === "completed" || update.status === "failed" || update.status === "cancelled";
+        if (update.status && update.status !== item.status) {
+          assertQueueTransition(item.status, update.status);
+        }
+        const nextItem = {
+          ...item,
+          ...update,
+          ...(terminal ? { finishedAt: item.finishedAt || now } : {}),
+        };
+        if (update.status === "failed" || update.status === "needs_user_action") {
+          nextItem.error = {
+            category: update.errorCategory || item.errorCategory || "unknown",
+            message: update.detail || item.detail,
+            itemId: item.id,
+            path: item.paths[0],
+            attempt: (update.retryCount || item.retryCount || 0) + 1,
+            timestamp: now,
+          };
+        }
+        return nextItem;
+      });
+      const retained = pruneQueueHistory(updated, now);
+      queueStoreRef.current.replace(retained);
+      return retained;
+    });
+  };
+
+  const updateQueueProgress = (id: string, completedBytes: number, totalBytes: number | null, completedItems?: number, totalItems?: number) => {
+    const previousSample = queueProgressSamplesRef.current.get(id) || [];
+    const now = Date.now();
+    const progress = calculateQueueProgress(
+      transferQueue.find((item) => item.id === id)?.progress,
+      completedBytes,
+      totalBytes,
+      completedItems,
+      totalItems,
+      previousSample,
+    );
+    queueProgressSamplesRef.current.set(id, [...previousSample, { bytes: completedBytes, at: now }].filter((sample) => now - sample.at <= 3000));
+    updateQueueItem(id, { progress, detail: `${formatSize(completedBytes)}${totalBytes ? ` / ${formatSize(totalBytes)}` : ""}${formatQueueProgress(progress)}` });
+    return progress;
   };
 
   const cancelledQueueItemsRef = useRef(new Set<string>());
   const cancelQueueItem = (id: string) => {
+    const current = transferQueue.find((item) => item.id === id);
+    if (!current || ["completed", "failed", "cancelled"].includes(current.status)) return;
     cancelledQueueItemsRef.current.add(id);
+    queueProgressSamplesRef.current.delete(id);
+    queueCompletionHandlersRef.current.delete(id);
+    void invoke("cancel_transfer", { transferId: id }).catch(() => {});
     updateQueueItem(id, { status: "cancelled", detail: "Cancelled by user." });
+    writeOperationLog(current.kind === "upload" ? "upload" : "download", "cancelled", current.label, current.destinationPath, "Transfer queue item cancelled by user.", "INFO");
+  };
+  const removeQueueItem = (id: string) => {
+    const current = transferQueue.find((item) => item.id === id);
+    if (current && !["completed", "failed", "cancelled"].includes(current.status)) {
+      cancelQueueItem(id);
+      return;
+    }
+    cancelledQueueItemsRef.current.add(id);
+    queueProgressSamplesRef.current.delete(id);
+    queueCompletionHandlersRef.current.delete(id);
+    setTransferQueue((current) => current.filter((item) => item.id !== id));
+  };
+  const clearQueueHistory = () => {
+    setTransferQueue((current) => current.filter((item) => !["completed", "failed", "cancelled"].includes(item.status)));
+  };
+  const clearQueueStatus = (status: TransferQueueItem["status"]) => {
+    setTransferQueue((current) => current.filter((item) => item.status !== status));
+  };
+  const clearFinishedQueue = () => {
+    setTransferQueue((current) => current.filter((item) => !["completed", "failed", "cancelled"].includes(item.status)));
   };
   const isQueueItemCancelled = (id: string) => cancelledQueueItemsRef.current.has(id);
 
-  const runQueuedSshUpload = async (item: TransferQueueItem, profile: SshProfile) => {
+  const executeQueuedSshUpload = async (item: TransferQueueItem, profile: SshProfile) => {
     writeOperationLog("upload", "started", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "SSH transfer queue upload started.", "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: `Uploading 0/${item.paths.length} items...` });
     let completed = 0;
@@ -2564,26 +2670,50 @@ function App() {
       await loadFiles(path);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
-      const detail = error instanceof Error ? error.message : String(error);
-      updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${item.paths.length} completed before failing)` });
+      const recovery = classifyQueueError(error);
+      const detail = `${recovery.message} (${completed}/${item.paths.length} completed before failing)`;
+      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail}`, errorCategory: recovery.category });
       writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `SSH queued upload failed: ${detail}`, "ERROR");
     }
   };
 
-  const runQueuedUpload = async (item: TransferQueueItem) => {
+  const executeQueuedUpload = async (item: TransferQueueItem) => {
     writeOperationLog("upload", "started", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "Transfer queue upload started.", "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: "Inspecting files..." });
+    updateQueueItem(item.id, { status: "running", detail: "Inspecting local files (this does not load file contents into the UI)..." });
+    let unlistenProgress: (() => void) | undefined;
     try {
       const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths: item.paths });
-      const checksums = await invoke<Record<string, string>>("hash_upload_paths", { paths: item.paths });
+      unlistenProgress = await listen<{ transferId: string; bytesCompleted: number; bytesTotal: number }>(
+        "upload-progress",
+        (event) => {
+          if (event.payload.transferId !== item.id || isQueueItemCancelled(item.id)) return;
+          const { bytesCompleted, bytesTotal } = event.payload;
+          const progress = updateQueueProgress(item.id, bytesCompleted, bytesTotal || null, 0, summary.files);
+          updateQueueItem(item.id, {
+            detail: `Uploading ${formatSize(bytesCompleted)} / ${formatSize(bytesTotal)}${formatQueueProgress(progress)}`,
+          });
+        },
+      );
       const headers: [string, string][] = session.token
         ? [
             ["Authorization", `Bearer ${session.token}`],
             ["X-Location-ID", item.locationId],
           ]
         : [["X-Location-ID", item.locationId]];
-      updateQueueItem(item.id, { detail: `Staged ${Object.keys(checksums).length} checksummed file${Object.keys(checksums).length === 1 ? "" : "s"}; uploading...` });
+      updateQueueItem(item.id, {
+        detail: `Prepared ${summary.files} file${summary.files === 1 ? "" : "s"} (${formatSize(summary.totalSize)}); streaming upload...`,
+      });
+      updateQueueItem(item.id, { progress: initialQueueProgress(summary.files, summary.totalSize || null) });
+      const currentSources = await invoke<UploadSummary>("inspect_upload_paths", { paths: item.paths });
+      const sourceChanged = summary.sources.length !== currentSources.sources.length
+        || summary.sources.some((source, index) => {
+          const current = currentSources.sources[index];
+          return !current || current.path !== source.path || current.size !== source.size || current.modified !== source.modified;
+        });
+      if (sourceChanged) throw new Error("Upload source changed after it was queued. Re-add the file to upload the new content.");
       const rawResponse = await invoke<NativeApiResponse>("api_upload_paths", {
+        transferId: item.id,
+        expectedSources: summary.sources,
         url: `${serverUrl(session)}/api/upload/multiple`,
         headers,
         paths: item.paths,
@@ -2594,6 +2724,7 @@ function App() {
       if (!response.ok) throw new Error(await readError(response));
       const { batchId } = (await response.json()) as { batchId?: string };
       if (!batchId) {
+         if (isQueueItemCancelled(item.id)) return;
          updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.` });
          writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.`);
          return;
@@ -2610,10 +2741,14 @@ function App() {
         if (isQueueItemCancelled(item.id)) return;
         const progress = new ApiResponse(progressResponse.status, progressResponse.body);
         if (!progress.ok) throw new Error(await readError(progress));
-        const batch = await progress.json() as { status: string; progress: number; successCount: number; totalFiles: number; failedCount: number };
-        updateQueueItem(item.id, { detail: `${batch.successCount}/${batch.totalFiles} files (${Math.round(batch.progress)}%)` });
+         const batch = await progress.json() as { status: string; progress: number; successCount: number; totalFiles: number; failedCount: number; totalSize?: number; transferredSize?: number };
+         const totalBytes = batch.totalSize || summary.totalSize || null;
+         const completedBytes = batch.transferredSize || (totalBytes ? Math.round(totalBytes * batch.progress / 100) : 0);
+         const queueProgress = updateQueueProgress(item.id, completedBytes, totalBytes, batch.successCount, batch.totalFiles);
+         updateQueueItem(item.id, { detail: `${batch.successCount}/${batch.totalFiles} files (${Math.round(batch.progress)}%)${totalBytes ? ` · ${formatSize(completedBytes)} / ${formatSize(totalBytes)}` : ""}${formatQueueProgress(queueProgress)}` });
          if (batch.status === "completed") {
-            updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.` });
+             if (isQueueItemCancelled(item.id)) return;
+             updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.` });
             writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`);
             await loadFiles(path);
             return;
@@ -2625,16 +2760,28 @@ function App() {
       }
       throw new Error("Upload progress timed out.");
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
+      if (isQueueItemCancelled(item.id)) return;
+      const recovery = classifyQueueError(error);
+      const detail = recovery.message;
+      const retryCount = item.retryCount || 0;
+      if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
+        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
+        updateQueueItem(item.id, nextItem);
+        window.setTimeout(() => { updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedUpload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
+        return;
+      }
       updateQueueItem(item.id, {
-        status: "failed",
-        detail,
+        status: recovery.needsUserAction ? "needs_user_action" : "failed",
+        detail: `[${recovery.category}] ${detail}`,
+        errorCategory: recovery.category,
       });
       writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Upload failed: ${detail}`, "ERROR");
+    } finally {
+      unlistenProgress?.();
     }
   };
 
-  const runQueuedDownload = async (item: TransferQueueItem) => {
+  const executeQueuedDownload = async (item: TransferQueueItem) => {
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
     writeOperationLog("download", "started", item.label, destinationLabel, "Transfer queue download started.", "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? `Preparing ${item.archiveFormat} archive...` : "Downloading..." });
@@ -2647,10 +2794,7 @@ function App() {
       (event) => {
         if (event.payload.transferId !== item.id) return;
         const { bytesCompleted, bytesTotal } = event.payload;
-        const detail = bytesTotal
-          ? `Downloading ${formatSize(bytesCompleted)} / ${formatSize(bytesTotal)} (${Math.min(100, Math.round((bytesCompleted / bytesTotal) * 100))}%)`
-          : `Downloading ${formatSize(bytesCompleted)}...`;
-        updateQueueItem(item.id, { detail });
+        updateQueueProgress(item.id, bytesCompleted, bytesTotal ?? null);
       },
     );
     try {
@@ -2668,18 +2812,37 @@ function App() {
         destinationFolder: item.localDestinationFolder || "",
         ignoreTlsErrors: session.ignoreTlsErrors,
       });
-      updateQueueItem(item.id, { status: "completed", detail: `Downloaded to ${destination}.` });
+      if (isQueueItemCancelled(item.id)) return;
+      const completionHandler = queueCompletionHandlersRef.current.get(item.id);
+      if (completionHandler) {
+        await completionHandler(destination);
+        queueCompletionHandlersRef.current.delete(item.id);
+      }
+      if (isQueueItemCancelled(item.id)) return;
+      updateQueueItem(item.id, {
+        status: "completed",
+        detail: `Downloaded to ${destination}.${item.progress ? formatQueueProgress(item.progress) : ""}`,
+      });
       writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded to ${destination}.`);
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      updateQueueItem(item.id, { status: "failed", detail });
+      if (isQueueItemCancelled(item.id)) return;
+      const recovery = classifyQueueError(error);
+      const detail = recovery.message;
+      const retryCount = item.retryCount || 0;
+      if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
+        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
+        updateQueueItem(item.id, nextItem);
+        window.setTimeout(() => { updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
+        return;
+      }
+      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail}`, errorCategory: recovery.category });
       writeOperationLog("download", "failed", item.label, destinationLabel, `Download failed: ${detail}`, "ERROR");
     } finally {
       unlistenProgress();
     }
   };
 
-  const runQueuedDownloadSet = async (item: TransferQueueItem) => {
+  const executeQueuedDownloadSet = async (item: TransferQueueItem) => {
     const files = item.setFiles || [];
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
     writeOperationLog("download", "started", item.label, destinationLabel, `Queued download of ${files.length} file(s) started.`, "DEBUG");
@@ -2698,6 +2861,7 @@ function App() {
         // extra synthetic "<n> selected items" segment here, or a single
         // selected directory would end up duplicated inside itself.
         const destination = await invoke<string>("download_to_disk_at", {
+          transferId: item.id,
           url: `${serverUrl(session)}/api/files/download/${downloadPath(file.remotePath)}`,
           method: "GET",
           headers,
@@ -2709,13 +2873,24 @@ function App() {
         completed += 1;
         lastDestinationRoot = destination.slice(0, destination.length - (file.relativePath.length + 1));
         updateQueueItem(item.id, { detail: `Downloading ${completed}/${files.length} files...`, setCompleted: completed });
+        const totalBytes = files.reduce((sum, current) => sum + current.size, 0);
+        const completedBytes = files.slice(0, completed).reduce((sum, current) => sum + current.size, 0);
+        updateQueueProgress(item.id, completedBytes, totalBytes, completed, files.length);
       }
       updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || destinationLabel}.` });
       writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded ${completed} file(s).`);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
-      const detail = error instanceof Error ? error.message : String(error);
-      updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${files.length} completed before failing)` });
+      const recovery = classifyQueueError(error);
+      const detail = recovery.message;
+      const retryCount = item.retryCount || 0;
+      if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
+        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
+        updateQueueItem(item.id, nextItem);
+        window.setTimeout(() => { updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownloadSet({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
+        return;
+      }
+      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail} (${completed}/${files.length} completed before failing)`, errorCategory: recovery.category });
       writeOperationLog("download", "failed", item.label, destinationLabel, `Queued download failed: ${detail}`, "ERROR");
     }
   };
@@ -2736,13 +2911,15 @@ function App() {
     return userFolder?.path || personal.path;
   };
 
-  const queueSavedLogUpload = (destinationPath: string) => {
-    const managedSession = managedSessions.find((item) => item.id === uploadDestinationSessionId);
+  const queueSavedLogUpload = (destinationPath: string, destinationSessionId: string = uploadSessionId) => {
+    const managedSession = apiUploadSessions.find((item) => item.id === destinationSessionId);
     const sxpEntry = managedSession?.sxpEntries[0];
-    const destination = sxpEntry && {
-      locationId: sxpEntry.locationId,
-      locationName: sxpEntry.locationName,
-    };
+    const destination = managedSession && session.locationId
+      ? {
+          locationId: sxpEntry?.locationId || session.locationId,
+          locationName: sxpEntry?.locationName || activeLocation?.displayName || session.locationId,
+        }
+      : null;
     if (!destination?.locationId) {
       setNotice("Select a Session with an API Remote destination before uploading the log.");
       setQueueOpen(true);
@@ -2767,20 +2944,20 @@ function App() {
   };
 
   const uploadSavedLog = () => {
-    const managedSession = managedSessions.find((item) => item.id === uploadSessionId);
+    const managedSession = apiUploadSessions.find((item) => item.id === uploadSessionId);
     const sxpEntry = managedSession?.sxpEntries[0];
+    const remoteLocationId = sxpEntry?.locationId || session.locationId;
     if (!savedLogPaths.length) {
       setNotice("Save the completed SSH log package before uploading it.");
       return;
     }
-    if (!sxpEntry?.locationId) {
+    if (!remoteLocationId) {
       setNotice("Select a Session with an API Remote destination before uploading the log.");
       setQueueOpen(true);
       return;
     }
-    setUploadDestinationSessionId(uploadSessionId);
     void run(async () => {
-      const defaultPath = sxpEntry.remotePath || await findDefaultRemoteUploadPath(sxpEntry.locationId);
+      const defaultPath = sxpEntry?.remotePath || await findDefaultRemoteUploadPath(remoteLocationId);
       setUploadDestinationPath(defaultPath);
       setUploadDestinationOpen(true);
     });
@@ -2855,12 +3032,24 @@ function App() {
   const sortedLocalFiles = sortFileItems(localFiles, localSortKey, localSortDirection);
   const selectedItems = files.filter((file) => selected.includes(file.path));
   const localSelectedItems = localFiles.filter((file) => localSelected.includes(file.path));
+  const activeTransferQueue = transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status));
+  const transferHistory = transferQueue.filter((item) => ["completed", "failed", "cancelled"].includes(item.status));
   // Whether the REMOTE file list should show an in-list "../" entry to go up
   // one level, mirroring LOCAL's own in-list ".." row instead of a separate
   // toolbar button. Root differs by source: SSH browsing is always
   // absolute-path-rooted at "/", while API-backed Locations use "" as root.
   const showRemoteUp = remoteSshEntryId ? path !== "/" : Boolean(path);
   const workspaceSessions = managedSessions.filter((item) => item.sshEntries.length > 0);
+  // A saved Workspace can predate the current Location metadata and have an
+  // empty SXP locationId. The authenticated API session is still a valid
+  // upload destination, so keep the Workspace selectable and fall back to
+  // the current session.locationId when resolving its destination.
+  const apiUploadSessions = managedSessions;
+  useEffect(() => {
+    if (!apiUploadSessions.some((item) => item.id === uploadSessionId)) {
+      setUploadSessionId(apiUploadSessions[0]?.id || "");
+    }
+  }, [apiUploadSessions, uploadSessionId]);
   const activeWorkspaceSession = workspaceSessions.find((item) => item.id === workspaceSessionId);
   // The Sessions modal's Workspace panel shows this regardless of whether it
   // has any SSH entries yet (unlike `activeWorkspaceSession` above, which is
@@ -3284,35 +3473,14 @@ function App() {
 
   const beginRemoteDrag = (event: React.DragEvent, file: FileItem) => {
     beginDrag(event, file);
-    // Normal drags stay inside the app so LOCAL <-> SSH transfers can use the
-    // HTML5 drop targets. Hold Alt when an OS-level drag-out is wanted.
+    // Windows native outbound drag is intentionally disabled. The inbound
+    // native drop target remains enabled so Explorer -> App uploads continue
+    // through Queue, while App -> Explorer uses the stable Download/Queue path
+    // instead of the WebView2/OLE plugin that can terminate the window.
     if (!event.altKey) return;
-    // The webview's native HTML5 drag-and-drop cannot drop files onto
-    // external apps on Linux (webkit2gtk does not implement outbound file
-    // drag via DownloadURL/text/uri-list). tauri-plugin-drag starts a real
-    // OS-level drag instead, so cancel the browser's own drag gesture here.
     event.preventDefault();
-    writeOperationLog("drag_out", "started", file.name, "External file manager", "Preparing a local file for external drag-out.", "DEBUG");
-    const items = selected.includes(file.path) ? selectedItems : [file];
-    const preparationKey = items.map((item) => item.path).join("\0");
-    const prepared = dragPreparationRef.current.get(preparationKey);
-    if (!prepared) {
-      setNotice(items.length > 1 || file.isDirectory
-        ? "The archive is still being prepared. Wait for staging to finish, then drag again."
-        : "The file is still being prepared. Wait for staging to finish, then drag again.");
-      return;
-    }
-    void Promise.all([prepared, resolveDragIcon()]).then(([localPathForDrag, icon]) => {
-      writeOperationLog("drag_out", "staged", file.name, "External file manager", items.length > 1 || file.isDirectory ? "tar.gz archive ready; starting native drag." : "Local file ready; starting native drag.", "DEBUG");
-      void startDrag({ item: [localPathForDrag], icon: icon || localPathForDrag }, (payload) => {
-        dragPreparationRef.current.delete(preparationKey);
-        void invoke("cleanup_drag_staging", { path: localPathForDrag }).catch(() => {});
-        writeOperationLog("drag_out", payload.result === "Dropped" ? "completed" : "cancelled", file.name, "External file manager", `Native drag ${payload.result.toLowerCase()}.`, "DEBUG");
-      });
-    }).catch((error) => {
-      setNotice(error instanceof Error ? error.message : String(error));
-      writeOperationLog("drag_out", "failed", file.name, "External file manager", `Staging failed: ${error instanceof Error ? error.message : String(error)}`, "ERROR");
-    });
+    setNotice("External drag-out is disabled on Windows for stability. Use Download to save through the Queue.");
+    writeOperationLog("drag_out", "skipped", file.name, "External file manager", "Windows outbound native drag is disabled; use Download/Queue instead.", "WARN");
   };
 
   const prepareRemoteDrag = (file: FileItem) => {
@@ -3324,7 +3492,21 @@ function App() {
       if (!profile) return;
       setNotice(`Preparing ${items.length} selected item${items.length === 1 ? "" : "s"} for drag...`);
       const setId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-      const preparation = (async () => {
+      const queueItem: TransferQueueItem = {
+        id: setId,
+        label: `${items.length} SSH remote item${items.length === 1 ? "" : "s"}`,
+        kind: "download",
+        paths: items.map((item) => item.path),
+        destinationPath: localPath ? `~/${localPath}` : "~/",
+        locationId: "",
+        locationName: `SSH: ${profile.name}`,
+        status: "queued",
+        detail: "Waiting to prepare drag transfer.",
+        sshEntryId: profile.id,
+        sshItems: items,
+        localDestinationFolder: localPath,
+      };
+      const preparation = queueDragPreparation(queueItem, async () => {
         let lastDestination = "";
         for (const item of items) {
           lastDestination = await invoke<string>("ssh_download_to_drag_staging", {
@@ -3337,7 +3519,7 @@ function App() {
         if (items.length === 1) return lastDestination;
         const suffixLength = items[items.length - 1].name.length + 1;
         return lastDestination.slice(0, lastDestination.length - suffixLength);
-      })();
+      });
       dragPreparationRef.current.set(preparationKey, preparation);
       return;
     }
@@ -3346,14 +3528,26 @@ function App() {
       ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
       : [];
     if (singleFile) {
-      const preparation = invoke<string>("download_to_drag_staging", {
-        url: `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`,
-        method: "GET",
-        headers,
-        body: undefined,
-        fileName: items[0].name,
-        ignoreTlsErrors: session.ignoreTlsErrors,
-      });
+      const queueItem: TransferQueueItem = {
+        id: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`,
+        label: items[0].name,
+        kind: "download",
+        paths: [items[0].path],
+        destinationPath: localPath ? `~/${localPath}` : "~/",
+        locationId: session.locationId,
+        locationName: activeLocation?.displayName || session.locationId,
+        status: "queued",
+        detail: "Waiting to prepare drag transfer.",
+        localDestinationFolder: localPath,
+      };
+      const preparation = queueDragPreparation(queueItem, () => invoke<string>("download_to_drag_staging", {
+          url: `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`,
+          method: "GET",
+          headers,
+          body: undefined,
+          fileName: items[0].name,
+          ignoreTlsErrors: session.ignoreTlsErrors,
+        }));
       dragPreparationRef.current.set(preparationKey, preparation);
       return;
     }
@@ -3370,7 +3564,19 @@ function App() {
     // starts with that directory's own name -- adding `setLabel` (the same
     // name) on top would nest it inside a duplicate copy of itself.
     const needsWrapper = items.length > 1;
-    const preparation = (async () => {
+    const queueItem: TransferQueueItem = {
+      id: setId,
+      label: setLabel,
+      kind: "download-set",
+      paths: items.map((item) => item.path),
+      destinationPath: localPath ? `~/${localPath}` : "~/",
+      locationId: session.locationId,
+      locationName: activeLocation?.displayName || session.locationId,
+      status: "queued",
+      detail: "Waiting to prepare drag transfer.",
+      localDestinationFolder: localPath,
+    };
+    const preparation = queueDragPreparation(queueItem, async () => {
       const response = await api("/api/files/flatten", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3400,7 +3606,7 @@ function App() {
       const topName = needsWrapper ? setLabel : items[0].name;
       const suffixLength = lastRelativePath.length - topName.length;
       return lastDestination.slice(0, lastDestination.length - suffixLength);
-    })();
+    });
     dragPreparationRef.current.set(preparationKey, preparation);
   };
 
@@ -3462,8 +3668,9 @@ function App() {
         destinationPath: localPath ? `~/${localPath}` : "~",
         locationId: session.locationId,
         locationName: activeLocation?.displayName || session.locationId,
-        status: "queued",
-        detail: `Waiting to start (${files.length} files)`,
+       status: "queued",
+       detail: `Waiting to start (${files.length} files)`,
+        progress: initialQueueProgress(files.length, files.reduce((sum, file) => sum + file.size, 0)),
         setFiles: files,
         setCompleted: 0,
         localDestinationFolder: localPath,
@@ -3501,8 +3708,9 @@ function App() {
       destinationPath: localPath ? `~/${localPath}` : "~",
       locationId: session.locationId,
       locationName: activeLocation?.displayName || session.locationId,
-      status: "queued",
-      detail: "Waiting to start",
+       status: "queued",
+       detail: "Waiting to start",
+       progress: initialQueueProgress(1, singleFile ? selectedItems[0].size : null),
       downloadUrl: singleFile
         ? `${serverUrl(session)}/api/files/download/${downloadPath(selectedItems[0].path)}`
         : `${serverUrl(session)}/api/archive`,
@@ -3519,7 +3727,7 @@ function App() {
     void runQueuedDownload(item);
   };
 
-  const runQueuedSshDownload = async (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => {
+  const executeQueuedSshDownload = async (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => {
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
     writeOperationLog("download", "started", item.label, destinationLabel, `SSH queued download of ${items.length} item(s) started.`, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${items.length} items...` });
@@ -3541,10 +3749,80 @@ function App() {
       writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded ${completed} item(s) via SFTP.`);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
-      const detail = error instanceof Error ? error.message : String(error);
-      updateQueueItem(item.id, { status: "failed", detail: `${detail} (${completed}/${items.length} completed before failing)` });
+      const recovery = classifyQueueError(error);
+      const detail = recovery.message;
+      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail} (${completed}/${items.length} completed before failing)`, errorCategory: recovery.category });
       writeOperationLog("download", "failed", item.label, destinationLabel, `SSH queued download failed: ${detail}`, "ERROR");
     }
+  };
+
+  const queueSchedulerRef = useRef(new QueueScheduler());
+  const runOnce = (id: string, execute: () => Promise<void>) => queueSchedulerRef.current.runExclusive(id, execute);
+  const runQueuedSshUpload = (item: TransferQueueItem, profile: SshProfile) => runOnce(item.id, () => executeQueuedSshUpload(item, profile));
+  const runQueuedUpload = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedUpload(item));
+  const runQueuedDownload = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedDownload(item));
+  const runQueuedDownloadSet = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedDownloadSet(item));
+  const runQueuedSshDownload = (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => runOnce(item.id, () => executeQueuedSshDownload(item, profile, items));
+  const retryDesktopQueueItem = (item: TransferQueueItem) => {
+    if (!(["failed", "needs_user_action"] as string[]).includes(item.status)) return;
+    cancelledQueueItemsRef.current.delete(item.id);
+    const retryItem = { ...item, status: "queued" as const, detail: "Retry queued", finishedAt: undefined };
+    updateQueueItem(item.id, retryItem);
+    writeOperationLog(item.kind === "upload" ? "upload" : "download", "retry", item.label, item.destinationPath, `Manual retry requested (attempt ${(item.retryCount || 0) + 1}).`, "INFO");
+    if (retryItem.sshEntryId) {
+      const profile = findSshProfileById(retryItem.sshEntryId);
+      if (!profile) {
+        updateQueueItem(item.id, { status: "needs_user_action", detail: "The SSH connection for this transfer is no longer available." });
+        return;
+      }
+      void (retryItem.kind === "download" ? runQueuedSshDownload(retryItem, profile, retryItem.sshItems || []) : runQueuedSshUpload(retryItem, profile));
+      return;
+    }
+    void (retryItem.kind === "download" ? runQueuedDownload(retryItem) : retryItem.kind === "download-set" ? runQueuedDownloadSet(retryItem) : runQueuedUpload(retryItem));
+  };
+  const renderDesktopQueueItem = (item: TransferQueueItem) => (
+    <div className="queue-item" key={item.id}>
+      <strong>{item.label}</strong>
+      <small>{item.locationName} {item.destinationPath || "/"}</small>
+      <span className={`queue-status ${item.status}`}>{item.status}</span>
+      <span>{item.detail}</span>
+      {(item.status === "running" || item.status === "queued" || item.status === "retrying") && (
+        <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>
+      )}
+      {item.progress && (["running", "queued", "retrying"].includes(item.status)) && (
+        <small>{item.progress.completedBytes ? `${formatSize(item.progress.completedBytes)}${item.progress.totalBytes ? ` / ${formatSize(item.progress.totalBytes)}` : ""}` : "Waiting for transfer data"}{formatQueueProgress(item.progress)}</small>
+      )}
+      {(item.status === "failed" || item.status === "needs_user_action") && (
+        <button type="button" onClick={() => retryDesktopQueueItem(item)}>Retry</button>
+      )}
+      {(["completed", "failed", "cancelled"].includes(item.status)) && (
+        <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>
+      )}
+    </div>
+  );
+  const queueDragPreparation = (
+    item: TransferQueueItem,
+    prepare: () => Promise<string>,
+  ) => {
+    let resolvePreparation: (path: string) => void = () => {};
+    let rejectPreparation: (error: unknown) => void = () => {};
+    const preparation = new Promise<string>((resolve, reject) => {
+      resolvePreparation = resolve;
+      rejectPreparation = reject;
+    });
+    setTransferQueue((current) => [...current, item]);
+    void runOnce(item.id, async () => {
+      updateQueueItem(item.id, { status: "running", detail: "Preparing drag transfer..." });
+      try {
+        const destination = await prepare();
+        resolvePreparation(destination);
+        updateQueueItem(item.id, { status: "needs_user_action", detail: "Ready. Drop the file into the external application." });
+      } catch (error) {
+        rejectPreparation(error);
+        updateQueueItem(item.id, { status: "failed", detail: describeError(error), errorCategory: classifyQueueError(error).category });
+      }
+    });
+    return preparation;
   };
 
   const enqueueSshDownload = () => {
@@ -3617,21 +3895,36 @@ function App() {
     void run(async () => {
       let localPathForEdit = viewerLocalPath;
       if (!localPathForEdit && viewerRemotePath) {
-        localPathForEdit = await invoke<string>("download_to_disk", {
-          transferId: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `edit-${Date.now()}`,
-          url: `${serverUrl(session)}/api/files/download/${downloadPath(viewerRemotePath)}`,
-          method: "GET",
-          headers: session.token
-            ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId]] : [])]
+        const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `edit-${Date.now()}`;
+        const item: TransferQueueItem = {
+          id,
+          label: `Prepare ${viewerTitle} for editing`,
+          kind: "download",
+          paths: [],
+          destinationPath: "~/Downloads",
+          locationId: session.locationId,
+          locationName: activeLocation?.displayName || session.locationId,
+          status: "queued",
+          detail: "Waiting to download editor copy",
+          downloadUrl: `${serverUrl(session)}/api/files/download/${downloadPath(viewerRemotePath)}`,
+          downloadMethod: "GET",
+          downloadHeaders: session.token
+            ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
             : [],
-          body: undefined,
-          fileName: viewerTitle,
-          // A scratch copy for editing is independent of wherever the LOCAL
-          // pane happens to be browsing; keep it in Downloads as before.
-          destinationFolder: "Downloads",
-          ignoreTlsErrors: session.ignoreTlsErrors,
+          downloadFileName: viewerTitle,
+          localDestinationFolder: "Downloads",
+          progress: initialQueueProgress(1, null),
+        };
+        queueCompletionHandlersRef.current.set(id, async (destination) => {
+          setViewerLocalPath(destination);
+          await invoke("edit_local_file", { path: destination });
+          notify(`Opened ${viewerTitle} in the default text editor.`);
         });
-        setViewerLocalPath(localPathForEdit);
+        if (isQueueItemCancelled(item.id)) return;
+        setTransferQueue((current) => [...current, item]);
+        setQueueOpen(true);
+        void runQueuedDownload(item);
+        return;
       }
       if (!localPathForEdit) throw new Error("No local file is available for editing.");
       await invoke("edit_local_file", { path: localPathForEdit });
@@ -3710,45 +4003,28 @@ function App() {
           `Drag-downloading ${items.length} item(s) from SSH to LOCAL.`,
           "DEBUG",
         );
-        try {
-          const resolvedPaths: string[] = [];
-          for (const item of items) {
-            resolvedPaths.push(
-              await invoke<string>("ssh_download_path", {
-                profile,
-                remotePath: item.path,
-                isDirectory: item.isDirectory,
-                localDestinationFolder: destination,
-              }),
-            );
-          }
-          finishDrag();
-          // Refresh whichever LOCAL folder is currently being browsed (it may
-          // differ from `destination` when dropping onto a folder-tree node
-          // that isn't the folder currently open in the LOCAL file list).
+        const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+        const queueItem: TransferQueueItem = {
+          id,
+          label: `${items.length} selected items`,
+          kind: "download",
+          paths: [],
+          destinationPath: destination ? `~/${destination}` : "~",
+          locationId: remoteSshEntryId,
+          locationName: profile.name,
+          status: "queued",
+          detail: "Waiting to start",
+          localDestinationFolder: destination,
+          sshEntryId: profile.id,
+          sshItems: items,
+        };
+        setTransferQueue((current) => [...current, queueItem]);
+        setQueueOpen(true);
+        finishDrag();
+        void runQueuedSshDownload(queueItem, profile, items).then(async () => {
           await loadLocalFiles(localPath);
-          if (destination !== localPath) {
-            void loadLocalTreeChildren(destination, true);
-          }
-          writeOperationLog(
-            "download",
-            "completed",
-            `SSH: ${profile.name}`,
-            `LOCAL: ~/${destination || ""}`,
-            `Drag-downloaded ${items.length} item(s) from SSH to LOCAL. Resolved local path(s): ${resolvedPaths.join(", ")}`,
-          );
-          notify(`Downloaded ${items.length} item${items.length === 1 ? "" : "s"} to LOCAL.`);
-        } catch (error) {
-          writeOperationLog(
-            "download",
-            "failed",
-            `SSH: ${profile.name}`,
-            `LOCAL: ~/${destination || ""}`,
-            `Drag download failed: ${error instanceof Error ? error.message : String(error)}`,
-            "ERROR",
-          );
-          throw error;
-        }
+          if (destination !== localPath) void loadLocalTreeChildren(destination, true);
+        });
         return;
       }
       // API Remote (not SSH): reuse the same flatten + queued-download
@@ -3874,38 +4150,23 @@ function App() {
           `Drag-uploading ${items.length} item(s) from LOCAL to SSH.`,
           "DEBUG",
         );
-        try {
-          const resolvedPaths: string[] = [];
-          for (const item of items) {
-            resolvedPaths.push(
-              await invoke<string>("ssh_upload_path", {
-                profile,
-                localPath: item.path,
-                remoteDestinationFolder: destination,
-              }),
-            );
-          }
-          finishDrag();
-          await loadFiles(path);
-          writeOperationLog(
-            "upload",
-            "completed",
-            `LOCAL: ~/${localPath || ""}`,
-            `SSH: ${profile.name}:${destination}`,
-            `Drag-uploaded ${items.length} item(s) from LOCAL to SSH. Resolved remote folder: ${resolvedPaths[0] ?? destination}`,
-          );
-          notify(`Uploaded ${items.length} item${items.length === 1 ? "" : "s"} to REMOTE.`);
-        } catch (error) {
-          writeOperationLog(
-            "upload",
-            "failed",
-            `LOCAL: ~/${localPath || ""}`,
-            `SSH: ${profile.name}:${destination}`,
-            `Drag upload failed: ${error instanceof Error ? error.message : String(error)}`,
-            "ERROR",
-          );
-          throw error;
-        }
+        const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+        const queueItem: TransferQueueItem = {
+          id,
+          label: `${items.length} selected items`,
+          kind: "upload",
+          paths: items.map((item) => item.path),
+          destinationPath: destination,
+          locationId: remoteSshEntryId,
+          locationName: profile.name,
+          status: "queued",
+          detail: "Waiting to start",
+          sshEntryId: profile.id,
+        };
+        setTransferQueue((current) => [...current, queueItem]);
+        setQueueOpen(true);
+        finishDrag();
+        void runQueuedSshUpload(queueItem, profile);
         return;
       }
       // API Remote (not SSH): reuse the exact same queued-upload machinery
@@ -3958,13 +4219,10 @@ function App() {
     uploadPaths(await invoke<string[]>("pick_upload_files"));
 
   useEffect(() => {
-    // NOTE: with `dragDropEnabled: false` set on the window (tauri.conf.json)
-    // to fix in-app LOCAL<->REMOTE HTML5 drag-and-drop on Windows WebView2
-    // (see that file for details), this OS-level "drop a file from Explorer
-    // onto the window" listener no longer receives events either -- both
-    // features share the same native drop-target registration. Dragging
-    // files in from outside the app is intentionally left non-functional;
-    // use the LOCAL pane / "Upload" picker instead.
+    // Windows enables Tauri's native drop target through
+    // tauri.windows.conf.json so Explorer drops arrive here and use the same
+    // Queue upload path. Linux keeps the native target disabled because its
+    // WebKitGTK integration can intercept the in-app HTML5 drag surface.
     let unlisten: (() => void) | undefined;
     let disposed = false;
     getCurrentWebview()
@@ -5462,10 +5720,7 @@ function App() {
                     data-path={file.path}
                     className={`file-tile ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
                     draggable
-                     onPointerDown={(event) => {
-                       if (event.altKey) prepareRemoteDrag(file);
-                     }}
-                    onDragStart={(event) => beginRemoteDrag(event, file)}
+                     onDragStart={(event) => beginRemoteDrag(event, file)}
                     onDragEnd={finishDragAfterDrop}
                     onDragOver={(event) => {
                       if (
@@ -5569,10 +5824,7 @@ function App() {
                       data-path={file.path}
                       draggable
                       className={`file-row ${selected.includes(file.path) ? "selected" : ""} ${dropTarget === file.path ? "drop-target" : ""}`}
-                        onPointerDown={(event) => {
-                          if (event.altKey) prepareRemoteDrag(file);
-                        }}
-                       onDragStart={(event) => beginRemoteDrag(event, file)}
+                           onDragStart={(event) => beginRemoteDrag(event, file)}
                       onDragEnd={finishDragAfterDrop}
                       onDragOver={(event) => {
                         if (
@@ -5872,7 +6124,7 @@ function App() {
                    required
                  />
                </label>
-               <small className="field-help">Files will be saved under the current user&apos;s Downloads folder.</small>
+                <small className="field-help">Save location: LOCAL {isAbsoluteLocalPath(saveLogDestinationPath) ? saveLogDestinationPath : `~/${saveLogDestinationPath}`}</small>
                <div className="modal-actions">
                  <button type="button" onClick={() => setSaveLogNameOpen(false)}>Cancel</button>
                  <button className="confirm" type="submit">Save Log</button>
@@ -6216,7 +6468,7 @@ function App() {
             </div>
             <div className="terminal-actions">
                <button onClick={() => openSessionsModal()}>Workspace Manager</button>
-              <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => item.status === "queued" || item.status === "running").length})</button>
+               <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length})</button>
               <button aria-label={terminalMaximized ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMaximized} onClick={toggleTerminalMaximized}>{terminalMaximized ? "⤡" : "⤢"}</button>
               <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
             </div>
@@ -6289,18 +6541,17 @@ function App() {
                       <button className="danger" onClick={stopRecording}>Stop Recording</button>
                     )}
                      <button disabled={recording || !recordingHasOutput} onClick={openSaveLogDialog}>Save Log</button>
-                     <span className="recording-log-location">Saved logs: current user&apos;s Downloads folder</span>
                     <div className="upload-session-select">
                       <span>Destination Session</span>
                       <PaletteSelect
                         label="Select Session"
                         value={uploadSessionId}
-                       options={managedSessions.map((managedSession) => ({ value: managedSession.id, label: managedSession.name }))}
+                        options={apiUploadSessions.map((managedSession) => ({ value: managedSession.id, label: managedSession.name }))}
                        onChange={setUploadSessionId}
                        menuPlacement="up"
                      />
                      </div>
-                     <button disabled={!savedLogPaths.length || recording} onClick={uploadSavedLog}>Upload Log</button>
+                      <button disabled={!savedLogPaths.length || recording || !apiUploadSessions.length || !session.locationId} onClick={uploadSavedLog}>Upload Log</button>
                       {savedLogPaths.length > 0 && <details className="saved-log-paths"><summary>Saved log files</summary>{savedLogPaths.map((savedPath) => <button type="button" key={savedPath} onClick={() => openLocalViewer(savedPath)}><code>{savedPath}</code></button>)}</details>}
                      {recording && <span className="recording-indicator">Recording</span>}
               </div>
@@ -6351,7 +6602,7 @@ function App() {
               />
             </label>
             <div className="modal-actions">
-              <button type="button" className="confirm" onClick={() => queueSavedLogUpload(uploadDestinationPath.trim())}>Upload here</button>
+              <button type="button" className="confirm" onClick={() => queueSavedLogUpload(uploadDestinationPath.trim(), uploadSessionId)}>Upload here</button>
               <button type="button" onClick={() => setUploadDestinationOpen(false)}>Cancel</button>
             </div>
           </div>
@@ -6362,35 +6613,13 @@ function App() {
           <div className="modal queue-modal" style={modalStyle("queue")} onMouseDown={(event) => event.stopPropagation()}>
             <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("queue")}>Transfer Queue</h2>
             {!transferQueue.length && <p className="muted">No transfers queued.</p>}
-            {transferQueue.map((item) => (
-              <div className="queue-item" key={item.id}>
-                <strong>{item.label}</strong>
-                <small>{item.locationName} {item.destinationPath || "/"}</small>
-                <span className={`queue-status ${item.status}`}>{item.status}</span>
-                <span>{item.detail}</span>
-                {item.status === "running" && (
-                  <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>
-                )}
-                {item.status === "failed" && (
-                  <button type="button" onClick={() => {
-                    cancelledQueueItemsRef.current.delete(item.id);
-                    updateQueueItem(item.id, { status: "queued", detail: "Retry queued" });
-                    const retryItem = { ...item, status: "queued" as const, detail: "Retry queued" };
-                    if (retryItem.sshEntryId) {
-                      const profile = findSshProfileById(retryItem.sshEntryId);
-                      if (!profile) {
-                        updateQueueItem(item.id, { status: "failed", detail: "The SSH connection for this transfer is no longer available." });
-                        return;
-                      }
-                      void (retryItem.kind === "download" ? runQueuedSshDownload(retryItem, profile, retryItem.sshItems || []) : runQueuedSshUpload(retryItem, profile));
-                      return;
-                    }
-                    void (retryItem.kind === "download" ? runQueuedDownload(retryItem) : retryItem.kind === "download-set" ? runQueuedDownloadSet(retryItem) : runQueuedUpload(retryItem));
-                  }}>Retry</button>
-                )}
-              </div>
-            ))}
+            {activeTransferQueue.length > 0 && <section className="queue-section"><h3>Active</h3>{activeTransferQueue.map(renderDesktopQueueItem)}</section>}
+            {transferHistory.length > 0 && <section className="queue-section"><h3>History</h3>{transferHistory.map(renderDesktopQueueItem)}</section>}
             <div className="modal-actions">
+              {transferQueue.some((item) => item.status === "completed") && <button type="button" onClick={() => clearQueueStatus("completed")}>Clear completed</button>}
+              {transferQueue.some((item) => item.status === "failed") && <button type="button" onClick={() => clearQueueStatus("failed")}>Clear failed</button>}
+              {transferQueue.some((item) => item.status === "cancelled") && <button type="button" onClick={() => clearQueueStatus("cancelled")}>Clear cancelled</button>}
+              {transferQueue.some((item) => ["completed", "failed", "cancelled"].includes(item.status)) && <button type="button" onClick={clearFinishedQueue}>Clear history</button>}
               <button type="button" onClick={() => setQueueOpen(false)}>Close</button>
             </div>
           </div>

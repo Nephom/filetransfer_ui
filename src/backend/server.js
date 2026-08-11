@@ -24,6 +24,7 @@ const database = require('./database/db');
 const shareManager = require('./auth/share-manager');
 const bulkUserJobManager = require('./auth/bulk-user-job');
 const { transferManager } = require('./transfer');
+const transferProgress = require('./transfer/progress');
 const { authenticate, setJwtSecret, requireAdmin, requireStaffRole, resolveCurrentAccount } = require('./middleware/auth');
 const { initializeSecurity } = require('./middleware/security');
 const { createLogger, systemLogger } = require('./utils/logger');
@@ -2643,6 +2644,16 @@ async function startServer() {
     await runTempUploadCleanup();
     tempUploadCleanupInterval = setInterval(runTempUploadCleanup, tempUploadCleanupIntervalHours * 60 * 60 * 1000);
     systemLogger.logSystem('INFO', `TEMP UPLOAD CLEANUP SCHEDULER - RetentionDays: ${tempUploadRetentionDays}, IntervalHours: ${tempUploadCleanupIntervalHours}`);
+
+    const transferCleanupInterval = 15 * 60 * 1000;
+    const transferCleanupTimer = setInterval(() => {
+      const result = transferManager.cleanup();
+      const legacyRemoved = transferProgress.cleanup();
+      if (result.transfersRemoved || result.batchesRemoved || legacyRemoved) {
+        systemLogger.logSystem('INFO', `TRANSFER PROGRESS CLEANUP - Transfers: ${result.transfersRemoved}, Batches: ${result.batchesRemoved}, Legacy: ${legacyRemoved}`);
+      }
+    }, transferCleanupInterval);
+    transferCleanupTimer.unref?.();
 
     // Initialize enhanced file system with in-memory cache
     fileSystem = new EnhancedMemoryFileSystem(storagePath);

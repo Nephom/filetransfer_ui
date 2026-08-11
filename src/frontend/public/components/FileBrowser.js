@@ -19,6 +19,17 @@ const fileTimestamp = (value) => {
     }
     return 0;
 };
+const formatRate = (bytesPerSecond) => {
+    if (!bytesPerSecond || bytesPerSecond < 1) return '--';
+    const units = ['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    let value = bytesPerSecond;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+        value /= 1024;
+        unit += 1;
+    }
+    return `${value.toFixed(unit ? 1 : 0)} ${units[unit]}`;
+};
 const compareFileNames = (left, right) => String(left || '').localeCompare(String(right || ''), undefined, { numeric: true, sensitivity: 'base' });
 const compareFiles = (left, right, key, direction) => {
     if (Boolean(left.isDirectory) !== Boolean(right.isDirectory)) return left.isDirectory ? -1 : 1;
@@ -35,6 +46,22 @@ const fileType = (item) => {
     if (item.isDirectory) return 'File folder';
     const extension = item.name?.split('.').pop();
     return extension && extension !== item.name ? `${extension.toUpperCase()} file` : 'File';
+};
+const classifyTransferError = (error) => {
+    const message = String(error?.message || error || '').toLowerCase();
+    const status = Number(error?.status || error?.statusCode || message.match(/\b(401|403|404|409|5\d\d)\b/)?.[1] || 0);
+    if (status >= 500) return 'server_error';
+    if (message.includes('401') || message.includes('unauthor')) return 'authentication';
+    if (message.includes('403') || message.includes('permission')) return 'permission';
+    if (message.includes('404') || message.includes('not found')) return 'source_missing';
+    if (message.includes('409') || message.includes('conflict')) return 'conflict';
+    if (message.includes('source changed') || message.includes('modified after')) return 'source_changed';
+    if (message.includes('destination') && (message.includes('unavailable') || message.includes('missing'))) return 'destination_unavailable';
+    if (message.includes('invalid') || message.includes('validation')) return 'validation';
+    if (message.includes('timeout') || message.includes('timed out')) return 'timeout';
+    if (message.includes('network') || message.includes('connect') || message.includes('fetch')) return 'network';
+    if (message.includes('cancel')) return 'cancelled';
+    return 'unknown';
 };
 
 const readDirectoryEntries = (reader) => new Promise((resolve, reject) => {
@@ -125,6 +152,14 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const downloadInProgress = React.useRef(false);
     const locationsLoaded = React.useRef(false);
     const locationRefreshInProgress = React.useRef(false);
+    const queueItemsRef = React.useRef([]);
+    const queueJobsRef = React.useRef(new Map());
+    const queueAbortControllersRef = React.useRef(new Map());
+    const queueRunningRef = React.useRef(false);
+    const queueRetryTimersRef = React.useRef(new Map());
+    const queueStoreRef = React.useRef(new window.FileTransferWebQueueStore());
+    queueItemsRef.current = queueItems;
+    React.useEffect(() => { queueStoreRef.current.replace(queueItems); }, [queueItems]);
 
     const authHeaders = {
         Authorization: `Bearer ${token}`,
@@ -265,6 +300,11 @@ const FileBrowser = ({ token, user, onLogout }) => {
     React.useEffect(() => () => {
         window.clearTimeout(dragExpandTimer.current);
         window.clearTimeout(notificationTimer.current);
+        queueRetryTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+        queueRetryTimersRef.current.clear();
+        queueAbortControllersRef.current.forEach((controller) => controller.abort());
+        queueAbortControllersRef.current.clear();
+        queueJobsRef.current.clear();
     }, []);
     React.useEffect(() => { localStorage.setItem('file-view-mode', viewMode); }, [viewMode]);
     React.useEffect(() => { localStorage.setItem('archive-format', archiveFormat); }, [archiveFormat]);
@@ -272,7 +312,17 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const activeLocation = locations.find((location) => location.id === locationId);
     const hasCapability = (capability) => activeLocation?.capabilities?.includes(capability) === true;
     const selectLocation = (nextLocationId) => {
-        if (nextLocationId === locationId) return;
+        if (nextLocationId === locationId) {
+            setCurrentPath('');
+            setDisplayPath('/');
+            setSelected([]);
+            setSearch('');
+            setSearching(false);
+            setPathBeforeSearch('');
+            setContext(null);
+            loadFiles('', nextLocationId);
+            return;
+        }
         setLocationId(nextLocationId);
         setCurrentPath('');
         setDisplayPath('/');
@@ -384,32 +434,152 @@ const FileBrowser = ({ token, user, onLogout }) => {
         // The browser needs time to claim the object URL after the synthetic click.
         window.setTimeout(() => URL.revokeObjectURL(url), 60000);
     };
-    const download = async (items = selectedItems) => {
-        if (!items.length || downloadInProgress.current) return;
-        const isArchive = items.length > 1 || items[0].isDirectory;
-        downloadInProgress.current = true;
-        window.clearTimeout(notificationTimer.current);
-        setDownloading(true); setError('');
-        setTransferStatus(isArchive ? `Preparing archive for ${items.length} item${items.length === 1 ? '' : 's'}...` : `Preparing download: ${items[0].name}...`);
+    const updateQueueItem = (id, patch) => {
+        const next = queueItemsRef.current.map((item) => {
+            if (item.id !== id) return item;
+            if (item.status === 'cancelled' && patch.status && patch.status !== 'cancelled') return item;
+            return { ...item, ...patch };
+        });
+        queueItemsRef.current = next;
+        queueStoreRef.current.replace(next);
+        setQueueItems(next);
+    };
+    const pruneQueueItems = () => {
+        const now = Date.now();
+        const policies = {
+            completed: { max: 20, ttl: 24 * 60 * 60 * 1000 },
+            cancelled: { max: 10, ttl: 24 * 60 * 60 * 1000 },
+            failed: { max: 20, ttl: 7 * 24 * 60 * 60 * 1000 }
+        };
+        const next = [];
+        Object.keys(policies).forEach((status) => {
+            const policy = policies[status];
+            queueItemsRef.current.filter((item) => item.status === status)
+                .sort((left, right) => (right.finishedAt || 0) - (left.finishedAt || 0))
+                .filter((item, index) => index < policy.max && (!item.finishedAt || now - item.finishedAt < policy.ttl))
+                .forEach((item) => next.push(item));
+        });
+        queueItemsRef.current.filter((item) => !policies[item.status]).forEach((item) => next.push(item));
+        queueItemsRef.current = next;
+        setQueueItems(next);
+    };
+    const finishQueueItem = (id, status, detail) => {
+        if (queueItemsRef.current.find((item) => item.id === id)?.status === 'cancelled') return;
+        updateQueueItem(id, { status, detail, finishedAt: Date.now() });
+        if (!['failed', 'needs_user_action'].includes(status)) queueJobsRef.current.delete(id);
+        window.setTimeout(pruneQueueItems, 0);
+    };
+    const runNextQueueItem = async () => {
+        if (queueRunningRef.current) return;
+        const item = queueItemsRef.current.find((candidate) => candidate.status === 'queued');
+        if (!item) return;
+        const job = queueJobsRef.current.get(item.id);
+        if (!job) {
+            finishQueueItem(item.id, 'failed', 'Queue executor is unavailable.');
+            return;
+        }
+        queueRunningRef.current = true;
+        const controller = new AbortController();
+        queueAbortControllersRef.current.set(item.id, controller);
+        updateQueueItem(item.id, { status: 'running', detail: 'Preparing transfer...' });
+        setDownloading(true);
+        let retryScheduled = false;
         try {
-            if (!isArchive) {
-                const file = items[0]; const response = await fetch(`/api/files/download/${encodeURIComponent(file.path)}`, { headers: authHeaders });
-                if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Download failed.'); downloadBlob(await response.blob(), file.name);
-            } else {
-                const response = await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath, format: archiveFormat }) });
-                if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Archive download failed.');
-                const disposition = response.headers.get('Content-Disposition') || ''; const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
-                downloadBlob(await response.blob(), match ? decodeURIComponent(match[1]) : `archive.${archiveFormat}`);
+            const detail = await job(item.id, controller.signal);
+            finishQueueItem(item.id, 'completed', detail || 'Transfer completed.');
+        } catch (requestError) {
+            if (controller.signal.aborted) {
+                finishQueueItem(item.id, 'cancelled', 'Cancelled by user.');
+                return;
             }
-            showSuccess('Download started in your browser.');
-        } catch (requestError) { setTransferStatus(''); setError(requestError.message); }
-        finally { downloadInProgress.current = false; setDownloading(false); }
+            const category = classifyTransferError(requestError);
+            const retryCount = item.retryCount || 0;
+            const retryable = ['network', 'timeout', 'server_error'].includes(category) && retryCount < 3;
+            if (retryable) {
+                retryScheduled = true;
+                updateQueueItem(item.id, { status: 'retrying', retryCount: retryCount + 1, detail: `[${category}] Retry ${retryCount + 1}/3 scheduled`, errorCategory: category });
+                const timer = window.setTimeout(() => {
+                    queueRetryTimersRef.current.delete(item.id);
+                    if (queueItemsRef.current.find((candidate) => candidate.id === item.id)?.status !== 'retrying') return;
+                    updateQueueItem(item.id, { status: 'queued', detail: 'Retry starting' });
+                    void runNextQueueItem();
+                }, Math.min(30_000, 1000 * (2 ** retryCount)));
+                queueRetryTimersRef.current.set(item.id, timer);
+            } else {
+                updateQueueItem(item.id, { errorCategory: category });
+                const needsUserAction = ['authentication', 'permission', 'conflict', 'source_missing', 'source_changed', 'destination_unavailable', 'validation', 'unknown'].includes(category);
+                finishQueueItem(item.id, needsUserAction ? 'needs_user_action' : 'failed', `[${category}] ${requestError.message || 'Transfer failed.'}`);
+            }
+        } finally {
+            queueRunningRef.current = false;
+            queueAbortControllersRef.current.delete(item.id);
+            setDownloading(false);
+            if (!retryScheduled) void runNextQueueItem();
+        }
+    };
+    const enqueueTransfer = (item, job) => {
+        queueJobsRef.current.set(item.id, job);
+        const next = [...queueItemsRef.current, item];
+        queueItemsRef.current = next;
+        setQueueItems(next);
+        setQueueOpen(true);
+        void runNextQueueItem();
+    };
+    const streamResponse = async (id, response, totalBytes = null) => {
+        if (!response.body) return response.blob();
+        const reader = response.body.getReader();
+        const chunks = [];
+        let completedBytes = 0;
+        const samples = [];
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            completedBytes += value.byteLength;
+            const now = Date.now();
+            samples.push({ bytes: completedBytes, at: now });
+            while (samples.length > 1 && now - samples[0].at > 3000) samples.shift();
+            const oldest = samples[0];
+            const elapsed = oldest ? now - oldest.at : 0;
+            if (elapsed >= 300) {
+                const bytesPerSecond = oldest ? (completedBytes - oldest.bytes) / (elapsed / 1000) : 0;
+                const percentage = totalBytes ? Math.min(100, completedBytes / totalBytes * 100) : null;
+                const eta = totalBytes && bytesPerSecond > 0 ? (totalBytes - completedBytes) / bytesPerSecond : null;
+                updateQueueItem(id, {
+                    detail: `Downloading ${formatSize(completedBytes)}${totalBytes ? ` / ${formatSize(totalBytes)}` : ''}${percentage === null ? '' : ` (${Math.round(percentage)}%)`} · ${formatRate(bytesPerSecond)}${eta === null ? '' : ` · ETA ${Math.ceil(eta)}s`}`,
+                    progress: { completedBytes, totalBytes, percentage, bytesPerSecond, etaSeconds: eta, completedItems: 0, totalItems: 1, updatedAt: now }
+                });
+            }
+        }
+        const percentage = totalBytes ? Math.min(100, completedBytes / totalBytes * 100) : null;
+        updateQueueItem(id, {
+            detail: `Transferred ${formatSize(completedBytes)}${totalBytes ? ` / ${formatSize(totalBytes)}` : ''}${percentage === null ? '' : ` (${Math.round(percentage)}%)`}`,
+            progress: { completedBytes, totalBytes, percentage, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: 1, updatedAt: Date.now() }
+        });
+        return new Blob(chunks);
+    };
+    const download = (items = selectedItems) => {
+        if (!items.length) return;
+        const isArchive = items.length > 1 || items[0].isDirectory;
+        const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const label = isArchive ? `${items.length} selected items` : items[0].name;
+        const totalBytes = !isArchive ? Number(items[0].size) || null : null;
+        enqueueTransfer({ id, label, status: 'queued', detail: 'Waiting to start', kind: 'download', finishedAt: null, progress: { completedBytes: 0, totalBytes, percentage: totalBytes ? 0 : null, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: 1, updatedAt: Date.now() } }, async (queueId, signal) => {
+            const response = isArchive
+                ? await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath, format: archiveFormat }), signal })
+                : await fetch(`/api/files/download/${encodeURIComponent(items[0].path)}`, { headers: authHeaders, signal });
+            if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || (isArchive ? 'Archive download failed.' : 'Download failed.'));
+            const disposition = response.headers.get('Content-Disposition') || '';
+            const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
+            const blob = await streamResponse(queueId, response, Number(response.headers.get('Content-Length')) || totalBytes);
+            downloadBlob(blob, isArchive ? (match ? decodeURIComponent(match[1]) : `archive.${archiveFormat}`) : items[0].name);
+            return `Downloaded ${label}.`;
+        });
     };
 
     // "Queue" download mode: fetch every individual file under the selection
     // (via /api/files/flatten) and track each one in the Transfer Queue,
     // instead of always bundling the selection into a single archive first.
-    const updateQueueItem = (id, patch) => setQueueItems((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
     const supportsDirectoryPicker = () => typeof window.showDirectoryPicker === 'function';
 
     const writeFileIntoDirectoryHandle = async (rootHandle, relativePath, blob) => {
@@ -429,9 +599,8 @@ const FileBrowser = ({ token, user, onLogout }) => {
         const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const label = items.length === 1 ? items[0].name : `${items.length} selected items`;
         setModal(null);
-        setQueueItems((current) => [...current, { id, label, status: 'running', detail: 'Preparing file list...' }]);
-        setQueueOpen(true);
-        try {
+        enqueueTransfer({ id, label, status: 'queued', detail: 'Waiting to prepare file list...', kind: 'download-set', finishedAt: null }, async (queueId, signal) => {
+            updateQueueItem(queueId, { detail: 'Preparing file list...' });
             const flattenResponse = await fetch('/api/files/flatten', {
                 method: 'POST',
                 headers: { ...authHeaders, 'Content-Type': 'application/json' },
@@ -441,6 +610,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             if (!flattenResponse.ok) throw new Error(flattenData.error || 'Unable to list files for the queue.');
             const targetFiles = flattenData.files || [];
             if (!targetFiles.length) throw new Error('The selection has no files to download.');
+            const totalBytes = targetFiles.reduce((sum, file) => sum + (Number(file.size) || 0), 0) || null;
 
             let directoryHandle = null;
             const useFileSystemAccess = supportsDirectoryPicker();
@@ -448,17 +618,16 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 try {
                     directoryHandle = await window.showDirectoryPicker();
                 } catch (pickerError) {
-                    updateQueueItem(id, { status: 'failed', detail: 'Destination folder selection was cancelled.' });
-                    return;
+                    throw new Error('Destination folder selection was cancelled.');
                 }
             }
 
             let completed = 0;
             for (const file of targetFiles) {
                 updateQueueItem(id, { detail: `Downloading ${completed}/${targetFiles.length} files...` });
-                const response = await fetch(`/api/files/download/${encodeURIComponent(file.remotePath)}`, { headers: authHeaders });
+                const response = await fetch(`/api/files/download/${encodeURIComponent(file.remotePath)}`, { headers: authHeaders, signal });
                 if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Failed to download ${file.relativePath}.`);
-                const blob = await response.blob();
+                const blob = await streamResponse(queueId, response, Number(response.headers.get('Content-Length')) || file.size || null);
                 if (directoryHandle) {
                     await writeFileIntoDirectoryHandle(directoryHandle, file.relativePath, blob);
                 } else {
@@ -469,13 +638,92 @@ const FileBrowser = ({ token, user, onLogout }) => {
                     await new Promise((resolve) => window.setTimeout(resolve, 150));
                 }
                 completed += 1;
+                const completedBytes = targetFiles.slice(0, completed).reduce((sum, current) => sum + (Number(current.size) || 0), 0);
+                const percentage = totalBytes ? completedBytes / totalBytes * 100 : null;
+                updateQueueItem(id, { detail: `Downloading ${completed}/${targetFiles.length} files${percentage === null ? '' : ` (${Math.round(percentage)}%)`}`, progress: { completedBytes, totalBytes, percentage, bytesPerSecond: null, etaSeconds: null, completedItems: completed, totalItems: targetFiles.length, updatedAt: Date.now() } });
             }
-            updateQueueItem(id, { status: 'completed', detail: directoryHandle ? `Downloaded ${completed} file(s) into the selected folder.` : `Downloaded ${completed} file(s) individually (folder structure not preserved in this browser).` });
-            showSuccess(`Queued download of ${completed} file(s) complete.`);
-        } catch (requestError) {
-            updateQueueItem(id, { status: 'failed', detail: requestError.message });
-        }
+            return directoryHandle ? `Downloaded ${completed} file(s) into the selected folder.` : `Downloaded ${completed} file(s) individually (folder structure not preserved in this browser).`;
+        });
     };
+    const cancelQueueItem = (id) => {
+        const item = queueItemsRef.current.find((candidate) => candidate.id === id);
+        if (!item || !['queued', 'running', 'retrying'].includes(item.status)) return;
+        const controller = queueAbortControllersRef.current.get(id);
+        controller?.abort();
+        const retryTimer = queueRetryTimersRef.current.get(id);
+        if (retryTimer) window.clearTimeout(retryTimer);
+        queueRetryTimersRef.current.delete(id);
+        queueJobsRef.current.delete(id);
+        updateQueueItem(id, { status: 'cancelled', detail: 'Cancelled by user.', finishedAt: Date.now() });
+        window.setTimeout(pruneQueueItems, 0);
+    };
+    const retryQueueItem = (id) => {
+        const item = queueItemsRef.current.find((candidate) => candidate.id === id);
+        if (!item || !['failed', 'needs_user_action'].includes(item.status) || !queueJobsRef.current.has(id)) return;
+        updateQueueItem(id, { status: 'queued', detail: 'Retry queued', finishedAt: null });
+        void runNextQueueItem();
+    };
+    const removeQueueItem = (id) => {
+        const item = queueItemsRef.current.find((candidate) => candidate.id === id);
+        if (item && ['queued', 'running', 'retrying'].includes(item.status)) {
+            cancelQueueItem(id);
+            return;
+        }
+        queueJobsRef.current.delete(id);
+        const next = queueItemsRef.current.filter((item) => item.id !== id);
+        queueItemsRef.current = next;
+        setQueueItems(next);
+    };
+    const clearQueueHistory = () => {
+        const next = queueItemsRef.current.filter((item) => !['completed', 'failed', 'cancelled'].includes(item.status));
+        queueItemsRef.current = next;
+        setQueueItems(next);
+    };
+    const clearQueueStatus = (status) => {
+        const next = queueItemsRef.current.filter((item) => item.status !== status);
+        queueItemsRef.current = next;
+        setQueueItems(next);
+    };
+    const uploadFormData = (queueId, data, totalBytes, signal) => new Promise((resolve, reject) => {
+        const request = new XMLHttpRequest();
+        request.open('POST', '/api/upload/multiple');
+        Object.entries(authHeaders).forEach(([name, value]) => request.setRequestHeader(name, value));
+        const samples = [];
+        request.upload.onprogress = (event) => {
+            if (!event.lengthComputable) {
+                updateQueueItem(queueId, { detail: 'Uploading file data... total size is being determined.' });
+                return;
+            }
+            const now = Date.now();
+            samples.push({ bytes: event.loaded, at: now });
+            while (samples.length > 1 && now - samples[0].at > 3000) samples.shift();
+            const oldest = samples[0];
+            const bytesPerSecond = oldest && now > oldest.at
+                ? (event.loaded - oldest.bytes) / ((now - oldest.at) / 1000)
+                : null;
+            const eta = bytesPerSecond && totalBytes ? Math.max(0, (totalBytes - event.loaded) / bytesPerSecond) : null;
+            const percentage = event.total > 0 ? event.loaded / event.total * 100 : null;
+            updateQueueItem(queueId, {
+                detail: `Uploading file data ${formatSize(event.loaded)} / ${formatSize(event.total)}${percentage === null ? '' : ` (${Math.round(percentage)}%)`}${bytesPerSecond ? ` · ${formatRate(bytesPerSecond)}` : ''}${eta ? ` · ETA ${Math.ceil(eta)}s` : ''}`,
+                progress: { completedBytes: event.loaded, totalBytes: totalBytes || event.total || null, percentage: totalBytes ? event.loaded / totalBytes * 100 : percentage, bytesPerSecond, etaSeconds: eta, completedItems: 0, totalItems: 1, updatedAt: now }
+            });
+        };
+        const abort = () => request.abort();
+        signal?.addEventListener('abort', abort, { once: true });
+        request.onerror = () => { signal?.removeEventListener('abort', abort); reject(new Error('Upload network request failed.')); };
+        request.onabort = () => { signal?.removeEventListener('abort', abort); reject(new Error('Upload request was cancelled.')); };
+        request.onload = () => {
+            let result = {};
+            try { result = JSON.parse(request.responseText || '{}'); } catch { /* handled as an API error below */ }
+            if (request.status < 200 || request.status >= 300) {
+                reject(new Error(result.error?.message || result.error || 'Upload failed.'));
+                return;
+            }
+            signal?.removeEventListener('abort', abort);
+            resolve(result);
+        };
+        request.send(data);
+    });
 
     const startDownload = () => {
         if (!selectedItems.length) return;
@@ -555,35 +803,47 @@ const FileBrowser = ({ token, user, onLogout }) => {
     };
     const uploadFiles = async (items, directories = []) => {
         if (!items.length && !directories.length) return;
-        const data = new FormData();
-        items.forEach(({ file, relativePath }) => {
-            data.append('files', file, file.name);
-            data.append('filePaths[]', relativePath);
-        });
-        directories.forEach((directory) => data.append('directoryPaths[]', directory));
-        data.append('path', currentPath);
-        setLoading(true); setError(''); setTransferStatus(`Uploading ${items.length} file${items.length === 1 ? '' : 's'}...`);
-        try {
-            const response = await fetch('/api/upload/multiple', { method: 'POST', headers: authHeaders, body: data });
-            const result = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(result.error?.message || result.error || 'Upload failed.');
+        const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const totalBytes = items.reduce((sum, item) => sum + (Number(item.file.size) || 0), 0) || null;
+        enqueueTransfer({
+            id,
+            label: `Upload ${items.length} file${items.length === 1 ? '' : 's'}`,
+            status: 'queued',
+            detail: 'Waiting to start',
+            kind: 'upload',
+            finishedAt: null,
+            progress: { completedBytes: 0, totalBytes, percentage: totalBytes ? 0 : null, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: items.length, updatedAt: Date.now() }
+        }, async (queueId, signal) => {
+            const data = new FormData();
+            items.forEach(({ file, relativePath }) => {
+                data.append('files', file, file.name);
+                data.append('filePaths[]', relativePath);
+            });
+            directories.forEach((directory) => data.append('directoryPaths[]', directory));
+            data.append('path', currentPath);
+            const result = await uploadFormData(queueId, data, totalBytes, signal);
             let completed = !result.batchId;
             if (result.batchId) {
                 for (let attempt = 0; attempt < 600; attempt += 1) {
-                    const progressResponse = await fetch(`/api/progress/batch/${encodeURIComponent(result.batchId)}`, { headers: authHeaders });
+                    const progressResponse = await fetch(`/api/progress/batch/${encodeURIComponent(result.batchId)}`, { headers: authHeaders, signal });
                     const progress = await progressResponse.json().catch(() => ({}));
                     if (!progressResponse.ok) throw new Error(progress.error || 'Unable to read upload progress.');
-                    setTransferStatus(`Uploading: ${progress.successCount}/${progress.totalFiles} files (${Math.round(progress.progress)}%)`);
+                    const completedBytes = totalBytes ? Math.round(totalBytes * (Number(progress.progress) || 0) / 100) : 0;
+                    const now = Date.now();
+                    updateQueueItem(queueId, {
+                        detail: `Uploading ${progress.successCount}/${progress.totalFiles} files (${Math.round(progress.progress)}%)${totalBytes ? ` · ${formatSize(completedBytes)} / ${formatSize(totalBytes)}` : ''}`,
+                        progress: { completedBytes, totalBytes, percentage: totalBytes ? Number(progress.progress) : null, bytesPerSecond: null, etaSeconds: null, completedItems: progress.successCount || 0, totalItems: progress.totalFiles || items.length, updatedAt: now }
+                    });
                     if (progress.status === 'completed') { completed = true; break; }
                     if (progress.status === 'failed' || progress.status === 'partial_fail') throw new Error(`Upload finished with ${progress.failedCount} failed file${progress.failedCount === 1 ? '' : 's'}.`);
                     await new Promise((resolve) => window.setTimeout(resolve, 1000));
                 }
             }
             if (!completed) throw new Error('Upload progress timed out.');
-            showSuccess(`Uploaded ${items.length} file${items.length === 1 ? '' : 's'} and ${directories.length} folder${directories.length === 1 ? '' : 's'}.`);
+            if (totalBytes) updateQueueItem(queueId, { progress: { completedBytes: totalBytes, totalBytes, percentage: 100, bytesPerSecond: null, etaSeconds: null, completedItems: items.length, totalItems: items.length, updatedAt: Date.now() } });
             loadFiles(currentPath); loadTreeChildren(locationId, '', true);
-        } catch (requestError) { setError(requestError.message); setTransferStatus(''); }
-        finally { setLoading(false); }
+            return `Uploaded ${items.length} file${items.length === 1 ? '' : 's'} and ${directories.length} folder${directories.length === 1 ? '' : 's'}.`;
+        });
     };
 
     const confirmUpload = async (upload) => {
@@ -675,14 +935,15 @@ const FileBrowser = ({ token, user, onLogout }) => {
           const tree = locationTrees[requestedLocationId];
           if (!tree || !tree.loaded) return <span className="tree-loading">Loading folders...</span>;
           return <div className="tree-children">{tree.children.map((node) => <FolderTree key={node.path} node={node} currentPath={requestedLocationId === locationId ? currentPath : ''} dragItems={dragItems} dropTarget={dropTarget} onToggle={(child) => toggleFolder(requestedLocationId, child)} onNavigate={(path) => { selectLocation(requestedLocationId); loadFiles(path, requestedLocationId); }} onDragOver={(event, child) => { if (isValidMoveTarget(dragItems, child.path, requestedLocationId)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(child.path); scheduleTreeExpand(requestedLocationId, child); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, child) => { event.preventDefault(); endDrag(); moveItems(dragItems, child.path, requestedLocationId); }} />)}</div>;
-      };
+       };
+       const renderQueueItem = (item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span>{item.detail}</span>{item.progress && <small>{item.progress.completedBytes ? `${formatSize(item.progress.completedBytes)}${item.progress.totalBytes ? ` / ${formatSize(item.progress.totalBytes)}` : ''}` : 'Preparing'}{item.progress.percentage === null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}{['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}{['failed', 'needs_user_action'].includes(item.status) && <button type="button" onClick={() => retryQueueItem(item.id)}>Retry</button>}{['completed', 'failed', 'cancelled'].includes(item.status) && <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>}</li>;
 
-    return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>
+     return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>
         <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountRef}><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{user.role === 'admin' && <button onClick={() => window.location.assign('/admin')}>Admin console</button>}{user.role === 'superuser' && <button onClick={() => window.location.assign('/super')}>Super Panel</button>}<button onClick={() => { setAccountOpen(false); setModal('password'); }}>Change password</button><hr /><button className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
          <nav className="commandbar">
              <button className="primary" disabled={!hasCapability('upload')} onClick={() => inputRef.current.click()}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} />
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
-              <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={startDownload}>{downloading ? 'Preparing download...' : 'Download'}</button><button className="optional" onClick={() => setQueueOpen((open) => !open)}>Transfer Queue{queueItems.some((item) => item.status === 'running') ? ' •' : ''}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
+              <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={startDownload}>{downloading ? 'Preparing download...' : 'Download'}</button><button className="optional" onClick={() => setQueueOpen((open) => !open)}>Transfer Queue{queueItems.some((item) => ['queued', 'running', 'retrying'].includes(item.status)) ? ` (${queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length})` : ''}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
              <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
                <button className="optional" onClick={selectAll}>Select all</button><label className="sort-control">Sort<select value={sortKey} onChange={(event) => setSortKey(event.target.value)} aria-label="Sort files"><option value="name">Name</option><option value="modified">Modified</option><option value="size">Size</option><option value="directory">Directory first</option></select><button type="button" onClick={() => setSortDirection((current) => current === 'asc' ? 'desc' : 'asc')} aria-label={`Sort ${sortDirection === 'asc' ? 'descending' : 'ascending'}`}>{sortDirection === 'asc' ? 'Ascending' : 'Descending'}</button></label><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button className="optional" onClick={openShareLinks}>Share Links</button><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
         </nav>
@@ -714,7 +975,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             </div>
         </Dialog>}
          {modal === 'shareLinks' && <Dialog title="Share Links" onClose={() => setModal(null)}><div className="share-links-dialog"><div className="share-links-toolbar"><p>Links created by {user.username}.</p><button type="button" onClick={loadShareLinks} disabled={shareLinksLoading}>{shareLinksLoading ? 'Refreshing...' : 'Refresh'}</button></div>{shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : <div className="share-links-list">{shareLinks.map((link) => { const secureUrl = shareLinkUrl(link, 'secure'); const directUrl = shareLinkUrl(link, 'direct'); const status = link.isExpired ? 'Expired' : link.isExhausted ? 'Exhausted' : link.isActive ? 'Active' : 'Revoked'; return <article className="share-link-card" key={link.shareToken}><div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div><small>Location: {link.locationId || '--'} · Created: {formatDate(link.createdAt)}</small><small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : ' / unlimited'} · Expires: {link.expiresAt ? formatDate(link.expiresAt) : 'never'}</small><label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.target.select()} /></label><label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.target.select()} /></label><div className="modal-actions"><button type="button" onClick={() => void copyShareLink(link, 'secure')}>Copy secure</button><button type="button" onClick={() => void copyShareLink(link, 'direct')}>Copy direct</button><button type="button" className="danger" onClick={() => void revokeShareLink(link.shareToken)} disabled={!link.isActive}>Revoke</button></div></article>; })}</div>}</div></Dialog>}
-         {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No queued downloads yet.</p> : <ul className="queue-panel-list">{queueItems.map((item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span>{item.detail}</span></li>)}</ul>}</div>}
+          {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue ({queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length} active)</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No transfers in history.</p> : <><strong>Active</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['queued', 'running', 'retrying', 'needs_user_action'].includes(item.status)).map(renderQueueItem)}</ul>{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <><strong>History</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['completed', 'failed', 'cancelled'].includes(item.status)).map(renderQueueItem)}</ul></>}</>}{queueItems.some((item) => item.status === 'completed') && <button type="button" onClick={() => clearQueueStatus('completed')}>Clear completed</button>}{queueItems.some((item) => item.status === 'failed') && <button type="button" onClick={() => clearQueueStatus('failed')}>Clear failed</button>}{queueItems.some((item) => item.status === 'cancelled') && <button type="button" onClick={() => clearQueueStatus('cancelled')}>Clear cancelled</button>}{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <button type="button" onClick={clearQueueHistory}>Clear history</button>}</div>}
     </div>;
 };
 
