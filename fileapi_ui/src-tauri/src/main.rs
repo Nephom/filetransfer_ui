@@ -285,6 +285,36 @@ fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf, String> {
         .map_err(|error| error.to_string())
 }
 
+#[cfg(test)]
+mod verbatim_prefix_tests {
+    use super::strip_verbatim_prefix;
+    use std::path::PathBuf;
+
+    #[test]
+    fn strips_the_plain_verbatim_drive_prefix() {
+        let input = PathBuf::from(r"\\?\C:\Users\Administrator");
+        assert_eq!(strip_verbatim_prefix(input), PathBuf::from(r"C:\Users\Administrator"));
+    }
+
+    #[test]
+    fn rewrites_the_verbatim_unc_prefix_to_a_plain_unc_path() {
+        let input = PathBuf::from(r"\\?\UNC\server\share\folder");
+        assert_eq!(strip_verbatim_prefix(input), PathBuf::from(r"\\server\share\folder"));
+    }
+
+    #[test]
+    fn leaves_an_ordinary_path_unchanged() {
+        let input = PathBuf::from(r"C:\Users\Administrator");
+        assert_eq!(strip_verbatim_prefix(input.clone()), input);
+    }
+
+    #[test]
+    fn leaves_a_unix_style_path_unchanged() {
+        let input = PathBuf::from("/home/user/project");
+        assert_eq!(strip_verbatim_prefix(input.clone()), input);
+    }
+}
+
 /// HOME's own real, absolute filesystem path. The frontend's LOCAL pane
 /// otherwise only ever deals in HOME-relative path strings ("" = HOME
 /// itself); an elevated session needs this to know where to go when
