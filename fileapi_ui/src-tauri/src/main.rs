@@ -244,15 +244,54 @@ fn local_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "Unable to locate the local home directory".to_string())
 }
 
+/// `Path::canonicalize()` resolves symlinks and returns an absolute path,
+/// but on Windows it prepends the "verbatim" `\\?\` prefix (e.g.
+/// `\\?\C:\Users\Administrator`) that only the raw Win32 API understands.
+/// Every canonicalized path in this file is either sent back to the
+/// frontend as a plain string or fed back into `Path::new` after this
+/// file's own `\` -> `/` conversion -- and once that happens, the verbatim
+/// prefix is no longer recognised as such and instead looks like a
+/// malformed UNC path, so the next filesystem call on it fails with Windows
+/// os error 123 ("The filename, directory, or volume label syntax is
+/// incorrect"). This is what broke an elevated session's "../" navigation
+/// up out of HOME on Windows (issue #159): `local_home_path()` canonicalized
+/// HOME to a verbatim path, and stepping up from it round-tripped that
+/// straight back through `Path::new`. Stripping the prefix immediately
+/// after every canonicalize() call keeps paths in the ordinary `C:\...`
+/// form end-to-end. A no-op on non-Windows paths.
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    match path.to_str() {
+        Some(text) => {
+            if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+                PathBuf::from(format!(r"\\{rest}"))
+            } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+                PathBuf::from(rest)
+            } else {
+                path
+            }
+        }
+        None => path,
+    }
+}
+
+/// `std::path::Path::canonicalize()`, with the Windows verbatim prefix
+/// stripped (see `strip_verbatim_prefix`) and the error already converted
+/// to the `String` this file's Tauri commands return. Use this everywhere
+/// instead of calling `.canonicalize()` directly.
+fn canonicalize(path: impl AsRef<Path>) -> Result<PathBuf, String> {
+    path.as_ref()
+        .canonicalize()
+        .map(strip_verbatim_prefix)
+        .map_err(|error| error.to_string())
+}
+
 /// HOME's own real, absolute filesystem path. The frontend's LOCAL pane
 /// otherwise only ever deals in HOME-relative path strings ("" = HOME
 /// itself); an elevated session needs this to know where to go when
 /// stepping "up" past HOME towards the real root.
 #[tauri::command]
 fn local_home_path() -> Result<String, String> {
-    Ok(local_home()?
-        .canonicalize()
-        .map_err(|error| error.to_string())?
+    Ok(canonicalize(local_home()?)?
         .to_string_lossy()
         .replace('\\', "/"))
 }
@@ -328,15 +367,11 @@ fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
         if !is_elevated() {
             return Err("Local transfer path must remain inside the current user's home directory".to_string());
         }
-        return input.canonicalize().map_err(|error| error.to_string());
+        return canonicalize(input);
     }
-    let home = local_home()?
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
+    let home = canonicalize(local_home()?)?;
     let candidate = home.join(input);
-    let resolved = candidate
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
+    let resolved = canonicalize(&candidate)?;
     if !resolved.starts_with(&home) {
         return Err("Local transfer path must remain inside the current user's home directory".to_string());
     }
@@ -364,16 +399,12 @@ fn resolve_local_download_destination(path: &str) -> Result<PathBuf, String> {
             return Err("Local transfer path must remain inside the current user's home directory".to_string());
         }
         std::fs::create_dir_all(input).map_err(|error| error.to_string())?;
-        return input.canonicalize().map_err(|error| error.to_string());
+        return canonicalize(input);
     }
-    let home = local_home()?
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
+    let home = canonicalize(local_home()?)?;
     let candidate = home.join(input);
     std::fs::create_dir_all(&candidate).map_err(|error| error.to_string())?;
-    let resolved = candidate
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
+    let resolved = canonicalize(&candidate)?;
     if !resolved.starts_with(&home) {
         return Err("Local transfer path must remain inside the current user's home directory".to_string());
     }
@@ -400,26 +431,24 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
             .file_name()
             .ok_or_else(|| "Invalid local path".to_string())?
             .to_os_string();
-        let parent = input
-            .parent()
-            .ok_or_else(|| "Invalid local path".to_string())?
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
+        let parent = canonicalize(
+            input
+                .parent()
+                .ok_or_else(|| "Invalid local path".to_string())?,
+        )?;
         return Ok(parent.join(name));
     }
-    let home = local_home()?
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
+    let home = canonicalize(local_home()?)?;
     let candidate = home.join(input);
     let name = candidate
         .file_name()
         .ok_or_else(|| "Invalid local path".to_string())?
         .to_os_string();
-    let parent = candidate
-        .parent()
-        .ok_or_else(|| "Invalid local path".to_string())?
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
+    let parent = canonicalize(
+        candidate
+            .parent()
+            .ok_or_else(|| "Invalid local path".to_string())?,
+    )?;
     if !parent.starts_with(&home) {
         return Err("Local transfer path must remain inside the current user's home directory".to_string());
     }
@@ -458,7 +487,7 @@ fn local_rename_path(old_path: String, new_path: String) -> Result<String, Strin
     }
     std::fs::rename(&old_resolved, &new_resolved).map_err(|error| error.to_string())?;
     Ok(new_resolved
-        .strip_prefix(local_home()?.canonicalize().map_err(|error| error.to_string())?)
+        .strip_prefix(canonicalize(local_home()?)?)
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| new_resolved.display().to_string().replace('\\', "/")))
 }
@@ -611,19 +640,14 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
         if !is_elevated() {
             return Err("Local path must stay inside the user home directory".to_string());
         }
-        let directory = input.canonicalize().map_err(|error| error.to_string())?;
+        let directory = canonicalize(input)?;
         if !directory.is_dir() {
             return Err("Local path is not a directory".to_string());
         }
         (None, directory)
     } else {
-        let home = local_home()?
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
-        let directory = home
-            .join(input)
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
+        let home = canonicalize(local_home()?)?;
+        let directory = canonicalize(home.join(input))?;
         if !directory.starts_with(&home) || !directory.is_dir() {
             return Err("Local path is outside the user home directory".to_string());
         }
@@ -989,10 +1013,10 @@ fn sweep_stale_drag_staging(staging_directory: &Path) {
 fn cleanup_drag_staging(path: String) -> Result<(), String> {
     let staging_directory = operation_storage_directory()?.join("drag-staging");
     let candidate = Path::new(&path);
-    let Ok(canonical) = candidate.canonicalize() else {
+    let Ok(canonical) = candidate.canonicalize().map(strip_verbatim_prefix) else {
         return Ok(());
     };
-    let Ok(staging_canonical) = staging_directory.canonicalize() else {
+    let Ok(staging_canonical) = staging_directory.canonicalize().map(strip_verbatim_prefix) else {
         return Ok(());
     };
     if !canonical.starts_with(&staging_canonical) {
