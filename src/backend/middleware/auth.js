@@ -199,4 +199,4 @@ const requireAdmin = requireRole(['admin']);
 // role themselves.
 const requireStaffRole = requireRole(['admin', 'superuser']);
 
-module.exports = { AuthMiddleware, authenticate, setJwtSecret, requireAdmin, requireStaffRole };
+module.exports = { AuthMiddleware, authenticate, setJwtSecret, requireAdmin, requireStaffRole, resolveCurrentAccount };

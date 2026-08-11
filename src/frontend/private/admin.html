@@ -1892,14 +1892,20 @@
             return localStorage.getItem('token');
         }
 
-        // Check if user is authenticated and is admin or superuser. This is
-        // only a UX redirect: every admin/superuser API call below is
-        // re-authorized server-side against the account's *current* role
-        // (see requireAdmin/requireStaffRole in middleware/auth.js), so a
-        // stale or forged claim here can't grant real access.
+        // Check if the caller is currently an active admin. Unlike a plain
+        // JWT decode, this re-verifies against the server on every page load
+        // (see /auth/verify -> resolveCurrentAccount in middleware/auth.js),
+        // so a stale token whose role was downgraded/deactivated since it was
+        // issued is rejected here immediately, before any admin data is
+        // fetched. A superuser is redirected to their own Super Panel
+        // (/super) instead - the Admin Console is admin-only. This is only a
+        // UX redirect on top of the real boundary: every admin API call below
+        // is independently re-authorized server-side (requireAdmin /
+        // requireStaffRole in middleware/auth.js), so a stale or forged claim
+        // here can't grant real access even if this check were bypassed.
         let currentUserRole = null;
 
-        function checkAuth() {
+        async function checkAuth() {
             const token = getToken();
             if (!token) {
                 alert('You must be logged in to access the admin panel');
@@ -1907,17 +1913,31 @@
                 return false;
             }
 
-            // Decode JWT to check role
             try {
-                const payload = JSON.parse(atob(token.split('.')[1]));
-                if (payload.role !== 'admin' && payload.role !== 'superuser') {
-                    alert('Access denied: Admin or Superuser privileges required');
+                const response = await fetch('/auth/verify', {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!response.ok) {
+                    localStorage.removeItem('token');
+                    alert('Your session has expired. Please log in again.');
                     window.location.href = '/';
                     return false;
                 }
-                currentUserRole = payload.role;
+                const data = await response.json();
+                const role = data.user?.role;
+                if (role === 'superuser') {
+                    window.location.href = '/super';
+                    return false;
+                }
+                if (role !== 'admin') {
+                    alert('Access denied: Admin privileges required');
+                    window.location.href = '/';
+                    return false;
+                }
+                currentUserRole = role;
             } catch (e) {
-                alert('Invalid token');
+                alert('Unable to verify your session. Please log in again.');
                 window.location.href = '/';
                 return false;
             }
@@ -1926,15 +1946,12 @@
             return true;
         }
 
-        // Superuser may only manage regular 'user' accounts and Permission
-        // Roles - hide every config/service/SSL control it cannot use
-        // (the underlying API routes reject these for a superuser anyway).
+        // Kept for backward compatibility with the data-admin-only markup;
+        // this page is admin-only now (a superuser is redirected to /super
+        // above), so every data-admin-only control stays visible here.
         function applyRoleBasedUI() {
             const badge = document.getElementById('currentRoleBadge');
-            if (badge) badge.textContent = currentUserRole === 'superuser' ? ' · Signed in as Superuser' : ' · Signed in as Admin';
-            if (currentUserRole !== 'admin') {
-                document.querySelectorAll('[data-admin-only]').forEach((el) => { el.style.display = 'none'; });
-            }
+            if (badge) badge.textContent = ' · Signed in as Admin';
         }
 
         // SSL Management Functions
@@ -2285,8 +2302,8 @@
         }
 
         // Initialize on page load
-        document.addEventListener('DOMContentLoaded', () => {
-            if (!checkAuth()) return;
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (!(await checkAuth())) return;
             fetchStats();
         });
     </script>
