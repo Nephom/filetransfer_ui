@@ -38,7 +38,7 @@ body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif
 .login::before {
   position: absolute;
   inset: 0;
-  z-index: -1;
+  z-index: 0;
   pointer-events: none;
   content: "";
   opacity: .24;
@@ -53,7 +53,7 @@ body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif
 .login::after {
   position: absolute;
   inset: 0;
-  z-index: -1;
+  z-index: 0;
   pointer-events: none;
   content: "";
   opacity: .08;
@@ -65,11 +65,24 @@ body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif
 .commandbar,
 .navigation,
 .statusbar {
-  background: rgba(3, 15, 28, .74);
+  position: relative;
+  z-index: 1;
+  background: linear-gradient(110deg, rgba(11, 43, 66, .68), rgba(3, 16, 30, .54) 52%, rgba(12, 48, 70, .62));
   border-color: var(--bridge-line);
   box-shadow: var(--bridge-inset);
   backdrop-filter: blur(18px) saturate(135%);
 }
+
+.explorer > * { position: relative; z-index: 1; }
+.explorer > .titlebar { z-index: 30; }
+.explorer > .commandbar { z-index: 20; }
+.explorer > .navigation { z-index: 10; }
+.explorer > .modal-cover { z-index: 100; }
+.account-control,
+.location-control { z-index: 2; }
+.account-menu,
+.location-menu,
+.context-menu { z-index: 100; }
 
 .titlebar {
   position: relative;
@@ -177,7 +190,10 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .local-pane {
   border: 1px solid var(--bridge-line);
   border-radius: var(--bridge-radius);
-  background: var(--bridge-panel);
+  background:
+    linear-gradient(135deg, rgba(75, 178, 211, .13), transparent 28%),
+    linear-gradient(315deg, rgba(36, 102, 174, .14), transparent 42%),
+    rgba(8, 27, 46, .48);
   box-shadow: var(--bridge-glass-shadow), var(--bridge-inset);
   backdrop-filter: blur(18px) saturate(125%);
 }
@@ -300,6 +316,38 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .login button { border-color: var(--bridge-cyan); background: linear-gradient(135deg, var(--bridge-cyan), var(--bridge-blue)); box-shadow: 0 0 20px rgba(99, 230, 255, .22); }
 .login output { color: #ffb4c1; }
 .only-terminal-corner-button { border-color: var(--bridge-line); border-radius: var(--bridge-radius-sm); color: var(--bridge-muted); background: rgba(4, 24, 40, .74); }
+
+/* Stronger material separation for WebViews where backdrop-filter is subtle. */
+.titlebar,
+.commandbar,
+.navigation,
+.desktop-folder-tree,
+.desktop-content,
+.local-pane,
+.terminal-dock,
+.modal {
+  background-clip: padding-box;
+  border-top-color: rgba(151, 234, 255, .46);
+}
+.desktop-folder-tree,
+.desktop-content,
+.local-pane,
+.terminal-dock {
+  box-shadow: var(--bridge-glass-shadow), var(--bridge-inset), inset 0 0 0 1px rgba(99, 230, 255, .035);
+}
+.desktop-content::after,
+.local-pane::after,
+.desktop-folder-tree::after,
+.terminal-dock::after,
+.modal::after {
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+  border-radius: calc(var(--bridge-radius) - 1px);
+  background: linear-gradient(120deg, rgba(171, 245, 255, .08), transparent 22%, transparent 72%, rgba(64, 147, 255, .08));
+}
 
 @keyframes bridge-panel-in { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @media (prefers-reduced-motion: reduce) {
