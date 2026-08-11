@@ -21,6 +21,7 @@ import "./tls.css";
 import "./webui-shell.css";
 import "./explorer-parity.css";
 import "./desktop-ui.css";
+import "./starship-bridge.css";
 
 type FileItem = {
   name: string;
@@ -4448,7 +4449,7 @@ function App() {
                 }}
                 onClick={() => void run(() => loadLocalFiles(localParentPath(localPath)))}
               >
-                <span className="tile-icon">📁</span>
+                <span className="tile-icon glyph-folder" aria-hidden="true" />
                 <strong>../</strong>
                 <span>Parent folder</span>
               </article>
@@ -4489,7 +4490,7 @@ function App() {
                   setContextMenu({ x: event.clientX, y: event.clientY });
                 }}
               >
-                <span className="tile-icon">{file.isDirectory ? "📁" : "📄"}</span>
+                <span className={`tile-icon ${file.isDirectory ? "glyph-folder" : "glyph-file"}`} aria-hidden="true" />
                 <strong>{file.name}</strong>
                 <span>{file.isDirectory ? "File folder" : "File"}</span>
                 <small>{file.isDirectory ? "--" : formatSize(file.size)}</small>
@@ -4523,7 +4524,7 @@ function App() {
               }}
               onClick={() => void run(() => loadLocalFiles(localParentPath(localPath)))}
             >
-              <span>📁</span>
+              <span className="glyph-folder" aria-hidden="true" />
               <span className="local-file-name">../</span>
             </button>
           )}
@@ -4563,7 +4564,7 @@ function App() {
                 setContextMenu({ x: event.clientX, y: event.clientY });
               }}
             >
-              <span>{file.isDirectory ? "📁" : "📄"}</span>
+              <span className={file.isDirectory ? "glyph-folder" : "glyph-file"} aria-hidden="true" />
               <span className="local-file-name">{file.name}</span>
               <small>{file.isDirectory ? "Folder" : formatSize(file.size)}</small>
             </button>
@@ -4656,7 +4657,7 @@ function App() {
             onClick={enterOnlyTerminalMode}
             title="Skip login and the API server. Local Explorer and SSH Terminal only."
           >
-            🧪 Only Terminal
+            <span className="status-glyph" aria-hidden="true">◆</span> Only Terminal
           </button>
         )}
       {sharePasswordOpen && (
@@ -5208,7 +5209,7 @@ function App() {
                     }}
                     onClick={() => void run(() => loadFiles(remoteSshEntryId ? sshParentPath(path) : parentPath(path)))}
                   >
-                    <span className="tile-icon">📁</span>
+                    <span className="tile-icon glyph-folder" aria-hidden="true" />
                     <strong>../</strong>
                     <span>Parent folder</span>
                   </article>
@@ -5258,7 +5259,7 @@ function App() {
                     }}
                   >
                     <span className="tile-icon">
-                      {file.isDirectory ? "📁" : "📄"}
+                      <span className={file.isDirectory ? "glyph-folder" : "glyph-file"} aria-hidden="true" />
                     </span>
                     <strong>{file.name}</strong>
                     <span>{file.isDirectory ? "File folder" : "File"}</span>
@@ -5317,7 +5318,7 @@ function App() {
                       onClick={() => void run(() => loadFiles(remoteSshEntryId ? sshParentPath(path) : parentPath(path)))}
                     >
                       <td />
-                      <td colSpan={3}>📁 ../</td>
+                      <td colSpan={3}><span className="glyph-folder" aria-hidden="true" /> ../</td>
                     </tr>
                   )}
 
@@ -5377,7 +5378,7 @@ function App() {
                       </td>
                       <td>
                         <span className="file-name">
-                          {file.isDirectory ? "📁" : "📄"} {file.name}
+                          <span className={file.isDirectory ? "glyph-folder" : "glyph-file"} aria-hidden="true" /> {file.name}
                         </span>
                       </td>
                       <td className="muted">

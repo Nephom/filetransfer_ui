@@ -1,0 +1,317 @@
+/* nFterm Starship Bridge visual layer. Kept separate from behavior styles. */
+:root {
+  --bridge-void: #020711;
+  --bridge-space: #061322;
+  --bridge-panel: rgba(8, 27, 46, .72);
+  --bridge-panel-strong: rgba(10, 34, 56, .9);
+  --bridge-panel-soft: rgba(16, 52, 78, .44);
+  --bridge-line: rgba(107, 201, 239, .26);
+  --bridge-line-bright: #63e6ff;
+  --bridge-text: #e9f8ff;
+  --bridge-muted: #8caec5;
+  --bridge-cyan: #63e6ff;
+  --bridge-blue: #318bff;
+  --bridge-green: #5df2bd;
+  --bridge-amber: #f2bd63;
+  --bridge-red: #ff657f;
+  --bridge-radius: 10px;
+  --bridge-radius-sm: 6px;
+  --bridge-glass-shadow: 0 18px 50px rgba(0, 0, 0, .42), 0 0 35px rgba(47, 173, 230, .08);
+  --bridge-inset: inset 0 1px 0 rgba(214, 248, 255, .12), inset 0 0 32px rgba(70, 191, 232, .04);
+  --bridge-transition: 180ms ease-out;
+}
+
+html, body, #root { background: var(--bridge-void); }
+body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif; }
+
+.explorer,
+.login {
+  position: relative;
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 76% -12%, rgba(30, 126, 186, .26), transparent 30%),
+    radial-gradient(circle at 12% 110%, rgba(25, 75, 136, .18), transparent 35%),
+    linear-gradient(135deg, #020711 0%, #061322 56%, #03101d 100%);
+}
+
+.explorer::before,
+.login::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+  opacity: .24;
+  background-image:
+    linear-gradient(rgba(99, 230, 255, .08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 230, 255, .08) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, .75), transparent 88%);
+}
+
+.explorer::after,
+.login::after {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+  opacity: .08;
+  background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(151, 234, 255, .12) 4px, transparent 5px);
+  mix-blend-mode: screen;
+}
+
+.titlebar,
+.commandbar,
+.navigation,
+.statusbar {
+  background: rgba(3, 15, 28, .74);
+  border-color: var(--bridge-line);
+  box-shadow: var(--bridge-inset);
+  backdrop-filter: blur(18px) saturate(135%);
+}
+
+.titlebar {
+  position: relative;
+  min-height: 56px;
+  height: auto;
+  padding: 8px 18px;
+}
+.titlebar::before,
+.commandbar::before,
+.navigation::before {
+  position: absolute;
+  top: 0;
+  left: 18px;
+  width: 120px;
+  height: 1px;
+  content: "";
+  background: linear-gradient(90deg, transparent, var(--bridge-cyan), transparent);
+  box-shadow: 0 0 12px var(--bridge-cyan);
+}
+.app-mark,
+.login-mark {
+  border: 1px solid var(--bridge-cyan);
+  border-radius: 5px;
+  background: linear-gradient(135deg, rgba(99, 230, 255, .95), rgba(49, 139, 255, .65));
+  box-shadow: 0 0 18px rgba(99, 230, 255, .42), inset 0 0 10px rgba(255, 255, 255, .35);
+}
+.app-name { letter-spacing: .08em; text-transform: uppercase; font-family: "Share Tech Mono", "Fira Code", monospace; }
+.connection-status { color: var(--bridge-green); font-size: .72em; letter-spacing: .06em; text-transform: uppercase; }
+.location-control,
+.account,
+.active-pane-indicator {
+  border-color: var(--bridge-line);
+  border-radius: var(--bridge-radius-sm);
+  background: rgba(11, 42, 65, .68);
+  box-shadow: var(--bridge-inset);
+}
+.location-control { margin-left: 22px; }
+.location-label,
+.sidebar-label,
+.eyebrow,
+.terminal-header::before {
+  color: var(--bridge-cyan);
+  letter-spacing: .16em;
+}
+.health-dot.online { background: var(--bridge-green); box-shadow: 0 0 0 2px rgba(93, 242, 189, .18), 0 0 14px var(--bridge-green); }
+
+.commandbar { position: relative; gap: 6px; min-height: 54px; padding: 8px 16px; }
+.commandbar button,
+.navigation button,
+.account,
+.nav-button,
+.view-switch button {
+  border-color: transparent;
+  border-radius: var(--bridge-radius-sm);
+  color: var(--bridge-muted);
+  background: transparent;
+  transition: color var(--bridge-transition), border-color var(--bridge-transition), background var(--bridge-transition), box-shadow var(--bridge-transition), transform var(--bridge-transition);
+}
+.commandbar button:hover:not(:disabled),
+.navigation button:hover:not(:disabled),
+.account:hover,
+.nav-button:hover:not(:disabled),
+.view-switch button:hover:not(:disabled) {
+  color: var(--bridge-text);
+  border-color: var(--bridge-line);
+  background: rgba(39, 116, 157, .24);
+  box-shadow: 0 0 14px rgba(99, 230, 255, .1);
+}
+.commandbar button:active:not(:disabled),
+.navigation button:active:not(:disabled) { transform: translateY(1px); }
+.commandbar .primary,
+:where(.explorer) button.confirm {
+  border-color: rgba(99, 230, 255, .8);
+  color: #04101a;
+  background: linear-gradient(135deg, #63e6ff, #318bff);
+  box-shadow: 0 0 18px rgba(99, 230, 255, .28), inset 0 1px rgba(255, 255, 255, .55);
+}
+.divider { background: var(--bridge-line); }
+.view-switch { padding: 2px; border: 1px solid var(--bridge-line); border-radius: var(--bridge-radius-sm); background: rgba(2, 13, 25, .6); }
+.view-switch button.active { color: var(--bridge-text); background: rgba(99, 230, 255, .16); box-shadow: inset 0 0 12px rgba(99, 230, 255, .12); }
+
+.navigation { position: relative; padding: 9px 16px; }
+.crumbs,
+.search,
+.palette-select,
+.location-menu,
+.account-menu,
+.context-menu {
+  border-color: var(--bridge-line);
+  border-radius: var(--bridge-radius-sm);
+  background: rgba(3, 18, 32, .82);
+  box-shadow: var(--bridge-glass-shadow), var(--bridge-inset);
+  backdrop-filter: blur(20px) saturate(135%);
+}
+.crumbs { height: 38px; }
+.search:focus,
+.palette-select:focus,
+input:focus,
+select:focus,
+textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99, 230, 255, .16), 0 0 18px rgba(99, 230, 255, .1); outline: none; }
+
+.desktop-workspace { gap: 10px; padding: 10px 12px 12px; }
+.desktop-folder-tree,
+.desktop-content,
+.local-pane {
+  border: 1px solid var(--bridge-line);
+  border-radius: var(--bridge-radius);
+  background: var(--bridge-panel);
+  box-shadow: var(--bridge-glass-shadow), var(--bridge-inset);
+  backdrop-filter: blur(18px) saturate(125%);
+}
+.desktop-folder-tree { flex-basis: 250px; width: 250px; border-right: 1px solid var(--bridge-line); }
+.desktop-content { overflow: hidden; }
+.desktop-content.active-pane,
+.local-pane.active-pane { box-shadow: 0 0 0 1px var(--bridge-cyan), var(--bridge-glass-shadow), var(--bridge-inset); }
+.tree-node,
+.local-file { border-radius: var(--bridge-radius-sm); color: #b7d0df; transition: background var(--bridge-transition), border-color var(--bridge-transition), color var(--bridge-transition); }
+.tree-node:hover,
+.local-file:hover { border-color: rgba(99, 230, 255, .28); background: rgba(42, 124, 160, .2); }
+.tree-node.active,
+.local-file.selected { border-color: rgba(99, 230, 255, .56); color: var(--bridge-text); background: linear-gradient(90deg, rgba(99, 230, 255, .2), rgba(49, 139, 255, .08)); box-shadow: inset 3px 0 var(--bridge-cyan), 0 0 16px rgba(99, 230, 255, .08); }
+.tree-children { border-color: rgba(99, 230, 255, .2); }
+.folder-mini { background: var(--bridge-amber); box-shadow: 0 0 8px rgba(242, 189, 99, .35); }
+.content-heading { padding: 16px 18px 10px; }
+.content-heading h1 { font-family: "Share Tech Mono", "Fira Code", monospace; letter-spacing: .02em; }
+.selection-count { color: var(--bridge-green); }
+.file-area { padding: 0 10px 12px; }
+.file-table th { color: var(--bridge-cyan); border-color: var(--bridge-line); }
+.file-row { border-color: rgba(99, 230, 255, .1); }
+.file-row:hover { background: rgba(52, 142, 178, .15); }
+.file-row.selected { background: linear-gradient(90deg, rgba(99, 230, 255, .22), rgba(49, 139, 255, .08)); box-shadow: inset 3px 0 var(--bridge-cyan), 0 0 18px rgba(99, 230, 255, .08); }
+.file-name, .file-name.folder { color: var(--bridge-text); }
+.muted { color: var(--bridge-muted); }
+.file-grid { gap: 12px; padding: 4px; }
+.file-tile { border: 1px solid var(--bridge-line); border-radius: var(--bridge-radius); background: rgba(8, 34, 55, .54); box-shadow: var(--bridge-inset); transition: transform var(--bridge-transition), border-color var(--bridge-transition), background var(--bridge-transition), box-shadow var(--bridge-transition); }
+.file-tile:hover { transform: translateY(-2px); border-color: var(--bridge-cyan); background: rgba(24, 76, 105, .52); box-shadow: var(--bridge-glass-shadow), 0 0 18px rgba(99, 230, 255, .1); }
+.file-tile.selected { border-color: var(--bridge-cyan); background: rgba(45, 121, 153, .38); box-shadow: 0 0 0 1px rgba(99, 230, 255, .45), var(--bridge-glass-shadow); }
+
+.glyph-folder,
+.glyph-file,
+.status-glyph { display: inline-block; flex: 0 0 auto; vertical-align: -.12em; }
+.glyph-folder { position: relative; width: 1.05em; height: .78em; border: 1px solid var(--bridge-amber); border-radius: 2px; background: linear-gradient(135deg, rgba(242, 189, 99, .8), rgba(166, 103, 38, .6)); box-shadow: 0 0 8px rgba(242, 189, 99, .28); }
+.glyph-folder::before { position: absolute; top: -.28em; left: .08em; width: .48em; height: .3em; content: ""; border: 1px solid var(--bridge-amber); border-bottom: 0; border-radius: 2px 2px 0 0; background: rgba(242, 189, 99, .8); }
+.glyph-file { width: .82em; height: 1em; border: 1px solid var(--bridge-cyan); border-radius: 2px; background: linear-gradient(135deg, rgba(99, 230, 255, .26), rgba(49, 139, 255, .08)); box-shadow: 0 0 8px rgba(99, 230, 255, .18); }
+.status-glyph { color: var(--bridge-cyan); font-size: .8em; }
+
+.notice,
+.share-link { border-color: var(--bridge-line); border-radius: var(--bridge-radius-sm); background: rgba(16, 70, 91, .44); box-shadow: var(--bridge-inset); }
+.statusbar { padding: 7px 16px; color: var(--bridge-muted); font-family: "Fira Code", monospace; font-size: 11px; }
+.terminal-dock { margin: 0 12px 10px; border: 1px solid var(--bridge-line); border-radius: var(--bridge-radius); background: rgba(3, 17, 30, .9); box-shadow: var(--bridge-glass-shadow), var(--bridge-inset); backdrop-filter: blur(22px) saturate(135%); }
+.terminal-header { min-height: 44px; border-color: var(--bridge-line); }
+.terminal-header::before { margin-right: 8px; content: "COMMAND DECK"; font: 10px "Share Tech Mono", monospace; }
+.terminal-tabs button.active,
+.terminal-tabs button:hover,
+.terminal-actions button:hover { border-color: var(--bridge-line); color: var(--bridge-text); background: rgba(99, 230, 255, .14); }
+.ssh-tab { border-color: var(--bridge-line); background: rgba(8, 36, 57, .62); }
+.ssh-tab.active { border-color: var(--bridge-cyan); background: rgba(99, 230, 255, .16); box-shadow: 0 0 14px rgba(99, 230, 255, .12); }
+.xterm-host,
+.ssh-output { border-color: var(--bridge-line); background: rgba(1, 7, 14, .88); }
+.ssh-quick-list { border-color: var(--bridge-line); background: rgba(5, 25, 42, .8); }
+.terminal-restore { margin: 0 12px 8px; width: calc(100% - 24px); border: 1px solid var(--bridge-line); border-radius: var(--bridge-radius-sm); background: rgba(7, 27, 44, .7); }
+
+.modal-cover { background: rgba(0, 5, 13, .7); backdrop-filter: blur(10px) saturate(125%); }
+.modal,
+.queue-modal,
+.sessions-modal,
+.settings-modal,
+.viewer-modal,
+.destination-modal,
+.archive-format-modal,
+.log-name-modal,
+.ssh-entry-modal,
+.sxp-entry-modal,
+.workspace-name-modal {
+  position: relative;
+  border: 1px solid var(--bridge-line);
+  border-radius: var(--bridge-radius);
+  background: linear-gradient(145deg, rgba(12, 42, 65, .9), rgba(3, 18, 32, .94));
+  box-shadow: var(--bridge-glass-shadow), var(--bridge-inset), 0 0 0 1px rgba(99, 230, 255, .04);
+  backdrop-filter: blur(24px) saturate(140%);
+  animation: bridge-panel-in 220ms ease-out both;
+}
+.modal::before,
+.settings-section::before,
+.workspace-card::before,
+.share-link-card::before {
+  position: absolute;
+  top: -1px;
+  left: 18px;
+  width: 72px;
+  height: 2px;
+  content: "";
+  background: var(--bridge-cyan);
+  box-shadow: 0 0 14px var(--bridge-cyan);
+}
+.settings-section,
+.workspace-card,
+.share-link-card,
+.queue-item,
+.session-card,
+.archive-format-option { position: relative; border-color: var(--bridge-line); border-radius: var(--bridge-radius-sm); background: rgba(3, 19, 33, .56); box-shadow: var(--bridge-inset); }
+.settings-section h3,
+.workspace-entry-section h3 { color: var(--bridge-cyan); letter-spacing: .12em; text-transform: uppercase; }
+.modal-heading-row > button { border-color: var(--bridge-line); color: var(--bridge-cyan); background: rgba(8, 41, 61, .7); }
+.modal-actions { margin-top: 16px; }
+.form-error { border-color: rgba(255, 101, 127, .65); background: rgba(103, 22, 42, .48); }
+.queue-status.running { color: var(--bridge-cyan); }
+.queue-status.completed { color: var(--bridge-green); }
+.queue-status.failed { color: var(--bridge-red); }
+.queue-status.cancelled { color: var(--bridge-amber); }
+
+:where(.explorer) button.danger,
+:where(.explorer) button.session-delete { border-color: rgba(255, 101, 127, .62); color: #ffb4c1; background: rgba(98, 25, 44, .56); }
+:where(.explorer) button.danger:hover:not(:disabled),
+:where(.explorer) button.session-delete:hover:not(:disabled) { border-color: var(--bridge-red); background: rgba(145, 32, 57, .66); }
+:where(.explorer) button:focus-visible,
+.login button:focus-visible,
+.login input:focus-visible { outline: 2px solid var(--bridge-cyan); outline-offset: 3px; }
+
+.login { display: grid; place-items: center; padding: 24px; }
+.login form { position: relative; width: min(470px, 100%); padding: 34px; border: 1px solid var(--bridge-line); border-radius: 14px; background: linear-gradient(145deg, rgba(11, 42, 65, .8), rgba(3, 18, 32, .9)); box-shadow: var(--bridge-glass-shadow), var(--bridge-inset); backdrop-filter: blur(26px) saturate(140%); }
+.login form::before { position: absolute; top: -1px; left: 32px; width: 110px; height: 2px; content: ""; background: var(--bridge-cyan); box-shadow: 0 0 18px var(--bridge-cyan); }
+.login h1 { font: 28px "Share Tech Mono", "Fira Code", monospace; letter-spacing: .08em; text-transform: uppercase; }
+.login h1::after { display: block; margin-top: 8px; color: var(--bridge-cyan); content: "// SECURE ACCESS CHANNEL"; font: 10px "Fira Code", monospace; letter-spacing: .14em; }
+.login p { color: var(--bridge-muted); }
+.login label { color: #c8e3ef; }
+.login input { border-color: var(--bridge-line); border-radius: var(--bridge-radius-sm); color: var(--bridge-text); background: rgba(1, 10, 19, .68); }
+.login button { border-color: var(--bridge-cyan); background: linear-gradient(135deg, var(--bridge-cyan), var(--bridge-blue)); box-shadow: 0 0 20px rgba(99, 230, 255, .22); }
+.login output { color: #ffb4c1; }
+.only-terminal-corner-button { border-color: var(--bridge-line); border-radius: var(--bridge-radius-sm); color: var(--bridge-muted); background: rgba(4, 24, 40, .74); }
+
+@keyframes bridge-panel-in { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .file-tile:hover, .commandbar button:active:not(:disabled), .navigation button:active:not(:disabled) { transform: none; }
+}
+@media (max-width: 720px) {
+  .titlebar { padding: 8px 12px; }
+  .app-name { max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .desktop-workspace { gap: 8px; padding: 8px; }
+  .desktop-folder-tree, .desktop-content, .local-pane { border-radius: var(--bridge-radius-sm); }
+  .terminal-dock { margin: 0 8px 8px; }
+  .modal-cover { padding: 12px; }
+  .modal { max-height: calc(100dvh - 24px); }
+}
