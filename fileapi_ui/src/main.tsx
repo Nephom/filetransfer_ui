@@ -31,6 +31,8 @@ import "./webui-shell.css";
 import "./explorer-parity.css";
 import "./desktop-ui.css";
 import "./starship-bridge.css";
+import "./help/help.css";
+import { HelpIcon, helpPages, helpSections } from "./help/help-content";
 
 type FileItem = {
   name: string;
@@ -124,7 +126,7 @@ type ManagedSession = {
   sshEntries: SshProfile[];
 };
 type ColumnKey = "name" | "modified" | "size";
-type SortKey = ColumnKey | "directory";
+type SortKey = ColumnKey;
 type SortDirection = "asc" | "desc";
 type SshProfile = {
   id: string;
@@ -219,6 +221,7 @@ type DesktopSettings = {
 };
 
 type ModalDragId =
+  | "help"
   | "settings"
   | "sessions"
   | "workspace-name"
@@ -575,8 +578,11 @@ const compareFileItems = (
   right: FileItem,
   sortKey: SortKey,
   direction: SortDirection,
+  directoriesFirst = false,
 ) => {
-  if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
+  if (directoriesFirst && left.isDirectory !== right.isDirectory) {
+    return left.isDirectory ? -1 : 1;
+  }
   let result = sortKey === "modified"
     ? fileTimestamp(left.modified) - fileTimestamp(right.modified)
     : sortKey === "size"
@@ -587,8 +593,13 @@ const compareFileItems = (
   }
   return direction === "desc" ? -result : result;
 };
-const sortFileItems = (items: FileItem[], sortKey: SortKey, direction: SortDirection) =>
-  [...items].sort((left, right) => compareFileItems(left, right, sortKey, direction));
+const sortFileItems = (
+  items: FileItem[],
+  sortKey: SortKey,
+  direction: SortDirection,
+  directoriesFirst = false,
+) => [...items].sort((left, right) =>
+  compareFileItems(left, right, sortKey, direction, directoriesFirst));
 const sanitizeArchiveName = (value: string) => {
   const cleaned = value
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
@@ -603,27 +614,6 @@ const localArchiveTimestamp = (date = new Date()) => {
 const sessionArchiveName = (sessionName: string) =>
   `${sanitizeArchiveName(sessionName)}_${localArchiveTimestamp()}`;
 
-type SortControlsProps = {
-  label: string;
-  sortKey: SortKey;
-  direction: SortDirection;
-  onSortKeyChange: (value: SortKey) => void;
-  onDirectionChange: () => void;
-};
-const SortControls = ({ label, sortKey, direction, onSortKeyChange, onDirectionChange }: SortControlsProps) => (
-  <label className="sort-control">
-    {label}
-    <select value={sortKey} onChange={(event) => onSortKeyChange(event.target.value as SortKey)} aria-label={`${label} field`}>
-      <option value="name">Name</option>
-      <option value="modified">Modified</option>
-      <option value="size">Size</option>
-      <option value="directory">Directory first</option>
-    </select>
-    <button type="button" onClick={onDirectionChange} aria-label={`${label} ${direction === "asc" ? "descending" : "ascending"}`}>
-      {direction === "asc" ? "Ascending" : "Descending"}
-    </button>
-  </label>
-);
 const serverUrl = (session: Session) =>
   `https://${session.host.trim()}:${session.port.trim()}`;
 
@@ -692,6 +682,9 @@ function App() {
   const [sharePasswordDraft, setSharePasswordDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [selectedHelpPageId, setSelectedHelpPageId] = useState("login");
+  const [expandedHelpSections, setExpandedHelpSections] = useState<string[]>(["getting-started"]);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -791,6 +784,7 @@ function App() {
   });
   const [remoteSortKey, setRemoteSortKey] = useState<SortKey>("name");
   const [remoteSortDirection, setRemoteSortDirection] = useState<SortDirection>("asc");
+  const [remoteDirectoriesFirst, setRemoteDirectoriesFirst] = useState(false);
   const [localSortKey, setLocalSortKey] = useState<SortKey>("name");
   const [localSortDirection, setLocalSortDirection] = useState<SortDirection>("asc");
   const [sshProfiles, setSshProfiles] = useState<SshProfile[]>(() => {
@@ -1019,6 +1013,7 @@ function App() {
 
   useEffect(() => {
     const openIds: Partial<Record<ModalDragId, boolean>> = {
+      help: helpOpen,
       settings: settingsOpen,
       sessions: sessionsOpen,
       "workspace-name": workspaceNameDialogOpen,
@@ -1039,7 +1034,7 @@ function App() {
       });
       return changed ? next : current;
     });
-  }, [queueOpen, sessionsOpen, settingsOpen, shareLinksOpen, sshEntryDialogOpen, sxpEntryDialogOpen, viewerOpen, workspaceNameDialogOpen]);
+  }, [helpOpen, queueOpen, sessionsOpen, settingsOpen, shareLinksOpen, sshEntryDialogOpen, sxpEntryDialogOpen, viewerOpen, workspaceNameDialogOpen]);
 
   useEffect(() => {
     const closeTopmostOverlay = (event: KeyboardEvent) => {
@@ -1063,6 +1058,8 @@ function App() {
         setSessionsOpen(false);
       } else if (settingsOpen) {
         setSettingsOpen(false);
+      } else if (helpOpen) {
+        setHelpOpen(false);
       } else if (archiveFormatOpen) {
         setArchiveFormatOpen(false);
       } else if (uploadDestinationOpen) {
@@ -1092,6 +1089,7 @@ function App() {
     archiveFormatOpen,
     changePasswordOpen,
     contextMenu,
+    helpOpen,
     locationMenuOpen,
     queueOpen,
     saveLogNameOpen,
@@ -1536,7 +1534,7 @@ function App() {
       return;
     }
     const response = await api(
-      `/api/files?path=${encodeURIComponent(nextPath)}&sort=${remoteSortKey}&order=${remoteSortDirection}`,
+      `/api/files?path=${encodeURIComponent(nextPath)}&sort=${remoteSortKey}&order=${remoteSortDirection}&directoriesFirst=${remoteDirectoriesFirst}`,
     );
     if (!response.ok) throw new Error(await readError(response));
     const data = await response.json();
@@ -3056,7 +3054,22 @@ function App() {
     );
   };
 
-  const sortedFiles = sortFileItems(files, remoteSortKey, remoteSortDirection);
+  const toggleSort = (
+    column: ColumnKey,
+    currentKey: SortKey,
+    setKey: React.Dispatch<React.SetStateAction<SortKey>>,
+    setDirection: React.Dispatch<React.SetStateAction<SortDirection>>,
+    currentDirection: SortDirection,
+  ) => {
+    if (currentKey === column) {
+      setDirection(currentDirection === "asc" ? "desc" : "asc");
+      return;
+    }
+    setKey(column);
+    setDirection("asc");
+  };
+
+  const sortedFiles = sortFileItems(files, remoteSortKey, remoteSortDirection, remoteDirectoriesFirst);
   const sortedLocalFiles = sortFileItems(localFiles, localSortKey, localSortDirection);
   const selectedItems = files.filter((file) => selected.includes(file.path));
   const localSelectedItems = localFiles.filter((file) => localSelected.includes(file.path));
@@ -3160,7 +3173,7 @@ function App() {
     const target = event.target as HTMLElement;
     if (
       target.closest(
-        ".file-row, .file-tile, .local-file, button, input, a, .column-resize-handle, .pane-resize-handle",
+        ".file-row, .file-tile, .local-file, .file-table th, button, input, a, .column-resize-handle, .pane-resize-handle",
       )
     )
       return;
@@ -3173,6 +3186,15 @@ function App() {
     event.preventDefault();
     setActivePane(pane);
     const additive = event.ctrlKey || event.metaKey;
+    if (!additive) {
+      if (pane === "local") {
+        localSelectionAnchorRef.current = null;
+        setLocalSelected([]);
+      } else {
+        selectionAnchorRef.current = null;
+        setSelected([]);
+      }
+    }
     marqueeStateRef.current = {
       pane,
       startX: event.clientX,
@@ -3224,8 +3246,11 @@ function App() {
     };
   }, []);
 
-  const searchFiles = () =>
-    run(async () => {
+  const canSearchRemote = Boolean(session.token && session.locationId && !session.onlyTerminalMode && !remoteSshEntryId);
+
+  const searchFiles = () => {
+    if (!canSearchRemote) return;
+    return run(async () => {
       const query = search.trim();
       if (!query) {
         if (searching) await loadFiles(pathBeforeSearch);
@@ -3244,11 +3269,32 @@ function App() {
       setSearching(true);
       setSelected([]);
     });
+  };
 
   const clearSearch = () => {
     setSearch("");
     if (searching) void run(() => loadFiles(pathBeforeSearch));
   };
+
+  const renderSearchControl = () => (
+    <div className="search-control">
+      <input
+        className="search"
+        value={search}
+        onChange={(event) => setSearch(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") searchFiles();
+          if (event.key === "Escape") clearSearch();
+        }}
+        placeholder="Search files"
+      />
+      {(search || searching) && (
+        <button className="clear-search" onClick={clearSearch}>
+          ×
+        </button>
+      )}
+    </div>
+  );
 
   const isValidMoveTarget = (items: FileItem[], destination: string) =>
     items.length > 0 &&
@@ -4713,6 +4759,10 @@ function App() {
     }));
   };
 
+  const selectedHelpPage = helpPages.find((page) => page.id === selectedHelpPageId) || helpPages[0];
+  const selectedHelpSection = helpSections.find((section) => section.pages.some((page) => page.id === selectedHelpPage.id)) || helpSections[0];
+  const selectedHelpIndex = helpPages.findIndex((page) => page.id === selectedHelpPage.id);
+
   const renderTreeNode = (node: FolderNode) => (
     <div className="folder-tree" key={node.path}>
       <div
@@ -4866,6 +4916,52 @@ function App() {
     </div>
   );
 
+  const renderLocalBreadcrumbs = () => {
+    const segments = localBreadcrumbSegments(localPath);
+    const absolute = isAbsoluteLocalPath(localPath);
+    const rootLabel = absolute ? (segments[0]?.label || "/") : "~";
+    const visibleSegments = absolute ? segments.slice(1) : segments;
+    return (
+      <div className="pane-breadcrumbs crumbs" aria-label="LOCAL path">
+        <button onClick={() => void run(() => loadLocalFiles(absolute ? segments[0]?.target || "/" : ""))}>
+          {rootLabel}
+        </button>
+        {visibleSegments.map((segment, index) => (
+          <React.Fragment key={`local-pane-${segment.target}-${index}`}>
+            <span className="crumb-separator">›</span>
+            <button onClick={() => void run(() => loadLocalFiles(segment.target))}>
+              {segment.label}
+            </button>
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  };
+
+  const renderRemoteBreadcrumbs = () => {
+    const parts = path.split("/").filter(Boolean);
+    return (
+      <div className="pane-breadcrumbs crumbs" aria-label="REMOTE path">
+        <button onClick={() => void run(() => loadFiles(remoteSshEntryId ? "/" : ""))}>/</button>
+        {parts.map((part, index) => (
+          <React.Fragment key={`remote-pane-${part}-${index}`}>
+            <span className="crumb-separator">›</span>
+            <button
+              onClick={() => void run(() => loadFiles(remoteSshEntryId
+                ? `/${parts.slice(0, index + 1).join("/")}`
+                : parts.slice(0, index + 1).join("/")))}
+            >
+              {part}
+            </button>
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  };
+  const remoteSourceLabel = remoteSshEntryId
+    ? `REMOTE (SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"})`
+    : `REMOTE (${activeLocation?.id || session.locationId || "Unknown"})`;
+
   const renderLocalPane = () => (
     <section
       className={`local-pane ${activePane === "local" ? "active-pane" : ""} ${isLocalElevated ? "privileged" : ""}`}
@@ -4882,7 +4978,7 @@ function App() {
             </span>
           )}
         </span>
-        <strong>{isAbsoluteLocalPath(localPath) ? localPath : localPath ? `~/${localPath}` : "~/"}</strong>
+        {renderLocalBreadcrumbs()}
       </div>
       <div className="local-pane-actions">
         <button onClick={() => void run(refreshLocalFiles)} disabled={busy}>
@@ -5334,7 +5430,7 @@ function App() {
                >
                  Settings
                </button>
-               {!session.onlyTerminalMode && session.role !== "admin" && (
+                {!session.onlyTerminalMode && session.role !== "admin" && (
                  <button
                    onClick={() => {
                      setAccountOpen(false);
@@ -5342,9 +5438,17 @@ function App() {
                    }}
                  >
                    Change password
-                 </button>
-               )}
-              <hr />
+                  </button>
+                )}
+               <button
+                 onClick={() => {
+                   setAccountOpen(false);
+                   setHelpOpen(true);
+                 }}
+               >
+                 Help
+               </button>
+               <hr />
               <button className="danger" onClick={signOut}>
                 Log out
               </button>
@@ -5530,15 +5634,6 @@ function App() {
             Split
           </button>
         </span>
-        <SortControls
-          label={activePane === "local" ? "LOCAL sort" : "REMOTE sort"}
-          sortKey={activePane === "local" ? localSortKey : remoteSortKey}
-          direction={activePane === "local" ? localSortDirection : remoteSortDirection}
-          onSortKeyChange={activePane === "local" ? setLocalSortKey : setRemoteSortKey}
-          onDirectionChange={() => activePane === "local"
-            ? setLocalSortDirection((current) => current === "asc" ? "desc" : "asc")
-            : setRemoteSortDirection((current) => current === "asc" ? "desc" : "asc")}
-        />
         <button
           onClick={() => {
             void loadLocations();
@@ -5557,63 +5652,6 @@ function App() {
           Terminal
         </button>
       </nav>
-      <div className="navigation">
-        <div className="crumbs">
-          {activePane === "local" ? (
-            <>
-              <button onClick={() => void run(() => loadLocalFiles(""))}>~</button>
-              {localBreadcrumbSegments(localPath).map((segment, index) => (
-                <React.Fragment key={`local-${segment.target}-${index}`}>
-                  <span className="crumb-separator">›</span>
-                  <button onClick={() => void run(() => loadLocalFiles(segment.target))}>
-                    {segment.label}
-                  </button>
-                </React.Fragment>
-              ))}
-            </>
-          ) : (
-            <>
-              <button onClick={() => void run(() => loadFiles(remoteSshEntryId ? "/" : ""))}>/</button>
-              {path
-                .split("/")
-                .filter(Boolean)
-                .map((part, index, parts) => (
-                  <React.Fragment key={`${part}-${index}`}>
-                    <span className="crumb-separator">›</span>
-                    <button
-                      onClick={() =>
-                        void run(() =>
-                          loadFiles(remoteSshEntryId
-                            ? `/${parts.slice(0, index + 1).join("/")}`
-                            : parts.slice(0, index + 1).join("/")),
-                        )
-                      }
-                    >
-                      {part}
-                    </button>
-                  </React.Fragment>
-                ))}
-            </>
-          )}
-        </div>
-        <div className="search-control">
-          <input
-            className="search"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") searchFiles();
-              if (event.key === "Escape") clearSearch();
-            }}
-            placeholder="Search files"
-          />
-          {(search || searching) && (
-            <button className="clear-search" onClick={clearSearch}>
-              ×
-            </button>
-          )}
-        </div>
-      </div>
       <div className={`desktop-workspace${splitMode ? " split-workspace" : ""}`}>
         {splitMode && renderLocalPane()}
         {splitMode && (
@@ -5647,10 +5685,11 @@ function App() {
         >
           <div className="content-heading">
             <div>
-              <span className="eyebrow">CURRENT DIRECTORY</span>
-              <h1>
-                {searching ? `Search results for "${search}"` : path || "/"}
-              </h1>
+              <span className="eyebrow">{remoteSourceLabel}</span>
+              <div className="remote-navigation-row">
+                {searching ? <h1>Search results for "{search}"</h1> : renderRemoteBreadcrumbs()}
+                {canSearchRemote && renderSearchControl()}
+              </div>
             </div>
             {selectedItems.length > 0 && (
               <span className="selection-count">
@@ -5816,8 +5855,43 @@ function App() {
                   <tr>
                     <th aria-label="Select" />
                     {(["name", "modified", "size"] as ColumnKey[]).map((column) => (
-                      <th key={column} className="resizable-column">
-                        {column[0].toUpperCase() + column.slice(1)}
+                      <th
+                        key={column}
+                        className={`resizable-column sortable-column${remoteSortKey === column ? " active" : ""}`}
+                        aria-sort={remoteSortKey === column
+                          ? remoteSortDirection === "asc" ? "ascending" : "descending"
+                          : "none"}
+                      >
+                        {column === "name" && (
+                          <button
+                            type="button"
+                            className={`directory-first-toggle${remoteDirectoriesFirst ? " active" : ""}`}
+                            aria-label="Keep folders first"
+                            aria-pressed={remoteDirectoriesFirst}
+                            title={remoteDirectoriesFirst ? "Folders first: on" : "Folders first: off"}
+                            onClick={() => setRemoteDirectoriesFirst((current) => !current)}
+                          >
+                            <span aria-hidden="true" />
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => toggleSort(
+                            column,
+                            remoteSortKey,
+                            setRemoteSortKey,
+                            setRemoteSortDirection,
+                            remoteSortDirection,
+                          )}
+                          aria-label={`Sort by ${column}`}
+                        >
+                          <span>{column[0].toUpperCase() + column.slice(1)}</span>
+                          {remoteSortKey === column && (
+                            <span className="sort-indicator" aria-hidden="true">
+                              {remoteSortDirection === "asc" ? "▲" : "▼"}
+                            </span>
+                          )}
+                        </button>
                         <span
                           className="column-resize-handle"
                           onPointerDown={(event) => beginColumnResize(column, event)}
@@ -6706,6 +6780,70 @@ function App() {
               <button type="button" onClick={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))}>Copy</button>
               <button type="button" onClick={() => setViewerOpen(false)}>Close</button>
             </div>
+          </div>
+        </div>
+      )}
+      {helpOpen && (
+        <div className="modal-cover" onMouseDown={() => setHelpOpen(false)}>
+          <div className="modal help-modal" style={modalStyle("help")} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="help-title">
+            <div className="help-heading" onMouseDown={beginModalDrag("help")}>
+              <HelpIcon name="book" />
+              <div>
+                <h2 id="help-title">nFterm Help</h2>
+                <p>操作說明、SSH 指南與技術文件</p>
+              </div>
+              <button type="button" className="help-close" onClick={() => setHelpOpen(false)} aria-label="Close Help">×</button>
+            </div>
+            <div className="help-layout">
+              <nav className="help-tree" aria-label="Help topics">
+                {helpSections.map((section) => {
+                  const expanded = expandedHelpSections.includes(section.id);
+                  return (
+                    <div className="help-tree-section" key={section.id}>
+                      <button
+                        type="button"
+                        className="help-tree-toggle"
+                        aria-expanded={expanded}
+                        onClick={() => setExpandedHelpSections((current) => expanded ? current.filter((id) => id !== section.id) : [...current, section.id])}
+                      >
+                        <span className="help-tree-chevron" aria-hidden="true">{expanded ? "−" : "+"}</span>
+                        <HelpIcon name={section.icon} size={16} />
+                        <span>{section.title}</span>
+                      </button>
+                      {expanded && (
+                        <div className="help-tree-pages">
+                          {section.pages.map((page) => (
+                            <button
+                              type="button"
+                              key={page.id}
+                              className={`help-tree-page${selectedHelpPage.id === page.id ? " active" : ""}`}
+                              aria-current={selectedHelpPage.id === page.id ? "page" : undefined}
+                              onClick={() => setSelectedHelpPageId(page.id)}
+                            >
+                              {page.title}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </nav>
+              <article className="help-content" aria-live="polite">
+                <div className="help-breadcrumb">{selectedHelpSection.title}</div>
+                <h3>{selectedHelpPage.title}</h3>
+                <p className="help-summary">{selectedHelpPage.summary}</p>
+                {selectedHelpPage.content}
+              </article>
+            </div>
+            <footer className="help-footer">
+              <span>頁面 {selectedHelpIndex + 1} / {helpPages.length}</span>
+              <div className="help-page-nav">
+                <button type="button" disabled={selectedHelpIndex <= 0} onClick={() => setSelectedHelpPageId(helpPages[selectedHelpIndex - 1].id)}>Previous</button>
+                <button type="button" disabled={selectedHelpIndex >= helpPages.length - 1} onClick={() => setSelectedHelpPageId(helpPages[selectedHelpIndex + 1].id)}>Next</button>
+                <button type="button" onClick={() => setHelpOpen(false)}>Close</button>
+              </div>
+            </footer>
           </div>
         </div>
       )}

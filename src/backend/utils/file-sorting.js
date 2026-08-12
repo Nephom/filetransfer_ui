@@ -15,14 +15,10 @@ const modifiedTimestamp = (value) => {
   return 0;
 };
 
-const compareFiles = (left, right, sort = 'name', order = 'asc') => {
-  const leftDirectory = Boolean(left?.isDirectory);
-  const rightDirectory = Boolean(right?.isDirectory);
-
-  // Directory-first is a fixed grouping rule; direction only changes the
-  // selected field within each group.
-  if (leftDirectory !== rightDirectory) return leftDirectory ? -1 : 1;
-
+const compareFiles = (left, right, sort = 'name', order = 'asc', directoriesFirst = false) => {
+  if (directoriesFirst && Boolean(left?.isDirectory) !== Boolean(right?.isDirectory)) {
+    return left?.isDirectory ? -1 : 1;
+  }
   let result;
   if (sort === 'modified') {
     result = modifiedTimestamp(left?.modified) - modifiedTimestamp(right?.modified);
@@ -39,12 +35,13 @@ const compareFiles = (left, right, sort = 'name', order = 'asc') => {
   return order === 'desc' ? -result : result;
 };
 
-const sortFiles = (files, sort = 'name', order = 'asc') =>
-  [...(Array.isArray(files) ? files : [])].sort((left, right) => compareFiles(left, right, sort, order));
+const sortFiles = (files, sort = 'name', order = 'asc', directoriesFirst = false) =>
+  [...(Array.isArray(files) ? files : [])].sort((left, right) => compareFiles(left, right, sort, order, directoriesFirst));
 
-const normalizeSort = (sort, order) => ({
+const normalizeSort = (sort, order, directoriesFirst) => ({
   sort: ['name', 'modified', 'size', 'directory'].includes(sort) ? sort : 'name',
-  order: order === 'desc' ? 'desc' : 'asc'
+  order: order === 'desc' ? 'desc' : 'asc',
+  directoriesFirst: directoriesFirst === true || directoriesFirst === 'true'
 });
 
 module.exports = {

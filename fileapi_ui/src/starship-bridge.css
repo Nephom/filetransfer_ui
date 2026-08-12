@@ -73,9 +73,6 @@ body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif
   backdrop-filter: blur(18px) saturate(135%);
 }
 
-.commandbar .sort-control { display: inline-flex; align-items: center; gap: 4px; margin: 0; color: var(--bridge-muted); font-size: 11px; white-space: nowrap; }
-.commandbar .sort-control select { width: auto; min-width: 86px; margin: 0; padding: 5px 7px; }
-.commandbar .sort-control button { padding: 6px 8px; }
 
 .explorer > *:not(.modal-cover) { position: relative; z-index: 1; }
 .explorer > .context-menu { position: fixed; z-index: 100; }

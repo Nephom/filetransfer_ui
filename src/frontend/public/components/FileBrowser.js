@@ -31,8 +31,8 @@ const formatRate = (bytesPerSecond) => {
     return `${value.toFixed(unit ? 1 : 0)} ${units[unit]}`;
 };
 const compareFileNames = (left, right) => String(left || '').localeCompare(String(right || ''), undefined, { numeric: true, sensitivity: 'base' });
-const compareFiles = (left, right, key, direction) => {
-    if (Boolean(left.isDirectory) !== Boolean(right.isDirectory)) return left.isDirectory ? -1 : 1;
+const compareFiles = (left, right, key, direction, directoriesFirst = false) => {
+    if (directoriesFirst && Boolean(left.isDirectory) !== Boolean(right.isDirectory)) return left.isDirectory ? -1 : 1;
     let result = key === 'modified'
         ? fileTimestamp(left.modified) - fileTimestamp(right.modified)
         : key === 'size'
@@ -41,7 +41,7 @@ const compareFiles = (left, right, key, direction) => {
     if (!result) result = compareFileNames(left.name, right.name) || String(left.path || '').localeCompare(String(right.path || ''));
     return direction === 'desc' ? -result : result;
 };
-const sortFiles = (items, key = 'name', direction = 'asc') => [...items].sort((left, right) => compareFiles(left, right, key, direction));
+const sortFiles = (items, key = 'name', direction = 'asc', directoriesFirst = false) => [...items].sort((left, right) => compareFiles(left, right, key, direction, directoriesFirst));
 const fileType = (item) => {
     if (item.isDirectory) return 'File folder';
     const extension = item.name?.split('.').pop();

@@ -989,9 +989,9 @@ app.get('/api/files', authenticate, async (req, res) => {
   const requestStartTime = Date.now(); // Performance monitoring
 
   try {
-    const { path: requestPath, offset, limit, sort, order } = req.query;
+    const { path: requestPath, offset, limit, sort, order, directoriesFirst } = req.query;
     const hasPagination = offset !== undefined || limit !== undefined;
-    const normalizedSort = normalizeSort(sort, order);
+    const normalizedSort = normalizeSort(sort, order, directoriesFirst);
     const context = await getStorageContext(req, requestPath || '', 'list');
     const { locationId, rootPath: storageRoot, targetPath, fileSystem: locationFileSystem } = context;
 
@@ -1038,7 +1038,7 @@ app.get('/api/files', authenticate, async (req, res) => {
         modified: modifiedTimestamp(file.modified)
       };
     });
-    const sortedFiles = sortFiles(transformedAllFiles, normalizedSort.sort, normalizedSort.order);
+    const sortedFiles = sortFiles(transformedAllFiles, normalizedSort.sort, normalizedSort.order, normalizedSort.directoriesFirst);
     let transformedFiles = sortedFiles;
     let paginationInfo;
     if (hasPagination) {
