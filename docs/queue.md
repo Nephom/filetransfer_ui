@@ -11,12 +11,15 @@ Every application-owned upload and download enters a Queue before execution.
 Move, rename, delete, folder creation and share-link creation are not transfers
 and remain immediate file operations.
 
-Desktop Windows Explorer drops are admitted through the Tauri native drop event
-and then use the same Queue upload path as the picker. Windows outbound native
-drag from REMOTE to Explorer is intentionally disabled because the WebView2/OLE
-plugin can terminate the application; use Download/Queue instead. Linux keeps
-the native drop target disabled to preserve the in-app WebKitGTK HTML5 drag/drop
-surface; Linux users should use the picker or in-app LOCAL-to-REMOTE drag path.
+Desktop file dragging is intentionally limited to the in-app HTML5 drag/drop
+surface. This supports LOCAL <-> API Remote and LOCAL <-> SSH/SFTP Remote
+transfers through the existing transfer paths. Windows must keep
+`dragDropEnabled: false`: enabling Tauri's native drop target intercepts the
+same WebView2 gesture before the in-app `dragover`/`drop` handlers receive it.
+Explorer drops and REMOTE-to-Explorer native drag-out are intentionally not
+supported. Use the file picker or Download/Queue instead. This is a deliberate
+developer decision and should not change unless a separate native and in-app
+drag channel becomes technically available.
 
 Desktop lifecycle primitives live under `fileapi_ui/src/queue/`: `state.ts`
 contains transitions, `recovery.ts` contains normalized failure decisions,

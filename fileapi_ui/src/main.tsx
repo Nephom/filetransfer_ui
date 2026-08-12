@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { resolveResource } from "@tauri-apps/api/path";
 import {
   formatQueueProgress,
@@ -916,6 +915,12 @@ function App() {
   // the opposite pane lights up the instant the drag starts, before the
   // cursor has moved there. See onDragEnter/onDragLeave on each pane body.
   const [paneDragHover, setPaneDragHover] = useState<"local" | "remote" | "">("");
+  // APP-internal file dragging is intentionally kept on the WebView HTML5
+  // drag/drop path. Do not enable Tauri's Windows native drop target here:
+  // WebView2 intercepts the same gesture before HTML5 dragover/drop, which
+  // breaks LOCAL <-> API Remote and LOCAL <-> SFTP Remote transfers. External
+  // Explorer drops are intentionally not supported unless a future Windows
+  // implementation can provide separate native and in-app drag channels.
   // Rubber-band/marquee mouse-drag multi-select. `marqueeRect` (viewport/
   // client coordinates, so no CSS containing-block dependency) drives the
   // visible selection-box overlay; `marqueeStateRef` carries the drag's
@@ -4247,33 +4252,6 @@ function App() {
 
   const upload = async () =>
     uploadPaths(await invoke<string[]>("pick_upload_files"));
-
-  useEffect(() => {
-    // Windows enables Tauri's native drop target through
-    // tauri.windows.conf.json so Explorer drops arrive here and use the same
-    // Queue upload path. Linux keeps the native target disabled because its
-    // WebKitGTK integration can intercept the in-app HTML5 drag surface.
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    getCurrentWebview()
-      .onDragDropEvent((event) => {
-        if (event.payload.type === "drop") uploadPaths(event.payload.paths);
-      })
-      .then((listener) => {
-        if (disposed) listener();
-        else unlisten = listener;
-      })
-      .catch((error) => {
-        if (!disposed)
-          setNotice(
-            `Unable to listen for file drops: ${error instanceof Error ? error.message : String(error)}`,
-          );
-      });
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, [session.token, path, session.ignoreTlsErrors, remoteSshEntryId]);
 
   const createFolder = () =>
     run(async () => {
