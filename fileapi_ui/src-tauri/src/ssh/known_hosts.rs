@@ -1,4 +1,5 @@
-// Host key (server identity) verification against the standard `~/.ssh/known_hosts`
+// Host key (server identity) verification against the app's SSH storage
+// directory (`~/.ssh/known_hosts` on Unix, or the portable Windows directory)
 // file, using the same TOFU (trust-on-first-use) semantics as OpenSSH's
 // `StrictHostKeyChecking=accept-new`: a host never seen before is learned and
 // trusted; a host whose recorded key no longer matches is rejected outright
@@ -20,9 +21,7 @@ pub enum HostKeyDecision {
 }
 
 fn known_hosts_path() -> Result<PathBuf, String> {
-    let home = crate::local_home()?;
-    let ssh_dir = home.join(".ssh");
-    std::fs::create_dir_all(&ssh_dir).map_err(|error| error.to_string())?;
+    let ssh_dir = crate::ssh_storage_dir()?;
     Ok(ssh_dir.join("known_hosts"))
 }
 

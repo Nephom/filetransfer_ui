@@ -513,6 +513,51 @@ fn local_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "Unable to locate the local home directory".to_string())
 }
 
+/// Resolve the directory used for SSH keys and known hosts.
+///
+/// Windows prefers a `.ssh` directory next to the executable so portable
+/// installations keep their SSH state with the application. Installed copies
+/// under a protected directory (for example, `Program Files`) fall back to
+/// the current user's profile. Unix platforms retain the standard
+/// `$HOME/.ssh` location.
+pub(crate) fn ssh_storage_dir() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        if let Ok(executable) = std::env::current_exe() {
+            if let Some(parent) = executable.parent() {
+                let portable_dir = parent.join(".ssh");
+                if std::fs::create_dir_all(&portable_dir).is_ok() {
+                    let probe =
+                        portable_dir.join(format!(".nfterm-write-test-{}", std::process::id()));
+                    let writable = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&probe)
+                        .is_ok();
+                    let _ = std::fs::remove_file(&probe);
+                    if writable {
+                        return Ok(portable_dir);
+                    }
+                }
+            }
+        }
+
+        let user_profile = std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .ok_or_else(|| "Unable to locate the Windows user profile".to_string())?;
+        let user_ssh_dir = user_profile.join(".ssh");
+        std::fs::create_dir_all(&user_ssh_dir).map_err(|error| error.to_string())?;
+        return Ok(user_ssh_dir);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let ssh_dir = local_home()?.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).map_err(|error| error.to_string())?;
+        Ok(ssh_dir)
+    }
+}
+
 /// `Path::canonicalize()` resolves symlinks and returns an absolute path,
 /// but on Windows it prepends the "verbatim" `\\?\` prefix (e.g.
 /// `\\?\C:\Users\Administrator`) that only the raw Win32 API understands.

@@ -490,11 +490,11 @@ async fn try_default_identity_files(
     passphrase: Option<&str>,
 ) -> bool {
     let label = profile_label(profile);
-    let Ok(home) = crate::local_home() else {
+    let Ok(ssh_dir) = crate::ssh_storage_dir() else {
         return false;
     };
     for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
-        let path = home.join(".ssh").join(name);
+        let path = ssh_dir.join(name);
         if !path.is_file() {
             continue;
         }
@@ -907,12 +907,12 @@ pub async fn install_key(profile: SshProfile) -> Result<String, String> {
         "authorized_keys",
         "Installing a local public key on the remote host.",
     );
-    let home = crate::local_home()?;
+    let ssh_dir = crate::ssh_storage_dir()?;
     let key_path = profile
         .private_key_path
         .clone()
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| home.join(".ssh").join("id_ed25519"));
+        .unwrap_or_else(|| ssh_dir.join("id_ed25519"));
     if !key_path.is_file() {
         if let Some(parent) = key_path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
