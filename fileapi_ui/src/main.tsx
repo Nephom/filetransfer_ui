@@ -5315,7 +5315,7 @@ function App() {
                >
                  Settings
                </button>
-               {!session.onlyTerminalMode && (
+               {!session.onlyTerminalMode && session.role !== "admin" && (
                  <button
                    onClick={() => {
                      setAccountOpen(false);
