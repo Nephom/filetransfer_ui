@@ -14,6 +14,7 @@ pub mod secrets;
 pub mod sftp;
 
 use russh::client::{self, AuthResult};
+#[cfg(unix)]
 use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
 use russh::ChannelMsg;
@@ -255,6 +256,7 @@ fn profile_label(profile: &SshProfile) -> String {
 /// differs by platform (Unix domain socket vs. Windows Pageant/named pipe);
 /// listing identities and attempting each one is identical everywhere.
 /// Returns `true` on success.
+#[cfg(unix)]
 async fn try_agent_identities<S>(
     handle: &mut client::Handle<ClientHandler>,
     profile: &SshProfile,
@@ -374,49 +376,15 @@ async fn try_agent_auth(handle: &mut client::Handle<ClientHandler>, profile: &Ss
     try_agent_identities(handle, profile, agent).await
 }
 
-/// Windows has no `SSH_AUTH_SOCK` convention. Try, in order: a running
-/// Pageant instance (PuTTY's agent, also used by some Git-for-Windows/WSL
-/// bridges), then the well-known named pipe the "OpenSSH Authentication
-/// Agent" Windows service listens on. Either is optional; failing to
-/// connect to one falls through to the next, and failing both simply
-/// falls through to the next auth method entirely (default identity
-/// files, then the configured key, then the stored password).
+/// Windows authentication is intentionally self-contained. Do not probe
+/// Pageant or the optional OpenSSH Authentication Agent service: the app uses
+/// its managed `.ssh` directory (or the user's fallback directory) directly.
 #[cfg(windows)]
-async fn try_agent_auth(handle: &mut client::Handle<ClientHandler>, profile: &SshProfile) -> bool {
-    let label = profile_label(profile);
-
-    match AgentClient::connect_pageant().await {
-        Ok(agent) => {
-            if try_agent_identities(handle, profile, agent).await {
-                return true;
-            }
-        }
-        Err(error) => {
-            crate::oplog::log(
-                "DEBUG",
-                "ssh_auth",
-                "skipped",
-                &label,
-                "agent",
-                &format!("Pageant not available: {error}"),
-            );
-        }
-    }
-
-    match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
-        Ok(agent) => try_agent_identities(handle, profile, agent).await,
-        Err(error) => {
-            crate::oplog::log(
-                "DEBUG",
-                "ssh_auth",
-                "skipped",
-                &label,
-                "agent",
-                &format!("OpenSSH Authentication Agent service not available: {error}"),
-            );
-            false
-        }
-    }
+async fn try_agent_auth(
+    _handle: &mut client::Handle<ClientHandler>,
+    _profile: &SshProfile,
+) -> bool {
+    false
 }
 
 /// No known agent transport on any other target; fall straight through to
@@ -518,15 +486,12 @@ async fn try_default_identity_files(
 }
 
 /// Authenticate using, in order: (1) any identity already loaded into a
-/// running SSH agent, (2) the default OpenSSH identity files on disk, (3)
-/// the SSH entry's explicitly-configured `private_key_path`, (4) the SSH
-/// entry's stored password. This mirrors the precedence a normal `ssh`
-/// client uses, so an account that can already be reached password-lessly
-/// via `ssh` (agent forwarding, or a default key with no passphrase) works
-/// the same way here instead of hard-failing the moment no password is
-/// configured. Returns Ok(()) only once one of these methods succeeds; every
-/// attempt (and its outcome) is written to the operation log so a failure
-/// can be diagnosed without guesswork.
+/// running SSH agent where the platform supports automatic discovery, (2) the
+/// default identity files in the app's SSH storage directory, (3) the SSH
+/// entry's explicitly-configured `private_key_path`, (4) the SSH entry's
+/// stored password. Returns Ok(()) only once one of these methods succeeds;
+/// every attempt (and its outcome) is written to the operation log so a
+/// failure can be diagnosed without guesswork.
 ///
 /// A blank/whitespace-only `private_key_path` (e.g. sent as `""` instead of
 /// `null` by some callers) is treated as "no key configured" rather than an
