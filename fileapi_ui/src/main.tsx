@@ -1354,6 +1354,7 @@ function App() {
       terminal.loadAddon(fit);
       terminal.open(terminalHostRef.current);
       fit.fit();
+      terminal.focus();
       terminalInstanceRef.current = terminal;
       shellInputRef.current = "";
       terminal.write(sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n");
@@ -2165,6 +2166,7 @@ function App() {
     setActiveSshTabId(tab.id);
     setWorkspaceSessionId(tab.workspaceId);
     setSelectedSshEntryId(tab.sshEntryId);
+    window.requestAnimationFrame(() => terminalInstanceRef.current?.focus());
     const profile = managedSessions.find((item) => item.id === tab.workspaceId)?.sshEntries.find((item) => item.id === tab.sshEntryId);
     if (profile) {
       setSshProfileId(profile.id);
