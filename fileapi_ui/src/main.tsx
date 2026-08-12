@@ -3501,10 +3501,9 @@ function App() {
 
   const beginRemoteDrag = (event: React.DragEvent, file: FileItem) => {
     beginDrag(event, file);
-    // Windows native outbound drag is intentionally disabled. The inbound
-    // native drop target remains enabled so Explorer -> App uploads continue
-    // through Queue, while App -> Explorer uses the stable Download/Queue path
-    // instead of the WebView2/OLE plugin that can terminate the window.
+    // Windows native outbound drag is intentionally disabled. A failed drop
+    // outside the app is reported by finishDragAfterDrop, which points the
+    // user to the stable Download/Queue path instead.
     if (!event.altKey) return;
     event.preventDefault();
     setNotice("External drag-out is disabled on Windows for stability. Use Download to save through the Queue.");
@@ -3650,7 +3649,13 @@ function App() {
     // Windows WebView2 can emit dragend before React receives the target's
     // drop callback. Keep the source payload alive for one event-loop turn so
     // the drop handler can still start the SFTP transfer.
-    window.setTimeout(finishDrag, 0);
+    const source = dragSourceRef.current;
+    window.setTimeout(() => {
+      if (source === "remote" && dragSourceRef.current === "remote") {
+        setNotice("Remote files cannot be dragged to Explorer. Use Download to save through the Queue.");
+      }
+      finishDrag();
+    }, 0);
   };
 
   // Pane-wide "drop here" highlighting must only turn on while the pointer
@@ -3660,7 +3665,15 @@ function App() {
   // target (where the pointer is going) is no longer inside this pane's
   // container -- otherwise the highlight would flicker off while moving
   // over child elements.
-  const enterPaneDragHover = (pane: "local" | "remote") => () => {
+  const isExternalFileDrag = (event: React.DragEvent) =>
+    dragSourceRef.current === "" && Array.from(event.dataTransfer.types).includes("Files");
+  const notifyExternalFileDrag = (event: React.DragEvent) => {
+    if (!isExternalFileDrag(event)) return false;
+    setNotice("External files cannot be dropped directly. Use Upload to choose files for the current Remote.");
+    return true;
+  };
+  const enterPaneDragHover = (pane: "local" | "remote") => (event: React.DragEvent) => {
+    if (notifyExternalFileDrag(event)) return;
     setPaneDragHover((current) => (current === pane ? current : pane));
   };
   const leavePaneDragHover = (pane: "local" | "remote") => (event: React.DragEvent) => {
@@ -4906,6 +4919,7 @@ function App() {
         className={`local-pane-body ${dragSource === "remote" && canDragRemoteToLocal && paneDragHover === "local" ? "drop-target" : ""}`}
         onDragEnter={enterPaneDragHover("local")}
         onDragOver={(event) => {
+          if (notifyExternalFileDrag(event)) return;
           if (dragSourceRef.current === "remote" && canDragRemoteToLocal && dragItemsRef.current.length) {
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
@@ -4913,6 +4927,12 @@ function App() {
         }}
         onDragLeave={leavePaneDragHover("local")}
         onDropCapture={(event) => {
+          if (isExternalFileDrag(event)) {
+            event.preventDefault();
+            event.stopPropagation();
+            notifyExternalFileDrag(event);
+            return;
+          }
           // If the drop landed on a folder-tree node inside the LOCAL tree
           // panel, let it fall through to that node's own onDropCapture
           // (which downloads into that specific folder) instead of always
@@ -5674,6 +5694,7 @@ function App() {
               onDragEnter={enterPaneDragHover("remote")}
               onDragOver={(event) => {
                 handleDragAutoScroll(event, fileAreaRef.current);
+                if (notifyExternalFileDrag(event)) return;
                 if (dragSourceRef.current === "local" && canDragLocalToRemote && dragItemsRef.current.length) {
                   event.preventDefault();
                   event.dataTransfer.dropEffect = "copy";
@@ -5686,6 +5707,12 @@ function App() {
               onMouseDown={(event) => beginMarqueeSelect(event, "remote", fileAreaRef.current)}
               onDropCapture={(event) => {
                 stopDragAutoScroll();
+                if (isExternalFileDrag(event)) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  notifyExternalFileDrag(event);
+                  return;
+                }
                 if (dragSourceRef.current === "local" && canDragLocalToRemote) {
                   event.preventDefault();
                   event.stopPropagation();
