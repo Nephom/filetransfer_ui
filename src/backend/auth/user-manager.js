@@ -157,7 +157,7 @@ class UserManager {
     // An omitted permission list gets the historical default. An explicitly
     // empty list means the administrator intentionally granted no capabilities.
     if (permissions === undefined) {
-      permissions = ['read', 'upload', 'delete', 'mkdir', 'share'];
+      permissions = ['list', 'read', 'upload', 'write', 'delete', 'mkdir', 'share'];
     }
 
     const newUser = {

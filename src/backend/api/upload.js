@@ -55,13 +55,7 @@ class UploadAPI {
 
   async _resolveLocation(req, relativePath = '', capability = 'upload') {
     if (!this.locationManager) {
-      const configManager = require('../config');
-      const rootPath = configManager.get('fileSystem.storagePath') || './storage';
-      return {
-        locationId: 'default',
-        rootPath: path.resolve(rootPath),
-        targetPath: path.resolve(rootPath, relativePath)
-      };
+      throw Object.assign(new Error('Location service is not ready'), { statusCode: 503 });
     }
 
     const locationId = req.body?.locationId || req.headers['x-location-id'] ||
@@ -69,9 +63,12 @@ class UploadAPI {
     if (!locationId) throw new Error('locationId is required');
     const location = this.locationManager.getLocation(locationId);
     if (!location || !location.enabled) throw new Error('Location is unavailable');
-    if (this.locationPermissionManager) {
-      // Upload handlers authenticate multipart requests before resolving their target.
-      await this.locationPermissionManager.assertCurrent(req.user, locationId, capability);
+    if (!this.locationPermissionManager) {
+      throw Object.assign(new Error('Location permission service is not ready'), { statusCode: 503 });
+    }
+    // Upload handlers authenticate multipart requests before resolving their target.
+    for (const requiredCapability of Array.isArray(capability) ? capability : [capability]) {
+      await this.locationPermissionManager.assertCurrent(req.user, locationId, requiredCapability);
     }
 
     return {
@@ -367,7 +364,7 @@ class UploadAPI {
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
-      const locationContext = await this._resolveLocation(req, currentPath);
+      const locationContext = await this._resolveLocation(req, currentPath, ['upload', 'write']);
       const normalizedFinalDir = locationContext.targetPath;
       const normalizedStoragePath = locationContext.rootPath;
 
@@ -503,7 +500,7 @@ class UploadAPI {
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
-      const locationContext = await this._resolveLocation(req, currentPath);
+      const locationContext = await this._resolveLocation(req, currentPath, ['upload', 'write']);
       const normalizedFinalDir = locationContext.targetPath;
       const normalizedStoragePath = locationContext.rootPath;
 
@@ -781,7 +778,7 @@ class UploadAPI {
 
       // Get currentPath from request body to determine destination directory
       const currentPath = req.body.path || '';
-      const locationContext = await this._resolveLocation(req, currentPath);
+      const locationContext = await this._resolveLocation(req, currentPath, ['upload', 'write']);
       const normalizedFinalDir = locationContext.targetPath;
       const normalizedStoragePath = locationContext.rootPath;
       
@@ -1005,7 +1002,7 @@ class UploadAPI {
 
         // Determine destination path (NOW with correct uploadPath)
         systemLogger.logSystem('INFO', `[UPLOAD] Step 6: Determining destination path`);
-        const locationContext = await this._resolveLocation({ ...req, body: { locationId } }, uploadPath);
+        const locationContext = await this._resolveLocation({ ...req, body: { locationId } }, uploadPath, ['upload', 'write']);
         const storageRoot = locationContext.rootPath;
         systemLogger.logSystem('INFO', `[UPLOAD] Storage root: ${storageRoot}, uploadPath: ${uploadPath}`);
         const targetDir = locationContext.targetPath;

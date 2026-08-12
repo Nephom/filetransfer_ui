@@ -46,9 +46,19 @@ class LocationPermissionManager {
         ? Object.entries(capabilities).filter(([, allowed]) => allowed).map(([name]) => name)
         : [];
 
-    return [...new Set(values
+    const normalized = [...new Set(values
       .map((capability) => CAPABILITY_ALIASES[capability] || capability)
       .filter((capability) => CAPABILITIES.includes(capability)))];
+
+    // Copying and moving are composite operations. Granting either one also
+    // grants the basic read/write/delete capabilities it necessarily performs.
+    if (normalized.includes('copy') || normalized.includes('move')) {
+      for (const capability of ['read', 'write', 'delete']) {
+        if (!normalized.includes(capability)) normalized.push(capability);
+      }
+    }
+
+    return normalized;
   }
 
   getLocationPermissions(user) {
@@ -78,15 +88,12 @@ class LocationPermissionManager {
       return { ...(roleBase || {}), ...(userOverrides || {}) };
     }
 
-    // Preserve legacy users during migration, but never grant new Locations implicitly.
+    // Legacy users without a Location matrix use their stored global
+    // capabilities for the default Location. Do not invent list, mkdir, share,
+    // or any other capability during migration.
     const legacyCapabilities = this.normalizeCapabilities(user?.permissions || ['read']);
-    // Legacy users previously had normal folder operations; keep mkdir available
-    // until an explicit per-Location permission mapping is configured. Sharing is
-    // intentionally not added here: it is a privileged capability and must be
-    // explicitly present in the user's legacy permissions.
-    if (!legacyCapabilities.includes('mkdir')) legacyCapabilities.push('mkdir');
     if (this.locationManager.getLocation('default')?.enabled) {
-      return { default: legacyCapabilities.includes('list') ? legacyCapabilities : ['list', ...legacyCapabilities] };
+      return { default: legacyCapabilities };
     }
     return {};
   }
@@ -113,9 +120,15 @@ class LocationPermissionManager {
   }
 
   async assertCurrent(user, locationId, capability) {
-    const currentUser = user?.role === 'admin' || !this.userResolver
+    if (!this.userResolver && user?.role !== 'admin') {
+      throw Object.assign(new Error('Location permission service is not ready.'), { statusCode: 503 });
+    }
+    const currentUser = user?.role === 'admin'
       ? user
-      : await this.userResolver(user.username) || user;
+      : await this.userResolver(user.username);
+    if (!currentUser || currentUser.active === false) {
+      throw Object.assign(new Error('Account no longer exists or is inactive.'), { statusCode: 401 });
+    }
     this.assert(currentUser, locationId, capability);
   }
 

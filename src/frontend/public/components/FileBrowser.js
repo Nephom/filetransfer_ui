@@ -425,6 +425,10 @@ const FileBrowser = ({ token, user, onLogout }) => {
     ].filter((group) => group.links.length > 0);
 
     const searchFiles = async () => {
+        if (!hasCapability('list')) {
+            setError('List permission is required to search files.');
+            return;
+        }
         const query = search.trim();
         if (!query) return loadFiles(searching ? pathBeforeSearch : currentPath);
         setLoading(true); setError(''); setContext(null);

@@ -78,6 +78,8 @@ const publicErrorMessage = (error) => {
 
 const getRequestedLocationId = (req) => req.query?.locationId || req.body?.locationId || req.headers['x-location-id'];
 
+// Pass capability=null for authenticated infrastructure operations (such as
+// cache/index maintenance) that are not file permission operations.
 const getStorageContext = async (req, relativePath = '', capability = 'list', requestedLocationId = null) => {
   if (!locationManager) {
     throw Object.assign(new Error('Location service is not ready'), { statusCode: 503 });
@@ -93,7 +95,10 @@ const getStorageContext = async (req, relativePath = '', capability = 'list', re
   if (!location || !location.enabled) {
     throw Object.assign(new Error('Location is unavailable'), { statusCode: 404 });
   }
-  await locationPermissionManager.assertCurrent(req.user, locationId, capability);
+  if (capability && !locationPermissionManager) {
+    throw Object.assign(new Error('Location permission service is not ready'), { statusCode: 503 });
+  }
+  if (capability) await locationPermissionManager.assertCurrent(req.user, locationId, capability);
   const health = await locationManager.getHealth(locationId);
   if (health.status !== 'online') {
     throw Object.assign(new Error('Location storage is unavailable'), {
@@ -709,7 +714,7 @@ app.post('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    const context = await getStorageContext(req, '', 'read');
+    const context = await getStorageContext(req, '', 'list');
 
     // Search using Redis index (no timeout needed - index queries are fast)
     const searchResults = await context.fileSystem.searchFiles(query);
@@ -760,7 +765,7 @@ app.get('/api/files/search', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Search query is required' });
     }
 
-    const context = await getStorageContext(req, '', 'read');
+    const context = await getStorageContext(req, '', 'list');
 
     // Search using Redis index (no timeout needed - index queries are fast)
     const searchResults = await context.fileSystem.searchFiles(query);
@@ -804,7 +809,7 @@ app.get('/api/files/search', authenticate, async (req, res) => {
 // Cache statistics endpoint
 app.get('/api/files/cache-stats', authenticate, async (req, res) => {
   try {
-    const context = await getStorageContext(req, '', 'list');
+    const context = await getStorageContext(req, '', null);
     const stats = await context.fileSystem.getCacheInfo ? await context.fileSystem.getCacheInfo() : { message: 'Cache stats not available' };
     res.json({ ...stats, locationId: context.locationId });
   } catch (error) {
@@ -816,7 +821,7 @@ app.get('/api/files/cache-stats', authenticate, async (req, res) => {
 // Index status endpoint - shows global search index status
 app.get('/api/files/index-status', authenticate, async (req, res) => {
   try {
-    const context = await getStorageContext(req, '', 'list');
+    const context = await getStorageContext(req, '', null);
     if (!context.fileSystem.cache || !context.fileSystem.cache.getIndexStatus) {
       return res.status(404).json({ error: 'Index status not available' });
     }
@@ -828,10 +833,10 @@ app.get('/api/files/index-status', authenticate, async (req, res) => {
   }
 });
 
-// Trigger manual index rebuild endpoint (admin only recommended)
+// Trigger manual index rebuild endpoint for authenticated infrastructure use.
 app.post('/api/files/rebuild-index', authenticate, async (req, res) => {
   try {
-    const context = await getStorageContext(req, '', 'list');
+    const context = await getStorageContext(req, '', null);
     if (!context.fileSystem.cache || !context.fileSystem.cache.buildGlobalIndex) {
       return res.status(404).json({ error: 'Index rebuild not available' });
     }
@@ -881,7 +886,7 @@ app.get('/api/locations', authenticate, async (req, res) => {
 app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
   try {
     const { directoryPath } = req.body; // Allow partial refresh
-    const context = await getStorageContext(req, directoryPath || '', 'list');
+    const context = await getStorageContext(req, directoryPath || '', null);
 
     if (directoryPath) {
       await refreshDirectoryCache(context.targetPath, 'refresh_directory', req, context.fileSystem);
