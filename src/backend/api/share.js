@@ -10,7 +10,8 @@ const fs = require('fs').promises;
 const shareManager = require('../auth/share-manager');
 const configManager = require('../config/index');
 const { systemLogger } = require('../utils/logger');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, requireAdmin } = require('../middleware/auth');
+const userManager = require('../auth/user-manager');
 const rateLimit = require('express-rate-limit');
 const { LocationManager } = require('../location');
 let locationPermissionManager = null;
@@ -26,6 +27,13 @@ const getLocationContext = (locationId) => {
   const location = manager.getLocation(selectedId);
   if (!location || !location.enabled) throw new Error('Location is unavailable');
   return { manager, locationId: selectedId, location };
+};
+
+const assertSharePermission = async (user, locationId) => {
+  if (!locationPermissionManager) {
+    throw Object.assign(new Error('Location permission service is not ready'), { statusCode: 503 });
+  }
+  await locationPermissionManager.assertCurrent(user, locationId, 'share');
 };
 
 // Rate limiter for share link creation (max 10 per minute per user)
@@ -70,7 +78,7 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     }
 
     const context = getLocationContext(locationId);
-    await locationPermissionManager?.assertCurrent(req.user, context.locationId, 'share');
+    await assertSharePermission(req.user, context.locationId);
     const fullPath = context.manager.resolveRelativePath(context.locationId, normalizedPath);
 
     // Check if file exists
@@ -118,7 +126,7 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Share link creation failed: ${error.message}`);
-    res.status(500).json({ success: false, message: error.message });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message });
   }
 });
 
@@ -209,10 +217,19 @@ router.get('/files/shares', authenticate, async (req, res) => {
     const userId = req.user?.id || req.user?.username || 'anonymous';
 
     const shareLinks = await shareManager.getUserShareLinks(userId);
+    const permittedLinks = [];
+    for (const shareLink of shareLinks) {
+      try {
+        await assertSharePermission(req.user, shareLink.locationId || 'default');
+        permittedLinks.push(shareLink);
+      } catch (error) {
+        if (error.statusCode !== 403) throw error;
+      }
+    }
 
     res.json({
       success: true,
-      data: shareLinks
+      data: permittedLinks
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to get user share links: ${error.message}`);
@@ -229,6 +246,12 @@ router.delete('/files/share/:shareToken', authenticate, async (req, res) => {
     const { shareToken } = req.params;
     const userId = req.user?.id || req.user?.username || 'anonymous';
 
+    const shareLink = await shareManager.getShareLinkInfo(shareToken);
+    if (!shareLink) {
+      return res.status(404).json({ success: false, message: '分享連結不存在或無權限撤銷' });
+    }
+    await assertSharePermission(req.user, shareLink.locationId || 'default');
+
     const success = await shareManager.revokeShareLink(shareToken, userId);
 
     if (!success) {
@@ -240,7 +263,104 @@ router.delete('/files/share/:shareToken', authenticate, async (req, res) => {
     res.json({ success: true, message: '分享連結已撤銷' });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to revoke share link: ${error.message}`);
-    res.status(500).json({ success: false, message: '撤銷分享連結失敗' });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || '撤銷分享連結失敗' });
+  }
+});
+
+/**
+ * GET /api/admin/share-links
+ * List every user's share links for administrators.
+ */
+router.get('/admin/share-links', requireAdmin, async (req, res) => {
+  try {
+    const [shareLinks, users] = await Promise.all([
+      shareManager.getAllShareLinks(),
+      userManager.getAllUsers()
+    ]);
+    const usernamesById = new Map(users.map(user => [String(user.id), user.username]));
+
+    res.json({
+      success: true,
+      data: shareLinks.map(link => ({
+        ...link,
+        creatorUsername: usernamesById.get(String(link.userId)) || String(link.userId)
+      }))
+    });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to get all share links: ${error.message}`);
+    res.status(500).json({ success: false, message: '獲取全部分享連結列表失敗' });
+  }
+});
+
+router.delete('/admin/share-links/:shareToken', requireAdmin, async (req, res) => {
+  const success = await shareManager.revokeShareLinkAsAdmin(req.params.shareToken);
+  if (!success) return res.status(404).json({ success: false, message: '分享連結不存在' });
+  res.json({ success: true, message: '分享連結已撤銷' });
+});
+
+router.delete('/admin/share-links/:shareToken/history', requireAdmin, async (req, res) => {
+  const success = await shareManager.deleteExpiredShareLinkAsAdmin(req.params.shareToken);
+  if (!success) return res.status(404).json({ success: false, message: '過期分享連結不存在或尚未過期' });
+  res.json({ success: true, message: '過期分享連結已移除' });
+});
+
+router.delete('/admin/share-links/:shareToken/history/revoked', requireAdmin, async (req, res) => {
+  const success = await shareManager.deleteRevokedShareLinkAsAdmin(req.params.shareToken);
+  if (!success) return res.status(404).json({ success: false, message: '已撤銷分享連結不存在或仍在啟用中' });
+  res.json({ success: true, message: '已撤銷分享連結已移除' });
+});
+
+/**
+ * DELETE /api/files/share/:shareToken/history
+ * Permanently remove an expired share link from the current user's history.
+ */
+router.delete('/files/share/:shareToken/history', authenticate, async (req, res) => {
+  try {
+    const { shareToken } = req.params;
+    const userId = req.user?.id || req.user?.username || 'anonymous';
+
+    const shareLink = await shareManager.getShareLinkInfo(shareToken);
+    if (!shareLink) {
+      return res.status(404).json({ success: false, message: '過期分享連結不存在或尚未過期' });
+    }
+    await assertSharePermission(req.user, shareLink.locationId || 'default');
+    const success = await shareManager.deleteExpiredShareLink(shareToken, userId);
+
+    if (!success) {
+      return res.status(404).json({ success: false, message: '過期分享連結不存在或尚未過期' });
+    }
+
+    res.json({ success: true, message: '過期分享連結已從歷史記錄移除' });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to delete expired share link: ${error.message}`);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || '移除過期分享連結失敗' });
+  }
+});
+
+/**
+ * DELETE /api/files/share/:shareToken/history/revoked
+ * Permanently remove a revoked share link from the current user's history.
+ */
+router.delete('/files/share/:shareToken/history/revoked', authenticate, async (req, res) => {
+  try {
+    const { shareToken } = req.params;
+    const userId = req.user?.id || req.user?.username || 'anonymous';
+
+    const shareLink = await shareManager.getShareLinkInfo(shareToken);
+    if (!shareLink) {
+      return res.status(404).json({ success: false, message: '已撤銷分享連結不存在或仍在啟用中' });
+    }
+    await assertSharePermission(req.user, shareLink.locationId || 'default');
+    const success = await shareManager.deleteRevokedShareLink(shareToken, userId);
+
+    if (!success) {
+      return res.status(404).json({ success: false, message: '已撤銷分享連結不存在或仍在啟用中' });
+    }
+
+    res.json({ success: true, message: '已撤銷分享連結已從歷史記錄移除' });
+  } catch (error) {
+    systemLogger.logSystem('ERROR', `Failed to delete revoked share link: ${error.message}`);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || '移除已撤銷分享連結失敗' });
   }
 });
 
@@ -290,13 +410,15 @@ router.get('/files/share/:shareToken/info', authenticate, async (req, res) => {
       return res.status(404).json({ success: false, message: '分享連結不存在' });
     }
 
+    await assertSharePermission(req.user, shareLink.locationId || 'default');
+
     res.json({
       success: true,
       data: shareLink
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to get share link info: ${error.message}`);
-    res.status(500).json({ success: false, message: '獲取分享連結信息失敗' });
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || '獲取分享連結信息失敗' });
   }
 });
 

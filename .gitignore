@@ -71,6 +71,7 @@ local-notes.md
 # Runtime files
 server.pid
 server.log
+start-wsl-local.ps1
 *.log
 *.log-*
 *.log.*

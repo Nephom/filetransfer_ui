@@ -55,9 +55,14 @@
 .settings-inline-action small { color: #91a9c0; }
 .share-links-modal { width: min(760px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 32px)); overflow: auto; }
 .share-links-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 0; color: #91a9c0; }
+.share-link-groups { display: grid; gap: 18px; }
+.share-link-group { display: grid; gap: 10px; }
+.share-link-group-heading { display: flex; align-items: center; gap: 10px; padding-bottom: 6px; border-bottom: 1px solid #315b7e; }
+.share-link-group-heading h3 { margin: 0; font-size: 14px; text-transform: uppercase; }
+.share-link-group-heading > span { min-width: 22px; padding: 2px 7px; border: 1px solid #315b7e; border-radius: 999px; color: #9be8ff; font-size: 11px; text-align: center; }
 .share-links-list { display: grid; gap: 12px; max-height: 52vh; overflow: auto; }
 .share-link-card { display: grid; gap: 7px; padding: 13px; border: 1px solid rgba(71, 205, 241, .32); border-radius: 7px; background: rgba(7, 25, 42, .74); box-shadow: inset 0 0 24px rgba(71, 205, 241, .04), 0 12px 28px rgba(0, 0, 0, .2); }
-.share-link-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.share-link-card-heading { display: flex; align-items: flex-start; flex-direction: column; gap: 6px; }
 .share-link-card small { color: #91a9c0; overflow-wrap: anywhere; }
 .share-link-card label { margin: 3px 0 0; }
 .share-link-card input { min-width: 0; }

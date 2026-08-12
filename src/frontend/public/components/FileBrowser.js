@@ -130,7 +130,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const [error, setError] = React.useState('');
     const [modal, setModal] = React.useState(null);
     const [context, setContext] = React.useState(null);
-    const [shareLink, setShareLink] = React.useState('');
+    const [createdShareLinks, setCreatedShareLinks] = React.useState(null);
     const [shareLinks, setShareLinks] = React.useState([]);
     const [shareLinksLoading, setShareLinksLoading] = React.useState(false);
     const [locationTrees, setLocationTrees] = React.useState({});
@@ -350,7 +350,8 @@ const FileBrowser = ({ token, user, onLogout }) => {
             const response = await fetch('/api/files/shares', { headers: { Authorization: `Bearer ${token}` } });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data.message || 'Unable to load share links.');
-            setShareLinks(data.data || []);
+            const statusRank = (link) => link.isExpired ? 2 : link.isActive ? 0 : 1;
+            setShareLinks([...(data.data || [])].sort((left, right) => statusRank(left) - statusRank(right)));
         } catch (requestError) {
             setError(requestError.message);
         } finally {
@@ -359,6 +360,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
     };
 
     const openShareLinks = () => {
+        if (!hasCapability('share')) return;
         setModal('shareLinks');
         void loadShareLinks();
     };
@@ -379,11 +381,48 @@ const FileBrowser = ({ token, user, onLogout }) => {
         }
     };
 
+    const deleteExpiredShareLink = async (shareToken) => {
+        try {
+            const response = await fetch(`/api/files/share/${encodeURIComponent(shareToken)}/history`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.message || 'Unable to remove expired share link.');
+            showSuccess('Expired share link removed from history.');
+            await loadShareLinks();
+        } catch (requestError) {
+            setError(requestError.message);
+        }
+    };
+
+    const deleteRevokedShareLink = async (shareToken) => {
+        try {
+            const response = await fetch(`/api/files/share/${encodeURIComponent(shareToken)}/history/revoked`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.message || 'Unable to remove revoked share link.');
+            showSuccess('Revoked share link removed from history.');
+            await loadShareLinks();
+        } catch (requestError) {
+            setError(requestError.message);
+        }
+    };
+
     const shareLinkUrl = (link, kind) => `${window.location.origin}${kind === 'direct' ? link.directDownloadUrl : link.shareUrl}`;
     const copyShareLink = async (link, kind) => {
         await navigator.clipboard.writeText(shareLinkUrl(link, kind));
         showSuccess(`${kind === 'direct' ? 'Direct' : 'Secure'} link copied.`);
     };
+    const shareLinkStatus = (link) => link.isExpired ? 'Expired' : link.isExhausted ? 'Exhausted' : link.isActive ? 'Active' : 'Revoked';
+    const shareLinkGroups = [
+        { key: 'active', label: 'Active', links: shareLinks.filter((link) => shareLinkStatus(link) === 'Active') },
+        { key: 'revoked', label: 'Revoked', links: shareLinks.filter((link) => shareLinkStatus(link) === 'Revoked') },
+        { key: 'expired', label: 'Expired', links: shareLinks.filter((link) => shareLinkStatus(link) === 'Expired') },
+        { key: 'exhausted', label: 'Exhausted', links: shareLinks.filter((link) => shareLinkStatus(link) === 'Exhausted') }
+    ].filter((group) => group.links.length > 0);
 
     const searchFiles = async () => {
         const query = search.trim();
@@ -875,7 +914,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
         event.preventDefault(); const file = selectedItems[0]; if (!file) return;
         try {
             const response = await fetch('/api/files/share', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ locationId, filePath: file.path, expiresIn: Number(event.target.expiresIn.value), maxDownloads: Number(event.target.maxDownloads.value) }) });
-            const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Could not create share link.'); setShareLink(data.data.fullUrl); showSuccess('Share link created.');
+            const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Could not create share link.'); setCreatedShareLinks({ secure: data.data.fullUrl, direct: data.data.directDownloadFullUrl }); showSuccess('Share links created.');
         } catch (requestError) { setError(requestError.message); }
     };
     const savePassword = async (event) => {
@@ -944,7 +983,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
              <button className="primary" disabled={!hasCapability('upload')} onClick={() => inputRef.current.click()}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} />
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
               <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={startDownload}>{downloading ? 'Preparing download...' : 'Download'}</button><button className="optional" onClick={() => setQueueOpen((open) => !open)}>Transfer Queue{queueItems.some((item) => ['queued', 'running', 'retrying'].includes(item.status)) ? ` (${queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length})` : ''}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
-             <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setShareLink(''); setModal('share'); }}>Share</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
+              <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setCreatedShareLinks(null); setModal('share'); }}>Share</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
                <button className="optional" onClick={selectAll}>Select all</button><label className="sort-control">Sort<select value={sortKey} onChange={(event) => setSortKey(event.target.value)} aria-label="Sort files"><option value="name">Name</option><option value="modified">Modified</option><option value="size">Size</option><option value="directory">Directory first</option></select><button type="button" onClick={() => setSortDirection((current) => current === 'asc' ? 'desc' : 'asc')} aria-label={`Sort ${sortDirection === 'asc' ? 'descending' : 'ascending'}`}>{sortDirection === 'asc' ? 'Ascending' : 'Descending'}</button></label><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button className="optional" onClick={openShareLinks}>Share Links</button><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
         </nav>
          <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
@@ -953,12 +992,12 @@ const FileBrowser = ({ token, user, onLogout }) => {
                  <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{sortedFiles.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{sortedFiles.map(renderFileItem)}</tbody></table>}</div>
             </section></main>
         <footer className="statusbar"><span>{files.length} item{files.length === 1 ? '' : 's'}</span><span>{searching ? 'Search results' : currentPath ? `/${currentPath}` : '/'}</span></footer>
-         {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading || !hasCapability('read')} onClick={() => action(startDownload)}>Download</button><button disabled={moving || !hasCapability('move')} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => action(() => { setShareLink(''); setModal('share'); })}>Share</button><hr /><button disabled={!hasCapability('delete')} onClick={() => action(remove)}>Delete</button></div>}
+          {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading || !hasCapability('read')} onClick={() => action(startDownload)}>Download</button><button disabled={moving || !hasCapability('move')} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => action(() => { setCreatedShareLinks(null); setModal('share'); })}>Share</button><hr /><button disabled={!hasCapability('delete')} onClick={() => action(remove)}>Delete</button></div>}
         {modal === 'folder' && <Dialog title="New folder" onClose={() => setModal(null)}><form onSubmit={saveFolder}><p>Create a folder in {currentPath ? `/${currentPath}` : '/'}.</p><label>Folder name<input name="folderName" autoFocus required /></label><DialogActions onClose={() => setModal(null)} label="Create" /></form></Dialog>}
          {modal === 'move' && <Dialog title="Move selected items" onClose={() => setModal(null)}><p>Choose a destination. You cannot move an item into its current folder or one of its own subfolders.</p><div className="move-tree">{locations.map((location) => <section key={location.id}><strong>{location.displayName}</strong>{renderTree(location.id, (node) => moveItems(selectedItems, node.path, location.id))}</section>)}</div><div className="modal-actions"><button type="button" onClick={() => setModal(null)}>Cancel</button></div></Dialog>}
         {modal === 'password' && <Dialog title="Change password" onClose={() => setModal(null)}><form onSubmit={savePassword}><p>Changing your password signs this device out.</p><label>Current password<input name="currentPassword" type="password" autoFocus required /></label><label>New password<input name="newPassword" type="password" minLength="6" required /></label><label>Confirm new password<input name="confirmPassword" type="password" minLength="6" required /></label><DialogActions onClose={() => setModal(null)} label="Change password" /></form></Dialog>}
         {modal === 'rename' && selectedItems[0] && <Dialog title="Rename" onClose={() => setModal(null)}><form onSubmit={saveRename}><p>Rename {selectedItems[0].name}.</p><label>New name<input name="newName" defaultValue={selectedItems[0].name} autoFocus required /></label><DialogActions onClose={() => setModal(null)} label="Rename" /></form></Dialog>}
-        {modal === 'share' && selectedItems[0] && <Dialog title="Share file" onClose={() => setModal(null)}>{shareLink ? <><p>Anyone with this link can download {selectedItems[0].name}.</p><input value={shareLink} readOnly onFocus={(event) => event.target.select()} /><div className="modal-actions"><button onClick={() => navigator.clipboard.writeText(shareLink)}>Copy link</button><button className="confirm" onClick={() => setModal(null)}>Done</button></div></> : <form onSubmit={createShare}><p>Create a download link for {selectedItems[0].name}.</p><label>Expires<select name="expiresIn" defaultValue="86400"><option value="3600">In 1 hour</option><option value="86400">In 1 day</option><option value="604800">In 7 days</option><option value="0">Never</option></select></label><label>Downloads<select name="maxDownloads" defaultValue="0"><option value="0">Unlimited</option><option value="1">1 download</option><option value="10">10 downloads</option><option value="100">100 downloads</option></select></label><DialogActions onClose={() => setModal(null)} label="Create link" /></form>}</Dialog>}
+        {modal === 'share' && selectedItems[0] && <Dialog title="Share file" onClose={() => setModal(null)}>{createdShareLinks ? <><p>Anyone with either link can download {selectedItems[0].name}.</p><label>Secure link<input value={createdShareLinks.secure} readOnly onFocus={(event) => event.target.select()} /></label><label>Direct download link<input value={createdShareLinks.direct} readOnly onFocus={(event) => event.target.select()} /></label><div className="modal-actions"><button type="button" onClick={() => navigator.clipboard.writeText(createdShareLinks.secure)}>Copy secure</button><button type="button" onClick={() => navigator.clipboard.writeText(createdShareLinks.direct)}>Copy direct</button><button className="confirm" onClick={() => setModal(null)}>Done</button></div></> : <form onSubmit={createShare}><p>Create download links for {selectedItems[0].name}.</p><label>Expires<select name="expiresIn" defaultValue="86400"><option value="3600">In 1 hour</option><option value="86400">In 1 day</option><option value="604800">In 7 days</option><option value="0">Never</option></select></label><label>Downloads<select name="maxDownloads" defaultValue="0"><option value="0">Unlimited</option><option value="1">1 download</option><option value="10">10 downloads</option><option value="100">100 downloads</option></select></label><DialogActions onClose={() => setModal(null)} label="Create links" /></form>}</Dialog>}
         {modal === 'downloadMode' && <Dialog title="Choose download mode" onClose={() => setModal(null)}>
             <p>Download {selectedItems.length} selected item{selectedItems.length === 1 ? '' : 's'} as a single archive, or queue every file individually (preserving the original folder structure where your browser supports it).</p>
             <label className="archive-format-option"><input type="radio" name="downloadMode" checked={downloadModeDraft === 'tar.gz'} onChange={() => setDownloadModeDraft('tar.gz')} /><span><strong>tar.gz archive</strong></span></label>
@@ -974,7 +1013,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 <button type="button" onClick={() => setModal(null)}>Cancel</button>
             </div>
         </Dialog>}
-         {modal === 'shareLinks' && <Dialog title="Share Links" onClose={() => setModal(null)}><div className="share-links-dialog"><div className="share-links-toolbar"><p>Links created by {user.username}.</p><button type="button" onClick={loadShareLinks} disabled={shareLinksLoading}>{shareLinksLoading ? 'Refreshing...' : 'Refresh'}</button></div>{shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : <div className="share-links-list">{shareLinks.map((link) => { const secureUrl = shareLinkUrl(link, 'secure'); const directUrl = shareLinkUrl(link, 'direct'); const status = link.isExpired ? 'Expired' : link.isExhausted ? 'Exhausted' : link.isActive ? 'Active' : 'Revoked'; return <article className="share-link-card" key={link.shareToken}><div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div><small>Location: {link.locationId || '--'} · Created: {formatDate(link.createdAt)}</small><small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : ' / unlimited'} · Expires: {link.expiresAt ? formatDate(link.expiresAt) : 'never'}</small><label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.target.select()} /></label><label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.target.select()} /></label><div className="modal-actions"><button type="button" onClick={() => void copyShareLink(link, 'secure')}>Copy secure</button><button type="button" onClick={() => void copyShareLink(link, 'direct')}>Copy direct</button><button type="button" className="danger" onClick={() => void revokeShareLink(link.shareToken)} disabled={!link.isActive}>Revoke</button></div></article>; })}</div>}</div></Dialog>}
+         {modal === 'shareLinks' && <Dialog title="Share Links" onClose={() => setModal(null)}><div className="share-links-dialog"><div className="share-links-toolbar"><p>Links created by {user.username}.</p><button type="button" onClick={loadShareLinks} disabled={shareLinksLoading}>{shareLinksLoading ? 'Refreshing...' : 'Refresh'}</button></div>{shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : <div className="share-link-groups">{shareLinkGroups.map((group) => <section className="share-link-group" key={group.key}><div className="share-link-group-heading"><h3>{group.label}</h3><span>{group.links.length}</span>{group.key === 'revoked' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteRevokedShareLink(link.shareToken)))}>Clear all revoked</button>}{group.key === 'expired' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteExpiredShareLink(link.shareToken)))}>Clear all expired</button>}</div><div className="share-links-list">{group.links.map((link) => { const secureUrl = shareLinkUrl(link, 'secure'); const directUrl = shareLinkUrl(link, 'direct'); const status = shareLinkStatus(link); return <article className="share-link-card" key={link.shareToken}><div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div><small>Location: {link.locationId || '--'} · Created: {formatDate(link.createdAt)}</small><small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : ' / unlimited'} · Expires: {link.expiresAt ? formatDate(link.expiresAt) : 'never'}</small><label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.target.select()} /></label><label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.target.select()} /></label><div className="modal-actions">{status === 'Active' && <><button type="button" onClick={() => void copyShareLink(link, 'secure')}>Copy secure</button><button type="button" onClick={() => void copyShareLink(link, 'direct')}>Copy direct</button><button type="button" className="danger" onClick={() => void revokeShareLink(link.shareToken)}>Revoke</button></>}{status === 'Revoked' && <button type="button" onClick={() => void deleteRevokedShareLink(link.shareToken)}>Clear revoked</button>}{status === 'Expired' && <button type="button" onClick={() => void deleteExpiredShareLink(link.shareToken)}>Clear expired</button>}</div></article>; })}</div></section>)}</div>}</div></Dialog>}
           {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue ({queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length} active)</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No transfers in history.</p> : <><strong>Active</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['queued', 'running', 'retrying', 'needs_user_action'].includes(item.status)).map(renderQueueItem)}</ul>{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <><strong>History</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['completed', 'failed', 'cancelled'].includes(item.status)).map(renderQueueItem)}</ul></>}</>}{queueItems.some((item) => item.status === 'completed') && <button type="button" onClick={() => clearQueueStatus('completed')}>Clear completed</button>}{queueItems.some((item) => item.status === 'failed') && <button type="button" onClick={() => clearQueueStatus('failed')}>Clear failed</button>}{queueItems.some((item) => item.status === 'cancelled') && <button type="button" onClick={() => clearQueueStatus('cancelled')}>Clear cancelled</button>}{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <button type="button" onClick={clearQueueHistory}>Clear history</button>}</div>}
     </div>;
 };

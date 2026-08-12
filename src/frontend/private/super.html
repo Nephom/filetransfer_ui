@@ -222,6 +222,13 @@
             cursor: pointer;
         }
 
+        .checkbox-group:has(input[id^="editPermission"]), .checkbox-group:has(input[id^="newPermission"]) { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); align-items: stretch; gap: 8px; margin: 0; }
+        .checkbox-group:has(input[id^="editPermission"]) label, .checkbox-group:has(input[id^="newPermission"]) label { display: flex; align-items: center; gap: 8px; margin: 0; padding: 9px 10px; border: 1px solid rgba(103, 207, 255, .24); border-radius: 8px; background: rgba(7, 25, 42, .56); color: #b9cee4; cursor: pointer; transition: border-color .2s ease, background .2s ease, box-shadow .2s ease, color .2s ease; }
+        .checkbox-group:has(input[id^="editPermission"]) label:has(input:checked), .checkbox-group:has(input[id^="newPermission"]) label:has(input:checked) { border-color: rgba(71, 217, 244, .8); background: rgba(17, 80, 112, .7); color: #efffff; box-shadow: inset 0 0 16px rgba(71, 217, 244, .1), 0 0 12px rgba(71, 217, 244, .12); }
+        .checkbox-group:has(input[id^="editPermission"]) input[type="checkbox"], .checkbox-group:has(input[id^="newPermission"]) input[type="checkbox"] { appearance: none; width: 16px; height: 16px; flex: 0 0 16px; margin: 0; border: 1px solid #527b9b; border-radius: 4px; background: rgba(3, 15, 28, .7); }
+        .checkbox-group:has(input[id^="editPermission"]) input[type="checkbox"]:checked, .checkbox-group:has(input[id^="newPermission"]) input[type="checkbox"]:checked { border-color: #67e8f9; background: #1ea8c5; box-shadow: 0 0 10px rgba(103, 232, 249, .6); }
+        .checkbox-group:has(input[id^="editPermission"]) label:focus-within, .checkbox-group:has(input[id^="newPermission"]) label:focus-within { outline: 2px solid rgba(103, 232, 249, .8); outline-offset: 2px; }
+
         @media (max-width: 768px) {
             .admin-container {
                 width: 95%;
@@ -443,8 +450,23 @@
                     <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">A per-Location capability matrix. Manage available Permission Roles from the Role Management card.</p>
                 </div>
                 <div class="form-group">
+                    <label>Permissions:</label>
+                    <div class="checkbox-group">
+                        <label><input type="checkbox" id="newPermissionList" checked> List</label>
+                        <label><input type="checkbox" id="newPermissionRead" checked> Read</label>
+                        <label><input type="checkbox" id="newPermissionUpload" checked> Upload</label>
+                        <label><input type="checkbox" id="newPermissionWrite"> Write</label>
+                        <label><input type="checkbox" id="newPermissionDelete" checked> Delete</label>
+                        <label><input type="checkbox" id="newPermissionRename"> Rename</label>
+                        <label><input type="checkbox" id="newPermissionMkdir" checked> Mkdir</label>
+                        <label><input type="checkbox" id="newPermissionCopy"> Copy</label>
+                        <label><input type="checkbox" id="newPermissionMove"> Move</label>
+                        <label><input type="checkbox" id="newPermissionShare" checked> Share</label>
+                    </div>
+                </div>
+                <div class="form-group">
                     <p style="font-size: 0.9rem; opacity: 0.7; margin: 0;">
-                        ℹ️ New users get standard permissions (read, upload, delete) unless a Permission Role is assigned.
+                        ℹ️ New users get standard permissions (read, upload, delete, share) unless a Permission Role is assigned.
                         New users are always created with the standard "User" system role.
                     </p>
                 </div>
@@ -485,9 +507,16 @@
             <div class="form-group">
                 <label>Permissions:</label>
                 <div class="checkbox-group">
+                    <label><input type="checkbox" id="editPermissionList"> List</label>
                     <label><input type="checkbox" id="editPermissionRead"> Read</label>
                     <label><input type="checkbox" id="editPermissionUpload"> Upload</label>
+                    <label><input type="checkbox" id="editPermissionWrite"> Write</label>
                     <label><input type="checkbox" id="editPermissionDelete"> Delete</label>
+                    <label><input type="checkbox" id="editPermissionRename"> Rename</label>
+                    <label><input type="checkbox" id="editPermissionMkdir"> Mkdir</label>
+                    <label><input type="checkbox" id="editPermissionCopy"> Copy</label>
+                    <label><input type="checkbox" id="editPermissionMove"> Move</label>
+                    <label><input type="checkbox" id="editPermissionShare"> Share</label>
                 </div>
                 <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Used only while no Permission Role is assigned below.</p>
             </div>
@@ -849,6 +878,7 @@
             const email = document.getElementById('newEmail').value.trim();
             const password = document.getElementById('newPassword').value;
             const roleId = document.getElementById('newUserRole').value || undefined;
+            const permissions = ['list', 'read', 'upload', 'write', 'delete', 'rename', 'mkdir', 'copy', 'move', 'share'].filter(permission => document.getElementById(`newPermission${permission.charAt(0).toUpperCase() + permission.slice(1)}`).checked);
 
             if (!username || !password) {
                 alert('Username and password are required');
@@ -879,6 +909,7 @@
                         username,
                         email,
                         password,
+                        permissions,
                         roleId
                     })
                 });
@@ -944,9 +975,9 @@
                 document.getElementById('editEmail').value = editingUser.email || '';
                 document.getElementById('editActive').checked = editingUser.active !== false;
                 const permissions = editingUser.permissions || [];
-                document.getElementById('editPermissionRead').checked = permissions.includes('read');
-                document.getElementById('editPermissionUpload').checked = permissions.includes('upload');
-                document.getElementById('editPermissionDelete').checked = permissions.includes('delete');
+                ['list', 'read', 'upload', 'write', 'delete', 'rename', 'mkdir', 'copy', 'move', 'share'].forEach(permission => {
+                    document.getElementById(`editPermission${permission.charAt(0).toUpperCase() + permission.slice(1)}`).checked = permissions.includes(permission);
+                });
                 document.getElementById('editPassword').value = '';
                 if (!rolesCache.length) await loadRoles({ silent: true });
                 document.getElementById('editUserRole').value = editingUser.roleId || '';
@@ -963,7 +994,7 @@
 
         async function saveEditedUser() {
             if (!editingUser) return;
-            const permissions = ['read', 'upload', 'delete'].filter(permission => document.getElementById(`editPermission${permission.charAt(0).toUpperCase() + permission.slice(1)}`).checked);
+            const permissions = ['list', 'read', 'upload', 'write', 'delete', 'rename', 'mkdir', 'copy', 'move', 'share'].filter(permission => document.getElementById(`editPermission${permission.charAt(0).toUpperCase() + permission.slice(1)}`).checked);
             const updates = {
                 email: document.getElementById('editEmail').value.trim(),
                 active: document.getElementById('editActive').checked,

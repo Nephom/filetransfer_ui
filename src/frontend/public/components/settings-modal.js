@@ -1,3 +1,5 @@
+const USER_PERMISSION_OPTIONS = ['list', 'read', 'upload', 'write', 'delete', 'rename', 'mkdir', 'copy', 'move', 'share'];
+
 // Settings Modal Component
 const SettingsModal = ({ onClose, token }) => {
     const [settings, setSettings] = useState({});
@@ -621,7 +623,7 @@ const SettingsModal = ({ onClose, token }) => {
 
 // Create User Modal Component
 const CreateUserModal = ({ onClose, onSubmit, loading, roles = [] }) => {
-    const [formData, setFormData] = useState({ username: '', password: '', email: '', role: 'user', permissions: [], roleId: '' });
+    const [formData, setFormData] = useState({ username: '', password: '', email: '', role: 'user', permissions: ['read', 'upload', 'share'], roleId: '' });
     const handleSubmit = (e) => { e.preventDefault(); const payload = { ...formData }; if (!payload.roleId) delete payload.roleId; onSubmit(payload); };
     return (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}>
@@ -654,6 +656,17 @@ const CreateUserModal = ({ onClose, onSubmit, loading, roles = [] }) => {
                         </select>
                         <p style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: '11px', margin: '4px 0 0' }}>Manage the available Roles and their per-Location permission matrix from the Admin Console.</p>
                     </div>
+                    <div style={{ marginBottom: '20px' }}>
+                        <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Permissions:</label>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+                            {USER_PERMISSION_OPTIONS.map(permission => (
+                                <label key={permission} style={{ color: 'rgba(255, 255, 255, 0.85)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
+                                    <input type="checkbox" checked={formData.permissions.includes(permission)} onChange={(e) => setFormData(prev => ({ ...prev, permissions: e.target.checked ? [...prev.permissions, permission] : prev.permissions.filter(item => item !== permission) }))} />
+                                    {permission}
+                                </label>
+                            ))}
+                        </div>
+                    </div>
                     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
                         <button type="button" onClick={onClose} style={{ background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 16px', cursor: 'pointer' }}>Cancel</button>
                         <button type="submit" disabled={loading} style={{ background: 'linear-gradient(135deg, #34d399, #10b981)', border: 'none', borderRadius: '6px', color: 'white', padding: '8px 16px', cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.7 : 1 }}>{loading ? 'Creating...' : 'Create User'}</button>
@@ -666,7 +679,7 @@ const CreateUserModal = ({ onClose, onSubmit, loading, roles = [] }) => {
 
 // Edit User Modal Component
 const EditUserModal = ({ user, onClose, onSubmit, loading, roles = [] }) => {
-    const [formData, setFormData] = useState({ role: 'user', active: user.active, email: user.email || '', permissions: user.permissions || ['read', 'upload', 'delete'], roleId: user.roleId || '', newPassword: '' });
+    const [formData, setFormData] = useState({ role: 'user', active: user.active, email: user.email || '', permissions: user.permissions || ['read', 'upload', 'share'], roleId: user.roleId || '', newPassword: '' });
     const handleSubmit = (e) => {
         e.preventDefault();
         const updates = { ...formData };
@@ -695,7 +708,7 @@ const EditUserModal = ({ user, onClose, onSubmit, loading, roles = [] }) => {
                     <div style={{ marginBottom: '16px' }}>
                         <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Permissions:</label>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
-                            {['read', 'upload', 'delete'].map(permission => (
+                            {USER_PERMISSION_OPTIONS.map(permission => (
                                 <label key={permission} style={{ color: 'rgba(255, 255, 255, 0.85)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
                                     <input type="checkbox" checked={formData.permissions.includes(permission)} onChange={(e) => setFormData(prev => ({ ...prev, permissions: e.target.checked ? [...prev.permissions, permission] : prev.permissions.filter(item => item !== permission) }))} />
                                     {permission}

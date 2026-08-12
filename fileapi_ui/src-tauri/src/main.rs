@@ -1729,6 +1729,36 @@ fn validate_local_user_path(path: &str) -> Result<std::path::PathBuf, String> {
     resolve_local_transfer_path(path)
 }
 
+fn decode_text_file(bytes: &[u8]) -> Result<String, String> {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        if bytes[2..].len() % 2 != 0 {
+            return Err("Text file has an incomplete UTF-16 code unit".to_string());
+        }
+        return String::from_utf16(&units)
+            .map_err(|_| "Text file contains invalid UTF-16".to_string());
+    }
+
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
+            .collect();
+        if bytes[2..].len() % 2 != 0 {
+            return Err("Text file has an incomplete UTF-16 code unit".to_string());
+        }
+        return String::from_utf16(&units)
+            .map_err(|_| "Text file contains invalid UTF-16".to_string());
+    }
+
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| "Only UTF-8 and UTF-16 text files can be viewed".to_string())
+}
+
 #[tauri::command]
 fn read_local_file(path: String) -> Result<String, String> {
     let path = validate_local_user_path(&path)?;
@@ -1739,7 +1769,43 @@ fn read_local_file(path: String) -> Result<String, String> {
     if metadata.len() > 8 * 1024 * 1024 {
         return Err("Files larger than 8 MB cannot be opened in the viewer".to_string());
     }
-    std::fs::read_to_string(path).map_err(|error| error.to_string())
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    decode_text_file(&bytes)
+}
+
+#[tauri::command]
+fn open_local_file(path: String) -> Result<(), String> {
+    let path = validate_local_user_path(&path)?;
+    let metadata = std::fs::metadata(&path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Only regular files can be opened".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let path = path.to_string_lossy();
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &format!("\"{path}\"")])
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Unable to open file: {error}"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Unable to open file: {error}"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Unable to open file: {error}"))
+    }
 }
 
 #[tauri::command]
@@ -1884,7 +1950,35 @@ fn set_operation_log_config(enabled: bool, level: String) {
 
 #[cfg(test)]
 mod phase1_filename_tests {
-    use super::{dedupe_candidate_name, sanitize_archive_name};
+    use super::{decode_text_file, dedupe_candidate_name, sanitize_archive_name};
+
+    #[test]
+    fn decodes_utf8_and_utf8_bom() {
+        assert_eq!(decode_text_file("hello".as_bytes()).unwrap(), "hello");
+        assert_eq!(
+            decode_text_file(&[0xEF, 0xBB, 0xBF, b'h', b'i']).unwrap(),
+            "hi"
+        );
+    }
+
+    #[test]
+    fn decodes_utf16_little_and_big_endian_bom() {
+        assert_eq!(
+            decode_text_file(&[0xFF, 0xFE, b'h', 0, b'i', 0]).unwrap(),
+            "hi"
+        );
+        assert_eq!(
+            decode_text_file(&[0xFE, 0xFF, 0, b'h', 0, b'i']).unwrap(),
+            "hi"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_text_encoding() {
+        assert!(decode_text_file(&[0xFF, 0xFE, b'h']).is_err());
+        assert!(decode_text_file(&[0xFF, 0xFE, 0, 0xD8]).is_err());
+        assert!(decode_text_file(&[0xFF, 0x00, 0xFE]).is_err());
+    }
 
     #[test]
     fn dedupe_preserves_compound_archive_extensions() {
@@ -1921,6 +2015,7 @@ fn main() {
             inspect_upload_paths,
             hash_upload_paths,
             api_upload_paths,
+            open_local_file,
             cancel_transfer,
             download_to_disk,
             download_to_disk_at,

@@ -69,6 +69,8 @@ type ShareResponse = {
 };
 type ShareLink = {
   shareToken: string;
+  userId?: number | string;
+  creatorUsername?: string;
   fileName: string;
   locationId?: string;
   createdAt?: number;
@@ -3868,8 +3870,13 @@ function App() {
     enqueueDownload("tar.gz");
   };
 
-  const openLocalViewer = (filePath: string) =>
+  const openLocalFile = (filePath: string) =>
     void run(async () => {
+      if (filePath.toLowerCase().endsWith(".pdf")) {
+        await invoke("open_local_file", { path: filePath });
+        notify("Opened the PDF in the default application.");
+        return;
+      }
       const content = await invoke<string>("read_local_file", { path: filePath });
       setViewerTitle(filePath.split(/[\\/]/).pop() || filePath);
       setViewerContent(content);
@@ -3877,6 +3884,8 @@ function App() {
       setViewerRemotePath("");
       setViewerOpen(true);
     });
+
+  const openLocalViewer = (filePath: string) => openLocalFile(filePath);
 
   const openRemoteViewer = (file: FileItem) =>
     void run(async () => {
@@ -4487,7 +4496,7 @@ function App() {
     if (!session.token || session.onlyTerminalMode) return;
     setShareLinksLoading(true);
     try {
-      const response = await api("/api/files/shares");
+      const response = await api(session.role === "admin" ? "/api/admin/share-links" : "/api/files/shares");
       if (!response.ok) throw new Error(await readError(response));
       const data = (await response.json()) as { data?: ShareLink[] };
       setShareLinks(data.data || []);
@@ -4516,11 +4525,36 @@ function App() {
   const revokeManagedShareLink = (shareToken: string) =>
     run(async () => {
       if (!window.confirm("Revoke this share link? Existing downloads will stop working.")) return;
-      const response = await api(`/api/files/share/${encodeURIComponent(shareToken)}`, { method: "DELETE" });
+      const response = await api(`${session.role === "admin" ? "/api/admin/share-links" : "/api/files/share"}/${encodeURIComponent(shareToken)}`, { method: "DELETE" });
       if (!response.ok) throw new Error(await readError(response));
       await loadShareLinks();
       notify("Share link revoked.");
     });
+
+  const deleteExpiredShareLink = (shareToken: string) =>
+    run(async () => {
+      const response = await api(`${session.role === "admin" ? "/api/admin/share-links" : "/api/files/share"}/${encodeURIComponent(shareToken)}/history`, { method: "DELETE" });
+      if (!response.ok) throw new Error(await readError(response));
+      await loadShareLinks();
+      notify("Expired share link removed from history.");
+    });
+
+  const deleteRevokedShareLink = (shareToken: string) =>
+    run(async () => {
+      const response = await api(`${session.role === "admin" ? "/api/admin/share-links" : "/api/files/share"}/${encodeURIComponent(shareToken)}/history/revoked`, { method: "DELETE" });
+      if (!response.ok) throw new Error(await readError(response));
+      await loadShareLinks();
+      notify("Revoked share link removed from history.");
+    });
+
+  const shareLinkStatus = (link: ShareLink) =>
+    link.isExpired ? "Expired" : link.isExhausted ? "Exhausted" : link.isActive ? "Active" : "Revoked";
+  const shareLinkGroups = [
+    { key: "active", label: "Active", links: shareLinks.filter((link) => shareLinkStatus(link) === "Active") },
+    { key: "revoked", label: "Revoked", links: shareLinks.filter((link) => shareLinkStatus(link) === "Revoked") },
+    { key: "expired", label: "Expired", links: shareLinks.filter((link) => shareLinkStatus(link) === "Expired") },
+    { key: "exhausted", label: "Exhausted", links: shareLinks.filter((link) => shareLinkStatus(link) === "Exhausted") },
+  ].filter((group) => group.links.length > 0);
 
   const share = () => {
     if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
@@ -5150,29 +5184,6 @@ function App() {
             <span className="status-glyph" aria-hidden="true">◆</span> Only Terminal
           </button>
         )}
-      {sharePasswordOpen && (
-        <div className="modal-cover" onMouseDown={() => setSharePasswordOpen(false)}>
-          <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
-            <h2>Secure share link</h2>
-            <p className="muted">Optional: protect the link with a password. Leave blank to share without one.</p>
-            <label>
-              Password (optional)
-              <input
-                type="password"
-                autoFocus
-                value={sharePasswordDraft}
-                onChange={(event) => setSharePasswordDraft(event.target.value)}
-              />
-            </label>
-            <div className="modal-actions">
-              <button type="button" className="confirm" onClick={() => void createShareLink(sharePasswordDraft.trim() || undefined)}>
-                Create link
-              </button>
-              <button type="button" onClick={() => setSharePasswordOpen(false)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
     </main>
 
     );
@@ -6104,9 +6115,32 @@ function App() {
                 </button>
               </div>
             </form>
+           </div>
           </div>
-         </div>
-       )}
+        )}
+        {sharePasswordOpen && (
+          <div className="modal-cover modal-layer-top" onMouseDown={() => setSharePasswordOpen(false)}>
+            <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
+              <h2>Secure share link</h2>
+              <p className="muted">Optional: protect the link with a password. Leave blank to share without one.</p>
+              <label>
+                Password (optional)
+                <input
+                  type="password"
+                  autoFocus
+                  value={sharePasswordDraft}
+                  onChange={(event) => setSharePasswordDraft(event.target.value)}
+                />
+              </label>
+              <div className="modal-actions">
+                <button type="button" className="confirm" onClick={() => void createShareLink(sharePasswordDraft.trim() || undefined)}>
+                  Create link
+                </button>
+                <button type="button" onClick={() => setSharePasswordOpen(false)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
        {saveLogNameOpen && (
          <div className="modal-cover" onMouseDown={() => setSaveLogNameOpen(false)}>
            <div className="modal log-name-modal" onMouseDown={(event) => event.stopPropagation()}>
@@ -6244,23 +6278,33 @@ function App() {
              <div className="modal share-links-modal" style={modalStyle("share-links")} onMouseDown={(event) => event.stopPropagation()}>
                <div className="modal-heading-row modal-drag-handle" onMouseDown={beginModalDrag("share-links")}><div><h2>Share Links</h2><p>Links created by this desktop client.</p></div><button type="button" onClick={() => setShareLinksOpen(false)} aria-label="Close Share Links">×</button></div>
               <div className="share-links-toolbar"><span>{shareLinks.length} link{shareLinks.length === 1 ? "" : "s"}</span><button type="button" onClick={() => void loadShareLinks()} disabled={shareLinksLoading}>{shareLinksLoading ? "Refreshing..." : "Refresh"}</button></div>
-              {shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : (
-                <div className="share-links-list">
-                  {shareLinks.map((link) => {
-                    const secureUrl = shareLinkUrl(link, "secure");
-                    const directUrl = shareLinkUrl(link, "direct");
-                    const status = link.isExpired ? "Expired" : link.isExhausted ? "Exhausted" : link.isActive ? "Active" : "Revoked";
-                    return <article className="share-link-card" key={link.shareToken}>
-                      <div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div>
-                      <small>Location: {link.locationId || "--"} · Created: {link.createdAt ? new Date(link.createdAt).toLocaleString() : "--"}</small>
-                      <small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : " / unlimited"} · Expires: {link.expiresAt ? new Date(link.expiresAt).toLocaleString() : "never"}</small>
-                      <label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.currentTarget.select()} /></label>
-                      <label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.currentTarget.select()} /></label>
-                      <div className="modal-actions"><button type="button" onClick={() => void copyManagedShareLink(link, "secure")} disabled={!secureUrl}>Copy secure</button><button type="button" onClick={() => void copyManagedShareLink(link, "direct")} disabled={!directUrl}>Copy direct</button><button type="button" className="danger" onClick={() => revokeManagedShareLink(link.shareToken)} disabled={!link.isActive}>Revoke</button></div>
-                    </article>;
-                  })}
-                </div>
-              )}
+               {shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : (
+                 <div className="share-link-groups">
+                   {shareLinkGroups.map((group) => (
+                     <section className="share-link-group" key={group.key}>
+                       <div className="share-link-group-heading"><h3>{group.label}</h3><span>{group.links.length}</span></div>
+                       <div className="share-links-list">
+                         {group.links.map((link) => {
+                           const secureUrl = shareLinkUrl(link, "secure");
+                           const directUrl = shareLinkUrl(link, "direct");
+                           const status = shareLinkStatus(link);
+                           return <article className="share-link-card" key={link.shareToken}>
+                             <div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div>
+                             {session.role === "admin" && <small>Created by: {link.creatorUsername || link.userId || "--"}</small>}
+                             <small>Location: {link.locationId || "--"} · Created: {link.createdAt ? new Date(link.createdAt).toLocaleString() : "--"}</small>
+                             <small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : " / unlimited"} · Expires: {link.expiresAt ? new Date(link.expiresAt).toLocaleString() : "never"}</small>
+                             <label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.currentTarget.select()} /></label>
+                             <label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.currentTarget.select()} /></label>
+                             {status === "Active" && <div className="modal-actions"><button type="button" onClick={() => void copyManagedShareLink(link, "secure")} disabled={!secureUrl}>Copy secure</button><button type="button" onClick={() => void copyManagedShareLink(link, "direct")} disabled={!directUrl}>Copy direct</button><button type="button" className="danger" onClick={() => revokeManagedShareLink(link.shareToken)}>Revoke</button></div>}
+                             {status === "Revoked" && <div className="modal-actions"><button type="button" onClick={() => deleteRevokedShareLink(link.shareToken)}>Clear revoked</button></div>}
+                             {status === "Expired" && <div className="modal-actions"><button type="button" onClick={() => deleteExpiredShareLink(link.shareToken)}>Clear expired</button></div>}
+                           </article>;
+                         })}
+                       </div>
+                     </section>
+                   ))}
+                 </div>
+               )}
               <div className="modal-actions modal-actions-end"><button type="button" className="confirm" onClick={() => setShareLinksOpen(false)}>Close</button></div>
             </div>
           </div>

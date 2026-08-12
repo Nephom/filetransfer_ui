@@ -114,7 +114,7 @@ class UserManager {
   /**
    * Create a new user
    */
-  async createUser({ username, password, email, role = 'user', permissions = [], locationPermissions, roleId }) {
+  async createUser({ username, password, email, role = 'user', permissions, locationPermissions, roleId }) {
     if (!this.initialized) {
       throw new Error('User manager not initialized');
     }
@@ -154,8 +154,10 @@ class UserManager {
       throw new Error(`Invalid role '${role}'. Must be one of: ${ASSIGNABLE_SYSTEM_ROLES.join(', ')}`);
     }
 
-    if (permissions.length === 0) {
-      permissions = ['read', 'upload', 'delete', 'mkdir'];
+    // An omitted permission list gets the historical default. An explicitly
+    // empty list means the administrator intentionally granted no capabilities.
+    if (permissions === undefined) {
+      permissions = ['read', 'upload', 'delete', 'mkdir', 'share'];
     }
 
     const newUser = {

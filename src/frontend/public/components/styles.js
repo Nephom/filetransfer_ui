@@ -41,15 +41,22 @@ const GlobalStyles = () => {
                 .share-links-dialog { display: grid; gap: 14px; max-height: 62vh; overflow: auto; }
                 .share-links-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
                 .share-links-toolbar p { margin: 0; color: rgba(255, 255, 255, 0.75); }
+                .share-link-groups { display: grid; gap: 18px; }
+                .share-link-group { display: grid; gap: 10px; }
+                .share-link-group-heading { display: flex; align-items: center; gap: 10px; padding-bottom: 6px; border-bottom: 1px solid rgba(103, 207, 255, 0.2); }
+                .share-link-group-heading h3 { margin: 0; color: rgba(255, 255, 255, 0.9); font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; }
+                .share-link-group-heading > span { min-width: 22px; padding: 2px 7px; border: 1px solid rgba(103, 207, 255, 0.3); border-radius: 999px; color: #9eeaff; font-size: 11px; text-align: center; }
+                .share-link-group-heading button { margin-left: auto; }
                 .share-links-list { display: grid; gap: 12px; }
                 .share-link-card { display: grid; gap: 7px; padding: 14px; border: 1px solid rgba(103, 207, 255, 0.3); border-radius: 12px; background: rgba(4, 22, 42, 0.62); box-shadow: inset 0 0 24px rgba(45, 177, 255, 0.05), 0 10px 25px rgba(0, 0, 0, 0.18); }
-                .share-link-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+                .share-link-card-heading { display: flex; align-items: flex-start; flex-direction: column; gap: 6px; }
+                .share-link-card-heading strong { min-width: 0; overflow-wrap: anywhere; }
                 .share-link-card small { color: rgba(255, 255, 255, 0.62); overflow-wrap: anywhere; }
                 .share-link-card label { margin: 4px 0 0; color: rgba(255, 255, 255, 0.78); }
                 .share-link-card input { min-width: 0; color: #e8f7ff; background: rgba(0, 10, 24, 0.58); }
-                .share-link-status { padding: 3px 8px; border: 1px solid rgba(103, 207, 255, 0.3); border-radius: 999px; color: #9eeaff; font-size: 11px; }
+                .share-link-status { flex: 0 0 auto; padding: 3px 8px; border: 1px solid rgba(103, 207, 255, 0.3); border-radius: 999px; color: #9eeaff; font-size: 11px; white-space: nowrap; }
                 .share-link-status.expired, .share-link-status.exhausted, .share-link-status.revoked { color: #ffb7af; border-color: rgba(255, 111, 111, 0.45); }
-                @media (max-width: 600px) { .share-links-toolbar, .share-link-card-heading { align-items: flex-start; flex-direction: column; } }
+                @media (max-width: 600px) { .share-links-toolbar, .share-link-card-heading { align-items: flex-start; flex-direction: column; } .share-link-group-heading { flex-wrap: wrap; } .share-link-group-heading button { margin-left: 0; } }
                 
                 /* Selection styles */
                 ::selection {

@@ -173,6 +173,69 @@ class ShareManager {
   }
 
   /**
+   * Permanently remove an expired share link from the owner's history.
+   * Active links must be revoked first and cannot be deleted through this method.
+   */
+  async deleteExpiredShareLink(shareToken, userId) {
+    try {
+      const result = await db.run(
+        'DELETE FROM share_links WHERE shareToken = ? AND userId = ? AND expiresAt IS NOT NULL AND expiresAt < ?',
+        [shareToken, userId, Date.now()]
+      );
+
+      if (result.changes === 0) {
+        return false;
+      }
+
+      systemLogger.logSystem('INFO', `Expired share link deleted: ${shareToken} by user ${userId}`);
+      return true;
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Failed to delete expired share link: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Permanently remove a revoked share link from the owner's history.
+   */
+  async deleteRevokedShareLink(shareToken, userId) {
+    try {
+      const result = await db.run(
+        'DELETE FROM share_links WHERE shareToken = ? AND userId = ? AND isActive = 0',
+        [shareToken, userId]
+      );
+
+      if (result.changes === 0) {
+        return false;
+      }
+
+      systemLogger.logSystem('INFO', `Revoked share link deleted: ${shareToken} by user ${userId}`);
+      return true;
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Failed to delete revoked share link: ${error.message}`);
+      throw error;
+    }
+  }
+
+  async revokeShareLinkAsAdmin(shareToken) {
+    const result = await db.run('UPDATE share_links SET isActive = 0 WHERE shareToken = ?', [shareToken]);
+    return result.changes > 0;
+  }
+
+  async deleteExpiredShareLinkAsAdmin(shareToken) {
+    const result = await db.run(
+      'DELETE FROM share_links WHERE shareToken = ? AND expiresAt IS NOT NULL AND expiresAt < ?',
+      [shareToken, Date.now()]
+    );
+    return result.changes > 0;
+  }
+
+  async deleteRevokedShareLinkAsAdmin(shareToken) {
+    const result = await db.run('DELETE FROM share_links WHERE shareToken = ? AND isActive = 0', [shareToken]);
+    return result.changes > 0;
+  }
+
+  /**
    * Get all share links for a user
    * @param {string} userId - User ID
    * @returns {Promise<Array>} Array of share link objects
@@ -194,6 +257,29 @@ class ShareManager {
       }));
     } catch (error) {
       systemLogger.logSystem('ERROR', `Failed to get user share links: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get every share link for admin management, including its owner id.
+   */
+  async getAllShareLinks() {
+    try {
+      const shareLinks = await db.all(
+        'SELECT id, shareToken, userId, locationId, filePath, fileName, createdAt, expiresAt, maxDownloads, downloadCount, isActive, lastDownloadAt FROM share_links ORDER BY createdAt DESC'
+      );
+
+      return shareLinks.map(link => ({
+        ...link,
+        shareUrl: `/share.html?token=${link.shareToken}`,
+        directDownloadUrl: `/api/share/${link.shareToken}/download`,
+        remainingDownloads: link.maxDownloads > 0 ? Math.max(0, link.maxDownloads - link.downloadCount) : null,
+        isExpired: link.expiresAt && Date.now() > link.expiresAt,
+        isExhausted: link.maxDownloads > 0 && link.downloadCount >= link.maxDownloads
+      }));
+    } catch (error) {
+      systemLogger.logSystem('ERROR', `Failed to get all share links: ${error.message}`);
       throw error;
     }
   }
