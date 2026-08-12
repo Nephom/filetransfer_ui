@@ -19,6 +19,17 @@ const { systemLogger } = require('../utils/logger');
 // and the /api/admin/users routes in server.js for the enforcement.
 const ASSIGNABLE_SYSTEM_ROLES = ['user', 'superuser'];
 
+const normalizeStoredPermissions = (permissions) => {
+  if (!Array.isArray(permissions)) return permissions;
+  const normalized = [...new Set(permissions)];
+  if (normalized.includes('copy') || normalized.includes('move')) {
+    for (const capability of ['read', 'write', 'delete']) {
+      if (!normalized.includes(capability)) normalized.push(capability);
+    }
+  }
+  return normalized;
+};
+
 class UserManager {
   constructor() {
     this.usersFilePath = process.env.USERS_FILE_PATH || path.join(__dirname, '../../users.json');
@@ -159,6 +170,7 @@ class UserManager {
     if (permissions === undefined) {
       permissions = ['list', 'read', 'upload', 'write', 'delete', 'mkdir', 'share'];
     }
+    permissions = normalizeStoredPermissions(permissions);
 
     const newUser = {
       id,
@@ -216,6 +228,10 @@ class UserManager {
         throw new Error('Password must be at least 6 characters long');
       }
       updates.password = await bcrypt.hash(updates.password, this.saltRounds);
+    }
+
+    if (updates.permissions !== undefined) {
+      updates.permissions = normalizeStoredPermissions(updates.permissions);
     }
 
     // Update user

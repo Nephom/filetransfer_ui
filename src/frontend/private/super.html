@@ -743,6 +743,28 @@
             document.getElementById('addUserForm').style.display = 'block';
         }
 
+        function syncPermissionDependencies(prefix, changedCapability = '') {
+            const get = (capability) => document.getElementById(`${prefix}${capability.charAt(0).toUpperCase() + capability.slice(1)}`);
+            const dependencyCapabilities = ['read', 'write', 'delete'];
+            const copy = get('copy');
+            const move = get('move');
+            if (changedCapability && dependencyCapabilities.includes(changedCapability) && !get(changedCapability).checked) {
+                copy.checked = false;
+                move.checked = false;
+            }
+            if (copy.checked || move.checked) {
+                dependencyCapabilities.forEach((capability) => { get(capability).checked = true; });
+            }
+        }
+
+        function bindPermissionDependencies(prefix) {
+            ['read', 'write', 'delete', 'copy', 'move'].forEach((capability) => {
+                const input = document.getElementById(`${prefix}${capability.charAt(0).toUpperCase() + capability.slice(1)}`);
+                input.addEventListener('change', () => syncPermissionDependencies(prefix, capability));
+            });
+            syncPermissionDependencies(prefix);
+        }
+
         function hideAddUserForm() {
             document.getElementById('addUserForm').style.display = 'none';
             document.getElementById('newUsername').value = '';
@@ -978,6 +1000,7 @@
                 ['list', 'read', 'upload', 'write', 'delete', 'rename', 'mkdir', 'copy', 'move', 'share'].forEach(permission => {
                     document.getElementById(`editPermission${permission.charAt(0).toUpperCase() + permission.slice(1)}`).checked = permissions.includes(permission);
                 });
+                syncPermissionDependencies('editPermission');
                 document.getElementById('editPassword').value = '';
                 if (!rolesCache.length) await loadRoles({ silent: true });
                 document.getElementById('editUserRole').value = editingUser.roleId || '';
@@ -994,6 +1017,7 @@
 
         async function saveEditedUser() {
             if (!editingUser) return;
+            syncPermissionDependencies('editPermission');
             const permissions = ['list', 'read', 'upload', 'write', 'delete', 'rename', 'mkdir', 'copy', 'move', 'share'].filter(permission => document.getElementById(`editPermission${permission.charAt(0).toUpperCase() + permission.slice(1)}`).checked);
             const updates = {
                 email: document.getElementById('editEmail').value.trim(),
@@ -1360,6 +1384,8 @@
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', async () => {
+            bindPermissionDependencies('newPermission');
+            bindPermissionDependencies('editPermission');
             if (!(await checkAuth())) return;
             fetchStats();
         });
