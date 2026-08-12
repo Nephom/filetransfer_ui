@@ -35,6 +35,8 @@ test-results/
 test-results/**
 test-output/
 test-output/**
+build-assets/
+build-assets/**
 
 # Issue Files
 issue*
@@ -107,8 +109,6 @@ src/config.ini
 .opencode/
 .opencode/skills/project-testing/
 test/
-!test/
-!test/*.test.js
 
 # OS generated files
 Thumbs.db
