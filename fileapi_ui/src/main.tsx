@@ -389,6 +389,7 @@ function PaletteSelect({
 }) {
   const [open, setOpen] = useState(false);
   const controlRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const selected = options.find((option) => option.value === value);
 
   useEffect(() => {
@@ -397,8 +398,15 @@ function PaletteSelect({
       if (!controlRef.current?.contains(event.target as Node)) setOpen(false);
     };
     window.addEventListener("click", close);
+    const firstOption = menuRef.current?.querySelector<HTMLButtonElement>("[role=option]");
+    firstOption?.focus();
     return () => window.removeEventListener("click", close);
   }, [open]);
+
+  const closeMenu = () => {
+    setOpen(false);
+    controlRef.current?.querySelector<HTMLButtonElement>(".palette-select")?.focus();
+  };
 
   return (
     <div ref={controlRef} className="palette-select-control">
@@ -407,13 +415,44 @@ function PaletteSelect({
         className="location-select palette-select"
         aria-label={label}
         aria-expanded={open}
+        aria-haspopup="listbox"
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
         onClick={() => setOpen((current) => !current)}
       >
         <span>{selected?.label || label}</span>
         <span className="location-chevron">⌄</span>
       </button>
       {open && (
-        <div className={`location-menu palette-select-menu ${menuPlacement === "up" ? "menu-up" : ""}`} role="listbox" aria-label={label}>
+        <div
+          ref={menuRef}
+          className={`location-menu palette-select-menu ${menuPlacement === "up" ? "menu-up" : ""}`}
+          role="listbox"
+          aria-label={label}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              closeMenu();
+              return;
+            }
+            const options = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role=option]") || []);
+            const currentIndex = options.indexOf(document.activeElement as HTMLButtonElement);
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              const nextIndex = event.key === "ArrowDown"
+                ? Math.min(currentIndex + 1, options.length - 1)
+                : Math.max(currentIndex - 1, 0);
+              options[nextIndex]?.focus();
+            } else if (event.key === "Home" || event.key === "End") {
+              event.preventDefault();
+              options[event.key === "Home" ? 0 : options.length - 1]?.focus();
+            }
+          }}
+        >
           {options.map((option) => (
             <button
               type="button"
@@ -423,7 +462,7 @@ function PaletteSelect({
               key={option.value}
               onClick={() => {
                 onChange(option.value);
-                setOpen(false);
+                closeMenu();
               }}
             >
               {option.label}
@@ -913,6 +952,7 @@ function App() {
   } | null>(null);
   const accountControl = useRef<HTMLDivElement>(null);
   const locationControl = useRef<HTMLDivElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const folderTreeRef = useRef<HTMLDivElement>(null);
   const localFolderTreeRef = useRef<HTMLDivElement>(null);
   const fileAreaRef = useRef<HTMLDivElement>(null);
@@ -1425,6 +1465,12 @@ function App() {
     window.addEventListener("click", closeAccountMenu);
     return () => window.removeEventListener("click", closeAccountMenu);
   }, []);
+
+  useEffect(() => {
+    if (accountOpen) accountControl.current?.querySelector<HTMLButtonElement>(".account-menu button:not(:disabled)")?.focus();
+    if (locationMenuOpen) locationControl.current?.querySelector<HTMLButtonElement>(".location-menu button[aria-selected=\"true\"], .location-menu button:not(:disabled)")?.focus();
+    if (contextMenu) contextMenuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, [accountOpen, contextMenu, locationMenuOpen]);
 
   const api = async (endpoint: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -5100,12 +5146,14 @@ function App() {
     );
 
   const autoDensity = viewport.width <= 1100 || viewport.height <= 760 ? "compact" : "standard";
+  const densityPercent = { compact: "80%", standard: "100%", comfortable: "120%" } as const;
+  const selectedDensity = desktopSettings.uiDensity === "auto" ? autoDensity : desktopSettings.uiDensity;
   const densityLabel = desktopSettings.uiDensity === "auto"
-    ? `Auto (${autoDensity})`
-    : desktopSettings.uiDensity[0].toUpperCase() + desktopSettings.uiDensity.slice(1);
-  const densitySliderValue = desktopSettings.uiDensity === "compact"
+    ? `Automatic (${densityPercent[selectedDensity]})`
+    : densityPercent[selectedDensity];
+  const densitySliderValue = selectedDensity === "compact"
     ? "0"
-    : desktopSettings.uiDensity === "comfortable"
+    : selectedDensity === "comfortable"
       ? "2"
       : "1";
 
@@ -5153,6 +5201,7 @@ function App() {
               setAccountOpen((open) => !open);
             }}
             aria-expanded={accountOpen}
+            aria-haspopup="menu"
           >
             {session.username}
             <span className="account-role">
@@ -5161,7 +5210,7 @@ function App() {
             <span className="account-chevron">⌄</span>
           </button>
           {accountOpen && (
-            <div className="account-menu">
+            <div className="account-menu" role="menu" aria-label="Account menu">
               <div className="account-summary">
                 <strong>{session.username}</strong>
                 <span>
@@ -5172,16 +5221,16 @@ function App() {
                       : "Standard user"}
                 </span>
               </div>
-               <button
-                 onClick={() => {
+                <button role="menuitem"
+                  onClick={() => {
                     setAccountOpen(false);
                     openSessionsModal();
                  }}
                >
                   Workspace Manager
                </button>
-               <button
-                 onClick={() => {
+                <button role="menuitem"
+                  onClick={() => {
                    setAccountOpen(false);
                    setSettingsOpen(true);
                    refreshStorageInfo();
@@ -5190,8 +5239,8 @@ function App() {
                  Settings
                </button>
                 {!session.onlyTerminalMode && session.role !== "admin" && (
-                 <button
-                   onClick={() => {
+                  <button role="menuitem"
+                    onClick={() => {
                      setAccountOpen(false);
                      setChangePasswordOpen(true);
                    }}
@@ -5199,8 +5248,8 @@ function App() {
                    Change password
                   </button>
                 )}
-               <button
-                 onClick={() => {
+                <button role="menuitem"
+                  onClick={() => {
                    setAccountOpen(false);
                    setHelpOpen(true);
                  }}
@@ -5208,7 +5257,7 @@ function App() {
                  Help
                </button>
                <hr />
-              <button className="danger" onClick={signOut}>
+               <button className="danger" role="menuitem" onClick={signOut}>
                 Log out
               </button>
             </div>
@@ -5821,7 +5870,10 @@ function App() {
       )}
       {contextMenu && (
         <div
+          ref={contextMenuRef}
           className="context-menu"
+          role="menu"
+          aria-label="File actions"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
@@ -6087,8 +6139,8 @@ function App() {
                       setDesktopSettings((current) => ({ ...current, uiDensity: values[Number(event.target.value)] }));
                     }}
                   />
-                  <div className="settings-density-scale"><span>Compact</span><span>Standard</span><span>Comfortable</span></div>
-                  <button type="button" onClick={() => setDesktopSettings((current) => ({ ...current, uiDensity: "auto" }))}>Use automatic sizing</button>
+                   <div className="settings-density-scale"><span>80%</span><span>100%</span><span>120%</span></div>
+                   <button type="button" aria-pressed={desktopSettings.uiDensity === "auto"} onClick={() => setDesktopSettings((current) => ({ ...current, uiDensity: "auto" }))}>Use automatic sizing</button>
                 </div>
               </section>
               <section className="settings-section">

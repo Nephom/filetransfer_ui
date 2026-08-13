@@ -4,6 +4,11 @@
   --bridge-space: #061322;
   --bridge-panel: rgba(8, 27, 46, .72);
   --bridge-panel-strong: rgba(10, 34, 56, .9);
+  --bridge-popover: rgba(6, 24, 40, .90);
+  --bridge-account-popover: rgba(6, 24, 40, .90);
+  --bridge-popover-border: rgba(107, 201, 239, .34);
+  --bridge-popover-shadow: 0 20px 55px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(185, 244, 255, .16), inset 0 0 24px rgba(99, 230, 255, .08);
+  --bridge-popover-blur: blur(18px) saturate(125%);
   --bridge-panel-soft: rgba(16, 52, 78, .44);
   --bridge-line: rgba(107, 201, 239, .26);
   --bridge-line-bright: #63e6ff;
@@ -374,9 +379,35 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .account-menu,
 .location-menu,
 .context-menu {
-  background: linear-gradient(135deg, rgba(22, 79, 105, .42), rgba(3, 18, 32, .3));
-  backdrop-filter: blur(26px) saturate(160%);
-  box-shadow: 0 20px 55px rgba(0, 0, 0, .38), inset 0 1px 0 rgba(185, 244, 255, .16), inset 0 0 24px rgba(99, 230, 255, .08);
+  border-color: var(--bridge-popover-border);
+  border-radius: var(--bridge-radius-sm);
+  background: linear-gradient(135deg, rgba(22, 79, 105, .52), var(--bridge-popover) 58%);
+  box-shadow: var(--bridge-popover-shadow);
+  backdrop-filter: var(--bridge-popover-blur);
+}
+.account-menu {
+  background: linear-gradient(135deg, rgba(22, 79, 105, .52), var(--bridge-account-popover) 58%);
+}
+.account-menu button:focus-visible,
+.location-menu button:focus-visible,
+.context-menu button:focus-visible,
+.palette-select-menu button:focus-visible {
+  outline: 2px solid var(--bridge-cyan);
+  outline-offset: -2px;
+}
+.account-menu button:disabled,
+.location-menu button:disabled,
+.context-menu button:disabled,
+.palette-select-menu button:disabled {
+  color: var(--bridge-muted);
+  cursor: not-allowed;
+}
+.account-menu button[aria-current="true"],
+.location-menu button[aria-selected="true"],
+.palette-select-menu button[aria-selected="true"] {
+  color: #9be8ff;
+  background: #174565;
+  font-weight: 600;
 }
 .modal-cover {
   align-items: start;
