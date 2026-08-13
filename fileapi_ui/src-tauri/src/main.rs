@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
@@ -1828,12 +1830,30 @@ fn open_local_file(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let path = path.to_string_lossy();
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &format!("\"{path}\"")])
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| format!("Unable to open file: {error}"))
+        // Use the Windows shell API directly so paths with spaces are not
+        // reparsed by cmd.exe and do not receive an extra quote character.
+        let wide_path: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let result = unsafe {
+            windows_sys::Win32::UI::Shell::ShellExecuteW(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                wide_path.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        };
+        if (result as usize) <= 32 {
+            Err(format!(
+                "Unable to open file (ShellExecuteW error {result:?})"
+            ))
+        } else {
+            Ok(())
+        }
     }
     #[cfg(target_os = "macos")]
     {
