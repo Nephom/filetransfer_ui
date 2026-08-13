@@ -9,6 +9,7 @@ const path = require('path');
 const { transferManager } = require('../transfer');
 const { FileSystem } = require('../file-system');
 const { systemLogger } = require('../utils/logger');
+const { nextAvailablePath } = require('../utils/dedupe-filename');
 
 const pathIsWithin = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
 
@@ -39,6 +40,7 @@ class UploadAPI {
     this.locationManager = null;
     this.locationPermissionManager = null;
     this.cacheResolver = null;
+    this.uploadLocks = new Map();
     this._setupMiddleware();
     this._setupRoutes();
   }
@@ -86,6 +88,31 @@ class UploadAPI {
     } else if (cache.scanDirectory) {
       await cache.scanDirectory(directoryPath);
     }
+  }
+
+  async _withUploadLock(lockPath, operation) {
+    const previous = this.uploadLocks.get(lockPath) || Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    this.uploadLocks.set(lockPath, current);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.uploadLocks.get(lockPath) === current) this.uploadLocks.delete(lockPath);
+    }
+  }
+
+  async _moveUploadedFile(sourcePath, requestedPath) {
+    return this._withUploadLock(path.dirname(requestedPath), async () => {
+      const finalPath = await nextAvailablePath(
+        requestedPath,
+        (candidate) => this.fileSystem.exists(candidate),
+      );
+      await this.fileSystem.move(sourcePath, finalPath);
+      return finalPath;
+    });
   }
 
   /**
@@ -372,17 +399,17 @@ class UploadAPI {
       await this.fileSystem.mkdir(normalizedFinalDir);
       
       // Final file path
-      const finalPath = path.join(normalizedFinalDir, path.basename(req.file.originalname));
+      const requestedPath = path.join(normalizedFinalDir, path.basename(req.file.originalname));
 
       // Create transfer record
       const transferId = transferManager.startTransfer({
         source: req.file.path,
-        destination: finalPath,
+        destination: requestedPath,
         totalSize: req.file.size
       });
 
       // Move file to final destination in storage
-      await this.fileSystem.move(req.file.path, finalPath);
+      const finalPath = await this._moveUploadedFile(req.file.path, requestedPath);
       await this._refreshCacheDirectory(normalizedFinalDir, locationContext.locationId);
 
       // Update transfer as complete
@@ -650,8 +677,8 @@ class UploadAPI {
 
         // Move file to final destination in storage
         systemLogger.logSystem('DEBUG', `UPLOAD MOVE START - BatchID: ${batchId}, TransferID: ${transferId}, TempFile: ${path.basename(file.path)}, Size: ${file.size}`);
-        await this.fileSystem.move(file.path, normalizedFinalPath);
-        await this._refreshCacheDirectory(path.dirname(normalizedFinalPath), locationId);
+        finalPath = await this._moveUploadedFile(file.path, normalizedFinalPath);
+        await this._refreshCacheDirectory(path.dirname(finalPath), locationId);
         systemLogger.logSystem('DEBUG', `UPLOAD MOVE COMPLETE - BatchID: ${batchId}, TransferID: ${transferId}, File: ${path.basename(file.originalname)}, Size: ${file.size}`);
 
         // Update transfer as complete
@@ -659,7 +686,7 @@ class UploadAPI {
           result: 'success',
           file: {
             name: path.basename(file.originalname),
-            path: path.relative(normalizedStoragePath, normalizedFinalPath),
+            path: path.relative(normalizedStoragePath, finalPath),
             size: file.size
           }
         });
@@ -786,12 +813,12 @@ class UploadAPI {
       await this.fileSystem.mkdir(normalizedFinalDir);
       
       // Final file path
-      const finalPath = path.join(normalizedFinalDir, path.basename(req.file.originalname));
+      const requestedPath = path.join(normalizedFinalDir, path.basename(req.file.originalname));
 
       // Create transfer record
       const transferId = transferManager.startTransfer({
         source: req.file.path,
-        destination: finalPath,
+        destination: requestedPath,
         totalSize: req.file.size
       });
 
@@ -812,8 +839,8 @@ class UploadAPI {
         clearInterval(interval);
 
         // Move file to final destination in storage
-        await this.fileSystem.move(req.file.path, finalPath);
-        await this._refreshCacheDirectory(normalizedFinalDir, locationContext.locationId);
+        const finalPath = await this._moveUploadedFile(req.file.path, requestedPath);
+        await this._refreshCacheDirectory(path.dirname(finalPath), locationContext.locationId);
 
         // Update transfer as complete
         transferManager.completeTransfer(transferId, {
@@ -1006,7 +1033,9 @@ class UploadAPI {
         const storageRoot = locationContext.rootPath;
         systemLogger.logSystem('INFO', `[UPLOAD] Storage root: ${storageRoot}, uploadPath: ${uploadPath}`);
         const targetDir = locationContext.targetPath;
-        const finalPath = path.join(targetDir, sanitizedFileName);
+        const requestedPath = path.join(targetDir, sanitizedFileName);
+        const finalPath = await this._withUploadLock(path.dirname(requestedPath), () =>
+          nextAvailablePath(requestedPath, (candidate) => this.fileSystem.exists(candidate)));
 
         systemLogger.logSystem('INFO', `[UPLOAD] Target directory: ${targetDir}`);
         systemLogger.logSystem('INFO', `[UPLOAD] Final path: ${finalPath}`);
