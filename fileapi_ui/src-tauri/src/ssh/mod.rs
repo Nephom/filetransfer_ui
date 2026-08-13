@@ -1020,3 +1020,15 @@ pub fn forget_password(entry_id: String) -> Result<(), String> {
 pub fn has_password(entry_id: String) -> Result<bool, String> {
     Ok(secrets::load_password(&entry_id)?.is_some())
 }
+
+pub fn save_rest_secret(entry_id: String, kind: String, value: String) -> Result<(), String> {
+    secrets::save_rest_secret(&entry_id, &kind, &value)
+}
+
+pub fn load_rest_secret(entry_id: String, kind: String) -> Result<Option<String>, String> {
+    secrets::load_rest_secret(&entry_id, &kind)
+}
+
+pub fn forget_rest_secret(entry_id: String, kind: String) -> Result<(), String> {
+    secrets::forget_rest_secret(&entry_id, &kind)
+}

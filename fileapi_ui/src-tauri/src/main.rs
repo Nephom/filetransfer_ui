@@ -44,6 +44,7 @@ fn cancel_transfer(transfer_id: String) -> Result<(), String> {
 struct ApiResponse {
     status: u16,
     body: Vec<u8>,
+    headers: Vec<(String, String)>,
 }
 
 // Emitted from download_to_disk while streaming a single-file (or archive)
@@ -327,8 +328,13 @@ fn apply_headers(
 
 async fn response_from(response: reqwest::Response) -> Result<ApiResponse, String> {
     let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.to_string(), value.to_string())))
+        .collect();
     let body = response.bytes().await.map_err(describe_error)?.to_vec();
-    Ok(ApiResponse { status, body })
+    Ok(ApiResponse { status, body, headers })
 }
 
 #[tauri::command]
@@ -1571,6 +1577,21 @@ fn ssh_has_password(entry_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn rest_save_secret(entry_id: String, kind: String, value: String) -> Result<(), String> {
+    ssh::save_rest_secret(entry_id, kind, value)
+}
+
+#[tauri::command]
+fn rest_load_secret(entry_id: String, kind: String) -> Result<Option<String>, String> {
+    ssh::load_rest_secret(entry_id, kind)
+}
+
+#[tauri::command]
+fn rest_forget_secret(entry_id: String, kind: String) -> Result<(), String> {
+    ssh::forget_rest_secret(entry_id, kind)
+}
+
+#[tauri::command]
 async fn ssh_list_directory(
     profile: ssh::SshProfile,
     path: String,
@@ -2096,6 +2117,9 @@ fn main() {
             ssh_save_password,
             ssh_forget_password,
             ssh_has_password,
+            rest_save_secret,
+            rest_load_secret,
+            rest_forget_secret,
             ssh_list_directory,
             ssh_sftp_disconnect,
             scp_download,

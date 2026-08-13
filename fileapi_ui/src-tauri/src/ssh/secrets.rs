@@ -106,6 +106,47 @@ pub fn forget_password(entry_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn save_rest_secret(entry_id: &str, kind: &str, value: &str) -> Result<(), String> {
+    let key = format!("rest:{entry_id}:{kind}");
+    if let Some(entry) = keyring_entry(&key) {
+        if entry.set_password(value).is_ok() {
+            let mut file = read_secrets_file().unwrap_or_default();
+            if file.entries.remove(&key).is_some() {
+                let _ = write_secrets_file(&file);
+            }
+            return Ok(());
+        }
+    }
+    let mut file = read_secrets_file()?;
+    file.entries.insert(key, base64_encode(value));
+    write_secrets_file(&file)
+}
+
+pub fn load_rest_secret(entry_id: &str, kind: &str) -> Result<Option<String>, String> {
+    let key = format!("rest:{entry_id}:{kind}");
+    if let Some(entry) = keyring_entry(&key) {
+        match entry.get_password() {
+            Ok(value) => return Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => {}
+            Err(_) => {}
+        }
+    }
+    let file = read_secrets_file()?;
+    Ok(file.entries.get(&key).and_then(|encoded| base64_decode(encoded)))
+}
+
+pub fn forget_rest_secret(entry_id: &str, kind: &str) -> Result<(), String> {
+    let key = format!("rest:{entry_id}:{kind}");
+    if let Some(entry) = keyring_entry(&key) {
+        let _ = entry.delete_credential();
+    }
+    let mut file = read_secrets_file()?;
+    if file.entries.remove(&key).is_some() {
+        write_secrets_file(&file)?;
+    }
+    Ok(())
+}
+
 fn base64_encode(value: &str) -> String {
     use std::fmt::Write;
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

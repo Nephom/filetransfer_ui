@@ -31,8 +31,10 @@ import "./webui-shell.css";
 import "./explorer-parity.css";
 import "./desktop-ui.css";
 import "./starship-bridge.css";
+import "./rest-api.css";
 import "./help/help.css";
 import { HelpIcon, helpPages, helpSections } from "./help/help-content";
+import { RestApiWorkspace, type RestApiEntry, type RestApiSecret } from "./rest-api";
 
 type FileItem = {
   name: string;
@@ -85,7 +87,7 @@ type ShareLink = {
   shareUrl?: string;
   directDownloadUrl?: string;
 };
-type NativeApiResponse = { status: number; body: number[] };
+type NativeApiResponse = { status: number; body: number[]; headers?: [string, string][] };
 type UploadSummary = { files: number; directories: number; totalSize: number; sources: { path: string; size: number; modified: number }[] };
 type FolderNode = {
   path: string;
@@ -102,6 +104,7 @@ type ManagedSession = {
   id: string;
   name: string;
   sshEntries: SshProfile[];
+  restApiEntries: RestApiEntry[];
 };
 type ColumnKey = "name" | "modified" | "size";
 type SortKey = ColumnKey;
@@ -228,10 +231,12 @@ const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
     const sshEntries = Array.isArray(item.sshEntries)
       ? item.sshEntries
       : entries.filter((entry) => entry.kind === "SSH").map((entry) => entry.sshProfile).filter(Boolean) as SshProfile[];
+    const restApiEntries = Array.isArray(item.restApiEntries) ? item.restApiEntries : [];
     return {
       id: item.id || crypto.randomUUID(),
       name: item.name || "Default",
       sshEntries,
+      restApiEntries,
     };
   });
 };
@@ -643,6 +648,9 @@ function App() {
   const [localHomeAbsolute, setLocalHomeAbsolute] = useState("");
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
+  const [appMode, setAppMode] = useState<"location" | "rest">(() =>
+    localStorage.getItem("fileapi-app-mode") === "rest" ? "rest" : "location",
+  );
   const [path, setPath] = useState("");
   const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -721,6 +729,9 @@ function App() {
       return [];
     }
   });
+  const [activeRestEntryId, setActiveRestEntryId] = useState("");
+  const [restSecrets, setRestSecrets] = useState<Record<string, RestApiSecret>>({});
+  const [restSessionHeaders, setRestSessionHeaders] = useState<Record<string, string>>({});
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [workspaceNameDialogOpen, setWorkspaceNameDialogOpen] = useState(false);
   const [sessionFormError, setSessionFormError] = useState("");
@@ -1169,6 +1180,25 @@ function App() {
   }, [managedSessions]);
 
   useEffect(() => {
+    localStorage.setItem("fileapi-app-mode", appMode);
+  }, [appMode]);
+
+  useEffect(() => {
+    if (activeRestEntryId) return;
+    const firstEntry = managedSessions.find((workspace) => workspace.restApiEntries.length)?.restApiEntries[0];
+    if (firstEntry) setActiveRestEntryId(firstEntry.id);
+  }, [activeRestEntryId, managedSessions]);
+
+  useEffect(() => {
+    const entries = managedSessions.flatMap((workspace) => workspace.restApiEntries);
+    void Promise.all(entries.flatMap((entry) => (["username", "password", "token", "apiKey", "cookie"] as const).map(async (kind) => {
+      const value = await invoke<string | null>("rest_load_secret", { entryId: entry.id, kind }).catch(() => null);
+      if (value === null) return;
+      setRestSecrets((current) => ({ ...current, [entry.id]: { ...current[entry.id], [kind]: value } }));
+    })));
+  }, [managedSessions]);
+
+  useEffect(() => {
     localStorage.setItem("fileapi-ssh-profiles", JSON.stringify(sshProfiles));
   }, [sshProfiles]);
 
@@ -1227,6 +1257,7 @@ function App() {
       id: makeId(),
       name: profile.name,
       sshEntries: [profile],
+      restApiEntries: [],
     }));
     setManagedSessions(migrated);
     setWorkspaceSessionId(migrated[0]?.id || "");
@@ -1846,7 +1877,7 @@ function App() {
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const managedSession: ManagedSession = existingWorkspace
       ? { ...existingWorkspace, name }
-      : { id: makeId(), name, sshEntries: [] };
+      : { id: makeId(), name, sshEntries: [], restApiEntries: [] };
     setManagedSessions((current) => existingWorkspace
       ? current.map((item) => item.id === existingWorkspace.id ? managedSession : item)
       : [...current, managedSession]);
@@ -2815,6 +2846,12 @@ function App() {
     );
   };
 
+  const selectRestWorkspace = (id: string) => {
+    selectWorkspaceSession(id);
+    const workspace = managedSessions.find((item) => item.id === id);
+    if (workspace?.restApiEntries[0]) setActiveRestEntryId(workspace.restApiEntries[0].id);
+  };
+
   const toggleSort = (
     column: ColumnKey,
     currentKey: SortKey,
@@ -2848,6 +2885,7 @@ function App() {
   // scoped to the SSH terminal selector and only considers workspaces that
   // already have at least one SSH entry).
   const activeManagedWorkspace = managedSessions.find((item) => item.id === workspaceSessionId);
+  const restWorkspace = activeManagedWorkspace || managedSessions.find((item) => item.restApiEntries.length) || managedSessions[0];
   const toggle = (file: FileItem, checked: boolean) => {
     setActivePane("remote");
     selectionAnchorRef.current = file.path;
@@ -5072,78 +5110,41 @@ function App() {
       : "1";
 
   return (
-    <main className={`explorer ui-density-${desktopSettings.uiDensity}`}>
+    <main className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode === "rest" ? "rest-mode" : ""}`}>
       <header className="titlebar">
         <span className="app-mark" />
         <span className="app-name">
           Nephom <span className="connection-status">File manager</span> cross <span className="connection-status">Terminal</span>
         </span>
-        {(activeLocation || connectedSshBrowseOptions().length > 0) && (
-          <div className="location-control" ref={locationControl}>
-            <span className="location-label">Location</span>
-            {(locations.length > 1 || connectedSshBrowseOptions().length > 0) ? (
-              <button
-                className="location-select"
-                aria-label="Location"
-                aria-expanded={locationMenuOpen}
-                aria-haspopup="listbox"
-                disabled={busy}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setLocationMenuOpen((open) => !open);
-                }}
-              >
-                {remoteSshEntryId
-                  ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}`
-                  : activeLocation ? activeLocation.displayName : "Browse via SSH"}
-                <span className="location-chevron" aria-hidden="true">⌄</span>
-              </button>
-            ) : (
-              <span className="location-single">
-                {activeLocation!.displayName}
-              </span>
-            )}
-            {(locations.length > 1 || connectedSshBrowseOptions().length > 0) && locationMenuOpen && (
-              <div className="location-menu" role="listbox" aria-label="Locations">
-                {locations.map((location) => (
-                  <button
-                    key={location.id}
-                    className={!remoteSshEntryId && location.id === session.locationId ? "selected" : ""}
-                    role="option"
-                    aria-selected={!remoteSshEntryId && location.id === session.locationId}
-                    onClick={() => {
-                      setLocationMenuOpen(false);
-                      void selectLocation(location.id);
-                    }}
-                  >
-                    {location.displayName}
-                  </button>
-                ))}
-                {connectedSshBrowseOptions().map((entry) => (
-                  <button
-                    key={entry.id}
-                    className={entry.id === remoteSshEntryId ? "selected" : ""}
-                    role="option"
-                    aria-selected={entry.id === remoteSshEntryId}
-                    onClick={() => {
-                      setLocationMenuOpen(false);
-                      selectSshBrowse(entry.id);
-                    }}
-                  >
-                    {`SSH: ${entry.name}`}
-                  </button>
-                ))}
-              </div>
-            )}
-            {activeLocation && (
-              <span
-                className={`health-dot ${activeLocation.status === "online" ? "online" : ""}`}
-                title={activeLocation.status || "unknown"}
-                aria-label={activeLocation.status || "unknown"}
-              />
-            )}
-          </div>
-        )}
+        <div className={`mode-switcher ${appMode === "rest" ? "rest-active" : "location-active"}`}>
+          <button type="button" className="mode-switch-button" aria-pressed={appMode === "rest"} onClick={() => setAppMode((current) => current === "rest" ? "location" : "rest")}>
+            <span className="mode-switch-dot" />
+            <span>{appMode === "rest" ? "REST API" : "LOCATION"}</span>
+          </button>
+          {appMode === "rest" ? (
+            <div className="workspace-select-wrap">
+              <span className="location-label">Workspace</span>
+              <select className="workspace-select" value={restWorkspace?.id || ""} onChange={(event) => selectRestWorkspace(event.target.value)} disabled={busy}>
+                {!managedSessions.length && <option value="">No Workspace</option>}
+                {managedSessions.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}
+              </select>
+            </div>
+          ) : (
+            <div className="location-control" ref={locationControl}>
+              <span className="location-label">Location</span>
+              {(locations.length > 1 || connectedSshBrowseOptions().length > 0) ? (
+                <button className="location-select" aria-label="Location" aria-expanded={locationMenuOpen} aria-haspopup="listbox" disabled={busy} onClick={(event) => { event.stopPropagation(); setLocationMenuOpen((open) => !open); }}>
+                  {remoteSshEntryId ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}` : activeLocation ? activeLocation.displayName : "Browse via SSH"}<span className="location-chevron" aria-hidden="true">⌄</span>
+                </button>
+              ) : <span className="location-single">{activeLocation?.displayName || "No Location"}</span>}
+              {(locations.length > 1 || connectedSshBrowseOptions().length > 0) && locationMenuOpen && <div className="location-menu" role="listbox" aria-label="Locations">
+                {locations.map((location) => <button key={location.id} className={!remoteSshEntryId && location.id === session.locationId ? "selected" : ""} role="option" aria-selected={!remoteSshEntryId && location.id === session.locationId} onClick={() => { setLocationMenuOpen(false); void selectLocation(location.id); }}>{location.displayName}</button>)}
+                {connectedSshBrowseOptions().map((entry) => <button key={entry.id} className={entry.id === remoteSshEntryId ? "selected" : ""} role="option" aria-selected={entry.id === remoteSshEntryId} onClick={() => { setLocationMenuOpen(false); selectSshBrowse(entry.id); }}>{`SSH: ${entry.name}`}</button>)}
+              </div>}
+              {activeLocation && <span className={`health-dot ${activeLocation.status === "online" ? "online" : ""}`} title={activeLocation.status || "unknown"} aria-label={activeLocation.status || "unknown"} />}
+            </div>
+          )}
+        </div>
         <div className="account-control" ref={accountControl}>
           <button
             className="account"
@@ -5214,7 +5215,7 @@ function App() {
           )}
         </div>
       </header>
-      <nav className="commandbar" aria-label="File actions">
+      <nav className="commandbar" aria-label={appMode === "rest" ? "REST API actions" : "File actions"}>
         {splitMode && (
           <span className="active-pane-indicator" title="New folder/Rename/Delete/View/Select all act on this pane">
             Acting on: <strong>{activePane === "local" ? "LOCAL" : "REMOTE"}</strong>
@@ -5411,6 +5412,42 @@ function App() {
         </button>
       </nav>
       <div className={`desktop-workspace${splitMode ? " split-workspace" : ""}`}>
+        {appMode === "rest" ? (
+          <RestApiWorkspace
+            workspaceName={restWorkspace?.name || "No Workspace"}
+            entries={restWorkspace?.restApiEntries || []}
+            activeEntryId={activeRestEntryId}
+            secrets={restSecrets}
+            sessionHeaders={restSessionHeaders}
+            onSelectEntry={setActiveRestEntryId}
+            onChangeEntries={(entries) => {
+              if (restWorkspace) {
+                setManagedSessions((current) => current.map((workspace) => workspace.id === restWorkspace.id ? { ...workspace, restApiEntries: entries } : workspace));
+                return;
+              }
+              const id = crypto.randomUUID();
+              setManagedSessions([{ id, name: "Default", sshEntries: [], restApiEntries: entries }]);
+              setWorkspaceSessionId(id);
+            }}
+            onChangeSecret={(entryId, secret) => {
+              setRestSecrets((current) => ({ ...current, [entryId]: secret }));
+              (Object.keys(secret) as (keyof RestApiSecret)[]).forEach((kind) => {
+                const value = secret[kind];
+                if (value) {
+                  void invoke("rest_save_secret", { entryId, kind, value });
+                } else {
+                  void invoke("rest_forget_secret", { entryId, kind });
+                }
+              });
+            }}
+            onChangeSessionHeaders={(entryId, headers) => {
+              const token = headers["X-Auth-Token"] || "";
+              setRestSessionHeaders((current) => ({ ...current, [entryId]: token }));
+              if (token) void invoke("rest_save_secret", { entryId, kind: "token", value: token });
+              else void invoke("rest_forget_secret", { entryId, kind: "token" });
+            }}
+          />
+        ) : <>
         {splitMode && renderLocalPane()}
         {splitMode && (
           <div
@@ -5760,12 +5797,13 @@ function App() {
             <PersistentScrollbar targetRef={fileAreaRef} label="Files" />
           </div>
         </section>
+        </>}
       </div>
       <footer className="statusbar">
         <span>
-          {files.length} item{files.length === 1 ? "" : "s"}
+          {appMode === "rest" ? `${restWorkspace?.restApiEntries.length || 0} REST entr${restWorkspace?.restApiEntries.length === 1 ? "y" : "ies"}` : `${files.length} item${files.length === 1 ? "" : "s"}`}
         </span>
-        <span>{searching ? "Search results" : path ? `/${path}` : "/"}</span>
+        <span>{appMode === "rest" ? "REST API reader" : searching ? "Search results" : path ? `/${path}` : "/"}</span>
       </footer>
       {marqueeRect && (
         <div
@@ -6201,8 +6239,23 @@ function App() {
                         ))}
                       </ol>
                     </section>
+                    <section className="workspace-entry-section">
+                      <h3>REST API Entries</h3>
+                      {!managedSession.restApiEntries.length && <span className="muted">No REST API entries yet.</span>}
+                      <ol className="workspace-entry-list">
+                        {managedSession.restApiEntries.map((entry) => (
+                          <li key={entry.id}>
+                            <button type="button" className="workspace-entry-button" onClick={() => { setWorkspaceSessionId(managedSession.id); setActiveRestEntryId(entry.id); setAppMode("rest"); setSessionsOpen(false); }}>
+                              <strong>{entry.name}</strong>
+                              <span>{entry.baseUrl}{entry.defaultPath}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    </section>
                     <div className="workspace-entry-actions">
                       <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>Add SSH Entry</button>
+                      <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("rest"); setSessionsOpen(false); }}>Open REST API</button>
                     </div>
                   </article>
                 ))}
