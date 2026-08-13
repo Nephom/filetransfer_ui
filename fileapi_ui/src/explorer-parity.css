@@ -89,8 +89,8 @@
 .ssh-entry-picker button { display: grid; gap: 2px; padding: 6px 8px; color: #e6eefc; background: #102d49; border-color: #315b7e; font-size: 11px; text-align: left; }
 .ssh-entry-picker button:hover, .ssh-entry-picker button.selected { color: #ffffff; background: #174565; border-color: #47cdf1; }
 .ssh-entry-picker button small { overflow: hidden; color: #91a9c0; text-overflow: ellipsis; white-space: nowrap; }
-.ssh-entry-modal, .sxp-entry-modal { width: min(480px, calc(100vw - 48px)); display: grid; gap: 10px; }
-.ssh-entry-modal label, .sxp-entry-modal label { margin: 0; }
+.ssh-entry-modal { width: min(480px, calc(100vw - 48px)); display: grid; gap: 10px; }
+.ssh-entry-modal label { margin: 0; }
 .session-entry small { overflow: hidden; color: #91a9c0; text-overflow: ellipsis; white-space: nowrap; }
 .field-help { display: block; margin-top: 5px; color: #7f9bb5; font-size: 11px; font-weight: 400; }
 .link-button { padding: 0; border: 0; background: transparent; color: #47cdf1; font-size: 11px; text-decoration: underline; cursor: pointer; }
@@ -194,10 +194,6 @@
 .ssh-profile-form label { margin: 0; }
 .ssh-profile-form label:last-of-type { grid-column: 1 / -1; }
 .ssh-recording-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.upload-session-select { min-width: 190px; margin: 0; color: #91a9c0; font-size: 11px; }
-.upload-session-select > span { display: block; margin-bottom: 4px; }
-.upload-session-select .palette-select-control { min-width: 190px; }
-.upload-session-select .palette-select { padding: 6px; }
 .queue-modal { width: min(620px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
 .queue-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; margin: 8px 0; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; background: #07192a; }
 .queue-item small, .queue-item > span:not(.queue-status) { color: #91a9c0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -225,9 +221,6 @@
 .saved-log-paths button { background: transparent; border: 0; color: inherit; cursor: pointer; text-align: left; padding: 0; }
 .viewer-modal { width: min(900px, calc(100vw - 32px)); }
 .file-viewer { width: 100%; min-height: min(65vh, 560px); resize: vertical; background: #071827; color: #e6eefc; border: 1px solid #315777; border-radius: 6px; padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.destination-modal { width: min(560px, calc(100vw - 32px)); }
-.destination-modal label { display: grid; gap: 6px; color: #d9e8f7; }
-.destination-modal input { width: 100%; }
 .archive-format-modal { width: min(560px, calc(100vw - 32px)); }
 .archive-format-option { display: flex; align-items: flex-start; gap: 9px; margin: 10px 0; padding: 10px; border: 1px solid #315b7e; border-radius: 5px; background: #07192a; }
 .archive-format-option input { width: 15px; min-width: 15px; margin: 2px 0 0; }

@@ -129,13 +129,8 @@
   align-items: center;
 }
 
-.ssh-controls label,
-.upload-session-select {
+.ssh-controls label {
   line-height: 1.2;
-}
-
-.upload-session-select > span {
-  white-space: nowrap;
 }
 
 .ssh-recording-actions > button,
@@ -269,9 +264,7 @@
     align-items: stretch;
   }
 
-  .ssh-controls .palette-select-control,
-  .upload-session-select,
-  .upload-session-select .palette-select-control {
+  .ssh-controls .palette-select-control {
     min-width: min(100%, 220px);
   }
 }

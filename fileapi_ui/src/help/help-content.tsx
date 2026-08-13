@@ -71,7 +71,7 @@ export const helpSections: HelpSection[] = [
   },
   {
     id: "workspace", title: "Workspace Manager", icon: "workspace", pages: [
-      { id: "workspaces", title: "Workspaces and session entries", summary: "Save reusable LOCAL and API Remote paths.", content: <Page><p>A Workspace groups Session Entries and SSH Entries. A Session Entry describes the LOCAL folder, API Remote Location, and remote path used by a repeatable transfer workflow.</p><p>Open Workspace Manager from the account menu to add, edit, select, or remove workspaces.</p></Page> },
+      { id: "workspaces", title: "Workspaces and SSH entries", summary: "Save reusable SSH connections.", content: <Page><p>A Workspace groups reusable SSH entries. Each SSH entry stores a connection name, host, port, username, and optional authentication settings.</p><p>Open Workspace Manager from the account menu to add, edit, select, or remove workspaces and SSH entries.</p></Page> },
       { id: "ssh-entry", title: "SSH entry settings", summary: "Save the connection details used by terminal and SFTP.", content: <Page><p>An SSH Entry contains a name, username, host, port, and optional private key path. Passwords are stored through the desktop credential store and are never included in workspace JSON or Help content.</p></Page> },
     ],
   },

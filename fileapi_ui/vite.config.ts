@@ -15,7 +15,8 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: {
-    port: 1420,
+    host: "127.0.0.1",
+    port: 5173,
     strictPort: true,
     // Never watch the Rust build output. `cargo`/`tauri dev` rewrites
     // thousands of intermediate files (.o/.d/.rlib) under src-tauri/target

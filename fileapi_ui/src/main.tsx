@@ -98,31 +98,9 @@ type LocalDirectory = {
   path: string;
   files: FileItem[];
 };
-type SessionEntry = {
-  id: string;
-  alias: string;
-  kind: "LOCAL" | "REMOTE" | "SSH";
-  path: string;
-  locationId?: string;
-  locationName?: string;
-  profileId?: string;
-  profileName?: string;
-  sshProfile?: SshProfile;
-};
-type SxpEntry = {
-  id: string;
-  name: string;
-  localAlias: string;
-  localPath: string;
-  remoteAlias: string;
-  remotePath: string;
-  locationId: string;
-  locationName: string;
-};
 type ManagedSession = {
   id: string;
   name: string;
-  sxpEntries: SxpEntry[];
   sshEntries: SshProfile[];
 };
 type ColumnKey = "name" | "modified" | "size";
@@ -226,7 +204,6 @@ type ModalDragId =
   | "sessions"
   | "workspace-name"
   | "ssh-entry"
-  | "sxp-entry"
   | "share-links"
   | "queue"
   | "viewer";
@@ -246,17 +223,15 @@ type OperationStorageInfo = {
 const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
   if (!Array.isArray(value)) return [];
   return value.map((raw) => {
-    const item = raw as Partial<ManagedSession> & { entries?: SessionEntry[] };
-    if (Array.isArray(item.sxpEntries) && Array.isArray(item.sshEntries)) return item as ManagedSession;
+    const item = raw as Partial<ManagedSession> & { entries?: Array<{ kind?: string; sshProfile?: SshProfile }> };
     const entries = Array.isArray(item.entries) ? item.entries : [];
-    const local = entries.find((entry) => entry.kind === "LOCAL");
-    const remote = entries.find((entry) => entry.kind === "REMOTE");
-    const ssh = entries.filter((entry) => entry.kind === "SSH").map((entry) => entry.sshProfile).filter(Boolean) as SshProfile[];
+    const sshEntries = Array.isArray(item.sshEntries)
+      ? item.sshEntries
+      : entries.filter((entry) => entry.kind === "SSH").map((entry) => entry.sshProfile).filter(Boolean) as SshProfile[];
     return {
       id: item.id || crypto.randomUUID(),
       name: item.name || "Default",
-      sxpEntries: local && remote ? [{ id: crypto.randomUUID(), name: "Default Transfer", localAlias: local.alias, localPath: local.path, remoteAlias: remote.alias, remotePath: remote.path, locationId: remote.locationId || "", locationName: remote.locationName || remote.locationId || "" }] : [],
-      sshEntries: ssh,
+      sshEntries,
     };
   });
 };
@@ -824,7 +799,6 @@ function App() {
   const [recording, setRecording] = useState(false);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
-  const [uploadSessionId, setUploadSessionId] = useState("");
   const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>([]);
   const queueStoreRef = useRef(new QueueStore<TransferQueueItem>((items) => pruneQueueHistory(items, Date.now())));
   useEffect(() => {
@@ -834,8 +808,6 @@ function App() {
   const [queueOpen, setQueueOpen] = useState(false);
   const [archiveFormatOpen, setArchiveFormatOpen] = useState(false);
   const [archiveFormatDraft, setArchiveFormatDraft] = useState<"tar.gz" | "zip" | "queue">("tar.gz");
-  const [uploadDestinationOpen, setUploadDestinationOpen] = useState(false);
-  const [uploadDestinationPath, setUploadDestinationPath] = useState("");
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerTitle, setViewerTitle] = useState("");
   const [viewerContent, setViewerContent] = useState("");
@@ -870,15 +842,10 @@ function App() {
   const dragScrollIntervalRef = useRef<number | null>(null);
   const dragIconPathRef = useRef<Promise<string> | null>(null);
   const [sessionNameDraft, setSessionNameDraft] = useState("");
-  const [localAliasDraft, setLocalAliasDraft] = useState("LocalHome");
-  const [remoteAliasDraft, setRemoteAliasDraft] = useState("RemoteRoot");
-  const [sxpEntryDraftId, setSxpEntryDraftId] = useState("");
-  const [sxpEntryNameDraft, setSxpEntryNameDraft] = useState("Default Transfer");
   // Session Manager only shows the Workspace list/summary; adding or
-  // editing an SSH entry or a Session Path entry happens in its own
-  // floating dialog on top of the Sessions modal.
+  // editing an SSH entry happens in its own floating dialog on top of the
+  // Sessions modal.
   const [sshEntryDialogOpen, setSshEntryDialogOpen] = useState(false);
-  const [sxpEntryDialogOpen, setSxpEntryDialogOpen] = useState(false);
   const [pendingRemotePath, setPendingRemotePath] = useState<string | null>(null);
   const [folderTree, setFolderTree] = useState<FolderNode>({
     path: "",
@@ -1018,7 +985,6 @@ function App() {
       sessions: sessionsOpen,
       "workspace-name": workspaceNameDialogOpen,
       "ssh-entry": sshEntryDialogOpen,
-      "sxp-entry": sxpEntryDialogOpen,
       "share-links": shareLinksOpen,
       queue: queueOpen,
       viewer: viewerOpen,
@@ -1034,7 +1000,7 @@ function App() {
       });
       return changed ? next : current;
     });
-  }, [helpOpen, queueOpen, sessionsOpen, settingsOpen, shareLinksOpen, sshEntryDialogOpen, sxpEntryDialogOpen, viewerOpen, workspaceNameDialogOpen]);
+  }, [helpOpen, queueOpen, sessionsOpen, settingsOpen, shareLinksOpen, sshEntryDialogOpen, viewerOpen, workspaceNameDialogOpen]);
 
   useEffect(() => {
     const closeTopmostOverlay = (event: KeyboardEvent) => {
@@ -1042,8 +1008,6 @@ function App() {
 
       if (sshEntryDialogOpen) {
         setSshEntryDialogOpen(false);
-      } else if (sxpEntryDialogOpen) {
-        setSxpEntryDialogOpen(false);
       } else if (workspaceNameDialogOpen) {
         setWorkspaceNameDialogOpen(false);
       } else if (sharePasswordOpen) {
@@ -1062,8 +1026,6 @@ function App() {
         setHelpOpen(false);
       } else if (archiveFormatOpen) {
         setArchiveFormatOpen(false);
-      } else if (uploadDestinationOpen) {
-        setUploadDestinationOpen(false);
       } else if (queueOpen) {
         setQueueOpen(false);
       } else if (viewerOpen) {
@@ -1098,8 +1060,6 @@ function App() {
     shareLinksOpen,
     sharePasswordOpen,
     sshEntryDialogOpen,
-    sxpEntryDialogOpen,
-    uploadDestinationOpen,
     viewerOpen,
     workspaceNameDialogOpen,
   ]);
@@ -1266,7 +1226,6 @@ function App() {
     const migrated = sshProfiles.map((profile) => ({
       id: makeId(),
       name: profile.name,
-      sxpEntries: [{ id: makeId(), name: "Default Transfer", localAlias: "Home", localPath: "", remoteAlias: "Personal", remotePath: "", locationId: session.locationId, locationName: session.locationId }],
       sshEntries: [profile],
     }));
     setManagedSessions(migrated);
@@ -1863,11 +1822,8 @@ function App() {
     });
   };
 
-  // Creates or renames a Workspace. This only manages the Workspace's name;
-  // SSH entries and Session Path entries are added/edited afterwards, each
-  // in their own floating dialog (see `saveSshEntry` and `saveSxpEntry`),
-  // so a brand-new Workspace does not need a Location or a Path entry
-  // selected up front just to exist.
+  // Creates or renames a Workspace. SSH entries are added or edited
+  // afterwards in their own floating dialog.
   const saveWorkspaceName = (form?: HTMLFormElement) => {
     const values = form ? new FormData(form) : null;
     const name = String(values?.get("sessionName") || sessionNameDraft).trim();
@@ -1890,7 +1846,7 @@ function App() {
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const managedSession: ManagedSession = existingWorkspace
       ? { ...existingWorkspace, name }
-      : { id: makeId(), name, sxpEntries: [], sshEntries: [] };
+      : { id: makeId(), name, sshEntries: [] };
     setManagedSessions((current) => existingWorkspace
       ? current.map((item) => item.id === existingWorkspace.id ? managedSession : item)
       : [...current, managedSession]);
@@ -1908,88 +1864,6 @@ function App() {
     setSessionNameDraft(target?.name || "");
     setSessionFormError("");
     setWorkspaceNameDialogOpen(true);
-  };
-
-  const openAddSxpEntryDialog = () => {
-    setSxpEntryDraftId("");
-    setSxpEntryNameDraft("Default Transfer");
-    setLocalAliasDraft("Home");
-    setRemoteAliasDraft(activeLocation?.displayName || "Personal");
-    setSessionFormError("");
-    setSxpEntryDialogOpen(true);
-  };
-
-  const openEditSxpEntryDialog = (entry: SxpEntry) => {
-    setSxpEntryDraftId(entry.id);
-    setSxpEntryNameDraft(entry.name);
-    setLocalAliasDraft(entry.localAlias);
-    setRemoteAliasDraft(entry.remoteAlias);
-    setSessionFormError("");
-    setSxpEntryDialogOpen(true);
-  };
-
-  // Saves the current LOCAL and API Remote browser paths (not free-typed
-  // paths) under the given aliases as one Session Path entry on the active
-  // Workspace, then closes the floating dialog and returns to the Sessions
-  // modal's Workspace view.
-  const saveSxpEntry = () => {
-    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
-    const name = sxpEntryNameDraft.trim();
-    const localAlias = localAliasDraft.trim();
-    const remoteAlias = remoteAliasDraft.trim();
-    if (!workspace) {
-      setSessionFormError("Save the Workspace name first, then add a Path entry to it.");
-      return;
-    }
-    if (!name || !localAlias || !remoteAlias) {
-      setSessionFormError("Preset name, local folder name, and remote folder name are required.");
-      return;
-    }
-    if ([name, localAlias, remoteAlias].some((value) => /\s/.test(value))) {
-      setSessionFormError("Path entry names cannot contain spaces.");
-      return;
-    }
-    if (!session.locationId) {
-      setSessionFormError("Select an available API Remote Location before saving this Path entry.");
-      return;
-    }
-    const makeId = () =>
-      typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const entry: SxpEntry = {
-      id: sxpEntryDraftId || makeId(),
-      name,
-      localAlias,
-      localPath,
-      remoteAlias,
-      remotePath: path,
-      locationId: session.locationId,
-      locationName: activeLocation?.displayName || session.locationId,
-    };
-    setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : {
-      ...item,
-      sxpEntries: item.sxpEntries.some((candidate) => candidate.id === entry.id)
-        ? item.sxpEntries.map((candidate) => candidate.id === entry.id ? entry : candidate)
-        : [...item.sxpEntries, entry],
-    }));
-    setSessionFormError("");
-    setSxpEntryDialogOpen(false);
-    notify(`${sxpEntryDraftId ? "Updated" : "Added"} Path entry: ${entry.name}`);
-  };
-
-  const removeSxpEntry = () => {
-    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
-    if (!workspace || !sxpEntryDraftId) return;
-    const entry = workspace.sxpEntries.find((item) => item.id === sxpEntryDraftId);
-    if (!entry) return;
-    if (workspace.sxpEntries.length === 1) {
-      setNotice("Add another Path entry before removing this one; a Workspace used for transfers needs at least one.");
-      return;
-    }
-    if (!window.confirm(`Remove Path entry "${entry.name}"?`)) return;
-    setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, sxpEntries: item.sxpEntries.filter((candidate) => candidate.id !== entry.id) }));
-    setSxpEntryDialogOpen(false);
   };
 
   const removeSession = (sessionId: string) => {
@@ -2281,52 +2155,11 @@ function App() {
 
   const openSessionsModal = (requestedWorkspaceId = workspaceSessionId) => {
     void run(async () => {
-      let workspace = managedSessions.find((item) => item.id === requestedWorkspaceId);
-      if (!workspace && !managedSessions.length) {
-        const makeId = () => typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const localPath = "";
-        const localAlias = "Home";
-        let remotePath = "";
-        let remoteAlias = activeLocation?.displayName || "Remote root";
-        if (session.locationId) {
-          const rootResponse = await api("/api/files?path=");
-          if (rootResponse.ok) {
-            const root = await rootResponse.json();
-            const personal = (root.files || []).find((item: FileItem) => item.isDirectory && item.name.toLowerCase() === "personal");
-            if (personal) {
-              remotePath = personal.path;
-              const personalResponse = await api(`/api/files?path=${encodeURIComponent(personal.path)}`);
-              if (personalResponse.ok) {
-                const personalData = await personalResponse.json();
-                const username = session.username.toLowerCase();
-                const userFolder = (personalData.files || []).find((item: FileItem) => item.isDirectory && item.name.toLowerCase() === username);
-                if (userFolder) {
-                  remotePath = userFolder.path;
-                  remoteAlias = `Personal/${userFolder.name}`;
-                } else {
-                  remoteAlias = "Personal";
-                }
-              }
-            }
-          }
-        }
-        workspace = {
-          id: makeId(),
-          name: "Default",
-          sxpEntries: [{ id: makeId(), name: "Default Transfer", localAlias, localPath, remoteAlias, remotePath, locationId: session.locationId, locationName: activeLocation?.displayName || session.locationId }],
-          sshEntries: [],
-        };
-        setManagedSessions([workspace]);
-      }
+      const workspace = managedSessions.find((item) => item.id === requestedWorkspaceId);
       if (workspace) {
         setWorkspaceSessionId(workspace.id);
-        const sxpEntry = workspace.sxpEntries[0];
-        setSxpEntryDraftId(sxpEntry?.id || "");
-        setSxpEntryNameDraft(sxpEntry?.name || "Default Transfer");
         const profile = workspace.sshEntries[0] || sshProfiles.find((item) => item.id === sshProfileId);
         setSessionNameDraft(workspace.name);
-        setLocalAliasDraft(sxpEntry?.localAlias || "Home");
-        setRemoteAliasDraft(sxpEntry?.remoteAlias || "Personal");
         if (profile) {
           setSshEntryDraftId(workspace.sshEntries[0]?.id || profile.id);
           setSelectedSshEntryId(profile.id);
@@ -2345,10 +2178,6 @@ function App() {
   const startNewWorkspace = () => {
     setWorkspaceSessionId("");
     setSessionNameDraft("");
-    setLocalAliasDraft("Home");
-    setRemoteAliasDraft(activeLocation?.displayName || "Personal");
-    setSxpEntryDraftId("");
-    setSxpEntryNameDraft("Default Transfer");
     setSshEntryDraftId("");
     setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
     setSessionFormError("");
@@ -2921,74 +2750,6 @@ function App() {
     }
   };
 
-  const findDefaultRemoteUploadPath = async (locationId: string) => {
-    const rootResponse = await apiForLocation("/api/files?path=", locationId);
-    if (!rootResponse.ok) throw new Error(await readError(rootResponse));
-    const root = await rootResponse.json() as { files?: FileItem[] };
-    const personal = (root.files || []).find((file) => file.isDirectory && file.name.toLowerCase() === "personal");
-    if (!personal) return "";
-    const personalResponse = await apiForLocation(`/api/files?path=${encodeURIComponent(personal.path)}`, locationId);
-    if (!personalResponse.ok) return personal.path;
-    const personalData = await personalResponse.json() as { files?: FileItem[] };
-    const username = session.username.trim().toLowerCase();
-    const userFolder = username
-      ? (personalData.files || []).find((file) => file.isDirectory && file.name.toLowerCase() === username)
-      : undefined;
-    return userFolder?.path || personal.path;
-  };
-
-  const queueSavedLogUpload = (destinationPath: string, destinationSessionId: string = uploadSessionId) => {
-    const managedSession = apiUploadSessions.find((item) => item.id === destinationSessionId);
-    const sxpEntry = managedSession?.sxpEntries[0];
-    const destination = managedSession && session.locationId
-      ? {
-          locationId: sxpEntry?.locationId || session.locationId,
-          locationName: sxpEntry?.locationName || activeLocation?.displayName || session.locationId,
-        }
-      : null;
-    if (!destination?.locationId) {
-      setNotice("Select a Session with an API Remote destination before uploading the log.");
-      setQueueOpen(true);
-      return;
-    }
-    const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-    const item: TransferQueueItem = {
-      id,
-      label: "SSH log package",
-      kind: "upload",
-      paths: savedLogPaths,
-      destinationPath,
-      locationId: destination.locationId,
-      locationName: destination.locationName || destination.locationId,
-      status: "queued",
-      detail: "Waiting to start",
-    };
-    setUploadDestinationOpen(false);
-    setTransferQueue((current) => [...current, item]);
-    setQueueOpen(true);
-    void runQueuedUpload(item);
-  };
-
-  const uploadSavedLog = () => {
-    const managedSession = apiUploadSessions.find((item) => item.id === uploadSessionId);
-    const sxpEntry = managedSession?.sxpEntries[0];
-    const remoteLocationId = sxpEntry?.locationId || session.locationId;
-    if (!savedLogPaths.length) {
-      setNotice("Save the completed SSH log package before uploading it.");
-      return;
-    }
-    if (!remoteLocationId) {
-      setNotice("Select a Session with an API Remote destination before uploading the log.");
-      setQueueOpen(true);
-      return;
-    }
-    void run(async () => {
-      const defaultPath = sxpEntry?.remotePath || await findDefaultRemoteUploadPath(remoteLocationId);
-      setUploadDestinationPath(defaultPath);
-      setUploadDestinationOpen(true);
-    });
-  };
-
   const refreshStorageInfo = () => {
     void run(async () => {
       const info = await invoke<OperationStorageInfo>("operation_storage_info");
@@ -3081,16 +2842,6 @@ function App() {
   // absolute-path-rooted at "/", while API-backed Locations use "" as root.
   const showRemoteUp = remoteSshEntryId ? path !== "/" : Boolean(path);
   const workspaceSessions = managedSessions.filter((item) => item.sshEntries.length > 0);
-  // A saved Workspace can predate the current Location metadata and have an
-  // empty SXP locationId. The authenticated API session is still a valid
-  // upload destination, so keep the Workspace selectable and fall back to
-  // the current session.locationId when resolving its destination.
-  const apiUploadSessions = managedSessions;
-  useEffect(() => {
-    if (!apiUploadSessions.some((item) => item.id === uploadSessionId)) {
-      setUploadSessionId(apiUploadSessions[0]?.id || "");
-    }
-  }, [apiUploadSessions, uploadSessionId]);
   const activeWorkspaceSession = workspaceSessions.find((item) => item.id === workspaceSessionId);
   // The Sessions modal's Workspace panel shows this regardless of whether it
   // has any SSH entries yet (unlike `activeWorkspaceSession` above, which is
@@ -6443,25 +6194,8 @@ function App() {
                         ))}
                       </ol>
                     </section>
-                    <section className="workspace-entry-section">
-                      <h3>Session Entries</h3>
-                      {!managedSession.sxpEntries.length && <span className="muted">No Session Entries yet.</span>}
-                      <ol className="workspace-entry-list">
-                        {managedSession.sxpEntries.map((entry) => (
-                          <li key={entry.id}>
-                            <button type="button" className="workspace-entry-button session-entry-summary" onClick={() => { setWorkspaceSessionId(managedSession.id); openEditSxpEntryDialog(entry); }}>
-                              <strong>{entry.name}</strong>
-                              <span>LOCAL: ~/{entry.localPath || ""}</span>
-                              <span>LOCATIONID: {entry.locationName || entry.locationId}</span>
-                              <span>REMOTE PATH: {entry.remotePath || "/"}</span>
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    </section>
                     <div className="workspace-entry-actions">
                       <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>Add SSH Entry</button>
-                      <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSxpEntryDialog(); }}>Add Session Entry</button>
                     </div>
                   </article>
                 ))}
@@ -6536,52 +6270,6 @@ function App() {
               <button type="button" onClick={() => setSshEntryDialogOpen(false)}>Cancel</button>
               {sshEntryDraftId && <button type="button" className="session-delete" onClick={removeSshEntry}>Remove</button>}
               <button type="button" className="confirm" onClick={saveSshEntry}>Save</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {sxpEntryDialogOpen && (
-        <div
-          className="modal-cover modal-layer-top"
-          onMouseDown={() => setSxpEntryDialogOpen(false)}
-        >
-          <div
-            className="modal sxp-entry-modal"
-            style={modalStyle("sxp-entry")}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-             <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("sxp-entry")}>{sxpEntryDraftId ? "Edit Session Entry" : "Add Session Entry"}</h2>
-            <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
-            {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
-            <label>
-              Preset name
-              <input name="sxpEntryName" value={sxpEntryNameDraft} onChange={(event) => setSxpEntryNameDraft(event.target.value)} required />
-            </label>
-            <label>
-              Local folder name
-              <input
-                name="localFolderName"
-                value={localAliasDraft}
-                onChange={(event) => setLocalAliasDraft(event.target.value)}
-                required
-              />
-              <small className="field-help">Name used to identify the current LOCAL folder in this Session.</small>
-            </label>
-            <label>
-              Remote folder name
-              <input
-                name="remoteFolderName"
-                value={remoteAliasDraft}
-                onChange={(event) => setRemoteAliasDraft(event.target.value)}
-                required
-              />
-              <small className="field-help">Name used to identify the current API Remote folder in this Session.</small>
-            </label>
-            <small className="field-help">Saves the LOCAL and API Remote folders you are currently browsing, under these names.</small>
-            <div className="modal-actions">
-              <button type="button" onClick={() => setSxpEntryDialogOpen(false)}>Cancel</button>
-              {sxpEntryDraftId && <button type="button" className="session-delete" onClick={removeSxpEntry}>Remove</button>}
-              <button type="button" className="confirm" onClick={saveSxpEntry}>Save</button>
             </div>
           </div>
         </div>
@@ -6685,18 +6373,7 @@ function App() {
                       <button className="danger" onClick={stopRecording}>Stop Recording</button>
                     )}
                      <button disabled={recording || !recordingHasOutput} onClick={openSaveLogDialog}>Save Log</button>
-                    <div className="upload-session-select">
-                      <span>Destination Session</span>
-                      <PaletteSelect
-                        label="Select Session"
-                        value={uploadSessionId}
-                        options={apiUploadSessions.map((managedSession) => ({ value: managedSession.id, label: managedSession.name }))}
-                       onChange={setUploadSessionId}
-                       menuPlacement="up"
-                     />
-                     </div>
-                      <button disabled={!savedLogPaths.length || recording || !apiUploadSessions.length || !session.locationId} onClick={uploadSavedLog}>Upload Log</button>
-                      {savedLogPaths.length > 0 && <details className="saved-log-paths"><summary>Saved log files</summary>{savedLogPaths.map((savedPath) => <button type="button" key={savedPath} onClick={() => openLocalViewer(savedPath)}><code>{savedPath}</code></button>)}</details>}
+                       {savedLogPaths.length > 0 && <details className="saved-log-paths"><summary>Saved log files</summary>{savedLogPaths.map((savedPath) => <button type="button" key={savedPath} onClick={() => openLocalViewer(savedPath)}><code>{savedPath}</code></button>)}</details>}
                      {recording && <span className="recording-indicator">Recording</span>}
               </div>
             </div>
@@ -6728,26 +6405,6 @@ function App() {
             <div className="modal-actions">
               <button type="button" className="confirm" onClick={() => archiveFormatDraft === "queue" ? enqueueQueueDownload() : enqueueDownload(archiveFormatDraft)}>Add to Transfer Queue</button>
               <button type="button" onClick={() => setArchiveFormatOpen(false)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {uploadDestinationOpen && (
-        <div className="modal-cover" onMouseDown={() => setUploadDestinationOpen(false)}>
-          <div className="modal destination-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <h2>Upload Log destination</h2>
-            <p className="muted">Choose the API Remote folder for this log package. The default is Personal/{session.username || "username"} when available.</p>
-            <label>
-              Remote folder path
-              <input
-                value={uploadDestinationPath}
-                onChange={(event) => setUploadDestinationPath(event.target.value.replace(/^\/+/, ""))}
-                placeholder="Personal/username"
-              />
-            </label>
-            <div className="modal-actions">
-              <button type="button" className="confirm" onClick={() => queueSavedLogUpload(uploadDestinationPath.trim(), uploadSessionId)}>Upload here</button>
-              <button type="button" onClick={() => setUploadDestinationOpen(false)}>Cancel</button>
             </div>
           </div>
         </div>

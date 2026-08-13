@@ -260,11 +260,9 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .sessions-modal,
 .settings-modal,
 .viewer-modal,
-.destination-modal,
 .archive-format-modal,
 .log-name-modal,
 .ssh-entry-modal,
-.sxp-entry-modal,
 .workspace-name-modal {
   position: relative;
   border: 1px solid var(--bridge-line);
@@ -394,11 +392,9 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .sessions-modal,
 .settings-modal,
 .viewer-modal,
-.destination-modal,
 .archive-format-modal,
 .log-name-modal,
 .ssh-entry-modal,
-.sxp-entry-modal,
 .workspace-name-modal {
   background: linear-gradient(145deg, rgba(22, 77, 101, .48), rgba(3, 18, 32, .34));
   backdrop-filter: blur(30px) saturate(155%);
