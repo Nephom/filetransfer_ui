@@ -3620,22 +3620,29 @@ function App() {
   };
   const renderDesktopQueueItem = (item: TransferQueueItem) => (
     <div className="queue-item" key={item.id}>
-      <strong>{item.label}</strong>
-      <small>{item.locationName} {item.destinationPath || "/"}</small>
-      <span className={`queue-status ${item.status}`}>{item.status}</span>
-      <span>{item.detail}</span>
-      {(item.status === "running" || item.status === "queued" || item.status === "retrying") && (
-        <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>
-      )}
+      <div className="queue-item-header">
+        <strong className="queue-item-label">{item.label}</strong>
+        <span className={`queue-status ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
+      </div>
+      <div className="queue-item-route">
+        <span>{item.locationName}</span>
+        <code>{item.destinationPath || "/"}</code>
+      </div>
+      <div className="queue-item-detail">{item.detail}</div>
       {item.progress && (["running", "queued", "retrying"].includes(item.status)) && (
-        <small>{item.progress.completedBytes ? `${formatSize(item.progress.completedBytes)}${item.progress.totalBytes ? ` / ${formatSize(item.progress.totalBytes)}` : ""}` : "Waiting for transfer data"}{formatQueueProgress(item.progress)}</small>
+        <div className="queue-item-progress"><small>{item.progress.completedBytes ? `${formatSize(item.progress.completedBytes)}${item.progress.totalBytes ? ` / ${formatSize(item.progress.totalBytes)}` : ""}` : "Waiting for transfer data"}{formatQueueProgress(item.progress)}</small></div>
       )}
-      {(item.status === "failed" || item.status === "needs_user_action") && (
-        <button type="button" onClick={() => retryDesktopQueueItem(item)}>Retry</button>
-      )}
-      {(["completed", "failed", "cancelled"].includes(item.status)) && (
-        <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>
-      )}
+      <div className="queue-item-actions">
+        {(item.status === "running" || item.status === "queued" || item.status === "retrying") && (
+          <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>
+        )}
+        {(item.status === "failed" || item.status === "needs_user_action") && (
+          <button type="button" onClick={() => retryDesktopQueueItem(item)}>Retry</button>
+        )}
+        {(["completed", "failed", "cancelled"].includes(item.status)) && (
+          <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>
+        )}
+      </div>
     </div>
   );
   const queueDragPreparation = (
