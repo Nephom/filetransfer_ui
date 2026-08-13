@@ -10,6 +10,8 @@
 - 具名、可重複使用的角色權限矩陣（每個 Location 各自的權限），可指派給使用者，並可在個別使用者身上覆寫。
 - JWT 驗證、TLS 管理、可設定的安全功能與檔案快取。
 - Ubuntu 22.04+ 與 Windows 10/11 Tauri v2 桌面客戶端（**nFterm**）：滑鼠導向的檔案總管介面。
+- nFterm REST API mode：在 Workspace 中管理 REST API entries，支援 HPE iLO、OpenBMC 與一般 Redfish/REST API。
+- REST API Session Auth：支援 HPE/OpenBMC Redfish SessionService、`X-Auth-Token` session、`@odata.id` 導覽、Redfish Actions、AHS/DownloadUri 下載與 GET path history。
 - `build.sh`：Linux 的安裝、首次設定、更新、測試與 DEB 建置。
 - `build.ps1`：Windows 建置機的桌面相依性檢查、更新建置與腳本自我更新。
 
@@ -97,6 +99,33 @@ Windows 使用 `build.ps1` 建置 NSIS 安裝包與不需安裝的 portable EXE�
 portable EXE 位於 `fileapi_ui/src-tauri/target/release/nFterm.exe`；NSIS 產物位於 `fileapi_ui/src-tauri/target/release/bundle/nsis/`。Windows 執行檔使用目前使用者的 Desktop 作為本機檔案區預設目錄。
 
 桌面客戶端已更名為 **nFterm**（原名 File Transfer Desktop / fileapi-desktop）；升級使用者可用 `upgrade_tools/migrate-desktop-data.ps1` 將舊資料目錄（`~/.fileapi-desktop`）搬移到新目錄（`~/.nFterm`）。
+
+## REST API Mode
+
+nFterm 的 REST API mode 與既有 `LOCATION` 檔案管理模式分開。切換至 REST API mode 後，左側顯示 Workspace 的 REST API entries，中間顯示 REST response reader；Terminal 與 SSH entries 保持不變。
+
+REST API entry 可設定 Base URL、path、query parameters、TLS 選項與認證方式。HPE iLO 或 OpenBMC Redfish 可在 Authentication 選擇 `Session Auth`，再選擇對應的 `HPE` 或 `OpenBMC` preset。
+
+Redfish 使用流程：
+
+1. 選擇 `Session Auth`。
+2. 輸入 Redfish username 與 password。
+3. 選擇 `HPE` 或 `OpenBMC`。
+4. 按 `Use Redfish SessionService preset`。
+5. 按 `Login`。
+6. 確認畫面顯示 REST session established。
+7. 按 `GET` 開始瀏覽 `/redfish/v1`。
+
+Reader 支援 `@odata.id`、`href`、`Members`、nested `Links`、Redfish `Actions.*.target`、最近 GET path history，以及 `DownloadUri` 等下載連結。Reset、Power、BIOS 或其他 action 會要求確認；Token、Cookie、password 不會寫入 Workspace JSON 或 operation log。
+
+沒有實際 REST server 時，可使用 WSL2 sandbox：
+
+```bash
+node fileapi_ui/sandbox/rest-server.mjs
+node fileapi_ui/sandbox/test-rest-server.mjs
+```
+
+Sandbox 預設位於 `http://127.0.0.1:8787`，測試帳號為 `sandbox`，密碼為 `sandbox`。
 
 ## 文件
 

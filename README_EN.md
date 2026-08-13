@@ -4,6 +4,8 @@
 
 A local file management system with a Windows Explorer-style web interface and a Tauri v2 desktop client (**nFterm**) for Ubuntu and Windows.
 
+The nFterm desktop client also includes a REST API mode for Workspace-managed REST API entries, HPE iLO, OpenBMC, and generic Redfish/REST services. It supports Redfish Session Auth with `X-Auth-Token`, `@odata.id` navigation, Redfish Actions, AHS/`DownloadUri` downloads, and recent GET path history.
+
 ## Install And Upgrade
 
 The server supports Alpine Linux and Ubuntu and requires network access plus permission to install system packages. `install` and `upgrade` install only Node.js and server dependencies; they do not install or build Tauri.
@@ -82,6 +84,33 @@ Windows build machines use the PowerShell workflow. It only handles the Tauri de
 The Windows build creates a portable EXE at `fileapi_ui/src-tauri/target/release/nFterm.exe` and an NSIS package under `fileapi_ui/src-tauri/target/release/bundle/nsis/`. The local file pane defaults to the current user's Desktop.
 
 The desktop client was renamed to **nFterm** (formerly "File Transfer Desktop" / fileapi-desktop). Upgrading users can move their legacy data directory (`~/.fileapi-desktop`) to the new one (`~/.nFterm`) with `upgrade_tools/migrate-desktop-data.ps1`.
+
+## REST API Mode
+
+nFterm REST API mode is separate from the existing `LOCATION` file-management mode. In REST API mode, the left side shows REST API entries from the selected Workspace and the center shows the REST response reader. The Terminal and SSH entries remain available and unchanged.
+
+A REST API entry can define its Base URL, path, query parameters, TLS settings, and authentication. For HPE iLO or OpenBMC Redfish, choose `Session Auth` and then select the matching `HPE` or `OpenBMC` preset.
+
+Redfish login flow:
+
+1. Select `Session Auth`.
+2. Enter the Redfish username and password.
+3. Select `HPE` or `OpenBMC`.
+4. Click `Use Redfish SessionService preset`.
+5. Click `Login`.
+6. Confirm that `REST session established` is displayed.
+7. Click `GET` to start browsing `/redfish/v1`.
+
+The reader supports `@odata.id`, `href`, `Members`, nested `Links`, Redfish `Actions.*.target`, recent GET path history, and download links such as `DownloadUri`. Reset, power, BIOS, and other actions require confirmation. Tokens, cookies, and passwords are never written to Workspace JSON or the operation log.
+
+When no real REST server is available, use the WSL2 sandbox:
+
+```bash
+node fileapi_ui/sandbox/rest-server.mjs
+node fileapi_ui/sandbox/test-rest-server.mjs
+```
+
+The sandbox listens at `http://127.0.0.1:8787` by default. Its test username is `sandbox` and its test password is `sandbox`.
 
 ## Documentation
 
