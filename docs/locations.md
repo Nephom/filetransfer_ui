@@ -87,7 +87,9 @@ The migration does not alter `users.json`; user Location permissions are stored 
 
 ## User Permissions and Health
 
-Regular users can be assigned a capability matrix by an administrator through:
+Regular users can receive Location capabilities through a reusable Permission Role or, for legacy and exception cases, an individual mapping. The WebUI uses Permission Roles as the primary management workflow. See [WebUI Permission Management](permissions.md) for the complete operator guide.
+
+Individual Location mappings are available through:
 
 ```text
 GET /api/admin/users/:username/locations
@@ -105,6 +107,6 @@ Example mapping:
 }
 ```
 
-The backend reloads this mapping from server-side user data on every request. A stale JWT therefore cannot retain a Location after an administrator revokes it. The token contains no filesystem root path or permission snapshot.
+The backend reloads the effective Role and individual mapping from server-side user data on every request. A stale JWT therefore cannot retain a Location after an administrator revokes it. The token contains no filesystem root path or permission snapshot. If both are present, the Role supplies the base matrix and the user's individual mapping overrides matching Locations.
 
 The Location discovery response exposes only permitted Locations and reports one of `online`, `offline`, `permission_denied`, `error`, or `disabled`. Storage failures return an explicit service error; they are not converted into an empty directory response.

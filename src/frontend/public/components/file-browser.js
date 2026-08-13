@@ -5,6 +5,7 @@ const FileBrowser = ({ token, user }) => {
     const [error, setError] = useState('');
     const [showUserDropdown, setShowUserDropdown] = useState(false);
     const [showSettingsModal, setShowSettingsModal] = useState(false);
+    const [settingsInitialTab, setSettingsInitialTab] = useState('security');
     const [searchQuery, setSearchQuery] = useState('');
     const [filteredFiles, setFilteredFiles] = useState([]);
     const [searchResults, setSearchResults] = useState([]);
@@ -280,6 +281,12 @@ const FileBrowser = ({ token, user }) => {
                             <UserDropdown 
                                 user={user}
                                 onSettings={() => {
+                                    setSettingsInitialTab('security');
+                                    setShowSettingsModal(true);
+                                    setShowUserDropdown(false);
+                                }}
+                                onHelp={() => {
+                                    setSettingsInitialTab('help');
                                     setShowSettingsModal(true);
                                     setShowUserDropdown(false);
                                 }}
@@ -440,9 +447,10 @@ const FileBrowser = ({ token, user }) => {
 
             {/* Settings Modal */}
             {showSettingsModal && (
-                <SettingsModal 
+                <SettingsModal
                     onClose={() => setShowSettingsModal(false)}
                     token={token}
+                    initialTab={settingsInitialTab}
                 />
             )}
         </div>

@@ -96,16 +96,18 @@ Admin-only routes are `/api/admin/users`, `/api/admin/roles`, `/api/admin/config
 
 ### Roles
 
-A Role is a named, reusable permission matrix (per-Location capabilities) that can be assigned to a user via `roleId`, instead of repeating the same `locationPermissions` on every user. A user's own `locationPermissions`, if set, still override the assigned Role on a per-Location basis, so a Role covers the common case while individual exceptions remain possible.
+A Role is a named, reusable permission matrix (per-Location capabilities) that can be assigned to a user via `roleId`, instead of repeating the same `locationPermissions` on every user. A user's own `locationPermissions`, if set, still override the assigned Role on a per-Location basis, so a Role covers the common case while individual exceptions remain possible. The WebUI presents the user's stored global `permissions` as fallback permissions and uses them only when no Permission Role is assigned.
 
 | Method | Endpoint | Request | Success |
 |---|---|---|---|
-| GET | `/api/admin/roles` | None | `{ success, roles, locations, capabilities }` -- `capabilities` is the full list of grantable capabilities (`list`, `read`, `upload`, `write`, `delete`, `rename`, `mkdir`, `copy`, `move`, `share`); `locations` is every configured Location (including disabled ones) for building a permission matrix UI. |
+| GET | `/api/admin/roles` | None | `{ success, roles, locations, capabilities }` -- each Role also includes `assignedUserCount`; `capabilities` is the full list of grantable capabilities (`list`, `read`, `upload`, `write`, `delete`, `rename`, `mkdir`, `copy`, `move`, `share`); `locations` is every configured Location (including disabled ones) for building a permission matrix UI. |
 | POST | `/api/admin/roles` | `{ "name", "description"?, "locationPermissions": { "<locationId>": ["<capability>", ...] } }` | `{ success, message, role }` |
 | PUT | `/api/admin/roles/:id` | Same shape as POST; any field omitted is left unchanged | `{ success, message, role }` |
 | DELETE | `/api/admin/roles/:id` | None | `{ success, message, unassignedUsers }` -- also clears `roleId` from any user that referenced the deleted Role, reverting them to their individual permissions. |
 
 `POST /api/admin/users` and `PUT /api/admin/users/:username` additionally accept an optional `roleId` field to assign or clear (`roleId: ""` or `null`) a user's Role.
+
+`POST /api/admin/users/bulk` accepts `{ "usernames": ["..."], "changes": { "roleId"?, "active"? } }`. The WebUI uses this endpoint to assign or clear a Permission Role and to change active status. The server revalidates every target and returns a job ID for polling with `GET /api/admin/users/bulk/:jobId`.
 
 ## Logging
 

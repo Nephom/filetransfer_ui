@@ -87,6 +87,7 @@ The desktop client was renamed to **nFterm** (formerly "File Transfer Desktop" /
 
 - [API reference](docs/api/API_REFERENCE.md)
 - [Documentation index](docs/README.md)
+- [WebUI permission management](docs/permissions.md)
 - [Tauri desktop client](fileapi_ui/README.md)
 
 `fileapi.sh` is deprecated and is not a supported compatibility target.

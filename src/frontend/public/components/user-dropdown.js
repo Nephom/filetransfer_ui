@@ -1,5 +1,5 @@
 // User Dropdown Component
-const UserDropdown = ({ user, onSettings, onLogout, onClose }) => {
+const UserDropdown = ({ user, onSettings, onHelp, onLogout, onClose }) => {
     return (
         <div style={{
             position: 'absolute',
@@ -83,6 +83,19 @@ const UserDropdown = ({ user, onSettings, onLogout, onClose }) => {
             >
                 <span>⚙️</span>
                 <span>Settings</span>
+            </button>
+            <button
+                onClick={onHelp || onSettings}
+                style={{
+                    width: '100%', textAlign: 'left', padding: '12px 16px', background: 'transparent',
+                    border: 'none', color: 'white', cursor: 'pointer', transition: 'background 0.3s ease',
+                    display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', outline: 'none'
+                }}
+                onMouseEnter={(e) => { e.target.style.background = 'rgba(255, 255, 255, 0.1)'; }}
+                onMouseLeave={(e) => { e.target.style.background = 'transparent'; }}
+            >
+                <span>❔</span>
+                <span>Help</span>
             </button>
             <div style={{ borderTop: '1px solid rgba(255, 255, 255, 0.2)', marginTop: '4px', paddingTop: '4px' }}>
                 <button

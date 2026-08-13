@@ -360,9 +360,20 @@
         .glass-panel, .stat-card, .control-card { background: #0b2137; border-color: #254764; box-shadow: 0 12px 30px rgba(0,0,0,.22); }.glass-panel { border-radius: 7px; }.control-card { border-radius: 6px; }.control-card:hover { background: #102d49; border-color: #3b7097; transform: translateY(-2px); }.glass-panel h2, .control-card h3 { color: #e9fbff; }.control-card p, .stat-card .label { color: #91a9c0; opacity: 1; }
         .stat-card .number { color: #6bf0ca; }.btn { background: #102d49; border-color: #315b7e; border-radius: 5px; }.btn:hover { background: #173653; border-color: #47cdf1; transform: none; }.btn.danger { background: #3b1d28; border-color: #813847; }.btn.danger:hover { background: #512332; }
         .form-control { color: #e6eefc; background: #07192a; border-color: #315b7e; }.form-control:focus { border-color: #47cdf1; box-shadow: 0 0 0 1px #47cdf1; }.modal-overlay { background: rgba(0,6,14,.75); }.modal-content { background: #0b2137; border-color: #315b7e; border-radius: 7px; }.modal-header { border-color: #284966; }
-        @media (max-width: 768px) { .admin-container { width: min(100% - 20px, 1200px); padding-top: 10px; }.admin-header { align-items: flex-start; gap: 14px; flex-direction: column; }.back-to-files { width: 100%; } }
+         @media (max-width: 768px) { .admin-container { width: min(100% - 20px, 1200px); padding-top: 10px; }.admin-header { align-items: flex-start; gap: 14px; flex-direction: column; }.back-to-files { width: 100%; } }
+         .permission-help { margin: 6px 0 0; color: #9fb8ce; font-size: .85rem; line-height: 1.45; }
+         .permission-help strong { color: #e9fbff; }
+         .permission-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+         .permission-chip, .role-chip, .source-chip { display: inline-flex; align-items: center; padding: 4px 8px; border: 1px solid #315b7e; border-radius: 999px; background: #102d49; color: #d9eafa; font-size: .78rem; white-space: nowrap; }
+         .role-chip { border-color: #3b7097; color: #9ff3ff; }
+         .source-chip.fallback { border-color: #80662d; color: #ffe6a3; }
+         .permission-advanced { padding: 14px; border: 1px solid #254764; border-radius: 6px; background: rgba(7,25,42,.45); }
+         .permission-advanced.is-role-managed { opacity: .62; }
+         .table-scroll { overflow-x: auto; }
+         .status-note { color: #9fb8ce; font-size: .82rem; line-height: 1.4; }
+         @media (max-width: 768px) { .modal-content { width: calc(100% - 20px); padding: 20px; max-height: 90vh; } .user-table { min-width: 760px; } .form-row { grid-template-columns: 1fr; } .btn-group { flex-wrap: wrap; } .btn-group .btn { flex: 1 1 180px; } }
 
-    </style>
+     </style>
 </head>
 <body>
     <div class="admin-container">
@@ -444,13 +455,13 @@
                 </div>
                 <div class="form-group">
                     <label>Permission Role (optional):</label>
-                    <select id="newUserRole" class="form-control">
+                    <select id="newUserRole" class="form-control" onchange="syncPermissionSource('newUserRole', 'newPermissionFallback')">
                         <option value="">No role (individually managed permissions)</option>
                     </select>
                     <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">A per-Location capability matrix. Manage available Permission Roles from the Role Management card.</p>
                 </div>
-                <div class="form-group">
-                    <label>Permissions:</label>
+                <div class="form-group permission-advanced" id="newPermissionFallback">
+                    <label>Fallback file permissions:</label>
                     <div class="checkbox-group">
                         <label><input type="checkbox" id="newPermissionList" checked> List</label>
                         <label><input type="checkbox" id="newPermissionRead" checked> Read</label>
@@ -463,6 +474,7 @@
                         <label><input type="checkbox" id="newPermissionMove"> Move</label>
                         <label><input type="checkbox" id="newPermissionShare" checked> Share</label>
                     </div>
+                    <p class="permission-help"><strong>Permission Role takes priority.</strong> These permissions are used only when no Permission Role is assigned.</p>
                 </div>
                 <div class="form-group">
                     <p style="font-size: 0.9rem; opacity: 0.7; margin: 0;">
@@ -504,9 +516,9 @@
                 <label>Email:</label>
                 <input type="email" id="editEmail" class="form-control">
             </div>
-            <div class="form-group">
-                <label>Permissions:</label>
-                <div class="checkbox-group">
+                <div class="form-group permission-advanced" id="editPermissionFallback">
+                    <label>Fallback file permissions:</label>
+                    <div class="checkbox-group">
                     <label><input type="checkbox" id="editPermissionList"> List</label>
                     <label><input type="checkbox" id="editPermissionRead"> Read</label>
                     <label><input type="checkbox" id="editPermissionUpload"> Upload</label>
@@ -518,11 +530,11 @@
                     <label><input type="checkbox" id="editPermissionMove"> Move</label>
                     <label><input type="checkbox" id="editPermissionShare"> Share</label>
                 </div>
-                <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Used only while no Permission Role is assigned below.</p>
+                <p class="permission-help"><strong>Permission Role takes priority.</strong> These permissions are used only when no Permission Role is assigned.</p>
             </div>
             <div class="form-group">
                 <label>Permission Role (optional):</label>
-                <select id="editUserRole" class="form-control">
+                <select id="editUserRole" class="form-control" onchange="syncPermissionSource('editUserRole', 'editPermissionFallback')">
                     <option value="">No role (use Permissions above)</option>
                 </select>
                 <p style="font-size: 0.85rem; opacity: 0.7; margin: 6px 0 0;">Assigning a Permission Role grants that Role's per-Location capability matrix. Manage Permission Roles from the Role Management card.</p>
@@ -565,18 +577,7 @@
                         <option value="false">Inactive</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label class="checkbox-group"><input type="checkbox" id="bulkChangeLocations" onchange="toggleBulkLocationEditor(this.checked)"> Change Location Permissions</label>
-                    <div id="bulkLocationEditor" style="display: none; margin-top: 10px;">
-                        <label style="font-weight: 400;">
-                            <input type="radio" name="bulkLocationMode" value="merge" checked> Merge (add these capabilities, keep everything else the user already has)
-                        </label><br>
-                        <label style="font-weight: 400;">
-                            <input type="radio" name="bulkLocationMode" value="replace"> Replace (for the Locations checked below, use exactly this capability set)
-                        </label>
-                        <div id="bulkLocationMatrixContainer" style="overflow-x: auto; margin-top: 10px;"></div>
-                    </div>
-                </div>
+                <p class="status-note">Bulk Edit changes the Permission Role or active status. Edit a single user for fallback permissions.</p>
             </div>
 
             <div id="bulkEditPreview" style="display: none; margin-top: 10px; padding: 12px; background: rgba(255,255,255,0.05); border: 1px solid #254764; border-radius: 6px;"></div>
@@ -765,12 +766,24 @@
             syncPermissionDependencies(prefix);
         }
 
+        function syncPermissionSource(selectId, fallbackId) {
+            const select = document.getElementById(selectId);
+            const fallback = document.getElementById(fallbackId);
+            if (!select || !fallback) return;
+            const roleManaged = Boolean(select.value);
+            fallback.classList.toggle('is-role-managed', roleManaged);
+            fallback.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+                input.disabled = roleManaged;
+            });
+        }
+
         function hideAddUserForm() {
             document.getElementById('addUserForm').style.display = 'none';
             document.getElementById('newUsername').value = '';
             document.getElementById('newEmail').value = '';
             document.getElementById('newPassword').value = '';
             document.getElementById('newUserRole').value = '';
+            syncPermissionSource('newUserRole', 'newPermissionFallback');
         }
 
         let usersCache = [];
@@ -861,12 +874,14 @@
 
             let html = `<table class="user-table"><thead><tr>
                 <th style="width: 34px;"><input type="checkbox" id="selectAllVisible" onchange="toggleSelectAllVisible(this.checked)"></th>
-                <th>Username</th><th>Email</th><th>System Role</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>`;
+                <th>Username</th><th>Email</th><th>System Role</th><th>Permission Role</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>`;
 
             users.forEach(user => {
                 const lastLogin = user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never';
                 const isConfigUser = user.isConfigUser || user.created === 'System Default';
                 const roleColor = user.role === 'admin' ? 'rgba(239, 68, 68, 0.3)' : (user.role === 'superuser' ? 'rgba(245, 158, 11, 0.3)' : 'rgba(34, 197, 94, 0.3)');
+                const permissionRole = rolesCache.find((role) => role.id === user.roleId);
+                const permissionRoleLabel = permissionRole ? `<span class="role-chip">${escapeHtml(permissionRole.name)}</span>` : '<span class="source-chip fallback">Fallback</span>';
                 const manageable = canActorManageUser(user);
                 const checked = selectedUsernames.has(user.username) ? 'checked' : '';
 
@@ -876,6 +891,7 @@
                         <td>${user.username}</td>
                         <td>${user.email || 'N/A'}</td>
                         <td><span style="background: ${roleColor}; padding: 4px 8px; border-radius: 4px;">${user.role}</span></td>
+                        <td>${permissionRoleLabel}</td>
                         <td>${lastLogin}</td>
                         <td>
                             ${isConfigUser
@@ -1004,6 +1020,7 @@
                 document.getElementById('editPassword').value = '';
                 if (!rolesCache.length) await loadRoles({ silent: true });
                 document.getElementById('editUserRole').value = editingUser.roleId || '';
+                syncPermissionSource('editUserRole', 'editPermissionFallback');
                 openModal('editUserModal');
             } catch (error) {
                 alert(`Error: ${error.message}`);
@@ -1071,8 +1088,6 @@
             document.getElementById('bulkChangeActive').checked = false;
             document.getElementById('bulkActiveValue').disabled = true;
             document.getElementById('bulkActiveValue').value = 'true';
-            document.getElementById('bulkChangeLocations').checked = false;
-            toggleBulkLocationEditor(false);
             document.getElementById('bulkEditForm').style.display = 'block';
             document.getElementById('bulkEditPreview').style.display = 'none';
             document.getElementById('bulkEditProgress').style.display = 'none';
@@ -1084,11 +1099,6 @@
         function closeBulkEditModal() {
             if (bulkJobPollTimer) { clearTimeout(bulkJobPollTimer); bulkJobPollTimer = null; }
             closeModal('bulkEditModal');
-        }
-
-        function toggleBulkLocationEditor(checked) {
-            document.getElementById('bulkLocationEditor').style.display = checked ? 'block' : 'none';
-            if (checked) renderRoleMatrix({}, 'bulkLocationMatrixContainer', 'bulk-location-matrix-cell');
         }
 
         function previewBulkEdit() {
@@ -1103,13 +1113,6 @@
                 changes.active = document.getElementById('bulkActiveValue').value === 'true';
                 summaryLines.push(`Active status → ${changes.active ? 'Active' : 'Inactive'}`);
             }
-            if (document.getElementById('bulkChangeLocations').checked) {
-                changes.locationPermissions = collectMatrixPermissions('bulk-location-matrix-cell');
-                changes.locationPermissionsMode = document.querySelector('input[name="bulkLocationMode"]:checked').value;
-                const locationCount = Object.keys(changes.locationPermissions).length;
-                summaryLines.push(`Location permissions (${changes.locationPermissionsMode}) for ${locationCount} Location(s)`);
-            }
-
             if (summaryLines.length === 0) {
                 alert('Select at least one field to change.');
                 return;
@@ -1226,6 +1229,8 @@
                 });
                 select.value = previousValue;
             });
+            syncPermissionSource('newUserRole', 'newPermissionFallback');
+            syncPermissionSource('editUserRole', 'editPermissionFallback');
         }
 
         async function loadRoles(options = {}) {
@@ -1255,7 +1260,7 @@
                 return;
             }
 
-            let html = '<table class="user-table"><thead><tr><th>Name</th><th>Description</th><th>Locations granted</th><th>Actions</th></tr></thead><tbody>';
+            let html = '<div class="status-note">A Role is the shared source of Location permissions. Changes apply immediately to every assigned user.</div><table class="user-table"><thead><tr><th>Name</th><th>Description</th><th>Locations granted</th><th>Assigned users</th><th>Actions</th></tr></thead><tbody>';
             roles.forEach((role) => {
                 const grantedLocations = Object.keys(role.locationPermissions || {}).length;
                 html += `
@@ -1263,6 +1268,7 @@
                         <td>${role.name}</td>
                         <td>${role.description || '<span style="opacity:0.6;">—</span>'}</td>
                         <td>${grantedLocations}</td>
+                        <td>${role.assignedUserCount || 0}</td>
                         <td>
                             <button class="btn btn-small" onclick="editRole('${role.id}')">✏️ Edit</button>
                             <button class="btn btn-small danger" onclick="deleteRole('${role.id}')">🗑️ Delete</button>
@@ -1367,7 +1373,9 @@
         }
 
         async function deleteRole(id) {
-            if (!confirm('Delete this Role? Users assigned to it will fall back to their individual permissions.')) return;
+            const role = rolesCache.find((candidate) => candidate.id === id);
+            const assigned = role?.assignedUserCount || 0;
+            if (!confirm(`Delete this Role? ${assigned} assigned user(s) will fall back to their individual permissions.`)) return;
             try {
                 const response = await fetch(`/api/admin/roles/${encodeURIComponent(id)}`, {
                     method: 'DELETE',
@@ -1386,6 +1394,8 @@
         document.addEventListener('DOMContentLoaded', async () => {
             bindPermissionDependencies('newPermission');
             bindPermissionDependencies('editPermission');
+            syncPermissionSource('newUserRole', 'newPermissionFallback');
+            syncPermissionSource('editUserRole', 'editPermissionFallback');
             if (!(await checkAuth())) return;
             fetchStats();
         });

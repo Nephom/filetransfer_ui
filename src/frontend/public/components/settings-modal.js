@@ -1,7 +1,7 @@
 const USER_PERMISSION_OPTIONS = ['list', 'read', 'upload', 'write', 'delete', 'rename', 'mkdir', 'copy', 'move', 'share'];
 
 // Settings Modal Component
-const SettingsModal = ({ onClose, token }) => {
+const SettingsModal = ({ onClose, token, initialTab = 'security' }) => {
     const [settings, setSettings] = useState({});
     const [users, setUsers] = useState([]);
     const [userStats, setUserStats] = useState(null);
@@ -10,7 +10,7 @@ const SettingsModal = ({ onClose, token }) => {
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
     const [success, setSuccess] = useState('');
-    const [activeTab, setActiveTab] = useState('security');
+    const [activeTab, setActiveTab] = useState(initialTab);
     const [userRole, setUserRole] = useState(null);
 
     // Check user role on mount
@@ -386,6 +386,7 @@ const SettingsModal = ({ onClose, token }) => {
                     <TabButton label="Security" tabName="security" />
                     {userRole === 'admin' && <TabButton label="User Management" tabName="users" />}
                     {userRole === 'admin' && <TabButton label="Configuration" tabName="config" />}
+                    <TabButton label="Help" tabName="help" />
                 </div>
 
                 <div style={{ flex: 1, overflow: 'auto', padding: '24px' }}>
@@ -448,6 +449,49 @@ const SettingsModal = ({ onClose, token }) => {
                                             ))}
                                         </div>
                                     </div>
+                                </div>
+                            )}
+
+                            {activeTab === 'help' && (
+                                <div style={{ color: 'white', lineHeight: 1.6 }}>
+                                    <h3 style={{ marginTop: 0 }}>Permission Management</h3>
+                                    <p style={{ color: 'rgba(255, 255, 255, 0.8)' }}>
+                                        Permission Roles are reusable Location permission sets. Assign a Role to a user when
+                                        several users should receive the same access rules.
+                                    </p>
+                                    <p style={{ color: 'rgba(255, 255, 255, 0.65)', fontSize: '13px' }}>
+                                        Upload Log and Session Path are removed features and are not part of the current workflow.
+                                    </p>
+                                    <div style={{ display: 'grid', gap: '12px' }}>
+                                        <div style={{ background: 'rgba(59, 130, 246, 0.16)', border: '1px solid rgba(96, 165, 250, 0.35)', borderRadius: '10px', padding: '14px' }}>
+                                            <strong>Permission Role</strong>
+                                            <div style={{ color: 'rgba(255, 255, 255, 0.78)', fontSize: '13px' }}>
+                                                A named matrix of capabilities for each server Location. Changes to a Role
+                                                apply immediately to all assigned users.
+                                            </div>
+                                        </div>
+                                        <div style={{ background: 'rgba(245, 158, 11, 0.14)', border: '1px solid rgba(245, 158, 11, 0.35)', borderRadius: '10px', padding: '14px' }}>
+                                            <strong>Fallback file permissions</strong>
+                                            <div style={{ color: 'rgba(255, 255, 255, 0.78)', fontSize: '13px' }}>
+                                                Used only when the user has no Permission Role. If a Role is assigned, its
+                                                Location matrix is the effective permission source.
+                                            </div>
+                                        </div>
+                                        <div style={{ background: 'rgba(34, 197, 94, 0.14)', border: '1px solid rgba(34, 197, 94, 0.35)', borderRadius: '10px', padding: '14px' }}>
+                                            <strong>Bulk Edit</strong>
+                                            <div style={{ color: 'rgba(255, 255, 255, 0.78)', fontSize: '13px' }}>
+                                                Use Bulk Edit to assign or clear a Permission Role, or to change active status.
+                                                Edit one user when changing fallback permissions.
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <h4>Capability rules</h4>
+                                    <ul style={{ color: 'rgba(255, 255, 255, 0.8)', paddingLeft: '20px' }}>
+                                        <li><code>list</code> allows browsing a Location; <code>read</code> allows reading/downloading files.</li>
+                                        <li><code>copy</code> or <code>move</code> also requires and grants <code>read</code>, <code>write</code>, and <code>delete</code>.</li>
+                                        <li>Read-only Locations never allow mutation capabilities, even when they are included in a Role.</li>
+                                        <li>Deleting a Role clears that Role from assigned users and returns them to fallback permissions.</li>
+                                    </ul>
                                 </div>
                             )}
 
@@ -649,7 +693,7 @@ const CreateUserModal = ({ onClose, onSubmit, loading, roles = [] }) => {
                         </select>
                     </div>
                     <div style={{ marginBottom: '20px' }}>
-                        <label style={{ color: 'white', display: 'block', marginBottom: '4px', fontSize: '14px' }}>Permission Role (optional):</label>
+                        <label style={{ color: 'white', display: 'block', marginBottom: '4px', fontSize: '14px' }}>Permission Role:</label>
                         <select value={formData.roleId} onChange={(e) => setFormData(prev => ({ ...prev, roleId: e.target.value }))} style={{ width: '100%', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px' }}>
                             <option value="">No role (individually managed permissions)</option>
                             {roles.map((role) => (<option key={role.id} value={role.id}>{role.name}</option>))}
@@ -657,7 +701,7 @@ const CreateUserModal = ({ onClose, onSubmit, loading, roles = [] }) => {
                         <p style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: '11px', margin: '4px 0 0' }}>Manage the available Roles and their per-Location permission matrix from the Admin Console.</p>
                     </div>
                     <div style={{ marginBottom: '20px' }}>
-                        <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Permissions:</label>
+                        <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Fallback file permissions:</label>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
                             {USER_PERMISSION_OPTIONS.map(permission => (
                                 <label key={permission} style={{ color: 'rgba(255, 255, 255, 0.85)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
@@ -706,7 +750,7 @@ const EditUserModal = ({ user, onClose, onSubmit, loading, roles = [] }) => {
                         <div style={{ color: 'rgba(255, 255, 255, 0.8)', padding: '8px 12px', background: 'rgba(255, 255, 255, 0.05)', border: '1px solid rgba(255, 255, 255, 0.15)', borderRadius: '6px' }}>User (the single system administrator is managed in Configuration)</div>
                     </div>
                     <div style={{ marginBottom: '16px' }}>
-                        <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Permissions:</label>
+                        <label style={{ color: 'white', display: 'block', marginBottom: '8px', fontSize: '14px' }}>Fallback file permissions:</label>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
                             {USER_PERMISSION_OPTIONS.map(permission => (
                                 <label key={permission} style={{ color: 'rgba(255, 255, 255, 0.85)', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
@@ -715,10 +759,10 @@ const EditUserModal = ({ user, onClose, onSubmit, loading, roles = [] }) => {
                                 </label>
                             ))}
                         </div>
-                        <p style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: '11px', margin: '6px 0 0' }}>Used only while no Permission Role is assigned below.</p>
+                        <p style={{ color: 'rgba(255, 255, 255, 0.6)', fontSize: '11px', margin: '6px 0 0' }}>Used only when no Permission Role is assigned. A Role's Location matrix takes priority.</p>
                     </div>
                     <div style={{ marginBottom: '16px' }}>
-                        <label style={{ color: 'white', display: 'block', marginBottom: '4px', fontSize: '14px' }}>Permission Role (optional):</label>
+                        <label style={{ color: 'white', display: 'block', marginBottom: '4px', fontSize: '14px' }}>Permission Role:</label>
                         <select value={formData.roleId} onChange={(e) => setFormData(prev => ({ ...prev, roleId: e.target.value }))} style={{ width: '100%', background: 'rgba(255, 255, 255, 0.1)', border: '1px solid rgba(255, 255, 255, 0.2)', borderRadius: '6px', color: 'white', padding: '8px 12px' }}>
                             <option value="">No role (use Permissions above)</option>
                             {roles.map((role) => (<option key={role.id} value={role.id}>{role.name}</option>))}

@@ -1884,13 +1884,10 @@ app.get('/api/admin/users/:username', requireStaffRole, async (req, res) => {
 // final per-user succeeded/failed/skipped breakdown. No bulk password
 // reset is offered. The config admin account can never be a target.
 function mergeLocationPermissionsForBulk(existingPermissions, incomingPermissions, mode) {
+  if (mode === 'replace') return { ...(incomingPermissions || {}) };
   const merged = { ...(existingPermissions || {}) };
   for (const [locationId, capabilities] of Object.entries(incomingPermissions || {})) {
-    if (mode === 'replace') {
-      merged[locationId] = [...capabilities];
-    } else {
-      merged[locationId] = [...new Set([...(existingPermissions?.[locationId] || []), ...capabilities])];
-    }
+    merged[locationId] = [...new Set([...(existingPermissions?.[locationId] || []), ...capabilities])];
   }
   return merged;
 }
@@ -2000,7 +1997,15 @@ app.get('/api/admin/users/bulk/:jobId', requireStaffRole, async (req, res) => {
 // to edit shared capability grants instead of repeating them per user.
 app.get('/api/admin/roles', requireStaffRole, async (req, res) => {
   try {
-    const roles = roleManager.getAllRoles();
+    const users = await userManager.getAllUsers();
+    const roleAssignments = users.reduce((counts, user) => {
+      if (user.roleId) counts[user.roleId] = (counts[user.roleId] || 0) + 1;
+      return counts;
+    }, {});
+    const roles = roleManager.getAllRoles().map((role) => ({
+      ...role,
+      assignedUserCount: roleAssignments[role.id] || 0
+    }));
     const locations = locationManager.getLocations({ includeDisabled: true })
       .map(({ id, displayName, enabled, readOnly, order }) => ({ id, displayName, enabled, readOnly, order }));
     res.json({ success: true, roles, locations, capabilities: CAPABILITIES });

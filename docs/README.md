@@ -44,6 +44,7 @@ The complete API documentation is available in the `api/` directory:
 - [API Overview](./api/README.md)
 - [Upload Examples](./api/upload.md#request-example)
 - [Error Handling](./api/error-codes.md)
+- [WebUI Permission Management](./permissions.md)
 
 ### For API Users
 
@@ -51,6 +52,7 @@ The complete API documentation is available in the `api/` directory:
 - [Single File Upload](./api/upload.md#single-file-upload-with-real-time-progress)
 - [Multi-File Upload](./api/upload.md#multi-file-upload-with-batch-tracking)
 - [Progress Polling](./api/progress.md)
+- [Permission and Role API](./api/API_REFERENCE.md#roles)
 
 ---
 

@@ -102,6 +102,7 @@ portable EXE 位於 `fileapi_ui/src-tauri/target/release/nFterm.exe`；NSIS 產�
 
 - [完整 API 參考](docs/api/API_REFERENCE.md)
 - [文件索引](docs/README.md)
+- [WebUI 權限管理說明](docs/permissions.md)
 - [Tauri 桌面客戶端](fileapi_ui/README.md)
 
 `fileapi.sh` 已淘汰，不是支援的 API 相容性目標。
