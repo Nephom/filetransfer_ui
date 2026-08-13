@@ -35,6 +35,8 @@ test-results/
 test-results/**
 test-output/
 test-output/**
+test/
+test/**
 build-assets/
 build-assets/**
 
