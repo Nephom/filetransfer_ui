@@ -34,12 +34,46 @@
 .rest-reader-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 20px 10px; }
 .rest-reader-heading h1 { margin: 3px 0 0; color: #effaff; font-size: 20px; font-weight: 600; }
 .rest-session-status { padding: 5px 8px; border: 1px solid #315b7e; border-radius: 999px; color: #91a9c0; font-size: 11px; white-space: nowrap; }
-.rest-auth-panel { margin: 0 20px 10px; border: 1px solid #315b7e; border-radius: 6px; background: rgba(7, 25, 42, .58); }
+.rest-auth-panel { position: relative; margin: 0 20px 10px; border: 1px solid #315b7e; border-radius: 6px; background: rgba(7, 25, 42, .58); }
 .rest-section-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 32px !important; padding: 7px 10px !important; border: 0; color: #d9eafa; background: transparent; text-align: left; }
 .rest-auth-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; padding: 0 10px 10px; }
-.rest-login-config { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.rest-login-config { display: grid; order: 1; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .rest-login-config textarea { min-height: 62px; resize: vertical; }
 .rest-login-config button { align-self: end; }
+.rest-session-preset { position: relative; display: flex; align-items: center; gap: 6px; grid-column: 1 / -1; }
+.rest-login-config > .rest-session-preset { display: none; }
+.rest-vendor-bar { position: relative; display: flex; align-items: center; flex-wrap: wrap; order: 2; grid-column: 1 / -1; gap: 6px; }
+.rest-vendor-toggle { display: inline-flex; align-items: center; border: 1px solid #315b7e; border-radius: 5px; overflow: hidden; background: #07192a; }
+.rest-vendor-toggle button { min-height: 27px !important; padding: 4px 9px !important; border: 0; border-right: 1px solid #315b7e; border-radius: 0; color: #91a9c0; background: transparent; font-size: 11px !important; }
+.rest-vendor-toggle button:last-child { border-right: 0; }
+.rest-vendor-toggle button:hover, .rest-vendor-toggle button.selected { color: #061522; background: #6be5ff; }
+.rest-vendor-preset { min-height: 27px !important; padding: 4px 9px !important; color: #b9eaff; background: #102d49; border-color: #315b7e; font-size: 11px !important; }
+.rest-vendor-preset:hover { color: #061522; background: #6be5ff; }
+.rest-login-button { min-width: 72px; min-height: 27px !important; padding: 4px 10px !important; font-size: 11px !important; }
+.rest-session-preset > button:not(.rest-help-button) { flex: 0 1 auto; }
+.rest-session-preset > button.confirm { min-width: 84px; }
+.rest-help-button { display: inline-grid; place-items: center; width: 24px; min-width: 24px; min-height: 24px !important; padding: 0 !important; border: 1px solid #47cdf1; border-radius: 50%; color: #9be8ff; background: #102d49; font-size: 13px !important; font-weight: 700; }
+.rest-help-button:hover, .rest-help-button[aria-expanded="true"] { color: #061522; background: #6be5ff; }
+.rest-session-help { position: absolute; z-index: 10; bottom: calc(100% + 8px); left: 0; width: min(440px, calc(100vw - 56px)); padding: 12px; border: 1px solid #47cdf1; border-radius: 6px; color: #cfe8f5; background: #0b2137; box-shadow: 0 14px 32px rgba(0, 0, 0, .52); font-size: 11px; line-height: 1.45; }
+.rest-session-help strong { color: #effaff; }
+.rest-session-help ol { margin: 8px 0; padding-left: 22px; }
+.rest-session-help li { margin: 3px 0; }
+.rest-session-help p { margin: 8px 0 0; color: #91a9c0; }
+.rest-session-help pre { margin: 8px 0; padding: 8px; overflow: auto; color: #bde9f5; background: #051421; border: 1px solid #214360; border-radius: 4px; font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
+.rest-session-help-close { position: absolute; top: 6px; right: 6px; min-height: 23px !important; padding: 1px 7px !important; border: 1px solid #315b7e; border-radius: 50%; color: #9be8ff; background: #102d49; }
+.rest-session-help-close:hover { color: #061522; background: #6be5ff; }
+.token-path-help { position: absolute; z-index: 13; top: 0; left: 0; display: inline-flex; align-items: center; gap: 6px; margin: 0; color: #9fb8cf; font-size: 11px; pointer-events: none; }
+.token-path-help > span { display: none; }
+.token-path-help-button { display: inline-grid; place-items: center; width: 18px; min-width: 18px; min-height: 18px !important; padding: 0 !important; border: 1px solid #47cdf1; border-radius: 50%; color: #9be8ff; background: #102d49; font-size: 10px !important; font-weight: 700; }
+.token-path-help-button, .token-path-help-popup { pointer-events: auto; }
+.token-path-help-button:hover, .token-path-help-button[aria-expanded="true"] { color: #061522; background: #6be5ff; }
+.token-path-help-popup { position: absolute; z-index: 12; bottom: calc(100% + 8px); left: 0; width: min(440px, calc(100vw - 48px)); padding: 12px; border: 1px solid #47cdf1; border-radius: 6px; color: #cfe8f5; background: #0b2137; box-shadow: 0 14px 32px rgba(0, 0, 0, .52); font-size: 11px; line-height: 1.45; }
+.token-path-help-popup strong { color: #effaff; }
+.token-path-help-popup p { margin: 7px 0; color: #91a9c0; }
+.token-path-help-popup pre { margin: 7px 0; padding: 8px; overflow: auto; color: #bde9f5; background: #051421; border: 1px solid #214360; border-radius: 4px; font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.token-path-help-popup code { color: #9be8ff; }
+.token-path-help-close { position: absolute; top: 6px; right: 6px; min-height: 22px !important; padding: 1px 7px !important; border: 1px solid #315b7e; border-radius: 50%; color: #9be8ff; background: #102d49; }
+.token-path-help-close:hover { color: #061522; background: #6be5ff; }
 .rest-url-row { display: flex; gap: 7px; padding: 0 20px 8px; }
 .rest-url-row select { width: 86px; flex: 0 0 auto; color: #9be8ff; background: #0b2137; border-color: #315b7e; font-weight: 700; }
 .rest-url-row input { min-width: 0; flex: 1 1 auto; margin: 0; color: #e6eefc; background: #07192a; border-color: #315b7e; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
@@ -59,6 +93,27 @@
 .rest-history-item span { min-width: 0; overflow: hidden; color: #78c9ee; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .rest-history-item small { flex: 0 0 auto; color: #668aa9; font-size: 10px; }
 .rest-history-clear { justify-self: start; min-height: 24px !important; padding: 3px 7px !important; border: 0; color: #ffb8ae; background: transparent; font-size: 10px !important; }
+.rest-actions { display: grid; gap: 6px; margin: 0 20px 10px; padding: 9px; border: 1px solid #6f5930; border-radius: 6px; background: rgba(55, 38, 14, .35); }
+.rest-links { display: grid; gap: 6px; margin: 0 20px 10px; padding: 9px; border: 1px solid #315b7e; border-radius: 6px; background: rgba(7, 25, 42, .45); }
+.rest-links-heading { display: flex; align-items: center; justify-content: space-between; color: #9be8ff; font-size: 12px; }
+.rest-links-heading span { min-width: 20px; padding: 2px 6px; border: 1px solid #315b7e; border-radius: 999px; color: #78c9ee; font-size: 10px; text-align: center; }
+.rest-link-button { display: grid; grid-template-columns: minmax(100px, .8fr) 55px minmax(0, 2fr); align-items: center; gap: 9px; width: 100%; min-height: 32px !important; padding: 6px 8px !important; border: 1px solid transparent; color: #d9eafa; background: transparent; text-align: left; }
+.rest-link-button:hover { border-color: #47cdf1; background: #102d49; }
+.rest-link-button span { overflow: hidden; color: #b9cee4; text-overflow: ellipsis; white-space: nowrap; }
+.rest-link-button small { color: #78c9ee; font-size: 10px; }
+.rest-link-button code { overflow: hidden; color: #9be8ff; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.rest-actions-heading { display: flex; align-items: center; justify-content: space-between; color: #ffd58a; font-size: 12px; }
+.rest-actions-heading span { padding: 2px 6px; border: 1px solid #8b6a2c; border-radius: 999px; color: #ffd58a; font-size: 10px; }
+.rest-action-button { display: grid; gap: 3px; width: 100%; min-height: 38px !important; padding: 7px 9px !important; border: 1px solid #6f5930; color: #ffe6ae; background: rgba(70, 49, 18, .5); text-align: left; }
+.rest-action-button:hover { border-color: #ffd58a; background: rgba(104, 72, 22, .65); }
+.rest-action-button small { overflow: hidden; color: #c5a967; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.rest-action-dialog { position: fixed; z-index: 100; top: 50%; left: 50%; width: min(520px, calc(100vw - 32px)); display: grid; gap: 10px; transform: translate(-50%, -50%); padding: 16px; border: 1px solid #8b6a2c; border-radius: 7px; color: #e6eefc; background: #0b2137; box-shadow: 0 20px 60px rgba(0, 0, 0, .65); }
+.rest-action-dialog::before { position: fixed; z-index: -1; top: 50%; left: 50%; width: 100vw; height: 100vh; content: ""; transform: translate(-50%, -50%); background: rgba(0, 6, 14, .66); }
+.rest-action-dialog-heading { display: flex; align-items: center; justify-content: space-between; color: #ffd58a; }
+.rest-action-dialog-heading button { min-height: 26px; padding: 2px 8px; border-radius: 50%; }
+.rest-action-dialog p { margin: 0; color: #c5a967; font-size: 12px; line-height: 1.45; }
+.rest-action-dialog label { display: grid; gap: 5px; color: #9fb8cf; font-size: 11px; }
+.rest-action-dialog textarea { min-height: 120px; padding: 9px; resize: vertical; color: #bde9f5; background: #051421; border: 1px solid #6f5930; border-radius: 4px; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .rest-breadcrumbs { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 0 20px 11px; color: #668aa9; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
 .rest-breadcrumbs button { min-height: 22px !important; padding: 2px 4px !important; border: 0; color: #78c9ee; background: transparent; font-family: inherit; font-size: inherit; }
 .rest-breadcrumbs button:hover { color: #effaff; background: #133b5b; }

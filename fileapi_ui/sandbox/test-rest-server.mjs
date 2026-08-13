@@ -35,4 +35,30 @@ assert(mutation.status === 200, `patch status ${mutation.status}`);
 
 const unauthorized = await fetch(`${base}/v1/rest/system`);
 assert(unauthorized.status === 401, `unauthorized status ${unauthorized.status}`);
+
+const redfishLogin = await fetch(`${base}/redfish/v1/SessionService/Sessions`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ UserName: "sandbox", Password: "sandbox" }),
+});
+assert(redfishLogin.status === 201, `redfish login status ${redfishLogin.status}`);
+const redfishToken = redfishLogin.headers.get("x-auth-token");
+assert(redfishToken === "sandbox-token", "redfish token missing");
+
+const systems = await fetch(`${base}/redfish/v1/Systems/1`, { headers: { "X-Auth-Token": redfishToken } });
+assert(systems.status === 200, `redfish system status ${systems.status}`);
+const systemBody = await systems.json();
+assert(systemBody["@odata.id"] === "/redfish/v1/Systems/1", "odata id missing");
+
+const managers = await fetch(`${base}/redfish/v1/Managers`, { headers: { "X-Auth-Token": redfishToken } });
+assert(managers.status === 200, `redfish managers status ${managers.status}`);
+const managerBody = await managers.json();
+assert(managerBody.Members?.[0]?.["@odata.id"] === "/redfish/v1/Managers/1", "manager member link missing");
+
+const reset = await fetch(`${base}/redfish/v1/Systems/1/Actions/ComputerSystem.Reset`, {
+  method: "POST",
+  headers: { "X-Auth-Token": redfishToken, "Content-Type": "application/json" },
+  body: JSON.stringify({ ResetType: "ForceRestart" }),
+});
+assert(reset.status === 204, `redfish action status ${reset.status}`);
 console.log("REST sandbox checks passed.");
