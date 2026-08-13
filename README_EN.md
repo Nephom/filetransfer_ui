@@ -103,15 +103,6 @@ Redfish login flow:
 
 The reader supports `@odata.id`, `href`, `Members`, nested `Links`, Redfish `Actions.*.target`, recent GET path history, and download links such as `DownloadUri`. Reset, power, BIOS, and other actions require confirmation. Tokens, cookies, and passwords are never written to Workspace JSON or the operation log.
 
-When no real REST server is available, use the WSL2 sandbox:
-
-```bash
-node fileapi_ui/sandbox/rest-server.mjs
-node fileapi_ui/sandbox/test-rest-server.mjs
-```
-
-The sandbox listens at `http://127.0.0.1:8787` by default. Its test username is `sandbox` and its test password is `sandbox`.
-
 ## Documentation
 
 - [API reference](docs/api/API_REFERENCE.md)

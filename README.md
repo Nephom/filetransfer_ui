@@ -118,15 +118,6 @@ Redfish 使用流程：
 
 Reader 支援 `@odata.id`、`href`、`Members`、nested `Links`、Redfish `Actions.*.target`、最近 GET path history，以及 `DownloadUri` 等下載連結。Reset、Power、BIOS 或其他 action 會要求確認；Token、Cookie、password 不會寫入 Workspace JSON 或 operation log。
 
-沒有實際 REST server 時，可使用 WSL2 sandbox：
-
-```bash
-node fileapi_ui/sandbox/rest-server.mjs
-node fileapi_ui/sandbox/test-rest-server.mjs
-```
-
-Sandbox 預設位於 `http://127.0.0.1:8787`，測試帳號為 `sandbox`，密碼為 `sandbox`。
-
 ## 文件
 
 - [完整 API 參考](docs/api/API_REFERENCE.md)
