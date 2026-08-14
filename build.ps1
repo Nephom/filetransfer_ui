@@ -358,6 +358,19 @@ function Get-AppVersion {
     return (Get-Content -LiteralPath (Join-Path $Root "VERSION") -Raw).Trim()
 }
 
+function Get-JsonVersion {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    # Use Node's JSON parser instead of Windows PowerShell's ConvertFrom-Json.
+    # The latter can reject valid npm lockfiles on older Windows PowerShell
+    # releases with a misleading error about an invalid property name.
+    $value = & node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" $Path
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($value)) {
+        throw "Unable to read version from JSON file '$Path'."
+    }
+    return ($value | Out-String).Trim()
+}
+
 function Assert-ProjectVersionConsistency {
     $expected = Get-AppVersion
     $versionFiles = @(
@@ -369,9 +382,9 @@ function Assert-ProjectVersionConsistency {
     $mismatches = @()
 
     foreach ($path in $versionFiles) {
-        $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-        if ($json.version -ne $expected) {
-            $mismatches += "$path = $($json.version)"
+        $actual = Get-JsonVersion -Path $path
+        if ($actual -ne $expected) {
+            $mismatches += "$path = $actual"
         }
     }
 
@@ -384,9 +397,9 @@ function Assert-ProjectVersionConsistency {
     }
 
     $tauriConfigPath = Join-Path $DesktopRoot "src-tauri\tauri.conf.json"
-    $tauriConfig = Get-Content -LiteralPath $tauriConfigPath -Raw | ConvertFrom-Json
-    if ($tauriConfig.version -ne $expected) {
-        $mismatches += "$tauriConfigPath = $($tauriConfig.version)"
+    $tauriVersion = Get-JsonVersion -Path $tauriConfigPath
+    if ($tauriVersion -ne $expected) {
+        $mismatches += "$tauriConfigPath = $tauriVersion"
     }
 
     if ($mismatches.Count -gt 0) {
@@ -402,8 +415,14 @@ function Get-AppVersionInfo {
     # the exact same "VERSION-commit (RELEASE_DATE)" identity as the WebUI
     # and the Linux/Mac Tauri build instead of drifting from whatever was
     # last hand-typed into fileapi_ui's own package.json/Cargo.toml/tauri.conf.json.
-    $json = node (Join-Path $Root "scripts\version.js") | Out-String
-    return $json | ConvertFrom-Json
+    $versionScript = Join-Path $Root "scripts\version.js"
+    return [pscustomobject]@{
+        baseVersion = (& node -p "require(process.argv[1]).getVersion().baseVersion" $versionScript | Out-String).Trim()
+        commit = (& node -p "require(process.argv[1]).getVersion().commit" $versionScript | Out-String).Trim()
+        releaseDate = (& node -p "require(process.argv[1]).getVersion().releaseDate" $versionScript | Out-String).Trim()
+        version = (& node -p "require(process.argv[1]).getVersion().version" $versionScript | Out-String).Trim()
+        display = (& node -p "require(process.argv[1]).getVersion().display" $versionScript | Out-String).Trim()
+    }
 }
 
 function Get-PEMachineType {
