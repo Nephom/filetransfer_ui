@@ -3,7 +3,7 @@ use reqwest::{Client, Url};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Deserializer, Error as DeError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -55,9 +55,29 @@ struct LoginData {
 
 #[derive(Deserialize)]
 struct ProxyData {
+    #[serde(deserialize_with = "deserialize_port")]
     port: u16,
     ticket: String,
     password: Option<String>,
+}
+
+fn deserialize_port<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Port {
+        Number(u16),
+        Text(String),
+    }
+
+    match Port::deserialize(deserializer)? {
+        Port::Number(port) => Ok(port),
+        Port::Text(port) => port
+            .parse::<u16>()
+            .map_err(|error| D::Error::custom(format!("invalid VNC port: {error}"))),
+    }
 }
 
 #[derive(Deserialize)]
@@ -531,6 +551,18 @@ mod tests {
                 url.as_str(),
                 "https://pve.example:8006/api2/json/access/ticket"
             );
+        }
+    }
+
+    #[test]
+    fn proxy_port_accepts_number_and_numeric_string() {
+        for body in [
+            r#"{"port":5900,"ticket":"ticket","password":"password"}"#,
+            r#"{"port":"5900","ticket":"ticket","password":"password"}"#,
+        ] {
+            let proxy: super::ProxyData =
+                serde_json::from_str(body).expect("proxy response should decode");
+            assert_eq!(proxy.port, 5900);
         }
     }
 }
