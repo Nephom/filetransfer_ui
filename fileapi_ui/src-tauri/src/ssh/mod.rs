@@ -1032,3 +1032,15 @@ pub fn load_rest_secret(entry_id: String, kind: String) -> Result<Option<String>
 pub fn forget_rest_secret(entry_id: String, kind: String) -> Result<(), String> {
     secrets::forget_rest_secret(&entry_id, &kind)
 }
+
+pub fn save_proxmox_secret(entry_id: String, kind: String, value: String) -> Result<(), String> {
+    secrets::save_proxmox_secret(&entry_id, &kind, &value)
+}
+
+pub fn load_proxmox_secret(entry_id: String, kind: String) -> Result<Option<String>, String> {
+    secrets::load_proxmox_secret(&entry_id, &kind)
+}
+
+pub fn forget_proxmox_secret(entry_id: String, kind: String) -> Result<(), String> {
+    secrets::forget_proxmox_secret(&entry_id, &kind)
+}
