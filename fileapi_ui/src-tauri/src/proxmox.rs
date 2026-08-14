@@ -3,6 +3,7 @@ use reqwest::{Client, Url};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -172,6 +173,18 @@ async fn api_error(stage: &str, response: reqwest::Response) -> String {
     format!("Proxmox {stage} failed ({status}): {body}")
 }
 
+async fn decode_api<T: DeserializeOwned>(
+    stage: &str,
+    response: reqwest::Response,
+) -> Result<T, String> {
+    let body = response
+        .bytes()
+        .await
+        .map_err(|error| format!("Unable to read Proxmox {stage} response: {error}"))?;
+    serde_json::from_slice(&body)
+        .map_err(|error| format!("Invalid Proxmox {stage} response: {error}"))
+}
+
 async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, String), String> {
     let base = normalized_url(&entry.base_url)?;
     let label = endpoint_label(entry);
@@ -219,18 +232,21 @@ async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, Stri
         );
         return Err(message);
     }
-    let data: ApiEnvelope<LoginData> = response.json().await.map_err(|error| {
-        let message = format!("Invalid Proxmox ticket response: {error}");
-        crate::oplog::log(
-            "ERROR",
-            "proxmox_vnc",
-            "ticket_login_failed",
-            &label,
-            "proxmox",
-            &message,
-        );
-        message
-    })?;
+    let data: ApiEnvelope<LoginData> =
+        decode_api("ticket login", response)
+            .await
+            .map_err(|error| {
+                let message = format!("Invalid Proxmox ticket response: {error}");
+                crate::oplog::log(
+                    "ERROR",
+                    "proxmox_vnc",
+                    "ticket_login_failed",
+                    &label,
+                    "proxmox",
+                    &message,
+                );
+                message
+            })?;
     crate::oplog::log(
         "INFO",
         "proxmox_vnc",
@@ -275,18 +291,19 @@ pub async fn list_vms(entry: VncEntry, password: String) -> Result<Vec<VmSummary
         );
         return Err(message);
     }
-    let data: ApiEnvelope<Vec<ClusterVm>> = response.json().await.map_err(|error| {
-        let message = format!("Invalid Proxmox VM list response: {error}");
-        crate::oplog::log(
-            "ERROR",
-            "proxmox_vnc",
-            "vm_list_failed",
-            &label,
-            "proxmox",
-            &message,
-        );
-        message
-    })?;
+    let data: ApiEnvelope<Vec<ClusterVm>> =
+        decode_api("VM list", response).await.map_err(|error| {
+            let message = format!("Invalid Proxmox VM list response: {error}");
+            crate::oplog::log(
+                "ERROR",
+                "proxmox_vnc",
+                "vm_list_failed",
+                &label,
+                "proxmox",
+                &message,
+            );
+            message
+        })?;
     crate::oplog::log(
         "INFO",
         "proxmox_vnc",
@@ -357,18 +374,19 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
         );
         return Err(message);
     }
-    let data: ApiEnvelope<ProxyData> = response.json().await.map_err(|error| {
-        let message = format!("Invalid Proxmox VNC proxy response: {error}");
-        crate::oplog::log(
-            "ERROR",
-            "proxmox_vnc",
-            "vnc_proxy_failed",
-            &label,
-            "proxmox",
-            &message,
-        );
-        message
-    })?;
+    let data: ApiEnvelope<ProxyData> =
+        decode_api("VNC proxy", response).await.map_err(|error| {
+            let message = format!("Invalid Proxmox VNC proxy response: {error}");
+            crate::oplog::log(
+                "ERROR",
+                "proxmox_vnc",
+                "vnc_proxy_failed",
+                &label,
+                "proxmox",
+                &message,
+            );
+            message
+        })?;
     let password = data.data.password.ok_or_else(|| {
         let message = "Proxmox VNC proxy did not return a VNC password".to_string();
         crate::oplog::log(
