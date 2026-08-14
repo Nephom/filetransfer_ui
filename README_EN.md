@@ -1,16 +1,22 @@
 [正體中文](README.md)
 
-# Web-Based File Management System 3.3.2
+# File Transfer Platform 3.3.3
 
-A local file management system with a Windows Explorer-style web interface and a Tauri v2 desktop client (**nFterm**) for Ubuntu and Windows.
+This repository contains two product surfaces: the browser-based WebUI and the nFterm Desktop App. They share the API server and permission model, but their execution environments and local-file capabilities are different.
 
-The nFterm desktop client also includes a REST API mode for Workspace-managed REST API entries, HPE iLO, OpenBMC, and generic Redfish/REST services. It supports Redfish Session Auth with `X-Auth-Token`, `@odata.id` navigation, Redfish Actions, AHS/`DownloadUri` downloads, and recent GET path history.
+## WebUI
 
-## Install And Upgrade
+The WebUI is the browser file-management product. It provides:
 
-The server supports Alpine Linux and Ubuntu and requires network access plus permission to install system packages. `install` and `upgrade` install only Node.js and server dependencies; they do not install or build Tauri.
+- Location browsing, search, upload, download, rename, delete, and folder operations.
+- Multi-file and directory uploads with preserved relative structure and progress polling.
+- ZIP archive downloads, share links, expiration, and download-count controls.
+- JWT authentication, TLS, Location health, read-only state, and capability authorization.
+- Admin Console workflows for users, Permission Roles, Locations, and system settings.
 
-For a new environment:
+### WebUI Installation
+
+The server supports Alpine Linux and Ubuntu. For a new environment:
 
 ```bash
 ./build.sh install
@@ -18,94 +24,73 @@ For a new environment:
 ./start.sh
 ```
 
-For an existing Git checkout:
+For an existing checkout:
 
 ```bash
 ./build.sh upgrade
 ./start.sh
 ```
 
-`upgrade` only fast-forwards and refuses a dirty working tree. It never overwrites `.env`, `src/config.ini`, storage, databases, users, or logs.
+Deployment values belong in protected, ignored `.env` or `src/config.ini` files. Do not put real addresses, credentials, tokens, certificates, or storage paths in documentation or Git.
 
-### Legacy Migration
+The default HTTP port is `9400`; the default HTTPS port is `9443`. Production deployments should use an operating-system-trusted HTTPS certificate.
 
-For releases older than 3.0.0, when `git pull` explicitly reports that local tracked changes would be overwritten, stop the service, back up the configuration, and move **only the files named by Git's error**:
+## nFterm Desktop App
 
-```bash
-./stop.sh
-mkdir -p ../filetransfer-local-backup
-cp src/config.ini ../filetransfer-local-backup/config.ini
-for file in package-lock.json start.sh stop.sh status.sh src/config.ini; do
-  if ! git diff --quiet -- "$file" || ! git diff --cached --quiet -- "$file"; then
-    mkdir -p "../filetransfer-local-backup/$(dirname "$file")"
-    mv "$file" "../filetransfer-local-backup/$file"
-  fi
-done
-git pull --ff-only
-cp ../filetransfer-local-backup/config.ini src/config.ini
-./build.sh upgrade
-./start.sh
-```
+nFterm is a Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11. It connects to the API server over HTTPS and provides:
 
-The loop moves only files with local Git changes. Do not restore the old `package-lock.json` or lifecycle scripts. Temporarily restoring `src/config.ini` lets `build.sh upgrade` migrate credentials, storage, and ports into ignored `.env`; it remains a local configuration file afterward.
+- LOCAL and API Remote file-management panes.
+- SSH Terminal, SFTP browsing, SSH upload/download, and remote archive operations.
+- A Transfer Queue with progress, cancellation, bounded retry, failure classification, and interrupted-state recovery.
+- REST API workspaces for generic REST, HPE iLO, OpenBMC, Redfish Session Auth, and Redfish Actions.
+- Proxmox VNC workspaces with login, VM discovery, VNC connection, and entry isolation.
+- Local file viewer/editor, archive operations, operation logs, and undo history.
 
-Use a one-command proxy when external access requires it:
+### Desktop Build
 
-```bash
-./build.sh upgrade --proxy http://proxy.example.internal:8080
-```
-
-The proxy is used only for that invocation by apk or apt, Git, npm, Cargo, curl, and wget; it is not saved globally.
-
-## Local Configuration
-
-`./build.sh setup` creates ignored `.env` and `src/config.ini` files and asks for storage, administrator credentials, HTTP/HTTPS ports, and an optional desktop default server address. Do not commit real addresses, credentials, tokens, or certificates.
-
-The default HTTP port is `9400`; the default HTTPS port is `9443`. HTTP redirects only after an HTTPS certificate is available. The desktop client always uses HTTPS and collects the server address and port separately.
-
-## Desktop Package
-
-Ubuntu 22.04+ builds the desktop DEB with:
+Ubuntu:
 
 ```bash
 ./build.sh build
 ```
 
-The package is written to `fileapi_ui/src-tauri/target/release/bundle/deb/`.
-
-Windows build machines use the PowerShell workflow. It only handles the Tauri desktop client; server `install` and `setup` remain in `build.sh`:
+Windows build machine:
 
 ```powershell
 .\build.ps1 build
-.\build.ps1 upgrade
-.\build.ps1 self-upgrade
 ```
 
-The Windows build creates a portable EXE at `fileapi_ui/src-tauri/target/release/nFterm.exe` and an NSIS package under `fileapi_ui/src-tauri/target/release/bundle/nsis/`. The local file pane defaults to the current user's Desktop.
+Artifacts are written to:
 
-The desktop client was renamed to **nFterm** (formerly "File Transfer Desktop" / fileapi-desktop). Upgrading users can move their legacy data directory (`~/.fileapi-desktop`) to the new one (`~/.nFterm`) with `upgrade_tools/migrate-desktop-data.ps1`.
+- Linux DEB: `fileapi_ui/src-tauri/target/release/bundle/deb/`
+- Windows portable EXE: `fileapi_ui/src-tauri/target/release/nFterm.exe`
+- Windows NSIS package: `fileapi_ui/src-tauri/target/release/bundle/nsis/`
 
-## REST API Mode
+### Desktop Security Behaviour
 
-nFterm REST API mode is separate from the existing `LOCATION` file-management mode. In REST API mode, the left side shows REST API entries from the selected Workspace and the center shows the REST response reader. The Terminal and SSH entries remain available and unchanged.
+- The API session token exists only for the running process and is not stored in WebView local storage.
+- SSH, REST, and Proxmox secrets use the OS credential store. If it is unavailable, nFterm fails explicitly instead of writing plaintext or Base64 secrets.
+- In a non-elevated process, local filesystem operations remain inside the user HOME. Canonical parent checks protect writes from symlink/junction escapes.
+- Downloads use collision-safe filenames and clean partial output after cancellation or failure.
+- TLS certificate verification is enabled by default. It is disabled only after the user explicitly selects Ignore TLS errors.
+- The Proxmox localhost relay uses a one-time token and exact WebSocket path validation. Switching entries cancels a pending relay.
 
-A REST API entry can define its Base URL, path, query parameters, TLS settings, and authentication. For HPE iLO or OpenBMC Redfish, choose `Session Auth` and then select the matching `HPE` or `OpenBMC` preset.
+## API Contract
 
-Redfish login flow:
+See the authoritative server contract:
 
-1. Select `Session Auth`.
-2. Enter the Redfish username and password.
-3. Select `HPE` or `OpenBMC`.
-4. Click `Use Redfish SessionService preset`.
-5. Click `Login`.
-6. Confirm that `REST session established` is displayed.
-7. Click `GET` to start browsing `/redfish/v1`.
+- [API Reference](docs/api/API_REFERENCE.md)
+- [API Documentation](docs/api/README.md)
+- [Upload API](docs/api/upload.md)
+- [Progress API](docs/api/progress.md)
+- [Error Codes](docs/api/error-codes.md)
 
-The reader supports `@odata.id`, `href`, `Members`, nested `Links`, Redfish `Actions.*.target`, recent GET path history, and download links such as `DownloadUri`. Reset, power, BIOS, and other actions require confirmation. Tokens, cookies, and passwords are never written to Workspace JSON or the operation log.
+## Technical Documentation
 
-## Documentation
-
-- [API reference](docs/api/API_REFERENCE.md)
 - [Documentation index](docs/README.md)
-- [WebUI permission management](docs/permissions.md)
-- [Tauri desktop client](fileapi_ui/README.md)
+- [Desktop Architecture](docs/desktop.md)
+- [Transfer Queue](docs/queue.md)
+- [Queue Maintenance](docs/queue-maintenance.md)
+- [Locations](docs/locations.md)
+- [Permission Management](docs/permissions.md)
+- [Versioning](docs/versioning.md)

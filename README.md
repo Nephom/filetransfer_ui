@@ -1,25 +1,22 @@
 [English](README_EN.md)
 
-# Web-Based File Management System 3.3.2
+# File Transfer Platform 3.3.3
 
-提供檔案總管式網頁介面，以及可在 Ubuntu 與 Windows 執行的 Tauri v2 桌面客戶端。
+本專案包含兩個產品面：上方是提供瀏覽器使用的 WebUI，下方是獨立的 nFterm Desktop App。兩者共用 API server 與權限模型，但執行環境、檔案能力與使用方式不同。
 
-## 功能
+## WebUI
 
-- 瀏覽器檔案總管：瀏覽、上傳、下載、重新命名、刪除、分享與資料夾 ZIP 下載。
-- 具名、可重複使用的角色權限矩陣（每個 Location 各自的權限），可指派給使用者，並可在個別使用者身上覆寫。
-- JWT 驗證、TLS 管理、可設定的安全功能與檔案快取。
-- Ubuntu 22.04+ 與 Windows 10/11 Tauri v2 桌面客戶端（**nFterm**）：滑鼠導向的檔案總管介面。
-- nFterm REST API mode：在 Workspace 中管理 REST API entries，支援 HPE iLO、OpenBMC 與一般 Redfish/REST API。
-- REST API Session Auth：支援 HPE/OpenBMC Redfish SessionService、`X-Auth-Token` session、`@odata.id` 導覽、Redfish Actions、AHS/DownloadUri 下載與 GET path history。
-- `build.sh`：Linux 的安裝、首次設定、更新、測試與 DEB 建置。
-- `build.ps1`：Windows 建置機的桌面相依性檢查、更新建置與腳本自我更新。
+WebUI 是瀏覽器版檔案管理介面，提供：
 
-## 安裝與升級
+- Location 檔案瀏覽、搜尋、上傳、下載、重新命名、刪除與資料夾操作。
+- 多檔案與資料夾上傳，保留相對目錄結構並提供進度查詢。
+- ZIP archive 下載、share link、到期與下載次數管理。
+- JWT 登入、TLS、Location health、read-only 與 capability 權限控制。
+- Admin Console 的使用者、Permission Role、Location 與系統設定管理。
 
-主服務支援 Alpine Linux 與 Ubuntu，且需要網路連線及可安裝系統套件的權限。`install` 與 `upgrade` 只安裝 Node.js 與主服務相依性，不會安裝或建置 Tauri。
+### WebUI 安裝與啟動
 
-全新環境：
+主服務支援 Alpine Linux 與 Ubuntu。全新環境：
 
 ```bash
 ./build.sh install
@@ -27,108 +24,73 @@
 ./start.sh
 ```
 
-既有 Git checkout 升級：
+既有 checkout 更新：
 
 ```bash
 ./build.sh upgrade
 ./start.sh
 ```
 
-`upgrade` 只允許 fast-forward 更新，並在工作樹有未提交變更時停止。它不會覆寫 `.env`、`src/config.ini`、storage、資料庫、users 或 logs。
+部署設定放在受保護且不納入版本控制的 `.env` 或 `src/config.ini`。實際位址、帳密、token、憑證與 storage 路徑不得寫入文件或 Git。
 
-Windows 建置機可以使用 PowerShell 流程。它只處理 Tauri 桌面客戶端，不接管主服務器的 `install/setup`：
+預設 HTTP port 為 `9400`，HTTPS port 為 `9443`。正式環境應使用受作業系統信任的 HTTPS 憑證。
 
-```powershell
-.\build.ps1 build
-.\build.ps1 -Help
-.\build.ps1 upgrade
-.\build.ps1 self-upgrade
-```
+## nFterm Desktop App
 
-Windows builds keep the WebView2 CAB in the ignored `build-assets\webview2\`
-cache. A validated copy and `runtime-manifest.json` are staged under
-`build-assets\websites\webview2\` for manual publication to an internal static
-web site; `build.ps1` never uploads files. Nginx only needs to serve that
-directory as static content. `application/octet-stream` is sufficient for the
-CAB, and directory listing is optional.
+nFterm 是 Tauri v2 desktop client，支援 Ubuntu 22.04+ 與 Windows 10/11。它使用 HTTPS 連線至 API server，並提供：
 
-### 舊版遷移
+- LOCAL 與 API Remote 雙窗格檔案管理。
+- SSH Terminal、SFTP browsing、SSH upload/download 與 remote archive 操作。
+- Transfer Queue、進度、取消、bounded retry、失敗分類與中斷狀態恢復。
+- REST API workspace，支援一般 REST、HPE iLO、OpenBMC、Redfish Session Auth 與 Redfish Actions。
+- Proxmox VNC workspace，支援登入、VM discovery、VNC 連線與 entry 隔離。
+- 本地檔案 viewer、editor、archive、operation log 與 undo history。
 
-若版本早於 3.0.0，且 `git pull` 明確表示某些 tracked 檔案會被本機修改覆蓋，請先停止服務、備份 config，並且**只移走錯誤訊息列出的檔案**：
+### Desktop Build
 
-```bash
-./stop.sh
-mkdir -p ../filetransfer-local-backup
-cp src/config.ini ../filetransfer-local-backup/config.ini
-for file in package-lock.json start.sh stop.sh status.sh src/config.ini; do
-  if ! git diff --quiet -- "$file" || ! git diff --cached --quiet -- "$file"; then
-    mkdir -p "../filetransfer-local-backup/$(dirname "$file")"
-    mv "$file" "../filetransfer-local-backup/$file"
-  fi
-done
-git pull --ff-only
-cp ../filetransfer-local-backup/config.ini src/config.ini
-./build.sh upgrade
-./start.sh
-```
-
-迴圈只移走有本機 Git 修改的檔案。不要還原舊的 `package-lock.json` 或 lifecycle scripts。暫時放回 `src/config.ini` 是為了讓 `build.sh upgrade` 將既有帳密、storage 路徑與 port 遷移至 ignored `.env`；成功後它保留為本機設定檔。
-
-若外部網路必須經由 proxy，所有命令均可加上暫時性的 proxy：
-
-```bash
-./build.sh upgrade --proxy http://proxy.example.internal:8080
-```
-
-此參數只在該次執行中套用至 apk 或 apt、Git、npm、Cargo、curl 與 wget，不會寫入全域設定。
-
-## 首次設定
-
-`./build.sh setup` 會建立未追蹤的 `.env` 和 `src/config.ini`，再詢問 storage 路徑、管理員帳密、HTTP/HTTPS port 與可選的桌面預設 server address。實際位址、帳密、token 與憑證絕不應提交到 Git。
-
-HTTP 預設 port 為 `9400`，HTTPS 預設 port 為 `9443`。HTTP redirect 只有在伺服器已具備有效 HTTPS 憑證時才會啟用。桌面客戶端固定使用 HTTPS，並將 server address 與 HTTPS port 分開輸入。
-
-## Desktop Build
-
-Ubuntu 22.04+ 使用 `build.sh` 建置 DEB：
+Ubuntu：
 
 ```bash
 ./build.sh build
 ```
 
-產物位於 `fileapi_ui/src-tauri/target/release/bundle/deb/`。
-
-Windows 使用 `build.ps1` 建置 NSIS 安裝包與不需安裝的 portable EXE：
+Windows build machine：
 
 ```powershell
 .\build.ps1 build
 ```
 
-portable EXE 位於 `fileapi_ui/src-tauri/target/release/nFterm.exe`；NSIS 產物位於 `fileapi_ui/src-tauri/target/release/bundle/nsis/`。Windows 執行檔使用目前使用者的 Desktop 作為本機檔案區預設目錄。
+產物位於：
 
-桌面客戶端已更名為 **nFterm**（原名 File Transfer Desktop / fileapi-desktop）；升級使用者可用 `upgrade_tools/migrate-desktop-data.ps1` 將舊資料目錄（`~/.fileapi-desktop`）搬移到新目錄（`~/.nFterm`）。
+- Linux DEB：`fileapi_ui/src-tauri/target/release/bundle/deb/`
+- Windows portable EXE：`fileapi_ui/src-tauri/target/release/nFterm.exe`
+- Windows NSIS：`fileapi_ui/src-tauri/target/release/bundle/nsis/`
 
-## REST API Mode
+### Desktop 安全行為
 
-nFterm 的 REST API mode 與既有 `LOCATION` 檔案管理模式分開。切換至 REST API mode 後，左側顯示 Workspace 的 REST API entries，中間顯示 REST response reader；Terminal 與 SSH entries 保持不變。
+- API session token 只留在執行期間，不寫入 WebView localStorage。
+- SSH、REST、Proxmox secret 使用 OS credential store；credential store 不可用時不會降級成明文或 Base64 檔案。
+- 非 elevated 模式的本地檔案操作限制在使用者 HOME，並在寫入前檢查 canonical parent，避免 symlink/junction 脫離邊界。
+- 下載使用 collision-safe filename；取消或失敗時清理 partial output。
+- TLS certificate verification 預設開啟。只有使用者明確選擇 Ignore TLS errors 時才停用驗證。
+- Proxmox localhost relay 使用一次性 token 與精確 WebSocket path；切換 entry 時會取消尚未建立的 pending relay。
 
-REST API entry 可設定 Base URL、path、query parameters、TLS 選項與認證方式。HPE iLO 或 OpenBMC Redfish 可在 Authentication 選擇 `Session Auth`，再選擇對應的 `HPE` 或 `OpenBMC` preset。
+## API Contract
 
-Redfish 使用流程：
+完整 server API 契約請參閱：
 
-1. 選擇 `Session Auth`。
-2. 輸入 Redfish username 與 password。
-3. 選擇 `HPE` 或 `OpenBMC`。
-4. 按 `Use Redfish SessionService preset`。
-5. 按 `Login`。
-6. 確認畫面顯示 REST session established。
-7. 按 `GET` 開始瀏覽 `/redfish/v1`。
+- [API Reference](docs/api/API_REFERENCE.md)
+- [API Documentation](docs/api/README.md)
+- [Upload API](docs/api/upload.md)
+- [Progress API](docs/api/progress.md)
+- [Error Codes](docs/api/error-codes.md)
 
-Reader 支援 `@odata.id`、`href`、`Members`、nested `Links`、Redfish `Actions.*.target`、最近 GET path history，以及 `DownloadUri` 等下載連結。Reset、Power、BIOS 或其他 action 會要求確認；Token、Cookie、password 不會寫入 Workspace JSON 或 operation log。
+## 技術文件
 
-## 文件
-
-- [完整 API 參考](docs/api/API_REFERENCE.md)
 - [文件索引](docs/README.md)
-- [WebUI 權限管理說明](docs/permissions.md)
-- [Tauri 桌面客戶端](fileapi_ui/README.md)
+- [Desktop Architecture](docs/desktop.md)
+- [Transfer Queue](docs/queue.md)
+- [Queue Maintenance](docs/queue-maintenance.md)
+- [Locations](docs/locations.md)
+- [Permission Management](docs/permissions.md)
+- [Versioning](docs/versioning.md)

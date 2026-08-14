@@ -11,7 +11,8 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
-use tokio_tungstenite::{accept_async, Connector};
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::{accept_hdr_async, Connector, WebSocketStream};
 
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +97,7 @@ struct PendingConnection {
     cookie: String,
     websocket_url: String,
     ignore_tls_errors: bool,
+    relay_token: String,
 }
 
 #[derive(Clone)]
@@ -511,9 +513,10 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
     let websocket_url = api_url(
         &base,
         &format!(
-            "api2/json/nodes/{}/{}/vncwebsocket?port={}&vncticket={}",
+            "api2/json/nodes/{}/{}/{}/vncwebsocket?port={}&vncticket={}",
             entry.node,
-            format!("{}/{}", entry.guest_type, vmid),
+            entry.guest_type,
+            vmid,
             data.data.port,
             urlencoding::encode(&data.data.ticket),
         ),
@@ -524,6 +527,7 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
         Ok(url.to_string())
     })?;
     let id = uuid::Uuid::new_v4().to_string();
+    let relay_token = uuid::Uuid::new_v4().to_string();
     let listener = TcpListener::bind("localhost:0")
         .await
         .map_err(|error| error.to_string())?;
@@ -534,6 +538,7 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
             cookie: auth_ticket,
             websocket_url,
             ignore_tls_errors: entry.ignore_tls_errors,
+            relay_token: relay_token.clone(),
         },
     );
     let connection_id = id.clone();
@@ -541,7 +546,7 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
         if let Ok((stream, _)) = listener.accept().await {
             let pending_connection = pending().lock().await.remove(&connection_id);
             if let Some(pending_connection) = pending_connection {
-                let _ = relay(stream, pending_connection).await;
+                let _ = relay(stream, connection_id, pending_connection).await;
             }
         }
     });
@@ -555,7 +560,11 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
     );
     Ok(VncConnection {
         id: id.clone(),
-        websocket_url: format!("ws://localhost:{}/vnc/{}", address.port(), id),
+        websocket_url: format!(
+            "ws://localhost:{}/vnc/{}?token={relay_token}",
+            address.port(),
+            id
+        ),
         password,
     })
 }
@@ -614,9 +623,10 @@ pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncCon
     let mut websocket_url = api_url(
         &base,
         &format!(
-            "api2/json/nodes/{}/{}/vncwebsocket?port={}&vncticket={}",
+            "api2/json/nodes/{}/{}/{}/vncwebsocket?port={}&vncticket={}",
             entry.node,
-            format!("{}/{}", entry.guest_type, vmid),
+            entry.guest_type,
+            vmid,
             data.data.port,
             urlencoding::encode(&data.data.ticket)
         ),
@@ -625,6 +635,7 @@ pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncCon
         .set_scheme("wss")
         .map_err(|_| "Proxmox WebSocket URL is invalid".to_string())?;
     let id = uuid::Uuid::new_v4().to_string();
+    let relay_token = uuid::Uuid::new_v4().to_string();
     let listener = TcpListener::bind("localhost:0")
         .await
         .map_err(|error| error.to_string())?;
@@ -635,6 +646,7 @@ pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncCon
             cookie: ticket,
             websocket_url: websocket_url.to_string(),
             ignore_tls_errors: entry.ignore_tls_errors,
+            relay_token: relay_token.clone(),
         },
     );
     let connection_id = id.clone();
@@ -642,7 +654,7 @@ pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncCon
     tokio::spawn(async move {
         if let Ok((stream, _)) = listener.accept().await {
             if let Some(pending_connection) = pending().lock().await.remove(&task_connection_id) {
-                let _ = relay(stream, pending_connection).await;
+                let _ = relay(stream, task_connection_id, pending_connection).await;
             }
         }
     });
@@ -656,13 +668,35 @@ pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncCon
     );
     Ok(VncConnection {
         id,
-        websocket_url: format!("ws://localhost:{}/vnc/{}", address.port(), connection_id),
+        websocket_url: format!(
+            "ws://localhost:{}/vnc/{}?token={relay_token}",
+            address.port(),
+            connection_id
+        ),
         password,
     })
 }
 
-async fn relay(stream: tokio::net::TcpStream, connection: PendingConnection) -> Result<(), String> {
-    let browser = accept_async(stream)
+#[allow(clippy::result_large_err)]
+async fn relay(
+    stream: tokio::net::TcpStream,
+    connection_id: String,
+    connection: PendingConnection,
+) -> Result<(), String> {
+    let expected_path = format!("/vnc/{connection_id}");
+    let expected_token = connection.relay_token.clone();
+    let browser: WebSocketStream<tokio::net::TcpStream> =
+        accept_hdr_async(stream, move |request: &Request, response: Response| {
+            if valid_relay_request(request.uri(), &expected_path, &expected_token) {
+                Ok(response)
+            } else {
+                let error: ErrorResponse = http::Response::builder()
+                    .status(http::StatusCode::NOT_FOUND)
+                    .body(Some("Not found".to_string()))
+                    .expect("static WebSocket rejection response should build");
+                Err(error)
+            }
+        })
         .await
         .map_err(|error| error.to_string())?;
     let request = http::Request::builder()
@@ -734,9 +768,19 @@ async fn relay(stream: tokio::net::TcpStream, connection: PendingConnection) -> 
     }
 }
 
+fn valid_relay_request(uri: &http::Uri, expected_path: &str, expected_token: &str) -> bool {
+    uri.path() == expected_path
+        && uri
+            .query()
+            .unwrap_or_default()
+            .split('&')
+            .filter_map(|part| part.split_once('='))
+            .any(|(name, value)| name == "token" && value == expected_token)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{api_url, normalized_url};
+    use super::{api_url, normalized_url, valid_relay_request};
 
     #[test]
     fn api_url_never_adds_a_second_slash() {
@@ -760,5 +804,23 @@ mod tests {
                 serde_json::from_str(body).expect("proxy response should decode");
             assert_eq!(proxy.port, 5900);
         }
+    }
+
+    #[test]
+    fn relay_requires_the_exact_path_and_one_time_token() {
+        let valid: http::Uri = "/vnc/connection-1?token=secret-1".parse().unwrap();
+        let wrong_path: http::Uri = "/vnc/connection-2?token=secret-1".parse().unwrap();
+        let wrong_token: http::Uri = "/vnc/connection-1?token=secret-2".parse().unwrap();
+        assert!(valid_relay_request(&valid, "/vnc/connection-1", "secret-1"));
+        assert!(!valid_relay_request(
+            &wrong_path,
+            "/vnc/connection-1",
+            "secret-1"
+        ));
+        assert!(!valid_relay_request(
+            &wrong_token,
+            "/vnc/connection-1",
+            "secret-1"
+        ));
     }
 }

@@ -112,7 +112,7 @@ body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif
 .titlebar-brand > span { margin-left: 0; }
 .titlebar-brand .app-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .titlebar-main { justify-content: center; }
-.titlebar-main .mode-switcher { width: min(600px, 100%); min-width: 0; margin-left: 0; flex: 1 1 auto; }
+.titlebar-main .mode-switcher { width: fit-content; max-width: 100%; min-width: 0; margin-left: 0; flex: 0 0 auto; }
 .titlebar-account { justify-content: flex-end; }
 .titlebar-account .account-control { margin-left: 0; }
 .titlebar span { margin-left: 0; }

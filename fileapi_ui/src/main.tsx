@@ -509,6 +509,38 @@ const initialSession: Session = {
 };
 const sessionRegistryKey = "fileapi-session-registry";
 const desktopSettingsKey = "nfterm-settings";
+const queueStorageKey = "nfterm-transfer-queue";
+
+const readPersistedQueue = (): TransferQueueItem[] => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(queueStorageKey) || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is TransferQueueItem => Boolean(item && typeof item.id === "string" && typeof item.status === "string"))
+      .map((item) => {
+        if (!["queued", "running", "retrying"].includes(item.status)) return item;
+        const requiresRequeue = item.kind === "download" && !item.sshEntryId;
+        return {
+          ...item,
+          status: "needs_user_action",
+          errorCategory: "unknown",
+          detail: requiresRequeue
+            ? "Transfer was interrupted when nFterm closed. Re-add it to authenticate again."
+            : "Transfer was interrupted when nFterm closed. Review and retry it.",
+          error: {
+            category: "unknown",
+            message: "Transfer was interrupted when nFterm closed.",
+            itemId: item.id,
+            path: item.paths?.[0],
+            attempt: item.retryCount || 0,
+            timestamp: Date.now(),
+          },
+        };
+      });
+  } catch {
+    return [];
+  }
+};
 const defaultDesktopSettings: DesktopSettings = {
   uiDensity: "auto",
   proxmoxVncModeEnabled: false,
@@ -879,10 +911,16 @@ function App() {
   const [recording, setRecording] = useState(false);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
-  const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>([]);
+  const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>(readPersistedQueue);
   const queueStoreRef = useRef(new QueueStore<TransferQueueItem>((items) => pruneQueueHistory(items, Date.now())));
   useEffect(() => {
     queueStoreRef.current.replace(transferQueue);
+  }, [transferQueue]);
+  useEffect(() => {
+    // Persist queue visibility/history, but never persist request headers or
+    // bodies because they may contain bearer tokens, cookies, or passwords.
+    const persisted = transferQueue.map(({ downloadHeaders: _headers, downloadBody: _body, downloadUrl: _url, ...item }) => item);
+    localStorage.setItem(queueStorageKey, JSON.stringify(persisted));
   }, [transferQueue]);
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
   const [queueOpen, setQueueOpen] = useState(false);
@@ -1198,7 +1236,11 @@ function App() {
   useEffect(() => () => window.clearTimeout(noticeTimer.current), []);
 
   useEffect(() => {
-    localStorage.setItem("nfterm-session", JSON.stringify(session));
+    // Authentication tokens are process secrets, not desktop preferences.
+    // Persist only the connection/profile fields so a copied WebView storage
+    // directory cannot be used as a bearer-token vault.
+    const { token: _token, ...persistedSession } = session;
+    localStorage.setItem("nfterm-session", JSON.stringify({ ...persistedSession, token: "" }));
   }, [session]);
 
   useEffect(() => {
@@ -3757,6 +3799,10 @@ function App() {
   const runQueuedDownloadSet = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedDownloadSet(item));
   const runQueuedSshDownload = (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => runOnce(item.id, () => executeQueuedSshDownload(item, profile, items));
   const retryDesktopQueueItem = (item: TransferQueueItem) => {
+    if (item.kind === "download" && !item.sshEntryId && !item.downloadUrl) {
+      setNotice("This restored download no longer contains its request credentials. Re-add the download to retry it safely.");
+      return;
+    }
     if (!(["failed", "needs_user_action"] as string[]).includes(item.status)) return;
     cancelledQueueItemsRef.current.delete(item.id);
     const retryItem = { ...item, status: "queued" as const, detail: "Retry queued", finishedAt: undefined };
@@ -3791,7 +3837,8 @@ function App() {
         {(item.status === "running" || item.status === "queued" || item.status === "retrying") && (
           <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>
         )}
-        {(item.status === "failed" || item.status === "needs_user_action") && (
+        {(item.status === "failed" || item.status === "needs_user_action") &&
+          (item.kind !== "download" || Boolean(item.sshEntryId) || Boolean(item.downloadUrl)) && (
           <button type="button" onClick={() => retryDesktopQueueItem(item)}>Retry</button>
         )}
         {(["completed", "failed", "cancelled"].includes(item.status)) && (

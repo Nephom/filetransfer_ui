@@ -69,7 +69,9 @@ The production application must never contain real NFS credentials in this repos
 4. Add each new NFS root with a new stable `id`; do not rename ids to reflect mount path changes.
 5. Keep `storagePath` until all clients and operational tooling use Location ids.
 
-The LocationManager foundation is intentionally separate from the existing file APIs. Location-aware API and UI wiring belongs to issues #120 and #118.
+Location-aware API and UI behavior is part of the current server contract. New
+clients must select an opaque Location id and must never construct or expose a
+server filesystem root path.
 
 ## Database Upgrade
 

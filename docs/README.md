@@ -32,7 +32,15 @@ The complete API documentation is available in the `api/` directory:
 - **[API Contract Reference](./api/API_REFERENCE.md)** - Authoritative endpoint contract
   - Authentication, browsing, upload, download, archive, sharing, administration, and TLS routes
   - Required payloads and client behaviour
-  - Archive and IPv4 logging rules
+   - Archive and IPv4 logging rules
+
+### Desktop Documentation
+
+- **[nFterm Desktop Architecture](./desktop.md)** - Supported desktop runtime
+  boundaries, secrets, local filesystem protection, queue, SSH/SFTP, and
+  Proxmox VNC behavior.
+- **[Transfer Queue](./queue.md)** - Queue lifecycle, progress, retry, cleanup,
+  persistence, and failure decisions.
 
 ---
 
@@ -45,6 +53,7 @@ The complete API documentation is available in the `api/` directory:
 - [Upload Examples](./api/upload.md#request-example)
 - [Error Handling](./api/error-codes.md)
 - [WebUI Permission Management](./permissions.md)
+- [nFterm Desktop Architecture](./desktop.md)
 
 ### For API Users
 
@@ -77,10 +86,6 @@ Use the root `build.sh` for the server lifecycle on Alpine Linux or Ubuntu. On a
 ```
 
 Actual deployment values belong in ignored `.env` and `src/config.ini` files. Never put internal addresses, credentials, tokens, or certificates in documentation or GitHub discussions. Production Alpine systems should use `install`, `setup`, `upgrade`, and `start`; they do not run the desktop `build` command.
-
-### Legacy Deployments
-
-For a deployment older than 3.0.0, see the root [legacy migration instructions](../README.md#舊版遷移). The migration preserves local configuration while replacing tracked scripts and dependency locks with the current release.
 
 ### 1. Authentication
 

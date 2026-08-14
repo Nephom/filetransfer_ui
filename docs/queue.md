@@ -28,8 +28,11 @@ single-flight execution, cancellation and retry admission. The scheduler is
 executor-agnostic so API and SSH/SFTP behavior remain separate.
 
 Desktop transfer executors are separated into API and SSH/SFTP paths. SSH/SFTP
-keeps its existing non-resumable behavior. This Queue work does not implement
-crash recovery, durable sessions, chunk resume or checksum manifests.
+keeps its existing non-resumable behavior. Queue metadata is persisted without
+request headers, bodies, or download URLs. Items that were active when the
+application closed are restored as `needs_user_action`; they are never reported
+as completed or silently resumed. API downloads restored without runtime
+request credentials must be added again.
 
 The public `share.html` download is a standalone unauthenticated browser flow.
 It cannot share the authenticated FileBrowser Queue state. Its download status
@@ -98,10 +101,10 @@ The UI should use these fallbacks:
 | Missing upload source | Stop before sending and request re-add/cancel |
 | Changed upload source | Stop; never silently send changed content |
 | Missing download destination | Stop; do not choose an unrelated destination |
-| Unknown partial data | Preserve it and require user decision |
+| Unknown partial data | Clean owned partial output and require user decision |
 | User cancellation | Abort where supported and clean owned temporary data |
 
-Full durable crash/session recovery is deferred to Issue #156. Without a
+The queue does not implement chunk resume or checksum manifests. Without a
 verifiable checkpoint, the safe fallback is a controlled full retransfer after
 cleanup, never an undocumented append or a claim of resume support.
 

@@ -410,7 +410,11 @@ pub async fn rename_path(
             .filter(|value| !value.is_empty())
             .ok_or_else(|| "Invalid remote path".to_string())?
             .to_string();
-        let parent = final_path.rsplitn(2, '/').nth(1).unwrap_or("").to_string();
+        let parent = final_path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("")
+            .to_string();
         let mut attempt = 1;
         loop {
             let candidate_name = crate::dedupe_candidate_name(&name, attempt);

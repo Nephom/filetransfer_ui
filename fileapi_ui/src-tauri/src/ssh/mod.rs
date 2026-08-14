@@ -936,9 +936,7 @@ pub async fn install_key(profile: SshProfile) -> Result<String, String> {
         .channel_open_session()
         .await
         .map_err(|error| error.to_string())?;
-    let remote_command = format!(
-        "umask 077 && mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && grep -qxF -- \"$(cat)\" ~/.ssh/authorized_keys || cat >> ~/.ssh/authorized_keys",
-    );
+    let remote_command = "umask 077 && mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && grep -qxF -- \"$(cat)\" ~/.ssh/authorized_keys || cat >> ~/.ssh/authorized_keys".to_string();
     channel
         .exec(true, remote_command.as_bytes())
         .await

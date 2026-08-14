@@ -23,9 +23,11 @@ and unavailable destination errors require a user decision. A browser download
 without File System Access API is a normal browser download, not resumable.
 
 `paused` and `needs_user_action` are coordination states, not promises of
-resume support. If a client process disappears, in-memory items must not be
-reported as completed; the safe behavior is a new full transfer after explicit
-cleanup or a user decision.
+resume support. If a client process disappears, persisted active items are
+restored as `needs_user_action`. They must not be reported as completed or
+silently resumed; the safe behavior is a new full transfer after explicit
+cleanup or a user decision. Sensitive request headers, bodies, and download
+URLs must not be persisted.
 
 ## Cleanup
 

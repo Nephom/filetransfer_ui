@@ -1,0 +1,115 @@
+# nFterm Desktop Architecture
+
+This document describes the supported architecture of the nFterm 3.3.3
+desktop client. It is an implementation contract for maintainers, not a local
+development runbook.
+
+## Runtime Boundaries
+
+nFterm is a Tauri v2 application with a React frontend and a Rust command
+backend. The frontend owns presentation, selection, queue state, and user
+confirmation. Rust owns network requests that require native TLS behavior,
+local filesystem access, SSH/SFTP, archive I/O, and Proxmox relay sockets.
+
+The WebUI and desktop client use the same server API contract, but they do not
+share browser storage, transfer executors, or local filesystem permissions.
+
+## Authentication And Secrets
+
+The API client collects a host and HTTPS port separately and uses HTTPS for the
+server connection. TLS verification is enabled by default. A user may
+explicitly enable the per-entry TLS bypass for a trusted private endpoint.
+
+API bearer tokens are process-lifetime state and are not persisted in WebView
+local storage. Workspace definitions contain non-secret connection metadata;
+SSH, REST, and Proxmox credentials are stored through the OS credential store.
+If the native credential store is unavailable, the operation fails rather than
+writing a reversible plaintext or Base64 fallback.
+
+SSH host verification uses a known-hosts file with TOFU semantics: a new host
+key is recorded, an existing matching key is accepted, and a changed key is
+rejected. Private key files remain on the local machine.
+
+## Local Filesystem Boundary
+
+The normal local root is the current user's HOME. Every command that reads,
+writes, renames, deletes, extracts, or stages a local path validates the path
+in Rust; frontend path strings are not trusted as authorization.
+
+For writes below a destination directory, nFterm creates missing parents and
+then canonicalizes the parent before opening the file. The canonical parent
+must remain below the selected root in a non-elevated process. This protects
+against traversal, symlink, and Windows junction/reparse-point escapes.
+
+Downloads use collision-safe names and write through a newly-created file.
+Network, cancellation, and write failures remove the partial output. Archive
+creation streams file contents rather than loading an entire file into memory.
+
+An elevated process may browse real filesystem roots. Elevation is detected by
+the Rust process and is never accepted from a frontend boolean.
+
+## Transfer Queue
+
+The queue is a client-side state machine. API and SSH/SFTP executors remain
+separate, while both use normalized status, progress, retry, cancellation, and
+failure categories.
+
+Queue metadata is persisted for visibility across application restarts. Active
+items from a previous process are restored as `needs_user_action`; they are not
+reported as completed and are not silently resumed. Sensitive request headers,
+bodies, and download URLs are excluded from persistence. A restored API
+download that lacks its runtime request credentials must be added again.
+
+Automatic retry is bounded and limited to network, timeout, and transient
+server failures. Authentication, permission, conflict, missing source,
+changed source, invalid path, and unavailable destination errors require an
+explicit user decision.
+
+## SSH And SFTP
+
+The terminal and SFTP browser use separate authenticated SSH connections. A
+connection has a bounded connection/authentication attempt, but an established
+interactive session remains available until the user disconnects or the
+server closes it.
+
+SFTP transfers support directory browsing, create, rename, delete, upload,
+download, archive, extraction, and native drag staging. File contents are
+transferred in bounded operations appropriate to the selected executor; local
+archive creation uses streaming I/O. Remote `zip` and `unzip` availability is
+reported as an actionable transfer error when unavailable.
+
+## Proxmox VNC
+
+Proxmox credentials are submitted to the Proxmox ticket endpoint and retained
+in the OS credential store when the user chooses to save them. The desktop
+client keeps the resulting authenticated session in process memory.
+
+The VNC flow is:
+
+1. Authenticate against the configured HTTPS Proxmox base URL.
+2. Discover permitted QEMU/LXC guests.
+3. Request a VNC proxy ticket for the selected node and VM.
+4. Create a loopback WebSocket relay for noVNC.
+5. Validate the exact `/vnc/<connection-id>` path and one-time relay token.
+6. Relay the browser WebSocket to the Proxmox WSS endpoint with the ticket.
+
+The relay retains the user's Proxmox authentication flow; the local token is
+an additional loopback connection boundary, not a replacement for Proxmox
+credentials. Switching entries, disconnecting, or unmounting the workspace
+cancels a pending relay. There is no fixed idle timeout while the user remains
+on the same entry.
+
+## Operation Logs
+
+Operation logs are JSON Lines stored in the application data directory. They
+redact values containing password, token, secret, cookie, or private-key
+markers, normalize line breaks, cap field length, rotate at 10 MiB, and retain
+at most three log files. Logs are diagnostic records, not a credential store.
+
+## Release Verification
+
+Before a release, maintainers must verify the relevant platform build, Rust
+tests, TypeScript production build, Clippy with warnings denied, JavaScript
+dependency audit, and RustSec audit. A RustSec advisory with no upstream fix
+must be documented with its dependency path and an explicit product risk
+decision before release approval.

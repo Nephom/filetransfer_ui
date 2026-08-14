@@ -103,6 +103,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const secret = entry ? secrets[entry.id] || {} : {};
   const screenRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<{ disconnect: () => void; sendCredentials: (credentials: { password: string }) => void; sendCtrlAltDel: () => void; focus: () => void; viewOnly: boolean; scaleViewport: boolean; resizeSession: boolean } | null>(null);
+  const pendingConnectionIdRef = useRef<string | null>(null);
   const sessionGenerationRef = useRef(0);
   const previousEntryIdRef = useRef(activeEntryId);
   const [password, setPassword] = useState(secret.password || "");
@@ -145,6 +146,9 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     sessionGenerationRef.current += 1;
     rfbRef.current?.disconnect();
     rfbRef.current = null;
+    const pendingConnectionId = pendingConnectionIdRef.current;
+    pendingConnectionIdRef.current = null;
+    if (pendingConnectionId) void invoke("proxmox_vnc_cancel", { connectionId: pendingConnectionId });
     setVms([]);
     setViewOnly(false);
     if (updateStatus) setStatus("Disconnected");
@@ -163,6 +167,10 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     sessionGenerationRef.current += 1;
     rfbRef.current?.disconnect();
     rfbRef.current = null;
+    if (pendingConnectionIdRef.current) {
+      void invoke("proxmox_vnc_cancel", { connectionId: pendingConnectionIdRef.current });
+      pendingConnectionIdRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -230,12 +238,15 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       const noVncUrl = new URL("noVNC/core/rfb.js", window.location.href).href;
       const { default: RFB } = await import(/* @vite-ignore */ noVncUrl);
       const connection = await invoke<Connection>("proxmox_vnc_start_session", { entry: nativeEntry, sessionId: authSessions[nativeEntry.id] });
+      pendingConnectionIdRef.current = connection.id;
       if (sessionGeneration !== sessionGenerationRef.current || sessionEntryId !== entry?.id) {
         await invoke("proxmox_vnc_cancel", { connectionId: connection.id });
+        pendingConnectionIdRef.current = null;
         return;
       }
       if (!screenRef.current) throw new Error("VNC screen is unavailable");
       const rfb = new RFB(screenRef.current, connection.websocketUrl);
+      pendingConnectionIdRef.current = null;
       rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = viewOnly;
       rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) { setStatus("Connected"); setControlsOpen(false); } });
       rfb.addEventListener("disconnect", () => { if (sessionGeneration === sessionGenerationRef.current) setStatus("Disconnected"); });

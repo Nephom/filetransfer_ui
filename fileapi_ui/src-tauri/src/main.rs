@@ -41,6 +41,12 @@ fn cancel_transfer(transfer_id: String) -> Result<(), String> {
     Ok(())
 }
 
+fn reset_transfer_cancellation(transfer_id: &str) {
+    if let Ok(mut ids) = cancelled_transfer_ids().lock() {
+        ids.remove(transfer_id);
+    }
+}
+
 #[derive(Serialize)]
 struct ApiResponse {
     status: u16,
@@ -263,6 +269,7 @@ fn collect_upload_path(
     Ok(())
 }
 
+#[allow(clippy::type_complexity)]
 fn collect_upload_paths(paths: &[String]) -> Result<(Vec<(PathBuf, String)>, Vec<String>), String> {
     let mut files = Vec::new();
     let mut directories = Vec::new();
@@ -332,10 +339,19 @@ async fn response_from(response: reqwest::Response) -> Result<ApiResponse, Strin
     let headers = response
         .headers()
         .iter()
-        .filter_map(|(name, value)| value.to_str().ok().map(|value| (name.to_string(), value.to_string())))
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.to_string(), value.to_string()))
+        })
         .collect();
     let body = response.bytes().await.map_err(describe_error)?.to_vec();
-    Ok(ApiResponse { status, body, headers })
+    Ok(ApiResponse {
+        status,
+        body,
+        headers,
+    })
 }
 
 #[tauri::command]
@@ -556,7 +572,7 @@ pub(crate) fn ssh_storage_dir() -> Result<PathBuf, String> {
             .ok_or_else(|| "Unable to locate the Windows user profile".to_string())?;
         let user_ssh_dir = user_profile.join(".ssh");
         std::fs::create_dir_all(&user_ssh_dir).map_err(|error| error.to_string())?;
-        return Ok(user_ssh_dir);
+        Ok(user_ssh_dir)
     }
 
     #[cfg(not(windows))]
@@ -779,6 +795,50 @@ fn resolve_local_download_destination(path: &str) -> Result<PathBuf, String> {
     Ok(resolved)
 }
 
+/// Resolve a file destination below `destination_folder` and verify the
+/// canonical parent after creating missing directories. Checking only the
+/// lexical path is not sufficient: an existing symlink/junction in a
+/// relative component can otherwise redirect a download outside the local
+/// HOME jail.
+fn resolve_local_download_file(
+    destination_folder: &str,
+    relative_path: &str,
+) -> Result<PathBuf, String> {
+    let relative = Path::new(relative_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Invalid destination path for queued download".to_string());
+    }
+    let destination_root = if Path::new(destination_folder).is_absolute() {
+        let root = canonicalize(destination_folder)?;
+        if !is_elevated() && !root.starts_with(canonicalize(local_home()?)?) {
+            return Err(
+                "Download destination must remain inside the current user's home directory"
+                    .to_string(),
+            );
+        }
+        root
+    } else {
+        resolve_local_download_destination(destination_folder)?
+    };
+    let requested = destination_root.join(relative);
+    let parent = requested
+        .parent()
+        .ok_or_else(|| "Invalid destination path for queued download".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let canonical_parent = canonicalize(parent)?;
+    if !is_elevated() && !canonical_parent.starts_with(&destination_root) {
+        return Err("Download destination leaves the current user's home directory".to_string());
+    }
+    let file_name = requested
+        .file_name()
+        .ok_or_else(|| "Invalid destination filename".to_string())?;
+    Ok(canonical_parent.join(file_name))
+}
+
 /// Resolve a local path that does not need to already exist (e.g. the
 /// destination of `mkdir`/`rename`). The path's *parent* must exist and
 /// stay inside the user's home directory (or be anywhere on disk when
@@ -910,8 +970,8 @@ fn add_path_to_zip<W: std::io::Write + std::io::Seek>(
         writer
             .start_file(name, options)
             .map_err(|error| error.to_string())?;
-        let data = std::fs::read(path).map_err(|error| error.to_string())?;
-        std::io::Write::write_all(writer, &data).map_err(|error| error.to_string())?;
+        let mut input = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        std::io::copy(&mut input, writer).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -1081,7 +1141,7 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
             })
         })
         .collect::<Vec<_>>();
-    files.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    files.sort_by_key(|left| left.name.to_lowercase());
 
     Ok(LocalDirectory {
         path: match &root {
@@ -1138,6 +1198,7 @@ fn hash_upload_paths(paths: Vec<String>) -> Result<HashMap<String, String>, Stri
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn api_upload_paths(
     app: tauri::AppHandle,
@@ -1149,6 +1210,9 @@ async fn api_upload_paths(
     path: String,
     ignore_tls_errors: bool,
 ) -> Result<ApiResponse, String> {
+    // Queue retries reuse the item id. Clear the previous cancellation marker
+    // only when a new backend transfer attempt actually starts.
+    reset_transfer_cancellation(&transfer_id);
     if is_transfer_cancelled(&transfer_id) {
         return Err("Transfer cancelled".to_string());
     }
@@ -1213,6 +1277,7 @@ async fn api_upload_paths(
     Ok(response)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn download_to_disk(
     app: tauri::AppHandle,
@@ -1225,6 +1290,7 @@ async fn download_to_disk(
     destination_folder: String,
     ignore_tls_errors: bool,
 ) -> Result<String, String> {
+    reset_transfer_cancellation(&transfer_id);
     if is_transfer_cancelled(&transfer_id) {
         return Err("Transfer cancelled".to_string());
     }
@@ -1262,11 +1328,24 @@ async fn download_to_disk(
     let (destination, mut file) = create_unique_file(&requested_destination)?;
     let mut bytes_completed: u64 = 0;
     let mut last_emit = Instant::now();
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+    while let Some(chunk) = match response.chunk().await {
+        Ok(chunk) => chunk,
+        Err(error) => {
+            drop(file);
+            let _ = std::fs::remove_file(&destination);
+            return Err(error.to_string());
+        }
+    } {
         if is_transfer_cancelled(&transfer_id) {
+            drop(file);
+            let _ = std::fs::remove_file(&destination);
             return Err("Transfer cancelled".to_string());
         }
-        file.write_all(&chunk).map_err(|error| error.to_string())?;
+        if let Err(error) = file.write_all(&chunk) {
+            drop(file);
+            let _ = std::fs::remove_file(&destination);
+            return Err(error.to_string());
+        }
         bytes_completed += chunk.len() as u64;
         if last_emit.elapsed().as_millis() >= 200 {
             let _ = app.emit(
@@ -1302,6 +1381,7 @@ async fn download_to_disk(
 /// the flatten endpoint) -- callers must not additionally wrap it in a
 /// synthetic "<n> selected items" segment, which would otherwise nest a
 /// single selected directory inside a duplicate copy of its own name.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn download_to_disk_at(
     transfer_id: String,
@@ -1313,6 +1393,7 @@ async fn download_to_disk_at(
     relative_path: String,
     ignore_tls_errors: bool,
 ) -> Result<String, String> {
+    reset_transfer_cancellation(&transfer_id);
     if is_transfer_cancelled(&transfer_id) {
         return Err("Transfer cancelled".to_string());
     }
@@ -1332,25 +1413,26 @@ async fn download_to_disk_at(
             .await
             .unwrap_or_else(|_| "Download failed".to_string()));
     }
-    let relative = Path::new(&relative_path);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err("Invalid destination path for queued download".to_string());
-    }
-    let destination_root = resolve_local_download_destination(&destination_folder)?;
-    let requested_destination = destination_root.join(relative);
-    if let Some(parent) = requested_destination.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
+    let requested_destination = resolve_local_download_file(&destination_folder, &relative_path)?;
     let (destination, mut file) = create_unique_file(&requested_destination)?;
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+    while let Some(chunk) = match response.chunk().await {
+        Ok(chunk) => chunk,
+        Err(error) => {
+            drop(file);
+            let _ = std::fs::remove_file(&destination);
+            return Err(error.to_string());
+        }
+    } {
         if is_transfer_cancelled(&transfer_id) {
+            drop(file);
+            let _ = std::fs::remove_file(&destination);
             return Err("Transfer cancelled".to_string());
         }
-        file.write_all(&chunk).map_err(|error| error.to_string())?;
+        if let Err(error) = file.write_all(&chunk) {
+            drop(file);
+            let _ = std::fs::remove_file(&destination);
+            return Err(error.to_string());
+        }
     }
     Ok(destination.display().to_string())
 }
@@ -1394,8 +1476,19 @@ async fn download_to_drag_staging(
         .as_nanos();
     let destination = staging_directory.join(format!("{stamp}-{safe_name}"));
     let mut file = std::fs::File::create(&destination).map_err(|error| error.to_string())?;
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
-        file.write_all(&chunk).map_err(|error| error.to_string())?;
+    while let Some(chunk) = match response.chunk().await {
+        Ok(chunk) => chunk,
+        Err(error) => {
+            drop(file);
+            let _ = std::fs::remove_file(&destination);
+            return Err(error.to_string());
+        }
+    } {
+        if let Err(error) = file.write_all(&chunk) {
+            drop(file);
+            let _ = std::fs::remove_file(&destination);
+            return Err(error.to_string());
+        }
     }
     Ok(destination.display().to_string())
 }
@@ -1441,18 +1534,12 @@ async fn download_to_drag_staging_at(
     if safe_set_id.is_empty() {
         return Err("Invalid drag staging set identifier".to_string());
     }
-    let relative = Path::new(&relative_path);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err("Invalid staging path for queued drag download".to_string());
-    }
     let staging_directory = operation_storage_directory()?
         .join("drag-staging")
         .join(&safe_set_id);
-    let destination = staging_directory.join(relative);
+    std::fs::create_dir_all(&staging_directory).map_err(|error| error.to_string())?;
+    let destination =
+        resolve_local_download_file(&staging_directory.to_string_lossy(), &relative_path)?;
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -1626,12 +1713,18 @@ async fn proxmox_logout(session_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn proxmox_list_vms_session(entry: proxmox::VncEntry, session_id: String) -> Result<Vec<proxmox::VmSummary>, String> {
+async fn proxmox_list_vms_session(
+    entry: proxmox::VncEntry,
+    session_id: String,
+) -> Result<Vec<proxmox::VmSummary>, String> {
     proxmox::list_vms_session(entry, session_id).await
 }
 
 #[tauri::command]
-async fn proxmox_vnc_start_session(entry: proxmox::VncEntry, session_id: String) -> Result<proxmox::VncConnection, String> {
+async fn proxmox_vnc_start_session(
+    entry: proxmox::VncEntry,
+    session_id: String,
+) -> Result<proxmox::VncConnection, String> {
     proxmox::start_session(entry, session_id).await
 }
 
@@ -1669,7 +1762,17 @@ async fn scp_download(
     remote_path: String,
     local_path: String,
 ) -> Result<String, String> {
-    ssh::sftp::download_file(profile, remote_path, local_path).await
+    let local_path = resolve_local_download_file(
+        Path::new(&local_path)
+            .parent()
+            .and_then(|parent| parent.to_str())
+            .unwrap_or_default(),
+        Path::new(&local_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Invalid local destination path".to_string())?,
+    )?;
+    ssh::sftp::download_file(profile, remote_path, local_path.display().to_string()).await
 }
 
 #[tauri::command]
@@ -1678,7 +1781,8 @@ async fn scp_upload(
     local_path: String,
     remote_path: String,
 ) -> Result<String, String> {
-    ssh::sftp::upload_file(profile, local_path, remote_path).await
+    let local_path = resolve_local_transfer_path(&local_path)?;
+    ssh::sftp::upload_file(profile, local_path.display().to_string(), remote_path).await
 }
 
 /// Write parity for the SSH SFTP browse pane: create/delete/rename/upload/
@@ -1860,7 +1964,7 @@ fn decode_text_file(bytes: &[u8]) -> Result<String, String> {
             .chunks_exact(2)
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
-        if bytes[2..].len() % 2 != 0 {
+        if !bytes[2..].len().is_multiple_of(2) {
             return Err("Text file has an incomplete UTF-16 code unit".to_string());
         }
         return String::from_utf16(&units)
@@ -1872,7 +1976,7 @@ fn decode_text_file(bytes: &[u8]) -> Result<String, String> {
             .chunks_exact(2)
             .map(|chunk| u16::from_be_bytes([chunk[0], chunk[1]]))
             .collect();
-        if bytes[2..].len() % 2 != 0 {
+        if !bytes[2..].len().is_multiple_of(2) {
             return Err("Text file has an incomplete UTF-16 code unit".to_string());
         }
         return String::from_utf16(&units)
@@ -2216,7 +2320,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{dedupe_candidate_name, UploadProgressEvent};
+    use super::{dedupe_candidate_name, resolve_local_download_file, UploadProgressEvent};
 
     #[test]
     fn upload_progress_event_keeps_normalized_queue_fields() {
@@ -2241,5 +2345,11 @@ mod tests {
             dedupe_candidate_name("archive.tar.gz", 2),
             "archive_(2).tar.gz"
         );
+    }
+
+    #[test]
+    fn queued_download_paths_reject_absolute_and_parent_components() {
+        assert!(resolve_local_download_file(".", "../outside.txt").is_err());
+        assert!(resolve_local_download_file(".", "/outside.txt").is_err());
     }
 }
