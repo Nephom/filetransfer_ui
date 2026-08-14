@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::{accept_async, Connector};
 
 #[derive(Deserialize, Clone)]
@@ -97,6 +98,13 @@ struct PendingConnection {
     ignore_tls_errors: bool,
 }
 
+#[derive(Clone)]
+struct AuthSession {
+    client: Client,
+    ticket: String,
+    csrf_token: String,
+}
+
 #[derive(Debug)]
 struct AcceptAnyCertificate;
 
@@ -143,9 +151,14 @@ impl ServerCertVerifier for AcceptAnyCertificate {
 }
 
 static PENDING: OnceLock<Arc<Mutex<HashMap<String, PendingConnection>>>> = OnceLock::new();
+static AUTH_SESSIONS: OnceLock<Arc<Mutex<HashMap<String, AuthSession>>>> = OnceLock::new();
 
 fn pending() -> &'static Arc<Mutex<HashMap<String, PendingConnection>>> {
     PENDING.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+fn auth_sessions() -> &'static Arc<Mutex<HashMap<String, AuthSession>>> {
+    AUTH_SESSIONS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
 fn normalized_url(value: &str) -> Result<Url, String> {
@@ -345,6 +358,82 @@ pub async fn list_vms(entry: VncEntry, password: String) -> Result<Vec<VmSummary
         .collect())
 }
 
+pub async fn authenticate(entry: VncEntry, password: String) -> Result<String, String> {
+    let (client, ticket, csrf_token) = login(&entry, &password).await?;
+    let session_id = uuid::Uuid::new_v4().to_string();
+    auth_sessions().lock().await.insert(
+        session_id.clone(),
+        AuthSession {
+            client,
+            ticket,
+            csrf_token,
+        },
+    );
+    Ok(session_id)
+}
+
+async fn session(session_id: &str) -> Result<AuthSession, String> {
+    auth_sessions()
+        .lock()
+        .await
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| "Proxmox session is not logged in or has expired".to_string())
+}
+
+pub async fn logout(session_id: String) -> Result<(), String> {
+    auth_sessions().lock().await.remove(&session_id);
+    Ok(())
+}
+
+pub async fn list_vms_session(
+    entry: VncEntry,
+    session_id: String,
+) -> Result<Vec<VmSummary>, String> {
+    let auth = session(&session_id).await?;
+    let base = normalized_url(&entry.base_url)?;
+    let label = endpoint_label(&entry);
+    let response = auth
+        .client
+        .get(api_url(&base, "api2/json/cluster/resources?type=vm")?)
+        .header("Cookie", format!("PVEAuthCookie={}", auth.ticket))
+        .send()
+        .await
+        .map_err(|error| format!("Unable to reach Proxmox VM list endpoint: {error}"))?;
+    if !response.status().is_success() {
+        let message = api_error("VM list", response).await;
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_vnc",
+            "vm_list_failed",
+            &label,
+            "proxmox",
+            &message,
+        );
+        return Err(message);
+    }
+    let data: ApiEnvelope<Vec<ClusterVm>> = decode_api("VM list", response).await?;
+    crate::oplog::log(
+        "INFO",
+        "proxmox_vnc",
+        "vm_list_succeeded",
+        &label,
+        "proxmox",
+        &format!("Loaded {} VM entries.", data.data.len()),
+    );
+    Ok(data
+        .data
+        .into_iter()
+        .map(|vm| VmSummary {
+            vmid: vm.vmid,
+            name: vm.name,
+            node: vm.node,
+            status: vm.status,
+            guest_type: vm.guest_type,
+        })
+        .collect())
+}
+
 pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, String> {
     if entry.guest_type != "qemu" && entry.guest_type != "lxc" {
         return Err("Proxmox guest type must be qemu or lxc".to_string());
@@ -476,12 +565,118 @@ pub async fn cancel(connection_id: String) -> Result<(), String> {
     Ok(())
 }
 
+pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncConnection, String> {
+    if entry.guest_type != "qemu" && entry.guest_type != "lxc" {
+        return Err("Proxmox guest type must be qemu or lxc".to_string());
+    }
+    let vmid = entry
+        .vmid
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "Proxmox node and VMID are required".to_string())?;
+    if entry.node.trim().is_empty() {
+        return Err("Proxmox node and VMID are required".to_string());
+    }
+    let auth = session(&session_id).await?;
+    let ticket = auth.ticket.clone();
+    let csrf_token = auth.csrf_token.clone();
+    let base = normalized_url(&entry.base_url)?;
+    let label = endpoint_label(&entry);
+    let guest_path = format!("{}/{}/vncproxy", entry.guest_type, vmid);
+    let response = auth
+        .client
+        .post(api_url(
+            &base,
+            &format!("api2/json/nodes/{}/{guest_path}", entry.node),
+        )?)
+        .header("Cookie", format!("PVEAuthCookie={ticket}"))
+        .header("CSRFPreventionToken", csrf_token)
+        .form(&[("websocket", "1"), ("generate-password", "1")])
+        .send()
+        .await
+        .map_err(|error| format!("Unable to reach Proxmox VNC proxy endpoint: {error}"))?;
+    if !response.status().is_success() {
+        let message = api_error("VNC proxy", response).await;
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_vnc",
+            "vnc_proxy_failed",
+            &label,
+            "proxmox",
+            &message,
+        );
+        return Err(message);
+    }
+    let data: ApiEnvelope<ProxyData> = decode_api("VNC proxy", response).await?;
+    let password = data
+        .data
+        .password
+        .ok_or_else(|| "Proxmox VNC proxy did not return a VNC password".to_string())?;
+    let mut websocket_url = api_url(
+        &base,
+        &format!(
+            "api2/json/nodes/{}/{}/vncwebsocket?port={}&vncticket={}",
+            entry.node,
+            format!("{}/{}", entry.guest_type, vmid),
+            data.data.port,
+            urlencoding::encode(&data.data.ticket)
+        ),
+    )?;
+    websocket_url
+        .set_scheme("wss")
+        .map_err(|_| "Proxmox WebSocket URL is invalid".to_string())?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let listener = TcpListener::bind("localhost:0")
+        .await
+        .map_err(|error| error.to_string())?;
+    let address = listener.local_addr().map_err(|error| error.to_string())?;
+    pending().lock().await.insert(
+        id.clone(),
+        PendingConnection {
+            cookie: ticket,
+            websocket_url: websocket_url.to_string(),
+            ignore_tls_errors: entry.ignore_tls_errors,
+        },
+    );
+    let connection_id = id.clone();
+    tokio::spawn(async move {
+        if let Ok((stream, _)) = listener.accept().await {
+            if let Some(pending_connection) = pending().lock().await.remove(&connection_id) {
+                let _ = relay(stream, pending_connection).await;
+            }
+        }
+    });
+    crate::oplog::log(
+        "INFO",
+        "proxmox_vnc",
+        "vnc_proxy_succeeded",
+        &label,
+        "vnc",
+        "Proxmox VNC proxy created; waiting for noVNC WebSocket connection.",
+    );
+    Ok(VncConnection {
+        id,
+        websocket_url: format!("ws://localhost:{}/vnc/{}", address.port(), connection_id),
+        password,
+    })
+}
+
 async fn relay(stream: tokio::net::TcpStream, connection: PendingConnection) -> Result<(), String> {
     let browser = accept_async(stream)
         .await
         .map_err(|error| error.to_string())?;
     let request = http::Request::builder()
         .uri(&connection.websocket_url)
+        .header(
+            "Host",
+            http::Uri::try_from(&connection.websocket_url)
+                .ok()
+                .and_then(|uri| uri.authority().map(|value| value.as_str().to_string()))
+                .unwrap_or_default(),
+        )
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", generate_key())
         .header("Cookie", format!("PVEAuthCookie={}", connection.cookie))
         .header("Sec-WebSocket-Protocol", "binary")
         .body(())

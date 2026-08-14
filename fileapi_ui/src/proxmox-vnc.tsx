@@ -27,12 +27,21 @@ type Props = {
   onChangeSecret: (entryId: string, secret: ProxmoxVncSecret) => void;
 };
 
+type EntryAuthProps = {
+  password: string;
+  authenticated: boolean;
+  loading: boolean;
+  onPasswordChange: (value: string) => void;
+  onLogin: () => void;
+  onLogout: () => void;
+};
+
 const emptyEntry = (): ProxmoxVncEntry => ({
   id: crypto.randomUUID(), name: "New Proxmox VNC", baseUrl: "https://", username: "",
   node: "", vmid: null, guestType: "qemu", proxmoxVersion: "auto", ignoreTlsErrors: false,
 });
 
-function VncEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry" | "onChangeEntries">) {
+function VncEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries, password, authenticated, loading, onPasswordChange, onLogin, onLogout }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry" | "onChangeEntries"> & EntryAuthProps) {
   const [editing, setEditing] = useState<ProxmoxVncEntry | null>(null);
   const save = () => {
     if (!editing || !editing.name.trim() || !/^https:\/\//i.test(editing.baseUrl.trim())) return;
@@ -48,6 +57,11 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries }: 
       {entries.map((entry) => <button type="button" key={entry.id} className={`vnc-entry${entry.id === activeEntryId ? " active" : ""}`} onClick={() => onSelectEntry(entry.id)}>
         <span className="vnc-entry-dot" /><span className="vnc-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{entry.node || "No node"} / {entry.vmid || "No VMID"}</small></span><span className="vnc-entry-edit" onClick={(event) => { event.stopPropagation(); setEditing(entry); }}>Edit</span>
       </button>)}
+    </div>
+    <div className="vnc-entry-auth">
+      <strong>{authenticated ? "Proxmox session active" : "Proxmox login"}</strong>
+      {!authenticated && <label>Password<input type="password" value={password} onChange={(event) => onPasswordChange(event.target.value)} /></label>}
+      {authenticated ? <button type="button" onClick={onLogout}>Logout</button> : <button type="button" className="confirm" onClick={onLogin} disabled={loading || !password}>{loading ? "Logging in..." : "Login"}</button>}
     </div>
     {editing && <div className="vnc-entry-editor">
       <div className="vnc-editor-heading"><strong>{entries.some((item) => item.id === editing.id) ? "Edit VNC entry" : "Add VNC entry"}</strong><button type="button" onClick={() => setEditing(null)} aria-label="Close editor">×</button></div>
@@ -78,6 +92,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [screenHeight, setScreenHeight] = useState(560);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const screenShellRef = useRef<HTMLDivElement>(null);
+  const [authSessions, setAuthSessions] = useState<Record<string, string>>({});
 
   const stopConnection = (updateStatus = true) => {
     sessionGenerationRef.current += 1;
@@ -131,15 +146,32 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const updatePassword = (value: string) => { setPassword(value); if (entry) onChangeSecret(entry.id, { password: value }); };
   const nativeEntry = entry ? { ...entry, guestType: entry.guestType, ignoreTlsErrors: entry.ignoreTlsErrors } : null;
-  const loadVms = async () => {
+  const authenticated = Boolean(entry && authSessions[entry.id]);
+  const loginEntry = async () => {
     if (!nativeEntry || !password) return;
     setLoading(true); setError("");
-    try { setVms(await invoke<VmSummary[]>("proxmox_list_vms", { entry: nativeEntry, password })); }
+    try {
+      const sessionId = await invoke<string>("proxmox_login", { entry: nativeEntry, password });
+      setAuthSessions((current) => ({ ...current, [nativeEntry.id]: sessionId }));
+    } catch (value) { setError(value instanceof Error ? value.message : String(value)); }
+    finally { setLoading(false); }
+  };
+  const logoutEntry = async () => {
+    if (!entry) return;
+    stopConnection();
+    const sessionId = authSessions[entry.id];
+    if (sessionId) await invoke("proxmox_logout", { sessionId }).catch(() => undefined);
+    setAuthSessions((current) => { const next = { ...current }; delete next[entry.id]; return next; });
+  };
+  const loadVms = async () => {
+    if (!nativeEntry || !authenticated) { setError("Log in to this Proxmox entry first."); return; }
+    setLoading(true); setError("");
+    try { setVms(await invoke<VmSummary[]>("proxmox_list_vms_session", { entry: nativeEntry, sessionId: authSessions[nativeEntry.id] })); }
     catch (value) { setError(value instanceof Error ? value.message : String(value)); }
     finally { setLoading(false); }
   };
   const connect = async () => {
-    if (!nativeEntry || !password) { setError("Select an entry and enter the Proxmox password first."); return; }
+    if (!nativeEntry || !authenticated) { setError("Log in to this Proxmox entry first."); return; }
     stopConnection(false);
     const sessionGeneration = sessionGenerationRef.current;
     const sessionEntryId = nativeEntry.id;
@@ -148,7 +180,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       // noVNC is a public runtime asset, so keep its URL out of Vite's module graph.
       const noVncUrl = new URL("noVNC/core/rfb.js", window.location.href).href;
       const { default: RFB } = await import(/* @vite-ignore */ noVncUrl);
-      const connection = await invoke<Connection>("proxmox_vnc_start", { entry: nativeEntry, password });
+      const connection = await invoke<Connection>("proxmox_vnc_start_session", { entry: nativeEntry, sessionId: authSessions[nativeEntry.id] });
       if (sessionGeneration !== sessionGenerationRef.current || sessionEntryId !== entry?.id) {
         await invoke("proxmox_vnc_cancel", { connectionId: connection.id });
         return;
@@ -176,12 +208,12 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   };
   const chooseVm = (vm: VmSummary) => entry && onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, node: vm.node, vmid: vm.vmid, guestType: vm.guestType as "qemu" | "lxc" } : item));
 
-  return <div className="vnc-workspace"><VncEntries entries={entries} activeEntryId={activeEntryId} onSelectEntry={selectEntry} onChangeEntries={onChangeEntries} />
+  return <div className="vnc-workspace"><VncEntries entries={entries} activeEntryId={activeEntryId} onSelectEntry={selectEntry} onChangeEntries={onChangeEntries} password={password} authenticated={authenticated} loading={loading} onPasswordChange={updatePassword} onLogin={() => void loginEntry()} onLogout={() => void logoutEntry()} />
     <section className="vnc-reader" aria-label="Proxmox VNC workspace">
       <div className="vnc-reader-heading"><div><span className="eyebrow">VNC mode · {workspaceName}</span><h1>{entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
-      <div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}><div className="vnc-auth-heading"><strong>Connection controls</strong><button type="button" onClick={() => setControlsOpen((value) => !value)}>{controlsOpen ? "Collapse" : "Expand"}</button></div>{controlsOpen && <><div className="vnc-auth-grid"><label>Password<input type="password" value={password} onChange={(event) => updatePassword(event.target.value)} /></label><label>Node<input value={entry?.node || ""} onChange={(event) => entry && onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, node: event.target.value } : item))} /></label><label>VMID<input type="number" min="1" value={entry?.vmid || ""} onChange={(event) => entry && onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, vmid: event.target.value ? Number(event.target.value) : null } : item))} /></label></div><div className="vnc-actions"><button type="button" onClick={() => void loadVms()} disabled={loading || !entry}>{loading ? "Loading..." : "Load VMs"}</button><button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry}>{loading ? "Connecting..." : "Connect"}</button><button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button></div>{entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}{error && <div className="notice rest-error">{error}</div>}</>}</div>
+      <div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}><div className="vnc-auth-heading"><strong>Connection controls</strong><span><button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button><button type="button" onClick={() => setControlsOpen((value) => !value)}>{controlsOpen ? "Collapse" : "Expand"}</button></span></div>{controlsOpen && <><div className="vnc-auth-grid"><label>Node<input value={entry?.node || ""} onChange={(event) => entry && onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, node: event.target.value } : item))} /></label><label>VMID<input type="number" min="1" value={entry?.vmid || ""} onChange={(event) => entry && onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, vmid: event.target.value ? Number(event.target.value) : null } : item))} /></label></div><div className="vnc-actions"><button type="button" onClick={() => void loadVms()} disabled={loading || !entry || !authenticated}>{loading ? "Loading..." : "Load VMs"}</button><button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated}>{loading ? "Connecting..." : "Connect"}</button><button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button><button type="button" onClick={() => void logoutEntry()} disabled={!authenticated}>Logout</button></div>{entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}{error && <div className="notice rest-error">{error}</div>}</>}</div>
       {!!vms.length && <div className="vnc-vm-list">{vms.map((vm) => <button type="button" key={`${vm.guestType}-${vm.vmid}`} onClick={() => chooseVm(vm)}><strong>{vm.name || `VM ${vm.vmid}`}</strong><span>{vm.guestType} · {vm.node} · {vm.status || "unknown"}</span></button>)}</div>}
-      <div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`} style={{ "--vnc-screen-height": `${screenHeight}px` } as React.CSSProperties}><div className="vnc-screen-toolbar"><span>VNC display</span><button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div><div ref={screenRef} className="vnc-screen" /><div className="vnc-screen-resize" role="separator" aria-label="Resize VNC display" onPointerDown={resizeScreen} /></div>
+      <div className="vnc-screen-resize" role="separator" aria-label="Resize VNC display" onPointerDown={resizeScreen} /><div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`} style={{ "--vnc-screen-height": `${screenHeight}px` } as React.CSSProperties}><div ref={screenRef} className="vnc-screen" /></div>
     </section>
   </div>;
 }

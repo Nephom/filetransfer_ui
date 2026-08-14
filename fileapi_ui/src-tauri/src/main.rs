@@ -1616,6 +1616,26 @@ async fn proxmox_list_vms(
 }
 
 #[tauri::command]
+async fn proxmox_login(entry: proxmox::VncEntry, password: String) -> Result<String, String> {
+    proxmox::authenticate(entry, password).await
+}
+
+#[tauri::command]
+async fn proxmox_logout(session_id: String) -> Result<(), String> {
+    proxmox::logout(session_id).await
+}
+
+#[tauri::command]
+async fn proxmox_list_vms_session(entry: proxmox::VncEntry, session_id: String) -> Result<Vec<proxmox::VmSummary>, String> {
+    proxmox::list_vms_session(entry, session_id).await
+}
+
+#[tauri::command]
+async fn proxmox_vnc_start_session(entry: proxmox::VncEntry, session_id: String) -> Result<proxmox::VncConnection, String> {
+    proxmox::start_session(entry, session_id).await
+}
+
+#[tauri::command]
 async fn proxmox_vnc_start(
     entry: proxmox::VncEntry,
     password: String,
@@ -2162,6 +2182,10 @@ fn main() {
             proxmox_load_secret,
             proxmox_forget_secret,
             proxmox_list_vms,
+            proxmox_login,
+            proxmox_logout,
+            proxmox_list_vms_session,
+            proxmox_vnc_start_session,
             proxmox_vnc_start,
             proxmox_vnc_cancel,
             ssh_list_directory,
