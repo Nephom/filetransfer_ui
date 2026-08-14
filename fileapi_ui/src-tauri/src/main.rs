@@ -2120,6 +2120,7 @@ mod phase1_filename_tests {
 }
 
 fn main() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
         .invoke_handler(tauri::generate_handler![

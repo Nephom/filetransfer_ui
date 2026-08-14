@@ -74,6 +74,10 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [vms, setVms] = useState<VmSummary[]>([]);
+  const [controlsOpen, setControlsOpen] = useState(true);
+  const [screenHeight, setScreenHeight] = useState(560);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const screenShellRef = useRef<HTMLDivElement>(null);
 
   const stopConnection = (updateStatus = true) => {
     sessionGenerationRef.current += 1;
@@ -97,6 +101,33 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     rfbRef.current?.disconnect();
     rfbRef.current = null;
   }, []);
+
+  useEffect(() => {
+    const updateFullscreen = () => setIsFullscreen(document.fullscreenElement === screenShellRef.current);
+    document.addEventListener("fullscreenchange", updateFullscreen);
+    return () => document.removeEventListener("fullscreenchange", updateFullscreen);
+  }, []);
+
+  const resizeScreen = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = screenHeight;
+    const move = (moveEvent: PointerEvent) => {
+      setScreenHeight(Math.max(280, Math.min(window.innerHeight * 0.85, startHeight + moveEvent.clientY - startY)));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop, { once: true });
+  };
+
+  const toggleFullscreen = async () => {
+    if (!screenShellRef.current) return;
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await screenShellRef.current.requestFullscreen();
+  };
 
   const updatePassword = (value: string) => { setPassword(value); if (entry) onChangeSecret(entry.id, { password: value }); };
   const nativeEntry = entry ? { ...entry, guestType: entry.guestType, ignoreTlsErrors: entry.ignoreTlsErrors } : null;
@@ -125,7 +156,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       if (!screenRef.current) throw new Error("VNC screen is unavailable");
       const rfb = new RFB(screenRef.current, connection.websocketUrl);
       rfb.scaleViewport = true; rfb.resizeSession = false;
-      rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) setStatus("Connected"); });
+      rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) { setStatus("Connected"); setControlsOpen(false); } });
       rfb.addEventListener("disconnect", () => { if (sessionGeneration === sessionGenerationRef.current) setStatus("Disconnected"); });
       rfb.addEventListener("securityfailure", (event: Event) => { if (sessionGeneration === sessionGenerationRef.current) setError(String((event as CustomEvent).detail || "VNC security failure")); });
       rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password: connection.password }));
@@ -148,9 +179,9 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   return <div className="vnc-workspace"><VncEntries entries={entries} activeEntryId={activeEntryId} onSelectEntry={selectEntry} onChangeEntries={onChangeEntries} />
     <section className="vnc-reader" aria-label="Proxmox VNC workspace">
       <div className="vnc-reader-heading"><div><span className="eyebrow">VNC mode · {workspaceName}</span><h1>{entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
-      <div className="vnc-auth-panel"><div className="vnc-auth-grid"><label>Password<input type="password" value={password} onChange={(event) => updatePassword(event.target.value)} /></label><label>Node<input value={entry?.node || ""} onChange={(event) => entry && onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, node: event.target.value } : item))} /></label><label>VMID<input type="number" min="1" value={entry?.vmid || ""} onChange={(event) => entry && onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, vmid: event.target.value ? Number(event.target.value) : null } : item))} /></label></div><div className="vnc-actions"><button type="button" onClick={() => void loadVms()} disabled={loading || !entry}>{loading ? "Loading..." : "Load VMs"}</button><button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry}>{loading ? "Connecting..." : "Connect"}</button><button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button></div>{entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}{error && <div className="notice rest-error">{error}</div>}</div>
+      <div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}><div className="vnc-auth-heading"><strong>Connection controls</strong><button type="button" onClick={() => setControlsOpen((value) => !value)}>{controlsOpen ? "Collapse" : "Expand"}</button></div>{controlsOpen && <><div className="vnc-auth-grid"><label>Password<input type="password" value={password} onChange={(event) => updatePassword(event.target.value)} /></label><label>Node<input value={entry?.node || ""} onChange={(event) => entry && onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, node: event.target.value } : item))} /></label><label>VMID<input type="number" min="1" value={entry?.vmid || ""} onChange={(event) => entry && onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, vmid: event.target.value ? Number(event.target.value) : null } : item))} /></label></div><div className="vnc-actions"><button type="button" onClick={() => void loadVms()} disabled={loading || !entry}>{loading ? "Loading..." : "Load VMs"}</button><button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry}>{loading ? "Connecting..." : "Connect"}</button><button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button></div>{entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}{error && <div className="notice rest-error">{error}</div>}</>}</div>
       {!!vms.length && <div className="vnc-vm-list">{vms.map((vm) => <button type="button" key={`${vm.guestType}-${vm.vmid}`} onClick={() => chooseVm(vm)}><strong>{vm.name || `VM ${vm.vmid}`}</strong><span>{vm.guestType} · {vm.node} · {vm.status || "unknown"}</span></button>)}</div>}
-      <div className="vnc-screen-shell"><div ref={screenRef} className="vnc-screen" /></div>
+      <div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`} style={{ "--vnc-screen-height": `${screenHeight}px` } as React.CSSProperties}><div className="vnc-screen-toolbar"><span>VNC display</span><button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div><div ref={screenRef} className="vnc-screen" /><div className="vnc-screen-resize" role="separator" aria-label="Resize VNC display" onPointerDown={resizeScreen} /></div>
     </section>
   </div>;
 }
