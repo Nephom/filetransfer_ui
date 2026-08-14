@@ -187,6 +187,7 @@ type UndoEntry = {
 };
 type DesktopSettings = {
   uiDensity: "auto" | "compact" | "standard" | "comfortable";
+  proxmoxVncModeEnabled: boolean;
   undoHistoryEnabled: boolean;
   operationLogEnabled: boolean;
   operationLogLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
@@ -507,6 +508,7 @@ const sessionRegistryKey = "fileapi-session-registry";
 const desktopSettingsKey = "nfterm-settings";
 const defaultDesktopSettings: DesktopSettings = {
   uiDensity: "auto",
+  proxmoxVncModeEnabled: false,
   undoHistoryEnabled: true,
   operationLogEnabled: true,
   operationLogLevel: "DEBUG",
@@ -694,7 +696,13 @@ function App() {
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [appMode, setAppMode] = useState<"location" | "rest" | "vnc">(() => {
     const saved = localStorage.getItem("fileapi-app-mode");
-    return saved === "rest" || saved === "vnc" ? saved : "location";
+    let vncEnabled = false;
+    try {
+      vncEnabled = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null")?.proxmoxVncModeEnabled === true;
+    } catch {
+      vncEnabled = false;
+    }
+    return saved === "rest" || (saved === "vnc" && vncEnabled) ? saved : "location";
   });
   const [path, setPath] = useState("");
   const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
@@ -735,6 +743,9 @@ function App() {
       const shareLinkMode = ["secure", "direct"].includes(saved?.shareLinkMode)
         ? saved.shareLinkMode
         : defaultDesktopSettings.shareLinkMode;
+      const proxmoxVncModeEnabled = typeof saved?.proxmoxVncModeEnabled === "boolean"
+        ? saved.proxmoxVncModeEnabled
+        : defaultDesktopSettings.proxmoxVncModeEnabled;
       return {
         ...defaultDesktopSettings,
         ...saved,
@@ -742,12 +753,16 @@ function App() {
         operationLogLevel,
         shareLinkExpirationDays,
         shareLinkMode,
+        proxmoxVncModeEnabled,
         confirmations: { ...defaultDesktopSettings.confirmations, ...(saved?.confirmations || {}) },
       };
     } catch {
       return defaultDesktopSettings;
     }
   });
+  useEffect(() => {
+    if (!desktopSettings.proxmoxVncModeEnabled && appMode === "vnc") setAppMode("location");
+  }, [desktopSettings.proxmoxVncModeEnabled, appMode]);
   const [viewport, setViewport] = useState(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
@@ -5198,7 +5213,7 @@ function App() {
            <div className="mode-buttons" role="group" aria-label="Application mode">
              <button type="button" className={`mode-switch-button${appMode === "location" ? " selected" : ""}`} aria-pressed={appMode === "location"} onClick={() => setAppMode("location")}><span className="mode-switch-dot" /><span>LOCATION</span></button>
              <button type="button" className={`mode-switch-button${appMode === "rest" ? " selected" : ""}`} aria-pressed={appMode === "rest"} onClick={() => setAppMode("rest")}><span className="mode-switch-dot" /><span>REST API</span></button>
-             <button type="button" className={`mode-switch-button${appMode === "vnc" ? " selected" : ""}`} aria-pressed={appMode === "vnc"} onClick={() => setAppMode("vnc")}><span className="mode-switch-dot" /><span>VNC</span></button>
+              {desktopSettings.proxmoxVncModeEnabled && <button type="button" className={`mode-switch-button${appMode === "vnc" ? " selected" : ""}`} aria-pressed={appMode === "vnc"} onClick={() => setAppMode("vnc")}><span className="mode-switch-dot" /><span>VNC</span></button>}
            </div>
            {appMode === "rest" ? (
             <div className="workspace-select-wrap">
@@ -6200,6 +6215,13 @@ function App() {
                 </div>
               </section>
               <section className="settings-section">
+                <h3>Interface features</h3>
+                <label className="settings-check">
+                  <input type="checkbox" checked={desktopSettings.proxmoxVncModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, proxmoxVncModeEnabled: event.target.checked }))} />
+                  <span><strong>Enable Proxmox VNC mode</strong><small>Show the Proxmox VNC workspace and its mode switcher.</small></span>
+                </label>
+              </section>
+              <section className="settings-section">
                <h3>Risk confirmations</h3>
                {([
                  ["delete", "Delete", "Deleting files or folders can permanently remove data."],
@@ -6361,7 +6383,7 @@ function App() {
                         ))}
                       </ol>
                     </section>
-                    <section className="workspace-entry-section">
+                    {desktopSettings.proxmoxVncModeEnabled && <section className="workspace-entry-section">
                       <h3>Proxmox VNC Entries</h3>
                       {!managedSession.proxmoxVncEntries.length && <span className="muted">No Proxmox VNC entries yet.</span>}
                       <ol className="workspace-entry-list">
@@ -6374,11 +6396,11 @@ function App() {
                           </li>
                         ))}
                       </ol>
-                    </section>
+                    </section>}
                     <div className="workspace-entry-actions">
                       <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>Add SSH Entry</button>
                       <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("rest"); setSessionsOpen(false); }}>Open REST API</button>
-                      <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("vnc"); setSessionsOpen(false); }}>Open VNC</button>
+                      {desktopSettings.proxmoxVncModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("vnc"); setSessionsOpen(false); }}>Open VNC</button>}
                     </div>
                   </article>
                 ))}
