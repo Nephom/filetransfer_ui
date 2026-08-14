@@ -638,9 +638,10 @@ pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncCon
         },
     );
     let connection_id = id.clone();
+    let task_connection_id = connection_id.clone();
     tokio::spawn(async move {
         if let Ok((stream, _)) = listener.accept().await {
-            if let Some(pending_connection) = pending().lock().await.remove(&connection_id) {
+            if let Some(pending_connection) = pending().lock().await.remove(&task_connection_id) {
                 let _ = relay(stream, pending_connection).await;
             }
         }
