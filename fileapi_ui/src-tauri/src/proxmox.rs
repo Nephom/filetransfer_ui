@@ -13,7 +13,6 @@ use tokio_tungstenite::{accept_async, Connector};
 #[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct VncEntry {
-    pub id: String,
     pub base_url: String,
     pub username: String,
     pub node: String,
