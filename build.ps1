@@ -16,8 +16,6 @@ $WebView2FixedRuntimeAssetRoot = Join-Path $Root "build-assets\webview2"
 $WebView2FixedRuntimeArchive = Join-Path $WebView2FixedRuntimeAssetRoot "downloads\Microsoft.WebView2.FixedVersionRuntime.151.0.4129.78.x64.cab"
 $WebView2FixedRuntimeExtractRoot = Join-Path $WebView2FixedRuntimeAssetRoot "fixed\x64"
 $WebView2FixedRuntimeStagingRoot = Join-Path $DesktopRoot "src-tauri\webview2-fixed-runtime"
-$WebView2WebsiteAssetRoot = Join-Path $Root "build-assets\websites\webview2"
-$WebView2WebsiteManifest = Join-Path $WebView2WebsiteAssetRoot "runtime-manifest.json"
 
 function Invoke-Native {
     param(
@@ -130,13 +128,6 @@ function Ensure-MsvcBuildTools {
 }
 
 function Ensure-WebView2FixedRuntime {
-    $websiteArchive = Join-Path $WebView2WebsiteAssetRoot (Split-Path -Leaf $WebView2FixedRuntimeArchive)
-    if (-not (Test-Path -LiteralPath $WebView2FixedRuntimeArchive) -and (Test-Path -LiteralPath $websiteArchive)) {
-        New-Item -ItemType Directory -Path (Split-Path -Parent $WebView2FixedRuntimeArchive) -Force | Out-Null
-        Copy-Item -LiteralPath $websiteArchive -Destination $WebView2FixedRuntimeArchive -Force
-        Write-Host "Using the manually staged WebView2 CAB from $websiteArchive"
-    }
-
     $runtime = Get-ChildItem -LiteralPath $WebView2FixedRuntimeExtractRoot -Filter "msedgewebview2.exe" -File -Recurse -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $runtime) {
@@ -178,23 +169,6 @@ function Ensure-WebView2FixedRuntime {
     # Tauri resolves fixedRuntime relative to src-tauri. Keep the source cache
     # outside the installer and never expose the build machine's absolute path.
     return "./webview2-fixed-runtime"
-}
-
-function Stage-WebView2WebsiteAsset {
-    # Keep the validated CAB and its metadata in a local handoff directory.
-    # This script deliberately does not upload to an internal web site.
-    New-Item -ItemType Directory -Path $WebView2WebsiteAssetRoot -Force | Out-Null
-    $websiteArchive = Join-Path $WebView2WebsiteAssetRoot (Split-Path -Leaf $WebView2FixedRuntimeArchive)
-    Copy-Item -LiteralPath $WebView2FixedRuntimeArchive -Destination $websiteArchive -Force
-    $manifest = [ordered]@{
-        version = $WebView2FixedRuntimeVersion
-        architecture = "x64"
-        file = (Split-Path -Leaf $websiteArchive)
-        sha256 = (Get-FileHash -LiteralPath $websiteArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-    } | ConvertTo-Json -Compress
-    Set-Content -LiteralPath $WebView2WebsiteManifest -Value $manifest -Encoding ascii -NoNewline
-    Write-Host "WebView2 website handoff: $websiteArchive"
-    Write-Host "WebView2 website manifest: $WebView2WebsiteManifest"
 }
 
 function Ensure-RustToolchain {
@@ -322,7 +296,7 @@ function Ensure-WindowsBuildTools {
     Ensure-RustToolchain
     Ensure-MsvcBuildTools
     Update-EnvironmentPath
-    Write-Host "Windows build prerequisites are ready. WebView2 is managed by the installer bootstrapper."
+    Write-Host "Windows build prerequisites are ready. WebView2 is provided by the local fixed runtime during packaging."
 }
 
 function Set-ProxyEnvironment {
@@ -471,11 +445,7 @@ function Build-Desktop {
     $env:VITE_APP_VERSION = $versionInfo.version
     $env:VITE_APP_VERSION_DISPLAY = $versionInfo.display
     Invoke-Native "npm.cmd" @("run", "build", "--prefix", $DesktopRoot)
-    # Keep validating/staging the fixed-runtime asset for the existing website
-    # publication flow. The NSIS installer itself uses the Evergreen bootstrapper
-    # and minimumWebview2Version so an existing runtime is only updated when old.
-    Ensure-WebView2FixedRuntime | Out-Null
-    Stage-WebView2WebsiteAsset
+    $webview2RuntimePath = Ensure-WebView2FixedRuntime
     try {
         Push-Location (Join-Path $DesktopRoot "src-tauri")
         try { Invoke-Native "cargo" @("check", "--locked", "--target", $WindowsTarget) }
@@ -522,10 +492,9 @@ function Build-Desktop {
         bundle = [ordered]@{
             windows = [ordered]@{
                 webviewInstallMode = [ordered]@{
-                    type = "downloadBootstrapper"
-                    silent = $true
+                    type = "fixedRuntime"
+                    path = $webview2RuntimePath
                 }
-                minimumWebview2Version = $WebView2FixedRuntimeVersion
             }
         }
     } | ConvertTo-Json -Compress -Depth 6
@@ -644,22 +613,11 @@ Options:
   -Interactive
               Allow interactive server configuration during 'upgrade'.
 
-  build    Check/install Windows build tools (Git, Node.js, Rust, and MSVC C++
-          Build Tools), validate/stage the WebView2 asset, and build the desktop
-          Tauri package. The installer uses the WebView2 bootstrapper and only
-          updates an existing runtime when it is below the minimum version.
+build    Check/install Windows build tools (Git, Node.js, Rust, and MSVC C++
+         Build Tools), validate the WebView2 Fixed Version runtime, and build
+         the desktop Tauri package.
 upgrade  Fast-forward the checkout and update desktop dependencies.
 self-upgrade Update this PowerShell build script from the tracked upstream branch.
-
-WebView2 asset flow:
-  build-assets\webview2\ is the local build cache.
-  build-assets\websites\webview2\ is the manual publication staging area.
-  The script never uploads to an internal web site. Copy the validated CAB and
-  runtime-manifest.json from that staging area to the site's static directory.
-
-Nginx only needs to serve that directory as static files. The CAB may use
-application/octet-stream; no special WebView2 proxy configuration is required.
-Directory listing is optional and can remain disabled.
 
 This script is for the build machine. It may use winget to install missing
 build tools (some, like Visual Studio Build Tools, may require an elevated
