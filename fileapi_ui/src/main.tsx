@@ -5530,8 +5530,9 @@ function App() {
             }}
           />
          ) : appMode === "vnc" ? (
-           <ProxmoxVncWorkspace
-             workspaceName={vncWorkspace?.name || "No Workspace"}
+            <ProxmoxVncWorkspace
+              key={vncWorkspace?.id || "default-vnc-workspace"}
+              workspaceName={vncWorkspace?.name || "No Workspace"}
              entries={vncWorkspace?.proxmoxVncEntries || []}
              activeEntryId={activeVncEntryId}
              secrets={vncSecrets}

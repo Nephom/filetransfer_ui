@@ -267,6 +267,11 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
     })
 }
 
+pub async fn cancel(connection_id: String) -> Result<(), String> {
+    pending().lock().await.remove(&connection_id);
+    Ok(())
+}
+
 async fn relay(stream: tokio::net::TcpStream, connection: PendingConnection) -> Result<(), String> {
     let browser = accept_async(stream)
         .await

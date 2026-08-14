@@ -1624,6 +1624,11 @@ async fn proxmox_vnc_start(
 }
 
 #[tauri::command]
+async fn proxmox_vnc_cancel(connection_id: String) -> Result<(), String> {
+    proxmox::cancel(connection_id).await
+}
+
+#[tauri::command]
 async fn ssh_list_directory(
     profile: ssh::SshProfile,
     path: String,
@@ -2157,6 +2162,7 @@ fn main() {
             proxmox_forget_secret,
             proxmox_list_vms,
             proxmox_vnc_start,
+            proxmox_vnc_cancel,
             ssh_list_directory,
             ssh_sftp_disconnect,
             scp_download,
