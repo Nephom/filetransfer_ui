@@ -6,6 +6,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, Connector};
@@ -140,13 +141,44 @@ fn normalized_url(value: &str) -> Result<Url, String> {
 fn client(ignore_tls_errors: bool) -> Result<Client, String> {
     Client::builder()
         .danger_accept_invalid_certs(ignore_tls_errors)
+        .danger_accept_invalid_hostnames(ignore_tls_errors)
+        .timeout(Duration::from_secs(10))
         .build()
         .map_err(|error| error.to_string())
 }
 
+fn endpoint_label(entry: &VncEntry) -> String {
+    Url::parse(entry.base_url.trim())
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| "invalid-proxmox-host".to_string())
+}
+
+async fn api_error(stage: &str, response: reqwest::Response) -> String {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|error| format!("Unable to read response body: {error}"));
+    let body = body.chars().take(2048).collect::<String>();
+    format!("Proxmox {stage} failed ({status}): {body}")
+}
+
 async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, String), String> {
     let base = normalized_url(&entry.base_url)?;
+    let label = endpoint_label(entry);
     let http = client(entry.ignore_tls_errors)?;
+    crate::oplog::log(
+        "INFO",
+        "proxmox_vnc",
+        "ticket_login_started",
+        &label,
+        "proxmox",
+        &format!(
+            "Authenticating user {} with Proxmox ticket authentication.",
+            entry.username
+        ),
+    );
     let response = http
         .post(format!("{base}/api2/json/access/ticket"))
         .form(&[
@@ -155,31 +187,106 @@ async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, Stri
         ])
         .send()
         .await
-        .map_err(|error| format!("Unable to reach Proxmox: {error}"))?;
+        .map_err(|error| {
+            let message = format!("Unable to reach Proxmox ticket endpoint: {error}");
+            crate::oplog::log(
+                "ERROR",
+                "proxmox_vnc",
+                "ticket_login_failed",
+                &label,
+                "proxmox",
+                &message,
+            );
+            message
+        })?;
     if !response.status().is_success() {
-        return Err(format!("Proxmox login failed ({})", response.status()));
+        let message = api_error("ticket login", response).await;
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_vnc",
+            "ticket_login_failed",
+            &label,
+            "proxmox",
+            &message,
+        );
+        return Err(message);
     }
-    let data: ApiEnvelope<LoginData> = response.json().await.map_err(|error| error.to_string())?;
+    let data: ApiEnvelope<LoginData> = response.json().await.map_err(|error| {
+        let message = format!("Invalid Proxmox ticket response: {error}");
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_vnc",
+            "ticket_login_failed",
+            &label,
+            "proxmox",
+            &message,
+        );
+        message
+    })?;
+    crate::oplog::log(
+        "INFO",
+        "proxmox_vnc",
+        "ticket_login_succeeded",
+        &label,
+        "proxmox",
+        "Proxmox ticket authentication succeeded.",
+    );
     Ok((http, data.data.ticket, data.data.csrf_token))
 }
 
 pub async fn list_vms(entry: VncEntry, password: String) -> Result<Vec<VmSummary>, String> {
     let (http, ticket, _) = login(&entry, &password).await?;
     let base = normalized_url(&entry.base_url)?;
+    let label = endpoint_label(&entry);
     let response = http
         .get(format!("{base}/api2/json/cluster/resources?type=vm"))
         .header("Cookie", format!("PVEAuthCookie={ticket}"))
         .send()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let message = format!("Unable to reach Proxmox VM list endpoint: {error}");
+            crate::oplog::log(
+                "ERROR",
+                "proxmox_vnc",
+                "vm_list_failed",
+                &label,
+                "proxmox",
+                &message,
+            );
+            message
+        })?;
     if !response.status().is_success() {
-        return Err(format!(
-            "Unable to list Proxmox VMs ({})",
-            response.status()
-        ));
+        let message = api_error("VM list", response).await;
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_vnc",
+            "vm_list_failed",
+            &label,
+            "proxmox",
+            &message,
+        );
+        return Err(message);
     }
-    let data: ApiEnvelope<Vec<ClusterVm>> =
-        response.json().await.map_err(|error| error.to_string())?;
+    let data: ApiEnvelope<Vec<ClusterVm>> = response.json().await.map_err(|error| {
+        let message = format!("Invalid Proxmox VM list response: {error}");
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_vnc",
+            "vm_list_failed",
+            &label,
+            "proxmox",
+            &message,
+        );
+        message
+    })?;
+    crate::oplog::log(
+        "INFO",
+        "proxmox_vnc",
+        "vm_list_succeeded",
+        &label,
+        "proxmox",
+        &format!("Loaded {} VM entries.", data.data.len()),
+    );
     Ok(data
         .data
         .into_iter()
@@ -206,6 +313,7 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
     }
     let (http, auth_ticket, csrf_token) = login(&entry, &password).await?;
     let base = normalized_url(&entry.base_url)?;
+    let label = endpoint_label(&entry);
     let guest_path = format!("{}/{}/{}", entry.guest_type, vmid, "vncproxy");
     let response = http
         .post(format!(
@@ -217,18 +325,54 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
         .form(&[("websocket", "1"), ("generate-password", "1")])
         .send()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let message = format!("Unable to reach Proxmox VNC proxy endpoint: {error}");
+            crate::oplog::log(
+                "ERROR",
+                "proxmox_vnc",
+                "vnc_proxy_failed",
+                &label,
+                "proxmox",
+                &message,
+            );
+            message
+        })?;
     if !response.status().is_success() {
-        return Err(format!(
-            "Unable to create Proxmox VNC session ({})",
-            response.status()
-        ));
+        let message = api_error("VNC proxy", response).await;
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_vnc",
+            "vnc_proxy_failed",
+            &label,
+            "proxmox",
+            &message,
+        );
+        return Err(message);
     }
-    let data: ApiEnvelope<ProxyData> = response.json().await.map_err(|error| error.to_string())?;
-    let password = data
-        .data
-        .password
-        .ok_or_else(|| "Proxmox did not return a VNC password".to_string())?;
+    let data: ApiEnvelope<ProxyData> = response.json().await.map_err(|error| {
+        let message = format!("Invalid Proxmox VNC proxy response: {error}");
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_vnc",
+            "vnc_proxy_failed",
+            &label,
+            "proxmox",
+            &message,
+        );
+        message
+    })?;
+    let password = data.data.password.ok_or_else(|| {
+        let message = "Proxmox VNC proxy did not return a VNC password".to_string();
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_vnc",
+            "vnc_proxy_failed",
+            &label,
+            "proxmox",
+            &message,
+        );
+        message
+    })?;
     let websocket_url = format!(
         "{base}/api2/json/nodes/{}/{}/vncwebsocket?port={}&vncticket={}",
         entry.node,
@@ -259,6 +403,14 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
             }
         }
     });
+    crate::oplog::log(
+        "INFO",
+        "proxmox_vnc",
+        "vnc_proxy_succeeded",
+        &label,
+        "vnc",
+        "Proxmox VNC proxy created; waiting for noVNC WebSocket connection.",
+    );
     Ok(VncConnection {
         id: id.clone(),
         websocket_url: format!("ws://localhost:{}/vnc/{}", address.port(), id),
@@ -293,7 +445,26 @@ async fn relay(stream: tokio::net::TcpStream, connection: PendingConnection) -> 
     let (pve, _) =
         tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                let message = format!("Unable to connect to Proxmox VNC WebSocket: {error}");
+                crate::oplog::log(
+                    "ERROR",
+                    "proxmox_vnc",
+                    "websocket_failed",
+                    "proxmox",
+                    "vnc",
+                    &message,
+                );
+                message
+            })?;
+    crate::oplog::log(
+        "INFO",
+        "proxmox_vnc",
+        "websocket_connected",
+        "proxmox",
+        "vnc",
+        "Proxmox VNC WebSocket relay connected.",
+    );
     let (mut browser_write, mut browser_read) = browser.split();
     let (mut pve_write, mut pve_read) = pve.split();
     tokio::select! {
