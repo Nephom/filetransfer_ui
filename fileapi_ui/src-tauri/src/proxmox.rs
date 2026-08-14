@@ -128,17 +128,23 @@ fn pending() -> &'static Arc<Mutex<HashMap<String, PendingConnection>>> {
 }
 
 fn normalized_url(value: &str) -> Result<Url, String> {
-    let mut url =
-        Url::parse(value.trim()).map_err(|_| "Proxmox base URL is invalid".to_string())?;
+    let url = Url::parse(value.trim()).map_err(|_| "Proxmox base URL is invalid".to_string())?;
     if url.scheme() != "https" {
         return Err("Proxmox base URL must start with https://".to_string());
     }
     if url.host_str().is_none() {
         return Err("Proxmox base URL must include a host".to_string());
     }
-    let path = url.path().trim_end_matches('/').to_string();
-    url.set_path(&path);
     Ok(url)
+}
+
+fn api_url(base: &Url, path: &str) -> Result<Url, String> {
+    let value = format!(
+        "{}/{}",
+        base.as_str().trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
+    Url::parse(&value).map_err(|_| "Proxmox API URL is invalid".to_string())
 }
 
 fn client(ignore_tls_errors: bool) -> Result<Client, String> {
@@ -182,7 +188,7 @@ async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, Stri
         ),
     );
     let response = http
-        .post(format!("{base}/api2/json/access/ticket"))
+        .post(api_url(&base, "api2/json/access/ticket")?)
         .form(&[
             ("username", entry.username.as_str()),
             ("password", password),
@@ -241,7 +247,7 @@ pub async fn list_vms(entry: VncEntry, password: String) -> Result<Vec<VmSummary
     let base = normalized_url(&entry.base_url)?;
     let label = endpoint_label(&entry);
     let response = http
-        .get(format!("{base}/api2/json/cluster/resources?type=vm"))
+        .get(api_url(&base, "api2/json/cluster/resources?type=vm")?)
         .header("Cookie", format!("PVEAuthCookie={ticket}"))
         .send()
         .await
@@ -318,10 +324,10 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
     let label = endpoint_label(&entry);
     let guest_path = format!("{}/{}/{}", entry.guest_type, vmid, "vncproxy");
     let response = http
-        .post(format!(
-            "{base}/api2/json/nodes/{}/{guest_path}",
-            entry.node
-        ))
+        .post(api_url(
+            &base,
+            &format!("api2/json/nodes/{}/{guest_path}", entry.node),
+        )?)
         .header("Cookie", format!("PVEAuthCookie={auth_ticket}"))
         .header("CSRFPreventionToken", csrf_token)
         .form(&[("websocket", "1"), ("generate-password", "1")])
@@ -375,14 +381,21 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
         );
         message
     })?;
-    let websocket_url = format!(
-        "{base}/api2/json/nodes/{}/{}/vncwebsocket?port={}&vncticket={}",
-        entry.node,
-        format!("{}/{}", entry.guest_type, vmid),
-        data.data.port,
-        urlencoding::encode(&data.data.ticket),
+    let websocket_url = api_url(
+        &base,
+        &format!(
+            "api2/json/nodes/{}/{}/vncwebsocket?port={}&vncticket={}",
+            entry.node,
+            format!("{}/{}", entry.guest_type, vmid),
+            data.data.port,
+            urlencoding::encode(&data.data.ticket),
+        ),
     )
-    .replace("https://", "wss://");
+    .and_then(|mut url| {
+        url.set_scheme("wss")
+            .map_err(|_| "Proxmox WebSocket URL is invalid".to_string())?;
+        Ok(url.to_string())
+    })?;
     let id = uuid::Uuid::new_v4().to_string();
     let listener = TcpListener::bind("localhost:0")
         .await
@@ -484,5 +497,22 @@ async fn relay(stream: tokio::net::TcpStream, connection: PendingConnection) -> 
             }
             Ok::<(), String>(())
         } => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{api_url, normalized_url};
+
+    #[test]
+    fn api_url_never_adds_a_second_slash() {
+        for base in ["https://pve.example:8006", "https://pve.example:8006/"] {
+            let base = normalized_url(base).expect("base URL should be valid");
+            let url = api_url(&base, "/api2/json/access/ticket").expect("API URL should be valid");
+            assert_eq!(
+                url.as_str(),
+                "https://pve.example:8006/api2/json/access/ticket"
+            );
+        }
     }
 }
