@@ -128,13 +128,16 @@ fn pending() -> &'static Arc<Mutex<HashMap<String, PendingConnection>>> {
 }
 
 fn normalized_url(value: &str) -> Result<Url, String> {
-    let url = Url::parse(value.trim()).map_err(|_| "Proxmox base URL is invalid".to_string())?;
+    let mut url =
+        Url::parse(value.trim()).map_err(|_| "Proxmox base URL is invalid".to_string())?;
     if url.scheme() != "https" {
         return Err("Proxmox base URL must start with https://".to_string());
     }
     if url.host_str().is_none() {
         return Err("Proxmox base URL must include a host".to_string());
     }
+    let path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&path);
     Ok(url)
 }
 
@@ -156,11 +159,10 @@ fn endpoint_label(entry: &VncEntry) -> String {
 
 async fn api_error(stage: &str, response: reqwest::Response) -> String {
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .unwrap_or_else(|error| format!("Unable to read response body: {error}"));
-    let body = body.chars().take(2048).collect::<String>();
+    let body = match response.bytes().await {
+        Ok(body) => String::from_utf8_lossy(&body).chars().take(2048).collect(),
+        Err(error) => format!("Unable to read response body: {error}"),
+    };
     format!("Proxmox {stage} failed ({status}): {body}")
 }
 
