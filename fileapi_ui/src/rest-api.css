@@ -97,7 +97,13 @@
 .rest-history-item span { min-width: 0; overflow: hidden; color: #78c9ee; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .rest-history-item small { flex: 0 0 auto; color: #668aa9; font-size: 10px; }
 .rest-history-clear { justify-self: start; min-height: 24px !important; padding: 3px 7px !important; border: 0; color: #ffb8ae; background: transparent; font-size: 10px !important; }
-.rest-actions { display: grid; gap: 6px; margin: 0 20px 10px; padding: 9px; border: 1px solid #6f5930; border-radius: 6px; background: rgba(55, 38, 14, .35); }
+.rest-actions { display: grid; gap: 6px; margin: 0 20px 10px; padding: 0 9px 9px; border: 1px solid #6f5930; border-radius: 6px; background: rgba(55, 38, 14, .35); }
+.rest-actions-toggle { display: flex; align-items: center; justify-content: space-between; width: calc(100% + 18px); min-height: 38px !important; margin: 0 -9px; padding: 7px 9px !important; border: 0; color: #ffd58a; background: transparent; text-align: left; }
+.rest-actions-toggle:hover { background: rgba(104, 72, 22, .45); }
+.rest-actions-heading { display: flex; align-items: center; justify-content: space-between; flex: 1; color: #ffd58a; font-size: 12px; }
+.rest-actions-heading span { padding: 2px 6px; border: 1px solid #8b6a2c; border-radius: 999px; color: #ffd58a; font-size: 10px; }
+.rest-actions-chevron { width: 24px; color: #ffd58a; font-size: 16px; text-align: center; }
+.rest-actions-list { display: grid; gap: 6px; }
 .rest-links { display: grid; gap: 6px; margin: 0 20px 10px; padding: 9px; border: 1px solid #315b7e; border-radius: 6px; background: rgba(7, 25, 42, .45); }
 .rest-links-heading { display: flex; align-items: center; justify-content: space-between; color: #9be8ff; font-size: 12px; }
 .rest-links-heading span { min-width: 20px; padding: 2px 6px; border: 1px solid #315b7e; border-radius: 999px; color: #78c9ee; font-size: 10px; text-align: center; }
@@ -106,8 +112,6 @@
 .rest-link-button span { overflow: hidden; color: #b9cee4; text-overflow: ellipsis; white-space: nowrap; }
 .rest-link-button small { color: #78c9ee; font-size: 10px; }
 .rest-link-button code { overflow: hidden; color: #9be8ff; font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.rest-actions-heading { display: flex; align-items: center; justify-content: space-between; color: #ffd58a; font-size: 12px; }
-.rest-actions-heading span { padding: 2px 6px; border: 1px solid #8b6a2c; border-radius: 999px; color: #ffd58a; font-size: 10px; }
 .rest-action-button { display: grid; gap: 3px; width: 100%; min-height: 38px !important; padding: 7px 9px !important; border: 1px solid #6f5930; color: #ffe6ae; background: rgba(70, 49, 18, .5); text-align: left; }
 .rest-action-button:hover { border-color: #ffd58a; background: rgba(104, 72, 22, .65); }
 .rest-action-button small { overflow: hidden; color: #c5a967; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
@@ -126,7 +130,9 @@
 .rest-success { color: #9ff2d2; background: #0d3b35; border-color: #2d8b79; }
 .rest-error { justify-content: space-between; color: #ffb8ae; background: #3b1d28; border-color: #813847; }
 .rest-error button { color: #ffe4df; background: #612638; border-color: #a24a5f; }
-.rest-response { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 220px; margin: 0 20px 14px; border: 1px solid #315b7e; border-radius: 6px; overflow: hidden; background: #07192a; }
+.rest-response { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 180px; margin: 0 20px 14px; border: 1px solid #315b7e; border-radius: 6px; overflow: hidden; background: #07192a; }
+.rest-response-resize-handle { height: 8px; margin: 0 20px; border: 1px solid #315b7e; border-bottom: 0; border-radius: 6px 6px 0 0; background: #07192a; cursor: row-resize; touch-action: none; }
+.rest-response-resize-handle:hover, .rest-response-resize-handle:focus-visible { background: #47cdf1; outline: 0; }
 .rest-response-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 9px 11px; border-bottom: 1px solid #254764; color: #91a9c0; font-size: 11px; }
 .rest-response-heading strong { margin-right: auto; color: #e6eefc; font-size: 13px; }
 .rest-status-ok { color: #6bf0ca; }

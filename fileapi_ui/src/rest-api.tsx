@@ -243,9 +243,11 @@ export function RestApiWorkspace(props: Props) {
   const [message, setMessage] = useState("");
   const [historyOpen, setHistoryOpen] = useState(true);
   const [history, setHistory] = useState<Record<string, RestHistoryItem[]>>({});
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [actionOpen, setActionOpen] = useState(false);
   const [selectedAction, setSelectedAction] = useState<RedfishAction | null>(null);
   const [actionBody, setActionBody] = useState("{\n  \n}");
+  const responseResizeRef = useRef<{ pointerY: number; height: number } | null>(null);
   const [sessionHelpOpen, setSessionHelpOpen] = useState(false);
   const [tokenPathHelpOpen, setTokenPathHelpOpen] = useState(false);
   const [tokenPathHelpPosition, setTokenPathHelpPosition] = useState({ top: -999, left: -999 });
@@ -280,6 +282,40 @@ export function RestApiWorkspace(props: Props) {
       localStorage.setItem(`rest-api-history:${entryId}`, JSON.stringify(items.slice(0, 20)));
     });
   }, [history]);
+
+  useEffect(() => {
+    const handlePointerMove = (event: PointerEvent) => {
+      const start = responseResizeRef.current;
+      if (!start) return;
+      const reader = document.querySelector<HTMLElement>(".rest-reader");
+      const panel = document.querySelector<HTMLElement>(".rest-response");
+      const minimumHeight = 180;
+      const maximumHeight = Math.max(minimumHeight, (reader?.clientHeight || start.height) - 180);
+      const nextHeight = start.height - (event.clientY - start.pointerY);
+      const height = Math.min(maximumHeight, Math.max(minimumHeight, nextHeight));
+      if (panel) panel.style.height = `${height}px`;
+    };
+    const stopResize = () => {
+      responseResizeRef.current = null;
+      document.body.style.removeProperty("cursor");
+      document.body.style.removeProperty("user-select");
+    };
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+    };
+  }, []);
+
+  const beginResponseResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    const panel = document.querySelector<HTMLElement>(".rest-response");
+    if (!panel) return;
+    responseResizeRef.current = { pointerY: event.clientY, height: panel.getBoundingClientRect().height };
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
 
   useEffect(() => {
     if (!sessionHelpOpen) return undefined;
@@ -490,13 +526,14 @@ export function RestApiWorkspace(props: Props) {
         {method !== "GET" && <label className="rest-body-editor">JSON request body<textarea value={bodyDraft} onChange={(event) => setBodyDraft(event.target.value)} spellCheck={false} /></label>}
         <div className="rest-query-editor"><span>Query parameters</span>{entry.query.map((item, index) => <div className="rest-query-row" key={`${entry.id}-query-${index}`}><input value={item.name} placeholder="name" onChange={(event) => updateQuery(entry.query.map((current, currentIndex) => currentIndex === index ? { ...current, name: event.target.value } : current))} /><input value={item.value} placeholder="value" onChange={(event) => updateQuery(entry.query.map((current, currentIndex) => currentIndex === index ? { ...current, value: event.target.value } : current))} /><button type="button" onClick={() => updateQuery(entry.query.filter((_, currentIndex) => currentIndex !== index))} aria-label="Remove query parameter">×</button></div>)}<button type="button" className="rest-query-add" onClick={() => updateQuery([...entry.query, { name: "", value: "" }])}>+ Add parameter</button></div>
         {!!currentHistory.length && <section className="rest-history"><button type="button" className="rest-history-toggle" onClick={() => setHistoryOpen((value) => !value)}><span>Recent GET paths</span><span>{historyOpen ? "−" : "+"}</span></button>{historyOpen && <div className="rest-history-list">{currentHistory.map((item) => <button type="button" className="rest-history-item" key={`${item.url}-${item.timestamp}`} onClick={() => void openPath(item.url)}><span>{item.url}</span><small>{new Date(item.timestamp).toLocaleTimeString()}</small></button>)}<button type="button" className="rest-history-clear" onClick={() => setHistory((current) => ({ ...current, [entry.id]: [] }))}>Clear history</button></div>}</section>}
-        <div className="rest-breadcrumbs" aria-label="REST path">{crumbs.map((crumb) => <React.Fragment key={crumb.value}><button type="button" onClick={() => void openPath(crumb.value)}>{crumb.label}</button>{crumb.value !== crumbs[crumbs.length - 1].value && <span>›</span>}</React.Fragment>)}</div>
-        {!!links.length && <section className="rest-links"><div className="rest-links-heading"><strong>Resource links</strong><span>{links.length}</span></div>{links.map((link) => <button type="button" className="rest-link-button" key={`${link.name}-${link.target}`} onClick={() => void (link.kind === "download" ? downloadResource(link.target) : openPath(link.target))}><span>{link.name}</span><small>{link.kind === "download" ? "download" : "GET"}</small><code>{link.target}</code></button>)}</section>}
-        {!!actions.length && <section className="rest-actions"><div className="rest-actions-heading"><strong>Redfish Actions</strong><span>POST</span></div>{actions.map((action) => <button type="button" className="rest-action-button" key={`${action.name}-${action.target}`} onClick={() => { setSelectedAction(action); setActionBody(defaultActionBody(action)); setActionOpen(true); }}><span>{action.title}</span><small>{action.target}</small></button>)}</section>}
-        {actionOpen && selectedAction && <div className="rest-action-dialog"><div className="rest-action-dialog-heading"><strong>{selectedAction.title}</strong><button type="button" onClick={() => setActionOpen(false)} aria-label="Close action">×</button></div><p>This Redfish action sends a POST request and may change power, BIOS, reset, or other server state.</p><label>JSON body<textarea value={actionBody} onChange={(event) => setActionBody(event.target.value)} spellCheck={false} /></label><div className="modal-actions"><button type="button" onClick={() => setActionOpen(false)}>Cancel</button><button type="button" className="danger" onClick={() => void executeAction()} disabled={loading}>{loading ? "Sending..." : "Run action"}</button></div></div>}
-        {entry.ignoreTlsErrors && <div className="notice rest-warning">TLS certificate verification is disabled for this REST entry.</div>}
-        {message && <div className="notice rest-success">{message}</div>}
-        {error && <div className="notice rest-error">{error}{response?.status === 401 || response?.status === 403 ? <button type="button" onClick={() => void login()}>Re-login</button> : null}</div>}
+          <div className="rest-breadcrumbs" aria-label="REST path">{crumbs.map((crumb) => <React.Fragment key={crumb.value}><button type="button" onClick={() => void openPath(crumb.value)}>{crumb.label}</button>{crumb.value !== crumbs[crumbs.length - 1].value && <span>›</span>}</React.Fragment>)}</div>
+          {entry.ignoreTlsErrors && <div className="notice rest-warning">TLS certificate verification is disabled for this REST entry.</div>}
+          {message && <div className="notice rest-success">{message}</div>}
+          {error && <div className="notice rest-error">{error}{response?.status === 401 || response?.status === 403 ? <button type="button" onClick={() => void login()}>Re-login</button> : null}</div>}
+          {!!links.length && <section className="rest-links"><div className="rest-links-heading"><strong>Resource links</strong><span>{links.length}</span></div>{links.map((link) => <button type="button" className="rest-link-button" key={`${link.name}-${link.target}`} onClick={() => void (link.kind === "download" ? downloadResource(link.target) : openPath(link.target))}><span>{link.name}</span><small>{link.kind === "download" ? "download" : "GET"}</small><code>{link.target}</code></button>)}</section>}
+         {!!actions.length && <section className="rest-actions"><button type="button" className="rest-actions-toggle" onClick={() => setActionsOpen((value) => !value)} aria-expanded={actionsOpen} aria-controls="rest-actions-list"><span className="rest-actions-heading"><strong>Redfish Actions</strong><span>POST · {actions.length}</span></span><span className="rest-actions-chevron" aria-hidden="true">{actionsOpen ? "⌃" : "⌄"}</span></button>{actionsOpen && <div id="rest-actions-list" className="rest-actions-list">{actions.map((action) => <button type="button" className="rest-action-button" key={`${action.name}-${action.target}`} onClick={() => { setSelectedAction(action); setActionBody(defaultActionBody(action)); setActionOpen(true); }}><span>{action.title}</span><small>{action.target}</small></button>)}</div>}</section>}
+         {actionOpen && selectedAction && <div className="rest-action-dialog"><div className="rest-action-dialog-heading"><strong>{selectedAction.title}</strong><button type="button" onClick={() => setActionOpen(false)} aria-label="Close action">×</button></div><p>This Redfish action sends a POST request and may change power, BIOS, reset, or other server state.</p><label>JSON body<textarea value={actionBody} onChange={(event) => setActionBody(event.target.value)} spellCheck={false} /></label><div className="modal-actions"><button type="button" onClick={() => setActionOpen(false)}>Cancel</button><button type="button" className="danger" onClick={() => void executeAction()} disabled={loading}>{loading ? "Sending..." : "Run action"}</button></div></div>}
+         {response && <div className="rest-response-resize-handle" role="separator" aria-label="Resize response panel" onPointerDown={beginResponseResize} tabIndex={0} />}
         {response && <section className="rest-response"><div className="rest-response-heading"><strong>Response</strong><span className={response.status >= 400 ? "rest-status-error" : "rest-status-ok"}>{response.status}</span><span>{response.headers?.find(([name]) => name.toLowerCase() === "content-type")?.[1] || "unknown content type"}</span><span>{response.body.length} bytes</span></div><div className="rest-view-tabs"><button type="button" className={view === "pretty" ? "active" : ""} onClick={() => setView("pretty")}>Pretty</button><button type="button" className={view === "raw" ? "active" : ""} onClick={() => setView("raw")}>Raw</button><button type="button" className={view === "headers" ? "active" : ""} onClick={() => setView("headers")}>Headers</button></div>{view === "headers" ? <div className="rest-headers">{(response.headers || []).map(([name, value], index) => <div key={`${name}-${index}`}><strong>{name}</strong><span>{name.toLowerCase().includes("authorization") || name.toLowerCase().includes("cookie") || name.toLowerCase().includes("token") ? "••••••••" : value}</span></div>)}</div> : view === "raw" || !json ? <pre className="rest-code">{responseText || "(empty response)"}</pre> : <div className="rest-json-view">{rows.length ? rows.map(([name, value]) => { const resourceLink = value && typeof value === "object" && !Array.isArray(value) && typeof (value as Record<string, unknown>)["@odata.id"] === "string" ? String((value as Record<string, unknown>)["@odata.id"]) : ""; const href = value && typeof value === "object" && !Array.isArray(value) && typeof (value as Record<string, unknown>).href === "string" ? String((value as Record<string, unknown>).href) : ""; const link = resourceLink || href; const target = link || `${normalizePath(path)}/${encodeURIComponent(name)}`; const isLink = Boolean(link); return <button type="button" className="rest-json-row" key={name} onClick={() => value && typeof value === "object" ? void openPath(target) : undefined}><span>{responseEntryName(value, name)}</span><small>{isLink ? "link" : Array.isArray(value) ? "array" : value && typeof value === "object" ? "object" : typeof value}</small><code>{isLink ? link : typeof value === "object" ? "[Open]" : String(value)}</code></button>; }) : <pre className="rest-code">{prettyJson(json)}</pre>}</div>}</section>}
       </>}
       {!entry && <div className="rest-reader-empty"><strong>Choose a REST API entry</strong><span>Create an entry on the left to start a request.</span></div>}
