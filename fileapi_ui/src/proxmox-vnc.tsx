@@ -89,8 +89,9 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     if (!nativeEntry || !password) { setError("Select an entry and enter the Proxmox password first."); return; }
     setLoading(true); setError(""); setStatus("Connecting...");
     try {
-      // @ts-expect-error noVNC is intentionally shipped as an unbundled public module.
-      const { default: RFB } = await import(/* @vite-ignore */ "/noVNC/core/rfb.js");
+      // noVNC is a public runtime asset, so keep its URL out of Vite's module graph.
+      const noVncUrl = new URL("noVNC/core/rfb.js", window.location.href).href;
+      const { default: RFB } = await import(/* @vite-ignore */ noVncUrl);
       const connection = await invoke<Connection>("proxmox_vnc_start", { entry: nativeEntry, password });
       if (!screenRef.current) throw new Error("VNC screen is unavailable");
       const rfb = new RFB(screenRef.current, connection.websocketUrl);
