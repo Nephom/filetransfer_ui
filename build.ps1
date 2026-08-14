@@ -322,7 +322,7 @@ function Ensure-WindowsBuildTools {
     Ensure-RustToolchain
     Ensure-MsvcBuildTools
     Update-EnvironmentPath
-    Write-Host "Windows build prerequisites are ready. WebView2 is provided by the local fixed runtime during packaging."
+    Write-Host "Windows build prerequisites are ready. WebView2 is managed by the installer bootstrapper."
 }
 
 function Set-ProxyEnvironment {
@@ -471,7 +471,10 @@ function Build-Desktop {
     $env:VITE_APP_VERSION = $versionInfo.version
     $env:VITE_APP_VERSION_DISPLAY = $versionInfo.display
     Invoke-Native "npm.cmd" @("run", "build", "--prefix", $DesktopRoot)
-    $webview2RuntimePath = Ensure-WebView2FixedRuntime
+    # Keep validating/staging the fixed-runtime asset for the existing website
+    # publication flow. The NSIS installer itself uses the Evergreen bootstrapper
+    # and minimumWebview2Version so an existing runtime is only updated when old.
+    Ensure-WebView2FixedRuntime | Out-Null
     Stage-WebView2WebsiteAsset
     try {
         Push-Location (Join-Path $DesktopRoot "src-tauri")
@@ -519,9 +522,10 @@ function Build-Desktop {
         bundle = [ordered]@{
             windows = [ordered]@{
                 webviewInstallMode = [ordered]@{
-                    type = "fixedRuntime"
-                    path = $webview2RuntimePath
+                    type = "downloadBootstrapper"
+                    silent = $true
                 }
+                minimumWebview2Version = $WebView2FixedRuntimeVersion
             }
         }
     } | ConvertTo-Json -Compress -Depth 6
@@ -640,9 +644,10 @@ Options:
   -Interactive
               Allow interactive server configuration during 'upgrade'.
 
-build    Check/install Windows build tools (Git, Node.js, Rust, and MSVC C++
-         Build Tools), validate the WebView2 Fixed Version runtime, stage a
-         manual website copy, and build the desktop Tauri package.
+  build    Check/install Windows build tools (Git, Node.js, Rust, and MSVC C++
+          Build Tools), validate/stage the WebView2 asset, and build the desktop
+          Tauri package. The installer uses the WebView2 bootstrapper and only
+          updates an existing runtime when it is below the minimum version.
 upgrade  Fast-forward the checkout and update desktop dependencies.
 self-upgrade Update this PowerShell build script from the tracked upstream branch.
 

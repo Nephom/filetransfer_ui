@@ -20,6 +20,12 @@ On a Windows build machine, run the repository-level PowerShell workflow. It che
 
 The portable EXE is created at `src-tauri/target/release/nFterm.exe`. The NSIS installer is created in `src-tauri/target/release/bundle/nsis/`.
 
+On Windows, an existing installation is upgraded in place. The installer does not
+need to uninstall nFterm first. The application is replaced while the existing
+user data is preserved. WebView2 is managed separately: the installer checks the
+minimum WebView2 version required by the build and only invokes Microsoft's
+bootstrapper when the installed runtime is missing or older than that version.
+
 ## Server Connection
 
 The sign-in page always uses HTTPS. It collects the server address and HTTPS port separately; the default port is `9443`. Do not include a protocol, path, or port in the server-address field.
