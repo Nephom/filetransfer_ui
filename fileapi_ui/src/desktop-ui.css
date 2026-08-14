@@ -106,6 +106,23 @@
   padding-top: 0;
   padding-bottom: 0;
 }
+.context-picker { position: relative; z-index: 40; min-width: 0; }
+.context-picker-trigger { display: flex; align-items: center; gap: 8px; min-width: 190px; max-width: min(360px, 42vw); min-height: var(--ui-button-height); padding: var(--ui-button-padding-y) var(--ui-button-padding-x); border: 1px solid var(--bridge-line); border-radius: var(--bridge-radius-sm); color: var(--bridge-text, #e6eefc); background: rgba(11, 42, 65, .68); box-shadow: var(--bridge-inset); text-align: left; }
+.context-picker-trigger:hover:not(:disabled), .context-picker-trigger[aria-expanded="true"] { border-color: var(--bridge-cyan, #63e6ff); background: rgba(19, 59, 91, .82); }
+.context-picker-label { color: var(--bridge-cyan, #63e6ff); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+.context-picker-trigger strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.context-picker-chevron { margin-left: auto; color: var(--bridge-cyan, #63e6ff); }
+.context-picker-popover { position: fixed; z-index: 200; overflow-y: auto; overflow-x: hidden; padding: 7px; border: 1px solid var(--bridge-line); border-radius: var(--bridge-radius); background: rgba(8, 27, 46, .96); box-shadow: var(--bridge-glass-shadow), 0 18px 50px rgba(0, 0, 0, .42); backdrop-filter: blur(22px) saturate(140%); animation: context-picker-in .16s ease-out both; }
+.context-picker-group + .context-picker-group { margin-top: 7px; padding-top: 7px; border-top: 1px solid rgba(99, 230, 255, .16); }
+.context-picker-group-label, .context-picker-empty { display: block; padding: 5px 8px; color: var(--bridge-cyan, #63e6ff); font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.context-picker-option { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 38px; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--bridge-radius-sm); color: #d9eafa; background: transparent; text-align: left; }
+.context-picker-option:hover, .context-picker-option.selected { border-color: rgba(99, 230, 255, .42); background: linear-gradient(90deg, rgba(99, 230, 255, .18), rgba(49, 139, 255, .08)); }
+.context-picker-option-copy { display: grid; min-width: 0; gap: 2px; }.context-picker-option-copy strong, .context-picker-option-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.context-picker-option-copy small { color: #91a9c0; font-size: 10px; }.context-picker-check { color: var(--bridge-cyan, #63e6ff); }
+@keyframes context-picker-in { from { opacity: 0; transform: translateY(5px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+.floating-dialog-layer { position: fixed; z-index: 300; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(0, 6, 14, .58); backdrop-filter: blur(8px) saturate(120%); animation: floating-dialog-in .16s ease-out both; }
+.floating-dialog-layer .rest-entry-editor, .floating-dialog-layer .vnc-entry-editor { position: relative; inset: auto; width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: 0; overflow-y: auto; overflow-x: hidden; }
+.account-menu { position: fixed; z-index: 240; top: auto; right: auto; max-height: min(460px, calc(100dvh - 24px)); overflow-y: auto; }
+@keyframes floating-dialog-in { from { opacity: 0; } to { opacity: 1; } }
 
 .commandbar {
   min-height: calc(var(--ui-button-height) + 12px);

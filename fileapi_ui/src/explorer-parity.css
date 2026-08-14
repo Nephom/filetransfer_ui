@@ -1,5 +1,6 @@
 .explorer { position: relative; }
 .desktop-workspace { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
+.mode-workspace { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; overflow: hidden; }
 .desktop-folder-tree { order: -1; display: flex; flex-direction: column; flex: 0 0 250px; width: 250px; min-height: 0; max-height: 100%; padding: 14px 8px; overflow: hidden; background: rgba(8, 24, 42, .82); border-right: 1px solid #1c3955; }
 .folder-pane, .file-pane { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
 .folder-tree-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-width: none; }

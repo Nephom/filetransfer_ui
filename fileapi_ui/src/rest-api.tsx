@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { PaneResizeHandle } from "./resizable-pane";
 
 export type RestAuthMode = "none" | "basic" | "bearer" | "api-key" | "cookie" | "login";
 export type RestMethod = "GET" | "POST" | "PATCH";
@@ -209,14 +211,14 @@ function RestEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries }:
         <span className="rest-entry-edit" onClick={(event) => { event.stopPropagation(); setEditing(entry); }}>Edit</span>
       </button>)}
     </div>
-    {editing && <div className="rest-entry-editor">
-      <div className="rest-editor-heading"><strong>{entries.some((entry) => entry.id === editing.id) ? "Edit REST entry" : "Add REST entry"}</strong><button type="button" onClick={() => setEditing(null)} aria-label="Close editor">×</button></div>
+    {editing && createPortal(<div className="floating-dialog-layer" role="presentation"><div className="rest-entry-editor" role="dialog" aria-modal="true" aria-labelledby="rest-entry-editor-title">
+      <div className="rest-editor-heading"><strong id="rest-entry-editor-title">{entries.some((entry) => entry.id === editing.id) ? "Edit REST entry" : "Add REST entry"}</strong><button type="button" onClick={() => setEditing(null)} aria-label="Close editor">×</button></div>
       <label>Name<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
       <label>Base URL<input value={editing.baseUrl} onChange={(event) => setEditing({ ...editing, baseUrl: event.target.value })} placeholder="https://api.example.com" /></label>
       <label>Default path<input value={editing.defaultPath} onChange={(event) => setEditing({ ...editing, defaultPath: event.target.value })} placeholder="/v1/rest" /></label>
       <label className="tls-option"><input type="checkbox" checked={editing.ignoreTlsErrors} onChange={(event) => setEditing({ ...editing, ignoreTlsErrors: event.target.checked })} /> Ignore TLS errors</label>
       <div className="modal-actions">{entries.some((entry) => entry.id === editing.id) && <button type="button" className="danger" onClick={() => { localStorage.removeItem(`rest-api-history:${editing.id}`); onChangeEntries(entries.filter((entry) => entry.id !== editing.id)); setEditing(null); }}>Remove</button>}<button type="button" onClick={() => setEditing(null)}>Cancel</button><button type="button" className="confirm" onClick={save}>Save entry</button></div>
-    </div>}
+    </div></div>, document.body)}
   </aside>;
 }
 
@@ -251,6 +253,30 @@ export function RestApiWorkspace(props: Props) {
   const [sessionHelpOpen, setSessionHelpOpen] = useState(false);
   const [tokenPathHelpOpen, setTokenPathHelpOpen] = useState(false);
   const [tokenPathHelpPosition, setTokenPathHelpPosition] = useState({ top: -999, left: -999 });
+  const [entryPaneWidth, setEntryPaneWidth] = useState(() => Number(localStorage.getItem("fileapi-rest-entry-pane-width")) || 380);
+  const entryPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const stopEntryPaneResize = () => {
+    entryPaneResizeRef.current = null;
+    window.removeEventListener("pointermove", resizeEntryPane);
+    window.removeEventListener("pointerup", stopEntryPaneResize);
+  };
+  const resizeEntryPane = (event: PointerEvent) => {
+    const start = entryPaneResizeRef.current;
+    if (!start) return;
+    const maxWidth = Math.max(220, Math.min(720, window.innerWidth - 300));
+    setEntryPaneWidth(Math.max(220, Math.min(maxWidth, start.startWidth + event.clientX - start.startX)));
+  };
+  const beginEntryPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    entryPaneResizeRef.current = { startX: event.clientX, startWidth: entryPaneWidth };
+    window.addEventListener("pointermove", resizeEntryPane);
+    window.addEventListener("pointerup", stopEntryPaneResize);
+  };
+  useEffect(() => {
+    localStorage.setItem("fileapi-rest-entry-pane-width", String(entryPaneWidth));
+  }, [entryPaneWidth]);
+  useEffect(() => () => stopEntryPaneResize(), []);
 
   useEffect(() => {
     const nextPath = entry?.defaultPath || "/";
@@ -504,7 +530,8 @@ export function RestApiWorkspace(props: Props) {
   const links = collectRedfishLinks(json);
 
   return <div className="rest-workspace">
-    <RestEntries {...props} entries={props.entries} activeEntryId={entry?.id || ""} />
+    <div className="rest-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries {...props} entries={props.entries} activeEntryId={entry?.id || ""} /></div>
+    <PaneResizeHandle ariaLabel="Resize REST API entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />
     <section className="rest-reader" aria-label="REST API reader">
       <div className="rest-reader-heading"><div><span className="eyebrow">REST API mode · {props.workspaceName}</span><h1>{entry?.name || "REST API reader"}</h1></div><span className="rest-session-status">{entry && (session["X-Auth-Token"] || secret.cookie) ? "Authenticated" : "Not authenticated"}</span></div>
       {entry && <>

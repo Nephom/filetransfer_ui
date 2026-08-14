@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { resolveResource } from "@tauri-apps/api/path";
@@ -37,6 +38,8 @@ import "./help/help.css";
 import { HelpIcon, helpPages, helpSections } from "./help/help-content";
 import { RestApiWorkspace, type RestApiEntry, type RestApiSecret } from "./rest-api";
 import { ProxmoxVncWorkspace, type ProxmoxVncEntry, type ProxmoxVncSecret } from "./proxmox-vnc";
+import { PaneResizeHandle } from "./resizable-pane";
+import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 
 type FileItem = {
   name: string;
@@ -718,6 +721,7 @@ function App() {
   const [sharePasswordDraft, setSharePasswordDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [accountMenuStyle, setAccountMenuStyle] = useState<React.CSSProperties>({});
   const [helpOpen, setHelpOpen] = useState(false);
   const [selectedHelpPageId, setSelectedHelpPageId] = useState("login");
   const [expandedHelpSections, setExpandedHelpSections] = useState<string[]>(["getting-started"]);
@@ -809,6 +813,9 @@ function App() {
   );
   const [localPaneWidth, setLocalPaneWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-local-pane-width")) || 380,
+  );
+  const [folderPaneWidth, setFolderPaneWidth] = useState(() =>
+    Number(localStorage.getItem("fileapi-folder-pane-width")) || 250,
   );
   const [localTreeWidth, setLocalTreeWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-local-tree-width")) || 130,
@@ -1213,6 +1220,9 @@ function App() {
   useEffect(() => {
     localStorage.setItem("fileapi-local-pane-width", String(localPaneWidth));
   }, [localPaneWidth]);
+  useEffect(() => {
+    localStorage.setItem("fileapi-folder-pane-width", String(folderPaneWidth));
+  }, [folderPaneWidth]);
 
   useEffect(() => {
     localStorage.setItem("fileapi-local-tree-width", String(localTreeWidth));
@@ -1493,16 +1503,32 @@ function App() {
 
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
-      if (!accountControl.current?.contains(event.target as Node))
+      if (!accountControl.current?.contains(event.target as Node) && !(event.target as HTMLElement).closest(".account-menu"))
         setAccountOpen(false);
       if (!locationControl.current?.contains(event.target as Node))
         setLocationMenuOpen(false);
-      if (!(event.target as HTMLElement).closest(".context-menu"))
+      if (!(event.target as HTMLElement).closest(".context-menu, .account-menu, .context-picker-popover"))
         setContextMenu(null);
     };
     window.addEventListener("click", closeAccountMenu);
     return () => window.removeEventListener("click", closeAccountMenu);
   }, []);
+
+  useEffect(() => {
+    if (!accountOpen) return;
+    const reposition = () => {
+      const rect = accountControl.current?.getBoundingClientRect();
+      if (!rect) return;
+      setAccountMenuStyle({ top: rect.bottom + 8, right: Math.max(12, window.innerWidth - rect.right) });
+    };
+    reposition();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [accountOpen]);
 
   useEffect(() => {
     if (accountOpen) accountControl.current?.querySelector<HTMLButtonElement>(".account-menu button:not(:disabled)")?.focus();
@@ -2034,13 +2060,13 @@ function App() {
     const start = paneResizeRef.current;
     if (!start) return;
     const maxWidth = Math.min(720, window.innerWidth - 300);
-    setLocalPaneWidth(
-      Math.max(220, Math.min(maxWidth, start.startWidth + (event.clientX - start.startX))),
-    );
+    const nextWidth = Math.max(220, Math.min(maxWidth, start.startWidth + (event.clientX - start.startX)));
+    if (splitMode) setLocalPaneWidth(nextWidth);
+    else setFolderPaneWidth(nextWidth);
   };
   const beginPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
-    paneResizeRef.current = { startX: event.clientX, startWidth: localPaneWidth };
+    paneResizeRef.current = { startX: event.clientX, startWidth: splitMode ? localPaneWidth : folderPaneWidth };
     window.addEventListener("pointermove", resizePane);
     window.addEventListener("pointerup", stopPaneResize);
   };
@@ -5201,46 +5227,47 @@ function App() {
     : selectedDensity === "comfortable"
       ? "2"
       : "1";
+  const contextLabel = appMode === "location" ? "LocationID" : appMode === "rest" ? "REST Entry" : "VNC Entry";
+  const contextValue = appMode === "location"
+    ? remoteSshEntryId ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}` : activeLocation?.id || session.locationId || "No Location"
+    : appMode === "rest"
+      ? restWorkspace?.restApiEntries.find((entry) => entry.id === activeRestEntryId)?.name || "No REST Entry"
+      : vncWorkspace?.proxmoxVncEntries.find((entry) => entry.id === activeVncEntryId)?.name || "No VNC Entry";
+  const contextGroups: ContextPickerGroup[] = appMode === "location"
+    ? [{ label: "Locations", options: [...locations.map((location) => ({ id: `location:${location.id}`, label: location.displayName, detail: location.id, selected: !remoteSshEntryId && location.id === session.locationId })), ...connectedSshBrowseOptions().map((entry) => ({ id: `ssh:${entry.id}`, label: `SSH: ${entry.name}`, selected: entry.id === remoteSshEntryId }))] }]
+    : managedSessions.map((workspace) => ({ label: workspace.name, options: (appMode === "rest" ? workspace.restApiEntries : workspace.proxmoxVncEntries).map((entry) => ({ id: entry.id, label: entry.name, detail: entry.baseUrl, selected: entry.id === (appMode === "rest" ? activeRestEntryId : activeVncEntryId) })) })).filter((group) => group.options.length);
+  const selectContext = (id: string) => {
+    if (appMode === "location") {
+      if (id.startsWith("location:")) void selectLocation(id.slice("location:".length));
+      else if (id.startsWith("ssh:")) selectSshBrowse(id.slice("ssh:".length));
+      return;
+    }
+    const workspace = managedSessions.find((item) => (appMode === "rest" ? item.restApiEntries : item.proxmoxVncEntries).some((entry) => entry.id === id));
+    if (!workspace) return;
+    setWorkspaceSessionId(workspace.id);
+    if (appMode === "rest") setActiveRestEntryId(id);
+    else setActiveVncEntryId(id);
+  };
 
-  return (
-       <main className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
+      return (
+        <main className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
       <header className="titlebar">
-        <span className="app-mark" />
-        <span className="app-name">
-          Nephom <span className="connection-status">File manager</span> cross <span className="connection-status">Terminal</span>
-        </span>
+        <div className="titlebar-brand">
+          <span className="app-mark" />
+          <span className="app-name">
+            Nephom <span className="connection-status">File manager</span> cross <span className="connection-status">Terminal</span>
+          </span>
+        </div>
+         <div className="titlebar-main">
          <div className={`mode-switcher ${appMode === "rest" ? "rest-active" : appMode === "vnc" ? "vnc-active" : "location-active"}`}>
            <div className="mode-buttons" role="group" aria-label="Application mode">
              <button type="button" className={`mode-switch-button${appMode === "location" ? " selected" : ""}`} aria-pressed={appMode === "location"} onClick={() => setAppMode("location")}><span className="mode-switch-dot" /><span>LOCATION</span></button>
              <button type="button" className={`mode-switch-button${appMode === "rest" ? " selected" : ""}`} aria-pressed={appMode === "rest"} onClick={() => setAppMode("rest")}><span className="mode-switch-dot" /><span>REST API</span></button>
               {desktopSettings.proxmoxVncModeEnabled && <button type="button" className={`mode-switch-button${appMode === "vnc" ? " selected" : ""}`} aria-pressed={appMode === "vnc"} onClick={() => setAppMode("vnc")}><span className="mode-switch-dot" /><span>VNC</span></button>}
-           </div>
-           {appMode === "rest" ? (
-            <div className="workspace-select-wrap">
-              <span className="location-label">Workspace</span>
-              <select className="workspace-select" value={restWorkspace?.id || ""} onChange={(event) => selectRestWorkspace(event.target.value)} disabled={busy}>
-                {!managedSessions.length && <option value="">No Workspace</option>}
-                {managedSessions.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}
-              </select>
-            </div>
-           ) : appMode === "vnc" ? (
-             <div className="workspace-select-wrap"><span className="location-label">Workspace</span><select className="workspace-select" value={vncWorkspace?.id || ""} onChange={(event) => selectVncWorkspace(event.target.value)} disabled={busy}>{!managedSessions.length && <option value="">No Workspace</option>}{managedSessions.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></div>
-           ) : (
-            <div className="location-control" ref={locationControl}>
-              <span className="location-label">Location</span>
-              {(locations.length > 1 || connectedSshBrowseOptions().length > 0) ? (
-                <button className="location-select" aria-label="Location" aria-expanded={locationMenuOpen} aria-haspopup="listbox" disabled={busy} onClick={(event) => { event.stopPropagation(); setLocationMenuOpen((open) => !open); }}>
-                  {remoteSshEntryId ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}` : activeLocation ? activeLocation.displayName : "Browse via SSH"}<span className="location-chevron" aria-hidden="true">⌄</span>
-                </button>
-              ) : <span className="location-single">{activeLocation?.displayName || "No Location"}</span>}
-              {(locations.length > 1 || connectedSshBrowseOptions().length > 0) && locationMenuOpen && <div className="location-menu" role="listbox" aria-label="Locations">
-                {locations.map((location) => <button key={location.id} className={!remoteSshEntryId && location.id === session.locationId ? "selected" : ""} role="option" aria-selected={!remoteSshEntryId && location.id === session.locationId} onClick={() => { setLocationMenuOpen(false); void selectLocation(location.id); }}>{location.displayName}</button>)}
-                {connectedSshBrowseOptions().map((entry) => <button key={entry.id} className={entry.id === remoteSshEntryId ? "selected" : ""} role="option" aria-selected={entry.id === remoteSshEntryId} onClick={() => { setLocationMenuOpen(false); selectSshBrowse(entry.id); }}>{`SSH: ${entry.name}`}</button>)}
-              </div>}
-              {activeLocation && <span className={`health-dot ${activeLocation.status === "online" ? "online" : ""}`} title={activeLocation.status || "unknown"} aria-label={activeLocation.status || "unknown"} />}
-            </div>
-          )}
-        </div>
+          </div>
+         </div>
+         </div>
+         <div className="titlebar-account">
         <div className="account-control" ref={accountControl}>
           <button
             className="account"
@@ -5257,8 +5284,8 @@ function App() {
             </span>
             <span className="account-chevron">⌄</span>
           </button>
-          {accountOpen && (
-            <div className="account-menu" role="menu" aria-label="Account menu">
+           {accountOpen && createPortal(
+             <div className="account-menu" style={accountMenuStyle} role="menu" aria-label="Account menu">
               <div className="account-summary">
                 <strong>{session.username}</strong>
                 <span>
@@ -5308,8 +5335,9 @@ function App() {
                <button className="danger" role="menuitem" onClick={signOut}>
                 Log out
               </button>
-            </div>
-          )}
+             </div>, document.body
+           )}
+        </div>
         </div>
       </header>
       <nav className="commandbar" aria-label={appMode === "rest" ? "REST API actions" : "File actions"}>
@@ -5499,16 +5527,9 @@ function App() {
         >
           Refresh
         </button>
-        <button
-          className={terminalOpen ? "active" : ""}
-          onClick={() => setTerminalOpen((open) => !open)}
-          aria-pressed={terminalOpen}
-          aria-label="Terminal"
-        >
-          Terminal
-        </button>
+         <ContextPicker label={contextLabel} value={contextValue} groups={contextGroups} onSelect={selectContext} disabled={busy} />
       </nav>
-       <div className={`desktop-workspace${splitMode ? " split-workspace" : ""}`}>
+       <div className={appMode === "location" ? `desktop-workspace${splitMode ? " split-workspace" : ""}` : "mode-workspace"}>
          {appMode === "rest" ? (
           <RestApiWorkspace
             workspaceName={restWorkspace?.name || "No Workspace"}
@@ -5570,15 +5591,9 @@ function App() {
          ) : <>
         {splitMode && renderLocalPane()}
         {splitMode && (
-          <div
-            className="pane-resize-handle"
-            onPointerDown={beginPaneResize}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize LOCAL and REMOTE panes"
-          />
+           <PaneResizeHandle ariaLabel="Resize LOCAL and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />
         )}
-        <aside className="desktop-folder-tree" onMouseDownCapture={() => setActivePane("remote")}>
+        <aside className="desktop-folder-tree" style={!splitMode ? { flexBasis: `${folderPaneWidth}px`, width: `${folderPaneWidth}px` } : undefined} onMouseDownCapture={() => setActivePane("remote")}>
           <span className="sidebar-label">Folders</span>
           <div className="folder-pane">
             <div
@@ -5594,6 +5609,7 @@ function App() {
             <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
           </div>
         </aside>
+        {!splitMode && <PaneResizeHandle ariaLabel="Resize Folders and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />}
         <section
           className={`desktop-content ${splitMode && activePane === "remote" ? "active-pane" : ""}`}
           onMouseDownCapture={() => setActivePane("remote")}

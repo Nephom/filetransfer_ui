@@ -97,10 +97,25 @@ body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif
 
 .titlebar {
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 360px) minmax(0, 1fr) auto;
+  align-items: center;
   min-height: 56px;
-  height: auto;
+  height: 56px;
+  max-height: 56px;
+  gap: 12px;
   padding: 8px 18px;
+  overflow: hidden;
 }
+.titlebar-brand, .titlebar-main, .titlebar-account { min-width: 0; display: flex; align-items: center; }
+.titlebar-brand { gap: 10px; overflow: hidden; }
+.titlebar-brand > span { margin-left: 0; }
+.titlebar-brand .app-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.titlebar-main { justify-content: center; }
+.titlebar-main .mode-switcher { width: min(600px, 100%); min-width: 0; margin-left: 0; flex: 1 1 auto; }
+.titlebar-account { justify-content: flex-end; }
+.titlebar-account .account-control { margin-left: 0; }
+.titlebar span { margin-left: 0; }
 .titlebar::before,
 .commandbar::before,
 .navigation::before {
@@ -466,8 +481,9 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
   .file-tile:hover, .commandbar button:active:not(:disabled), .navigation button:active:not(:disabled) { transform: none; }
 }
 @media (max-width: 720px) {
-  .titlebar { padding: 8px 12px; }
+  .titlebar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; padding: 8px 12px; gap: 8px; }
   .app-name { max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .titlebar-account .account-role { display: none; }
   .desktop-workspace { gap: 8px; padding: 8px; }
   .desktop-folder-tree, .desktop-content, .local-pane { border-radius: var(--bridge-radius-sm); }
   .terminal-dock { margin: 0 8px 8px; }
