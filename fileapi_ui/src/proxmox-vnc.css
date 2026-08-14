@@ -24,6 +24,7 @@
 .vnc-entry-editor input, .vnc-entry-editor select, .vnc-auth-grid input, .vnc-auth-grid select { min-width: 0; color: #e6eefc; background: #07192a; border-color: #315b7e; }
 .vnc-entry-login { display: flex; align-items: end; justify-content: flex-end; gap: 7px; color: #9fb8cf; font-size: 11px; }
 .vnc-entry-login button { min-height: 27px !important; padding: 4px 10px !important; font-size: 11px !important; }
+.vnc-username-field { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end; gap: 7px; }.vnc-realm-at { padding-bottom: 8px; color: #9fb8cf; font-weight: 700; }.vnc-realm-options { display: flex; gap: 8px; padding-bottom: 7px; color: #9fb8cf; font-size: 11px; }.vnc-realm-options label { display: flex; grid-template-columns: none; align-items: center; gap: 3px; white-space: nowrap; }.vnc-realm-options input { min-width: auto; }
 .vnc-display-toolbar { position: absolute; z-index: 2; top: 8px; right: 8px; display: flex; gap: 5px; padding: 5px; border: 1px solid #315b7e; border-radius: 5px; background: rgba(7, 25, 42, .9); }
 .vnc-display-toolbar button { min-height: 25px !important; padding: 3px 8px !important; color: #d9eafa; background: #0b2137; border: 1px solid #315b7e; font-size: 11px !important; }
 .vnc-display-toolbar button:hover:not(:disabled) { border-color: #6be5ff; }

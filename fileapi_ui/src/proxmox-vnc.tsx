@@ -37,19 +37,40 @@ type EntryAuthProps = {
 };
 
 const emptyEntry = (): ProxmoxVncEntry => ({
-  id: crypto.randomUUID(), name: "New Proxmox VNC", baseUrl: "https://", username: "",
+  id: crypto.randomUUID(), name: "New Proxmox VNC", baseUrl: "https://:8006", username: "root@pam",
   node: "", vmid: null, guestType: "qemu", proxmoxVersion: "auto", ignoreTlsErrors: false,
 });
+
+const endpointParts = (baseUrl: string) => {
+  try {
+    const url = new URL(baseUrl);
+    return { host: url.hostname, port: Number(url.port) || 8006 };
+  } catch {
+    const match = baseUrl.match(/^https:\/\/([^/:]+)(?::(\d+))?/i);
+    return { host: match?.[1] || "", port: Number(match?.[2]) || 8006 };
+  }
+};
+
+const usernameParts = (username: string) => {
+  const [account = "root", realm = "pam"] = username.split("@", 2);
+  return { account, realm: realm === "pve" ? "pve" : "pam" };
+};
 
 function VncEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries, password, authenticated, loading, onPasswordChange, onLogin, onLogout }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry" | "onChangeEntries"> & EntryAuthProps) {
   const [editing, setEditing] = useState<ProxmoxVncEntry | null>(null);
   const save = () => {
-    if (!editing || !editing.name.trim() || !/^https:\/\//i.test(editing.baseUrl.trim())) return;
+    const endpoint = editing ? endpointParts(editing.baseUrl) : null;
+    const username = editing ? usernameParts(editing.username) : null;
+    if (!editing || !editing.name.trim() || !endpoint?.host || endpoint.port < 1 || endpoint.port > 65535 || !username?.account.trim()) return;
     const next = entries.some((item) => item.id === editing.id)
       ? entries.map((item) => item.id === editing.id ? editing : item)
       : [...entries, editing];
     onChangeEntries(next); onSelectEntry(editing.id); setEditing(null);
   };
+  const endpoint = editing ? endpointParts(editing.baseUrl) : { host: "", port: 8006 };
+  const proxmoxUsername = editing ? usernameParts(editing.username) : { account: "root", realm: "pam" };
+  const updateEndpoint = (host: string, port: number) => editing && setEditing({ ...editing, baseUrl: `https://${host}:${port || 8006}` });
+  const updateUsername = (account: string, realm: string) => editing && setEditing({ ...editing, username: `${account}@${realm}` });
   return <aside className="vnc-entry-pane">
     <div className="vnc-entry-heading"><span className="sidebar-label">PROXMOX VNC ENTRIES</span><button type="button" className="confirm vnc-add-button" onClick={() => setEditing(emptyEntry())}>+ Add entry</button></div>
     <div className="vnc-entry-list">
@@ -65,8 +86,8 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries, pa
     {editing && <div className="vnc-entry-editor">
       <div className="vnc-editor-heading"><strong>{entries.some((item) => item.id === editing.id) ? "Edit VNC entry" : "Add VNC entry"}</strong><button type="button" onClick={() => setEditing(null)} aria-label="Close editor">×</button></div>
       <label>Name<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
-      <label>Proxmox base URL<input value={editing.baseUrl} onChange={(event) => setEditing({ ...editing, baseUrl: event.target.value })} placeholder="https://proxmox.example.com:8006" /></label>
-      <label>Username<input value={editing.username} onChange={(event) => setEditing({ ...editing, username: event.target.value })} placeholder="root@pam" /></label>
+      <div className="vnc-form-grid"><label>Proxmox host<input value={endpoint.host} onChange={(event) => updateEndpoint(event.target.value, endpoint.port)} placeholder="proxmox.example.com" /></label><label>Port<input type="number" min="1" max="65535" value={endpoint.port} onChange={(event) => updateEndpoint(endpoint.host, Number(event.target.value))} /></label></div>
+      <div className="vnc-username-field"><label>Username<input value={proxmoxUsername.account} onChange={(event) => updateUsername(event.target.value, proxmoxUsername.realm)} placeholder="root" /></label><span className="vnc-realm-at">@</span><div className="vnc-realm-options"><label><input type="radio" name={`realm-${editing.id}`} checked={proxmoxUsername.realm === "pam"} onChange={() => updateUsername(proxmoxUsername.account, "pam")} /> pam</label><label><input type="radio" name={`realm-${editing.id}`} checked={proxmoxUsername.realm === "pve"} onChange={() => updateUsername(proxmoxUsername.account, "pve")} /> pve</label></div></div>
       <label>Password<input type="password" value={password} onChange={(event) => onPasswordChange(event.target.value)} /></label>
       <div className="vnc-form-grid"><label>PVE version<select value={editing.proxmoxVersion} onChange={(event) => setEditing({ ...editing, proxmoxVersion: event.target.value as ProxmoxVersion })}><option value="auto">Auto detect</option><option value="6.4">6.4</option><option value="7.x">7.x</option><option value="8.x">8.x</option><option value="9.x">9.x</option></select></label><div className="vnc-entry-login">{authenticated ? <><span>Session active</span><button type="button" onClick={onLogout}>Logout</button></> : <button type="button" className="confirm" onClick={onLogin} disabled={loading || !password}>{loading ? "Logging in..." : "Login"}</button>}</div></div>
       <label className="tls-option"><input type="checkbox" checked={editing.ignoreTlsErrors} onChange={(event) => setEditing({ ...editing, ignoreTlsErrors: event.target.checked })} /> Ignore TLS certificate errors</label>
