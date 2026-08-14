@@ -109,5 +109,3 @@ The reader supports `@odata.id`, `href`, `Members`, nested `Links`, Redfish `Act
 - [Documentation index](docs/README.md)
 - [WebUI permission management](docs/permissions.md)
 - [Tauri desktop client](fileapi_ui/README.md)
-
-`fileapi.sh` is deprecated and is not a supported compatibility target.

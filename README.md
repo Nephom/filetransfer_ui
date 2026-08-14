@@ -132,5 +132,3 @@ Reader 支援 `@odata.id`、`href`、`Members`、nested `Links`、Redfish `Actio
 - [文件索引](docs/README.md)
 - [WebUI 權限管理說明](docs/permissions.md)
 - [Tauri 桌面客戶端](fileapi_ui/README.md)
-
-`fileapi.sh` 已淘汰，不是支援的 API 相容性目標。
