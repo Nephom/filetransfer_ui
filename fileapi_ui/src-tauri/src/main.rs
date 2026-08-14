@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod oplog;
+mod proxmox;
 mod ssh;
 
 use reqwest::{multipart, Client};
@@ -1592,6 +1593,37 @@ fn rest_forget_secret(entry_id: String, kind: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn proxmox_save_secret(entry_id: String, kind: String, value: String) -> Result<(), String> {
+    ssh::save_proxmox_secret(&entry_id, &kind, &value)
+}
+
+#[tauri::command]
+fn proxmox_load_secret(entry_id: String, kind: String) -> Result<Option<String>, String> {
+    ssh::load_proxmox_secret(&entry_id, &kind)
+}
+
+#[tauri::command]
+fn proxmox_forget_secret(entry_id: String, kind: String) -> Result<(), String> {
+    ssh::forget_proxmox_secret(&entry_id, &kind)
+}
+
+#[tauri::command]
+async fn proxmox_list_vms(
+    entry: proxmox::VncEntry,
+    password: String,
+) -> Result<Vec<proxmox::VmSummary>, String> {
+    proxmox::list_vms(entry, password).await
+}
+
+#[tauri::command]
+async fn proxmox_vnc_start(
+    entry: proxmox::VncEntry,
+    password: String,
+) -> Result<proxmox::VncConnection, String> {
+    proxmox::start(entry, password).await
+}
+
+#[tauri::command]
 async fn ssh_list_directory(
     profile: ssh::SshProfile,
     path: String,
@@ -2120,6 +2152,11 @@ fn main() {
             rest_save_secret,
             rest_load_secret,
             rest_forget_secret,
+            proxmox_save_secret,
+            proxmox_load_secret,
+            proxmox_forget_secret,
+            proxmox_list_vms,
+            proxmox_vnc_start,
             ssh_list_directory,
             ssh_sftp_disconnect,
             scp_download,

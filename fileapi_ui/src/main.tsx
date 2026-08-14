@@ -32,9 +32,11 @@ import "./explorer-parity.css";
 import "./desktop-ui.css";
 import "./starship-bridge.css";
 import "./rest-api.css";
+import "./proxmox-vnc.css";
 import "./help/help.css";
 import { HelpIcon, helpPages, helpSections } from "./help/help-content";
 import { RestApiWorkspace, type RestApiEntry, type RestApiSecret } from "./rest-api";
+import { ProxmoxVncWorkspace, type ProxmoxVncEntry, type ProxmoxVncSecret } from "./proxmox-vnc";
 
 type FileItem = {
   name: string;
@@ -105,6 +107,7 @@ type ManagedSession = {
   name: string;
   sshEntries: SshProfile[];
   restApiEntries: RestApiEntry[];
+  proxmoxVncEntries: ProxmoxVncEntry[];
 };
 type ColumnKey = "name" | "modified" | "size";
 type SortKey = ColumnKey;
@@ -232,11 +235,13 @@ const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
       ? item.sshEntries
       : entries.filter((entry) => entry.kind === "SSH").map((entry) => entry.sshProfile).filter(Boolean) as SshProfile[];
     const restApiEntries = Array.isArray(item.restApiEntries) ? item.restApiEntries : [];
+    const proxmoxVncEntries = Array.isArray(item.proxmoxVncEntries) ? item.proxmoxVncEntries : [];
     return {
       id: item.id || crypto.randomUUID(),
       name: item.name || "Default",
       sshEntries,
       restApiEntries,
+      proxmoxVncEntries,
     };
   });
 };
@@ -687,9 +692,10 @@ function App() {
   const [localHomeAbsolute, setLocalHomeAbsolute] = useState("");
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
-  const [appMode, setAppMode] = useState<"location" | "rest">(() =>
-    localStorage.getItem("fileapi-app-mode") === "rest" ? "rest" : "location",
-  );
+  const [appMode, setAppMode] = useState<"location" | "rest" | "vnc">(() => {
+    const saved = localStorage.getItem("fileapi-app-mode");
+    return saved === "rest" || saved === "vnc" ? saved : "location";
+  });
   const [path, setPath] = useState("");
   const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -771,6 +777,8 @@ function App() {
   const [activeRestEntryId, setActiveRestEntryId] = useState("");
   const [restSecrets, setRestSecrets] = useState<Record<string, RestApiSecret>>({});
   const [restSessionHeaders, setRestSessionHeaders] = useState<Record<string, string>>({});
+  const [activeVncEntryId, setActiveVncEntryId] = useState("");
+  const [vncSecrets, setVncSecrets] = useState<Record<string, ProxmoxVncSecret>>({});
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [workspaceNameDialogOpen, setWorkspaceNameDialogOpen] = useState(false);
   const [sessionFormError, setSessionFormError] = useState("");
@@ -1230,12 +1238,26 @@ function App() {
   }, [activeRestEntryId, managedSessions]);
 
   useEffect(() => {
+    if (activeVncEntryId) return;
+    const firstEntry = managedSessions.find((workspace) => workspace.proxmoxVncEntries.length)?.proxmoxVncEntries[0];
+    if (firstEntry) setActiveVncEntryId(firstEntry.id);
+  }, [activeVncEntryId, managedSessions]);
+
+  useEffect(() => {
     const entries = managedSessions.flatMap((workspace) => workspace.restApiEntries);
     void Promise.all(entries.flatMap((entry) => (["username", "password", "token", "apiKey", "cookie"] as const).map(async (kind) => {
       const value = await invoke<string | null>("rest_load_secret", { entryId: entry.id, kind }).catch(() => null);
       if (value === null) return;
       setRestSecrets((current) => ({ ...current, [entry.id]: { ...current[entry.id], [kind]: value } }));
     })));
+  }, [managedSessions]);
+
+  useEffect(() => {
+    const entries = managedSessions.flatMap((workspace) => workspace.proxmoxVncEntries);
+    void Promise.all(entries.map(async (entry) => {
+      const value = await invoke<string | null>("proxmox_load_secret", { entryId: entry.id, kind: "password" }).catch(() => null);
+      if (value !== null) setVncSecrets((current) => ({ ...current, [entry.id]: { ...current[entry.id], password: value } }));
+    }));
   }, [managedSessions]);
 
   useEffect(() => {
@@ -1298,6 +1320,7 @@ function App() {
       name: profile.name,
       sshEntries: [profile],
       restApiEntries: [],
+      proxmoxVncEntries: [],
     }));
     setManagedSessions(migrated);
     setWorkspaceSessionId(migrated[0]?.id || "");
@@ -1923,7 +1946,7 @@ function App() {
         : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const managedSession: ManagedSession = existingWorkspace
       ? { ...existingWorkspace, name }
-      : { id: makeId(), name, sshEntries: [], restApiEntries: [] };
+      : { id: makeId(), name, sshEntries: [], restApiEntries: [], proxmoxVncEntries: [] };
     setManagedSessions((current) => existingWorkspace
       ? current.map((item) => item.id === existingWorkspace.id ? managedSession : item)
       : [...current, managedSession]);
@@ -2898,6 +2921,12 @@ function App() {
     if (workspace?.restApiEntries[0]) setActiveRestEntryId(workspace.restApiEntries[0].id);
   };
 
+  const selectVncWorkspace = (id: string) => {
+    selectWorkspaceSession(id);
+    const workspace = managedSessions.find((item) => item.id === id);
+    if (workspace?.proxmoxVncEntries[0]) setActiveVncEntryId(workspace.proxmoxVncEntries[0].id);
+  };
+
   const toggleSort = (
     column: ColumnKey,
     currentKey: SortKey,
@@ -2932,6 +2961,7 @@ function App() {
   // already have at least one SSH entry).
   const activeManagedWorkspace = managedSessions.find((item) => item.id === workspaceSessionId);
   const restWorkspace = activeManagedWorkspace || managedSessions.find((item) => item.restApiEntries.length) || managedSessions[0];
+  const vncWorkspace = activeManagedWorkspace || managedSessions.find((item) => item.proxmoxVncEntries.length) || managedSessions[0];
   const toggle = (file: FileItem, checked: boolean) => {
     setActivePane("remote");
     selectionAnchorRef.current = file.path;
@@ -5158,18 +5188,19 @@ function App() {
       : "1";
 
   return (
-    <main className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode === "rest" ? "rest-mode" : ""}`}>
+       <main className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
       <header className="titlebar">
         <span className="app-mark" />
         <span className="app-name">
           Nephom <span className="connection-status">File manager</span> cross <span className="connection-status">Terminal</span>
         </span>
-        <div className={`mode-switcher ${appMode === "rest" ? "rest-active" : "location-active"}`}>
-          <button type="button" className="mode-switch-button" aria-pressed={appMode === "rest"} onClick={() => setAppMode((current) => current === "rest" ? "location" : "rest")}>
-            <span className="mode-switch-dot" />
-            <span>{appMode === "rest" ? "REST API" : "LOCATION"}</span>
-          </button>
-          {appMode === "rest" ? (
+         <div className={`mode-switcher ${appMode === "rest" ? "rest-active" : appMode === "vnc" ? "vnc-active" : "location-active"}`}>
+           <div className="mode-buttons" role="group" aria-label="Application mode">
+             <button type="button" className={`mode-switch-button${appMode === "location" ? " selected" : ""}`} aria-pressed={appMode === "location"} onClick={() => setAppMode("location")}><span className="mode-switch-dot" /><span>LOCATION</span></button>
+             <button type="button" className={`mode-switch-button${appMode === "rest" ? " selected" : ""}`} aria-pressed={appMode === "rest"} onClick={() => setAppMode("rest")}><span className="mode-switch-dot" /><span>REST API</span></button>
+             <button type="button" className={`mode-switch-button${appMode === "vnc" ? " selected" : ""}`} aria-pressed={appMode === "vnc"} onClick={() => setAppMode("vnc")}><span className="mode-switch-dot" /><span>VNC</span></button>
+           </div>
+           {appMode === "rest" ? (
             <div className="workspace-select-wrap">
               <span className="location-label">Workspace</span>
               <select className="workspace-select" value={restWorkspace?.id || ""} onChange={(event) => selectRestWorkspace(event.target.value)} disabled={busy}>
@@ -5177,7 +5208,9 @@ function App() {
                 {managedSessions.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}
               </select>
             </div>
-          ) : (
+           ) : appMode === "vnc" ? (
+             <div className="workspace-select-wrap"><span className="location-label">Workspace</span><select className="workspace-select" value={vncWorkspace?.id || ""} onChange={(event) => selectVncWorkspace(event.target.value)} disabled={busy}>{!managedSessions.length && <option value="">No Workspace</option>}{managedSessions.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name}</option>)}</select></div>
+           ) : (
             <div className="location-control" ref={locationControl}>
               <span className="location-label">Location</span>
               {(locations.length > 1 || connectedSshBrowseOptions().length > 0) ? (
@@ -5460,8 +5493,8 @@ function App() {
           Terminal
         </button>
       </nav>
-      <div className={`desktop-workspace${splitMode ? " split-workspace" : ""}`}>
-        {appMode === "rest" ? (
+       <div className={`desktop-workspace${splitMode ? " split-workspace" : ""}`}>
+         {appMode === "rest" ? (
           <RestApiWorkspace
             workspaceName={restWorkspace?.name || "No Workspace"}
             entries={restWorkspace?.restApiEntries || []}
@@ -5475,7 +5508,7 @@ function App() {
                 return;
               }
               const id = crypto.randomUUID();
-              setManagedSessions([{ id, name: "Default", sshEntries: [], restApiEntries: entries }]);
+      setManagedSessions([{ id, name: "Default", sshEntries: [], restApiEntries: entries, proxmoxVncEntries: [] }]);
               setWorkspaceSessionId(id);
             }}
             onChangeSecret={(entryId, secret) => {
@@ -5496,7 +5529,29 @@ function App() {
               else void invoke("rest_forget_secret", { entryId, kind: "token" });
             }}
           />
-        ) : <>
+         ) : appMode === "vnc" ? (
+           <ProxmoxVncWorkspace
+             workspaceName={vncWorkspace?.name || "No Workspace"}
+             entries={vncWorkspace?.proxmoxVncEntries || []}
+             activeEntryId={activeVncEntryId}
+             secrets={vncSecrets}
+             onSelectEntry={setActiveVncEntryId}
+             onChangeEntries={(entries) => {
+               if (vncWorkspace) {
+                 setManagedSessions((current) => current.map((workspace) => workspace.id === vncWorkspace.id ? { ...workspace, proxmoxVncEntries: entries } : workspace));
+                 return;
+               }
+               const id = crypto.randomUUID();
+               setManagedSessions([{ id, name: "Default", sshEntries: [], restApiEntries: [], proxmoxVncEntries: entries }]);
+               setWorkspaceSessionId(id);
+             }}
+             onChangeSecret={(entryId, secret) => {
+               setVncSecrets((current) => ({ ...current, [entryId]: secret }));
+               if (secret.password) void invoke("proxmox_save_secret", { entryId, kind: "password", value: secret.password });
+               else void invoke("proxmox_forget_secret", { entryId, kind: "password" });
+             }}
+           />
+         ) : <>
         {splitMode && renderLocalPane()}
         {splitMode && (
           <div
@@ -6305,9 +6360,24 @@ function App() {
                         ))}
                       </ol>
                     </section>
+                    <section className="workspace-entry-section">
+                      <h3>Proxmox VNC Entries</h3>
+                      {!managedSession.proxmoxVncEntries.length && <span className="muted">No Proxmox VNC entries yet.</span>}
+                      <ol className="workspace-entry-list">
+                        {managedSession.proxmoxVncEntries.map((entry) => (
+                          <li key={entry.id}>
+                            <button type="button" className="workspace-entry-button" onClick={() => { setWorkspaceSessionId(managedSession.id); setActiveVncEntryId(entry.id); setAppMode("vnc"); setSessionsOpen(false); }}>
+                              <strong>{entry.name}</strong>
+                              <span>{entry.baseUrl} · {entry.node || "No node"}/{entry.vmid || "No VMID"}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    </section>
                     <div className="workspace-entry-actions">
                       <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>Add SSH Entry</button>
                       <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("rest"); setSessionsOpen(false); }}>Open REST API</button>
+                      <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("vnc"); setSessionsOpen(false); }}>Open VNC</button>
                     </div>
                   </article>
                 ))}

@@ -147,6 +147,18 @@ pub fn forget_rest_secret(entry_id: &str, kind: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn save_proxmox_secret(entry_id: &str, kind: &str, value: &str) -> Result<(), String> {
+    save_rest_secret(&format!("proxmox:{entry_id}"), kind, value)
+}
+
+pub fn load_proxmox_secret(entry_id: &str, kind: &str) -> Result<Option<String>, String> {
+    load_rest_secret(&format!("proxmox:{entry_id}"), kind)
+}
+
+pub fn forget_proxmox_secret(entry_id: &str, kind: &str) -> Result<(), String> {
+    forget_rest_secret(&format!("proxmox:{entry_id}"), kind)
+}
+
 fn base64_encode(value: &str) -> String {
     use std::fmt::Write;
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
