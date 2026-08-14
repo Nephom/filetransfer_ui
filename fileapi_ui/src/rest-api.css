@@ -133,7 +133,7 @@
 .rest-success { color: #9ff2d2; background: #0d3b35; border-color: #2d8b79; }
 .rest-error { justify-content: space-between; color: #ffb8ae; background: #3b1d28; border-color: #813847; }
 .rest-error button { color: #ffe4df; background: #612638; border-color: #a24a5f; }
-.rest-response { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 180px; margin: 0 20px 14px; border: 1px solid #315b7e; border-radius: 6px; overflow: hidden; background: #07192a; }
+.rest-response { display: flex; flex: 0 0 auto; flex-direction: column; width: auto; height: min(50vh, 560px); min-height: 180px; margin: 0 20px 14px; border: 1px solid #315b7e; border-radius: 6px; overflow: hidden; background: #07192a; }
 .rest-response-resize-handle { height: 8px; margin: 0 20px; border: 1px solid #315b7e; border-bottom: 0; border-radius: 6px 6px 0 0; background: #07192a; cursor: row-resize; touch-action: none; }
 .rest-response-resize-handle:hover, .rest-response-resize-handle:focus-visible { background: #47cdf1; outline: 0; }
 .rest-response-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 9px 11px; border-bottom: 1px solid #254764; color: #91a9c0; font-size: 11px; }

@@ -284,7 +284,7 @@ export function RestApiWorkspace(props: Props) {
   }, [history]);
 
   useEffect(() => {
-    const handlePointerMove = (event: PointerEvent) => {
+    const handleMouseMove = (event: MouseEvent) => {
       const start = responseResizeRef.current;
       if (!start) return;
       const reader = document.querySelector<HTMLElement>(".rest-reader");
@@ -300,21 +300,21 @@ export function RestApiWorkspace(props: Props) {
       document.body.style.removeProperty("cursor");
       document.body.style.removeProperty("user-select");
     };
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", stopResize);
     return () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", stopResize);
     };
   }, []);
 
-  const beginResponseResize = (event: React.PointerEvent<HTMLDivElement>) => {
+  const beginResponseResize = (event: React.MouseEvent<HTMLDivElement>) => {
     const panel = document.querySelector<HTMLElement>(".rest-response");
     if (!panel) return;
     responseResizeRef.current = { pointerY: event.clientY, height: panel.getBoundingClientRect().height };
     document.body.style.cursor = "row-resize";
     document.body.style.userSelect = "none";
-    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
   };
 
   useEffect(() => {
@@ -533,7 +533,7 @@ export function RestApiWorkspace(props: Props) {
           {!!links.length && <section className="rest-links"><div className="rest-links-heading"><strong>Resource links</strong><span>{links.length}</span></div>{links.map((link) => <button type="button" className="rest-link-button" key={`${link.name}-${link.target}`} onClick={() => void (link.kind === "download" ? downloadResource(link.target) : openPath(link.target))}><span>{link.name}</span><small>{link.kind === "download" ? "download" : "GET"}</small><code>{link.target}</code></button>)}</section>}
          {!!actions.length && <section className="rest-actions"><button type="button" className="rest-actions-toggle" onClick={() => setActionsOpen((value) => !value)} aria-expanded={actionsOpen} aria-controls="rest-actions-list"><span className="rest-actions-heading"><strong>Redfish Actions</strong><span>POST · {actions.length}</span></span><span className="rest-actions-chevron" aria-hidden="true">{actionsOpen ? "⌃" : "⌄"}</span></button>{actionsOpen && <div id="rest-actions-list" className="rest-actions-list">{actions.map((action) => <button type="button" className="rest-action-button" key={`${action.name}-${action.target}`} onClick={() => { setSelectedAction(action); setActionBody(defaultActionBody(action)); setActionOpen(true); }}><span>{action.title}</span><small>{action.target}</small></button>)}</div>}</section>}
          {actionOpen && selectedAction && <div className="rest-action-dialog"><div className="rest-action-dialog-heading"><strong>{selectedAction.title}</strong><button type="button" onClick={() => setActionOpen(false)} aria-label="Close action">×</button></div><p>This Redfish action sends a POST request and may change power, BIOS, reset, or other server state.</p><label>JSON body<textarea value={actionBody} onChange={(event) => setActionBody(event.target.value)} spellCheck={false} /></label><div className="modal-actions"><button type="button" onClick={() => setActionOpen(false)}>Cancel</button><button type="button" className="danger" onClick={() => void executeAction()} disabled={loading}>{loading ? "Sending..." : "Run action"}</button></div></div>}
-         {response && <div className="rest-response-resize-handle" role="separator" aria-label="Resize response panel" onPointerDown={beginResponseResize} tabIndex={0} />}
+         {response && <div className="rest-response-resize-handle" role="separator" aria-label="Resize response panel" onMouseDown={beginResponseResize} tabIndex={0} />}
         {response && <section className="rest-response"><div className="rest-response-heading"><strong>Response</strong><span className={response.status >= 400 ? "rest-status-error" : "rest-status-ok"}>{response.status}</span><span>{response.headers?.find(([name]) => name.toLowerCase() === "content-type")?.[1] || "unknown content type"}</span><span>{response.body.length} bytes</span></div><div className="rest-view-tabs"><button type="button" className={view === "pretty" ? "active" : ""} onClick={() => setView("pretty")}>Pretty</button><button type="button" className={view === "raw" ? "active" : ""} onClick={() => setView("raw")}>Raw</button><button type="button" className={view === "headers" ? "active" : ""} onClick={() => setView("headers")}>Headers</button></div>{view === "headers" ? <div className="rest-headers">{(response.headers || []).map(([name, value], index) => <div key={`${name}-${index}`}><strong>{name}</strong><span>{name.toLowerCase().includes("authorization") || name.toLowerCase().includes("cookie") || name.toLowerCase().includes("token") ? "••••••••" : value}</span></div>)}</div> : view === "raw" || !json ? <pre className="rest-code">{responseText || "(empty response)"}</pre> : <div className="rest-json-view">{rows.length ? rows.map(([name, value]) => { const resourceLink = value && typeof value === "object" && !Array.isArray(value) && typeof (value as Record<string, unknown>)["@odata.id"] === "string" ? String((value as Record<string, unknown>)["@odata.id"]) : ""; const href = value && typeof value === "object" && !Array.isArray(value) && typeof (value as Record<string, unknown>).href === "string" ? String((value as Record<string, unknown>).href) : ""; const link = resourceLink || href; const target = link || `${normalizePath(path)}/${encodeURIComponent(name)}`; const isLink = Boolean(link); return <button type="button" className="rest-json-row" key={name} onClick={() => value && typeof value === "object" ? void openPath(target) : undefined}><span>{responseEntryName(value, name)}</span><small>{isLink ? "link" : Array.isArray(value) ? "array" : value && typeof value === "object" ? "object" : typeof value}</small><code>{isLink ? link : typeof value === "object" ? "[Open]" : String(value)}</code></button>; }) : <pre className="rest-code">{prettyJson(json)}</pre>}</div>}</section>}
       </>}
       {!entry && <div className="rest-reader-empty"><strong>Choose a REST API entry</strong><span>Create an entry on the left to start a request.</span></div>}
