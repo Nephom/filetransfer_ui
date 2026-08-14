@@ -1,6 +1,8 @@
 .mode-switcher { display: flex; flex: 0 1 600px; align-items: center; gap: 8px; width: 600px; min-width: 0; margin-left: 18px; padding: 4px 7px; border: 1px solid #315b7e; border-radius: 6px; background: #0d2942; }
 .mode-buttons { display: flex; flex: 0 0 441px; gap: 3px; }
 .mode-switch-button { display: inline-flex; flex: 1 1 0; min-width: 0; align-items: center; justify-content: flex-start; gap: 7px; min-height: 28px; padding: 4px 8px; border: 1px solid #315b7e; border-radius: 999px; color: #d9eafa; background: #07192a; cursor: pointer; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.mode-switch-button span { margin-left: 0; }
+.mode-switch-button { gap: 5px; }
 .mode-switch-button:hover { border-color: #6be5ff; background: #102d49; }
 .mode-switch-button.selected { border-color: #6be5ff; background: #102d49; }
 .mode-switch-dot { width: 9px; height: 9px; border-radius: 50%; background: #8294a7; box-shadow: 0 0 0 2px rgba(130, 148, 167, .16); }
