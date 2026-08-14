@@ -2,18 +2,22 @@ param(
     [ValidateSet("build", "upgrade", "self-upgrade", "help")]
     [string]$Command = "help",
     [switch]$Interactive,
-    [string]$Proxy
+    [string]$Proxy,
+    [switch]$Help
 )
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $DesktopRoot = Join-Path $Root "fileapi_ui"
+$WebView2FixedRuntimeVersion = "151.0.4129.78"
 $WebView2FixedRuntimeUrl = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/355004fc-ebbc-42d3-b319-d43be39f8d39/Microsoft.WebView2.FixedVersionRuntime.151.0.4129.78.x64.cab"
 $WebView2FixedRuntimeSha256 = "d4c8864a764bc3ff015f7b644e1f9d022ba8a73ab470447398dda0cc9e75ab92"
 $WebView2FixedRuntimeAssetRoot = Join-Path $Root "build-assets\webview2"
 $WebView2FixedRuntimeArchive = Join-Path $WebView2FixedRuntimeAssetRoot "downloads\Microsoft.WebView2.FixedVersionRuntime.151.0.4129.78.x64.cab"
 $WebView2FixedRuntimeExtractRoot = Join-Path $WebView2FixedRuntimeAssetRoot "fixed\x64"
 $WebView2FixedRuntimeStagingRoot = Join-Path $DesktopRoot "src-tauri\webview2-fixed-runtime"
+$WebView2WebsiteAssetRoot = Join-Path $Root "build-assets\websites\webview2"
+$WebView2WebsiteManifest = Join-Path $WebView2WebsiteAssetRoot "runtime-manifest.json"
 
 function Invoke-Native {
     param(
@@ -126,6 +130,13 @@ function Ensure-MsvcBuildTools {
 }
 
 function Ensure-WebView2FixedRuntime {
+    $websiteArchive = Join-Path $WebView2WebsiteAssetRoot (Split-Path -Leaf $WebView2FixedRuntimeArchive)
+    if (-not (Test-Path -LiteralPath $WebView2FixedRuntimeArchive) -and (Test-Path -LiteralPath $websiteArchive)) {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $WebView2FixedRuntimeArchive) -Force | Out-Null
+        Copy-Item -LiteralPath $websiteArchive -Destination $WebView2FixedRuntimeArchive -Force
+        Write-Host "Using the manually staged WebView2 CAB from $websiteArchive"
+    }
+
     $runtime = Get-ChildItem -LiteralPath $WebView2FixedRuntimeExtractRoot -Filter "msedgewebview2.exe" -File -Recurse -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $runtime) {
@@ -167,6 +178,23 @@ function Ensure-WebView2FixedRuntime {
     # Tauri resolves fixedRuntime relative to src-tauri. Keep the source cache
     # outside the installer and never expose the build machine's absolute path.
     return "./webview2-fixed-runtime"
+}
+
+function Stage-WebView2WebsiteAsset {
+    # Keep the validated CAB and its metadata in a local handoff directory.
+    # This script deliberately does not upload to an internal web site.
+    New-Item -ItemType Directory -Path $WebView2WebsiteAssetRoot -Force | Out-Null
+    $websiteArchive = Join-Path $WebView2WebsiteAssetRoot (Split-Path -Leaf $WebView2FixedRuntimeArchive)
+    Copy-Item -LiteralPath $WebView2FixedRuntimeArchive -Destination $websiteArchive -Force
+    $manifest = [ordered]@{
+        version = $WebView2FixedRuntimeVersion
+        architecture = "x64"
+        file = (Split-Path -Leaf $websiteArchive)
+        sha256 = (Get-FileHash -LiteralPath $websiteArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+    } | ConvertTo-Json -Compress
+    Set-Content -LiteralPath $WebView2WebsiteManifest -Value $manifest -Encoding ascii -NoNewline
+    Write-Host "WebView2 website handoff: $websiteArchive"
+    Write-Host "WebView2 website manifest: $WebView2WebsiteManifest"
 }
 
 function Ensure-RustToolchain {
@@ -330,6 +358,43 @@ function Get-AppVersion {
     return (Get-Content -LiteralPath (Join-Path $Root "VERSION") -Raw).Trim()
 }
 
+function Assert-ProjectVersionConsistency {
+    $expected = Get-AppVersion
+    $versionFiles = @(
+        (Join-Path $Root "package.json"),
+        (Join-Path $Root "package-lock.json"),
+        (Join-Path $DesktopRoot "package.json"),
+        (Join-Path $DesktopRoot "package-lock.json")
+    )
+    $mismatches = @()
+
+    foreach ($path in $versionFiles) {
+        $json = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        if ($json.version -ne $expected) {
+            $mismatches += "$path = $($json.version)"
+        }
+    }
+
+    $cargoPath = Join-Path $DesktopRoot "src-tauri\Cargo.toml"
+    $cargoVersion = Select-String -LiteralPath $cargoPath -Pattern '^version\s*=\s*"([^"]+)"' |
+        Select-Object -First 1
+    if (-not $cargoVersion -or $cargoVersion.Matches[0].Groups[1].Value -ne $expected) {
+        $actual = if ($cargoVersion) { $cargoVersion.Matches[0].Groups[1].Value } else { "missing" }
+        $mismatches += "$cargoPath = $actual"
+    }
+
+    $tauriConfigPath = Join-Path $DesktopRoot "src-tauri\tauri.conf.json"
+    $tauriConfig = Get-Content -LiteralPath $tauriConfigPath -Raw | ConvertFrom-Json
+    if ($tauriConfig.version -ne $expected) {
+        $mismatches += "$tauriConfigPath = $($tauriConfig.version)"
+    }
+
+    if ($mismatches.Count -gt 0) {
+        throw "Version metadata does not match VERSION ($expected):`n - $($mismatches -join "`n - ")"
+    }
+    Write-Host "Version metadata is synchronized at $expected."
+}
+
 function Get-AppVersionInfo {
     # Mirrors build.sh's application_version()/application_version_display():
     # derive the release-metadata version (VERSION + RELEASE_DATE + current
@@ -371,6 +436,7 @@ function Get-PEMachineType {
 
 function Build-Desktop {
     Write-Host "Building nFterm v$(Get-AppVersion) for Windows..."
+    Assert-ProjectVersionConsistency
     Install-DesktopDependencies
     $versionInfo = Get-AppVersionInfo
     Write-Host "Desktop build identity: $($versionInfo.display)"
@@ -379,6 +445,7 @@ function Build-Desktop {
     $env:VITE_APP_VERSION_DISPLAY = $versionInfo.display
     Invoke-Native "npm.cmd" @("run", "build", "--prefix", $DesktopRoot)
     $webview2RuntimePath = Ensure-WebView2FixedRuntime
+    Stage-WebView2WebsiteAsset
     try {
         Push-Location (Join-Path $DesktopRoot "src-tauri")
         try { Invoke-Native "cargo" @("check", "--locked", "--target", $WindowsTarget) }
@@ -540,11 +607,27 @@ function Show-Help {
     @"
 Usage: .\build.ps1 <build|upgrade|self-upgrade|help> [-Interactive] [-Proxy URL]
 
+Options:
+  -Help       Show this help and exit.
+  -Proxy URL  Use a temporary HTTP/HTTPS proxy for prerequisite and runtime downloads.
+  -Interactive
+              Allow interactive server configuration during 'upgrade'.
+
 build    Check/install Windows build tools (Git, Node.js, Rust, and MSVC C++
-         Build Tools), prepare the local WebView2 Fixed Version runtime, and
-         build the desktop Tauri package.
+         Build Tools), validate the WebView2 Fixed Version runtime, stage a
+         manual website copy, and build the desktop Tauri package.
 upgrade  Fast-forward the checkout and update desktop dependencies.
 self-upgrade Update this PowerShell build script from the tracked upstream branch.
+
+WebView2 asset flow:
+  build-assets\webview2\ is the local build cache.
+  build-assets\websites\webview2\ is the manual publication staging area.
+  The script never uploads to an internal web site. Copy the validated CAB and
+  runtime-manifest.json from that staging area to the site's static directory.
+
+Nginx only needs to serve that directory as static files. The CAB may use
+application/octet-stream; no special WebView2 proxy configuration is required.
+Directory listing is optional and can remain disabled.
 
 This script is for the build machine. It may use winget to install missing
 build tools (some, like Visual Studio Build Tools, may require an elevated
@@ -554,6 +637,7 @@ portable EXE / NSIS installer.
 }
 
 Set-ProxyEnvironment
+if ($Help) { Show-Help; exit 0 }
 switch ($Command) {
     "build" { Build-Desktop }
     "upgrade" { Upgrade-Checkout }

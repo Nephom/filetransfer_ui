@@ -40,9 +40,17 @@ Windows 建置機可以使用 PowerShell 流程。它只處理 Tauri 桌面客�
 
 ```powershell
 .\build.ps1 build
+.\build.ps1 -Help
 .\build.ps1 upgrade
 .\build.ps1 self-upgrade
 ```
+
+Windows builds keep the WebView2 CAB in the ignored `build-assets\webview2\`
+cache. A validated copy and `runtime-manifest.json` are staged under
+`build-assets\websites\webview2\` for manual publication to an internal static
+web site; `build.ps1` never uploads files. Nginx only needs to serve that
+directory as static content. `application/octet-stream` is sufficient for the
+CAB, and directory listing is optional.
 
 ### 舊版遷移
 
