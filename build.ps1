@@ -396,6 +396,14 @@ function Assert-ProjectVersionConsistency {
         $mismatches += "$cargoPath = $actual"
     }
 
+    $cargoLockPath = Join-Path $DesktopRoot "src-tauri\Cargo.lock"
+    $cargoLockText = Get-Content -LiteralPath $cargoLockPath -Raw
+    $cargoLockVersion = [regex]::Match($cargoLockText, '(?ms)name\s*=\s*"nFterm"\s*\r?\nversion\s*=\s*"([^"]+)"')
+    if (-not $cargoLockVersion.Success -or $cargoLockVersion.Groups[1].Value -ne $expected) {
+        $actual = if ($cargoLockVersion.Success) { $cargoLockVersion.Groups[1].Value } else { "missing" }
+        $mismatches += "$cargoLockPath (nFterm) = $actual"
+    }
+
     $tauriConfigPath = Join-Path $DesktopRoot "src-tauri\tauri.conf.json"
     $tauriVersion = Get-JsonVersion -Path $tauriConfigPath
     if ($tauriVersion -ne $expected) {
