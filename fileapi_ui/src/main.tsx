@@ -15,6 +15,7 @@ import { classifyQueueError, retryDelayMs, type QueueErrorCategory } from "./que
 import { assertQueueTransition } from "./queue/state";
 import { QueueScheduler } from "./queue/scheduler";
 import { QueueStore } from "./queue/store";
+import { selectActiveQueueItems, selectQueueHistory } from "./queue/selectors";
 // `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
 // imported inside the terminal-setup effect below instead of eagerly here:
 // they're only ever needed once the user actually opens the SSH terminal
@@ -48,9 +49,12 @@ import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 import { AppShell } from "./app/AppShell";
 import { FloatingWindow } from "./ui/FloatingWindow";
+import { useTerminalLifecycle } from "./features/terminal/useTerminalLifecycle";
+import { VncWorkspaceController } from "./features/vnc/VncWorkspaceController";
 import { QueueModal } from "./features/queue/QueueModal";
 import { ViewerModal } from "./features/viewer/ViewerModal";
 import { HelpModal } from "./features/help/HelpModal";
+import { useSshEventBridge } from "./features/terminal/useSshEventBridge";
 
 type FileItem = {
   name: string;
@@ -1455,156 +1459,53 @@ function App() {
     setWorkspaceSessionId(migrated[0]?.id || "");
   }, [managedSessions.length, sshProfiles]);
 
-  useEffect(() => {
-    let disposed = false;
-    // Resolve which tab an `ssh-output`/`ssh-exit` event belongs to.
-    // `sessionId` is authoritative once known; `requestId` (set by
-    // `performSshConnect` before `ssh_connect` is invoked) is the only way
-    // to bind an event to a tab *before* that -- output can start streaming
-    // from the backend before the invoke() promise resolves with the real
-    // session id, and with several tabs connecting close together, event
-    // arrival order is not guaranteed to match invocation order.
-    const resolveTab = (payload: SshEvent) => {
-      const bySession = sshTabsRef.current.find((item) => item.sessionId === payload.sessionId);
-      if (bySession) return bySession;
-      const pendingTabId = pendingSshConnectRequestsRef.current[payload.requestId];
-      return pendingTabId ? sshTabsRef.current.find((item) => item.id === pendingTabId) : undefined;
-    };
-    const unlistenOutput = listen<SshEvent>("ssh-output", (event) => {
-      if (disposed) return;
-      const tab = resolveTab(event.payload);
+  useSshEventBridge({
+    tabsRef: sshTabsRef,
+    pendingRequestsRef: pendingSshConnectRequestsRef,
+    onOutput: (tabId, payload) => {
+      const data = payload.data;
+      const tab = sshTabsRef.current.find((item) => item.id === tabId);
       if (!tab) return;
-      if (tab.sessionId !== event.payload.sessionId) {
-        setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, sessionId: event.payload.sessionId, connected: true } : item));
-      }
-      const data = event.payload.data;
-      setSshTabs((current) => current.map((item) => {
-        if (item.id !== tab.id) return item;
-        const output = item.output + data;
-        return {
-          ...item,
-          output,
-          rawLog: item.recording ? item.rawLog + data : item.rawLog,
-          plainLog: item.recording ? item.plainLog + stripAnsi(data) : item.plainLog,
-        };
-      }));
-      if (tab.id === activeSshTabIdRef.current) {
-        sshOutputRef.current += data;
-        terminalInstanceRef.current?.write(data);
-        const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd();
-        sshSecretPromptRef.current = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText);
-      }
-    });
-    const unlistenExit = listen<SshEvent>("ssh-exit", (event) => {
-      if (disposed) return;
-      const tab = resolveTab(event.payload);
-      if (!tab) return;
-      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : {
-        ...item,
-        connected: false,
-        sessionId: "",
-        output: `${item.output}${VT_SESSION_BOUNDARY_GUARD}\n${event.payload.data}\n`,
-      }));
-      if (tab.id === activeSshTabIdRef.current) {
-        setSshConnected(false);
-        sshConnectingRef.current = false;
-      }
-    });
-    return () => {
-      disposed = true;
-      void unlistenOutput.then((dispose) => dispose());
-      void unlistenExit.then((dispose) => dispose());
-    };
-  }, []);
+      if (tab.sessionId !== payload.sessionId) setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, sessionId: payload.sessionId, connected: true } : item));
+      setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, output: item.output + data, rawLog: item.recording ? item.rawLog + data : item.rawLog, plainLog: item.recording ? item.plainLog + stripAnsi(data) : item.plainLog } : item));
+      if (tabId === activeSshTabIdRef.current) { sshOutputRef.current += data; terminalInstanceRef.current?.write(data); const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd(); sshSecretPromptRef.current = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText); }
+    },
+    onExit: (tabId, payload) => {
+      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connected: false, sessionId: "", output: `${item.output}${VT_SESSION_BOUNDARY_GUARD}\n${payload.data}\n` }));
+      if (tabId === activeSshTabIdRef.current) { setSshConnected(false); sshConnectingRef.current = false; }
+    },
+  });
 
-  useEffect(() => {
-    if (!terminalOpen || !terminalHostRef.current) return undefined;
-    let disposed = false;
-    let cleanup: (() => void) | undefined;
-    void Promise.all([
-      import("@xterm/xterm"),
-      import("@xterm/addon-fit"),
-      import("@xterm/xterm/css/xterm.css"),
-    ]).then(([{ Terminal }, { FitAddon }]) => {
-      // The effect (or the whole terminal panel) may have already been
-      // torn down by the time this dynamic import resolves.
-      if (disposed || !terminalHostRef.current) return;
-      const terminal = new Terminal({
-        cursorBlink: true,
-        convertEol: true,
-        fontFamily: "monospace",
-        fontSize: 13,
-        theme: { background: "#020a12", foreground: "#d9eafa", cursor: "#47cdf1" },
-      });
-      const fit = new FitAddon();
-      terminal.loadAddon(fit);
-      terminal.open(terminalHostRef.current);
-      fit.fit();
-      terminal.focus();
-      terminalInstanceRef.current = terminal;
-      shellInputRef.current = "";
-      const replayedOutput = sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n";
-      let replaying = true;
-      // Tab switching recreates xterm while retaining the tab's scrollback.
-      // Close any VT control string that may have been truncated at the end
-      // of the replay before live output is written into this new instance.
-      // The callback also marks the end of replay so responses generated by
-      // replayed terminal queries are not sent back to the SSH shell.
-      terminal.write(`${replayedOutput}${VT_SESSION_BOUNDARY_GUARD}`, () => {
-        replaying = false;
-      });
-      const resizeSshPty = () => {
-        const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
-        if (!tab?.sessionId) return;
-        void invoke("ssh_resize", { sessionId: tab.sessionId, cols: terminal.cols, rows: terminal.rows });
-      };
-      const resizeObserver = new ResizeObserver(() => {
-        fit.fit();
-        resizeSshPty();
-      });
-      resizeObserver.observe(terminalHostRef.current);
-      resizeSshPty();
-      const inputListener = terminal.onData((data: string) => {
-        if (replaying) return;
-        const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
-        if (!tab?.sessionId) return;
-        // xterm emits terminal-query responses through the same onData
-        // callback as user input. Queue writes per SSH session so a response
-        // cannot arrive after a later `exit` and get handled by the parent
-        // shell when a nested SSH session closes.
-        const previous = sshWriteQueuesRef.current.get(tab.sessionId) || Promise.resolve();
-        const next = previous
-          .catch(() => undefined)
-          .then(() => invoke<void>("ssh_write", { sessionId: tab.sessionId, data }));
-        sshWriteQueuesRef.current.set(tab.sessionId, next.catch(() => undefined));
-        if (recordingRef.current && !sshSecretPromptRef.current) {
-          if (data === "\r" || data === "\n") {
-            if (shellInputRef.current.trim()) {
-              const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
-              commandLogRef.current += command;
-              setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, commandLog: item.commandLog + command } : item));
-            }
-            shellInputRef.current = "";
-          } else if (data === "\u007f") {
-            shellInputRef.current = shellInputRef.current.slice(0, -1);
-          } else if (!data.startsWith("\u001b")) {
-            shellInputRef.current += data;
+  useTerminalLifecycle({
+    enabled: terminalOpen,
+    hostRef: terminalHostRef,
+    terminalRef: terminalInstanceRef,
+    replayOutput: sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n",
+    boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
+    onResize: (cols, rows) => {
+      const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
+      if (tab?.sessionId) void invoke("ssh_resize", { sessionId: tab.sessionId, cols, rows });
+    },
+    onData: (data, replaying) => {
+      if (replaying) return;
+      const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
+      if (!tab?.sessionId) return;
+      const previous = sshWriteQueuesRef.current.get(tab.sessionId) || Promise.resolve();
+      const next = previous.catch(() => undefined).then(() => invoke<void>("ssh_write", { sessionId: tab.sessionId, data }));
+      sshWriteQueuesRef.current.set(tab.sessionId, next.catch(() => undefined));
+      if (recordingRef.current && !sshSecretPromptRef.current) {
+        if (data === "\r" || data === "\n") {
+          if (shellInputRef.current.trim()) {
+            const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
+            commandLogRef.current += command;
+            setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, commandLog: item.commandLog + command } : item));
           }
-        }
-      });
-      cleanup = () => {
-        inputListener.dispose();
-        resizeObserver.disconnect();
-        terminal.dispose();
-        terminalInstanceRef.current = null;
-      };
-    });
-    return () => {
-      disposed = true;
-      cleanup?.();
-    };
-  }, [terminalOpen, activeSshTabId, sshTabs.find((item) => item.id === activeSshTabId)?.sessionId]);
-
+          shellInputRef.current = "";
+        } else if (data === "\u007f") shellInputRef.current = shellInputRef.current.slice(0, -1);
+        else if (!data.startsWith("\u001b")) shellInputRef.current += data;
+      }
+    },
+  });
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
       if (!accountControl.current?.contains(event.target as Node) && !(event.target as HTMLElement).closest(".account-menu"))
@@ -3198,8 +3099,8 @@ function App() {
   const sortedLocalFiles = sortFileItems(localFiles, localSortKey, localSortDirection);
   const selectedItems = files.filter((file) => selected.includes(file.path));
   const localSelectedItems = localFiles.filter((file) => localSelected.includes(file.path));
-  const activeTransferQueue = transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status));
-  const transferHistory = transferQueue.filter((item) => ["completed", "failed", "cancelled"].includes(item.status));
+  const activeTransferQueue = selectActiveQueueItems(transferQueue);
+  const transferHistory = selectQueueHistory(transferQueue);
   // Whether the REMOTE file list should show an in-list "../" entry to go up
   // one level, mirroring LOCAL's own in-list ".." row instead of a separate
   // toolbar button. Root differs by source: SSH browsing is always
@@ -5816,7 +5717,7 @@ function App() {
             }}
           />
          ) : appMode === "vnc" ? (
-            <ProxmoxVncWorkspace
+            <VncWorkspaceController
               key={vncWorkspace?.id || "default-vnc-workspace"}
               workspaceName={vncWorkspace?.name || "No Workspace"}
              entries={vncWorkspace?.proxmoxVncEntries || []}

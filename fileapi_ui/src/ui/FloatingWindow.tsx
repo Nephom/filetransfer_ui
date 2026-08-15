@@ -1,4 +1,5 @@
 import React from "react";
+import { overlayZIndex } from "./overlay-registry";
 
 type FloatingWindowProps = {
   ariaLabel: string;
@@ -13,7 +14,7 @@ type FloatingWindowProps = {
 
 export function FloatingWindow({ ariaLabel, className = "", style, header, children, footer, onClose, onDragStart }: FloatingWindowProps) {
   return (
-    <div className="modal-cover modal-layer-top floating-window-layer" onMouseDown={onClose}>
+    <div className="modal-cover modal-layer-top floating-window-layer" style={{ zIndex: overlayZIndex.modal }} onMouseDown={onClose}>
       <section
         className={`modal floating-window ${className}`.trim()}
         style={style}
