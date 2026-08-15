@@ -1,0 +1,33 @@
+.floating-window-layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  pointer-events: none;
+}
+
+.floating-window-layer > .floating-window {
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+}
+
+.floating-window-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.floating-window-footer { flex: 0 0 auto; }
+
+.floating-window.queue-modal .floating-window-content,
+.floating-window.viewer-modal .floating-window-content { overflow: auto; padding: 0 16px; }
+
+.floating-window.viewer-modal .file-viewer { flex: 1; min-height: min(65vh, 560px); }
+
+@media (max-width: 720px) {
+  .floating-window-layer {
+    overflow: auto;
+  }
+}

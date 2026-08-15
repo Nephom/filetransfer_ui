@@ -24,6 +24,9 @@ import { QueueStore } from "./queue/store";
 // here, which TypeScript/esbuild erases entirely at build time (no runtime
 // cost, so it doesn't defeat the point of the dynamic import below).
 import type { Terminal } from "@xterm/xterm";
+import "./styles/tokens.css";
+import "./styles/overlays.css";
+import { themePresets, themeStyle, type ThemePreset } from "./styles/theme";
 import "./styles.css";
 import "./login.css";
 import "./location-control.css";
@@ -36,12 +39,18 @@ import "./rest-api.css";
 import "./proxmox-vnc.css";
 import "./help/help.css";
 import "./log-view.css";
+import "./styles/theme-overrides.css";
 import { HelpIcon, helpPages, helpSections } from "./help/help-content";
 import { LogView, type OperationLogRecord } from "./log-view";
 import { RestApiWorkspace, type RestApiEntry, type RestApiSecret } from "./rest-api";
 import { ProxmoxVncWorkspace, type ProxmoxVncEntry, type ProxmoxVncSecret } from "./proxmox-vnc";
 import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
+import { AppShell } from "./app/AppShell";
+import { FloatingWindow } from "./ui/FloatingWindow";
+import { QueueModal } from "./features/queue/QueueModal";
+import { ViewerModal } from "./features/viewer/ViewerModal";
+import { HelpModal } from "./features/help/HelpModal";
 
 type FileItem = {
   name: string;
@@ -193,6 +202,8 @@ type UndoEntry = {
 };
 type DesktopSettings = {
   uiDensity: "auto" | "compact" | "standard" | "comfortable";
+  theme: ThemePreset;
+  accentColor: string;
   proxmoxVncModeEnabled: boolean;
   undoHistoryEnabled: boolean;
   operationLogEnabled: boolean;
@@ -210,6 +221,7 @@ type DesktopSettings = {
     crossSourceMove: boolean;
   };
 };
+type SettingsPanel = "size" | "theme" | "features" | "confirmations" | "sharing" | "history";
 
 type ModalDragId =
   | "log-view"
@@ -556,6 +568,8 @@ const readPersistedQueue = (): TransferQueueItem[] => {
 };
 const defaultDesktopSettings: DesktopSettings = {
   uiDensity: "auto",
+  theme: "bridge",
+  accentColor: "#63e6ff",
   proxmoxVncModeEnabled: false,
   undoHistoryEnabled: true,
   operationLogEnabled: true,
@@ -775,6 +789,8 @@ function App() {
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState<SettingsPanel | null>(null);
+  useEffect(() => { if (!settingsOpen) setSettingsPanel(null); }, [settingsOpen]);
   const [saveLogNameOpen, setSaveLogNameOpen] = useState(false);
   const [saveLogNameDraft, setSaveLogNameDraft] = useState("");
   const [saveLogDestinationPath, setSaveLogDestinationPath] = useState("");
@@ -784,6 +800,12 @@ function App() {
       const uiDensity = ["auto", "compact", "standard", "comfortable"].includes(saved?.uiDensity)
         ? saved.uiDensity
         : defaultDesktopSettings.uiDensity;
+      const theme = Object.prototype.hasOwnProperty.call(themePresets, saved?.theme)
+        ? saved.theme as ThemePreset
+        : defaultDesktopSettings.theme;
+      const accentColor = typeof saved?.accentColor === "string" && /^#[0-9a-f]{6}$/i.test(saved.accentColor)
+        ? saved.accentColor
+        : defaultDesktopSettings.accentColor;
       const operationLogLevel = ["DEBUG", "INFO", "WARN", "ERROR"].includes(saved?.operationLogLevel)
         ? saved.operationLogLevel
         : defaultDesktopSettings.operationLogLevel;
@@ -801,6 +823,8 @@ function App() {
         ...defaultDesktopSettings,
         ...saved,
         uiDensity,
+        theme,
+        accentColor,
         operationLogLevel,
         shareLinkExpirationDays,
         shareLinkMode,
@@ -811,6 +835,12 @@ function App() {
       return defaultDesktopSettings;
     }
   });
+  useEffect(() => {
+    const variables = themeStyle(desktopSettings.theme, desktopSettings.accentColor);
+    Object.entries(variables).forEach(([name, value]) => {
+      if (typeof value === "string") document.documentElement.style.setProperty(name, value);
+    });
+  }, [desktopSettings.theme, desktopSettings.accentColor]);
   useEffect(() => {
     if (!desktopSettings.proxmoxVncModeEnabled && appMode === "vnc") setAppMode("location");
   }, [desktopSettings.proxmoxVncModeEnabled, appMode]);
@@ -5463,7 +5493,7 @@ function App() {
   };
 
       return (
-        <main className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
+    <AppShell style={themeStyle(desktopSettings.theme, desktopSettings.accentColor)} className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
       <header className="titlebar">
         <div className="titlebar-brand">
           <span className="app-mark" />
@@ -6423,10 +6453,10 @@ function App() {
          </div>
        )}
        {settingsOpen && (
-         <div className="modal-cover" onMouseDown={() => setSettingsOpen(false)}>
-            <div className="modal settings-modal" style={modalStyle("settings")} onMouseDown={(event) => event.stopPropagation()}>
-               <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("settings")}>Desktop Settings</h2>
-              <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
+          <FloatingWindow ariaLabel="Desktop Settings" className={`settings-modal settings-panel-${settingsPanel || "menu"}`} style={modalStyle("settings")} onClose={() => setSettingsOpen(false)} onDragStart={beginModalDrag("settings")} header={<div className="settings-floating-heading"><h2 className="modal-drag-handle">Desktop Settings</h2><button type="button" className="settings-floating-close" onClick={() => setSettingsOpen(false)} aria-label="Close Desktop Settings">×</button></div>} footer={<div className="settings-floating-footer"><button type="button" className="confirm" onClick={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}>Save</button><button type="button" onClick={() => settingsPanel === null ? setSettingsOpen(false) : setSettingsPanel(null)}>Close</button></div>}>
+               <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
+               {settingsPanel !== null && <button type="button" className="settings-subpanel-back" onClick={() => setSettingsPanel(null)}>‹ Settings</button>}
+               {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("size")}><strong>Interface size</strong><span>{densityLabel}</span><small>Adjust controls and spacing.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"}</span><small>Enable optional workspaces.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b>›</b></button></div>}
               <section className="settings-section">
                 <h3>Interface size</h3>
                 <div className="settings-density">
@@ -6449,8 +6479,18 @@ function App() {
                    <div className="settings-density-scale"><span>80%</span><span>100%</span><span>120%</span></div>
                    <button type="button" aria-pressed={desktopSettings.uiDensity === "auto"} onClick={() => setDesktopSettings((current) => ({ ...current, uiDensity: "auto" }))}>Use automatic sizing</button>
                 </div>
-              </section>
-              <section className="settings-section">
+               </section>
+               <section className="settings-section">
+                 <h3>Color theme</h3>
+                 <div className="settings-check settings-theme-row">
+                   <span><strong>Application palette</strong><small>Changes the shared colors used by the main view, overlays, buttons, and status states.</small></span>
+                   <select value={desktopSettings.theme} onChange={(event) => { const theme = event.target.value as ThemePreset; setDesktopSettings((current) => ({ ...current, theme, accentColor: themePresets[theme].variables.cyan })); }}>
+                     {(Object.entries(themePresets) as [ThemePreset, { label: string }][]) .map(([value, theme]) => <option key={value} value={value}>{theme.label}</option>)}
+                   </select>
+                   <label className="theme-accent-control">Accent <input type="color" value={desktopSettings.accentColor} onChange={(event) => setDesktopSettings((current) => ({ ...current, accentColor: event.target.value }))} /></label>
+                 </div>
+               </section>
+               <section className="settings-section">
                 <h3>Interface features</h3>
                 <label className="settings-check">
                   <input type="checkbox" checked={desktopSettings.proxmoxVncModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, proxmoxVncModeEnabled: event.target.checked }))} />
@@ -6531,9 +6571,7 @@ function App() {
                 {storageInfo && <div className="storage-info"><span>History: {storageInfo.historyPath} ({formatSize(storageInfo.historyBytes)})</span><span>Logs: {storageInfo.logPath} ({formatSize(storageInfo.logBytes)})</span><span>{storageInfo.logFiles.length} log file{storageInfo.logFiles.length === 1 ? "" : "s"} currently retained</span></div>}
                <div className="modal-actions settings-actions"><button type="button" onClick={clearHistory}>Clear undo history</button><button type="button" className="danger" onClick={clearLogs}>Clear operation logs</button></div>
              </section>
-             <div className="modal-actions"><button type="button" className="confirm" onClick={() => setSettingsOpen(false)}>Close</button></div>
-           </div>
-         </div>
+          </FloatingWindow>
        )}
         {shareLinksOpen && (
           <div className="modal-cover modal-layer-top" onMouseDown={() => setShareLinksOpen(false)}>
@@ -6850,7 +6888,8 @@ function App() {
           </div>
         </div>
       )}
-      {queueOpen && (
+      {queueOpen && <QueueModal items={transferQueue} activeItems={activeTransferQueue} historyItems={transferHistory} renderItem={(item) => renderDesktopQueueItem(item as TransferQueueItem)} modalStyle={modalStyle("queue")} onDragStart={beginModalDrag("queue")} onClose={() => setQueueOpen(false)} onClearStatus={clearQueueStatus} onClearHistory={clearFinishedQueue} />}
+      {false && queueOpen && (
         <div className="modal-cover" onMouseDown={() => setQueueOpen(false)}>
           <div className="modal queue-modal" style={modalStyle("queue")} onMouseDown={(event) => event.stopPropagation()}>
             <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("queue")}>Transfer Queue</h2>
@@ -6867,7 +6906,8 @@ function App() {
           </div>
         </div>
       )}
-      {viewerOpen && (
+      {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={() => setViewerOpen(false)} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
+      {false && viewerOpen && (
         <div className="modal-cover" onMouseDown={() => setViewerOpen(false)}>
           <div className="modal viewer-modal" style={modalStyle("viewer")} onMouseDown={(event) => event.stopPropagation()}>
             <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("viewer")}>{viewerTitle}</h2>
@@ -6882,7 +6922,8 @@ function App() {
         </div>
       )}
       {logViewOpen && <LogView records={operationLogRecords} modalStyle={modalStyle("log-view")} onDragStart={beginModalDrag("log-view")} onClose={() => setLogViewOpen(false)} onExport={exportOperationLog} />}
-      {helpOpen && (
+      {helpOpen && <HelpModal sections={helpSections} pages={helpPages} selectedPage={selectedHelpPage} selectedSection={selectedHelpSection} selectedIndex={selectedHelpIndex} expandedSections={expandedHelpSections} modalStyle={modalStyle("help")} onDragStart={beginModalDrag("help")} onClose={() => setHelpOpen(false)} onToggleSection={(id) => setExpandedHelpSections((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onSelectPage={setSelectedHelpPageId} />}
+      {false && helpOpen && (
         <div className="modal-cover" onMouseDown={() => setHelpOpen(false)}>
           <div className="modal help-modal" style={modalStyle("help")} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="help-title">
             <div className="help-heading" onMouseDown={beginModalDrag("help")}>
@@ -6946,7 +6987,7 @@ function App() {
           </div>
         </div>
       )}
-    </main>
+    </AppShell>
   );
 }
 

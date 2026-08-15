@@ -1,0 +1,31 @@
+:root {
+  /* Semantic aliases keep the existing bridge palette as the source of truth. */
+  --color-bg: var(--bridge-void, #020711);
+  --color-bg-panel: var(--bridge-panel, rgba(8, 27, 46, .72));
+  --color-bg-panel-strong: var(--bridge-panel-strong, rgba(10, 34, 56, .9));
+  --color-bg-popover: var(--bridge-popover, rgba(6, 24, 40, .9));
+  --color-text: var(--bridge-text, #e9f8ff);
+  --color-text-muted: var(--bridge-muted, #8caec5);
+  --color-primary: var(--bridge-cyan, #63e6ff);
+  --color-secondary: var(--bridge-blue, #318bff);
+  --color-success: var(--bridge-green, #5df2bd);
+  --color-warning: var(--bridge-amber, #f2bd63);
+  --color-danger: var(--bridge-red, #ff657f);
+  --color-border: var(--bridge-line, rgba(107, 201, 239, .26));
+  --color-border-strong: var(--bridge-line-bright, #63e6ff);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --radius-sm: var(--bridge-radius-sm, 6px);
+  --radius-md: var(--bridge-radius, 10px);
+  --font-family-ui: "Segoe UI", system-ui, sans-serif;
+  --font-family-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --z-dropdown: 400;
+  --z-modal: 500;
+  --z-toast: 600;
+}

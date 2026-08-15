@@ -12,7 +12,7 @@
   --bridge-panel-soft: rgba(16, 52, 78, .44);
   --bridge-line: rgba(107, 201, 239, .26);
   --bridge-line-bright: #63e6ff;
-  --bridge-text: #e9f8ff;
+  --bridge-text: var(--color-text);
   --bridge-muted: #8caec5;
   --bridge-cyan: #63e6ff;
   --bridge-blue: #318bff;
@@ -420,8 +420,8 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .account-menu button[aria-current="true"],
 .location-menu button[aria-selected="true"],
 .palette-select-menu button[aria-selected="true"] {
-  color: #9be8ff;
-  background: #174565;
+  color: var(--color-primary);
+  background: var(--color-bg-panel);
   font-weight: 600;
 }
 .modal-cover {

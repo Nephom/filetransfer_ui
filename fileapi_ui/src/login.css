@@ -1,35 +1,35 @@
 :root {
-  color: #e6eefc;
-  background: #07111f;
+  color: var(--color-text);
+  background: var(--color-bg);
 }
 
 body {
-  background: #07111f;
+  background: var(--color-bg);
 }
 
 .login {
   padding: 20px;
-  background: radial-gradient(circle at 80% -10%, #123356 0, transparent 35%), #07111f;
+  background: radial-gradient(circle at 80% -10%, var(--color-bg-panel) 0, transparent 35%), var(--color-bg);
 }
 
 .login form {
   width: min(420px, 100%);
   padding: 30px;
   background: rgba(11, 33, 55, .94);
-  border-color: #315b7e;
+  border-color: var(--color-border);
   border-radius: 8px;
   box-shadow: 0 16px 45px rgba(0, 0, 0, .52);
 }
 
 .login h1 { margin: 0 0 8px; font-size: 24px; }
-.login p { margin: 0 0 22px; color: #a8c0d8; font-size: 13px; }
+.login p { margin: 0 0 22px; color: var(--color-text-muted); font-size: 13px; }
 
 .login-mark {
   width: 34px;
   height: 28px;
   margin-bottom: 18px;
   border-radius: 4px;
-  background: linear-gradient(#50d8ff 0 30%, #1477c9 30%);
+  background: linear-gradient(var(--color-primary) 0 30%, var(--color-secondary) 30%);
   position: relative;
   box-shadow: 0 0 18px rgba(80, 216, 255, .38);
 }
@@ -41,15 +41,15 @@ body {
   top: -4px;
   left: 3px;
   border-radius: 2px 2px 0 0;
-  background: #63ddff;
+  background: var(--color-primary);
 }
 
-.login label { color: #d9eafa; }
-.login input { color: #e6eefc; background: #07192a; border-color: #315b7e; }
-.login input:focus { outline: none; border-color: #47cdf1; box-shadow: 0 0 0 1px #47cdf1; }
-.login button { margin-top: 8px; background: linear-gradient(135deg, #1477c9, #168bb9); border-color: #47cdf1; }
-.login-version { display: inline-block; margin-left: 8px; color: #7f9bb5; font-size: 12px; font-weight: 400; vertical-align: middle; }
-.tls-option small { color: #8fa8bf; }
+.login label { color: var(--color-text); }
+.login input { color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }
+.login input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 1px var(--color-primary); }
+.login button { margin-top: 8px; background: linear-gradient(135deg, var(--color-secondary), var(--color-secondary)); border-color: var(--color-primary); }
+.login-version { display: inline-block; margin-left: 8px; color: var(--color-text-muted); font-size: 12px; font-weight: 400; vertical-align: middle; }
+.tls-option small { color: var(--color-text-muted); }
 
 /* "Only Terminal" is a dev-only escape hatch (skips login + API server).
    Kept physically separate from the sign-in form, in a low-key corner
@@ -60,9 +60,9 @@ body {
   bottom: 18px;
   padding: 7px 12px;
   font-size: 12px;
-  color: #8fa8bf;
+  color: var(--color-text-muted);
   background: rgba(11, 33, 55, .55);
-  border: 1px dashed #315b7e;
+  border: 1px dashed var(--color-border);
   border-radius: 999px;
   opacity: .55;
   transition: opacity .15s ease, color .15s ease, border-color .15s ease;
@@ -70,8 +70,8 @@ body {
 .only-terminal-corner-button:hover,
 .only-terminal-corner-button:focus-visible {
   opacity: 1;
-  color: #e6eefc;
-  border-color: #47cdf1;
+  color: var(--color-text);
+  border-color: var(--color-primary);
   border-style: solid;
 }
 .only-terminal-corner-button:disabled {

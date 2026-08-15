@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { FloatingWindow } from "./ui/FloatingWindow";
 
 export type OperationLogRecord = Record<string, unknown>;
 type SortKey = "time" | "function" | "level" | "status";
@@ -147,9 +148,14 @@ export function LogView({ records, onClose, onExport, modalStyle, onDragStart }:
   }, []);
 
   return (
-    <div className="modal-cover modal-layer-top" onMouseDown={onClose}>
-      <section className="modal log-view-modal" style={modalStyle} role="dialog" aria-modal="true" aria-labelledby="log-view-title" onMouseDown={(event) => event.stopPropagation()}>
-        <header className="log-view-heading modal-drag-handle" onMouseDown={onDragStart}>
+    <FloatingWindow
+      ariaLabel="LogView"
+      className="log-view-modal"
+      style={modalStyle}
+      onClose={onClose}
+      onDragStart={onDragStart}
+      header={(
+        <header className="log-view-heading modal-drag-handle">
           <div>
             <h2 id="log-view-title">LogView</h2>
             <p>Grouped operation events. Operation IDs are hidden.</p>
@@ -159,14 +165,15 @@ export function LogView({ records, onClose, onExport, modalStyle, onDragStart }:
             <button ref={closeRef} type="button" className="log-view-close" onClick={onClose} aria-label="Close LogView">×</button>
           </div>
         </header>
-        <div className="log-view-content" tabIndex={0} aria-label="Pretty operation log">
+      )}
+    >
+        <div className="log-view-content floating-window-content" tabIndex={0} aria-label="Pretty operation log">
           {records.length ? <LogTable records={records} /> : <p className="log-view-empty">No operation logs recorded yet.</p>}
         </div>
-        <footer className="log-view-footer">
+        <div className="log-view-footer floating-window-footer">
           <span>{records.length} event{records.length === 1 ? "" : "s"}</span>
           <button type="button" className="confirm" onClick={onClose}>Close</button>
-        </footer>
-      </section>
-    </div>
+        </div>
+    </FloatingWindow>
   );
 }
