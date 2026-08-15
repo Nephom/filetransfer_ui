@@ -291,7 +291,7 @@ function RestEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries }:
       document.removeEventListener("keydown", closeOnEscape);
       layer?.removeEventListener("pointerdown", closeOnOutsidePointer);
     };
-  }, [editing]);
+  }, [editing?.id]);
 
   const createEntry = () => setEditing({
     id: crypto.randomUUID(),
