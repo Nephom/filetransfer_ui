@@ -85,6 +85,7 @@ type Session = {
   permissions: string[];
   locationId: string;
   ignoreTlsErrors: boolean;
+  saveUserInformation: boolean;
   onlyTerminalMode: boolean;
 };
 type ShareResponse = {
@@ -542,11 +543,13 @@ const initialSession: Session = {
   permissions: [],
   locationId: "",
   ignoreTlsErrors: false,
+  saveUserInformation: false,
   onlyTerminalMode: false,
 };
 const sessionRegistryKey = "fileapi-session-registry";
 const desktopSettingsKey = "nfterm-settings";
 const queueStorageKey = "nfterm-transfer-queue";
+const apiCredentialEntryId = "api-login";
 
 const readPersistedQueue = (): TransferQueueItem[] => {
   try {
@@ -768,6 +771,16 @@ type LoginScreenProps = {
 };
 
 function LoginScreen({ session, setSession, password, setPassword, busy, notice, onSubmit, onOnlyTerminal }: LoginScreenProps) {
+  const updateSaveUserInformation = (enabled: boolean) => {
+    setSession((current) => ({ ...current, saveUserInformation: enabled }));
+    if (!enabled) {
+      void Promise.all([
+        invoke("rest_forget_secret", { entryId: apiCredentialEntryId, kind: "username" }),
+        invoke("rest_forget_secret", { entryId: apiCredentialEntryId, kind: "password" }),
+      ]).catch(() => undefined);
+    }
+  };
+
   return (
     <main className="login">
       <form onSubmit={onSubmit}>
@@ -778,7 +791,15 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
         <label>HTTPS port<input inputMode="numeric" value={session.port} onChange={(event) => setSession((current) => ({ ...current, port: event.target.value }))} /></label>
         <label>Username<input value={session.username} onChange={(event) => setSession((current) => ({ ...current, username: event.target.value }))} /></label>
         <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-        <label className="tls-option"><input type="checkbox" checked={session.ignoreTlsErrors} onChange={(event) => setSession((current) => ({ ...current, ignoreTlsErrors: event.target.checked }))} /> Ignore SSL certificate verification <small>Only enable for a server you trust.</small></label>
+        <div className="login-toggle-row" role="group" aria-label="Login options">
+          <button type="button" className={`login-toggle-button${session.ignoreTlsErrors ? " enabled" : ""}`} aria-pressed={session.ignoreTlsErrors} onClick={() => setSession((current) => ({ ...current, ignoreTlsErrors: !current.ignoreTlsErrors }))} title="Disable HTTPS certificate verification for this API server">
+            <span className="mode-switch-dot" aria-hidden="true" /><span>IGNORE SSL</span>
+          </button>
+          <button type="button" className={`login-toggle-button${session.saveUserInformation ? " enabled" : ""}`} aria-pressed={session.saveUserInformation} onClick={() => updateSaveUserInformation(!session.saveUserInformation)} title="Save the API username and password in the OS credential store">
+            <span className="mode-switch-dot" aria-hidden="true" /><span>SAVE USER INFORMATION</span>
+          </button>
+        </div>
+        <p className="login-toggle-help">Ignore SSL disables certificate verification. Save User Information stores the username and password in the OS credential store.</p>
         <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
         {notice && <output role="alert">{notice}</output>}
       </form>
@@ -795,14 +816,30 @@ function App() {
         ...initialSession,
         host: saved?.host || defaultHost,
         port: saved?.port || defaultPort,
-        username: saved?.username || "",
+        username: saved?.saveUserInformation === true ? saved?.username || "" : "",
         ignoreTlsErrors: saved?.ignoreTlsErrors === true,
+        saveUserInformation: saved?.saveUserInformation === true,
       };
     } catch {
       return initialSession;
     }
   });
   const [password, setPassword] = useState("");
+  useEffect(() => {
+    if (!session.saveUserInformation) return undefined;
+    let cancelled = false;
+    void Promise.all([
+      invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId, kind: "username" }),
+      invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId, kind: "password" }),
+    ])
+      .then(([username, storedPassword]) => {
+        if (cancelled) return;
+        if (username !== null) setSession((current) => ({ ...current, username }));
+        if (storedPassword !== null) setPassword(storedPassword);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [session.saveUserInformation]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -810,11 +847,12 @@ function App() {
     localStorage.setItem("nfterm-session", JSON.stringify({
       host: session.host,
       port: session.port,
-      username: session.username,
+      username: session.saveUserInformation ? session.username : "",
       ignoreTlsErrors: session.ignoreTlsErrors,
+      saveUserInformation: session.saveUserInformation,
       token: "",
     }));
-  }, [session.host, session.port, session.username, session.ignoreTlsErrors]);
+  }, [session.host, session.port, session.username, session.ignoreTlsErrors, session.saveUserInformation]);
 
   const login = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -832,7 +870,19 @@ function App() {
       const response = new ApiResponse(responseValue.status, responseValue.body);
       if (!response.ok) throw new Error(await readError(response));
       const data = await response.json();
-      setSession((current) => ({ ...current, token: data.token, username: data.user.username, userId: data.user.id ?? null, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
+      const authenticatedUsername = data.user.username || session.username;
+      setSession((current) => ({ ...current, token: data.token, username: authenticatedUsername, userId: data.user.id ?? null, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
+      if (session.saveUserInformation) {
+        await Promise.all([
+          invoke("rest_save_secret", { entryId: apiCredentialEntryId, kind: "username", value: authenticatedUsername }),
+          invoke("rest_save_secret", { entryId: apiCredentialEntryId, kind: "password", value: password }),
+        ]);
+      } else {
+        await Promise.all([
+          invoke("rest_forget_secret", { entryId: apiCredentialEntryId, kind: "username" }),
+          invoke("rest_forget_secret", { entryId: apiCredentialEntryId, kind: "password" }),
+        ]);
+      }
       setPassword("");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));

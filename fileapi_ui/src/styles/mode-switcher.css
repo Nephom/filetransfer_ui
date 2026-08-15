@@ -70,6 +70,26 @@
   box-shadow: 0 0 12px color-mix(in srgb, var(--color-primary) 68%, transparent);
 }
 
+/* Keep the selected status light tied to the mode, rather than the shared
+   primary selected-button treatment. */
+.titlebar-main .mode-switcher.location-active .mode-switch-button.selected .mode-switch-dot {
+  border-color: #63e6ff;
+  background: #63e6ff;
+  box-shadow: 0 0 12px color-mix(in srgb, #63e6ff 68%, transparent);
+}
+
+.titlebar-main .mode-switcher.rest-active .mode-switch-button.selected .mode-switch-dot {
+  border-color: #5df2bd;
+  background: #5df2bd;
+  box-shadow: 0 0 12px color-mix(in srgb, #5df2bd 68%, transparent);
+}
+
+.titlebar-main .mode-switcher.vnc-active .mode-switch-button.selected .mode-switch-dot {
+  border-color: #f2bd63;
+  background: #f2bd63;
+  box-shadow: 0 0 12px color-mix(in srgb, #f2bd63 68%, transparent);
+}
+
 @media (max-width: 720px) {
   .titlebar-main .mode-switcher { width: 100%; justify-content: stretch; }
   .titlebar-main .mode-buttons { width: 100%; }
