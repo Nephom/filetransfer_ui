@@ -2705,8 +2705,17 @@ async function startServer() {
       console.log(`- File Watcher: ${cacheInfo.isWatching ? 'Active' : 'Inactive'}`);
     }
 
-    // Check for SSL certificates
-    const sslOptions = await loadSSLCertificates();
+    // Generate local certificates on first startup when setup enabled it.
+    let sslOptions = await loadSSLCertificates();
+    if (!sslOptions && configManager.get('ssl.autoGenerateCerts') === true) {
+      const sans = await sanManager.getSANList();
+      const result = await certificateManager.generateFullCertificateSet(sans);
+      if (result.success) {
+        sslOptions = await loadSSLCertificates();
+      } else {
+        systemLogger.logSystem('ERROR', `Failed to auto-generate SSL certificates: ${result.message}`);
+      }
+    }
     let httpsServer = null;
 
     if (sslOptions) {

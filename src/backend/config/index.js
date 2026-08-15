@@ -268,6 +268,11 @@ class ConfigManager {
       env.ssl.enableHttpsRedirect = process.env.SSL_ENABLE_HTTPS_REDIRECT.toLowerCase() === 'true';
     }
 
+    if (process.env.SSL_AUTO_GENERATE_CERTS !== undefined) {
+      env.ssl = env.ssl || {};
+      env.ssl.autoGenerateCerts = process.env.SSL_AUTO_GENERATE_CERTS.toLowerCase() === 'true';
+    }
+
     return env;
   }
 

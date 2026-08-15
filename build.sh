@@ -152,18 +152,18 @@ install_server_system_dependencies() {
   detect_os
   case "$OS_ID" in
     alpine)
-      local commands=(bash curl wget git node npm python3 make g++ lsof ip)
+      local commands=(bash curl wget git node npm python3 make g++ lsof ip redis-server)
       local command_name
       for command_name in "${commands[@]}"; do
         if ! command -v "$command_name" >/dev/null 2>&1; then
-          run_apk add --no-cache bash ca-certificates curl wget git nodejs npm python3 make g++ libstdc++ lsof iproute2
+          run_apk add --no-cache bash ca-certificates curl wget git nodejs npm python3 make g++ libstdc++ lsof iproute2 redis
           return
         fi
       done
       echo "Server system dependencies are already installed; skipping root-only package installation."
       ;;
     ubuntu)
-      local packages=(ca-certificates curl wget git file build-essential pkg-config python3)
+      local packages=(ca-certificates curl wget git file build-essential pkg-config python3 redis-server)
       local missing=()
       local package
       for package in "${packages[@]}"; do
@@ -505,6 +505,7 @@ setup_configuration() {
   upsert_env AUTH_PASSWORD "$password"
   upsert_env SERVER_PORT "$http_port"
   upsert_env SSL_HTTPS_PORT "$https_port"
+  upsert_env SSL_AUTO_GENERATE_CERTS "true"
   upsert_env JWT_SECRET "$secret"
   mkdir -p "$storage"
 
