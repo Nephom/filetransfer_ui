@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { resolveResource } from "@tauri-apps/api/path";
@@ -28,7 +27,6 @@ import type { Terminal } from "@xterm/xterm";
 import "./styles/tokens.css";
 import "./styles/overlays.css";
 import { themePresets, themeStyle, type ThemePreset } from "./styles/theme";
-import "./styles.css";
 import "./login.css";
 import "./location-control.css";
 import "./tls.css";
@@ -41,13 +39,14 @@ import "./proxmox-vnc.css";
 import "./help/help.css";
 import "./log-view.css";
 import "./styles/theme-overrides.css";
-import { HelpIcon, helpPages, helpSections } from "./help/help-content";
+import { helpPages, helpSections } from "./help/help-content";
 import { LogView, type OperationLogRecord } from "./log-view";
 import { RestApiWorkspace, type RestApiEntry, type RestApiSecret } from "./rest-api";
-import { ProxmoxVncWorkspace, type ProxmoxVncEntry, type ProxmoxVncSecret } from "./proxmox-vnc";
+import { type ProxmoxVncEntry, type ProxmoxVncSecret } from "./proxmox-vnc";
 import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 import { AppShell } from "./app/AppShell";
+import { DesktopTitlebar } from "./app/DesktopTitlebar";
 import { FloatingWindow } from "./ui/FloatingWindow";
 import { useTerminalLifecycle } from "./features/terminal/useTerminalLifecycle";
 import { VncWorkspaceController } from "./features/vnc/VncWorkspaceController";
@@ -5395,102 +5394,25 @@ function App() {
 
       return (
     <AppShell style={themeStyle(desktopSettings.theme, desktopSettings.accentColor)} className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
-      <header className="titlebar">
-        <div className="titlebar-brand">
-          <span className="app-mark" />
-          <span className="app-name">
-            Nephom <span className="connection-status">File manager</span> cross <span className="connection-status">Terminal</span>
-          </span>
-        </div>
-         <div className="titlebar-main">
-         <div className={`mode-switcher ${appMode === "rest" ? "rest-active" : appMode === "vnc" ? "vnc-active" : "location-active"}`}>
-           <div className="mode-buttons" role="group" aria-label="Application mode">
-             <button type="button" className={`mode-switch-button${appMode === "location" ? " selected" : ""}`} aria-pressed={appMode === "location"} onClick={() => setAppMode("location")}><span className="mode-switch-dot" /><span>LOCATION</span></button>
-             <button type="button" className={`mode-switch-button${appMode === "rest" ? " selected" : ""}`} aria-pressed={appMode === "rest"} onClick={() => setAppMode("rest")}><span className="mode-switch-dot" /><span>REST API</span></button>
-              {desktopSettings.proxmoxVncModeEnabled && <button type="button" className={`mode-switch-button${appMode === "vnc" ? " selected" : ""}`} aria-pressed={appMode === "vnc"} onClick={() => setAppMode("vnc")}><span className="mode-switch-dot" /><span>VNC</span></button>}
-          </div>
-         </div>
-         </div>
-         <div className="titlebar-account">
-        <div className="account-control" ref={accountControl}>
-          <button
-            className="account"
-            onClick={(event) => {
-              event.stopPropagation();
-              setAccountOpen((open) => !open);
-            }}
-            aria-expanded={accountOpen}
-            aria-haspopup="menu"
-          >
-            {session.username}
-            <span className="account-role">
-              {session.onlyTerminalMode ? "Only Terminal" : session.role === "admin" ? "Admin" : "User"}
-            </span>
-            <span className="account-chevron">⌄</span>
-          </button>
-           {accountOpen && createPortal(
-             <div className="account-menu" style={accountMenuStyle} role="menu" aria-label="Account menu">
-              <div className="account-summary">
-                <strong>{session.username}</strong>
-                <span>
-                  {session.onlyTerminalMode
-                    ? "Offline dev session — no API server connected"
-                    : session.role === "admin"
-                      ? "System administrator"
-                      : "Standard user"}
-                </span>
-              </div>
-                <button role="menuitem"
-                  onClick={() => {
-                    setAccountOpen(false);
-                    openSessionsModal();
-                 }}
-               >
-                  Workspace Manager
-               </button>
-                <button role="menuitem"
-                  onClick={() => {
-                   setAccountOpen(false);
-                   setSettingsOpen(true);
-                   refreshStorageInfo();
-                 }}
-               >
-                 Settings
-               </button>
-                {!session.onlyTerminalMode && session.role !== "admin" && (
-                  <button role="menuitem"
-                    onClick={() => {
-                     setAccountOpen(false);
-                     setChangePasswordOpen(true);
-                   }}
-                 >
-                   Change password
-                  </button>
-                )}
-                 <button role="menuitem"
-                   onClick={() => {
-                    openLogView();
-                  }}
-                >
-                  LogView
-                </button>
-                <button role="menuitem"
-                   onClick={() => {
-                    setAccountOpen(false);
-                    setHelpOpen(true);
-                  }}
-               >
-                 Help
-               </button>
-               <hr />
-               <button className="danger" role="menuitem" onClick={signOut}>
-                Log out
-              </button>
-             </div>, document.body
-           )}
-        </div>
-        </div>
-      </header>
+      <DesktopTitlebar
+        appMode={appMode}
+        vncEnabled={desktopSettings.proxmoxVncModeEnabled}
+        session={session}
+        accountOpen={accountOpen}
+        accountControl={accountControl}
+        accountMenuStyle={accountMenuStyle}
+        onModeChange={setAppMode}
+        onAccountToggle={(event) => {
+          event.stopPropagation();
+          setAccountOpen((open) => !open);
+        }}
+        onOpenSessions={() => { setAccountOpen(false); openSessionsModal(); }}
+        onOpenSettings={() => { setAccountOpen(false); setSettingsOpen(true); refreshStorageInfo(); }}
+        onChangePassword={() => { setAccountOpen(false); setChangePasswordOpen(true); }}
+        onOpenLogView={openLogView}
+        onOpenHelp={() => { setAccountOpen(false); setHelpOpen(true); }}
+        onSignOut={signOut}
+      />
       <nav className="commandbar" aria-label={appMode === "rest" ? "REST API actions" : "File actions"}>
         {splitMode && (
           <span className="active-pane-indicator" title="New folder/Rename/Delete/View/Select all act on this pane">
@@ -6790,104 +6712,9 @@ function App() {
         </div>
       )}
       {queueOpen && <QueueModal items={transferQueue} activeItems={activeTransferQueue} historyItems={transferHistory} renderItem={(item) => renderDesktopQueueItem(item as TransferQueueItem)} modalStyle={modalStyle("queue")} onDragStart={beginModalDrag("queue")} onClose={() => setQueueOpen(false)} onClearStatus={clearQueueStatus} onClearHistory={clearFinishedQueue} />}
-      {false && queueOpen && (
-        <div className="modal-cover" onMouseDown={() => setQueueOpen(false)}>
-          <div className="modal queue-modal" style={modalStyle("queue")} onMouseDown={(event) => event.stopPropagation()}>
-            <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("queue")}>Transfer Queue</h2>
-            {!transferQueue.length && <p className="muted">No transfers queued.</p>}
-            {activeTransferQueue.length > 0 && <section className="queue-section"><h3>Active</h3>{activeTransferQueue.map(renderDesktopQueueItem)}</section>}
-            {transferHistory.length > 0 && <section className="queue-section"><h3>History</h3>{transferHistory.map(renderDesktopQueueItem)}</section>}
-            <div className="modal-actions">
-              {transferQueue.some((item) => item.status === "completed") && <button type="button" onClick={() => clearQueueStatus("completed")}>Clear completed</button>}
-              {transferQueue.some((item) => item.status === "failed") && <button type="button" onClick={() => clearQueueStatus("failed")}>Clear failed</button>}
-              {transferQueue.some((item) => item.status === "cancelled") && <button type="button" onClick={() => clearQueueStatus("cancelled")}>Clear cancelled</button>}
-              {transferQueue.some((item) => ["completed", "failed", "cancelled"].includes(item.status)) && <button type="button" onClick={clearFinishedQueue}>Clear history</button>}
-              <button type="button" onClick={() => setQueueOpen(false)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
       {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={() => setViewerOpen(false)} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
-      {false && viewerOpen && (
-        <div className="modal-cover" onMouseDown={() => setViewerOpen(false)}>
-          <div className="modal viewer-modal" style={modalStyle("viewer")} onMouseDown={(event) => event.stopPropagation()}>
-            <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("viewer")}>{viewerTitle}</h2>
-            <p className="muted">Read-only viewer. Edit opens this file in the default text editor.</p>
-            <textarea className="file-viewer" value={viewerContent} readOnly spellCheck={false} />
-            <div className="modal-actions">
-              <button type="button" onClick={editViewerFile}>Edit in text editor</button>
-              <button type="button" onClick={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))}>Copy</button>
-              <button type="button" onClick={() => setViewerOpen(false)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
       {logViewOpen && <LogView records={operationLogRecords} modalStyle={modalStyle("log-view")} onDragStart={beginModalDrag("log-view")} onClose={() => setLogViewOpen(false)} onExport={exportOperationLog} />}
       {helpOpen && <HelpModal sections={helpSections} pages={helpPages} selectedPage={selectedHelpPage} selectedSection={selectedHelpSection} selectedIndex={selectedHelpIndex} expandedSections={expandedHelpSections} modalStyle={modalStyle("help")} onDragStart={beginModalDrag("help")} onClose={() => setHelpOpen(false)} onToggleSection={(id) => setExpandedHelpSections((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onSelectPage={setSelectedHelpPageId} />}
-      {false && helpOpen && (
-        <div className="modal-cover" onMouseDown={() => setHelpOpen(false)}>
-          <div className="modal help-modal" style={modalStyle("help")} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="help-title">
-            <div className="help-heading" onMouseDown={beginModalDrag("help")}>
-              <HelpIcon name="book" />
-              <div>
-                <h2 id="help-title">nFterm Help</h2>
-                <p>操作說明、SSH 指南與技術文件</p>
-              </div>
-              <button type="button" className="help-close" onClick={() => setHelpOpen(false)} aria-label="Close Help">×</button>
-            </div>
-            <div className="help-layout">
-              <nav className="help-tree" aria-label="Help topics">
-                {helpSections.map((section) => {
-                  const expanded = expandedHelpSections.includes(section.id);
-                  return (
-                    <div className="help-tree-section" key={section.id}>
-                      <button
-                        type="button"
-                        className="help-tree-toggle"
-                        aria-expanded={expanded}
-                        onClick={() => setExpandedHelpSections((current) => expanded ? current.filter((id) => id !== section.id) : [...current, section.id])}
-                      >
-                        <span className="help-tree-chevron" aria-hidden="true">{expanded ? "−" : "+"}</span>
-                        <HelpIcon name={section.icon} size={16} />
-                        <span>{section.title}</span>
-                      </button>
-                      {expanded && (
-                        <div className="help-tree-pages">
-                          {section.pages.map((page) => (
-                            <button
-                              type="button"
-                              key={page.id}
-                              className={`help-tree-page${selectedHelpPage.id === page.id ? " active" : ""}`}
-                              aria-current={selectedHelpPage.id === page.id ? "page" : undefined}
-                              onClick={() => setSelectedHelpPageId(page.id)}
-                            >
-                              {page.title}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </nav>
-              <article className="help-content" aria-live="polite">
-                <div className="help-breadcrumb">{selectedHelpSection.title}</div>
-                <h3>{selectedHelpPage.title}</h3>
-                <p className="help-summary">{selectedHelpPage.summary}</p>
-                {selectedHelpPage.content}
-              </article>
-            </div>
-            <footer className="help-footer">
-              <span>頁面 {selectedHelpIndex + 1} / {helpPages.length}</span>
-              <div className="help-page-nav">
-                <button type="button" disabled={selectedHelpIndex <= 0} onClick={() => setSelectedHelpPageId(helpPages[selectedHelpIndex - 1].id)}>Previous</button>
-                <button type="button" disabled={selectedHelpIndex >= helpPages.length - 1} onClick={() => setSelectedHelpPageId(helpPages[selectedHelpIndex + 1].id)}>Next</button>
-                <button type="button" onClick={() => setHelpOpen(false)}>Close</button>
-              </div>
-            </footer>
-          </div>
-        </div>
-      )}
     </AppShell>
   );
 }

@@ -13,6 +13,6 @@
 
 .tls-option small {
   grid-column: 2;
-  color: #666;
+  color: var(--color-text-muted);
   margin-top: 3px;
 }
