@@ -31,6 +31,20 @@ For an existing checkout:
 ./start.sh
 ```
 
+Uninstall removes project-local dependencies and generated configuration by default, while preserving operating-system packages:
+
+```bash
+./uninstall.sh
+```
+
+To remove only the system packages that `build.sh install` installed and recorded:
+
+```bash
+./uninstall.sh --remove-system-dependencies
+```
+
+The install manifest is kept in the ignored `.filetransfer_install_manifest` file. Packages that existed before installation are never recorded or removed.
+
 Deployment values belong in protected, ignored `.env` or `src/config.ini` files. Do not put real addresses, credentials, tokens, certificates, or storage paths in documentation or Git.
 
 The default HTTP port is `9400`; the default HTTPS port is `9443`. Production deployments should use an operating-system-trusted HTTPS certificate.

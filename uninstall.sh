@@ -16,10 +16,12 @@
 set -u
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_MANIFEST="$ROOT_DIR/.filetransfer_install_manifest"
 source "$ROOT_DIR/scripts/runtime.sh"
 
 ASSUME_YES=0
 REMOVE_DESKTOP_APP=""
+REMOVE_SYSTEM_DEPENDENCIES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,9 +37,13 @@ while [[ $# -gt 0 ]]; do
       REMOVE_DESKTOP_APP="no"
       shift
       ;;
+    --remove-system-dependencies|--purge)
+      REMOVE_SYSTEM_DEPENDENCIES=1
+      shift
+      ;;
     --help|-h)
       cat <<'EOF'
-Usage: ./uninstall.sh [--yes|--force] [--remove-desktop-app|--keep-desktop-app]
+Usage: ./uninstall.sh [--yes|--force] [--remove-desktop-app|--keep-desktop-app] [--remove-system-dependencies]
 
 Stops the running service, then removes local configuration, dependencies,
 and generated files from this project directory. The project directory
@@ -48,6 +54,9 @@ itself and the configured storage path are never removed.
                           external data directory (~/.fileapi-desktop)
                           without prompting.
   --keep-desktop-app     Leave the Desktop app installed without prompting.
+  --remove-system-dependencies
+                         Remove only system packages recorded by build.sh install.
+                         Without this option, system packages are preserved.
 EOF
       exit 0
       ;;
@@ -227,6 +236,66 @@ check_systemd_units() {
   fi
 }
 
+remove_recorded_system_dependencies() {
+  if [[ "$REMOVE_SYSTEM_DEPENDENCIES" -ne 1 ]]; then
+    [[ -f "$INSTALL_MANIFEST" ]] && echo "System dependencies: preserved (use --remove-system-dependencies to remove recorded packages)."
+    return
+  fi
+  if [[ ! -f "$INSTALL_MANIFEST" ]]; then
+    echo "System dependencies: no install manifest found; skipping."
+    return
+  fi
+
+  local -a apt_packages=() apk_packages=()
+  local manager package
+  while IFS=$'\t' read -r manager package; do
+    [[ "$manager" == "apt" || "$manager" == "apk" ]] || continue
+    [[ -n "$package" ]] || continue
+    if [[ ! "$package" =~ ^[A-Za-z0-9][A-Za-z0-9+._:-]*$ ]]; then
+      echo "Ignoring invalid package name in install manifest: $package" >&2
+      continue
+    fi
+    case "$manager" in
+      apt) apt_packages+=("$package") ;;
+      apk) apk_packages+=("$package") ;;
+    esac
+  done < <(grep -Ev '^(#|version=|$)' "$INSTALL_MANIFEST")
+
+  [[ "${#apt_packages[@]}" -gt 0 ]] && echo "Recorded Ubuntu packages to remove: ${apt_packages[*]}"
+  [[ "${#apk_packages[@]}" -gt 0 ]] && echo "Recorded Alpine packages to remove: ${apk_packages[*]}"
+  if [[ "${#apt_packages[@]}" -eq 0 && "${#apk_packages[@]}" -eq 0 ]]; then
+    echo "System dependencies: manifest contains no removable packages."
+    return
+  fi
+  confirm "Remove the recorded system dependencies?" || {
+    echo "System dependency removal cancelled."
+    return
+  }
+
+  if [[ "${#apt_packages[@]}" -gt 0 ]]; then
+    if [[ "$EUID" -eq 0 ]]; then
+      apt-get remove -y "${apt_packages[@]}" || return 1
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo apt-get remove -y "${apt_packages[@]}" || return 1
+    else
+      echo "Root privileges are required to remove Ubuntu packages." >&2
+      return 1
+    fi
+  fi
+  if [[ "${#apk_packages[@]}" -gt 0 ]]; then
+    if [[ "$EUID" -eq 0 ]]; then
+      apk del "${apk_packages[@]}" || return 1
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo apk del "${apk_packages[@]}" || return 1
+    else
+      echo "Root privileges are required to remove Alpine packages." >&2
+      return 1
+    fi
+  fi
+  rm -f "$INSTALL_MANIFEST"
+  echo "System dependencies: removed recorded packages."
+}
+
 # --- 5/6. Project-directory cleanup, preserving the configured storage ----
 
 read_env_value_from() {
@@ -272,7 +341,6 @@ main() {
   echo
   check_systemd_units
   echo
-
   local storage_keep database_keep
   storage_keep="$(preserved_storage_path)"
   database_keep="$(preserved_database_path)"
@@ -314,6 +382,8 @@ main() {
     echo "Cancelled; nothing was removed."
     exit 0
   fi
+
+  remove_recorded_system_dependencies
 
   for target in "${targets[@]}"; do
     if [[ -e "$target" ]]; then

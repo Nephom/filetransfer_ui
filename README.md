@@ -31,6 +31,20 @@ WebUI 是瀏覽器版檔案管理介面，提供：
 ./start.sh
 ```
 
+解除安裝時，預設只移除專案本地依賴與產生的設定，保留作業系統套件：
+
+```bash
+./uninstall.sh
+```
+
+若要移除 `build.sh install` 本次實際安裝且已記錄的系統套件：
+
+```bash
+./uninstall.sh --remove-system-dependencies
+```
+
+安裝紀錄保存在未納入版本控制的 `.filetransfer_install_manifest`。安裝前已存在的共用套件不會被列入或移除。
+
 部署設定放在受保護且不納入版本控制的 `.env` 或 `src/config.ini`。實際位址、帳密、token、憑證與 storage 路徑不得寫入文件或 Git。
 
 預設 HTTP port 為 `9400`，HTTPS port 為 `9443`。正式環境應使用受作業系統信任的 HTTPS 憑證。

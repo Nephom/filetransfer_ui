@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="${FILETRANSFER_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+INSTALL_MANIFEST="$ROOT_DIR/.filetransfer_install_manifest"
 COMMAND=""
 PROXY=""
 INTERACTIVE_UPGRADE=0
@@ -109,6 +110,35 @@ run_as_root() {
   fi
 }
 
+package_installed() {
+  local manager="$1"
+  local package="$2"
+  case "$manager" in
+    apt) dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii ' ;;
+    apk) apk info -e "$package" >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+record_installed_packages() {
+  local manager="$1"
+  shift
+  local package
+
+  [[ "$#" -gt 0 ]] || return 0
+  if [[ ! -f "$INSTALL_MANIFEST" ]]; then
+    {
+      printf '%s\n' '# File Transfer install manifest; managed by build.sh.'
+      printf '%s\n' 'version=1'
+    } > "$INSTALL_MANIFEST"
+  fi
+
+  for package in "$@"; do
+    grep -Fq "${manager}	${package}" "$INSTALL_MANIFEST" ||
+      printf '%s\t%s\n' "$manager" "$package" >> "$INSTALL_MANIFEST"
+  done
+}
+
 detect_os() {
   [[ -r /etc/os-release ]] || { echo "Alpine Linux or Ubuntu is required." >&2; exit 1; }
   . /etc/os-release
@@ -134,7 +164,7 @@ install_desktop_system_dependencies() {
   local missing=()
   local package
   for package in "${packages[@]}"; do
-    dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii ' || missing+=("$package")
+    package_installed apt "$package" || missing+=("$package")
   done
 
   if [[ "${#missing[@]}" -eq 0 ]]; then
@@ -146,28 +176,32 @@ install_desktop_system_dependencies() {
   run_as_root true
   run_apt update
   run_apt install -y "${missing[@]}"
+  record_installed_packages apt "${missing[@]}"
 }
 
 install_server_system_dependencies() {
   detect_os
   case "$OS_ID" in
     alpine)
-      local commands=(bash curl wget git node npm python3 make g++ lsof ip redis-server)
-      local command_name
-      for command_name in "${commands[@]}"; do
-        if ! command -v "$command_name" >/dev/null 2>&1; then
-          run_apk add --no-cache bash ca-certificates curl wget git nodejs npm python3 make g++ libstdc++ lsof iproute2 redis
-          return
-        fi
+      local packages=(bash ca-certificates curl wget git nodejs npm python3 make g++ libstdc++ lsof iproute2 redis)
+      local missing=()
+      local package
+      for package in "${packages[@]}"; do
+        package_installed apk "$package" || missing+=("$package")
       done
-      echo "Server system dependencies are already installed; skipping root-only package installation."
+      if [[ "${#missing[@]}" -eq 0 ]]; then
+        echo "Server system dependencies are already installed; skipping root-only package installation."
+        return
+      fi
+      run_apk add --no-cache "${missing[@]}"
+      record_installed_packages apk "${missing[@]}"
       ;;
     ubuntu)
       local packages=(ca-certificates curl wget git file build-essential pkg-config python3 redis-server)
       local missing=()
       local package
       for package in "${packages[@]}"; do
-        dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii ' || missing+=("$package")
+        package_installed apt "$package" || missing+=("$package")
       done
       if [[ "${#missing[@]}" -eq 0 ]]; then
         echo "Server system dependencies are already installed; skipping root-only package installation."
@@ -176,6 +210,7 @@ install_server_system_dependencies() {
       run_as_root true
       run_apt update
       run_apt install -y "${missing[@]}"
+      record_installed_packages apt "${missing[@]}"
       ;;
     *)
       echo "Unsupported server OS: $OS_ID. Supported server platforms are Alpine Linux and Ubuntu." >&2
@@ -206,6 +241,7 @@ ensure_node() {
     echo "Installing Node.js 22 LTS..."
     curl --fail --location --show-error https://deb.nodesource.com/setup_22.x | run_as_root env http_proxy="${http_proxy:-}" https_proxy="${https_proxy:-}" bash -
     run_apt install -y nodejs
+    record_installed_packages apt nodejs
   else
     echo "Unsupported server OS: $OS_ID." >&2
     exit 1
