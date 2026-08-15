@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import "./log-view.css";
 import { FloatingWindow } from "./ui/FloatingWindow";
 
 export type OperationLogRecord = Record<string, unknown>;

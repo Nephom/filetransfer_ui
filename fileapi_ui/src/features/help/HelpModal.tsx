@@ -1,4 +1,5 @@
 import React from "react";
+import "../../help/help.css";
 import { HelpIcon, type HelpPage, type HelpSection } from "../../help/help-content";
 import { FloatingWindow } from "../../ui/FloatingWindow";
 

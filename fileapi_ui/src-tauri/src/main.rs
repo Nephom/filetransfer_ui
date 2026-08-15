@@ -183,6 +183,20 @@ struct LocalDirectory {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct LocalDirectoryChild {
+    name: String,
+    path: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalDirectoryChildren {
+    path: String,
+    directories: Vec<LocalDirectoryChild>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct SshLogPaths {
     raw: String,
     plain: String,
@@ -1170,6 +1184,68 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
             None => directory.to_string_lossy().replace('\\', "/"),
         },
         files,
+    })
+}
+
+#[tauri::command]
+fn local_list_directories(path: String) -> Result<LocalDirectoryChildren, String> {
+    let input = Path::new(&path);
+    if input
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Local path must not contain '..'".to_string());
+    }
+    let (root, directory): (Option<PathBuf>, PathBuf) = if input.is_absolute() {
+        if !is_elevated() {
+            return Err("Local path must stay inside the user home directory".to_string());
+        }
+        let directory = canonicalize(input)?;
+        if !directory.is_dir() {
+            return Err("Local path is not a directory".to_string());
+        }
+        (None, directory)
+    } else {
+        let home = canonicalize(local_home()?)?;
+        let directory = canonicalize(home.join(input))?;
+        if !directory.starts_with(&home) || !directory.is_dir() {
+            return Err("Local path is outside the user home directory".to_string());
+        }
+        (Some(home), directory)
+    };
+
+    let mut directories = std::fs::read_dir(&directory)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            let name = entry.file_name().to_str()?.to_string();
+            let child = directory.join(&name);
+            let child_path = match &root {
+                Some(root) => child
+                    .strip_prefix(root)
+                    .ok()?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+                None => child.to_string_lossy().replace('\\', "/"),
+            };
+            Some(LocalDirectoryChild { name, path: child_path })
+        })
+        .collect::<Vec<_>>();
+    directories.sort_by_key(|left| left.name.to_lowercase());
+
+    Ok(LocalDirectoryChildren {
+        path: match &root {
+            Some(root) => directory
+                .strip_prefix(root)
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .replace('\\', "/"),
+            None => directory.to_string_lossy().replace('\\', "/"),
+        },
+        directories,
     })
 }
 
@@ -2314,6 +2390,7 @@ fn main() {
             pick_local_directory,
             save_text_file,
             local_list_directory,
+            local_list_directories,
             local_create_directory,
             local_rename_path,
             local_delete_path,

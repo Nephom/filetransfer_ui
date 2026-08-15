@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 
 type DesktopTitlebarProps = {
   appMode: "location" | "rest" | "vnc";
@@ -57,7 +58,7 @@ export function DesktopTitlebar({
             <span className="account-role">{session.onlyTerminalMode ? "Only Terminal" : session.role === "admin" ? "Admin" : "User"}</span>
             <span className="account-chevron">⌄</span>
           </button>
-          {accountOpen && (
+          {accountOpen && createPortal(
             <div className="account-menu" style={accountMenuStyle} role="menu" aria-label="Account menu">
               <div className="account-summary">
                 <strong>{session.username}</strong>
@@ -70,7 +71,8 @@ export function DesktopTitlebar({
               <button role="menuitem" onClick={onOpenHelp}>Help</button>
               <hr />
               <button className="danger" role="menuitem" onClick={onSignOut}>Log out</button>
-            </div>
+            </div>,
+            document.body,
           )}
         </div>
       </div>

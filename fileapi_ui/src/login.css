@@ -8,30 +8,37 @@ body {
 }
 
 .login {
+  width: 100%;
+  min-height: 100dvh;
+  box-sizing: border-box;
   padding: 20px;
   background: radial-gradient(circle at 80% -10%, var(--color-bg-panel) 0, transparent 35%), var(--color-bg);
 }
 
 .login form {
-  width: min(420px, 100%);
-  padding: 30px;
-  background: rgba(11, 33, 55, .94);
+  width: min(470px, 100%);
+  box-sizing: border-box;
+  padding: 34px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--color-secondary) 24%, var(--color-bg-panel-strong)), color-mix(in srgb, var(--color-bg) 82%, var(--color-bg-panel)));
   border-color: var(--color-border);
-  border-radius: 8px;
-  box-shadow: 0 16px 45px rgba(0, 0, 0, .52);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-panel), var(--shadow-inset);
+  backdrop-filter: blur(26px) saturate(140%);
 }
 
 .login h1 { margin: 0 0 8px; font-size: 24px; }
 .login p { margin: 0 0 22px; color: var(--color-text-muted); font-size: 13px; }
+.login form > label { display: grid; gap: var(--space-2); margin: 0; }
+.login form > label input { width: 100%; box-sizing: border-box; }
 
 .login-mark {
   width: 34px;
   height: 28px;
   margin-bottom: 18px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: linear-gradient(var(--color-primary) 0 30%, var(--color-secondary) 30%);
   position: relative;
-  box-shadow: 0 0 18px rgba(80, 216, 255, .38);
+  box-shadow: var(--shadow-glow);
 }
 
 .login-mark span {
@@ -47,7 +54,7 @@ body {
 .login label { color: var(--color-text); }
 .login input { color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }
 .login input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 1px var(--color-primary); }
-.login button { margin-top: 8px; background: linear-gradient(135deg, var(--color-secondary), var(--color-secondary)); border-color: var(--color-primary); }
+.login button { margin-top: 8px; background: linear-gradient(135deg, var(--color-secondary), var(--color-primary)); border-color: var(--color-primary); }
 .login-version { display: inline-block; margin-left: 8px; color: var(--color-text-muted); font-size: 12px; font-weight: 400; vertical-align: middle; }
 .tls-option small { color: var(--color-text-muted); }
 
@@ -61,7 +68,7 @@ body {
   padding: 7px 12px;
   font-size: 12px;
   color: var(--color-text-muted);
-  background: rgba(11, 33, 55, .55);
+  background: var(--color-bg-panel);
   border: 1px dashed var(--color-border);
   border-radius: 999px;
   opacity: .55;

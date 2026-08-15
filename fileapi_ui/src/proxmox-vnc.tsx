@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import "./proxmox-vnc.css";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { PaneResizeHandle } from "./resizable-pane";
@@ -112,10 +113,11 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [loading, setLoading] = useState(false);
   const [vms, setVms] = useState<VmSummary[]>([]);
   const [controlsOpen, setControlsOpen] = useState(true);
-  const [screenHeight, setScreenHeight] = useState(560);
+  const [controlsRatio, setControlsRatio] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewOnly, setViewOnly] = useState(false);
   const screenShellRef = useRef<HTMLDivElement>(null);
+  const vncReaderRef = useRef<HTMLElement>(null);
   const [authSessions, setAuthSessions] = useState<Record<string, string>>({});
   const [entryPaneWidth, setEntryPaneWidth] = useState(() => Number(localStorage.getItem("fileapi-vnc-entry-pane-width")) || 380);
   const entryPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -179,12 +181,16 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     return () => document.removeEventListener("fullscreenchange", updateFullscreen);
   }, []);
 
-  const resizeScreen = (event: React.PointerEvent<HTMLDivElement>) => {
+  const resizeControls = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
     const startY = event.clientY;
-    const startHeight = screenHeight;
+    const reader = vncReaderRef.current;
+    if (!reader) return;
+    const startRatio = controlsRatio ?? 0.25;
+    const availableHeight = Math.max(1, reader.clientHeight - 12);
     const move = (moveEvent: PointerEvent) => {
-      setScreenHeight(Math.max(280, Math.min(window.innerHeight * 0.85, startHeight + moveEvent.clientY - startY)));
+      const deltaRatio = (moveEvent.clientY - startY) / availableHeight;
+      setControlsRatio(Math.max(0.2, Math.min(0.8, startRatio + deltaRatio)));
     };
     const stop = () => {
       window.removeEventListener("pointermove", move);
@@ -281,12 +287,12 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     setViewOnly(next);
     if (rfbRef.current) rfbRef.current.viewOnly = next;
   };
+  const screenExpanded = controlsRatio !== null && controlsRatio < 0.5;
 
   return <div className="vnc-workspace"><div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}><VncEntries entries={entries} activeEntryId={activeEntryId} onSelectEntry={selectEntry} onChangeEntries={onChangeEntries} password={password} authenticated={authenticated} loading={loading} onPasswordChange={updatePassword} onLogin={() => void loginEntry()} onLogout={() => void logoutEntry()} /></div><PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />
-    <section className="vnc-reader" aria-label="Proxmox VNC workspace">
+    <section ref={vncReaderRef} className="vnc-reader" aria-label="Proxmox VNC workspace">
       <div className="vnc-reader-heading"><div><span className="eyebrow">VNC mode · {workspaceName}</span><h1>{entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
-      <div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}><div className="vnc-auth-heading"><strong>Connection controls</strong><button type="button" onClick={() => setControlsOpen((value) => !value)}>{controlsOpen ? "Collapse" : "Expand"}</button></div>{controlsOpen && <><div className="vnc-auth-grid"><label>Node<select value={selectedNode} onChange={(event) => chooseNode(event.target.value)} disabled={!authenticated || !nodes.length}><option value="">{authenticated ? "Select node" : "Login first"}</option>{nodes.map((node) => <option key={node} value={node}>{node}</option>)}</select></label><label>VM<select value={selectedVm ? String(selectedVm.vmid) : ""} onChange={(event) => chooseVm(event.target.value)} disabled={!authenticated || !selectedNode || !nodeVms.length}><option value="">{selectedNode ? "Select VM" : "Select node first"}</option>{nodeVms.map((vm) => <option key={`${vm.guestType}-${vm.vmid}`} value={vm.vmid}>{vm.name || `VM ${vm.vmid}`} ({vm.vmid})</option>)}</select></label></div><div className="vnc-actions"><button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button><button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button><button type="button" onClick={() => void logoutEntry()} disabled={!authenticated}>Logout</button></div>{entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}{error && <div className="notice rest-error">{error}</div>}</>}</div>
-       <div className="vnc-screen-resize" role="separator" aria-label="Resize VNC display" onPointerDown={resizeScreen} /><div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`} style={{ "--vnc-screen-height": `${screenHeight}px` } as React.CSSProperties}><div className="vnc-display-toolbar"><button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button><button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button><button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button><button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div><div ref={screenRef} className="vnc-screen" /></div>
+      <div className="vnc-display-split" style={{ "--controls-row": controlsRatio === null ? "auto" : screenExpanded ? "0.333fr" : "1fr", "--screen-row": "1fr" } as React.CSSProperties}><div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}><div className="vnc-auth-heading"><strong>Connection controls</strong><button type="button" onClick={() => { setControlsOpen((value) => !value); setControlsRatio(null); }}>{controlsOpen ? "Collapse" : "Expand"}</button></div>{controlsOpen && <><div className="vnc-auth-grid"><label>Node<select value={selectedNode} onChange={(event) => chooseNode(event.target.value)} disabled={!authenticated || !nodes.length}><option value="">{authenticated ? "Select node" : "Login first"}</option>{nodes.map((node) => <option key={node} value={node}>{node}</option>)}</select></label><label>VM<select value={selectedVm ? String(selectedVm.vmid) : ""} onChange={(event) => chooseVm(event.target.value)} disabled={!authenticated || !selectedNode || !nodeVms.length}><option value="">{selectedNode ? "Select VM" : "Select node first"}</option>{nodeVms.map((vm) => <option key={`${vm.guestType}-${vm.vmid}`} value={vm.vmid}>{vm.name || `VM ${vm.vmid}`} ({vm.vmid})</option>)}</select></label></div><div className="vnc-actions"><button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button><button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button><button type="button" onClick={() => void logoutEntry()} disabled={!authenticated}>Logout</button></div>{entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}{error && <div className="notice rest-error">{error}</div>}</>}</div><div className="vnc-screen-resize" role="separator" aria-label="Resize Connection controls" title="Drag downward to enlarge Connection controls" onPointerDown={resizeControls} /><div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`}><div className="vnc-display-toolbar"><button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button><button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button><button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button><button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div><div ref={screenRef} className="vnc-screen" /></div></div>
     </section>
   </div>;
 }

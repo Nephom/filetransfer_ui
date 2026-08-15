@@ -23,9 +23,14 @@
 
   --radius-sm: var(--bridge-radius-sm, 6px);
   --radius-md: var(--bridge-radius, 10px);
+  --shadow-panel: var(--bridge-glass-shadow, 0 18px 50px rgba(0, 0, 0, .42));
+  --shadow-inset: var(--bridge-inset, inset 0 1px 0 rgba(214, 248, 255, .12));
+  --shadow-glow: var(--bridge-glow-shadow, 0 0 18px color-mix(in srgb, var(--color-primary) 28%, transparent));
+  --transition-fast: var(--bridge-transition, 180ms ease-out);
   --font-family-ui: "Segoe UI", system-ui, sans-serif;
   --font-family-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
   --z-dropdown: 400;
+  --z-context: 450;
   --z-modal: 500;
   --z-toast: 600;
 }

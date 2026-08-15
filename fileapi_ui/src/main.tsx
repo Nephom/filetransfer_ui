@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -29,31 +29,37 @@ import "./styles/overlays.css";
 import { themePresets, themeStyle, type ThemePreset } from "./styles/theme";
 import "./login.css";
 import "./location-control.css";
+import "./context-picker.css";
+import "./settings.css";
+import "./account-menu.css";
 import "./tls.css";
 import "./webui-shell.css";
 import "./explorer-parity.css";
 import "./desktop-ui.css";
 import "./starship-bridge.css";
-import "./rest-api.css";
-import "./proxmox-vnc.css";
-import "./help/help.css";
-import "./log-view.css";
 import "./styles/theme-overrides.css";
+import "./styles/surface-overrides.css";
+import "./styles/mode-switcher.css";
+import "./styles/vnc-interactions.css";
+import "./styles/commandbar.css";
 import { helpPages, helpSections } from "./help/help-content";
-import { LogView, type OperationLogRecord } from "./log-view";
-import { RestApiWorkspace, type RestApiEntry, type RestApiSecret } from "./rest-api";
-import { type ProxmoxVncEntry, type ProxmoxVncSecret } from "./proxmox-vnc";
+import type { OperationLogRecord } from "./log-view";
+import type { RestApiEntry, RestApiSecret } from "./rest-api";
+import type { ProxmoxVncEntry, ProxmoxVncSecret } from "./proxmox-vnc";
 import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 import { AppShell } from "./app/AppShell";
 import { DesktopTitlebar } from "./app/DesktopTitlebar";
 import { FloatingWindow } from "./ui/FloatingWindow";
 import { useTerminalLifecycle } from "./features/terminal/useTerminalLifecycle";
-import { VncWorkspaceController } from "./features/vnc/VncWorkspaceController";
-import { QueueModal } from "./features/queue/QueueModal";
-import { ViewerModal } from "./features/viewer/ViewerModal";
-import { HelpModal } from "./features/help/HelpModal";
 import { useSshEventBridge } from "./features/terminal/useSshEventBridge";
+
+const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
+const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
+const QueueModal = lazy(() => import("./features/queue/QueueModal").then(({ QueueModal: component }) => ({ default: component })));
+const ViewerModal = lazy(() => import("./features/viewer/ViewerModal").then(({ ViewerModal: component }) => ({ default: component })));
+const HelpModal = lazy(() => import("./features/help/HelpModal").then(({ HelpModal: component }) => ({ default: component })));
+const LogView = lazy(() => import("./log-view").then(({ LogView: component }) => ({ default: component })));
 
 type FileItem = {
   name: string;
@@ -118,6 +124,10 @@ type FolderNode = {
 type LocalDirectory = {
   path: string;
   files: FileItem[];
+};
+type LocalDirectoryChildren = {
+  path: string;
+  directories: { name: string; path: string }[];
 };
 type ManagedSession = {
   id: string;
@@ -735,13 +745,120 @@ const validateServer = (session: Session) => {
     throw new Error("Enter an HTTPS port between 1 and 65535.");
 };
 
+type DesktopAppProps = {
+  session: Session;
+  setSession: React.Dispatch<React.SetStateAction<Session>>;
+  password: string;
+  setPassword: React.Dispatch<React.SetStateAction<string>>;
+  busy: boolean;
+  setBusy: React.Dispatch<React.SetStateAction<boolean>>;
+  notice: string;
+  setNotice: React.Dispatch<React.SetStateAction<string>>;
+};
+
+type LoginScreenProps = {
+  session: Session;
+  setSession: React.Dispatch<React.SetStateAction<Session>>;
+  password: string;
+  setPassword: React.Dispatch<React.SetStateAction<string>>;
+  busy: boolean;
+  notice: string;
+  onSubmit: (event: React.FormEvent) => void;
+  onOnlyTerminal: () => void;
+};
+
+function LoginScreen({ session, setSession, password, setPassword, busy, notice, onSubmit, onOnlyTerminal }: LoginScreenProps) {
+  return (
+    <main className="login">
+      <form onSubmit={onSubmit}>
+        <div className="login-mark" aria-hidden="true"><span /></div>
+        <h1>nFterm {appVersion && <small className="login-version">{appVersion}</small>}</h1>
+        <p>Sign in to your API server over HTTPS.</p>
+        <label>Server address<input placeholder="files.example.internal" value={session.host} onChange={(event) => setSession((current) => ({ ...current, host: event.target.value }))} /></label>
+        <label>HTTPS port<input inputMode="numeric" value={session.port} onChange={(event) => setSession((current) => ({ ...current, port: event.target.value }))} /></label>
+        <label>Username<input value={session.username} onChange={(event) => setSession((current) => ({ ...current, username: event.target.value }))} /></label>
+        <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        <label className="tls-option"><input type="checkbox" checked={session.ignoreTlsErrors} onChange={(event) => setSession((current) => ({ ...current, ignoreTlsErrors: event.target.checked }))} /> Ignore SSL certificate verification <small>Only enable for a server you trust.</small></label>
+        <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
+        {notice && <output role="alert">{notice}</output>}
+      </form>
+      {onlyTerminalAvailable && <button type="button" className="only-terminal-corner-button" disabled={busy} onClick={onOnlyTerminal} title="Skip login and the API server. Local Explorer and SSH Terminal only."><span className="status-glyph" aria-hidden="true">◆</span> Only Terminal</button>}
+    </main>
+  );
+}
+
 function App() {
-  const [session, setSession] = useState<Session>(initialSession);
+  const [session, setSession] = useState<Session>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("nfterm-session") || "null") as Partial<Session> | null;
+      return {
+        ...initialSession,
+        host: saved?.host || defaultHost,
+        port: saved?.port || defaultPort,
+        username: saved?.username || "",
+        ignoreTlsErrors: saved?.ignoreTlsErrors === true,
+      };
+    } catch {
+      return initialSession;
+    }
+  });
   const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    localStorage.setItem("nfterm-session", JSON.stringify({
+      host: session.host,
+      port: session.port,
+      username: session.username,
+      ignoreTlsErrors: session.ignoreTlsErrors,
+      token: "",
+    }));
+  }, [session.host, session.port, session.username, session.ignoreTlsErrors]);
+
+  const login = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setNotice("");
+    try {
+      validateServer(session);
+      const responseValue = await invoke<NativeApiResponse>("api_request", {
+        url: `${serverUrl(session)}/auth/login`,
+        method: "POST",
+        headers: [["Content-Type", "application/json"]],
+        body: Array.from(new TextEncoder().encode(JSON.stringify({ username: session.username, password }))),
+        ignoreTlsErrors: session.ignoreTlsErrors,
+      });
+      const response = new ApiResponse(responseValue.status, responseValue.body);
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json();
+      setSession((current) => ({ ...current, token: data.token, username: data.user.username, userId: data.user.id ?? null, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
+      setPassword("");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const enterOnlyTerminalMode = () => {
+    setPassword("");
+    setSession((current) => ({ ...current, token: "only-terminal-mode", username: "only-terminal", userId: 0, role: "test", permissions: [], locationId: "", onlyTerminalMode: true }));
+    setNotice("Only Terminal: skipped login and API server connection. Local Explorer and SSH Terminal are available; remote (REMOTE) features are disabled.");
+  };
+
+  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} onSubmit={login} onOnlyTerminal={enterOnlyTerminalMode} />;
+  return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} />;
+}
+
+function DesktopApp({ session, setSession, password, setPassword, busy, setBusy, notice, setNotice }: DesktopAppProps) {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [localFiles, setLocalFiles] = useState<FileItem[]>([]);
   const [localPath, setLocalPath] = useState("");
   const [localSelected, setLocalSelected] = useState<string[]>([]);
+  const localTreeCacheRef = useRef(new Map<string, FolderNode[]>());
+  const localRequestGenerationRef = useRef(0);
+  const localFilesFingerprintRef = useRef("");
   // The LOCAL folder-tree "forest": the first entry is always the HOME
   // shortcut (path ""), matching the pane's own default view. When the app
   // is running elevated (`isLocalElevated`), one extra top-level entry is
@@ -774,14 +891,12 @@ function App() {
   const [selected, setSelected] = useState<string[]>([]);
   const selectionAnchorRef = useRef<string | null>(null);
   const localSelectionAnchorRef = useRef<string | null>(null);
-  const [notice, setNotice] = useState("");
   const [shareUrl, setShareUrl] = useState("");
   const [shareLinksOpen, setShareLinksOpen] = useState(false);
   const [shareLinks, setShareLinks] = useState<ShareLink[]>([]);
   const [shareLinksLoading, setShareLinksLoading] = useState(false);
   const [sharePasswordOpen, setSharePasswordOpen] = useState(false);
   const [sharePasswordDraft, setSharePasswordDraft] = useState("");
-  const [busy, setBusy] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [accountMenuStyle, setAccountMenuStyle] = useState<React.CSSProperties>({});
   const [helpOpen, setHelpOpen] = useState(false);
@@ -1279,32 +1394,7 @@ function App() {
     recordingRef.current = recording;
   }, [recording]);
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("nfterm-session");
-      if (saved) {
-        const parsed = JSON.parse(saved) as Partial<Session>;
-        setSession((current) => ({
-          ...current,
-          ...parsed,
-          host: parsed.host || defaultHost,
-          port: parsed.port || defaultPort,
-        }));
-      }
-    } catch {
-      setNotice("Unable to restore the saved desktop session.");
-    }
-  }, []);
-
   useEffect(() => () => window.clearTimeout(noticeTimer.current), []);
-
-  useEffect(() => {
-    // Authentication tokens are process secrets, not desktop preferences.
-    // Persist only the connection/profile fields so a copied WebView storage
-    // directory cannot be used as a bearer-token vault.
-    const { token: _token, ...persistedSession } = session;
-    localStorage.setItem("nfterm-session", JSON.stringify({ ...persistedSession, token: "" }));
-  }, [session]);
 
   useEffect(() => {
     localStorage.setItem("file-view-mode", viewMode);
@@ -1346,10 +1436,11 @@ function App() {
       return;
     }
     const refreshTimer = window.setInterval(() => {
+      if (document.hidden) return;
       void refreshLocalFiles().catch((error) => {
         setNotice(error instanceof Error ? error.message : String(error));
       });
-    }, 2000);
+    }, 5000);
     return () => window.clearInterval(refreshTimer);
   }, [splitMode, localPath]);
 
@@ -1523,7 +1614,13 @@ function App() {
     const reposition = () => {
       const rect = accountControl.current?.getBoundingClientRect();
       if (!rect) return;
-      setAccountMenuStyle({ top: rect.bottom + 8, right: Math.max(12, window.innerWidth - rect.right) });
+       const top = rect.bottom + 10;
+       setAccountMenuStyle({
+         top,
+         right: Math.max(12, window.innerWidth - rect.right),
+         minWidth: 240,
+         maxHeight: Math.max(160, window.innerHeight - top - 12),
+       });
     };
     reposition();
     window.addEventListener("resize", reposition);
@@ -1687,7 +1784,33 @@ function App() {
     return true;
   };
 
+  const updateLocalTreeNode = (data: LocalDirectory) => {
+    const children = (data.files || [])
+      .filter((file) => file.isDirectory)
+      .map((file) => ({ path: file.path, name: file.name, expanded: false, loaded: false, children: [] }))
+      .sort((left, right) => compareFileNames(left.name, right.name));
+    setLocalTrees((trees) =>
+      trees.map((tree) => tree.path === data.path
+        ? { ...tree, expanded: true, loaded: true, children }
+        : tree),
+    );
+  };
+
+  const applyLocalFiles = (data: LocalDirectory) => {
+    const files = data.files || [];
+    const fingerprint = files.map((file) => `${file.path}\u0000${file.isDirectory ? "d" : "f"}\u0000${file.size}\u0000${file.modified}`).join("\u0001");
+    if (fingerprint !== localFilesFingerprintRef.current) {
+      localFilesFingerprintRef.current = fingerprint;
+      setLocalFiles(files);
+      setLocalSelected((current) => current.filter((item) => files.some((file) => file.path === item)));
+    }
+    setLocalPath(data.path || "");
+    updateLocalTreeNode(data);
+  };
+
   const loadLocalFiles = async (nextPath = localPath) => {
+    const generation = ++localRequestGenerationRef.current;
+    localTreeCacheRef.current.delete(nextPath);
     const operationId = crypto.randomUUID();
     const started = performance.now();
     writeOperationLog("local_browse", "started", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${nextPath || ""}`, JSON.stringify({ operationId, path: nextPath }), "DEBUG");
@@ -1695,9 +1818,8 @@ function App() {
       const data = await invoke<LocalDirectory>("local_list_directory", {
         path: nextPath,
       });
-      setLocalFiles(data.files || []);
-      setLocalPath(data.path || "");
-      setLocalSelected([]);
+      if (generation !== localRequestGenerationRef.current) return;
+      applyLocalFiles(data);
       writeOperationLog("local_browse", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${data.path || nextPath || ""}`, JSON.stringify({ operationId, path: data.path || nextPath, fileCount: data.files?.length || 0, durationMs: Math.round(performance.now() - started) }), "INFO");
     } catch (error) {
       writeOperationLog("local_browse", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${nextPath || ""}`, JSON.stringify({ operationId, path: nextPath, durationMs: Math.round(performance.now() - started), failureType: "list", errorMessage: describeError(error) }), "ERROR");
@@ -1706,6 +1828,7 @@ function App() {
   };
 
   const refreshLocalFiles = async () => {
+    const generation = ++localRequestGenerationRef.current;
     const operationId = crypto.randomUUID();
     const started = performance.now();
     writeOperationLog("local_browse", "started", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${localPath || ""}`, JSON.stringify({ operationId, path: localPath, action: "refresh" }), "DEBUG");
@@ -1713,11 +1836,8 @@ function App() {
       const data = await invoke<LocalDirectory>("local_list_directory", {
         path: localPath,
       });
-      setLocalFiles(data.files || []);
-      setLocalPath(data.path || "");
-      setLocalSelected((current) => current.filter((item) =>
-        (data.files || []).some((file) => file.path === item),
-      ));
+      if (generation !== localRequestGenerationRef.current) return;
+      applyLocalFiles(data);
       writeOperationLog("local_browse", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${data.path || localPath || ""}`, JSON.stringify({ operationId, path: data.path || localPath, fileCount: data.files?.length || 0, durationMs: Math.round(performance.now() - started), action: "refresh" }), "INFO");
     } catch (error) {
       writeOperationLog("local_browse", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${localPath || ""}`, JSON.stringify({ operationId, path: localPath, durationMs: Math.round(performance.now() - started), failureType: "refresh", errorMessage: describeError(error) }), "ERROR");
@@ -1726,15 +1846,22 @@ function App() {
   };
 
   const loadLocalTreeChildren = async (treePath: string, force = false) => {
+    const cachedChildren = !force ? localTreeCacheRef.current.get(treePath) : undefined;
+    if (cachedChildren) {
+      setLocalTrees((trees) => trees.map((tree) => updateTreeNode(tree, treePath, (node) => ({ ...node, expanded: true, loaded: true, children: cachedChildren }))));
+      return;
+    }
+    const generation = ++localRequestGenerationRef.current;
     const operationId = crypto.randomUUID();
     const started = performance.now();
     writeOperationLog("local_folder_tree", "started", "LOCAL folder tree", `LOCAL: ~/${treePath || ""}`, JSON.stringify({ operationId, path: treePath }), "DEBUG");
     try {
-      const data = await invoke<LocalDirectory>("local_list_directory", { path: treePath });
-      const children = (data.files || [])
-        .filter((file) => file.isDirectory)
-        .map((file) => ({ path: file.path, name: file.name, expanded: false, loaded: false, children: [] }))
+      const data = await invoke<LocalDirectoryChildren>("local_list_directories", { path: treePath });
+      if (generation !== localRequestGenerationRef.current) return;
+      const children = (data.directories || [])
+        .map((directory) => ({ path: directory.path, name: directory.name, expanded: false, loaded: false, children: [] }))
         .sort((left, right) => compareFileNames(left.name, right.name));
+      localTreeCacheRef.current.set(treePath, children);
       setLocalTrees((trees) =>
         trees.map((tree) => updateTreeNode(tree, treePath, (node) => ({ ...node, expanded: true, loaded: true, children }))),
       );
@@ -1897,17 +2024,19 @@ function App() {
   }, [session.token, session.onlyTerminalMode]);
 
   useEffect(() => {
+    if (!session.token && !session.onlyTerminalMode) return undefined;
     void (async () => {
       try {
         await loadLocalFiles("");
-        await loadLocalTreeChildren("", true);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : String(error));
       }
     })();
-  }, []);
+    return undefined;
+  }, [session.token, session.onlyTerminalMode]);
 
   useEffect(() => {
+    if (!session.token && !session.onlyTerminalMode) return undefined;
     void (async () => {
       try {
         const elevated = await invoke<boolean>("is_local_elevated");
@@ -1925,14 +2054,12 @@ function App() {
             .filter((root) => !trees.some((tree) => tree.path === root))
             .map((root) => ({ path: root, name: root, expanded: false, loaded: false, children: [] })),
         ]);
-        notify(
-          "Running with root/Administrator privileges: the LOCAL pane is no longer confined to your home directory. Be careful moving or deleting files outside it.",
-        );
       } catch {
         // Not fatal -- the LOCAL pane just stays confined to HOME as usual.
       }
     })();
-  }, []);
+    return undefined;
+  }, [session.token, session.onlyTerminalMode]);
 
   useEffect(() => {
     if (session.token && session.locationId && !session.onlyTerminalMode) {
@@ -3025,46 +3152,6 @@ function App() {
       refreshStorageInfo();
       notify("Operation logs cleared.");
     });
-  };
-
-  const login = async (event: React.FormEvent) => {
-    event.preventDefault();
-    await run(async () => {
-      validateServer(session);
-      const response = await api("/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: session.username, password }),
-      });
-      if (!response.ok) throw new Error(await readError(response));
-      const data = await response.json();
-      setSession((current) => ({
-        ...current,
-        token: data.token,
-        username: data.user.username,
-        userId: data.user.id ?? null,
-        role: data.user.role ?? "user",
-        permissions: data.user.permissions ?? [],
-      }));
-      setPassword("");
-    });
-  };
-
-  const enterOnlyTerminalMode = () => {
-    setPassword("");
-    setSession((current) => ({
-      ...current,
-      token: "only-terminal-mode",
-      username: "only-terminal",
-      userId: 0,
-      role: "test",
-      permissions: [],
-      locationId: "",
-      onlyTerminalMode: true,
-    }));
-    setNotice(
-      "Only Terminal: skipped login and API server connection. Local Explorer and SSH Terminal are available; remote (REMOTE) features are disabled.",
-    );
   };
 
   const selectRestWorkspace = (id: string) => {
@@ -5256,93 +5343,6 @@ function App() {
     </section>
   );
 
-  if (!session.token)
-    return (
-      <main className="login">
-        <form onSubmit={login}>
-          <div className="login-mark" aria-hidden="true">
-            <span />
-          </div>
-          <h1>nFterm {appVersion && <small className="login-version">{appVersion}</small>}</h1>
-          <p>Sign in to your API server over HTTPS.</p>
-          <label>
-            Server address
-            <input
-              placeholder="files.example.internal"
-              value={session.host}
-              onChange={(event) =>
-                setSession((current) => ({
-                  ...current,
-                  host: event.target.value,
-                }))
-              }
-            />
-          </label>
-          <label>
-            HTTPS port
-            <input
-              inputMode="numeric"
-              value={session.port}
-              onChange={(event) =>
-                setSession((current) => ({
-                  ...current,
-                  port: event.target.value,
-                }))
-              }
-            />
-          </label>
-          <label>
-            Username
-            <input
-              value={session.username}
-              onChange={(event) =>
-                setSession((current) => ({
-                  ...current,
-                  username: event.target.value,
-                }))
-              }
-            />
-          </label>
-          <label>
-            Password
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </label>
-          <label className="tls-option">
-            <input
-              type="checkbox"
-              checked={session.ignoreTlsErrors}
-              onChange={(event) =>
-                setSession((current) => ({
-                  ...current,
-                  ignoreTlsErrors: event.target.checked,
-                }))
-              }
-            />{" "}
-            Ignore SSL certificate verification{" "}
-            <small>Only enable for a server you trust.</small>
-          </label>
-          <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
-          {notice && <output role="alert">{notice}</output>}
-        </form>
-        {onlyTerminalAvailable && (
-          <button
-            type="button"
-            className="only-terminal-corner-button"
-            disabled={busy}
-            onClick={enterOnlyTerminalMode}
-            title="Skip login and the API server. Local Explorer and SSH Terminal only."
-          >
-            <span className="status-glyph" aria-hidden="true">◆</span> Only Terminal
-          </button>
-        )}
-    </main>
-
-    );
-
   const autoDensity = viewport.width <= 1100 || viewport.height <= 760 ? "compact" : "standard";
   const densityPercent = { compact: "80%", standard: "100%", comfortable: "120%" } as const;
   const selectedDensity = desktopSettings.uiDensity === "auto" ? autoDensity : desktopSettings.uiDensity;
@@ -5394,6 +5394,7 @@ function App() {
 
       return (
     <AppShell style={themeStyle(desktopSettings.theme, desktopSettings.accentColor)} className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
+      <Suspense fallback={null}>
       <DesktopTitlebar
         appMode={appMode}
         vncEnabled={desktopSettings.proxmoxVncModeEnabled}
@@ -6715,6 +6716,7 @@ function App() {
       {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={() => setViewerOpen(false)} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
       {logViewOpen && <LogView records={operationLogRecords} modalStyle={modalStyle("log-view")} onDragStart={beginModalDrag("log-view")} onClose={() => setLogViewOpen(false)} onExport={exportOperationLog} />}
       {helpOpen && <HelpModal sections={helpSections} pages={helpPages} selectedPage={selectedHelpPage} selectedSection={selectedHelpSection} selectedIndex={selectedHelpIndex} expandedSections={expandedHelpSections} modalStyle={modalStyle("help")} onDragStart={beginModalDrag("help")} onClose={() => setHelpOpen(false)} onToggleSection={(id) => setExpandedHelpSections((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onSelectPage={setSelectedHelpPageId} />}
+      </Suspense>
     </AppShell>
   );
 }

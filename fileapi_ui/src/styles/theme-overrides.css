@@ -369,6 +369,12 @@
 :where(.explorer) .rest-success { color: var(--color-success); border-color: var(--color-success); background: color-mix(in srgb, var(--color-success) 14%, var(--color-bg-panel)); }
 :where(.explorer) .rest-error { color: var(--color-danger); border-color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel)); }
 
+/* VNC keeps its layout rules local while all theme-sensitive surfaces stay here. */
+:where(.explorer) .vnc-entry-pane,
+:where(.explorer) .vnc-reader { border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-bg-panel) 88%, var(--color-bg)); box-shadow: var(--shadow-panel), var(--shadow-inset); }
+:where(.explorer) .vnc-auth-panel { border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }
+:where(.explorer) .vnc-display-toolbar { border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }
+
 /* Portaled overlays live under body rather than inside .explorer. */
 .account-menu,
 .context-picker-popover,

@@ -1,0 +1,78 @@
+/* Primary mode navigation: a compact, legible segmented glass control. */
+.titlebar-main .mode-switcher {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, var(--color-border));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-bg) 66%, transparent);
+  box-shadow: var(--shadow-inset), 0 10px 28px color-mix(in srgb, var(--color-bg) 42%, transparent);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+
+.titlebar-main .mode-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.titlebar-main .mode-switch-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: clamp(100px, 9vw, 140px);
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--color-text-muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: clamp(11px, .8vw, 13px);
+  font-weight: 700;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.titlebar-main .mode-switch-button:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: color-mix(in srgb, var(--color-primary) 34%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.titlebar-main .mode-switch-button.selected {
+  color: var(--color-text);
+  border-color: color-mix(in srgb, var(--color-primary) 72%, white 8%);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 30%, var(--color-bg-panel-strong)), color-mix(in srgb, var(--color-secondary) 24%, var(--color-bg-panel)));
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--color-primary) 16%, transparent), var(--shadow-inset);
+}
+
+.titlebar-main .mode-switch-button:active:not(:disabled) { transform: scale(.98); }
+
+.titlebar-main .mode-switch-dot {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border: 2px solid color-mix(in srgb, var(--color-primary) 35%, var(--color-text-muted));
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.titlebar-main .mode-switch-button.selected .mode-switch-dot,
+.titlebar-main .mode-switch-button:hover:not(:disabled) .mode-switch-dot {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-primary) 68%, transparent);
+}
+
+@media (max-width: 720px) {
+  .titlebar-main .mode-switcher { width: 100%; justify-content: stretch; }
+  .titlebar-main .mode-buttons { width: 100%; }
+  .titlebar-main .mode-switch-button { min-width: 0; flex: 1 1 0; padding-inline: 9px; }
+  .titlebar-main .mode-switch-button > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+}

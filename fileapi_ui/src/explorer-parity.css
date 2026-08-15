@@ -302,6 +302,7 @@
 .local-pane-tree { flex: 0 0 auto; min-width: 80px; min-height: 0; overflow-y: auto; padding: 6px; }
 .local-file-list { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
 .local-file { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 7px; align-items: center; width: 100%; padding: 8px 7px; border: 1px solid transparent; border-radius: 4px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
+.file-row, .local-file, .file-tile { content-visibility: auto; contain-intrinsic-size: 40px; }
 .local-file:hover, .local-file.selected { background: var(--color-bg-panel); border-color: var(--color-border); }
 .local-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .local-file small { color: var(--color-text-muted); }

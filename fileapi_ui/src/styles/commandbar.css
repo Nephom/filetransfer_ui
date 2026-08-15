@@ -1,0 +1,73 @@
+/* Adaptive command toolbar: keep primary actions visible without a first-paint scrollbar. */
+.commandbar {
+  gap: clamp(2px, .35vw, 6px);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.commandbar > button {
+  flex: 0 1 10ch;
+  min-width: 4.5ch;
+  max-width: 10ch;
+  min-height: var(--ui-button-height);
+  overflow: hidden;
+  padding-inline: clamp(6px, .75vw, 11px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commandbar > button.primary {
+  flex: 0 0 auto;
+  max-width: 12ch;
+}
+
+.commandbar > .divider { flex: 0 0 1px; margin-inline: clamp(2px, .25vw, 5px); }
+
+.commandbar .active-pane-indicator {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 15ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commandbar .view-switch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 2px;
+}
+
+.commandbar .view-switch button {
+  min-width: 0;
+  padding-inline: clamp(6px, .65vw, 10px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.commandbar .context-picker {
+  flex: 1 1 clamp(170px, 18vw, 270px);
+  min-width: 140px;
+  max-width: clamp(220px, 24vw, 340px);
+}
+
+.commandbar .context-picker-trigger {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+@media (max-width: 900px) {
+  .commandbar > button { flex-basis: 8ch; max-width: 8ch; }
+  .commandbar .context-picker { min-width: 120px; max-width: 32vw; }
+}
+
+@media (max-width: 640px) {
+  .commandbar { padding-inline: 6px; }
+  .commandbar > button { flex-basis: 6ch; max-width: 6ch; padding-inline: 5px; }
+  .commandbar > button.primary { max-width: 8ch; }
+  .commandbar .active-pane-indicator { max-width: 10ch; }
+  .commandbar .context-picker { min-width: 110px; max-width: 36vw; }
+}
