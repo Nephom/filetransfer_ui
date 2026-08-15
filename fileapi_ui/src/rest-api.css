@@ -54,6 +54,7 @@
 .rest-auth-panel { position: relative; margin: 0 20px 10px; border: 1px solid var(--color-border); border-radius: 6px; background: rgba(7, 25, 42, .58); }
 .rest-section-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 32px !important; padding: 7px 10px !important; border: 0; color: var(--color-text); background: transparent; text-align: left; }
 .rest-auth-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; padding: 0 10px 10px; }
+.rest-auth-action { display: flex; align-items: end; }
 .rest-login-config { display: grid; order: 1; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .rest-login-config textarea { min-height: 62px; resize: vertical; }
 .rest-login-config button { align-self: end; }
