@@ -127,6 +127,17 @@ pub async fn list_directory(
     profile: SshProfile,
     path: String,
 ) -> Result<crate::LocalDirectory, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = super::profile_label(&profile);
+    crate::oplog::log(
+        "DEBUG",
+        "sftp_browse",
+        "started",
+        &label,
+        &path,
+        &serde_json::json!({"operationId": operation_id, "path": path}).to_string(),
+    );
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
@@ -147,11 +158,20 @@ pub async fn list_directory(
         format!("/{path}")
     };
 
-    let entries = connection
-        .sftp
-        .read_dir(&remote_path)
-        .await
-        .map_err(|error| error.to_string())?;
+    let entries = match connection.sftp.read_dir(&remote_path).await {
+        Ok(entries) => entries,
+        Err(error) => {
+            crate::oplog::log(
+                "ERROR",
+                "sftp_browse",
+                "failed",
+                &label,
+                &remote_path,
+                &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": error.to_string()}).to_string(),
+            );
+            return Err(error.to_string());
+        }
+    };
 
     let mut files = Vec::new();
     for entry in entries {
@@ -179,10 +199,19 @@ pub async fn list_directory(
         left.name.to_lowercase().cmp(&right.name.to_lowercase())
     });
 
-    Ok(crate::LocalDirectory {
+    let result = crate::LocalDirectory {
         path: remote_path,
         files,
-    })
+    };
+    crate::oplog::log(
+        "INFO",
+        "sftp_browse",
+        "completed",
+        &label,
+        &result.path,
+        &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "fileCount": result.files.len()}).to_string(),
+    );
+    Ok(result)
 }
 
 pub async fn disconnect(entry_id: String) -> Result<(), String> {
@@ -214,6 +243,10 @@ pub async fn download_file(
     remote_path: String,
     local_path: String,
 ) -> Result<String, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = super::profile_label(&profile);
+    crate::oplog::log("DEBUG", "sftp_download", "started", &label, &remote_path, &serde_json::json!({"operationId": operation_id, "remotePath": remote_path, "localPath": local_path}).to_string());
     let local = std::path::Path::new(&local_path);
     if !local.is_absolute()
         || local
@@ -227,16 +260,24 @@ pub async fn download_file(
     let connection = sessions
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
-    let data = connection
-        .sftp
-        .read(remote_path.clone())
-        .await
-        .map_err(|error| error.to_string())?;
+    let data = match connection.sftp.read(remote_path.clone()).await {
+        Ok(data) => data,
+        Err(error) => {
+            crate::oplog::log("ERROR", "sftp_download", "failed", &label, &remote_path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": error.to_string()}).to_string());
+            return Err(error.to_string());
+        }
+    };
     if let Some(parent) = local.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    std::fs::write(local, data).map_err(|error| error.to_string())?;
-    Ok(local.display().to_string())
+    let byte_count = data.len();
+    if let Err(error) = std::fs::write(local, data) {
+        crate::oplog::log("ERROR", "sftp_download", "failed", &label, &local_path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": error.to_string()}).to_string());
+        return Err(error.to_string());
+    }
+    let result = local.display().to_string();
+    crate::oplog::log("INFO", "sftp_download", "completed", &label, &result, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "bytes": byte_count}).to_string());
+    Ok(result)
 }
 
 pub async fn upload_file(
@@ -244,17 +285,32 @@ pub async fn upload_file(
     local_path: String,
     remote_path: String,
 ) -> Result<String, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = super::profile_label(&profile);
+    crate::oplog::log("DEBUG", "sftp_upload", "started", &label, &remote_path, &serde_json::json!({"operationId": operation_id, "localPath": local_path, "remotePath": remote_path}).to_string());
     let local = std::path::Path::new(&local_path);
     if !local.is_file() {
         return Err("Local source file does not exist".to_string());
     }
-    let data = std::fs::read(local).map_err(|error| error.to_string())?;
+    let data = match std::fs::read(local) {
+        Ok(data) => data,
+        Err(error) => {
+            crate::oplog::log("ERROR", "sftp_upload", "failed", &label, &remote_path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": error.to_string()}).to_string());
+            return Err(error.to_string());
+        }
+    };
+    let byte_count = data.len();
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
-    write_remote_file(&connection.sftp, remote_path.clone(), &data).await?;
+    if let Err(error) = write_remote_file(&connection.sftp, remote_path.clone(), &data).await {
+        crate::oplog::log("ERROR", "sftp_upload", "failed", &label, &remote_path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "bytes": byte_count, "error": error.to_string()}).to_string());
+        return Err(error);
+    }
+    crate::oplog::log("INFO", "sftp_upload", "completed", &label, &remote_path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "bytes": byte_count}).to_string());
     Ok(remote_path)
 }
 
@@ -343,12 +399,25 @@ pub async fn delete_path(
     path: String,
     is_directory: bool,
 ) -> Result<(), String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = super::profile_label(&profile);
+    crate::oplog::log("DEBUG", "sftp_delete", "started", &label, &path, &serde_json::json!({"operationId": operation_id, "path": path, "isDirectory": is_directory}).to_string());
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
         .get(&profile.id)
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
-    delete_recursive(&connection.sftp, &path, is_directory).await
+    match delete_recursive(&connection.sftp, &path, is_directory).await {
+        Ok(()) => {
+            crate::oplog::log("INFO", "sftp_delete", "completed", &label, &path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis()}).to_string());
+            Ok(())
+        }
+        Err(error) => {
+            crate::oplog::log("ERROR", "sftp_delete", "failed", &label, &path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": error}).to_string());
+            Err(error)
+        }
+    }
 }
 
 async fn delete_recursive(
@@ -389,13 +458,15 @@ pub async fn rename_path(
     new_path: String,
 ) -> Result<String, String> {
     let label = super::profile_label(&profile);
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
     crate::oplog::log(
         "DEBUG",
         "rename",
         "started",
         &format!("SSH: {label}:{old_path}"),
         &new_path,
-        "Renaming/moving a remote path over SFTP.",
+        &serde_json::json!({"operationId": operation_id, "oldPath": old_path, "newPath": new_path}).to_string(),
     );
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
@@ -442,7 +513,7 @@ pub async fn rename_path(
             "completed",
             &format!("SSH: {label}:{old_path}"),
             &final_path,
-            "Remote rename/move completed.",
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis()}).to_string(),
         ),
         Err(error) => crate::oplog::log(
             "ERROR",
@@ -450,7 +521,7 @@ pub async fn rename_path(
             "failed",
             &format!("SSH: {label}:{old_path}"),
             &final_path,
-            error,
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": error}).to_string(),
         ),
     }
     result.map(|()| final_path)
@@ -461,6 +532,23 @@ pub async fn rename_path(
 /// segment (mirrors how the API Remote upload path lands files under the
 /// destination folder).
 pub async fn upload_path(
+    profile: SshProfile,
+    local_path: String,
+    remote_destination_folder: String,
+) -> Result<String, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let byte_count = std::fs::metadata(&local_path).map(|metadata| if metadata.is_file() { metadata.len() } else { 0 }).unwrap_or(0);
+    crate::oplog::log("DEBUG", "upload_path", "started", &local_path, &remote_destination_folder, &serde_json::json!({"operationId": operation_id, "sourcePath": local_path, "destinationPath": remote_destination_folder, "fileCount": 1, "byteCount": byte_count, "collisionAttempt": 0}).to_string());
+    let result = upload_path_inner(profile, local_path.clone(), remote_destination_folder.clone()).await;
+    match &result {
+        Ok(destination) => crate::oplog::log("INFO", "upload_path", "completed", &local_path, destination, &serde_json::json!({"operationId": operation_id, "sourcePath": local_path, "destinationPath": destination, "fileCount": 1, "byteCount": byte_count, "collisionAttempt": 0, "durationMs": started.elapsed().as_millis()}).to_string()),
+        Err(error) => crate::oplog::log("ERROR", "upload_path", "failed", &local_path, &remote_destination_folder, &serde_json::json!({"operationId": operation_id, "sourcePath": local_path, "destinationPath": remote_destination_folder, "byteCount": byte_count, "collisionAttempt": 0, "durationMs": started.elapsed().as_millis(), "failureType": "sftp", "error": error}).to_string()),
+    }
+    result
+}
+
+async fn upload_path_inner(
     profile: SshProfile,
     local_path: String,
     remote_destination_folder: String,
@@ -567,6 +655,23 @@ pub async fn upload_path(
 /// `local_destination_folder`, recreating the source's own name as the top
 /// segment.
 pub async fn download_path(
+    profile: SshProfile,
+    remote_path: String,
+    is_directory: bool,
+    local_destination_folder: String,
+) -> Result<String, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    crate::oplog::log("DEBUG", "download_path", "started", &remote_path, &local_destination_folder, &serde_json::json!({"operationId": operation_id, "sourcePath": remote_path, "destinationPath": local_destination_folder, "fileCount": 1, "byteCount": 0, "collisionAttempt": 0}).to_string());
+    let result = download_path_inner(profile, remote_path.clone(), is_directory, local_destination_folder.clone()).await;
+    match &result {
+        Ok(destination) => crate::oplog::log("INFO", "download_path", "completed", &remote_path, destination, &serde_json::json!({"operationId": operation_id, "sourcePath": remote_path, "destinationPath": destination, "fileCount": 1, "byteCount": std::fs::metadata(&destination).map(|metadata| metadata.len()).unwrap_or(0), "durationMs": started.elapsed().as_millis()}).to_string()),
+        Err(error) => crate::oplog::log("ERROR", "download_path", "failed", &remote_path, &local_destination_folder, &serde_json::json!({"operationId": operation_id, "sourcePath": remote_path, "destinationPath": local_destination_folder, "byteCount": 0, "durationMs": started.elapsed().as_millis(), "failureType": "sftp", "error": error}).to_string()),
+    }
+    result
+}
+
+async fn download_path_inner(
     profile: SshProfile,
     remote_path: String,
     is_directory: bool,
@@ -704,7 +809,12 @@ pub async fn compress_paths(
     archive_name: String,
 ) -> Result<String, String> {
     let label = super::profile_label(&profile);
-    ensure_connected(&profile).await?;
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    if let Err(error) = ensure_connected(&profile).await {
+        crate::oplog::log("ERROR", "compress", "failed", &format!("SSH: {label}:{destination_folder}"), &archive_name, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "pathCount": paths.len(), "failureType": "ensure_connected", "error": error}).to_string());
+        return Err(error);
+    }
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
         .get(&profile.id)
@@ -761,7 +871,7 @@ pub async fn compress_paths(
         "started",
         &format!("SSH: {label}:{destination_folder}"),
         &final_name,
-        "Compressing remote item(s) with zip.",
+        &serde_json::json!({"operationId": operation_id, "pathCount": paths.len(), "attempt": attempt}).to_string(),
     );
     let (exit_status, stderr) = exec_command(&connection.handle, &remote_command).await?;
     if exit_status != Some(0) {
@@ -778,7 +888,7 @@ pub async fn compress_paths(
             "failed",
             &format!("SSH: {label}:{destination_folder}"),
             &final_name,
-            &message,
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "attempt": attempt, "exitStatus": exit_status, "stderrSummary": stderr.trim(), "failureType": "remote_command", "error": message}).to_string(),
         );
         return Err(message);
     }
@@ -788,7 +898,7 @@ pub async fn compress_paths(
         "completed",
         &format!("SSH: {label}:{destination_folder}"),
         &final_name,
-        "Remote compression completed.",
+        &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "attempt": attempt, "exitStatus": exit_status, "stderrSummary": stderr.trim()}).to_string(),
     );
     Ok(final_name)
 }
@@ -801,7 +911,12 @@ pub async fn extract_archive(
     destination_folder: String,
 ) -> Result<String, String> {
     let label = super::profile_label(&profile);
-    ensure_connected(&profile).await?;
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    if let Err(error) = ensure_connected(&profile).await {
+        crate::oplog::log("ERROR", "extract", "failed", &format!("SSH: {label}:{archive_path}"), &destination_folder, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "ensure_connected", "error": error}).to_string());
+        return Err(error);
+    }
     let sessions = sftp_sessions().lock().await;
     let connection = sessions
         .get(&profile.id)
@@ -848,7 +963,7 @@ pub async fn extract_archive(
         "started",
         &format!("SSH: {label}:{archive_path}"),
         &final_name,
-        "Extracting remote archive with unzip.",
+        &serde_json::json!({"operationId": operation_id, "attempt": attempt}).to_string(),
     );
     let (exit_status, stderr) = exec_command(&connection.handle, &remote_command).await?;
     if exit_status != Some(0) {
@@ -864,7 +979,7 @@ pub async fn extract_archive(
             "failed",
             &format!("SSH: {label}:{archive_path}"),
             &final_name,
-            &message,
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "attempt": attempt, "exitStatus": exit_status, "stderrSummary": stderr.trim(), "failureType": "remote_command", "error": message}).to_string(),
         );
         return Err(message);
     }
@@ -874,7 +989,7 @@ pub async fn extract_archive(
         "completed",
         &format!("SSH: {label}:{archive_path}"),
         &final_name,
-        "Remote extraction completed.",
+        &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "attempt": attempt, "exitStatus": exit_status, "stderrSummary": stderr.trim()}).to_string(),
     );
     Ok(final_name)
 }

@@ -82,6 +82,7 @@ logs/
 # Node.js
 node_modules/
 fileapi_ui/dist/
+fileapi_ui/sandbox/
 fileapi_ui/src-tauri/gen/
 fileapi_ui/src-tauri/target/
 fileapi_ui/Backup/

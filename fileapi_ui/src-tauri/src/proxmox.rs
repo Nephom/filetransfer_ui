@@ -94,6 +94,7 @@ struct ClusterVm {
 
 #[derive(Clone)]
 struct PendingConnection {
+    operation_id: String,
     cookie: String,
     websocket_url: String,
     ignore_tls_errors: bool,
@@ -223,6 +224,8 @@ async fn decode_api<T: DeserializeOwned>(
 async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, String), String> {
     let base = normalized_url(&entry.base_url)?;
     let label = endpoint_label(entry);
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
     let http = client(entry.ignore_tls_errors)?;
     crate::oplog::log(
         "INFO",
@@ -230,10 +233,7 @@ async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, Stri
         "ticket_login_started",
         &label,
         "proxmox",
-        &format!(
-            "Authenticating user {} with Proxmox ticket authentication.",
-            entry.username
-        ),
+        &serde_json::json!({"operationId": operation_id, "username": entry.username, "target": "api2/json/access/ticket"}).to_string(),
     );
     let response = http
         .post(api_url(&base, "api2/json/access/ticket")?)
@@ -251,7 +251,7 @@ async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, Stri
                 "ticket_login_failed",
                 &label,
                 "proxmox",
-                &message,
+                &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "network", "error": message}).to_string(),
             );
             message
         })?;
@@ -263,7 +263,7 @@ async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, Stri
             "ticket_login_failed",
             &label,
             "proxmox",
-            &message,
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "http", "error": message}).to_string(),
         );
         return Err(message);
     }
@@ -278,7 +278,7 @@ async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, Stri
                     "ticket_login_failed",
                     &label,
                     "proxmox",
-                    &message,
+                    &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "parse", "error": message}).to_string(),
                 );
                 message
             })?;
@@ -288,15 +288,28 @@ async fn login(entry: &VncEntry, password: &str) -> Result<(Client, String, Stri
         "ticket_login_succeeded",
         &label,
         "proxmox",
-        "Proxmox ticket authentication succeeded.",
+        &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis()}).to_string(),
     );
     Ok((http, data.data.ticket, data.data.csrf_token))
 }
 
 pub async fn list_vms(entry: VncEntry, password: String) -> Result<Vec<VmSummary>, String> {
-    let (http, ticket, _) = login(&entry, &password).await?;
-    let base = normalized_url(&entry.base_url)?;
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
     let label = endpoint_label(&entry);
+    crate::oplog::log("DEBUG", "list_vms", "started", &label, "proxmox", &serde_json::json!({"operationId": operation_id}).to_string());
+    let result = list_vms_inner(&entry, password).await;
+    match &result {
+        Ok(vms) => crate::oplog::log("INFO", "list_vms", "completed", &label, "proxmox", &serde_json::json!({"operationId": operation_id, "vmCount": vms.len(), "durationMs": started.elapsed().as_millis()}).to_string()),
+        Err(error) => crate::oplog::log("ERROR", "list_vms", "failed", &label, "proxmox", &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "vm_list", "error": error}).to_string()),
+    }
+    result
+}
+
+async fn list_vms_inner(entry: &VncEntry, password: String) -> Result<Vec<VmSummary>, String> {
+    let (http, ticket, _) = login(entry, &password).await?;
+    let base = normalized_url(&entry.base_url)?;
+    let label = endpoint_label(entry);
     let response = http
         .get(api_url(&base, "api2/json/cluster/resources?type=vm")?)
         .header("Cookie", format!("PVEAuthCookie={ticket}"))
@@ -384,7 +397,15 @@ async fn session(session_id: &str) -> Result<AuthSession, String> {
 }
 
 pub async fn logout(session_id: String) -> Result<(), String> {
-    auth_sessions().lock().await.remove(&session_id);
+    let removed = auth_sessions().lock().await.remove(&session_id).is_some();
+    crate::oplog::log(
+        "INFO",
+        "proxmox_session",
+        "logout",
+        "proxmox",
+        "",
+        &serde_json::json!({"sessionId": session_id, "removed": removed}).to_string(),
+    );
     Ok(())
 }
 
@@ -392,16 +413,28 @@ pub async fn list_vms_session(
     entry: VncEntry,
     session_id: String,
 ) -> Result<Vec<VmSummary>, String> {
-    let auth = session(&session_id).await?;
-    let base = normalized_url(&entry.base_url)?;
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
     let label = endpoint_label(&entry);
+    let auth = match session(&session_id).await {
+        Ok(auth) => auth,
+        Err(error) => {
+            crate::oplog::log("ERROR", "list_vms_session", "failed", &label, "proxmox", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "missing_session", "error": error}).to_string());
+            return Err(error);
+        }
+    };
+    let base = normalized_url(&entry.base_url)?;
     let response = auth
         .client
         .get(api_url(&base, "api2/json/cluster/resources?type=vm")?)
         .header("Cookie", format!("PVEAuthCookie={}", auth.ticket))
         .send()
         .await
-        .map_err(|error| format!("Unable to reach Proxmox VM list endpoint: {error}"))?;
+        .map_err(|error| {
+            let message = format!("Unable to reach Proxmox VM list endpoint: {error}");
+            crate::oplog::log("ERROR", "proxmox_vnc", "vm_list_failed", &label, "proxmox", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "network", "error": message}).to_string());
+            message
+        })?;
     if !response.status().is_success() {
         let message = api_error("VM list", response).await;
         crate::oplog::log(
@@ -410,18 +443,22 @@ pub async fn list_vms_session(
             "vm_list_failed",
             &label,
             "proxmox",
-            &message,
+            &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "http", "error": message}).to_string(),
         );
         return Err(message);
     }
-    let data: ApiEnvelope<Vec<ClusterVm>> = decode_api("VM list", response).await?;
+    let data: ApiEnvelope<Vec<ClusterVm>> = decode_api("VM list", response).await.map_err(|error| {
+        let message = error.to_string();
+        crate::oplog::log("ERROR", "proxmox_vnc", "vm_list_failed", &label, "proxmox", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "parse", "error": message}).to_string());
+        message
+    })?;
     crate::oplog::log(
         "INFO",
         "proxmox_vnc",
         "vm_list_succeeded",
         &label,
         "proxmox",
-        &format!("Loaded {} VM entries.", data.data.len()),
+        &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "vmCount": data.data.len()}).to_string(),
     );
     Ok(data
         .data
@@ -437,6 +474,19 @@ pub async fn list_vms_session(
 }
 
 pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = endpoint_label(&entry);
+    crate::oplog::log("DEBUG", "proxmox_vnc_start", "started", &label, "vnc", &serde_json::json!({"operationId": operation_id, "guestType": entry.guest_type, "node": entry.node, "vmid": entry.vmid}).to_string());
+    let result = start_inner(entry, password).await;
+    match &result {
+        Ok(connection) => crate::oplog::log("INFO", "proxmox_vnc_start", "completed", &label, "vnc", &serde_json::json!({"operationId": operation_id, "connectionId": connection.id, "durationMs": started.elapsed().as_millis()}).to_string()),
+        Err(error) => crate::oplog::log("ERROR", "proxmox_vnc_start", "failed", &label, "vnc", &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "vnc_start", "error": error}).to_string()),
+    }
+    result
+}
+
+async fn start_inner(entry: VncEntry, password: String) -> Result<VncConnection, String> {
     if entry.guest_type != "qemu" && entry.guest_type != "lxc" {
         return Err("Proxmox guest type must be qemu or lxc".to_string());
     }
@@ -447,6 +497,8 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
     if entry.node.trim().is_empty() {
         return Err("Proxmox node and VMID are required".to_string());
     }
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
     let (http, auth_ticket, csrf_token) = login(&entry, &password).await?;
     let base = normalized_url(&entry.base_url)?;
     let label = endpoint_label(&entry);
@@ -535,6 +587,7 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
     pending().lock().await.insert(
         id.clone(),
         PendingConnection {
+            operation_id: operation_id.clone(),
             cookie: auth_ticket,
             websocket_url,
             ignore_tls_errors: entry.ignore_tls_errors,
@@ -556,7 +609,7 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
         "vnc_proxy_succeeded",
         &label,
         "vnc",
-        "Proxmox VNC proxy created; waiting for noVNC WebSocket connection.",
+        &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "connectionId": id}).to_string(),
     );
     Ok(VncConnection {
         id: id.clone(),
@@ -570,11 +623,32 @@ pub async fn start(entry: VncEntry, password: String) -> Result<VncConnection, S
 }
 
 pub async fn cancel(connection_id: String) -> Result<(), String> {
-    pending().lock().await.remove(&connection_id);
+    let removed = pending().lock().await.remove(&connection_id).is_some();
+    crate::oplog::log(
+        "WARN",
+        "proxmox_vnc",
+        "cancelled",
+        "vnc",
+        "",
+        &serde_json::json!({"connectionId": connection_id, "removed": removed}).to_string(),
+    );
     Ok(())
 }
 
 pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncConnection, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = endpoint_label(&entry);
+    crate::oplog::log("DEBUG", "proxmox_vnc_start_session", "started", &label, "vnc", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "guestType": entry.guest_type, "node": entry.node, "vmid": entry.vmid}).to_string());
+    let result = start_session_inner(entry, session_id.clone()).await;
+    match &result {
+        Ok(connection) => crate::oplog::log("INFO", "proxmox_vnc_start_session", "completed", &label, "vnc", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "connectionId": connection.id, "durationMs": started.elapsed().as_millis()}).to_string()),
+        Err(error) => crate::oplog::log("ERROR", "proxmox_vnc_start_session", "failed", &label, "vnc", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "vnc_start", "error": error}).to_string()),
+    }
+    result
+}
+
+async fn start_session_inner(entry: VncEntry, session_id: String) -> Result<VncConnection, String> {
     if entry.guest_type != "qemu" && entry.guest_type != "lxc" {
         return Err("Proxmox guest type must be qemu or lxc".to_string());
     }
@@ -585,6 +659,8 @@ pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncCon
     if entry.node.trim().is_empty() {
         return Err("Proxmox node and VMID are required".to_string());
     }
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
     let auth = session(&session_id).await?;
     let ticket = auth.ticket.clone();
     let csrf_token = auth.csrf_token.clone();
@@ -643,6 +719,7 @@ pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncCon
     pending().lock().await.insert(
         id.clone(),
         PendingConnection {
+            operation_id: operation_id.clone(),
             cookie: ticket,
             websocket_url: websocket_url.to_string(),
             ignore_tls_errors: entry.ignore_tls_errors,
@@ -664,7 +741,7 @@ pub async fn start_session(entry: VncEntry, session_id: String) -> Result<VncCon
         "vnc_proxy_succeeded",
         &label,
         "vnc",
-        "Proxmox VNC proxy created; waiting for noVNC WebSocket connection.",
+        &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "connectionId": id}).to_string(),
     );
     Ok(VncConnection {
         id,
@@ -683,6 +760,15 @@ async fn relay(
     connection_id: String,
     connection: PendingConnection,
 ) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    crate::oplog::log(
+        "DEBUG",
+        "proxmox_vnc",
+        "relay_started",
+        "vnc",
+        "",
+        &serde_json::json!({"operationId": connection.operation_id.clone(), "connectionId": connection_id}).to_string(),
+    );
     let expected_path = format!("/vnc/{connection_id}");
     let expected_token = connection.relay_token.clone();
     let browser: WebSocketStream<tokio::net::TcpStream> =
@@ -736,7 +822,7 @@ async fn relay(
                     "websocket_failed",
                     "proxmox",
                     "vnc",
-                    &message,
+                    &serde_json::json!({"operationId": connection.operation_id.clone(), "connectionId": connection_id, "failureType": "websocket", "error": message}).to_string(),
                 );
                 message
             })?;
@@ -746,11 +832,11 @@ async fn relay(
         "websocket_connected",
         "proxmox",
         "vnc",
-        "Proxmox VNC WebSocket relay connected.",
+        &serde_json::json!({"operationId": connection.operation_id.clone(), "connectionId": connection_id}).to_string(),
     );
     let (mut browser_write, mut browser_read) = browser.split();
     let (mut pve_write, mut pve_read) = pve.split();
-    tokio::select! {
+    let relay_result = tokio::select! {
         result = async {
             while let Some(message) = browser_read.next().await {
                 let message = message.map_err(|error| error.to_string())?;
@@ -765,7 +851,16 @@ async fn relay(
             }
             Ok::<(), String>(())
         } => result,
-    }
+    };
+    crate::oplog::log(
+        if relay_result.is_ok() { "INFO" } else { "ERROR" },
+        "proxmox_vnc",
+        if relay_result.is_ok() { "relay_closed" } else { "relay_failed" },
+        "vnc",
+        "",
+        &serde_json::json!({"operationId": connection.operation_id, "connectionId": connection_id, "durationMs": started.elapsed().as_millis(), "failureType": if relay_result.is_ok() { serde_json::Value::Null } else { serde_json::Value::String("relay".to_string()) }, "error": relay_result.as_ref().err()}).to_string(),
+    );
+    relay_result
 }
 
 fn valid_relay_request(uri: &http::Uri, expected_path: &str, expected_token: &str) -> bool {

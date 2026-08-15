@@ -501,13 +501,15 @@ async fn authenticate(
     profile: &SshProfile,
 ) -> Result<(), String> {
     let label = profile_label(profile);
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
     crate::oplog::log(
         "DEBUG",
         "ssh_auth",
         "started",
         &label,
         "",
-        "Beginning authentication attempts.",
+        &serde_json::json!({"operationId": operation_id, "authMethod": "auto", "identitySource": "agent/default/configured/password", "attempt": 0, "identityLabel": label}).to_string(),
     );
     let stored_password = secrets::load_password(&profile.id)?;
 
@@ -551,7 +553,7 @@ async fn authenticate(
             "attempting",
             &label,
             "password",
-            "Trying the stored password.",
+            &serde_json::json!({"operationId": operation_id, "authMethod": "password", "identitySource": "stored_secret", "attempt": 1, "identityLabel": label, "safeDetail": "Trying the stored password."}).to_string(),
         );
         let result = handle
             .authenticate_password(profile.username.clone(), password)
@@ -564,7 +566,7 @@ async fn authenticate(
                 "succeeded",
                 &label,
                 "password",
-                "Authenticated using the stored password.",
+                &serde_json::json!({"operationId": operation_id, "authMethod": "password", "identitySource": "stored_secret", "attempt": 1, "identityLabel": label}).to_string(),
             );
             return Ok(());
         }
@@ -574,14 +576,14 @@ async fn authenticate(
             "failed",
             &label,
             "password",
-            "The stored password was rejected.",
+            &serde_json::json!({"operationId": operation_id, "authMethod": "password", "identitySource": "stored_secret", "attempt": 1, "identityLabel": label, "failureType": "rejected"}).to_string(),
         );
     }
 
     let message = key_error.unwrap_or_else(|| {
         "Authentication failed. Add a password or a private key to this SSH entry in the Session manager, then try again.".to_string()
     });
-    crate::oplog::log("ERROR", "ssh_auth", "failed", &label, "", &message);
+    crate::oplog::log("ERROR", "ssh_auth", "failed", &label, "", &serde_json::json!({"operationId": operation_id, "authMethod": "auto", "identitySource": "configured", "attempt": 1, "identityLabel": label, "durationMs": started.elapsed().as_millis(), "failureType": "authentication", "error": message}).to_string());
     Err(message)
 }
 
@@ -596,7 +598,12 @@ pub async fn connect(
     profile: SshProfile,
     request_id: String,
 ) -> Result<String, String> {
-    validate_profile(&profile)?;
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    if let Err(error) = validate_profile(&profile) {
+        crate::oplog::log("ERROR", "ssh_connect", "failed", "SSH profile", "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "durationMs": started.elapsed().as_millis(), "failureType": "validation", "error": error}).to_string());
+        return Err(error);
+    }
     let label = profile_label(&profile);
     let session_id = format!("ssh-{}", uuid::Uuid::new_v4());
     crate::oplog::log(
@@ -605,7 +612,7 @@ pub async fn connect(
         "started",
         &label,
         "terminal",
-        &format!("Connecting (session {session_id})."),
+        &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "target": format!("{}:{}", profile.host, profile.port)}).to_string(),
     );
     let handler = ClientHandler {
         host: profile.host.clone(),
@@ -627,7 +634,7 @@ pub async fn connect(
                 "failed",
                 &label,
                 "terminal",
-                &message,
+                &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "network", "error": message}).to_string(),
             );
             return Err(message);
         }
@@ -644,7 +651,7 @@ pub async fn connect(
                 "failed",
                 &label,
                 "terminal",
-                &message,
+                &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "timeout", "error": message}).to_string(),
             );
             return Err(message);
         }
@@ -655,7 +662,7 @@ pub async fn connect(
         "tcp_connected",
         &label,
         "terminal",
-        "TCP/key-exchange completed; starting authentication.",
+        &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "phase": "key_exchange"}).to_string(),
     );
 
     if let Err(error) = tokio::time::timeout(CONNECT_TIMEOUT, authenticate(&mut handle, &profile))
@@ -668,23 +675,29 @@ pub async fn connect(
             "failed",
             &label,
             "terminal",
-            &format!("Authentication failed: {error}"),
+            &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "authentication", "error": error.to_string()}).to_string(),
         );
         return Err(error);
     }
 
-    let channel = handle
-        .channel_open_session()
-        .await
-        .map_err(|error| error.to_string())?;
-    channel
-        .request_pty(false, "xterm-256color", 120, 32, 0, 0, &[])
-        .await
-        .map_err(|error| error.to_string())?;
-    channel
-        .request_shell(true)
-        .await
-        .map_err(|error| error.to_string())?;
+    let channel = match handle.channel_open_session().await {
+        Ok(channel) => channel,
+        Err(error) => {
+            let message = error.to_string();
+            crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "channel_open", "error": message}).to_string());
+            return Err(message);
+        }
+    };
+    if let Err(error) = channel.request_pty(false, "xterm-256color", 120, 32, 0, 0, &[]).await {
+        let message = error.to_string();
+        crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "pty_request", "error": message}).to_string());
+        return Err(message);
+    }
+    if let Err(error) = channel.request_shell(true).await {
+        let message = error.to_string();
+        crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "shell_request", "error": message}).to_string());
+        return Err(message);
+    }
     let (mut read_half, write_half) = channel.split();
 
     sessions().lock().await.insert(
@@ -700,7 +713,7 @@ pub async fn connect(
         "connected",
         &label,
         "terminal",
-        &format!("Shell session {session_id} is ready."),
+        &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis()}).to_string(),
     );
 
     let reader_session = session_id.clone();
@@ -790,7 +803,7 @@ pub async fn connect(
             "ended",
             &reader_label,
             "terminal",
-            &format!("Shell session {reader_session} ended."),
+            &serde_json::json!({"operationId": operation_id, "requestId": reader_request_id, "sessionId": reader_session, "durationMs": started.elapsed().as_millis()}).to_string(),
         );
         sessions().lock().await.remove(&reader_session);
     });
@@ -799,30 +812,72 @@ pub async fn connect(
 }
 
 pub async fn write(session_id: String, data: String) -> Result<(), String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let byte_count = data.len();
+    crate::oplog::log("DEBUG", "ssh_write", "started", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "byteCount": byte_count}).to_string());
     let sessions = sessions().lock().await;
     let session = sessions
         .get(&session_id)
-        .ok_or_else(|| "SSH session is not connected".to_string())?;
-    session
+        .ok_or_else(|| "SSH session is not connected".to_string());
+    let session = match session {
+        Ok(session) => session,
+        Err(error) => {
+            crate::oplog::log("ERROR", "ssh_write", "failed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "byteCount": byte_count, "durationMs": started.elapsed().as_millis(), "failureType": "missing_session", "error": error}).to_string());
+            return Err(error);
+        }
+    };
+    match session
         .write
         .data(data.into_bytes().as_slice())
         .await
-        .map_err(|error| error.to_string())
+    {
+        Ok(()) => {
+            crate::oplog::log("INFO", "ssh_write", "completed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "byteCount": byte_count, "durationMs": started.elapsed().as_millis()}).to_string());
+            Ok(())
+        }
+        Err(error) => {
+            let message = error.to_string();
+            crate::oplog::log("ERROR", "ssh_write", "failed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "byteCount": byte_count, "durationMs": started.elapsed().as_millis(), "failureType": "channel_write", "error": message}).to_string());
+            Err(message)
+        }
+    }
 }
 
 pub async fn resize(session_id: String, cols: u16, rows: u16) -> Result<(), String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    crate::oplog::log("DEBUG", "ssh_resize", "started", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows}).to_string());
     if cols == 0 || rows == 0 {
+        crate::oplog::log("ERROR", "ssh_resize", "failed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows, "durationMs": started.elapsed().as_millis(), "failureType": "validation", "error": "SSH terminal size must be greater than zero"}).to_string());
         return Err("SSH terminal size must be greater than zero".to_string());
     }
     let sessions = sessions().lock().await;
     let session = sessions
         .get(&session_id)
-        .ok_or_else(|| "SSH session is not connected".to_string())?;
-    session
+        .ok_or_else(|| "SSH session is not connected".to_string());
+    let session = match session {
+        Ok(session) => session,
+        Err(error) => {
+            crate::oplog::log("ERROR", "ssh_resize", "failed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows, "durationMs": started.elapsed().as_millis(), "failureType": "missing_session", "error": error}).to_string());
+            return Err(error);
+        }
+    };
+    match session
         .write
         .window_change(cols as u32, rows as u32, 0, 0)
         .await
-        .map_err(|error| error.to_string())
+    {
+        Ok(()) => {
+            crate::oplog::log("INFO", "ssh_resize", "completed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows, "durationMs": started.elapsed().as_millis()}).to_string());
+            Ok(())
+        }
+        Err(error) => {
+            let message = error.to_string();
+            crate::oplog::log("ERROR", "ssh_resize", "failed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows, "durationMs": started.elapsed().as_millis(), "failureType": "channel_resize", "error": message}).to_string());
+            Err(message)
+        }
+    }
 }
 
 pub async fn disconnect(session_id: String) -> Result<(), String> {
@@ -862,6 +917,19 @@ pub fn key_available(profile: &SshProfile) -> Result<bool, String> {
 /// exist on Windows). Authenticates with the entry's stored password, then
 /// runs the equivalent of what `ssh-copy-id` does over an exec channel.
 pub async fn install_key(profile: SshProfile) -> Result<String, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = profile_label(&profile);
+    crate::oplog::log("DEBUG", "ssh_install_key", "started", &label, "authorized_keys", &serde_json::json!({"operationId": operation_id}).to_string());
+    let result = install_key_inner(profile).await;
+    match &result {
+        Ok(path) => crate::oplog::log("INFO", "ssh_install_key", "completed", &label, path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis()}).to_string()),
+        Err(error) => crate::oplog::log("ERROR", "ssh_install_key", "failed", &label, "authorized_keys", &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "install", "error": error}).to_string()),
+    }
+    result
+}
+
+async fn install_key_inner(profile: SshProfile) -> Result<String, String> {
     validate_profile(&profile)?;
     let label = profile_label(&profile);
     crate::oplog::log(

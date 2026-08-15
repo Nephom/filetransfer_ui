@@ -35,7 +35,9 @@ import "./starship-bridge.css";
 import "./rest-api.css";
 import "./proxmox-vnc.css";
 import "./help/help.css";
+import "./log-view.css";
 import { HelpIcon, helpPages, helpSections } from "./help/help-content";
+import { LogView, type OperationLogRecord } from "./log-view";
 import { RestApiWorkspace, type RestApiEntry, type RestApiSecret } from "./rest-api";
 import { ProxmoxVncWorkspace, type ProxmoxVncEntry, type ProxmoxVncSecret } from "./proxmox-vnc";
 import { PaneResizeHandle } from "./resizable-pane";
@@ -142,6 +144,7 @@ type SshTerminalTab = {
 };
 type TransferQueueItem = {
   id: string;
+  operationId?: string;
   label: string;
   kind: "upload" | "download" | "download-set";
   paths: string[];
@@ -209,6 +212,7 @@ type DesktopSettings = {
 };
 
 type ModalDragId =
+  | "log-view"
   | "help"
   | "settings"
   | "sessions"
@@ -238,7 +242,15 @@ const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
     const sshEntries = Array.isArray(item.sshEntries)
       ? item.sshEntries
       : entries.filter((entry) => entry.kind === "SSH").map((entry) => entry.sshProfile).filter(Boolean) as SshProfile[];
-    const restApiEntries = Array.isArray(item.restApiEntries) ? item.restApiEntries : [];
+    const restApiEntries = Array.isArray(item.restApiEntries)
+      ? item.restApiEntries.map((rawEntry) => {
+        const entry = rawEntry as RestApiEntry;
+        const vendor = entry.vendor === "hpe" || entry.vendor === "openbmc" || entry.vendor === "none"
+          ? entry.vendor
+          : "none";
+        return { ...entry, vendor };
+      })
+      : [];
     const proxmoxVncEntries = Array.isArray(item.proxmoxVncEntries) ? item.proxmoxVncEntries : [];
     return {
       id: item.id || crypto.randomUUID(),
@@ -518,10 +530,11 @@ const readPersistedQueue = (): TransferQueueItem[] => {
     return parsed
       .filter((item): item is TransferQueueItem => Boolean(item && typeof item.id === "string" && typeof item.status === "string"))
       .map((item) => {
-        if (!["queued", "running", "retrying"].includes(item.status)) return item;
+        const withOperationId = { ...item, operationId: item.operationId || item.id };
+        if (!["queued", "running", "retrying"].includes(item.status)) return withOperationId;
         const requiresRequeue = item.kind === "download" && !item.sshEntryId;
         return {
-          ...item,
+          ...withOperationId,
           status: "needs_user_action",
           errorCategory: "unknown",
           detail: requiresRequeue
@@ -755,6 +768,8 @@ function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [accountMenuStyle, setAccountMenuStyle] = useState<React.CSSProperties>({});
   const [helpOpen, setHelpOpen] = useState(false);
+  const [logViewOpen, setLogViewOpen] = useState(false);
+  const [operationLogRecords, setOperationLogRecords] = useState<OperationLogRecord[]>([]);
   const [selectedHelpPageId, setSelectedHelpPageId] = useState("login");
   const [expandedHelpSections, setExpandedHelpSections] = useState<string[]>(["getting-started"]);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
@@ -804,6 +819,17 @@ function App() {
     height: window.innerHeight,
   }));
   const [storageInfo, setStorageInfo] = useState<OperationStorageInfo | null>(null);
+  useEffect(() => {
+    if (!logViewOpen) return undefined;
+    const refresh = () => {
+      void invoke<OperationLogRecord[]>("read_operation_logs")
+        .then(setOperationLogRecords)
+        .catch(() => {});
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 1_000);
+    return () => window.clearInterval(timer);
+  }, [logViewOpen]);
   const [search, setSearch] = useState("");
   const [searching, setSearching] = useState(false);
   const [pathBeforeSearch, setPathBeforeSearch] = useState("");
@@ -1099,6 +1125,7 @@ function App() {
 
   useEffect(() => {
     const openIds: Partial<Record<ModalDragId, boolean>> = {
+      "log-view": logViewOpen,
       help: helpOpen,
       settings: settingsOpen,
       sessions: sessionsOpen,
@@ -1119,7 +1146,7 @@ function App() {
       });
       return changed ? next : current;
     });
-  }, [helpOpen, queueOpen, sessionsOpen, settingsOpen, shareLinksOpen, sshEntryDialogOpen, viewerOpen, workspaceNameDialogOpen]);
+  }, [helpOpen, logViewOpen, queueOpen, sessionsOpen, settingsOpen, shareLinksOpen, sshEntryDialogOpen, viewerOpen, workspaceNameDialogOpen]);
 
   useEffect(() => {
     const closeTopmostOverlay = (event: KeyboardEvent) => {
@@ -1143,6 +1170,8 @@ function App() {
         setSettingsOpen(false);
       } else if (helpOpen) {
         setHelpOpen(false);
+      } else if (logViewOpen) {
+        setLogViewOpen(false);
       } else if (archiveFormatOpen) {
         setArchiveFormatOpen(false);
       } else if (queueOpen) {
@@ -1171,6 +1200,7 @@ function App() {
     changePasswordOpen,
     contextMenu,
     helpOpen,
+    logViewOpen,
     locationMenuOpen,
     queueOpen,
     saveLogNameOpen,
@@ -1312,12 +1342,14 @@ function App() {
 
   useEffect(() => {
     const entries = managedSessions.flatMap((workspace) => workspace.restApiEntries);
+    let cancelled = false;
     void Promise.all(entries.flatMap((entry) => (["username", "password", "token", "apiKey", "cookie"] as const).map(async (kind) => {
       const value = await invoke<string | null>("rest_load_secret", { entryId: entry.id, kind }).catch(() => null);
-      if (value === null) return;
+      if (cancelled || value === null) return;
       setRestSecrets((current) => ({ ...current, [entry.id]: { ...current[entry.id], [kind]: value } }));
     })));
-  }, [managedSessions]);
+    return () => { cancelled = true; };
+  }, [managedSessions.map((workspace) => workspace.restApiEntries.map((entry) => entry.id).join(",")).join("|")]);
 
   useEffect(() => {
     const entries = managedSessions.flatMap((workspace) => workspace.proxmoxVncEntries);
@@ -1362,7 +1394,7 @@ function App() {
         sourceLabel: "Desktop",
         destinationLabel: "",
         detail: "nFterm stopped.",
-      });
+      }).catch(() => {});
     };
   }, []);
 
@@ -1661,30 +1693,43 @@ function App() {
 
   const loadFiles = async (nextPath = path, sshEntryOverride: string | null = null) => {
     const sshEntryId = sshEntryOverride !== null ? sshEntryOverride : remoteSshEntryId;
-    if (sshEntryId) {
-      const profile = findSshProfileById(sshEntryId);
-      if (!profile) {
-        setRemoteSshEntryId("");
-        throw new Error("The SSH connection for this remote view is no longer available.");
+    const operationId = crypto.randomUUID();
+    const started = performance.now();
+    const operation = sshEntryId ? "ssh_browse" : "api_browse";
+    const source = sshEntryId ? `SSH: ${sshEntryId}` : "API Remote";
+    writeOperationLog(operation, "started", source, nextPath, JSON.stringify({ operationId, path: nextPath, sshEntryId, locationId: session.locationId }), "DEBUG");
+    try {
+      if (sshEntryId) {
+        const profile = findSshProfileById(sshEntryId);
+        if (!profile) {
+          setRemoteSshEntryId("");
+          throw new Error("The SSH connection for this remote view is no longer available.");
+        }
+        const data = await invoke<LocalDirectory>("ssh_list_directory", { profile, path: nextPath });
+        setFiles(data.files || []);
+        setPath(data.path || "");
+        setSearching(false);
+        selectionAnchorRef.current = null;
+        setSelected([]);
+        writeOperationLog(operation, "completed", source, data.path || nextPath, JSON.stringify({ operationId, path: data.path || nextPath, fileCount: data.files?.length || 0, durationMs: Math.round(performance.now() - started), sshEntryId }), "INFO");
+        return;
       }
-      const data = await invoke<LocalDirectory>("ssh_list_directory", { profile, path: nextPath });
-      setFiles(data.files || []);
-      setPath(data.path || "");
+      const response = await api(
+        `/api/files?path=${encodeURIComponent(nextPath)}&sort=${remoteSortKey}&order=${remoteSortDirection}&directoriesFirst=${remoteDirectoriesFirst}`,
+      );
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json();
+      const files = data.files || [];
+      setFiles(files);
+      setPath(data.currentPath || "");
       setSearching(false);
       selectionAnchorRef.current = null;
       setSelected([]);
-      return;
+      writeOperationLog(operation, "completed", source, data.currentPath || nextPath, JSON.stringify({ operationId, path: data.currentPath || nextPath, fileCount: files.length, durationMs: Math.round(performance.now() - started), locationId: session.locationId, httpStatus: response.status }), "INFO");
+    } catch (error) {
+      writeOperationLog(operation, "failed", source, nextPath, JSON.stringify({ operationId, path: nextPath, durationMs: Math.round(performance.now() - started), failureType: "browse", errorMessage: describeError(error), locationId: session.locationId, sshEntryId }), "ERROR");
+      throw error;
     }
-    const response = await api(
-      `/api/files?path=${encodeURIComponent(nextPath)}&sort=${remoteSortKey}&order=${remoteSortDirection}&directoriesFirst=${remoteDirectoriesFirst}`,
-    );
-    if (!response.ok) throw new Error(await readError(response));
-    const data = await response.json();
-    setFiles(data.files || []);
-    setPath(data.currentPath || "");
-    setSearching(false);
-    selectionAnchorRef.current = null;
-    setSelected([]);
   };
 
   // Where "up" from `path` should go for the LOCAL pane. Non-elevated
@@ -1713,6 +1758,9 @@ function App() {
   };
 
   const loadLocalFiles = async (nextPath = localPath) => {
+    const operationId = crypto.randomUUID();
+    const started = performance.now();
+    writeOperationLog("local_browse", "started", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${nextPath || ""}`, JSON.stringify({ operationId, path: nextPath }), "DEBUG");
     try {
       const data = await invoke<LocalDirectory>("local_list_directory", {
         path: nextPath,
@@ -1720,13 +1768,17 @@ function App() {
       setLocalFiles(data.files || []);
       setLocalPath(data.path || "");
       setLocalSelected([]);
+      writeOperationLog("local_browse", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${data.path || nextPath || ""}`, JSON.stringify({ operationId, path: data.path || nextPath, fileCount: data.files?.length || 0, durationMs: Math.round(performance.now() - started) }), "INFO");
     } catch (error) {
-      writeOperationLog("browse", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${nextPath || ""}`, `Failed to list LOCAL directory: ${describeError(error)}`, "ERROR");
+      writeOperationLog("local_browse", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${nextPath || ""}`, JSON.stringify({ operationId, path: nextPath, durationMs: Math.round(performance.now() - started), failureType: "list", errorMessage: describeError(error) }), "ERROR");
       throw error;
     }
   };
 
   const refreshLocalFiles = async () => {
+    const operationId = crypto.randomUUID();
+    const started = performance.now();
+    writeOperationLog("local_browse", "started", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${localPath || ""}`, JSON.stringify({ operationId, path: localPath, action: "refresh" }), "DEBUG");
     try {
       const data = await invoke<LocalDirectory>("local_list_directory", {
         path: localPath,
@@ -1736,13 +1788,17 @@ function App() {
       setLocalSelected((current) => current.filter((item) =>
         (data.files || []).some((file) => file.path === item),
       ));
+      writeOperationLog("local_browse", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${data.path || localPath || ""}`, JSON.stringify({ operationId, path: data.path || localPath, fileCount: data.files?.length || 0, durationMs: Math.round(performance.now() - started), action: "refresh" }), "INFO");
     } catch (error) {
-      writeOperationLog("browse", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${localPath || ""}`, `Failed to refresh LOCAL directory: ${describeError(error)}`, "ERROR");
+      writeOperationLog("local_browse", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${localPath || ""}`, JSON.stringify({ operationId, path: localPath, durationMs: Math.round(performance.now() - started), failureType: "refresh", errorMessage: describeError(error) }), "ERROR");
       throw error;
     }
   };
 
   const loadLocalTreeChildren = async (treePath: string, force = false) => {
+    const operationId = crypto.randomUUID();
+    const started = performance.now();
+    writeOperationLog("local_folder_tree", "started", "LOCAL folder tree", `LOCAL: ~/${treePath || ""}`, JSON.stringify({ operationId, path: treePath }), "DEBUG");
     try {
       const data = await invoke<LocalDirectory>("local_list_directory", { path: treePath });
       const children = (data.files || [])
@@ -1752,12 +1808,13 @@ function App() {
       setLocalTrees((trees) =>
         trees.map((tree) => updateTreeNode(tree, treePath, (node) => ({ ...node, expanded: true, loaded: true, children }))),
       );
+      writeOperationLog("local_folder_tree", "completed", "LOCAL folder tree", `LOCAL: ~/${treePath || ""}`, JSON.stringify({ operationId, path: treePath, fileCount: children.length, durationMs: Math.round(performance.now() - started) }), "INFO");
     } catch (error) {
       // `force` is used for background/prefetch expansion where a failure
       // (e.g. a permission-denied subfolder) is tolerated and the tree node
       // is just left collapsed - but it must still be logged, not silently
       // dropped, so ERROR-level browse failures always show up somewhere.
-      writeOperationLog("browse", "failed", "LOCAL folder tree", `LOCAL: ~/${treePath || ""}`, `Failed to expand LOCAL folder tree node: ${describeError(error)}`, "ERROR");
+      writeOperationLog("local_folder_tree", "failed", "LOCAL folder tree", `LOCAL: ~/${treePath || ""}`, JSON.stringify({ operationId, path: treePath, durationMs: Math.round(performance.now() - started), failureType: "tree", errorMessage: describeError(error) }), "ERROR");
       if (!force) throw error instanceof Error ? error : new Error(String(error));
     }
   };
@@ -1958,6 +2015,7 @@ function App() {
 
   const selectLocation = (locationId: string) => {
     const wasSsh = Boolean(remoteSshEntryId);
+    writeOperationLog("location", "selected", session.locationId || "none", locationId || "none", "Location selected.", "INFO");
     setRemoteSshEntryId("");
     setPath("");
     setSelected([]);
@@ -1987,6 +2045,7 @@ function App() {
 
   const selectSshBrowse = (entryId: string) => {
     if (entryId === remoteSshEntryId) return;
+    writeOperationLog("ssh_browse", "selected", remoteSshEntryId || "none", entryId, "SSH browse entry selected.", "INFO");
     setRemoteSshEntryId(entryId);
     setPath("/");
     setSelected([]);
@@ -2517,12 +2576,14 @@ function App() {
     commandLogRef.current = "";
     const startedAt = Date.now();
     setSshTabs((current) => current.map((item) => item.id !== activeSshTab.id ? item : { ...item, recording: true, recordingStartedAt: startedAt, rawLog: "", plainLog: "", commandLog: "", savedLogPaths: [] }));
+    writeOperationLog("ssh_recording", "started", activeSshTab.sessionId || activeSshTab.id, "LOCAL recording buffer", JSON.stringify({ operationId: activeSshTab.id, recordingId: activeSshTab.id, sessionId: activeSshTab.sessionId, startedAt: new Date(startedAt).toISOString() }), "INFO");
     notify("SSH output recording started.");
   };
 
   const stopRecording = () => {
     if (!activeSshTab) return;
     setSshTabs((current) => current.map((item) => item.id === activeSshTab.id ? { ...item, recording: false } : item));
+    writeOperationLog("ssh_recording", "stopped", activeSshTab.sessionId || activeSshTab.id, "LOCAL recording buffer", JSON.stringify({ operationId: activeSshTab.id, recordingId: activeSshTab.id, sessionId: activeSshTab.sessionId, startedAt: activeSshTab.recordingStartedAt ? new Date(activeSshTab.recordingStartedAt).toISOString() : null, endedAt: new Date().toISOString(), rawBytes: new TextEncoder().encode(activeSshTab.rawLog).length, commandCount: activeSshTab.commandLog.split("\n").filter(Boolean).length, durationMs: activeSshTab.recordingStartedAt ? Date.now() - activeSshTab.recordingStartedAt : undefined }), "INFO");
     notify("Recording finalized. Save the log package before disconnecting.");
   };
 
@@ -2550,8 +2611,11 @@ function App() {
       rawBytes: new TextEncoder().encode(tab.rawLog).length,
       files: ["raw.log", "txt", "commands.log", "meta.json"],
     }, null, 2);
-    void run(async () => {
-      const paths = await invoke<{ raw: string; plain: string; commands: string; metadata: string }>(
+     void run(async () => {
+       const operationId = tab.id;
+       const started = performance.now();
+       try {
+       const paths = await invoke<{ raw: string; plain: string; commands: string; metadata: string }>(
         "save_ssh_logs",
          {
             profileName: logName,
@@ -2563,18 +2627,13 @@ function App() {
         },
        );
        setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, savedLogPaths: [paths.raw, paths.plain, paths.commands, paths.metadata] } : item));
-       if (desktopSettings.operationLogEnabled) {
-          void invoke("append_operation_log", {
-            level: "INFO",
-            operation: "save_ssh_log",
-           status: "completed",
-           sourceLabel: logName,
-            destinationLabel: `LOCAL: ~/${saveLogDestinationPath || ""}`,
-           detail: "SSH output recording package saved.",
-         });
-       }
+        writeOperationLog("ssh_recording", "saved", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, sessionId: tab.sessionId, packagePaths: [paths.raw, paths.plain, paths.commands, paths.metadata], durationMs: Math.round(performance.now() - started), rawBytes: new TextEncoder().encode(tab.rawLog).length, commandCount: tab.commandLog.split("\n").filter(Boolean).length }), "INFO");
        setSaveLogNameOpen(false);
        notify(`Saved SSH logs to ${paths.raw}`);
+       } catch (error) {
+         writeOperationLog("ssh_recording", "save_failed", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, durationMs: Math.round(performance.now() - started), failureType: "save", errorMessage: describeError(error) }), "ERROR");
+         throw error;
+       }
       });
     };
 
@@ -2590,18 +2649,87 @@ function App() {
     });
   };
 
+  const operationIds = useRef(new Map<string, { id: string; lastAt: number; startedAt: number }>());
   const writeOperationLog = (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string, level: DesktopSettings["operationLogLevel"] = "INFO") => {
     if (!desktopSettings.operationLogEnabled) return;
     const levels = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+    const lifecycleKey = `${operation}|${sourceLabel}|${destinationLabel}`;
+    const now = Date.now();
+    const previous = operationIds.current.get(lifecycleKey);
+    const operationId = previous && now - previous.lastAt < 60_000 ? previous.id : crypto.randomUUID();
+    const startedAt = previous && now - previous.lastAt < 60_000 ? previous.startedAt : now;
+    operationIds.current.set(lifecycleKey, { id: operationId, lastAt: now, startedAt });
     if (levels[level] < levels[desktopSettings.operationLogLevel]) return;
-    void invoke("append_operation_log", {
+    const structuredDetail = (() => {
+      try {
+        const parsed = JSON.parse(detail) as unknown;
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+      } catch {
+        return {};
+      }
+    })();
+    const errorMessage = typeof structuredDetail.errorMessage === "string"
+      ? structuredDetail.errorMessage
+      : level === "ERROR" ? detail : undefined;
+    const isFailure = level === "ERROR" || ["failed", "retry_exhausted", "save_failed"].includes(status);
+    const itemCount = detail.match(/(\d+)\s+(?:item|file)s?/i)?.[1];
+    const completedCount = detail.match(/(?:moved|uploaded|downloaded|deleted|extracted|created)\s+(\d+)\s+(?:item|file|folder)/i)?.[1];
+    const archiveFormat = detail.match(/\b(zip|tar\.gz|tgz)\b/i)?.[1]?.toLowerCase();
+    const archiveName = detail.match(/(?:created|extracted)\s+([^\s.]+(?:\.[a-z0-9.]+)?)/i)?.[1];
+    const sourceType = /\b(local|ssh|remote|api)\b/i.exec(sourceLabel)?.[1]?.toUpperCase();
+    const destinationType = /\b(local|ssh|remote|api|external)\b/i.exec(destinationLabel)?.[1]?.toUpperCase();
+    void invoke("append_structured_operation_log", {
       level,
+      mode: "desktop",
       operation,
+      event: status,
       status,
-      sourceLabel,
-      destinationLabel,
+      source: sourceLabel,
+      destination: destinationLabel,
       detail,
-    });
+      ...structuredDetail,
+      timestamp: new Date().toISOString(),
+      operationId: structuredDetail.operationId || operationId,
+      correlationId: crypto.randomUUID(),
+      ...(errorMessage ? { errorMessage } : {}),
+      ...(structuredDetail.sourcePath === undefined ? { sourcePath: sourceLabel } : {}),
+      ...(structuredDetail.destinationPath === undefined ? { destinationPath: destinationLabel } : {}),
+      ...(itemCount && structuredDetail.itemCount === undefined ? { itemCount: Number(itemCount) } : {}),
+      ...(completedCount && structuredDetail.completedCount === undefined ? { completedCount: Number(completedCount) } : {}),
+      ...(["move", "rename", "undo"].includes(operation) ? { oldPath: structuredDetail.oldPath || sourceLabel, newPath: structuredDetail.newPath || destinationLabel } : {}),
+      ...(sourceType && structuredDetail.sourceType === undefined ? { sourceType } : {}),
+      ...(destinationType && structuredDetail.destinationType === undefined ? { destinationType } : {}),
+      ...(archiveFormat && structuredDetail.archiveFormat === undefined ? { archiveFormat } : {}),
+      ...(["compress", "extract"].includes(operation) ? { archiveName: structuredDetail.archiveName || archiveName || destinationLabel, collisionAttempt: structuredDetail.collisionAttempt ?? 0 } : {}),
+      ...(["completed", "failed", "cancelled", "retry_exhausted", "save_failed"].includes(status) && structuredDetail.durationMs === undefined ? { durationMs: now - startedAt } : {}),
+      ...(isFailure && !structuredDetail.failureType ? { failureType: "operation_failed" } : {}),
+      ...(isFailure && !structuredDetail.errorCategory ? { errorCategory: "unknown" } : {}),
+      ...(isFailure && structuredDetail.recoverable === undefined ? { recoverable: false } : {}),
+      ...(isFailure && structuredDetail.needsUserAction === undefined ? { needsUserAction: true } : {}),
+    }).catch(() => {});
+  };
+  const logQueueEvent = (item: TransferQueueItem, event: string, fields: Record<string, unknown> = {}, level: DesktopSettings["operationLogLevel"] = "INFO") => {
+    const destination = item.kind === "upload"
+      ? `${item.locationName}:${item.destinationPath || "/"}`
+      : `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    writeOperationLog(
+      item.kind === "upload" ? "upload" : "download",
+      event,
+      item.label,
+      destination,
+      JSON.stringify({
+        sourceType: item.kind === "upload" ? "LOCAL" : "REMOTE",
+        destinationType: item.kind === "upload" ? "REMOTE" : "LOCAL",
+        itemCount: item.setFiles?.length || item.paths.length || 1,
+        retryCount: item.retryCount || 0,
+        bytesCompleted: item.progress?.completedBytes || 0,
+        bytesTotal: item.progress?.totalBytes || undefined,
+        completedItems: item.setCompleted || 0,
+        totalItems: item.setFiles?.length || item.paths.length || 1,
+        ...fields,
+      }),
+      level,
+    );
   };
   // Every file-mutating action below should log both how it finished, success
   // or failure -- an on-screen `notify`/error banner disappears after a few
@@ -2666,9 +2794,11 @@ function App() {
     cancelledQueueItemsRef.current.add(id);
     queueProgressSamplesRef.current.delete(id);
     queueCompletionHandlersRef.current.delete(id);
-    void invoke("cancel_transfer", { transferId: id }).catch(() => {});
+    void invoke("cancel_transfer", { transferId: id })
+      .then(() => logQueueEvent(current, "cancel_requested", { backendCancelSucceeded: true, alreadyRunning: current.status === "running" }))
+      .catch((error) => logQueueEvent(current, "cancel_requested", { backendCancelSucceeded: false, alreadyRunning: current.status === "running", failureType: "cancel_command", errorMessage: describeError(error) }, "WARN"));
     updateQueueItem(id, { status: "cancelled", detail: "Cancelled by user." });
-    writeOperationLog(current.kind === "upload" ? "upload" : "download", "cancelled", current.label, current.destinationPath, "Transfer queue item cancelled by user.", "INFO");
+    logQueueEvent(current, "cancelled", { finalCancelledState: true });
   };
   const removeQueueItem = (id: string) => {
     const current = transferQueue.find((item) => item.id === id);
@@ -2805,9 +2935,12 @@ function App() {
       if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
         const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
         updateQueueItem(item.id, nextItem);
-        window.setTimeout(() => { updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedUpload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
+        logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
+        logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) }, "INFO");
+        window.setTimeout(() => { logQueueEvent(nextItem, "retry_started", { attempt: retryCount + 1, maximumAttempts: 3 }); updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedUpload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
         return;
       }
+      if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
       updateQueueItem(item.id, {
         status: recovery.needsUserAction ? "needs_user_action" : "failed",
         detail: `[${recovery.category}] ${detail}`,
@@ -2870,9 +3003,12 @@ function App() {
       if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
         const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
         updateQueueItem(item.id, nextItem);
-        window.setTimeout(() => { updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
+        logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
+        logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) });
+        window.setTimeout(() => { logQueueEvent(nextItem, "retry_started", { attempt: retryCount + 1, maximumAttempts: 3 }); updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
         return;
       }
+      if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
       updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail}`, errorCategory: recovery.category });
       writeOperationLog("download", "failed", item.label, destinationLabel, `Download failed: ${detail}`, "ERROR");
     } finally {
@@ -2925,9 +3061,12 @@ function App() {
       if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
         const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
         updateQueueItem(item.id, nextItem);
-        window.setTimeout(() => { updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownloadSet({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
+        logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
+        logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) });
+        window.setTimeout(() => { logQueueEvent(nextItem, "retry_started", { attempt: retryCount + 1, maximumAttempts: 3 }); updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownloadSet({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
         return;
       }
+      if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
       updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail} (${completed}/${files.length} completed before failing)`, errorCategory: recovery.category });
       writeOperationLog("download", "failed", item.label, destinationLabel, `Queued download failed: ${detail}`, "ERROR");
     }
@@ -3350,6 +3489,7 @@ function App() {
 
   const moveItems = (items: FileItem[], destination: string, source = dragSourceRef.current) =>
     run(async () => {
+      writeOperationLog("drag", "dropped", source === "local" ? "LOCAL" : "REMOTE", destination, JSON.stringify({ itemCount: items.length, sourceType: source === "local" ? "LOCAL" : "REMOTE", destinationType: source === "local" ? "REMOTE" : "LOCAL" }), "INFO");
       if (source === "local") {
         uploadLocalItemsToRemote(items, destination);
         return;
@@ -3471,6 +3611,7 @@ function App() {
     dragSourceRef.current = "remote";
     setDragItems(items);
     setDragSource("remote");
+    writeOperationLog("drag", "started", "REMOTE", file.path, JSON.stringify({ fileCount: items.length, source: "remote" }), "DEBUG");
     event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData("application/x-filetransfer-source", "remote");
   };
@@ -3482,6 +3623,7 @@ function App() {
     dragSourceRef.current = "local";
     setDragItems(items);
     setDragSource("local");
+    writeOperationLog("drag", "started", "LOCAL", file.path, JSON.stringify({ fileCount: items.length, source: "local" }), "DEBUG");
     event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData("application/x-filetransfer-source", "local");
   };
@@ -3647,6 +3789,7 @@ function App() {
     window.setTimeout(() => {
       if (source === "remote" && dragSourceRef.current === "remote") {
         setNotice("Remote files cannot be dragged to Explorer. Use Download to save through the Queue.");
+        writeOperationLog("drag", "cancelled", "REMOTE", "External file manager", JSON.stringify({ itemCount: dragItemsRef.current.length, sourceType: "REMOTE", destinationType: "EXTERNAL", reason: "unsupported_target" }), "WARN");
       }
       finishDrag();
     }, 0);
@@ -3851,6 +3994,8 @@ function App() {
     item: TransferQueueItem,
     prepare: () => Promise<string>,
   ) => {
+    const started = performance.now();
+    writeOperationLog("drag", "started", item.locationName, item.destinationPath, JSON.stringify({ operationId: item.id, itemCount: item.paths.length || 1, sourceType: item.sshEntryId ? "SSH" : "API", destinationType: "LOCAL" }), "DEBUG");
     let resolvePreparation: (path: string) => void = () => {};
     let rejectPreparation: (error: unknown) => void = () => {};
     const preparation = new Promise<string>((resolve, reject) => {
@@ -3864,9 +4009,11 @@ function App() {
         const destination = await prepare();
         resolvePreparation(destination);
         updateQueueItem(item.id, { status: "needs_user_action", detail: "Ready. Drop the file into the external application." });
+        writeOperationLog("drag", "prepared", item.locationName, destination, JSON.stringify({ operationId: item.id, itemCount: item.paths.length || 1, stagingPath: destination, durationMs: Math.round(performance.now() - started) }), "INFO");
       } catch (error) {
         rejectPreparation(error);
         updateQueueItem(item.id, { status: "failed", detail: describeError(error), errorCategory: classifyQueueError(error).category });
+        writeOperationLog("drag", "failed", item.locationName, item.destinationPath, JSON.stringify({ operationId: item.id, itemCount: item.paths.length || 1, durationMs: Math.round(performance.now() - started), failureType: "preparation", errorMessage: describeError(error) }), "ERROR");
       }
     });
     return preparation;
@@ -4471,6 +4618,9 @@ function App() {
       if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
       const item = selectedItems[0];
       const sourceLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${item.path}`;
+      const operationId = crypto.randomUUID();
+      const started = performance.now();
+      writeOperationLog("share", "started", sourceLabel, "Public share link", JSON.stringify({ operationId, locationId: session.locationId, filePath: item.path, mode: desktopSettings.shareLinkMode, expiration: desktopSettings.shareLinkExpirationDays, passwordConfigured: Boolean(password) }), "DEBUG");
       try {
         const expiresIn = desktopSettings.shareLinkExpirationDays > 0
           ? desktopSettings.shareLinkExpirationDays * 86400
@@ -4502,10 +4652,10 @@ function App() {
         setShareUrl(url);
         setSharePasswordOpen(false);
         setSharePasswordDraft("");
-        writeOperationLog("share", "completed", sourceLabel, "Public share link", `Created a share link for ${item.name}.`);
+         writeOperationLog("share", "completed", sourceLabel, "Public share link", JSON.stringify({ operationId, locationId: session.locationId, filePath: item.path, mode: desktopSettings.shareLinkMode, expiration: desktopSettings.shareLinkExpirationDays, passwordConfigured: Boolean(password), durationMs: Math.round(performance.now() - started) }));
         notify("Share link created.");
       } catch (error) {
-        writeOperationLog("share", "failed", sourceLabel, "Public share link", `Failed to create a share link for ${item.name}: ${describeError(error)}`, "ERROR");
+         writeOperationLog("share", "failed", sourceLabel, "Public share link", JSON.stringify({ operationId, locationId: session.locationId, filePath: item.path, mode: desktopSettings.shareLinkMode, expiration: desktopSettings.shareLinkExpirationDays, passwordConfigured: Boolean(password), durationMs: Math.round(performance.now() - started), failureType: "share_request", errorMessage: describeError(error) }), "ERROR");
         throw error;
       }
     });
@@ -5296,6 +5446,22 @@ function App() {
     else setActiveVncEntryId(id);
   };
 
+  const openLogView = () => {
+    setAccountOpen(false);
+    void run(async () => {
+      const records = await invoke<OperationLogRecord[]>("read_operation_logs");
+      setOperationLogRecords(records);
+      setLogViewOpen(true);
+    });
+  };
+
+  const exportOperationLog = () => {
+    const content = operationLogRecords.map((record) => JSON.stringify(record)).join("\n");
+    void invoke<string | null>("save_text_file", { name: "nfterm-operations.jsonl", content })
+      .then((savedPath) => { if (savedPath) notify(`Operation log exported to ${savedPath}`); })
+      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+  };
+
       return (
         <main className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
       <header className="titlebar">
@@ -5370,11 +5536,18 @@ function App() {
                    Change password
                   </button>
                 )}
+                 <button role="menuitem"
+                   onClick={() => {
+                    openLogView();
+                  }}
+                >
+                  LogView
+                </button>
                 <button role="menuitem"
-                  onClick={() => {
-                   setAccountOpen(false);
-                   setHelpOpen(true);
-                 }}
+                   onClick={() => {
+                    setAccountOpen(false);
+                    setHelpOpen(true);
+                  }}
                >
                  Help
                </button>
@@ -6708,6 +6881,7 @@ function App() {
           </div>
         </div>
       )}
+      {logViewOpen && <LogView records={operationLogRecords} modalStyle={modalStyle("log-view")} onDragStart={beginModalDrag("log-view")} onClose={() => setLogViewOpen(false)} onExport={exportOperationLog} />}
       {helpOpen && (
         <div className="modal-cover" onMouseDown={() => setHelpOpen(false)}>
           <div className="modal help-modal" style={modalStyle("help")} onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="help-title">

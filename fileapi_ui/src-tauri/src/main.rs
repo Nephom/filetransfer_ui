@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Mutex, OnceLock};
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tauri::Emitter;
 use tokio::io::{AsyncRead, ReadBuf};
 
@@ -50,6 +50,7 @@ fn reset_transfer_cancellation(transfer_id: &str) {
 #[derive(Serialize)]
 struct ApiResponse {
     status: u16,
+    status_text: String,
     body: Vec<u8>,
     headers: Vec<(String, String)>,
 }
@@ -318,6 +319,7 @@ fn describe_error<E: std::error::Error>(error: E) -> String {
 
 fn api_client(ignore_tls_errors: bool) -> Result<Client, String> {
     Client::builder()
+        .timeout(Duration::from_secs(30))
         // This is intentionally opt-in for private, self-signed servers.
         .danger_accept_invalid_certs(ignore_tls_errors)
         .danger_accept_invalid_hostnames(ignore_tls_errors)
@@ -336,6 +338,7 @@ fn apply_headers(
 
 async fn response_from(response: reqwest::Response) -> Result<ApiResponse, String> {
     let status = response.status().as_u16();
+    let status_text = response.status().canonical_reason().unwrap_or("").to_string();
     let headers = response
         .headers()
         .iter()
@@ -349,6 +352,7 @@ async fn response_from(response: reqwest::Response) -> Result<ApiResponse, Strin
     let body = response.bytes().await.map_err(describe_error)?.to_vec();
     Ok(ApiResponse {
         status,
+        status_text,
         body,
         headers,
     })
@@ -410,6 +414,19 @@ async fn pick_local_directory(path: String) -> Result<Option<String>, String> {
         return Ok(Some(selected_path.to_string_lossy().replace('\\', "/")));
     }
     Err("Selected directory must remain inside the current user's home directory".to_string())
+}
+
+#[tauri::command]
+async fn save_text_file(name: String, content: String) -> Result<Option<String>, String> {
+    let selected = rfd::AsyncFileDialog::new()
+        .set_file_name(&name)
+        .save_file()
+        .await;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    std::fs::write(selected.path(), content.as_bytes()).map_err(|error| error.to_string())?;
+    Ok(Some(selected.path().display().to_string()))
 }
 
 /// Build the `name_(n).ext` candidate for the n-th collision-avoidance
@@ -2108,6 +2125,29 @@ fn operation_storage_info() -> Result<OperationStorageInfo, String> {
 }
 
 #[tauri::command]
+fn read_operation_logs() -> Result<Vec<serde_json::Value>, String> {
+    let (_, log_path) = operation_paths()?;
+    let mut records = Vec::new();
+    for path in [
+        log_path.with_extension("log.2"),
+        log_path.with_extension("log.1"),
+        log_path,
+    ] {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        records.extend(
+            content
+                .lines()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()),
+        );
+    }
+    Ok(records)
+}
+
+#[tauri::command]
 fn clear_operation_history() -> Result<(), String> {
     let (history_path, _) = operation_paths()?;
     match std::fs::remove_file(history_path) {
@@ -2131,6 +2171,9 @@ fn clear_operation_logs() -> Result<(), String> {
             Err(error) => return Err(error.to_string()),
         }
     }
+    for suffix in ["operations.pretty.log", "operations.pretty.log.1", "operations.pretty.log.2"] {
+        let _ = std::fs::remove_file(operation_storage_directory()?.join(suffix));
+    }
     Ok(())
 }
 
@@ -2139,6 +2182,9 @@ fn initialize_operation_log() -> Result<(), String> {
     let staging_directory = operation_storage_directory()?.join("drag-staging");
     if staging_directory.exists() {
         std::fs::remove_dir_all(&staging_directory).map_err(|error| error.to_string())?;
+    }
+    for suffix in ["operations.pretty.log", "operations.pretty.log.1", "operations.pretty.log.2"] {
+        let _ = std::fs::remove_file(operation_storage_directory()?.join(suffix));
     }
     let (_, log_path) = operation_paths()?;
     let rotated_two = log_path.with_extension("log.2");
@@ -2171,18 +2217,33 @@ fn append_operation_log(
     destination_label: String,
     detail: String,
 ) -> Result<(), String> {
-    // The frontend's `writeOperationLog` already applied its own
-    // enabled/level filter before invoking this command, so this writes
-    // unconditionally rather than re-checking the mirrored config (see
-    // `oplog::write` for why).
-    oplog::write(
+    // Apply the Rust-side mirrored setting as well. REST DEBUG records are
+    // emitted directly from the workspace and do not pass through the
+    // frontend's writeOperationLog helper.
+    oplog::log(
         &level,
         &operation,
         &status,
         &source_label,
         &destination_label,
         &detail,
-    )
+    );
+    Ok(())
+}
+
+#[tauri::command]
+fn append_structured_operation_log(record: serde_json::Value) -> Result<(), String> {
+    let object = record
+        .as_object()
+        .ok_or_else(|| "Operation log record must be a JSON object".to_string())?;
+    if !object.get("level").and_then(serde_json::Value::as_str).is_some()
+        || !object.get("operation").and_then(serde_json::Value::as_str).is_some()
+        || !object.get("status").and_then(serde_json::Value::as_str).is_some()
+    {
+        return Err("Operation log record requires level, operation, and status".to_string());
+    }
+    oplog::log_structured(record);
+    Ok(())
 }
 
 /// Mirror the frontend's "Enable operation log" / "Log detail level"
@@ -2251,6 +2312,7 @@ fn main() {
             api_request,
             pick_upload_files,
             pick_local_directory,
+            save_text_file,
             local_list_directory,
             local_create_directory,
             local_rename_path,
@@ -2308,10 +2370,12 @@ fn main() {
             read_local_file,
             edit_local_file,
             operation_storage_info,
+            read_operation_logs,
             clear_operation_history,
             clear_operation_logs,
             initialize_operation_log,
             append_operation_log,
+            append_structured_operation_log,
             set_operation_log_config
         ])
         .run(tauri::generate_context!())

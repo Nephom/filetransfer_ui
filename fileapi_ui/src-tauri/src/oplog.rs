@@ -41,9 +41,8 @@ fn level_rank(level: &str) -> u8 {
         "WARN" => 2,
         "ERROR" => 3,
         _ => 1,
-    }
-}
-
+     }
+ }
 /// Mirror the frontend's "Enable operation log" / "Log detail level"
 /// settings into this process so Rust-originated log calls (SSH auth
 /// attempts, connect/disconnect, drag staging, etc.) respect the same
@@ -73,6 +72,119 @@ fn sanitize(value: &str) -> String {
     }
     normalized.chars().take(256).collect()
 }
+fn is_secret_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    if lower == "session" || lower.ends_with("session_token") || lower.ends_with("session_secret") {
+        return true;
+    }
+    [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "cookie",
+        "authorization",
+        "api-key",
+        "api_key",
+        "credential",
+        "private-key",
+        "private_key",
+        "ticket",
+        "csrf",
+        "vncticket",
+        "pveauthticket",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn sanitize_urlish(value: &str) -> String {
+    let normalized = value.replace(['\r', '\n'], " ");
+    let (without_fragment, fragment) = normalized.split_once('#').map_or((normalized.as_str(), ""), |(base, fragment)| (base, fragment));
+    let (authority, query) = without_fragment.split_once('?').map_or((without_fragment, None), |(authority, query)| (authority, Some(query)));
+    let authority = if let Some(scheme_end) = authority.find("://") {
+        let prefix_end = scheme_end + 3;
+        if let Some(at) = authority[prefix_end..].find('@') {
+            format!("{}[REDACTED]@{}", &authority[..prefix_end], &authority[prefix_end + at + 1..])
+        } else {
+            authority.to_string()
+        }
+    } else {
+        authority.to_string()
+    };
+    let mut result = authority;
+    if let Some(query) = query {
+        let sanitized_query = query
+            .split('&')
+            .map(|part| {
+                let (key, value) = part.split_once('=').map_or((part, ""), |(key, value)| (key, value));
+                if is_secret_key(key) || key.eq_ignore_ascii_case("session") { format!("{key}=[REDACTED]") } else { format!("{key}={value}") }
+            })
+            .collect::<Vec<_>>()
+            .join("&");
+        result.push('?');
+        result.push_str(&sanitized_query);
+    }
+    if !fragment.is_empty() { result.push_str("#[REDACTED]"); }
+    result.chars().take(256).collect()
+}
+
+fn redact_detail_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object.iter_mut() {
+                if is_secret_key(key) {
+                    *child = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_detail_value(child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            if items.len() == 2 {
+                if let Some(serde_json::Value::String(name)) = items.first() {
+                    if is_secret_key(name) {
+                        items[1] = serde_json::Value::String("[REDACTED]".to_string());
+                        return;
+                    }
+                }
+            }
+            for item in items {
+                redact_detail_value(item);
+            }
+        }
+        serde_json::Value::String(text) => {
+            let original = text.clone();
+            if let Ok(mut nested) = serde_json::from_str::<serde_json::Value>(&original) {
+                redact_detail_value(&mut nested);
+                *text = serde_json::to_string(&nested).unwrap_or_else(|_| "[REDACTED]".to_string());
+            } else if ["password", "passwd", "secret", "token", "cookie", "authorization", "ticket", "csrf", "vncticket", "session"]
+                .iter()
+                .any(|marker| original.to_ascii_lowercase().contains(marker))
+            {
+                *text = "[REDACTED]".to_string();
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_detail(value: &str) -> String {
+    let normalized = value.replace(['\r', '\n'], " ");
+    if let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(&normalized) {
+        redact_detail_value(&mut parsed);
+        let serialized = serde_json::to_string(&parsed).unwrap_or_else(|_| "[REDACTED]".to_string());
+        return serialized.chars().take(65_536).collect();
+    }
+    let lower = normalized.to_ascii_lowercase();
+    if ["password", "passwd", "secret", "token", "cookie", "authorization", "ticket", "csrf", "vncticket", "session"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    {
+        return "[REDACTED]".to_string();
+    }
+    normalized.chars().take(65_536).collect()
+}
 
 fn timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -101,10 +213,15 @@ fn write_record(
         "level": sanitize(level),
         "operation": sanitize(operation),
         "status": sanitize(status),
-        "source": sanitize(source_label),
-        "destination": sanitize(destination_label),
-        "detail": sanitize(detail),
+        "source": sanitize_urlish(source_label),
+        "destination": sanitize_urlish(destination_label),
+        "detail": sanitize_detail(detail),
     });
+    write_record_value(record, log_path)
+}
+
+fn write_record_value(mut record: serde_json::Value, log_path: std::path::PathBuf) -> Result<(), String> {
+    redact_detail_value(&mut record);
     let line = format!(
         "{}\n",
         serde_json::to_string(&record).map_err(|error| error.to_string())?
@@ -130,8 +247,7 @@ fn write_record(
         .append(true)
         .open(log_path)
         .map_err(|error| error.to_string())?;
-    file.write_all(line.as_bytes())
-        .map_err(|error| error.to_string())
+    file.write_all(line.as_bytes()).map_err(|error| error.to_string())
 }
 
 /// Best-effort operation-log write, filtered by the mirrored
@@ -151,36 +267,187 @@ pub fn log(
     if !should_write(level) {
         return;
     }
-    let _ = write_record(
+    if let Ok(mut structured) = serde_json::from_str::<serde_json::Value>(detail) {
+        if let Some(object) = structured.as_object_mut() {
+            object.insert("level".to_string(), serde_json::Value::String(level.to_string()));
+            object.insert("operation".to_string(), serde_json::Value::String(operation.to_string()));
+            object.insert("status".to_string(), serde_json::Value::String(status.to_string()));
+            object.insert("source".to_string(), serde_json::Value::String(source_label.to_string()));
+            object.insert("destination".to_string(), serde_json::Value::String(destination_label.to_string()));
+            object.entry("mode".to_string()).or_insert_with(|| serde_json::Value::String("desktop".to_string()));
+            log_structured(structured);
+            return;
+        }
+    }
+    if let Err(error) = write_record(
         level,
         operation,
         status,
         source_label,
         destination_label,
         detail,
-    );
+    ) {
+        eprintln!("operation log write failed: {error}");
+    }
 }
 
-/// Write a record without re-checking the enabled/level filter. Used by the
-/// `append_operation_log` Tauri command: the frontend's `writeOperationLog`
-/// helper already applied its own enabled/level check before invoking it, so
-/// re-filtering here would just risk a startup race (this process's mirrored
-/// config may not have synced yet) silently dropping an entry the user
-/// already decided to log.
-pub fn write(
-    level: &str,
-    operation: &str,
-    status: &str,
-    source_label: &str,
-    destination_label: &str,
-    detail: &str,
-) -> Result<(), String> {
-    write_record(
-        level,
-        operation,
-        status,
-        source_label,
-        destination_label,
-        detail,
-    )
+/// Persist a structured record without nesting its fields inside `detail`.
+/// This keeps operationId, metrics, and failure fields queryable in JSONL.
+pub fn log_structured(record: serde_json::Value) {
+    let level = record.get("level").and_then(serde_json::Value::as_str).unwrap_or("INFO");
+    if !should_write(level) {
+        return;
+    }
+    let mut record = record;
+    if let Some(object) = record.as_object_mut() {
+        for key in ["level", "operation", "status", "event", "mode", "operationId", "correlationId", "timestamp", "failureType", "errorCategory", "errorMessage"] {
+            if let Some(value) = object.get_mut(key) {
+                if let Some(text) = value.as_str() {
+                    *value = serde_json::Value::String(sanitize(text));
+                }
+            }
+        }
+        for key in ["source", "destination", "sourcePath", "destinationPath", "url", "stderr"] {
+            if let Some(value) = object.get_mut(key) {
+                if let Some(text) = value.as_str() {
+                    *value = serde_json::Value::String(if key == "stderr" { sanitize_detail(text) } else { sanitize_urlish(text) });
+                }
+            }
+        }
+        let failed = matches!(object.get("status").and_then(serde_json::Value::as_str), Some("failed" | "failure" | "retry_exhausted" | "save_failed"));
+        if failed {
+            object.entry("failureType".to_string()).or_insert_with(|| serde_json::Value::String("operation_failed".to_string()));
+            object.entry("errorCategory".to_string()).or_insert_with(|| serde_json::Value::String("unknown".to_string()));
+            object.entry("recoverable".to_string()).or_insert(serde_json::Value::Bool(false));
+            object.entry("needsUserAction".to_string()).or_insert(serde_json::Value::Bool(true));
+        }
+    }
+    redact_detail_value(&mut record);
+    if let Ok((_, log_path)) = crate::operation_paths() {
+        if let Err(error) = write_record_value(record, log_path) {
+            eprintln!("structured operation log write failed: {error}");
+        }
+    } else {
+        eprintln!("structured operation log path unavailable");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{log, set_config};
+    use std::fs;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn writes_persisted_debug_record_with_redaction() {
+        let _lock = TEST_LOCK.lock().expect("logging test lock should not be poisoned");
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("nfterm-oplog-{suffix}"));
+        fs::create_dir_all(&directory).expect("temporary log directory should be created");
+        std::env::set_var("FILEAPI_DATA_DIR", &directory);
+        set_config(true, "DEBUG");
+        log("DEBUG", "REST", "workflow.step.result", "entry", "/redfish/v1", "token=sensitive");
+        let content = fs::read_to_string(directory.join("operations.log")).expect("operation log should be written");
+        assert!(content.contains("workflow.step.result"));
+        assert!(content.contains("[REDACTED]"));
+        assert!(!content.contains("sensitive"));
+        log(
+            "DEBUG",
+            "REST",
+            "workflow.step.result",
+            "entry",
+            "/redfish/v1",
+            r#"{"event":"workflow.step.result","requestId":"request-1","headers":[["X-Auth-Token","sensitive-token"]],"body":"{\"UserName\":\"Administrator\",\"Password\":\"sensitive-password\"}"}"#,
+        );
+        let content = fs::read_to_string(directory.join("operations.log")).expect("REST detail should be written");
+        assert!(content.contains("request-1"));
+        assert!(!content.contains("sensitive-token"));
+        assert!(!content.contains("sensitive-password"));
+        assert!(content.contains("UserName"));
+        log(
+            "INFO",
+            "sftp_upload",
+            "completed",
+            "LOCAL: /tmp/a.txt",
+            "SSH: host:/tmp/a.txt",
+            r#"{"operationId":"operation-1","durationMs":12,"bytesCompleted":4,"bytesTotal":4}"#,
+        );
+        let content = fs::read_to_string(directory.join("operations.log")).expect("structured record should be written");
+        assert!(content.contains(r#""operationId":"operation-1""#));
+        assert!(content.contains(r#""bytesCompleted":4"#));
+        log(
+            "ERROR",
+            "proxmox_vnc",
+            "failed",
+            "https://user:password@pve.example:8006",
+            "wss://pve.example:8006/vnc?vncticket=sensitive-ticket&port=5900",
+            "Proxmox request failed with csrf_token=sensitive-csrf",
+        );
+        let content = fs::read_to_string(directory.join("operations.log")).expect("URL detail should be written");
+        assert!(!content.contains("password@"));
+        assert!(!content.contains("sensitive-ticket"));
+        assert!(!content.contains("sensitive-csrf"));
+        log(
+            "DEBUG",
+            "REST",
+            "headers",
+            "entry",
+            "/redfish/v1",
+            r#"{"headers":[["Authorization","Bearer hidden"],["Cookie","PVEAuthCookie=hidden"]],"body":{"csrfToken":"hidden","nested":{"session":"hidden"}},"stderr":"ticket=hidden"}"#,
+        );
+        let content = fs::read_to_string(directory.join("operations.log")).expect("nested secrets should be written safely");
+        assert!(!content.contains("Bearer hidden"));
+        assert!(!content.contains("PVEAuthCookie=hidden"));
+        assert!(!content.contains("hidden"));
+        log(
+            "INFO",
+            "ssh_recording",
+            "saved",
+            "ssh-session",
+            "LOCAL: recording",
+            r#"{"recordingId":"recording-1","sessionId":"session-1","packagePaths":["raw.log","meta.json"],"metadata":{"password":"hidden-recording-secret"}}"#,
+        );
+        let content = fs::read_to_string(directory.join("operations.log")).expect("recording metadata should be written safely");
+        assert!(content.contains("recording-1"));
+        assert!(!content.contains("hidden-recording-secret"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn acceptance_fixture_covers_every_logging_gap() {
+        let _lock = TEST_LOCK.lock().expect("logging test lock should not be poisoned");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!("../../logging_gap_acceptance_fixture.json"))
+            .expect("logging acceptance fixture must be valid JSON");
+        let events = fixture["events"].as_array().expect("fixture events must be an array");
+        assert_eq!(events.len(), 33);
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event["id"].as_str(), Some(format!("LG-{:03}", index + 1).as_str()));
+            for field in ["input", "persisted"] {
+                assert!(event[field].is_object(), "fixture event {index} must include {field}");
+            }
+        }
+    }
+
+    #[test]
+    fn logging_failure_does_not_change_operation_result() {
+        let _lock = TEST_LOCK.lock().expect("logging test lock should not be poisoned");
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let invalid_directory = std::env::temp_dir().join(format!("nfterm-oplog-file-{suffix}"));
+        fs::write(&invalid_directory, "not a directory").expect("test path should be created as a file");
+        std::env::set_var("FILEAPI_DATA_DIR", &invalid_directory);
+        set_config(true, "DEBUG");
+        let operation_result = Ok::<u32, String>(42);
+        log("ERROR", "test", "failed", "source", "destination", "safe diagnostic");
+        assert_eq!(operation_result, Ok(42));
+        let _ = fs::remove_file(invalid_directory);
+    }
 }
