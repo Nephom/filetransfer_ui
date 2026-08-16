@@ -6853,16 +6853,18 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                  <span><strong>Direct link (for tools like BMC)</strong><small>A plain file URL with no page and no Authorization header, for pasting into tools that only accept a bare link. No password protection.</small></span>
                </label>
                 <label className="settings-level">Default share link expiration
-                 <select
-                   value={desktopSettings.shareLinkExpirationDays}
-                   onChange={(event) => setDesktopSettings((current) => ({ ...current, shareLinkExpirationDays: Number(event.target.value) }))}
-                 >
-                   <option value={0}>Server default</option>
-                   <option value={1}>1 day</option>
-                   <option value={7}>7 days</option>
-                   <option value={30}>30 days</option>
-                   <option value={90}>90 days</option>
-                 </select>
+                 <Dropdown
+                   label="Default share link expiration"
+                   value={String(desktopSettings.shareLinkExpirationDays)}
+                   onChange={(value) => setDesktopSettings((current) => ({ ...current, shareLinkExpirationDays: Number(value) }))}
+                   options={[
+                     { value: "0", label: "Server default" },
+                     { value: "1", label: "1 day" },
+                     { value: "7", label: "7 days" },
+                     { value: "30", label: "30 days" },
+                     { value: "90", label: "90 days" },
+                   ]}
+                 />
                   <small>Applied to every new share link created from this desktop app. The server also enforces its own configured maximum, so longer values may be rejected.</small>
                 </label>
                 <div className="settings-inline-action">
