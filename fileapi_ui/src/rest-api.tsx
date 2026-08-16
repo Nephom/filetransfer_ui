@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { PaneResizeHandle } from "./resizable-pane";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon } from "./ui/icons";
+import { Dropdown } from "./ui/Dropdown";
 import { MobileChoiceMenu } from "./ui/MobileChoiceMenu";
 import { RestPollingController } from "./rest-polling";
 import { monitorRedfishTask } from "./rest-task";
@@ -1326,7 +1327,7 @@ export function RestApiWorkspace(props: Props) {
         <section className={`rest-auth-panel${authOpen ? " open" : ""}`}>
           <button type="button" className="rest-section-toggle" onClick={() => setAuthOpen((value) => !value)}><span>Authentication</span><span>{authOpen ? "−" : "+"}</span></button>
           {authOpen && <div className="rest-auth-fields">
-            <label>Mode<select value={entry.authMode} onChange={(event) => changeAuthMode(event.target.value as RestAuthMode)}>{Object.entries(authLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+            <label>Mode<Dropdown label="Mode" value={entry.authMode} onChange={(value) => changeAuthMode(value as RestAuthMode)} options={Object.entries(authLabels).map(([value, label]) => ({ value, label }))} /></label>
             {(entry.authMode === "basic" || entry.authMode === "login") && <label>Username<input value={entry.username} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, username: event.target.value } : item))} /></label>}
             {(entry.authMode === "basic" || entry.authMode === "login") && <label>Password<input type="password" value={secret.password || ""} onChange={(event) => updateSecret({ password: event.target.value })} /></label>}
             {entry.authMode === "bearer" && <label>Bearer token<input type="password" value={secret.token || ""} onChange={(event) => updateSecret({ token: event.target.value })} /></label>}
