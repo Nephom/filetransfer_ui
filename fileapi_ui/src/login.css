@@ -23,42 +23,27 @@ body {
    ui/dropdown.css's --dropdown-* tokens, same as every other Dropdown. */
 .login-profile-menu { flex: 0 1 auto; min-width: 0; max-width: 165px; }
 .login-profile-menu .dropdown-menu button[role="option"] { min-height: var(--control-height-mobile-lg); font-size: var(--font-size-mobile-base); }
-.login.ui-profile-mobile form { width: min(560px, 100%); padding: 36px; }
-.login.ui-profile-mobile h1 { font-size: 28px; }
-.login.ui-profile-mobile p { font-size: 16px; }
-.login.ui-profile-mobile form > label { gap: 8px; }
-.login.ui-profile-mobile form > label { font-size: 16px; }
-.login.ui-profile-mobile form > label input { min-height: 42px; font-size: 16px; }
-.login.ui-profile-mobile .login-toggle-row { gap: 10px; }
 
 @media (max-width: 720px) {
   .login-profile-menu { max-width: 130px; }
 }
 
-.login.ui-profile-mobile :is(h1, h2, h3, p, label, button, input, select, textarea, output, span, small, strong) { font-size: 16px !important; }
-.login.ui-profile-mobile h1 { font-size: 28px !important; }
-.login.ui-profile-mobile small { font-size: 14px !important; }
-
-/* Auto profile at Mobile-sized viewports (T-027/T-036): driven by the same
-   isMobileViewport() resolver + ui-layout-mobile class DesktopApp uses,
-   not a hand-copied "@media (max-width: 1023px), (max-height: 767px)"
-   mirror of those same numbers. Nothing here is a genuine narrow-viewport
-   rule independent of Mobile-profile detection, so none of it moves to a
-   real media query (T-037) -- the only real width-driven rule in this file
-   is the 720px .login-profile-menu max-width above, which stays a
-   media query since it's about running out of horizontal room for the
-   trigger label, not about detecting the Mobile profile. */
-.login.ui-profile-auto.ui-layout-mobile :is(h1, h2, h3, p, label, button, input, select, textarea, output, span, small, strong) { font-size: 16px !important; }
-.login.ui-profile-auto.ui-layout-mobile h1 { font-size: 28px !important; }
-.login.ui-profile-auto.ui-layout-mobile small { font-size: 14px !important; }
-/* Large-sized text needs more room than the trigger's shrink-to-fit
-   flex-basis would otherwise leave it (it was collapsing the label down to
-   an unreadable "L."), so give the trigger a fixed flex-basis wide enough
-   for its longest label ("Large") at the Mobile/Large font size instead of
-   competing for space against the two toggle buttons on `flex: 1 1 0`. */
-.login.ui-profile-auto.ui-layout-mobile .login-toggle-row { flex-wrap: wrap; align-items: stretch; }
-.login.ui-profile-auto.ui-layout-mobile .login-profile-menu { flex: 0 0 auto; min-width: 110px; max-width: 165px; }
-.login.ui-profile-auto.ui-layout-mobile .login-profile-menu .dropdown-trigger { width: 100%; min-width: 0; font-size: var(--font-size-mobile-base); }
+/* Login always uses the same viewport-driven layout regardless of the
+   selected uiProfile (Auto or Large/mobile) -- Large's uniform enlargement
+   is only meaningful for DesktopApp's much bigger surface area; on the
+   login screen (4 fields + 2 toggles + 1 button) it just overflowed the
+   app's default window and squeezed the profile Dropdown. .ui-layout-mobile
+   is still driven by the shared isMobileViewport() resolver (T-027/T-036),
+   so both profiles enlarge together only when the *window* is actually
+   small, not whenever Large happens to be selected. */
+.login.ui-layout-mobile :is(h1, h2, h3, p, label, button, input, select, textarea, output, span, small, strong) { font-size: 16px !important; }
+.login.ui-layout-mobile h1 { font-size: 28px !important; }
+.login.ui-layout-mobile small { font-size: 14px !important; }
+/* A fixed flex-basis keeps the trigger label ("Large") readable instead of
+   losing a `flex: 1 1 0` shrink contest against the two toggle buttons. */
+.login.ui-layout-mobile .login-toggle-row { flex-wrap: wrap; align-items: stretch; }
+.login.ui-layout-mobile .login-profile-menu { flex: 0 0 auto; min-width: 110px; max-width: 165px; }
+.login.ui-layout-mobile .login-profile-menu .dropdown-trigger { width: 100%; min-width: 0; font-size: var(--font-size-mobile-base); }
 
 .login form {
   width: min(470px, 100%);

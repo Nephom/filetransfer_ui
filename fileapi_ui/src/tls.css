@@ -33,18 +33,12 @@
   margin-top: 6px;
 }
 
-/* See login.css's matching .ui-profile-auto.ui-layout-mobile comment: a
-   fixed flex-basis keeps the trigger label ("Large") readable instead of
-   losing a `flex: 1 1 0` shrink contest against the two toggle buttons. */
-.login.ui-profile-mobile .login-toggle-row { flex-wrap: wrap; align-items: stretch; }
-.login.ui-profile-mobile .login-profile-menu { flex: 0 0 auto; min-width: 110px; max-width: 165px; }
-.login.ui-profile-mobile .login-profile-menu .dropdown-trigger { width: 100%; min-width: 0; font-size: var(--font-size-mobile-base); }
-.login.ui-profile-mobile .login-toggle-button { font-size: var(--font-size-mobile-base); }
-.login.ui-profile-mobile .login-toggle-help { font-size: var(--font-size-mobile-small) !important; }
-
-/* The Auto-profile equivalent of the three rules above lives in the
-   .login.ui-profile-auto.ui-layout-mobile rules in login.css, driven by
-   the shared isMobileViewport() resolver instead of a raw media query. */
+/* See login.css's matching .ui-layout-mobile comment: login always uses
+   the viewport-driven layout regardless of the selected uiProfile, and a
+   fixed flex-basis here keeps the trigger label ("Large") readable instead
+   of losing a `flex: 1 1 0` shrink contest against the two toggle buttons. */
+.login.ui-layout-mobile .login-toggle-button { font-size: var(--font-size-mobile-base); }
+.login.ui-layout-mobile .login-toggle-help { font-size: var(--font-size-mobile-small) !important; }
 
 .login .login-toggle-button {
   display: inline-flex;

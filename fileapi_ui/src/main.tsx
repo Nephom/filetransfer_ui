@@ -782,7 +782,14 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
     window.addEventListener("resize", updateViewport);
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
-  const loginMobileLayout = uiProfile === "mobile" || (uiProfile === "auto" && isMobileViewport(loginViewport));
+  // The login screen always uses Auto's viewport-driven layout, even when
+  // uiProfile is "mobile" (Large) -- Large's uniform text/control scale-up
+  // was the direct cause of the login form overflowing the app's default
+  // window (bottom border clipped) and the profile Dropdown being squeezed.
+  // Login only has 4 fields + 2 toggles + 1 button, so it is already fully
+  // usable at 800x600 without Large's enlargement; DesktopApp (post-login)
+  // is unaffected and still honors the selected uiProfile normally.
+  const loginMobileLayout = isMobileViewport(loginViewport);
   const updateSaveUserInformation = (enabled: boolean) => {
     setSession((current) => ({ ...current, saveUserInformation: enabled }));
     if (!enabled) {
