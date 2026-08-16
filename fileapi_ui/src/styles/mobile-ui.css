@@ -44,8 +44,8 @@ body:has(.login.ui-profile-auto) .login-profile-menu {
 
 .explorer.ui-layout-mobile :is(.mobile-choice-trigger, .context-picker-trigger, .location-select, .location-single),
 body:has(.explorer.ui-layout-mobile) :is(.account-menu button, .context-picker-option, .location-menu button),
-body:has(.login.ui-profile-mobile) .login-profile-trigger,
-body:has(.login.ui-profile-auto) .login-profile-trigger {
+body:has(.login.ui-profile-mobile) .login-profile-menu .dropdown-trigger,
+body:has(.login.ui-profile-auto) .login-profile-menu .dropdown-trigger {
   min-height: var(--mobile-ui-control-height) !important;
   padding: var(--mobile-ui-padding);
   font-size: var(--mobile-ui-font) !important;
@@ -54,8 +54,8 @@ body:has(.login.ui-profile-auto) .login-profile-trigger {
 
 .explorer.ui-layout-mobile :is(.mobile-choice-trigger, .context-picker-trigger),
 body:has(.explorer.ui-layout-mobile) :is(.account-menu, .context-picker-popover, .location-menu),
-body:has(.login.ui-profile-mobile) .login-profile-options,
-body:has(.login.ui-profile-auto) .login-profile-options {
+body:has(.login.ui-profile-mobile) .login-profile-menu .dropdown-menu,
+body:has(.login.ui-profile-auto) .login-profile-menu .dropdown-menu {
   border-color: var(--mobile-ui-border);
   background: var(--mobile-ui-background);
   box-shadow: var(--shadow-panel);
@@ -63,15 +63,15 @@ body:has(.login.ui-profile-auto) .login-profile-options {
 
 .explorer.ui-layout-mobile :is(.mobile-choice-options, .context-picker-popover),
 body:has(.explorer.ui-layout-mobile) :is(.account-menu, .location-menu, .rest-action-dialog, .rest-session-help, .token-path-help-popup, .rest-hardware-dialog),
-body:has(.login.ui-profile-mobile) .login-profile-options,
-body:has(.login.ui-profile-auto) .login-profile-options {
+body:has(.login.ui-profile-mobile) .login-profile-menu .dropdown-menu,
+body:has(.login.ui-profile-auto) .login-profile-menu .dropdown-menu {
   z-index: var(--mobile-ui-menu-z);
 }
 
 .explorer.ui-layout-mobile :is(.mobile-choice-options button, .context-picker-option),
 body:has(.explorer.ui-layout-mobile) :is(.account-menu button, .location-menu button),
-body:has(.login.ui-profile-mobile) .login-profile-options button,
-body:has(.login.ui-profile-auto) .login-profile-options button {
+body:has(.login.ui-profile-mobile) .login-profile-menu .dropdown-menu button,
+body:has(.login.ui-profile-auto) .login-profile-menu .dropdown-menu button {
   min-height: var(--mobile-ui-control-height) !important;
   padding: var(--mobile-ui-padding);
   color: var(--color-text);
@@ -81,8 +81,8 @@ body:has(.login.ui-profile-auto) .login-profile-options button {
 
 .explorer.ui-layout-mobile :is(.mobile-choice-options button, .context-picker-option):focus-visible,
 body:has(.explorer.ui-layout-mobile) :is(.account-menu button, .location-menu button):focus-visible,
-body:has(.login.ui-profile-mobile) .login-profile-options button:focus-visible,
-body:has(.login.ui-profile-auto) .login-profile-options button:focus-visible {
+body:has(.login.ui-profile-mobile) .login-profile-menu .dropdown-menu button:focus-visible,
+body:has(.login.ui-profile-auto) .login-profile-menu .dropdown-menu button:focus-visible {
   outline: var(--mobile-ui-focus);
   outline-offset: 2px;
 }

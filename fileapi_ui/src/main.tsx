@@ -773,17 +773,6 @@ type LoginScreenProps = {
 };
 
 function LoginScreen({ session, setSession, password, setPassword, busy, notice, uiProfile, onUiProfileChange, onSubmit, onOnlyTerminal }: LoginScreenProps) {
-  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
-  useEffect(() => {
-    if (!profileMenuOpen) return undefined;
-    const close = (event: MouseEvent) => {
-      if (!(event.target as HTMLElement).closest(".login-profile-menu")) setProfileMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setProfileMenuOpen(false); };
-    document.addEventListener("click", close);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", closeOnEscape); };
-  }, [profileMenuOpen]);
   // Auto profile sizing must flip to Mobile at the exact same threshold as
   // DesktopApp's own mobileLayout check, via the one shared resolver --
   // not a hand-copied CSS media query mirroring the same numbers (T-027).
@@ -794,7 +783,6 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
   const loginMobileLayout = uiProfile === "mobile" || (uiProfile === "auto" && isMobileViewport(loginViewport));
-  const profileLabel = uiProfile === "mobile" ? "Mobile" : "Auto";
   const updateSaveUserInformation = (enabled: boolean) => {
     setSession((current) => ({ ...current, saveUserInformation: enabled }));
     if (!enabled) {
@@ -822,12 +810,16 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
           <button type="button" className={`login-toggle-button${session.saveUserInformation ? " enabled" : ""}`} aria-pressed={session.saveUserInformation} onClick={() => updateSaveUserInformation(!session.saveUserInformation)} title="Save the API username and password in the OS credential store">
             <span className="mode-switch-dot" aria-hidden="true" /><span>SAVE USER INFORMATION</span>
           </button>
-          <span className={`login-profile-menu${profileMenuOpen ? " open" : ""}`}>
-            <button type="button" className="login-toggle-button login-profile-trigger" aria-expanded={profileMenuOpen} aria-haspopup="menu" onClick={() => setProfileMenuOpen((open) => !open)}>{profileLabel}<span aria-hidden="true">{profileMenuOpen ? <ChevronLeftIcon /> : <ChevronRightIcon />}</span></button>
-            {profileMenuOpen && <span className="login-profile-options" role="menu">
-              {(["auto", "mobile"] as const).filter((profile) => profile !== uiProfile).map((profile) => <button key={profile} type="button" role="menuitem" onClick={() => { onUiProfileChange(profile); setProfileMenuOpen(false); }}>{profile === "mobile" ? "Mobile (Touch Friendly)" : "Auto"}</button>)}
-            </span>}
-          </span>
+          <Dropdown
+            className="login-profile-menu"
+            label="Interface profile"
+            value={uiProfile}
+            onChange={(profile) => onUiProfileChange(profile as "auto" | "mobile")}
+            options={[
+              { value: "auto", label: "Auto" },
+              { value: "mobile", label: "Mobile (Touch Friendly)" },
+            ]}
+          />
         </div>
         <p className="login-toggle-help">Ignore SSL disables certificate verification. Save User Information stores the username and password in the OS credential store.</p>
         <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
