@@ -403,6 +403,8 @@ export function RestApiWorkspace(props: Props) {
   const [sessionHelpOpen, setSessionHelpOpen] = useState(false);
   const [tokenPathHelpOpen, setTokenPathHelpOpen] = useState(false);
   const [tokenPathHelpPosition, setTokenPathHelpPosition] = useState({ top: -999, left: -999 });
+  const [tokenPathHelpPopupStyle, setTokenPathHelpPopupStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
+  const tokenPathHelpButtonRef = useRef<HTMLButtonElement>(null);
   const [entryPaneWidth, setEntryPaneWidth] = useState(() => Number(localStorage.getItem("fileapi-rest-entry-pane-width")) || 380);
   const [entryPaneCollapsed, setEntryPaneCollapsed] = useState(false);
   const entryPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -513,10 +515,43 @@ export function RestApiWorkspace(props: Props) {
     if (!tokenPathHelpOpen) return undefined;
     const closeHelp = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      if (!target.closest(".token-path-help") && !target.closest(".token-path-help-button")) setTokenPathHelpOpen(false);
+      if (!target.closest(".token-path-help") && !target.closest(".token-path-help-popup")) setTokenPathHelpOpen(false);
     };
     document.addEventListener("click", closeHelp);
     return () => document.removeEventListener("click", closeHelp);
+  }, [tokenPathHelpOpen]);
+
+  useEffect(() => {
+    // Portaled to document.body (mirrors ContextPicker/Dropdown/
+    // CommandBarOverflowMenu) because .rest-reader has overflow:auto,
+    // which was clipping/hiding this popup instead of letting it float
+    // above the rest of the REST workspace.
+    if (!tokenPathHelpOpen) return undefined;
+    const reposition = () => {
+      const rect = tokenPathHelpButtonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(440, window.innerWidth - 24);
+      const gap = 8;
+      const belowTop = rect.bottom + gap;
+      const aboveTop = rect.top - gap;
+      const placeAbove = aboveTop >= 160 || belowTop + 160 > window.innerHeight - 12;
+      const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
+      setTokenPathHelpPopupStyle({
+        position: "fixed",
+        top: placeAbove ? undefined : belowTop,
+        bottom: placeAbove ? window.innerHeight - aboveTop : undefined,
+        left,
+        width,
+        visibility: "visible",
+      });
+    };
+    reposition();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
   }, [tokenPathHelpOpen]);
 
   useEffect(() => {
@@ -552,12 +587,20 @@ export function RestApiWorkspace(props: Props) {
       const panel = document.querySelector<HTMLElement>(".rest-auth-panel");
       const labels = document.querySelectorAll<HTMLElement>(".rest-login-config > label");
       const tokenLabel = labels[1];
-      if (!panel || !tokenLabel) return;
+      const textNode = tokenLabel?.firstChild;
+      if (!panel || !tokenLabel || !textNode) return;
+      // Measure the actual rendered width of the "Token JSON path" text
+      // (via Range, not a fixed px offset) so the (?) button sits right
+      // after the label at any font size -- Auto's clamp() scale and the
+      // Large profile's larger fixed text size both change how wide this
+      // text renders, and a literal px offset only matched one size.
+      const range = document.createRange();
+      range.selectNodeContents(textNode);
+      const textRect = range.getBoundingClientRect();
       const panelRect = panel.getBoundingClientRect();
-      const labelRect = tokenLabel.getBoundingClientRect();
       setTokenPathHelpPosition({
-        top: labelRect.top - panelRect.top - 2,
-        left: labelRect.left - panelRect.left + 100,
+        top: textRect.top - panelRect.top - 2,
+        left: textRect.right - panelRect.left + 6,
       });
     };
     updateTokenHelpPosition();
@@ -1293,7 +1336,7 @@ export function RestApiWorkspace(props: Props) {
             {entry.authMode === "login" && <div className="rest-vendor-bar"><button type="button" className="rest-help-button" onClick={() => setSessionHelpOpen((value) => !value)} aria-label="How to use the selected Session Auth preset" aria-expanded={sessionHelpOpen}>?</button><div className="rest-vendor-toggle" role="group" aria-label="REST API vendor"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => selectVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => selectVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => selectVendor("openbmc")}>OpenBMC</button></div><button type="button" className="rest-vendor-preset" onClick={applyVendorPreset}>{vendor === "openbmc" ? "Use OpenBMC /login preset" : "Use Redfish SessionService preset"}</button><button type="button" className="confirm rest-login-button" onClick={() => void login()} disabled={loading}>{loading ? "Logging in..." : "Login"}</button>{sessionHelpOpen && <div className="rest-session-help" role="note" onClick={(event) => event.stopPropagation()}><button type="button" className="rest-session-help-close" onClick={() => setSessionHelpOpen(false)} aria-label="Close Session Auth help"><CloseIcon size={12} /></button><strong>{vendor === "openbmc" ? "OpenBMC /login session" : `${vendorPreset.label} Redfish SessionService login`}</strong><ol><li>Set Authentication Mode to <strong>Session Auth</strong>.</li><li>Enter your Redfish username.</li><li>Enter your Redfish password.</li><li>Apply the vendor preset shown above.</li><li>Click <strong>Login</strong>.</li><li>Confirm that <strong>REST session established for this entry.</strong> appears.</li><li>Click <strong>GET</strong> to read the current Redfish resource.</li></ol><pre>{vendorPreset.referenceJson}</pre><p>The session token is kept for this REST API entry and reused by history, breadcrumbs, links, actions, and downloads.</p></div>}</div>}
             {entry.authMode === "login" && <div className="rest-login-config"><label>Login path<input value={entry.loginPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginPath: event.target.value } : item))} /></label><label>Token JSON path<input value={entry.tokenPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenPath: event.target.value } : item))} /></label><label>Token header<input value={entry.tokenHeader} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenHeader: event.target.value } : item))} /></label><label>Login body<textarea value={entry.loginBody} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginBody: event.target.value } : item))} /></label><div className="rest-session-preset"><button type="button" className="rest-help-button" onClick={() => setSessionHelpOpen((value) => !value)} aria-label="How to use Redfish SessionService preset" aria-expanded={sessionHelpOpen}>?</button><button type="button" onClick={() => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginPath: "/redfish/v1/SessionService/Sessions", tokenPath: "", tokenHeader: "X-Auth-Token", tokenSendAs: "X-Auth-Token", loginBody: '{"UserName":"{{username}}","Password":"{{password}}"}' } : item))}>Use Redfish SessionService preset</button><button type="button" className="confirm" onClick={() => void login()} disabled={loading}>{loading ? "Logging in..." : "Login"}</button>{sessionHelpOpen && <div className="rest-session-help" role="note" onClick={(event) => event.stopPropagation()}><button type="button" className="rest-session-help-close" onClick={() => setSessionHelpOpen(false)} aria-label="Close Session Auth help"><CloseIcon size={12} /></button><strong>Redfish SessionService login</strong><ol><li>Set Authentication Mode to <strong>Session Auth</strong>.</li><li>Enter your Redfish username.</li><li>Enter your Redfish password.</li><li>Click <strong>Use Redfish SessionService preset</strong>.</li><li>Click <strong>Login</strong>.</li><li>Confirm that <strong>REST session established for this entry.</strong> appears.</li><li>Click <strong>GET</strong> to read the current Redfish resource.</li></ol><p>The session token is kept for this REST API entry and reused by history, breadcrumbs, links, actions, and downloads.</p></div>}</div></div>}
            </div>}
-          {entry.authMode === "login" && <div className="token-path-help" style={tokenPathHelpPosition}><span>Token JSON Path</span><button type="button" className="token-path-help-button" onClick={() => setTokenPathHelpOpen((value) => !value)} aria-label="What is Token JSON Path" aria-expanded={tokenPathHelpOpen}>?</button>{tokenPathHelpOpen && <div className="token-path-help-popup" role="note" onClick={(event) => event.stopPropagation()}><button type="button" className="token-path-help-close" onClick={() => setTokenPathHelpOpen(false)} aria-label="Close Token JSON Path help"><CloseIcon size={12} /></button><strong>Token JSON Path</strong><p>Use this only when the login response returns the token inside a JSON response body.</p><pre>{'{\n  "data": {\n    "token": "abc123"\n  }\n}'}</pre><p>Enter <code>data.token</code>. For HPE iLO and OpenBMC Redfish SessionService, leave this empty when the token is returned in the <code>X-Auth-Token</code> response header.</p></div>}</div>}
+          {entry.authMode === "login" && <div className="token-path-help" style={tokenPathHelpPosition}><span>Token JSON Path</span><button ref={tokenPathHelpButtonRef} type="button" className="token-path-help-button" onClick={() => setTokenPathHelpOpen((value) => !value)} aria-label="What is Token JSON Path" aria-expanded={tokenPathHelpOpen}>?</button>{tokenPathHelpOpen && createPortal(<div className="token-path-help-popup" role="note" style={tokenPathHelpPopupStyle} onClick={(event) => event.stopPropagation()}><button type="button" className="token-path-help-close" onClick={() => setTokenPathHelpOpen(false)} aria-label="Close Token JSON Path help"><CloseIcon size={12} /></button><strong>Token JSON Path</strong><p>Use this only when the login response returns the token inside a JSON response body.</p><pre>{'{\n  "data": {\n    "token": "abc123"\n  }\n}'}</pre><p>Enter <code>data.token</code>. For HPE iLO and OpenBMC Redfish SessionService, leave this empty when the token is returned in the <code>X-Auth-Token</code> response header.</p></div>, document.body)}</div>}
         </section>
          <section className="rest-operation-sections" aria-label="REST operations">
               {vendor === "hpe" && <div className="rest-operation-section"><button type="button" className="rest-operation-toggle" onClick={() => setHpeToolsOpen((value) => !value)} aria-expanded={hpeToolsOpen}><span>HPE Tools</span><span>{hpeToolsOpen ? "−" : "+"}</span></button>{hpeToolsOpen && <div className="rest-operation-body"><button type="button" onClick={() => void loadAllHardware()}>All hardware inventory</button><button type="button" onClick={() => void openAllResources()}>All Resources</button><button type="button" onClick={() => void discoverPower()}>Power controls</button><button type="button" onClick={() => void loadBios()}>BIOS settings</button><button type="button" onClick={() => void loadFirmware()}>Firmware update</button><button type="button" onClick={() => void resetLogs()}>Clear logs / reset</button><button type="button" onClick={() => void openDevices()}>Devices table</button><button type="button" onClick={() => { setImlOpen(true); void fetchIml(); }}>IML monitor</button></div>}</div>}

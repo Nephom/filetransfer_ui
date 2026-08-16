@@ -92,7 +92,7 @@
 .token-path-help-button { display: inline-grid; place-items: center; width: 18px; min-width: 18px; min-height: 18px !important; padding: 0 !important; border: 1px solid var(--color-primary); border-radius: 50%; color: var(--color-primary); background: var(--color-bg-panel); font-size: 10px !important; font-weight: 700; }
 .token-path-help-button, .token-path-help-popup { pointer-events: auto; }
 .token-path-help-button:hover, .token-path-help-button[aria-expanded="true"] { color: var(--color-bg); background: var(--color-primary); }
-.token-path-help-popup { position: absolute; z-index: 12; bottom: calc(100% + 8px); left: 0; width: min(440px, calc(100vw - 48px)); padding: 12px; border: 1px solid var(--color-primary); border-radius: 6px; color: var(--color-text); background: var(--color-bg-panel-strong); box-shadow: 0 14px 32px rgba(0, 0, 0, .52); font-size: 11px; line-height: 1.45; }
+.token-path-help-popup { position: fixed; z-index: var(--z-context); padding: 12px; border: 1px solid var(--color-primary); border-radius: 6px; color: var(--color-text); background: var(--color-bg-panel-strong); box-shadow: 0 14px 32px rgba(0, 0, 0, .52); font-size: 11px; line-height: 1.45; }
 .token-path-help-popup strong { color: var(--color-text); }
 .token-path-help-popup p { margin: 7px 0; color: var(--color-text-muted); }
 .token-path-help-popup pre { margin: 7px 0; padding: 8px; overflow: auto; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
