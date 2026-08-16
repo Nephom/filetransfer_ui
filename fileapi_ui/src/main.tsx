@@ -416,106 +416,6 @@ function PersistentScrollbar({
   );
 }
 
-function PaletteSelect({
-  label,
-  value,
-  options,
-  onChange,
-  menuPlacement = "down",
-}: {
-  label: string;
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  onChange: (value: string) => void;
-  menuPlacement?: "down" | "up";
-}) {
-  const [open, setOpen] = useState(false);
-  const controlRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const selected = options.find((option) => option.value === value);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const close = (event: MouseEvent) => {
-      if (!controlRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    window.addEventListener("click", close);
-    const firstOption = menuRef.current?.querySelector<HTMLButtonElement>("[role=option]");
-    firstOption?.focus();
-    return () => window.removeEventListener("click", close);
-  }, [open]);
-
-  const closeMenu = () => {
-    setOpen(false);
-    controlRef.current?.querySelector<HTMLButtonElement>(".palette-select")?.focus();
-  };
-
-  return (
-    <div ref={controlRef} className="palette-select-control">
-      <button
-        type="button"
-        className="location-select palette-select"
-        aria-label={label}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            setOpen(true);
-          }
-        }}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span>{selected?.label || label}</span>
-        <ChevronDownIcon className="location-chevron" />
-      </button>
-      {open && (
-        <div
-          ref={menuRef}
-          className={`location-menu palette-select-menu ${menuPlacement === "up" ? "menu-up" : ""}`}
-          role="listbox"
-          aria-label={label}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              closeMenu();
-              return;
-            }
-            const options = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role=option]") || []);
-            const currentIndex = options.indexOf(document.activeElement as HTMLButtonElement);
-            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-              event.preventDefault();
-              const nextIndex = event.key === "ArrowDown"
-                ? Math.min(currentIndex + 1, options.length - 1)
-                : Math.max(currentIndex - 1, 0);
-              options[nextIndex]?.focus();
-            } else if (event.key === "Home" || event.key === "End") {
-              event.preventDefault();
-              options[event.key === "Home" ? 0 : options.length - 1]?.focus();
-            }
-          }}
-        >
-          {options.map((option) => (
-            <button
-              type="button"
-              role="option"
-              aria-selected={option.value === value}
-              className={option.value === value ? "selected" : ""}
-              key={option.value}
-              onClick={() => {
-                onChange(option.value);
-                closeMenu();
-              }}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 type CommandBarOverflowAction = {
   key: string;
   label: string;
@@ -7140,14 +7040,16 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             )}
             <div className="terminal-content ssh-terminal-content">
               <div className="ssh-controls">
-                <PaletteSelect
-                   label="Select a Workspace"
+                <Dropdown
+                  className="palette-select-control"
+                  label="Select a Workspace"
                   value={workspaceSessionId}
                   options={workspaceSessions.map((workspace) => ({ value: workspace.id, label: workspace.name }))}
                   onChange={selectWorkspaceSession}
                 />
                 {activeWorkspaceSession && (
-                  <PaletteSelect
+                  <Dropdown
+                    className="palette-select-control"
                     label="Select an SSH entry"
                     value={selectedSshEntryId}
                     options={activeWorkspaceSession.sshEntries.map((entry) => ({ value: entry.id, label: entry.name }))}
