@@ -1,15 +1,21 @@
-/* Shared Desktop UI sizing. Component styles should consume these tokens. */
+/* Shared Desktop UI sizing. Component styles should consume these tokens.
+   Desktop text/control size scales continuously with the actual window size
+   (vmin = 1% of whichever of width/height is smaller) instead of a manual
+   80/100/120% preset -- there is no ceiling tied to a fixed "Comfortable"
+   step, so enlarging the window keeps making text bigger up to the clamp()
+   ceiling below. Mobile keeps its own fixed touch-target sizing (unrelated
+   to reading comfort), so ui-layout-mobile is untouched. */
 .explorer {
-  --ui-font-size: 13px;
-  --ui-small-font-size: 11px;
-  --ui-button-height: 30px;
-  --ui-control-height: 30px;
-  --ui-button-padding-x: 9px;
-  --ui-button-padding-y: 4px;
-  --ui-control-gap: 6px;
-  --ui-section-gap: 10px;
-  --ui-panel-padding: 12px;
-  --ui-terminal-min-height: 180px;
+  --ui-font-size: clamp(13px, calc(6px + 1.1vmin), 22px);
+  --ui-small-font-size: clamp(11px, calc(5px + 0.9vmin), 18px);
+  --ui-button-height: clamp(30px, calc(14px + 2.6vmin), 52px);
+  --ui-control-height: var(--ui-button-height);
+  --ui-button-padding-x: clamp(7px, calc(3px + 0.7vmin), 16px);
+  --ui-button-padding-y: clamp(3px, calc(1px + 0.35vmin), 10px);
+  --ui-control-gap: clamp(4px, calc(1px + 0.5vmin), 12px);
+  --ui-section-gap: clamp(6px, calc(2px + 0.8vmin), 20px);
+  --ui-panel-padding: clamp(8px, calc(3px + 0.9vmin), 22px);
+  --ui-terminal-min-height: clamp(160px, calc(100px + 6vmin), 260px);
   font-size: var(--ui-font-size);
 }
 
@@ -29,52 +35,6 @@
 /* The mobile text floor itself (button/input/label/heading font sizes,
    including the !important overrides needed for descendant elements) is
    declared once in styles/mobile-ui.css, not duplicated here. */
-
-.explorer.ui-density-compact {
-  --ui-font-size: 11px;
-  --ui-small-font-size: 9px;
-  --ui-button-height: 26px;
-  --ui-control-height: 26px;
-  --ui-button-padding-x: 6px;
-  --ui-button-padding-y: 3px;
-  --ui-control-gap: 4px;
-  --ui-section-gap: 6px;
-  --ui-panel-padding: 8px;
-  --ui-terminal-min-height: 165px;
-}
-
-.explorer.ui-density-comfortable {
-  --ui-font-size: 16px;
-  --ui-small-font-size: 13px;
-  --ui-button-height: 38px;
-  --ui-control-height: 38px;
-  --ui-button-padding-x: 14px;
-  --ui-button-padding-y: 9px;
-  --ui-control-gap: 10px;
-  --ui-section-gap: 16px;
-  --ui-panel-padding: 18px;
-  --ui-terminal-min-height: 220px;
-}
-
-@media (max-width: 1100px), (max-height: 760px) {
-  .explorer.ui-density-auto {
-    --ui-font-size: 11px;
-    --ui-small-font-size: 9px;
-    --ui-button-height: 26px;
-    --ui-control-height: 26px;
-    --ui-button-padding-x: 6px;
-    --ui-button-padding-y: 3px;
-    --ui-control-gap: 4px;
-    --ui-section-gap: 6px;
-    --ui-panel-padding: 8px;
-    --ui-terminal-min-height: 165px;
-  }
-}
-
-.explorer.ui-density-auto,
-.explorer.ui-density-standard {
-  --ui-density-mode: standard;
-}
 
 @media (max-width: 720px) {
   .explorer {

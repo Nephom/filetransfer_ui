@@ -25,24 +25,16 @@
 .settings-panel-card small { color: var(--color-text-muted); font-size: 11px; }
 .settings-panel-card b { position: absolute; top: 50%; right: 14px; font-size: 24px; font-weight: 400; transform: translateY(-50%); }
 .settings-panel-menu + .settings-section, .settings-modal.settings-panel-menu .settings-section { display: none; }
-.settings-modal.settings-panel-size .settings-section:nth-of-type(n + 2),
-.settings-modal.settings-panel-theme .settings-section:not(:nth-of-type(2)),
-.settings-modal.settings-panel-features .settings-section:not(:nth-of-type(3)),
-.settings-modal.settings-panel-confirmations .settings-section:not(:nth-of-type(4)),
-.settings-modal.settings-panel-sharing .settings-section:not(:nth-of-type(5)),
-.settings-modal.settings-panel-history .settings-section:not(:nth-of-type(6)) { display: none; }
+.settings-modal.settings-panel-theme .settings-section:not(:nth-of-type(1)),
+.settings-modal.settings-panel-features .settings-section:not(:nth-of-type(2)),
+.settings-modal.settings-panel-confirmations .settings-section:not(:nth-of-type(3)),
+.settings-modal.settings-panel-sharing .settings-section:not(:nth-of-type(4)),
+.settings-modal.settings-panel-history .settings-section:not(:nth-of-type(5)) { display: none; }
 .settings-subpanel-back { align-self: flex-start; margin-bottom: 8px; }
 .settings-subpanel { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: auto; padding: var(--ui-panel-padding); animation: settings-subpanel-in 160ms ease-out both; }
 .settings-subpanel-heading { display: flex; align-items: center; gap: var(--ui-control-gap); margin-bottom: var(--ui-section-gap); }
 .settings-subpanel-heading button { min-height: var(--ui-button-height); }
 .settings-subpanel-heading strong { color: var(--color-text); font-size: 16px; }
-.settings-density { display: grid; gap: var(--ui-control-gap); }
-.settings-density-heading, .settings-density-scale { display: flex; align-items: center; justify-content: space-between; gap: var(--ui-control-gap); }
-.settings-density-heading strong { color: var(--color-text); }
-.settings-density-heading small, .settings-density-scale span { color: var(--color-text-muted); font-size: var(--ui-small-font-size); }
-.settings-density input[type="range"] { width: 100%; min-height: 0; margin: 0; padding: 0; }
-.settings-density-mode { color: var(--color-primary); font-size: var(--ui-small-font-size); font-weight: 700; }
-.settings-density > button[aria-pressed="true"] { border-color: var(--color-primary); color: var(--color-bg); background: var(--color-primary); }
 .settings-actions { gap: var(--ui-control-gap); margin-top: var(--ui-section-gap); }
 .settings-global-collapse { display: flex; align-items: flex-start; gap: var(--ui-control-gap); margin: 0 var(--ui-panel-padding) var(--ui-section-gap); padding: var(--ui-panel-padding); border: 1px solid var(--color-primary); border-radius: var(--radius-md); color: var(--color-text); background: var(--color-bg-panel); }
 .settings-global-collapse input { flex: 0 0 22px; width: 22px; min-width: 22px; height: 22px; min-height: 22px; margin: 2px 0 0; accent-color: var(--color-primary); }

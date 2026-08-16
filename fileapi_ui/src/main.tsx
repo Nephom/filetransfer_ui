@@ -220,7 +220,6 @@ type UndoEntry = {
 };
 type DesktopSettings = {
   uiProfile: "auto" | "mobile";
-  uiDensity: "auto" | "compact" | "standard" | "comfortable";
   theme: ThemePreset;
   accentColor: string;
   proxmoxVncModeEnabled: boolean;
@@ -241,7 +240,7 @@ type DesktopSettings = {
     crossSourceMove: boolean;
   };
 };
-type SettingsPanel = "size" | "theme" | "features" | "confirmations" | "sharing" | "history";
+type SettingsPanel = "theme" | "features" | "confirmations" | "sharing" | "history";
 
 type ModalDragId =
   | "log-view"
@@ -694,7 +693,6 @@ const readPersistedQueue = (): TransferQueueItem[] => {
 };
 const defaultDesktopSettings: DesktopSettings = {
   uiProfile: "auto",
-  uiDensity: "auto",
   theme: "bridge",
   accentColor: "#63e6ff",
   proxmoxVncModeEnabled: false,
@@ -1117,9 +1115,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       const uiProfile = ["auto", "mobile"].includes(saved?.uiProfile)
         ? saved.uiProfile
         : defaultDesktopSettings.uiProfile;
-      const uiDensity = ["auto", "compact", "standard", "comfortable"].includes(saved?.uiDensity)
-        ? saved.uiDensity
-        : defaultDesktopSettings.uiDensity;
       const theme = Object.prototype.hasOwnProperty.call(themePresets, saved?.theme)
         ? saved.theme as ThemePreset
         : defaultDesktopSettings.theme;
@@ -1146,7 +1141,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         ...defaultDesktopSettings,
         ...saved,
         uiProfile,
-        uiDensity,
         theme,
         accentColor,
         operationLogLevel,
@@ -5552,19 +5546,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     </section>
   );
 
-  const autoDensity = viewport.width <= 1100 || viewport.height <= 760 ? "compact" : "standard";
   const mobileLayout = desktopSettings.uiProfile === "mobile"
     || (desktopSettings.uiProfile === "auto" && isMobileViewport(viewport));
-  const densityPercent = { compact: "80%", standard: "100%", comfortable: "120%" } as const;
-  const selectedDensity = desktopSettings.uiDensity === "auto" ? autoDensity : desktopSettings.uiDensity;
-  const densityLabel = desktopSettings.uiDensity === "auto"
-    ? `Automatic (${densityPercent[selectedDensity]})`
-    : densityPercent[selectedDensity];
-  const densitySliderValue = selectedDensity === "compact"
-    ? "0"
-    : selectedDensity === "comfortable"
-      ? "2"
-      : "1";
   const contextLabel = appMode === "location" ? "LocationID" : appMode === "rest" ? "REST Entry" : "VNC Entry";
   const contextValue = appMode === "location"
     ? remoteSshEntryId ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}` : activeLocation?.id || session.locationId || "No Location"
@@ -5604,7 +5587,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   };
 
       return (
-    <AppShell style={themeStyle(desktopSettings.theme, desktopSettings.accentColor)} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
+    <AppShell style={themeStyle(desktopSettings.theme, desktopSettings.accentColor)} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
       <Suspense fallback={null}>
       <DesktopTitlebar
         appMode={appMode}
@@ -6592,30 +6575,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                 <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
                 {settingsPanel !== null && <button type="button" className="settings-subpanel-back" onClick={() => setSettingsPanel(null)}>‹ Settings</button>}
                 {settingsPanel === null && <label className="settings-global-collapse"><input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} /><span><strong>Collapse main split panes</strong><small>Use [‹] and [›] instead of the main resizebar in Location, REST API, and VNC.</small></span></label>}
-                {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("size")}><strong>Interface size</strong><span>{densityLabel}</span><small>Adjust controls and spacing.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"}</span><small>Enable optional workspaces.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b>›</b></button></div>}
-               <section className="settings-section">
-                 <h3>Interface size</h3>
-                 <div className="settings-density">
-                  <div className="settings-density-heading">
-                    <strong>{densityLabel}</strong>
-                    <small>Buttons and spacing adapt without cutting text.</small>
-                  </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="2"
-                    step="1"
-                    value={densitySliderValue}
-                    aria-label="Interface size"
-                    onChange={(event) => {
-                      const values = ["compact", "standard", "comfortable"] as const;
-                      setDesktopSettings((current) => ({ ...current, uiDensity: values[Number(event.target.value)] }));
-                    }}
-                  />
-                   <div className="settings-density-scale"><span>80%</span><span>100%</span><span>120%</span></div>
-                   <button type="button" aria-pressed={desktopSettings.uiDensity === "auto"} onClick={() => setDesktopSettings((current) => ({ ...current, uiDensity: "auto" }))}>Use automatic sizing</button>
-                </div>
-               </section>
+                {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"}</span><small>Enable optional workspaces.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b>›</b></button></div>}
                <section className="settings-section">
                  <h3>Color theme</h3>
                  <div className="settings-check settings-theme-row">
