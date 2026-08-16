@@ -63,6 +63,17 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
+/* Mobile mode navigation renders MobileChoiceMenu in place of .mode-buttons
+   (see DesktopTitlebar.tsx); it is never a third row in the titlebar. Only
+   the titlebar grid/region rules below are still consumed in that state. */
+.explorer.ui-layout-mobile > .titlebar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); height: 56px; max-height: 56px; overflow: visible; }
+.explorer.ui-layout-mobile > .titlebar .titlebar-brand { display: flex; min-width: 0; overflow: hidden; }
+.explorer.ui-layout-mobile > .titlebar .titlebar-brand .app-name { font-size: 13px; }
+.explorer.ui-layout-mobile > .titlebar .titlebar-main { min-width: 0; justify-content: flex-start; overflow: visible; }
+.explorer.ui-layout-mobile > .titlebar .titlebar-main { justify-self: center; }
+.explorer.ui-layout-mobile > .titlebar .titlebar-account { min-width: max-content; justify-self: end; justify-content: flex-end; }
+.explorer.ui-layout-mobile > .titlebar .titlebar-main .mode-switcher { position: relative; width: fit-content; max-width: 100%; overflow: visible; }
+
 .titlebar-main .mode-switch-button.selected .mode-switch-dot,
 .titlebar-main .mode-switch-button:hover:not(:disabled) .mode-switch-dot {
   border-color: var(--color-primary);
