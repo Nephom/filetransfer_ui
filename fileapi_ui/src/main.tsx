@@ -42,6 +42,7 @@ import "./styles/surface-overrides.css";
 import "./styles/mode-switcher.css";
 import "./styles/vnc-interactions.css";
 import "./styles/commandbar.css";
+import "./styles/mobile-ui.css";
 import { helpPages, helpSections } from "./help/help-content";
 import type { OperationLogRecord } from "./log-view";
 import type { RestApiEntry, RestApiSecret } from "./rest-api";
@@ -53,6 +54,7 @@ import { DesktopTitlebar } from "./app/DesktopTitlebar";
 import { FloatingWindow } from "./ui/FloatingWindow";
 import { useTerminalLifecycle } from "./features/terminal/useTerminalLifecycle";
 import { useSshEventBridge } from "./features/terminal/useSshEventBridge";
+import { isMobileViewport } from "./styles/breakpoints";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
@@ -215,10 +217,12 @@ type UndoEntry = {
   newPath: string;
 };
 type DesktopSettings = {
+  uiProfile: "auto" | "mobile";
   uiDensity: "auto" | "compact" | "standard" | "comfortable";
   theme: ThemePreset;
   accentColor: string;
   proxmoxVncModeEnabled: boolean;
+  collapseMainPaneEnabled: boolean;
   undoHistoryEnabled: boolean;
   operationLogEnabled: boolean;
   operationLogLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
@@ -583,10 +587,12 @@ const readPersistedQueue = (): TransferQueueItem[] => {
   }
 };
 const defaultDesktopSettings: DesktopSettings = {
+  uiProfile: "auto",
   uiDensity: "auto",
   theme: "bridge",
   accentColor: "#63e6ff",
   proxmoxVncModeEnabled: false,
+  collapseMainPaneEnabled: false,
   undoHistoryEnabled: true,
   operationLogEnabled: true,
   operationLogLevel: "DEBUG",
@@ -766,11 +772,25 @@ type LoginScreenProps = {
   setPassword: React.Dispatch<React.SetStateAction<string>>;
   busy: boolean;
   notice: string;
+  uiProfile: "auto" | "mobile";
+  onUiProfileChange: (profile: "auto" | "mobile") => void;
   onSubmit: (event: React.FormEvent) => void;
   onOnlyTerminal: () => void;
 };
 
-function LoginScreen({ session, setSession, password, setPassword, busy, notice, onSubmit, onOnlyTerminal }: LoginScreenProps) {
+function LoginScreen({ session, setSession, password, setPassword, busy, notice, uiProfile, onUiProfileChange, onSubmit, onOnlyTerminal }: LoginScreenProps) {
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!profileMenuOpen) return undefined;
+    const close = (event: MouseEvent) => {
+      if (!(event.target as HTMLElement).closest(".login-profile-menu")) setProfileMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setProfileMenuOpen(false); };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", closeOnEscape); };
+  }, [profileMenuOpen]);
+  const profileLabel = uiProfile === "mobile" ? "Mobile" : "Auto";
   const updateSaveUserInformation = (enabled: boolean) => {
     setSession((current) => ({ ...current, saveUserInformation: enabled }));
     if (!enabled) {
@@ -782,7 +802,7 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
   };
 
   return (
-    <main className="login">
+    <main className={`login ui-profile-${uiProfile}`}>
       <form onSubmit={onSubmit}>
         <div className="login-mark" aria-hidden="true"><span /></div>
         <h1>nFterm {appVersion && <small className="login-version">{appVersion}</small>}</h1>
@@ -798,6 +818,12 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
           <button type="button" className={`login-toggle-button${session.saveUserInformation ? " enabled" : ""}`} aria-pressed={session.saveUserInformation} onClick={() => updateSaveUserInformation(!session.saveUserInformation)} title="Save the API username and password in the OS credential store">
             <span className="mode-switch-dot" aria-hidden="true" /><span>SAVE USER INFORMATION</span>
           </button>
+          <span className={`login-profile-menu${profileMenuOpen ? " open" : ""}`}>
+            <button type="button" className="login-toggle-button login-profile-trigger" aria-expanded={profileMenuOpen} aria-haspopup="menu" onClick={() => setProfileMenuOpen((open) => !open)}>{profileLabel}<span aria-hidden="true">{profileMenuOpen ? "‹" : "›"}</span></button>
+            {profileMenuOpen && <span className="login-profile-options" role="menu">
+              {(["auto", "mobile"] as const).filter((profile) => profile !== uiProfile).map((profile) => <button key={profile} type="button" role="menuitem" onClick={() => { onUiProfileChange(profile); setProfileMenuOpen(false); }}>{profile === "mobile" ? "Mobile (Touch Friendly)" : "Auto"}</button>)}
+            </span>}
+          </span>
         </div>
         <p className="login-toggle-help">Ignore SSL disables certificate verification. Save User Information stores the username and password in the OS credential store.</p>
         <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
@@ -842,6 +868,23 @@ function App() {
   }, [session.saveUserInformation]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [uiProfile, setUiProfile] = useState<DesktopSettings["uiProfile"]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
+      return saved?.uiProfile === "mobile" ? "mobile" : "auto";
+    } catch {
+      return "auto";
+    }
+  });
+  const changeUiProfile = (profile: DesktopSettings["uiProfile"]) => {
+    setUiProfile(profile);
+    try {
+      const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
+      localStorage.setItem(desktopSettingsKey, JSON.stringify({ ...(saved || {}), uiProfile: profile }));
+    } catch {
+      localStorage.setItem(desktopSettingsKey, JSON.stringify({ uiProfile: profile }));
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem("nfterm-session", JSON.stringify({
@@ -897,7 +940,7 @@ function App() {
     setNotice("Only Terminal: skipped login and API server connection. Local Explorer and SSH Terminal are available; remote (REMOTE) features are disabled.");
   };
 
-  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} onSubmit={login} onOnlyTerminal={enterOnlyTerminalMode} />;
+  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} uiProfile={uiProfile} onUiProfileChange={changeUiProfile} onSubmit={login} onOnlyTerminal={enterOnlyTerminalMode} />;
   return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} />;
 }
 
@@ -965,6 +1008,9 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
+      const uiProfile = ["auto", "mobile"].includes(saved?.uiProfile)
+        ? saved.uiProfile
+        : defaultDesktopSettings.uiProfile;
       const uiDensity = ["auto", "compact", "standard", "comfortable"].includes(saved?.uiDensity)
         ? saved.uiDensity
         : defaultDesktopSettings.uiDensity;
@@ -987,9 +1033,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       const proxmoxVncModeEnabled = typeof saved?.proxmoxVncModeEnabled === "boolean"
         ? saved.proxmoxVncModeEnabled
         : defaultDesktopSettings.proxmoxVncModeEnabled;
+      const collapseMainPaneEnabled = typeof saved?.collapseMainPaneEnabled === "boolean"
+        ? saved.collapseMainPaneEnabled
+        : defaultDesktopSettings.collapseMainPaneEnabled;
       return {
         ...defaultDesktopSettings,
         ...saved,
+        uiProfile,
         uiDensity,
         theme,
         accentColor,
@@ -997,6 +1047,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         shareLinkExpirationDays,
         shareLinkMode,
         proxmoxVncModeEnabled,
+        collapseMainPaneEnabled,
         confirmations: { ...defaultDesktopSettings.confirmations, ...(saved?.confirmations || {}) },
       };
     } catch {
@@ -1040,6 +1091,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [splitMode, setSplitMode] = useState(() =>
     localStorage.getItem("file-layout-mode") === "split",
   );
+  const [locationPaneCollapsed, setLocationPaneCollapsed] = useState<"left" | "right" | null>(null);
+  useEffect(() => { setLocationPaneCollapsed(null); }, [splitMode, appMode]);
   const [managedSessions, setManagedSessions] = useState<ManagedSession[]>(() => {
     try {
       const saved = localStorage.getItem(sessionRegistryKey);
@@ -5394,6 +5447,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   );
 
   const autoDensity = viewport.width <= 1100 || viewport.height <= 760 ? "compact" : "standard";
+  const mobileLayout = desktopSettings.uiProfile === "mobile"
+    || (desktopSettings.uiProfile === "auto" && isMobileViewport(viewport));
   const densityPercent = { compact: "80%", standard: "100%", comfortable: "120%" } as const;
   const selectedDensity = desktopSettings.uiDensity === "auto" ? autoDensity : desktopSettings.uiDensity;
   const densityLabel = desktopSettings.uiDensity === "auto"
@@ -5443,7 +5498,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   };
 
       return (
-    <AppShell style={themeStyle(desktopSettings.theme, desktopSettings.accentColor)} className={`explorer ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
+    <AppShell style={themeStyle(desktopSettings.theme, desktopSettings.accentColor)} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ui-density-${desktopSettings.uiDensity} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
       <Suspense fallback={null}>
       <DesktopTitlebar
         appMode={appMode}
@@ -5452,6 +5507,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         accountOpen={accountOpen}
         accountControl={accountControl}
         accountMenuStyle={accountMenuStyle}
+        mobileLayout={mobileLayout}
         onModeChange={setAppMode}
         onAccountToggle={(event) => {
           event.stopPropagation();
@@ -5653,14 +5709,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         </button>
          <ContextPicker label={contextLabel} value={contextValue} groups={contextGroups} onSelect={selectContext} disabled={busy} />
       </nav>
-       <div className={appMode === "location" ? `desktop-workspace${splitMode ? " split-workspace" : ""}` : "mode-workspace"}>
+       <div className={appMode === "location" ? `desktop-workspace${splitMode ? " split-workspace" : ""}${locationPaneCollapsed ? ` pane-collapse-${locationPaneCollapsed}` : ""}` : "mode-workspace"}>
          {appMode === "rest" ? (
           <RestApiWorkspace
             workspaceName={restWorkspace?.name || "No Workspace"}
             entries={restWorkspace?.restApiEntries || []}
-            activeEntryId={activeRestEntryId}
-            secrets={restSecrets}
-            sessionHeaders={restSessionHeaders}
+             activeEntryId={activeRestEntryId}
+             secrets={restSecrets}
+             sessionHeaders={restSessionHeaders}
+             collapseMainPaneEnabled={desktopSettings.collapseMainPaneEnabled}
             onSelectEntry={setActiveRestEntryId}
             onChangeEntries={(entries) => {
               if (restWorkspace) {
@@ -5694,9 +5751,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
               key={vncWorkspace?.id || "default-vnc-workspace"}
               workspaceName={vncWorkspace?.name || "No Workspace"}
              entries={vncWorkspace?.proxmoxVncEntries || []}
-             activeEntryId={activeVncEntryId}
-             secrets={vncSecrets}
-             onSelectEntry={setActiveVncEntryId}
+              activeEntryId={activeVncEntryId}
+              secrets={vncSecrets}
+              collapseMainPaneEnabled={desktopSettings.collapseMainPaneEnabled}
+              onSelectEntry={setActiveVncEntryId}
              onChangeEntries={(entries) => {
                if (vncWorkspace) {
                  setManagedSessions((current) => current.map((workspace) => workspace.id === vncWorkspace.id ? { ...workspace, proxmoxVncEntries: entries } : workspace));
@@ -5714,9 +5772,14 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
            />
          ) : <>
         {splitMode && renderLocalPane()}
-        {splitMode && (
+         {desktopSettings.collapseMainPaneEnabled ? (
+           <div className="location-main-pane-collapse-controls" role="group" aria-label="Location pane visibility">
+             <button type="button" onClick={() => setLocationPaneCollapsed(locationPaneCollapsed === "right" ? null : "left")} disabled={locationPaneCollapsed === "left"} aria-label={locationPaneCollapsed === "right" ? "Restore REMOTE pane" : "Collapse left Location pane"}>‹</button>
+             <button type="button" onClick={() => setLocationPaneCollapsed(locationPaneCollapsed === "left" ? null : "right")} disabled={!splitMode && locationPaneCollapsed !== "left" || locationPaneCollapsed === "right"} aria-label={locationPaneCollapsed === "left" ? "Restore LOCAL pane" : "Collapse right Location pane"}>›</button>
+           </div>
+         ) : splitMode ? (
            <PaneResizeHandle ariaLabel="Resize LOCAL and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />
-        )}
+         ) : null}
         <aside className="desktop-folder-tree" style={!splitMode ? { flexBasis: `${folderPaneWidth}px`, width: `${folderPaneWidth}px` } : undefined} onMouseDownCapture={() => setActivePane("remote")}>
           <span className="sidebar-label">Folders</span>
           <div className="folder-pane">
@@ -5733,7 +5796,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
           </div>
         </aside>
-        {!splitMode && <PaneResizeHandle ariaLabel="Resize Folders and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />}
+         {!splitMode && !desktopSettings.collapseMainPaneEnabled && <PaneResizeHandle ariaLabel="Resize Folders and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />}
         <section
           className={`desktop-content ${splitMode && activePane === "remote" ? "active-pane" : ""}`}
           onMouseDownCapture={() => setActivePane("remote")}
@@ -6328,12 +6391,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
        )}
        {settingsOpen && (
           <FloatingWindow ariaLabel="Desktop Settings" className={`settings-modal settings-panel-${settingsPanel || "menu"}`} style={modalStyle("settings")} onClose={() => setSettingsOpen(false)} onDragStart={beginModalDrag("settings")} header={<div className="settings-floating-heading"><h2 className="modal-drag-handle">Desktop Settings</h2><button type="button" className="settings-floating-close" onClick={() => setSettingsOpen(false)} aria-label="Close Desktop Settings">×</button></div>} footer={<div className="settings-floating-footer"><button type="button" className="confirm" onClick={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}>Save</button><button type="button" onClick={() => settingsPanel === null ? setSettingsOpen(false) : setSettingsPanel(null)}>Close</button></div>}>
-               <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
-               {settingsPanel !== null && <button type="button" className="settings-subpanel-back" onClick={() => setSettingsPanel(null)}>‹ Settings</button>}
-               {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("size")}><strong>Interface size</strong><span>{densityLabel}</span><small>Adjust controls and spacing.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"}</span><small>Enable optional workspaces.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b>›</b></button></div>}
-              <section className="settings-section">
-                <h3>Interface size</h3>
-                <div className="settings-density">
+                <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
+                {settingsPanel !== null && <button type="button" className="settings-subpanel-back" onClick={() => setSettingsPanel(null)}>‹ Settings</button>}
+                {settingsPanel === null && <label className="settings-global-collapse"><input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} /><span><strong>Collapse main split panes</strong><small>Use [‹] and [›] instead of the main resizebar in Location, REST API, and VNC.</small></span></label>}
+                {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("size")}><strong>Interface size</strong><span>{densityLabel}</span><small>Adjust controls and spacing.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"}</span><small>Enable optional workspaces.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b>›</b></button></div>}
+               <section className="settings-section">
+                 <h3>Interface size</h3>
+                 <div className="settings-density">
                   <div className="settings-density-heading">
                     <strong>{densityLabel}</strong>
                     <small>Buttons and spacing adapt without cutting text.</small>
@@ -6366,11 +6430,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                </section>
                <section className="settings-section">
                 <h3>Interface features</h3>
-                <label className="settings-check">
-                  <input type="checkbox" checked={desktopSettings.proxmoxVncModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, proxmoxVncModeEnabled: event.target.checked }))} />
-                  <span><strong>Enable Proxmox VNC mode</strong><small>Show the Proxmox VNC workspace and its mode switcher.</small></span>
-                </label>
-              </section>
+                 <label className="settings-check">
+                   <input type="checkbox" checked={desktopSettings.proxmoxVncModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, proxmoxVncModeEnabled: event.target.checked }))} />
+                   <span><strong>Enable Proxmox VNC mode</strong><small>Show the Proxmox VNC workspace and its mode switcher.</small></span>
+                 </label>
+                 <label className="settings-check">
+                   <input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} />
+                   <span><strong>Use collapse controls instead of split resizebars</strong><small>Apply the main [‹] and [›] pane controls globally in Location, REST API, and VNC. LOCAL's internal tree controls are unchanged.</small></span>
+                 </label>
+               </section>
               <section className="settings-section">
                <h3>Risk confirmations</h3>
                {([

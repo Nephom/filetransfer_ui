@@ -1,0 +1,97 @@
+/* Single Mobile UI contract. Portal surfaces use :has() because they mount
+   under body. Every literal size below is a single token declared in
+   styles/tokens.css, so the mobile text/control floor is defined once. */
+:root {
+  --mobile-ui-font: var(--font-size-mobile-base);
+  --mobile-ui-secondary-font: var(--font-size-mobile-small);
+  --mobile-ui-heading-font: 20px;
+  --mobile-ui-control-height: var(--control-height-mobile);
+  --mobile-ui-gap: 8px;
+  --mobile-ui-padding: 9px 12px;
+  --mobile-ui-border: var(--color-border);
+  --mobile-ui-background: var(--color-bg-panel-strong);
+  --mobile-ui-focus: var(--control-focus-ring);
+  --mobile-ui-menu-z: 700;
+}
+
+/* Text floor: raises text only; pane/control geometry stays intact. */
+.explorer.ui-layout-mobile :is(button, input, select, textarea, label, p, span, small, strong, em, th, td, code, pre, summary, output, option) {
+  font-size: var(--mobile-ui-font) !important;
+}
+
+.explorer.ui-layout-mobile :is(small, .muted, .eyebrow, .sidebar-label, .account-role, .connection-status) {
+  font-size: var(--mobile-ui-secondary-font) !important;
+}
+
+.explorer.ui-layout-mobile :is(h1, h2, h3, h4, h5, h6) {
+  font-size: var(--mobile-ui-heading-font) !important;
+}
+
+.explorer.ui-layout-mobile :is(.app-mark, .mode-switch-dot, .glyph-file, .glyph-folder, .folder-mini, .tile-icon, svg) {
+  font-size: initial !important;
+}
+
+.explorer.ui-layout-mobile ::placeholder {
+  font-size: var(--mobile-ui-font) !important;
+}
+
+.explorer.ui-layout-mobile :is(.mobile-choice-menu, .context-picker, .location-control),
+body:has(.explorer.ui-layout-mobile) :is(.account-menu, .context-picker-popover, .location-menu, .rest-action-dialog, .rest-session-help, .token-path-help-popup, .rest-hardware-dialog),
+body:has(.login.ui-profile-mobile) .login-profile-menu,
+body:has(.login.ui-profile-auto) .login-profile-menu {
+  font-size: var(--mobile-ui-font);
+}
+
+.explorer.ui-layout-mobile :is(.mobile-choice-trigger, .context-picker-trigger, .location-select, .location-single),
+body:has(.explorer.ui-layout-mobile) :is(.account-menu button, .context-picker-option, .location-menu button),
+body:has(.login.ui-profile-mobile) .login-profile-trigger,
+body:has(.login.ui-profile-auto) .login-profile-trigger {
+  min-height: var(--mobile-ui-control-height) !important;
+  padding: var(--mobile-ui-padding);
+  font-size: var(--mobile-ui-font) !important;
+  line-height: 1.35;
+}
+
+.explorer.ui-layout-mobile :is(.mobile-choice-trigger, .context-picker-trigger),
+body:has(.explorer.ui-layout-mobile) :is(.account-menu, .context-picker-popover, .location-menu),
+body:has(.login.ui-profile-mobile) .login-profile-options,
+body:has(.login.ui-profile-auto) .login-profile-options {
+  border-color: var(--mobile-ui-border);
+  background: var(--mobile-ui-background);
+  box-shadow: var(--shadow-panel);
+}
+
+.explorer.ui-layout-mobile :is(.mobile-choice-options, .context-picker-popover),
+body:has(.explorer.ui-layout-mobile) :is(.account-menu, .location-menu, .rest-action-dialog, .rest-session-help, .token-path-help-popup, .rest-hardware-dialog),
+body:has(.login.ui-profile-mobile) .login-profile-options,
+body:has(.login.ui-profile-auto) .login-profile-options {
+  z-index: var(--mobile-ui-menu-z);
+}
+
+.explorer.ui-layout-mobile :is(.mobile-choice-options button, .context-picker-option),
+body:has(.explorer.ui-layout-mobile) :is(.account-menu button, .location-menu button),
+body:has(.login.ui-profile-mobile) .login-profile-options button,
+body:has(.login.ui-profile-auto) .login-profile-options button {
+  min-height: var(--mobile-ui-control-height) !important;
+  padding: var(--mobile-ui-padding);
+  color: var(--color-text);
+  font-size: var(--mobile-ui-font) !important;
+  line-height: 1.35;
+}
+
+.explorer.ui-layout-mobile :is(.mobile-choice-options button, .context-picker-option):focus-visible,
+body:has(.explorer.ui-layout-mobile) :is(.account-menu button, .location-menu button):focus-visible,
+body:has(.login.ui-profile-mobile) .login-profile-options button:focus-visible,
+body:has(.login.ui-profile-auto) .login-profile-options button:focus-visible {
+  outline: var(--mobile-ui-focus);
+  outline-offset: 2px;
+}
+
+body:has(.explorer.ui-layout-mobile) :is(.account-menu .account-summary strong, .account-menu .account-summary span) {
+  font-size: var(--mobile-ui-font) !important;
+  line-height: 1.4;
+}
+
+body:has(.explorer.ui-layout-mobile) .account-menu .account-summary span {
+  font-size: var(--mobile-ui-secondary-font) !important;
+}

@@ -13,6 +13,23 @@
   font-size: var(--ui-font-size);
 }
 
+.explorer.ui-layout-mobile {
+  --ui-font-size: var(--font-size-mobile-base);
+  --ui-small-font-size: var(--font-size-mobile-small);
+  --ui-button-height: var(--control-height-mobile);
+  --ui-control-height: var(--control-height-mobile);
+  --ui-button-padding-x: 12px;
+  --ui-button-padding-y: 8px;
+  --ui-control-gap: 8px;
+  --ui-section-gap: 12px;
+  --ui-panel-padding: 12px;
+  --ui-terminal-min-height: 180px;
+}
+
+/* The mobile text floor itself (button/input/label/heading font sizes,
+   including the !important overrides needed for descendant elements) is
+   declared once in styles/mobile-ui.css, not duplicated here. */
+
 .explorer.ui-density-compact {
   --ui-font-size: 12px;
   --ui-small-font-size: 10px;
@@ -79,16 +96,30 @@
 
 :where(.explorer) input,
 :where(.explorer) select,
+:where(.explorer) textarea,
 :where(.explorer) .palette-select {
   min-height: var(--ui-control-height);
   font-size: var(--ui-font-size);
   line-height: 1.2;
 }
 
+:where(.explorer.ui-layout-mobile) button,
+:where(.explorer.ui-layout-mobile) input,
+:where(.explorer.ui-layout-mobile) select,
+:where(.explorer.ui-layout-mobile) textarea {
+  line-height: 1.35;
+}
+
+:where(.explorer) :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 .commandbar,
 .navigation {
   gap: var(--ui-control-gap);
 }
+
 
 /* Keep the mode switch's Location and Workspace controls on one density scale. */
 .mode-switcher .location-control,
@@ -170,6 +201,15 @@
   max-height: calc(100dvh - 24px);
 }
 
+.explorer.ui-layout-mobile :is(.modal, .queue-modal, .sessions-modal, .settings-modal) {
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+}
+
+.explorer.ui-layout-mobile .modal-actions {
+  flex-wrap: wrap;
+}
+
 .sessions-layout {
   gap: var(--ui-section-gap);
 }
@@ -191,5 +231,20 @@
 
   .ssh-controls .palette-select-control {
     min-width: min(100%, 220px);
+  }
+}
+
+
+@media (max-width: 900px), (max-height: 640px) {
+  .explorer.ui-layout-mobile {
+    --ui-font-size: 14px;
+    --ui-small-font-size: 12px;
+    --ui-button-height: 40px;
+    --ui-control-height: 40px;
+    --ui-button-padding-x: 12px;
+    --ui-button-padding-y: 8px;
+    --ui-control-gap: 8px;
+    --ui-section-gap: 12px;
+    --ui-panel-padding: 12px;
   }
 }

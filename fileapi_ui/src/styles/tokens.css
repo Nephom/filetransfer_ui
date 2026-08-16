@@ -31,6 +31,7 @@
   --button-height-base: var(--control-height-base);
   --control-gap-base: clamp(6px, calc(4px + 0.25vmin), 10px);
   --panel-padding-base: clamp(9px, calc(7px + 0.4vmin), 15px);
+  --control-height-mobile: 40px;
   --control-focus-ring: 2px solid var(--color-primary);
   --icon-size: 18px;
 

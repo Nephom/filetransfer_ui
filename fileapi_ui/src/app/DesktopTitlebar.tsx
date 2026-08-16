@@ -1,5 +1,6 @@
 import React from "react";
 import { createPortal } from "react-dom";
+import { MobileChoiceMenu } from "../ui/MobileChoiceMenu";
 
 type DesktopTitlebarProps = {
   appMode: "location" | "rest" | "vnc";
@@ -8,6 +9,7 @@ type DesktopTitlebarProps = {
   accountOpen: boolean;
   accountControl: React.Ref<HTMLDivElement>;
   accountMenuStyle: React.CSSProperties;
+  mobileLayout: boolean;
   onModeChange: (mode: "location" | "rest" | "vnc") => void;
   onAccountToggle: (event: React.MouseEvent<HTMLButtonElement>) => void;
   onOpenSessions: () => void;
@@ -25,6 +27,7 @@ export function DesktopTitlebar({
   accountOpen,
   accountControl,
   accountMenuStyle,
+  mobileLayout,
   onModeChange,
   onAccountToggle,
   onOpenSessions,
@@ -34,6 +37,11 @@ export function DesktopTitlebar({
   onOpenHelp,
   onSignOut,
 }: DesktopTitlebarProps) {
+  const modeOptions = [
+    { id: "location", label: "LOCATION" },
+    { id: "rest", label: "REST API" },
+    ...(vncEnabled ? [{ id: "vnc", label: "VNC" }] : []),
+  ];
   return (
     <header className="titlebar">
       <div className="titlebar-brand">
@@ -44,11 +52,9 @@ export function DesktopTitlebar({
       </div>
       <div className="titlebar-main">
         <div className={`mode-switcher ${appMode === "rest" ? "rest-active" : appMode === "vnc" ? "vnc-active" : "location-active"}`}>
-          <div className="mode-buttons" role="group" aria-label="Application mode">
-            <button type="button" className={`mode-switch-button${appMode === "location" ? " selected" : ""}`} aria-pressed={appMode === "location"} onClick={() => onModeChange("location")}><span className="mode-switch-dot" /><span>LOCATION</span></button>
-            <button type="button" className={`mode-switch-button${appMode === "rest" ? " selected" : ""}`} aria-pressed={appMode === "rest"} onClick={() => onModeChange("rest")}><span className="mode-switch-dot" /><span>REST API</span></button>
-            {vncEnabled && <button type="button" className={`mode-switch-button${appMode === "vnc" ? " selected" : ""}`} aria-pressed={appMode === "vnc"} onClick={() => onModeChange("vnc")}><span className="mode-switch-dot" /><span>VNC</span></button>}
-          </div>
+          {mobileLayout ? <MobileChoiceMenu label="Application mode" currentId={appMode} options={modeOptions} onSelect={(id) => onModeChange(id as "location" | "rest" | "vnc")} /> : <div className="mode-buttons" role="group" aria-label="Application mode">
+            {modeOptions.map((mode) => <button type="button" key={mode.id} className={`mode-switch-button${appMode === mode.id ? " selected" : ""}`} aria-pressed={appMode === mode.id} onClick={() => onModeChange(mode.id as "location" | "rest" | "vnc")}><span className="mode-switch-dot" /><span>{mode.label}</span></button>)}
+          </div>}
         </div>
       </div>
       <div className="titlebar-account">
