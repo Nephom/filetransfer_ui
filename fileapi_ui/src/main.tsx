@@ -817,7 +817,7 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
             onChange={(profile) => onUiProfileChange(profile as "auto" | "mobile")}
             options={[
               { value: "auto", label: "Auto" },
-              { value: "mobile", label: "Mobile (Touch Friendly)" },
+              { value: "mobile", label: "Large" },
             ]}
           />
         </div>
