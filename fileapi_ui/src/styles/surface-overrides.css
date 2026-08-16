@@ -130,7 +130,11 @@
   min-height: 100dvh;
   padding: clamp(12px, 3vh, 48px) clamp(16px, 4vw, 64px);
   box-sizing: border-box;
-  overflow: hidden;
+  /* Auto or Large content can be taller than the window's default size
+     (especially Large, which enlarges every control uniformly); scrolling
+     instead of clipping keeps the form's own bottom border visible instead
+     of being cut off by the viewport edge. */
+  overflow-y: auto;
 }
 
 .login form {

@@ -808,7 +808,7 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
             <span className="mode-switch-dot" aria-hidden="true" /><span>IGNORE SSL</span>
           </button>
           <button type="button" className={`login-toggle-button${session.saveUserInformation ? " enabled" : ""}`} aria-pressed={session.saveUserInformation} onClick={() => updateSaveUserInformation(!session.saveUserInformation)} title="Save the API username and password in the OS credential store">
-            <span className="mode-switch-dot" aria-hidden="true" /><span>SAVE USER INFORMATION</span>
+            <span className="mode-switch-dot" aria-hidden="true" /><span>SAVE USER INFO</span>
           </button>
           <Dropdown
             className="login-profile-menu"

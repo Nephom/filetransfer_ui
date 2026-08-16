@@ -33,11 +33,14 @@
   margin-top: 6px;
 }
 
-.login.ui-profile-mobile .login-toggle-row { flex-wrap: nowrap; align-items: stretch; }
-.login.ui-profile-mobile .login-profile-menu { flex: 1 1 0; min-width: 0; max-width: none; }
-.login.ui-profile-mobile .login-profile-menu .dropdown-trigger { width: 100%; min-width: 0; font-size: 16px; }
-.login.ui-profile-mobile .login-toggle-button { font-size: 16px; }
-.login.ui-profile-mobile .login-toggle-help { font-size: 14px !important; }
+/* See login.css's matching .ui-profile-auto.ui-layout-mobile comment: a
+   fixed flex-basis keeps the trigger label ("Large") readable instead of
+   losing a `flex: 1 1 0` shrink contest against the two toggle buttons. */
+.login.ui-profile-mobile .login-toggle-row { flex-wrap: wrap; align-items: stretch; }
+.login.ui-profile-mobile .login-profile-menu { flex: 0 0 auto; min-width: 110px; max-width: 165px; }
+.login.ui-profile-mobile .login-profile-menu .dropdown-trigger { width: 100%; min-width: 0; font-size: var(--font-size-mobile-base); }
+.login.ui-profile-mobile .login-toggle-button { font-size: var(--font-size-mobile-base); }
+.login.ui-profile-mobile .login-toggle-help { font-size: var(--font-size-mobile-small) !important; }
 
 /* The Auto-profile equivalent of the three rules above lives in the
    .login.ui-profile-auto.ui-layout-mobile rules in login.css, driven by
