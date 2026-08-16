@@ -3,7 +3,7 @@
   display: flex;
   width: fit-content;
   max-width: 100%;
-  padding: 5px;
+  padding: var(--space-1);
   border: 1px solid color-mix(in srgb, var(--color-primary) 32%, var(--color-border));
   border-radius: 16px;
   background: color-mix(in srgb, var(--color-bg) 66%, transparent);
@@ -22,16 +22,16 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: clamp(100px, 9vw, 140px);
-  min-height: 42px;
-  padding: 0 14px;
+  min-height: var(--ui-button-height, var(--control-height-base));
+  padding: 0 var(--ui-button-padding-x, var(--space-3));
   border: 1px solid transparent;
   border-radius: 12px;
   color: var(--color-text-muted);
   background: transparent;
   cursor: pointer;
-  font-size: clamp(11px, .8vw, 13px);
+  font-size: var(--ui-small-font-size, var(--font-size-small));
   font-weight: 700;
   letter-spacing: .02em;
   white-space: nowrap;
@@ -54,9 +54,9 @@
 .titlebar-main .mode-switch-button:active:not(:disabled) { transform: scale(.98); }
 
 .titlebar-main .mode-switch-dot {
-  width: 12px;
-  height: 12px;
-  flex: 0 0 12px;
+  width: var(--icon-size);
+  height: var(--icon-size);
+  flex: 0 0 var(--icon-size);
   border: 2px solid color-mix(in srgb, var(--color-primary) 35%, var(--color-text-muted));
   border-radius: 50%;
   background: transparent;
@@ -66,9 +66,9 @@
 /* Mobile mode navigation renders MobileChoiceMenu in place of .mode-buttons
    (see DesktopTitlebar.tsx); it is never a third row in the titlebar. Only
    the titlebar grid/region rules below are still consumed in that state. */
-.explorer.ui-layout-mobile > .titlebar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); height: 56px; max-height: 56px; overflow: visible; }
+.explorer.ui-layout-mobile > .titlebar { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); height: calc(var(--control-height-mobile-lg) + var(--space-3)); max-height: calc(var(--control-height-mobile-lg) + var(--space-3)); overflow: visible; }
 .explorer.ui-layout-mobile > .titlebar .titlebar-brand { display: flex; min-width: 0; overflow: hidden; }
-.explorer.ui-layout-mobile > .titlebar .titlebar-brand .app-name { font-size: 13px; }
+.explorer.ui-layout-mobile > .titlebar .titlebar-brand .app-name { font-size: var(--font-size-mobile-small); }
 .explorer.ui-layout-mobile > .titlebar .titlebar-main { min-width: 0; justify-content: flex-start; overflow: visible; }
 .explorer.ui-layout-mobile > .titlebar .titlebar-main { justify-self: center; }
 .explorer.ui-layout-mobile > .titlebar .titlebar-account { min-width: max-content; justify-self: end; justify-content: flex-end; }
@@ -104,6 +104,6 @@
 @media (max-width: 720px) {
   .titlebar-main .mode-switcher { width: 100%; justify-content: stretch; }
   .titlebar-main .mode-buttons { width: 100%; }
-  .titlebar-main .mode-switch-button { min-width: 0; flex: 1 1 0; padding-inline: 9px; }
+  .titlebar-main .mode-switch-button { min-width: 0; flex: 1 1 0; padding-inline: var(--space-2); }
   .titlebar-main .mode-switch-button > span:last-child { overflow: hidden; text-overflow: ellipsis; }
 }
