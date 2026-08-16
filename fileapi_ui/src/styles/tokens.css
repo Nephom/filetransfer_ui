@@ -32,8 +32,21 @@
   --control-gap-base: clamp(6px, calc(4px + 0.25vmin), 10px);
   --panel-padding-base: clamp(9px, calc(7px + 0.4vmin), 15px);
   --control-height-mobile: 40px;
+  /* Roomier fixed mobile/Large touch-target height used by dropdown options
+     and other "comfortable" mobile controls that were already 44px before
+     token conversion (kept as its own token instead of forcing every 44px
+     control down to the 40px floor). */
+  --control-height-mobile-lg: 44px;
+  --font-size-mobile-heading: 28px;
   --control-focus-ring: 2px solid var(--color-primary);
   --icon-size: 18px;
+  --icon-size-lg: 34px;
+  /* Decorative login mark glyph dimensions, tokenized so login.css has no
+     standalone literal px. */
+  --login-mark-width: 34px;
+  --login-mark-height: 28px;
+  --login-mark-accent-width: 14px;
+  --login-mark-accent-height: 5px;
 
   --radius-sm: var(--bridge-radius-sm, 6px);
   --radius-md: var(--bridge-radius, 10px);
