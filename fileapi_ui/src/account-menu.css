@@ -1,12 +1,12 @@
 .account-control { position: relative; margin-left: auto; }
-.account { display: flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 6px 9px; background: var(--color-bg-panel); color: var(--color-text); cursor: pointer; font-size: 13px; }
+.account { display: flex; align-items: center; gap: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: var(--ui-button-padding-y, var(--space-2)) var(--ui-button-padding-x, var(--space-3)); background: var(--color-bg-panel); color: var(--color-text); cursor: pointer; font-size: var(--ui-small-font-size, var(--font-size-small)); }
 .account:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
-.account-role { color: var(--color-primary); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
-.account-chevron { color: var(--color-primary); font-size: 16px; line-height: 10px; }
+.account-role { color: var(--color-primary); font-size: var(--font-size-small); letter-spacing: .06em; text-transform: uppercase; }
+.account-chevron { color: var(--color-primary); font-size: var(--icon-size); line-height: 10px; }
 .account-menu { position: fixed; z-index: var(--z-dropdown); top: auto; right: auto; min-width: 210px; max-height: min(460px, calc(100dvh - 24px)); overflow-y: auto; }
-.account-summary { display: flex; flex-direction: column; gap: 3px; padding: var(--space-3); border-bottom: 1px solid var(--color-border); }
-.account-summary span { color: var(--color-text-muted); font-size: 12px; }
-.account-menu button { width: 100%; border: 0; padding: 10px 12px; border-radius: 0; background: transparent; color: var(--color-text); cursor: pointer; text-align: left; }
+.account-summary { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3); border-bottom: 1px solid var(--color-border); }
+.account-summary span { color: var(--color-text-muted); font-size: var(--font-size-small); }
+.account-menu button { width: 100%; border: 0; min-height: var(--ui-button-height, var(--control-height-base)); padding: var(--ui-button-padding-y, var(--space-2)) var(--space-3); border-radius: 0; background: transparent; color: var(--color-text); cursor: pointer; text-align: left; }
 .account-menu button:hover { background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
 .account-menu hr { margin: var(--space-1) 0; border: 0; border-top: 1px solid var(--color-border); }
 .account-menu .danger { color: var(--color-danger); }
