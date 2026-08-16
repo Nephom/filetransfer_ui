@@ -5,51 +5,51 @@
  * after the log-name dialog rules, from the former monolithic
  * explorer-parity.css). See styles/layout/README.md. */
 .queue-modal { width: min(900px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
-.queue-item { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; margin: 8px 0; padding: 12px; border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-bg); }
-.queue-item-header { display: flex; align-items: center; justify-content: flex-start; gap: 12px; min-width: 0; }
+.queue-item { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); margin: var(--space-2) 0; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-bg); }
+.queue-item-header { display: flex; align-items: center; justify-content: flex-start; gap: var(--space-3); min-width: 0; }
 .queue-item-label { min-width: 0; overflow-wrap: anywhere; }
-.queue-item-route { display: grid; gap: 2px; min-width: 0; color: var(--color-text-muted); font-size: 12px; }
+.queue-item-route { display: grid; gap: var(--space-1); min-width: 0; color: var(--color-text-muted); font-size: var(--font-size-small); }
 .queue-item-route span { overflow-wrap: anywhere; }
 .queue-item-route code { min-width: 0; color: var(--color-text); overflow-wrap: anywhere; white-space: pre-wrap; font: inherit; }
 .queue-item-detail { min-width: 0; color: var(--color-text); line-height: 1.4; overflow-wrap: anywhere; }
 .queue-item-progress { min-width: 0; color: var(--color-text-muted); }
 .queue-item-progress small { color: inherit; overflow-wrap: anywhere; }
-.queue-item-actions { display: flex; justify-content: flex-start; gap: 8px; flex-wrap: wrap; padding-top: 2px; }
+.queue-item-actions { display: flex; justify-content: flex-start; gap: var(--space-2); flex-wrap: wrap; padding-top: var(--space-1); }
 .settings-modal { width: min(680px, calc(100vw - 32px)); max-height: min(720px, calc(100vh - 40px)); overflow: auto; }
 .settings-intro, .settings-section p { color: var(--color-text-muted); line-height: 1.5; }
-.settings-section { display: grid; gap: 9px; margin: 16px 0; padding: 14px; border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-bg); }
-.settings-section h3 { margin: 0; color: var(--color-primary); font-size: 14px; }
-.settings-section p { margin: 0; font-size: 12px; }
-.settings-check { display: flex; align-items: flex-start; gap: 9px; margin: 0; color: var(--color-text); }
-.settings-check input { flex: 0 0 auto; margin-top: 3px; }
-.settings-check span { display: grid; gap: 2px; }
+.settings-section { display: grid; gap: var(--space-2); margin: var(--space-4) 0; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-bg); }
+.settings-section h3 { margin: 0; color: var(--color-primary); font-size: var(--font-size-base); }
+.settings-section p { margin: 0; font-size: var(--font-size-small); }
+.settings-check { display: flex; align-items: flex-start; gap: var(--space-2); margin: 0; color: var(--color-text); }
+.settings-check input { flex: 0 0 auto; margin-top: var(--space-1); }
+.settings-check span { display: grid; gap: var(--space-1); }
 .settings-check small { color: var(--color-text-muted); line-height: 1.35; }
-.storage-info { display: grid; gap: 3px; padding: 9px; color: var(--color-text-muted); background: var(--color-bg); border: 1px solid var(--color-border); font: 11px/1.4 monospace; overflow-wrap: anywhere; }
+.storage-info { display: grid; gap: var(--space-1); padding: var(--space-2); color: var(--color-text-muted); background: var(--color-bg); border: 1px solid var(--color-border); font: 11px/1.4 monospace; overflow-wrap: anywhere; }
 .settings-actions { justify-content: flex-start; }
-.queue-status { flex: 0 0 auto; color: var(--color-success); font-size: 11px; font-weight: 700; letter-spacing: .04em; text-align: right; text-transform: uppercase; white-space: nowrap; }
+.queue-status { flex: 0 0 auto; color: var(--color-success); font-size: var(--font-size-small); font-weight: 700; letter-spacing: .04em; text-align: right; text-transform: uppercase; white-space: nowrap; }
 .queue-status.failed { color: var(--color-danger); }
 .queue-status.cancelled { color: var(--color-warning); }
 .queue-status.needs_user_action { color: var(--color-warning); }
 .queue-status.running { color: var(--color-primary); }
-.queue-status.running::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border: 1px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: queue-spin .8s linear infinite; vertical-align: -1px; }
+.queue-status.running::before { content: ""; display: inline-block; width: var(--space-2); height: var(--space-2); margin-right: var(--space-1); border: 1px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: queue-spin .8s linear infinite; vertical-align: -1px; }
 @keyframes queue-spin { to { transform: rotate(360deg); } }
-.recording-indicator { color: var(--color-danger); font-size: 12px; font-weight: 700; }
-.recording-log-location { color: var(--color-text-muted); font-size: 11px; }
-.saved-log-paths { display: grid; gap: 3px; flex-basis: 100%; color: var(--color-primary); font-size: 11px; }
+.recording-indicator { color: var(--color-danger); font-size: var(--font-size-small); font-weight: 700; }
+.recording-log-location { color: var(--color-text-muted); font-size: var(--font-size-small); }
+.saved-log-paths { display: grid; gap: var(--space-1); flex-basis: 100%; color: var(--color-primary); font-size: var(--font-size-small); }
 .saved-log-paths code { color: var(--color-text-muted); overflow-wrap: anywhere; }
 .saved-log-paths button { background: transparent; border: 0; color: inherit; cursor: pointer; text-align: left; padding: 0; }
 .viewer-modal { width: min(900px, calc(100vw - 32px)); }
-.file-viewer { width: 100%; min-height: min(65vh, 560px); resize: vertical; background: var(--color-bg); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 6px; padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.file-viewer { width: 100%; min-height: min(65vh, 560px); resize: vertical; background: var(--color-bg); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 6px; padding: var(--space-3); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .archive-format-modal { width: min(560px, calc(100vw - 32px)); }
-.archive-format-option { display: flex; align-items: flex-start; gap: 9px; margin: 10px 0; padding: 10px; border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-bg); }
-.archive-format-option input { width: 15px; min-width: 15px; margin: 2px 0 0; }
-.archive-format-option span { display: grid; gap: 3px; }
+.archive-format-option { display: flex; align-items: flex-start; gap: var(--space-2); margin: var(--space-3) 0; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-bg); }
+.archive-format-option input { width: var(--space-4); min-width: var(--space-4); margin: var(--space-1) 0 0; }
+.archive-format-option span { display: grid; gap: var(--space-1); }
 .archive-format-option small { color: var(--color-text-muted); font-weight: 400; }
-.settings-level { display: grid; gap: 5px; color: var(--color-text); }
+.settings-level { display: grid; gap: var(--space-1); color: var(--color-text); }
 .settings-level small { color: var(--color-text-muted); font-weight: 400; }
 .log-name-modal { width: min(520px, calc(100vw - 32px)); }
 .log-name-modal p { color: var(--color-text-muted); line-height: 1.5; }
-.log-name-modal input { width: 100%; margin-top: 5px; padding: 8px; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; }
-.terminal-restore { order: 10; flex: 0 0 28px; width: 100%; padding: 4px; border: 0; border-top: 1px solid var(--color-border); border-radius: 0; color: var(--color-text-muted); background: var(--color-bg); }
+.log-name-modal input { width: 100%; margin-top: var(--space-1); padding: var(--space-2); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; }
+.terminal-restore { order: 10; flex: 0 0 var(--space-6); width: 100%; padding: var(--space-1); border: 0; border-top: 1px solid var(--color-border); border-radius: 0; color: var(--color-text-muted); background: var(--color-bg); }
 .explorer > .statusbar { order: 20; }
 .terminal-restore:hover { color: var(--color-text); background: var(--color-bg-panel); }

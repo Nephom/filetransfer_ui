@@ -26,11 +26,11 @@
 .desktop-workspace.pane-collapse-right.split-workspace .local-pane { flex: 1 1 auto; }
 .desktop-workspace.pane-collapse-left .location-main-pane-collapse-controls button:first-child,
 .desktop-workspace.pane-collapse-right .location-main-pane-collapse-controls button:last-child { opacity: .38; }
-.explorer.ui-layout-mobile .location-main-pane-collapse-controls { flex-basis: 52px; }
+.explorer.ui-layout-mobile .location-main-pane-collapse-controls { flex-basis: calc(var(--control-height-mobile-lg) + var(--space-2)); }
 .explorer.ui-layout-mobile .location-main-pane-collapse-controls button { width: var(--control-height-mobile-lg); min-width: var(--control-height-mobile-lg); min-height: var(--control-height-mobile-lg) !important; font-size: var(--icon-size-lg) !important; }
 
 /* Sessions and the queue must float over the workspace and terminal, never join their flex flow. */
-.modal-cover { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(0, 6, 14, .72); backdrop-filter: blur(7px); }
+.modal-cover { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: var(--space-5); background: rgba(0, 6, 14, .72); backdrop-filter: blur(7px); }
 .modal { width: min(900px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; box-shadow: 0 24px 70px rgba(0, 0, 0, .58), 0 0 0 1px rgba(71, 205, 241, .08), 0 0 34px rgba(38, 155, 210, .1); }
 .sessions-modal { width: min(980px, calc(100vw - 48px)); }
 .modal-drag-handle { cursor: grab; user-select: none; }

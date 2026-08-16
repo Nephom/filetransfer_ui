@@ -45,6 +45,17 @@
      regardless of window width. */
   --font-size-mobile-narrow-small: 12px;
   --terminal-min-height-mobile: 180px;
+  /* Location Split-mode LOCAL pane minimum footprint under Mobile/Large,
+     where LOCAL/REMOTE stack vertically instead of sitting side by side. */
+  --pane-min-size-mobile: 260px;
+  /* Mobile/Large's file-table header row height and stacked-row inline
+     padding; kept as their own tokens (not reused from control-height-
+     mobile-lg/space-3) because they were already distinct fixed values
+     before token conversion. */
+  --file-table-header-height-mobile: 42px;
+  --file-row-padding-inline-mobile: 10px;
+  /* Narrow-window (<=900x640) folder-tree ceiling under Mobile/Large. */
+  --folder-tree-max-height-mobile-narrow: 220px;
   --control-focus-ring: 2px solid var(--color-primary);
   --icon-size: 18px;
   --icon-size-lg: 34px;

@@ -71,21 +71,21 @@
 
 /* Keep actions inside the dark desktop surfaces instead of falling back to the global light button. */
 .modal-actions,
-.ssh-entry-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
-.modal-actions { margin-top: 14px; }
+.ssh-entry-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
+.modal-actions { margin-top: var(--space-3); }
 .modal-actions button,
 .session-list-heading button,
 .session-card-heading button,
 .ssh-entry-actions button,
 .ssh-controls > button,
 .ssh-recording-actions > button {
-  padding: 6px 10px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border);
   border-radius: 4px;
   color: var(--color-text);
   background: var(--color-bg-panel);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--font-size-small);
 }
 .modal-actions button:hover:not(:disabled),
 .session-list-heading button:hover:not(:disabled),
