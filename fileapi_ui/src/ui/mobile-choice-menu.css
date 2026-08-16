@@ -1,6 +1,19 @@
+/* MobileChoiceMenu restyled to read from the same --dropdown-* tokens as
+   ui/dropdown.css (T-076) so its trigger/options/hover/selected/focus
+   states stay visually interchangeable with every other Dropdown-family
+   surface regardless of which component renders it. */
 .mobile-choice-menu { position: relative; display: inline-flex; min-width: 0; }
-.mobile-choice-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: min(190px, 100%); min-height: var(--ui-control-height, var(--control-height-mobile)); padding: var(--ui-button-padding-y, var(--space-2)) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-text); background: var(--color-bg-panel-strong); cursor: pointer; font: inherit; font-size: var(--ui-font-size, var(--font-size-mobile-small)); white-space: nowrap; }
-.mobile-choice-trigger:hover, .mobile-choice-trigger:focus-visible { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
-.mobile-choice-options { position: absolute; z-index: var(--z-dropdown, 400); top: calc(100% + 6px); left: 50%; display: grid; width: max(190px, 100%); min-width: 0; gap: 6px; padding: 6px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-panel-strong); box-shadow: var(--shadow-panel); transform: translateX(-50%); }
-.mobile-choice-options button { min-height: var(--ui-control-height, var(--control-height-mobile)); padding: var(--ui-button-padding-y, var(--space-2)) var(--space-3); border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--color-text); background: transparent; cursor: pointer; font: inherit; font-size: var(--ui-font-size, var(--font-size-mobile-small)); text-align: left; white-space: nowrap; }
-.mobile-choice-options button:hover, .mobile-choice-options button:focus-visible { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel)); }
+.mobile-choice-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: min(190px, 100%); min-height: var(--ui-control-height, var(--control-height-mobile)); padding: var(--ui-button-padding-y, var(--space-2)) var(--space-3); border: var(--dropdown-border); border-radius: var(--dropdown-trigger-radius); color: var(--color-text); background: var(--color-bg-panel); box-shadow: var(--shadow-inset); cursor: pointer; font: inherit; font-size: var(--ui-font-size, var(--font-size-mobile-small)); white-space: nowrap; transition: border-color var(--motion-fast), background var(--motion-fast); }
+.mobile-choice-trigger:hover:not(:disabled), .mobile-choice-trigger[aria-expanded="true"] { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
+.mobile-choice-trigger:focus-visible { outline: var(--dropdown-focus-ring); outline-offset: 2px; }
+.mobile-choice-options { position: absolute; z-index: var(--z-dropdown, 400); top: calc(100% + 6px); left: 50%; display: grid; width: max(190px, 100%); min-width: 0; gap: var(--space-1); padding: var(--space-1); border: var(--dropdown-border); border-radius: var(--dropdown-menu-radius); background: var(--dropdown-surface); box-shadow: var(--shadow-panel); backdrop-filter: blur(22px) saturate(140%); transform: translateX(-50%); animation: mobile-choice-options-in .16s ease-out both; }
+.mobile-choice-options button { min-height: var(--ui-control-height, var(--control-height-mobile)); padding: var(--dropdown-option-padding); border: 1px solid transparent; border-radius: var(--dropdown-option-radius); color: var(--color-text); background: transparent; cursor: pointer; font: inherit; font-size: var(--ui-font-size, var(--font-size-mobile-small)); text-align: left; white-space: nowrap; }
+.mobile-choice-options button:hover,
+.mobile-choice-options button:focus-visible,
+.mobile-choice-options button.selected { border-color: color-mix(in srgb, var(--color-primary) 42%, transparent); background: linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 18%, transparent), color-mix(in srgb, var(--color-secondary) 8%, transparent)); }
+.mobile-choice-options button:focus-visible { outline: var(--dropdown-focus-ring); outline-offset: 1px; }
+
+@keyframes mobile-choice-options-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(5px) scale(.98); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
