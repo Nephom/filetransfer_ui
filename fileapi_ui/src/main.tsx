@@ -6762,9 +6762,12 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                  <h3>Color theme</h3>
                  <div className="settings-check settings-theme-row">
                    <span><strong>Application palette</strong><small>Changes the shared colors used by the main view, overlays, buttons, and status states. Selecting a theme previews it immediately; use Revert below to go back to what was active before you opened Settings.</small></span>
-                   <select value={desktopSettings.theme} onChange={(event) => { const theme = event.target.value as ThemePreset; setDesktopSettings((current) => ({ ...current, theme, accentColor: themePresets[theme].variables.cyan })); }}>
-                     {(Object.entries(themePresets) as [ThemePreset, { label: string }][]) .map(([value, theme]) => <option key={value} value={value}>{theme.label}</option>)}
-                   </select>
+                   <Dropdown
+                     label="Application palette"
+                     value={desktopSettings.theme}
+                     onChange={(value) => { const theme = value as ThemePreset; setDesktopSettings((current) => ({ ...current, theme, accentColor: themePresets[theme].variables.cyan })); }}
+                     options={(Object.entries(themePresets) as [ThemePreset, { label: string }][]).map(([value, theme]) => ({ value, label: theme.label }))}
+                   />
                    <label className="theme-accent-control">Accent <input type="color" value={desktopSettings.accentColor} onChange={(event) => setDesktopSettings((current) => ({ ...current, accentColor: event.target.value }))} /></label>
                  </div>
                  {(() => {
