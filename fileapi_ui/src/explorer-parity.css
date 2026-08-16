@@ -1,12 +1,12 @@
 .explorer { position: relative; }
 .desktop-workspace { flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
 .mode-workspace { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; overflow: hidden; }
-.desktop-folder-tree { order: -1; display: flex; flex-direction: column; flex: 0 0 250px; width: 250px; min-height: 0; max-height: 100%; padding: 14px 8px; overflow: hidden; background: rgba(8, 24, 42, .82); border-right: 1px solid var(--color-border); }
+.desktop-folder-tree { order: -1; display: flex; flex-direction: column; flex: 0 0 250px; width: 250px; min-height: 0; max-height: 100%; padding: var(--space-3) var(--space-2); overflow: hidden; background: rgba(8, 24, 42, .82); border-right: 1px solid var(--color-border); }
 .folder-pane, .file-pane { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
 .folder-tree-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; scrollbar-width: none; }
 .folder-tree-scroll::-webkit-scrollbar { display: none; }
 .desktop-content { flex: 1; min-width: 0; margin-left: 0; }
-.sidebar-label { display: block; padding: 6px 12px 10px; color: var(--color-text-muted); font-size: 10px; letter-spacing: .13em; font-weight: 700; text-transform: uppercase; }.folder-tree { min-width: 0; }.tree-node { display: flex; align-items: center; min-height: 32px; border: 1px solid transparent; border-radius: 4px; color: var(--color-text); }.tree-node:hover { background: var(--color-bg-panel); }.tree-node.active { color: var(--color-text); background: var(--color-bg-panel); }.tree-node.drop-target { color: var(--color-text); background: #12516a; border-color: var(--color-primary); box-shadow: inset 3px 0 var(--color-primary); }.tree-toggle { width: 26px; height: 26px; padding: 0; border: 0; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: 17px; }.tree-folder { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; border: 0; padding: 6px 8px 6px 0; background: transparent; color: inherit; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.tree-children { margin-left: 13px; padding-left: 7px; border-left: 1px solid var(--color-border); }.tree-loading { display: block; padding: 6px 10px; color: var(--color-text-muted); font-size: 12px; }.drop-label { margin-right: 8px; color: var(--color-success); font-size: 10px; font-weight: 700; white-space: nowrap; }.folder-mini { display: inline-block; flex: 0 0 auto; width: 17px; height: 13px; border-radius: 2px; background: var(--color-warning); position: relative; }.folder-mini::before { content: ""; position: absolute; width: 8px; height: 3px; top: -2px; left: 1px; background: var(--color-warning); border-radius: 2px 2px 0 0; }.search-control { position: relative; width: min(290px, 32vw); }.search { width: 100%; height: 34px; padding: 0 30px 0 10px; border: 1px solid var(--color-border); border-radius: 4px; outline: none; color: var(--color-text); background: var(--color-bg); }.clear-search { position: absolute; top: 2px; right: 2px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 3px; color: #8fb5d3; background: transparent; cursor: pointer; font-size: 20px; line-height: 20px; }.view-switch { display: inline-flex; overflow: hidden; border: 1px solid var(--color-border); border-radius: 5px; }.commandbar .view-switch button { border: 0; border-radius: 0; padding: 7px 9px; }.commandbar .view-switch button.active { color: #e9fbff; background: #175070; box-shadow: inset 0 -2px var(--color-primary); }.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 10px; padding: 4px; }.file-tile { display: flex; flex-direction: column; min-height: 152px; gap: 6px; padding: 14px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel-strong); color: var(--color-text); cursor: grab; overflow: hidden; }.file-tile:hover { border-color: #3b7097; background: var(--color-bg-panel); }.file-tile.selected { border-color: var(--color-primary); background: var(--color-bg-panel); box-shadow: inset 3px 0 var(--color-primary); }.file-tile.drop-target, .file-row.drop-target { border-color: var(--color-primary); background: #12516a; box-shadow: 0 0 0 1px var(--color-primary); }.tile-icon { font-size: 30px; line-height: 38px; }.file-tile strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }.file-tile > span:not(.tile-icon), .file-tile small { color: var(--color-text-muted); font-size: 12px; }.file-tile small { margin-top: auto; }
+.sidebar-label { display: block; padding: 6px 12px 10px; color: var(--color-text-muted); font-size: 10px; letter-spacing: .13em; font-weight: 700; text-transform: uppercase; }.folder-tree { min-width: 0; }.tree-node { display: flex; align-items: center; min-height: 32px; border: 1px solid transparent; border-radius: 4px; color: var(--color-text); }.tree-node:hover { background: var(--color-bg-panel); }.tree-node.active { color: var(--color-text); background: var(--color-bg-panel); }.tree-node.drop-target { color: var(--color-text); background: #12516a; border-color: var(--color-primary); box-shadow: inset 3px 0 var(--color-primary); }.tree-toggle { width: var(--ui-button-height, var(--control-height-base)); height: var(--ui-button-height, var(--control-height-base)); padding: 0; border: 0; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: var(--icon-size); }.tree-folder { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; border: 0; padding: 6px 8px 6px 0; background: transparent; color: inherit; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.tree-children { margin-left: 13px; padding-left: 7px; border-left: 1px solid var(--color-border); }.tree-loading { display: block; padding: 6px 10px; color: var(--color-text-muted); font-size: 12px; }.drop-label { margin-right: 8px; color: var(--color-success); font-size: 10px; font-weight: 700; white-space: nowrap; }.folder-mini { display: inline-block; flex: 0 0 auto; width: 17px; height: 13px; border-radius: 2px; background: var(--color-warning); position: relative; }.folder-mini::before { content: ""; position: absolute; width: 8px; height: 3px; top: -2px; left: 1px; background: var(--color-warning); border-radius: 2px 2px 0 0; }.search-control { position: relative; width: min(290px, 32vw); }.search { width: 100%; height: var(--ui-button-height, var(--control-height-base)); padding: 0 30px 0 var(--space-2); border: 1px solid var(--color-border); border-radius: 4px; outline: none; color: var(--color-text); background: var(--color-bg); }.clear-search { position: absolute; top: 2px; right: 2px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 3px; color: #8fb5d3; background: transparent; cursor: pointer; font-size: 20px; line-height: 20px; }.view-switch { display: inline-flex; overflow: hidden; border: 1px solid var(--color-border); border-radius: 5px; }.commandbar .view-switch button { border: 0; border-radius: 0; padding: 7px 9px; }.commandbar .view-switch button.active { color: #e9fbff; background: #175070; box-shadow: inset 0 -2px var(--color-primary); }.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 10px; padding: 4px; }.file-tile { display: flex; flex-direction: column; min-height: 152px; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel-strong); color: var(--color-text); cursor: grab; overflow: hidden; }.file-tile:hover { border-color: #3b7097; background: var(--color-bg-panel); }.file-tile.selected { border-color: var(--color-primary); background: var(--color-bg-panel); box-shadow: inset 3px 0 var(--color-primary); }.file-tile.drop-target, .file-row.drop-target { border-color: var(--color-primary); background: #12516a; box-shadow: 0 0 0 1px var(--color-primary); }.tile-icon { font-size: var(--icon-size-lg); line-height: 38px; }.file-tile strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }.file-tile > span:not(.tile-icon), .file-tile small { color: var(--color-text-muted); font-size: 12px; }.file-tile small { margin-top: auto; }
 /* T-038: scoped by .ui-layout-mobile instead of a raw @media (max-width:
    720px) query -- see the longer note in desktop-ui.css next to the same
    migration. This makes a forced Mobile profile stack the Location
@@ -182,7 +182,7 @@
 .terminal-dock { z-index: 10; }
 .terminal-resize-handle { position: absolute; top: -4px; right: 0; left: 0; z-index: 2; height: 8px; cursor: row-resize; }
 .terminal-resize-handle:hover { background: var(--color-primary); }
-.terminal-header { display: flex; align-items: center; justify-content: space-between; min-height: 38px; padding: 0 12px; border-bottom: 1px solid var(--color-border); }
+.terminal-header { display: flex; align-items: center; justify-content: space-between; min-height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-3); border-bottom: 1px solid var(--color-border); }
 .terminal-tabs, .terminal-actions { display: flex; align-items: center; gap: 6px; }
 .terminal-tabs button, .terminal-actions button { padding: 5px 10px; border: 1px solid transparent; color: var(--color-text-muted); background: transparent; }
 .terminal-tabs button.active, .terminal-tabs button:hover, .terminal-actions button:hover { color: var(--color-text); border-color: var(--color-border); background: var(--color-bg-panel); }
@@ -291,7 +291,7 @@
 .remote-navigation-items button:disabled { opacity: .45; cursor: not-allowed; }
 .split-workspace { gap: 0; }
 .split-workspace .desktop-folder-tree { display: none; }
-.local-pane { display: flex; flex: 0 0 auto; min-width: 220px; min-height: 0; flex-direction: column; background: rgba(8, 24, 42, .92); border-right: 1px solid var(--color-border); }
+.local-pane { display: flex; flex: 0 0 auto; min-width: min(220px, 100%); min-height: 0; flex-direction: column; background: rgba(8, 24, 42, .92); border-right: 1px solid var(--color-border); }
 /* Visual "you are here" indicator for whichever pane the toolbar
    (New folder/Rename/Delete/View/Select all) currently acts on, only shown
    in Split mode where LOCAL and REMOTE are both on screen at once. */
@@ -303,7 +303,7 @@
 .pane-resize-handle:hover, .pane-resize-handle:active { background: var(--color-primary); border-left-color: var(--color-primary); }
 .local-pane-heading { display: flex; flex-direction: column; gap: 2px; padding: 14px 14px 8px; color: var(--color-text); }
 .local-pane-heading .sidebar-label { padding: 0; color: var(--color-success); }
-.pane-breadcrumbs { width: 100%; min-width: 0; height: 32px; padding: 0 7px; }
+.pane-breadcrumbs { width: 100%; min-width: 0; height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-2); }
 .pane-breadcrumbs button { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; }
 .content-heading .pane-breadcrumbs { margin-top: 4px; }
 .content-heading > div { min-width: 0; flex: 1 1 auto; }
@@ -330,7 +330,7 @@
 .local-pane.privileged .local-file.drop-target { outline: 2px solid var(--color-danger); outline-offset: -2px; border-color: var(--color-danger); background: rgba(255, 77, 109, .2); box-shadow: none; }
 .local-pane.privileged .tree-node.drop-target { color: var(--color-text); background: color-mix(in srgb, var(--color-danger) 25%, var(--color-bg-panel)); border-color: var(--color-danger); box-shadow: inset 3px 0 var(--color-danger); }
 .privileged-badge { color: var(--color-danger); font-weight: 700; }
-.local-pane-tree { flex: 0 0 auto; min-width: 80px; min-height: 0; overflow-y: auto; padding: 6px; }
+.local-pane-tree { flex: 0 0 auto; min-width: min(80px, 100%); min-height: 0; overflow-y: auto; padding: var(--space-2); }
 .local-file-list { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
 .local-file { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 7px; align-items: center; width: 100%; padding: 8px 7px; border: 1px solid transparent; border-radius: 4px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
 .file-row, .local-file, .file-tile { content-visibility: auto; contain-intrinsic-size: 40px; }
@@ -353,7 +353,7 @@
 .explorer.ui-layout-mobile .local-pane-actions { flex-wrap: wrap; gap: 8px; }
 .explorer.ui-layout-mobile .local-pane-actions button { min-height: 40px; }
 .explorer.ui-layout-mobile .file-table th { height: 42px; font-size: var(--ui-small-font-size); }
-.explorer.ui-layout-mobile .file-row { height: 44px; }
+.explorer.ui-layout-mobile .file-row { height: var(--control-height-mobile-lg); }
 .explorer.ui-layout-mobile .file-row td { padding-inline: 10px; }
 
 @media (max-width: 900px), (max-height: 640px) {
@@ -365,8 +365,8 @@
 /* These collapse-control rules must stay outside the media query above:
    the [<]/[>] Location collapse buttons need their base style at every
    window size, not only below the 900x640 breakpoint. */
-.location-main-pane-collapse-controls { display: flex; flex: 0 0 48px; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border-inline: 1px solid var(--color-border); background: var(--color-bg-panel); }
-.location-main-pane-collapse-controls button { width: 40px; min-width: 40px; min-height: 40px !important; padding: 0 !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: 24px !important; }
+.location-main-pane-collapse-controls { display: flex; flex: 0 0 48px; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); border-inline: 1px solid var(--color-border); background: var(--color-bg-panel); }
+.location-main-pane-collapse-controls button { width: var(--control-height-mobile); min-width: var(--control-height-mobile); min-height: var(--control-height-mobile) !important; padding: 0 !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: var(--icon-size-lg) !important; }
 .location-main-pane-collapse-controls button:not(:disabled):hover { color: var(--color-bg); background: var(--color-primary); border-color: var(--color-primary); }
 .location-main-pane-collapse-controls button:disabled { cursor: not-allowed; opacity: .38; }
 .desktop-workspace.pane-collapse-left.split-workspace .local-pane,
@@ -375,7 +375,7 @@
 .desktop-workspace.pane-collapse-left .location-main-pane-collapse-controls button:first-child,
 .desktop-workspace.pane-collapse-right .location-main-pane-collapse-controls button:last-child { opacity: .38; }
 .explorer.ui-layout-mobile .location-main-pane-collapse-controls { flex-basis: 52px; }
-.explorer.ui-layout-mobile .location-main-pane-collapse-controls button { width: 44px; min-width: 44px; min-height: 44px !important; font-size: 26px !important; }
+.explorer.ui-layout-mobile .location-main-pane-collapse-controls button { width: var(--control-height-mobile-lg); min-width: var(--control-height-mobile-lg); min-height: var(--control-height-mobile-lg) !important; font-size: var(--icon-size-lg) !important; }
 
 /* Match native controls to the LOCATION menu palette. */
 select { color: var(--color-text); background-color: var(--color-bg-panel-strong); border: 1px solid var(--color-border); }
