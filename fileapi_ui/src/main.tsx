@@ -27,25 +27,12 @@ import { Dropdown } from "./ui/Dropdown";
 // here, which TypeScript/esbuild erases entirely at build time (no runtime
 // cost, so it doesn't defeat the point of the dynamic import below).
 import type { Terminal } from "@xterm/xterm";
-import "./styles/tokens.css";
-import "./styles/overlays.css";
 import { themePresets, themeStyle, type ThemePreset } from "./styles/theme";
-import "./login.css";
-import "./location-control.css";
-import "./context-picker.css";
-import "./settings.css";
-import "./account-menu.css";
-import "./tls.css";
-import "./webui-shell.css";
-import "./explorer-parity.css";
-import "./desktop-ui.css";
-import "./starship-bridge.css";
-import "./styles/theme-overrides.css";
-import "./styles/surface-overrides.css";
-import "./styles/mode-switcher.css";
-import "./styles/vnc-interactions.css";
-import "./styles/commandbar.css";
-import "./styles/mobile-ui.css";
+// Single ordered global-style entry point (T-018): tokens/base CSS first,
+// feature-component CSS in the middle, override CSS (theme-overrides.css,
+// surface-overrides.css) always last. See styles/index.css for the full
+// contract and why the previous 18 separate imports here were consolidated.
+import "./styles/index.css";
 import { helpPages, helpSections } from "./help/help-content";
 import type { OperationLogRecord } from "./log-view";
 import type { RestApiEntry, RestApiSecret } from "./rest-api";

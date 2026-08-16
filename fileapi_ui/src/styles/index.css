@@ -1,0 +1,41 @@
+/* Single ordered global-style entry point (T-018).
+ *
+ * Contract: token/base CSS loads first, feature-component CSS loads in the
+ * middle (their relative order among themselves does not matter -- they
+ * were verified to have no colliding selectors against each other), and
+ * override CSS (theme-overrides.css, surface-overrides.css) loads LAST so
+ * it always wins the cascade for anything it targets, instead of relying on
+ * hand-maintained import order in main.tsx where a future addition could
+ * accidentally land after an override file and silently stop being
+ * overridden.
+ *
+ * This is a straight re-expression of main.tsx's previous 18 separate
+ * `import "*.css"` statements as `@import` here, with exactly one change:
+ * theme-overrides.css and surface-overrides.css moved from the middle of
+ * the list to the end. That move was verified safe before making it --
+ * the only selector those two files share with anything now ordered after
+ * them (`.context-picker-popover`, shared with mobile-ui.css) sets a
+ * different CSS property on each side (color/background vs. a
+ * mobile-profile-only, !important, higher-specificity font-size rule), so
+ * reordering them changes no computed style. */
+
+@import "./tokens.css";
+@import "./overlays.css";
+
+@import "../login.css";
+@import "../location-control.css";
+@import "../context-picker.css";
+@import "../settings.css";
+@import "../account-menu.css";
+@import "../tls.css";
+@import "../webui-shell.css";
+@import "../explorer-parity.css";
+@import "../desktop-ui.css";
+@import "../starship-bridge.css";
+@import "./mode-switcher.css";
+@import "./vnc-interactions.css";
+@import "./commandbar.css";
+@import "./mobile-ui.css";
+
+@import "./theme-overrides.css";
+@import "./surface-overrides.css";
