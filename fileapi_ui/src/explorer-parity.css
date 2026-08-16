@@ -7,7 +7,19 @@
 .folder-tree-scroll::-webkit-scrollbar { display: none; }
 .desktop-content { flex: 1; min-width: 0; margin-left: 0; }
 .sidebar-label { display: block; padding: 6px 12px 10px; color: var(--color-text-muted); font-size: 10px; letter-spacing: .13em; font-weight: 700; text-transform: uppercase; }.folder-tree { min-width: 0; }.tree-node { display: flex; align-items: center; min-height: 32px; border: 1px solid transparent; border-radius: 4px; color: var(--color-text); }.tree-node:hover { background: var(--color-bg-panel); }.tree-node.active { color: var(--color-text); background: var(--color-bg-panel); }.tree-node.drop-target { color: var(--color-text); background: #12516a; border-color: var(--color-primary); box-shadow: inset 3px 0 var(--color-primary); }.tree-toggle { width: 26px; height: 26px; padding: 0; border: 0; background: transparent; color: var(--color-text-muted); cursor: pointer; font-size: 17px; }.tree-folder { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; border: 0; padding: 6px 8px 6px 0; background: transparent; color: inherit; text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.tree-children { margin-left: 13px; padding-left: 7px; border-left: 1px solid var(--color-border); }.tree-loading { display: block; padding: 6px 10px; color: var(--color-text-muted); font-size: 12px; }.drop-label { margin-right: 8px; color: var(--color-success); font-size: 10px; font-weight: 700; white-space: nowrap; }.folder-mini { display: inline-block; flex: 0 0 auto; width: 17px; height: 13px; border-radius: 2px; background: var(--color-warning); position: relative; }.folder-mini::before { content: ""; position: absolute; width: 8px; height: 3px; top: -2px; left: 1px; background: var(--color-warning); border-radius: 2px 2px 0 0; }.search-control { position: relative; width: min(290px, 32vw); }.search { width: 100%; height: 34px; padding: 0 30px 0 10px; border: 1px solid var(--color-border); border-radius: 4px; outline: none; color: var(--color-text); background: var(--color-bg); }.clear-search { position: absolute; top: 2px; right: 2px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 3px; color: #8fb5d3; background: transparent; cursor: pointer; font-size: 20px; line-height: 20px; }.view-switch { display: inline-flex; overflow: hidden; border: 1px solid var(--color-border); border-radius: 5px; }.commandbar .view-switch button { border: 0; border-radius: 0; padding: 7px 9px; }.commandbar .view-switch button.active { color: #e9fbff; background: #175070; box-shadow: inset 0 -2px var(--color-primary); }.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 10px; padding: 4px; }.file-tile { display: flex; flex-direction: column; min-height: 152px; gap: 6px; padding: 14px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel-strong); color: var(--color-text); cursor: grab; overflow: hidden; }.file-tile:hover { border-color: #3b7097; background: var(--color-bg-panel); }.file-tile.selected { border-color: var(--color-primary); background: var(--color-bg-panel); box-shadow: inset 3px 0 var(--color-primary); }.file-tile.drop-target, .file-row.drop-target { border-color: var(--color-primary); background: #12516a; box-shadow: 0 0 0 1px var(--color-primary); }.tile-icon { font-size: 30px; line-height: 38px; }.file-tile strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }.file-tile > span:not(.tile-icon), .file-tile small { color: var(--color-text-muted); font-size: 12px; }.file-tile small { margin-top: auto; }
-@media (max-width: 720px) { .desktop-workspace { flex-direction: column; }.desktop-folder-tree { order: 0; flex: 0 0 auto; width: auto; max-height: 190px; }.desktop-content { margin-left: 0; }.navigation { flex-wrap: wrap; }.remote-navigation-row { flex-wrap: wrap; }.remote-navigation-row .pane-breadcrumbs, .remote-navigation-row .search-control { flex-basis: 100%; width: 100%; }.search-control { order: 3; width: 100%; flex-basis: 100%; } }
+/* T-038: scoped by .ui-layout-mobile instead of a raw @media (max-width:
+   720px) query -- see the longer note in desktop-ui.css next to the same
+   migration. This makes a forced Mobile profile stack the Location
+   workspace the same way Auto-detected Mobile already does, at any
+   window width, instead of only when the window also happens to be
+   narrow enough to trip the old width-only proxy. */
+.explorer.ui-layout-mobile .desktop-workspace { flex-direction: column; }
+.explorer.ui-layout-mobile .desktop-folder-tree { order: 0; flex: 0 0 auto; width: auto; max-height: 190px; }
+.explorer.ui-layout-mobile .desktop-content { margin-left: 0; }
+.explorer.ui-layout-mobile .navigation { flex-wrap: wrap; }
+.explorer.ui-layout-mobile .remote-navigation-row { flex-wrap: wrap; }
+.explorer.ui-layout-mobile .remote-navigation-row .pane-breadcrumbs, .explorer.ui-layout-mobile .remote-navigation-row .search-control { flex-basis: 100%; width: 100%; }
+.explorer.ui-layout-mobile .search-control { order: 3; width: 100%; flex-basis: 100%; }
 .context-menu { position: fixed; z-index: 60; min-width: 160px; padding: 4px; }
 .context-menu button { display: block; width: 100%; border: 0; border-radius: 3px; padding: 8px 10px; background: transparent; color: var(--color-text); text-align: left; cursor: pointer; }
 .context-menu button:hover:not(:disabled) { background: var(--color-bg-panel); }
@@ -326,12 +338,18 @@
 .local-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .local-file small { color: var(--color-text-muted); }
 .local-pane-footer { padding: 7px 14px; color: var(--color-text-muted); border-top: 1px solid var(--color-border); font-size: 12px; }
-@media (max-width: 720px) { .sessions-layout { grid-template-columns: 1fr; } }
-@media (max-width: 720px) { .terminal-header { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 12px; }.terminal-tabs { max-width: 100%; overflow-x: auto; }.terminal-actions { width: 100%; justify-content: flex-end; } }
-@media (max-width: 720px) { .split-workspace { overflow: auto; }.split-workspace .local-pane { flex: 0 0 100%; min-height: 260px; }.split-workspace .desktop-folder-tree { flex: 0 0 100%; } }
+/* T-038: .sessions-layout's single-column rule already lives in
+   desktop-ui.css (co-located with its base .sessions-layout rule, both
+   scoped by .ui-layout-mobile) -- the duplicate that used to be here,
+   gated by a raw @media (max-width: 720px) query, is removed rather than
+   migrated. */
+.explorer.ui-layout-mobile .terminal-header { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 12px; }
+.explorer.ui-layout-mobile .terminal-tabs { max-width: 100%; overflow-x: auto; }
+.explorer.ui-layout-mobile .terminal-actions { width: 100%; justify-content: flex-end; }
 
 .explorer.ui-layout-mobile .split-workspace { gap: 8px; overflow: auto; }
-.explorer.ui-layout-mobile .split-workspace .local-pane { min-width: 260px; }
+.explorer.ui-layout-mobile .split-workspace .local-pane { min-width: 260px; flex: 0 0 100%; min-height: 260px; }
+.explorer.ui-layout-mobile .split-workspace .desktop-folder-tree { flex: 0 0 100%; }
 .explorer.ui-layout-mobile .local-pane-actions { flex-wrap: wrap; gap: 8px; }
 .explorer.ui-layout-mobile .local-pane-actions button { min-height: 40px; }
 .explorer.ui-layout-mobile .file-table th { height: 42px; font-size: var(--ui-small-font-size); }

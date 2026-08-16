@@ -36,16 +36,14 @@
    including the !important overrides needed for descendant elements) is
    declared once in styles/mobile-ui.css, not duplicated here. */
 
-@media (max-width: 720px) {
-  .explorer {
-    --ui-font-size: 12px;
-    --ui-small-font-size: 10px;
-    --ui-button-height: 27px;
-    --ui-control-height: 27px;
-    --ui-button-padding-x: 7px;
-    --ui-button-padding-y: 3px;
-  }
-}
+/* (T-038: a `@media (max-width: 720px) { .explorer { ... } }` block used to
+   sit here, hardcoding smaller-than-Mobile-floor sizing for plain
+   `.explorer`. It was provably dead: `isMobileViewport()` treats width <=
+   1024 as Mobile, and 720 < 1024, so `.ui-layout-desktop` can never coexist
+   with a <=720px viewport -- and wherever `.ui-layout-mobile` *does* apply,
+   its 2-class selector already outranks this 1-class one on specificity
+   regardless of media query or source order. Removed rather than migrated;
+   there was no live behavior for a layout class to take over.) */
 
 :where(.explorer) button {
   min-height: var(--ui-button-height);
@@ -174,24 +172,31 @@
   gap: var(--ui-section-gap);
 }
 
-@media (max-width: 720px) {
-  .sessions-layout {
-    grid-template-columns: 1fr;
-  }
+/* T-038: these used to be gated by a raw `@media (max-width: 720px)`
+   query, which happened to give the correct result for Auto profile
+   (width <= 720 always implies isMobileViewport() = Mobile, since
+   720 < the shared 1024 threshold) but silently did nothing for a
+   *forced* Mobile profile on a window wider than 720px -- the layout
+   class is the actual profile signal, the media query was a width-only
+   proxy for it that only agreed with the real signal by coincidence in
+   the Auto case. Scoping by .ui-layout-mobile instead makes forced
+   Mobile behave the same as Auto-detected Mobile at any window size. */
+.explorer.ui-layout-mobile .sessions-layout {
+  grid-template-columns: 1fr;
+}
 
-  .terminal-actions {
-    max-width: 100%;
-    overflow-x: auto;
-  }
+.explorer.ui-layout-mobile .terminal-actions {
+  max-width: 100%;
+  overflow-x: auto;
+}
 
-  .ssh-controls,
-  .ssh-recording-actions {
-    align-items: stretch;
-  }
+.explorer.ui-layout-mobile .ssh-controls,
+.explorer.ui-layout-mobile .ssh-recording-actions {
+  align-items: stretch;
+}
 
-  .ssh-controls .palette-select-control {
-    min-width: min(100%, 220px);
-  }
+.explorer.ui-layout-mobile .ssh-controls .palette-select-control {
+  min-width: min(100%, 220px);
 }
 
 
