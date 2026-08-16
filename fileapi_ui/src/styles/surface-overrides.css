@@ -125,15 +125,20 @@
 
 .login {
   display: grid;
-  place-items: center;
+  /* `place-items: center` when content is taller than the viewport lets
+     the browser overflow equally above AND below the scrollport, and the
+     part that overflows above is not reachable by scrolling -- only the
+     part below is, which looked like the form's bottom border was
+     permanently clipped no matter how far you scrolled. `start` (plus
+     `justify-items: center` to keep horizontal centering) anchors content
+     to the top instead, so any overflow is entirely below and reachable
+     by scrolling down. */
+  align-items: start;
+  justify-items: center;
   width: 100%;
   min-height: 100dvh;
   padding: clamp(12px, 3vh, 48px) clamp(16px, 4vw, 64px);
   box-sizing: border-box;
-  /* Auto or Large content can be taller than the window's default size
-     (especially Large, which enlarges every control uniformly); scrolling
-     instead of clipping keeps the form's own bottom border visible instead
-     of being cut off by the viewport edge. */
   overflow-y: auto;
 }
 
@@ -210,7 +215,6 @@
 }
 
 @media (max-height: 620px) {
-  .login { overflow: auto; align-items: start; }
   .login form { max-height: calc(100dvh - 24px); overflow-y: auto; scrollbar-width: thin; }
 }
 :where(.explorer) .rest-warning { color: var(--color-warning); }
