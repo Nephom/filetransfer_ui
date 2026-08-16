@@ -1,3 +1,6 @@
+/* ContextPicker restyled to read from the same --dropdown-* tokens as
+   ui/dropdown.css (T-075) so it stays visually interchangeable with every
+   other Dropdown-family surface regardless of which component renders it. */
 .context-picker {
   position: relative;
   z-index: var(--z-dropdown);
@@ -10,20 +13,27 @@
   gap: var(--space-2);
   min-width: min(190px, 100%);
   max-width: min(360px, 42vw);
-  min-height: var(--ui-button-height);
-  padding: var(--ui-button-padding-y) var(--ui-button-padding-x);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
+  min-height: var(--ui-button-height, var(--control-height-base));
+  padding: var(--ui-button-padding-y, 6px) var(--ui-button-padding-x, var(--space-2));
+  border: var(--dropdown-border);
+  border-radius: var(--dropdown-trigger-radius);
   color: var(--color-text);
   background: var(--color-bg-panel);
   box-shadow: var(--shadow-inset);
   text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
 }
 
 .context-picker-trigger:hover:not(:disabled),
 .context-picker-trigger[aria-expanded="true"] {
   border-color: var(--color-primary);
   background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong));
+}
+
+.context-picker-trigger:focus-visible {
+  outline: var(--dropdown-focus-ring);
+  outline-offset: 2px;
 }
 
 .context-picker-label,
@@ -38,16 +48,17 @@
 
 .context-picker-label { white-space: nowrap; }
 .context-picker-trigger strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.context-picker-chevron { margin-left: auto; color: var(--color-primary); }
+.context-picker-chevron { margin-left: auto; color: var(--color-primary); transition: transform var(--motion-fast); }
+.context-picker-trigger[aria-expanded="true"] .context-picker-chevron { transform: rotate(180deg); }
 
 .context-picker-popover {
   position: fixed;
   z-index: var(--z-dropdown);
   overflow: auto;
   padding: var(--space-1);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg-popover);
+  border: var(--dropdown-border);
+  border-radius: var(--dropdown-menu-radius);
+  background: var(--dropdown-surface);
   box-shadow: var(--shadow-panel);
   backdrop-filter: blur(22px) saturate(140%);
   animation: context-picker-in .16s ease-out both;
@@ -69,18 +80,25 @@
   gap: var(--space-2);
   width: 100%;
   min-height: var(--ui-button-height, var(--control-height-base));
-  padding: var(--space-1) var(--space-2);
+  padding: var(--dropdown-option-padding);
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-radius: var(--dropdown-option-radius);
   color: var(--color-text);
   background: transparent;
   text-align: left;
+  cursor: pointer;
 }
 
 .context-picker-option:hover,
-.context-picker-option.selected {
+.context-picker-option.selected,
+.context-picker-option:focus-visible {
   border-color: color-mix(in srgb, var(--color-primary) 42%, transparent);
   background: linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 18%, transparent), color-mix(in srgb, var(--color-secondary) 8%, transparent));
+}
+
+.context-picker-option:focus-visible {
+  outline: var(--dropdown-focus-ring);
+  outline-offset: 1px;
 }
 
 .context-picker-option-copy { display: grid; min-width: 0; gap: 2px; }
