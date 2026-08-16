@@ -73,12 +73,20 @@
   padding-inline: clamp(8px, 1vw, 12px);
 }
 
-.commandbar .commandbar-overflow .mobile-choice-options {
-  right: 0;
-  left: auto;
+/* Portaled to document.body (see main.tsx) because .commandbar's
+   overflow:hidden would otherwise clip a normally-positioned popover.
+   position:fixed + JS-computed top/left (matches ContextPicker's own
+   popover) keeps it in the same coordinate space as getBoundingClientRect().
+   The compound selector (two classes) guarantees this wins over
+   mobile-choice-menu.css's .mobile-choice-options rule regardless of
+   which file the bundler places first. */
+.mobile-choice-options.commandbar-overflow-options {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-dropdown);
+  overflow: auto;
   transform: none;
-  width: max-content;
-  min-width: 160px;
 }
 
 @media (max-width: 900px) {

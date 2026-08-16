@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { resolveResource } from "@tauri-apps/api/path";
@@ -536,17 +537,19 @@ type CommandBarOverflowAction = {
 // Narrow commandbars cannot show every action at full label width (see
 // styles/commandbar.css); rather than truncating every button into an
 // unreadable "…", secondary actions collapse behind this one trigger.
-// Visually matches MobileChoiceMenu (same token-driven chrome) so every
-// commandbar-adjacent menu looks the same regardless of which component
-// renders it.
+// Portaled to document.body (mirrors ContextPicker) because .commandbar
+// has overflow:hidden, which would otherwise clip a normally-positioned
+// popover before it ever became visible.
 function CommandBarOverflowMenu({ label, actions }: { label: string; actions: CommandBarOverflowAction[] }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
 
   useEffect(() => {
     if (!open) return undefined;
     const close = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      if (!rootRef.current?.contains(event.target as Node) && !(event.target as HTMLElement).closest(".commandbar-overflow-options")) setOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
@@ -559,9 +562,37 @@ function CommandBarOverflowMenu({ label, actions }: { label: string; actions: Co
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return undefined;
+    const reposition = () => {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.max(190, rect.width);
+      const maxHeight = Math.min(420, Math.max(140, window.innerHeight - 24));
+      const gap = 6;
+      const belowTop = rect.bottom + gap;
+      const aboveTop = rect.top - gap - maxHeight;
+      const top = belowTop + maxHeight <= window.innerHeight - 12
+        ? belowTop
+        : aboveTop >= 12
+          ? aboveTop
+          : Math.max(12, Math.min(belowTop, window.innerHeight - maxHeight - 12));
+      const left = Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12));
+      setPopoverStyle({ top, left, width, maxHeight, visibility: "visible" });
+    };
+    reposition();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open]);
+
   return (
     <div ref={rootRef} className={`mobile-choice-menu commandbar-overflow${open ? " open" : ""}`}>
       <button
+        ref={triggerRef}
         type="button"
         className="mobile-choice-trigger commandbar-overflow-trigger"
         aria-label={label}
@@ -575,8 +606,8 @@ function CommandBarOverflowMenu({ label, actions }: { label: string; actions: Co
         <span>{label}</span>
         <span aria-hidden="true">{open ? "‹" : "›"}</span>
       </button>
-      {open && (
-        <div className="mobile-choice-options" role="menu" aria-label={label}>
+      {open && createPortal(
+        <div className="mobile-choice-options commandbar-overflow-options" style={popoverStyle} role="menu" aria-label={label}>
           {actions.map((action) => (
             <button
               key={action.key}
@@ -592,7 +623,8 @@ function CommandBarOverflowMenu({ label, actions }: { label: string; actions: Co
               {action.label}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
