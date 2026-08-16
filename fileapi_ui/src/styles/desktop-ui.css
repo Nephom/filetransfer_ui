@@ -213,3 +213,39 @@
     --ui-panel-padding: var(--space-3);
   }
 }
+
+/* T-190: layout properties ported from the now-deleted styles/webui-shell.css
+   (a stale duplicate mostly shadowed by this file / starship-bridge.css /
+   styles/theme/*.css -- see the cascade audit referenced in the task list).
+   These specific properties had no later override anywhere and were still
+   live, so they're ported here (desktop-ui.css: generic explorer chrome
+   layout) rather than dropped. Colors/backgrounds for the same selectors
+   already live in starship-bridge.css/styles/theme/*.css and are
+   unaffected by this port. */
+html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+body { min-width: 320px; }
+.explorer { height: 100dvh; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.titlebar, .commandbar, .navigation, .statusbar { flex-shrink: 0; }
+.app-mark { width: var(--app-mark-width); height: var(--app-mark-height); position: relative; }
+.app-mark::before { content: ""; position: absolute; width: 10px; height: 4px; top: -3px; left: 2px; border-radius: 2px 2px 0 0; }
+.app-name { font-weight: 700; }
+.connection-status { font-weight: 700; }
+.divider { width: 1px; height: var(--space-5); margin: 0 var(--space-1); flex: 0 0 auto; }
+.crumbs { display: flex; align-items: center; min-width: 0; flex: 1; padding: 0 var(--space-3); overflow: hidden; white-space: nowrap; }
+.crumbs button { border: 0; padding: 3px var(--space-1); border-radius: 3px; cursor: pointer; }
+.crumbs button:hover { background: var(--color-bg-panel); }
+.crumb-separator { padding: 0 2px; }
+.desktop-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.content-heading { display: flex; align-items: center; gap: var(--space-3); }
+.file-area { flex: 1; min-height: 0; overflow: auto; }
+.file-table { width: 100%; border-collapse: collapse; }
+.file-table th { text-align: left; font-weight: 700; }
+.file-table th:first-child, .file-table td:first-child { width: 42px; padding-left: var(--space-3); }
+.file-row { height: var(--control-height-mobile); }
+.file-row td { overflow: hidden; padding: 0 var(--space-2); text-overflow: ellipsis; white-space: nowrap; border: 0; }
+.file-name.folder:hover { text-decoration: none; }
+.notice { display: flex; align-items: center; gap: var(--space-2); border-radius: 4px; }
+.transfer-notice { color: var(--color-primary); }
+.share-link { margin: 0 var(--space-4) var(--space-2); }
+.share-link input { color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }
+.statusbar { display: flex; justify-content: space-between; }

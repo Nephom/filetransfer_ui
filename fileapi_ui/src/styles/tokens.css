@@ -65,6 +65,10 @@
   --login-mark-height: 28px;
   --login-mark-accent-width: 14px;
   --login-mark-accent-height: 5px;
+  /* Titlebar app-mark glyph (smaller sibling of --login-mark-*, ported
+     from webui-shell.css under T-190). */
+  --app-mark-width: 24px;
+  --app-mark-height: 20px;
 
   --radius-sm: var(--bridge-radius-sm, 6px);
   --radius-md: var(--bridge-radius, 10px);

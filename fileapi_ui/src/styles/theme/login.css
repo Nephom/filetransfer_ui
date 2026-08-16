@@ -25,17 +25,18 @@
   justify-items: center;
   width: 100%;
   /* height (not min-height): html/body/#root force overflow:hidden
-     (styles/webui-shell.css), so a min-height container that grows taller
-     than the viewport just gets clipped by that ancestor -- overflow-y:auto
-     on THIS element never gets a chance to run because this element itself
-     never became smaller than its content. Locking .login to exactly the
-     ancestor height makes it the actual scroll container whenever its
-     content (e.g. Large's uniformly enlarged form) is taller than it.
-     Uses 100% (not 100dvh) to exactly match the html/body/#root chain
-     (index.html, styles/webui-shell.css), which is also 100% -- mixing dvh
-     with an ancestor chain sized in % risks .login computing even slightly
-     taller than #root in this webview, which would just move the same
-     clipping bug up to #root's own overflow:hidden instead of fixing it. */
+     (styles/desktop-ui.css, ported from webui-shell.css under T-190), so a
+     min-height container that grows taller than the viewport just gets
+     clipped by that ancestor -- overflow-y:auto on THIS element never gets
+     a chance to run because this element itself never became smaller than
+     its content. Locking .login to exactly the ancestor height makes it
+     the actual scroll container whenever its content (e.g. Large's
+     uniformly enlarged form) is taller than it. Uses 100% (not 100dvh) to
+     exactly match the html/body/#root chain (index.html, styles/
+     desktop-ui.css), which is also 100% -- mixing dvh with an ancestor
+     chain sized in % risks .login computing even slightly taller than
+     #root in this webview, which would just move the same clipping bug up
+     to #root's own overflow:hidden instead of fixing it. */
   height: 100%;
   min-height: 0;
   padding: clamp(12px, 3vh, 48px) clamp(16px, 4vw, 64px);

@@ -19,11 +19,11 @@
  * changes no computed style.
  *
  * T-201: every global stylesheet imported below now lives under this
- * styles/ directory (the 10 files that used to sit directly under src/ --
- * account-menu.css, context-picker.css, desktop-ui.css, explorer-parity.css,
- * location-control.css, login.css, settings.css, starship-bridge.css,
- * tls.css, webui-shell.css -- were moved here unchanged, though
- * explorer-parity.css itself was then further split per T-202 below).
+ * styles/ directory. T-190 later deleted webui-shell.css entirely (a
+ * stale duplicate largely shadowed by desktop-ui.css/starship-bridge.css/
+ * styles/theme/*.css -- its few still-live layout properties were ported
+ * into desktop-ui.css instead of staying in a dead file).
+ *
  * Component-scoped CSS that a single feature file imports directly next to
  * its own .tsx (log-view.css, proxmox-vnc.css, rest-api.css,
  * ui/dropdown.css, ui/mobile-choice-menu.css, help/help.css) intentionally
@@ -54,7 +54,6 @@
 @import "./settings.css";
 @import "./account-menu.css";
 @import "./tls.css";
-@import "./webui-shell.css";
 @import "./layout/folder-tree.css";
 @import "./layout/context-menu.css";
 @import "./layout/workspace-dialogs.css";
