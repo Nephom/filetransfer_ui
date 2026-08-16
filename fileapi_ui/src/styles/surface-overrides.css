@@ -83,7 +83,6 @@
 :where(.explorer) .modal,
 :where(.explorer) .rest-action-dialog,
 :where(.explorer) .rest-hardware-dialog,
-:where(.explorer) .rest-entry-editor,
 :where(.explorer) .rest-session-help,
 :where(.explorer) .token-path-help-popup {
   border-color: var(--color-border);

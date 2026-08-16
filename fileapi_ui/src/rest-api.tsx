@@ -339,8 +339,8 @@ function RestEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries }:
         <span className="rest-entry-edit" onClick={(event) => { event.stopPropagation(); setEditing(entry); }}>Edit</span>
       </button>)}
     </div>
-    {editing && createPortal(<div className="floating-dialog-layer" role="presentation"><div ref={editorRef} tabIndex={-1} className="rest-entry-editor" role="dialog" aria-modal="true" aria-labelledby="rest-entry-editor-title">
-      <div className="rest-editor-heading"><strong id="rest-entry-editor-title">{entries.some((entry) => entry.id === editing.id) ? "Edit REST entry" : "Add REST entry"}</strong><button type="button" onClick={() => setEditing(null)} aria-label="Close editor">×</button></div>
+    {editing && createPortal(<div className="modal-cover modal-layer-top" role="presentation"><div ref={editorRef} tabIndex={-1} className="modal rest-entry-modal" role="dialog" aria-modal="true" aria-labelledby="rest-entry-editor-title">
+      <h2 id="rest-entry-editor-title">{entries.some((entry) => entry.id === editing.id) ? "Edit REST entry" : "Add REST entry"}</h2>
       <label>Name<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
       <label>Base URL<input value={editing.baseUrl} onChange={(event) => setEditing({ ...editing, baseUrl: event.target.value })} placeholder="https://api.example.com" /></label>
       <label>Default path<input value={editing.defaultPath} onChange={(event) => setEditing({ ...editing, defaultPath: event.target.value })} placeholder="/v1/rest" /></label>

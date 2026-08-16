@@ -39,17 +39,6 @@
   animation: floating-dialog-in .16s ease-out both;
 }
 
-.floating-dialog-layer .rest-entry-editor,
-.floating-dialog-layer .vnc-entry-editor {
-  position: relative;
-  inset: auto;
-  width: min(520px, calc(100vw - 32px));
-  max-height: calc(100dvh - 32px);
-  margin: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
 @keyframes floating-dialog-in { from { opacity: 0; } to { opacity: 1; } }
 
 .floating-window.queue-modal .floating-window-content,

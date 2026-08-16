@@ -225,7 +225,6 @@
 :where(.explorer) .token-path-help-close:hover { color: var(--color-bg); background: var(--color-primary); }
 :where(.explorer) .rest-session-help,
 :where(.explorer) .token-path-help-popup,
-:where(.explorer) .rest-entry-editor,
 :where(.explorer) .rest-action-dialog { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); }
 :where(.explorer) .token-path-help-popup pre { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg); }
 
@@ -322,13 +321,10 @@
 :where(.explorer) .rest-breadcrumbs,
 :where(.explorer) .rest-debug-summary,
 :where(.explorer) .rest-audit-heading span { color: var(--color-text-muted); }
-:where(.explorer) .rest-entry-editor,
 :where(.explorer) .rest-action-dialog,
 :where(.explorer) .rest-hardware-dialog,
 :where(.explorer) .rest-bios-editor-card,
 :where(.explorer) .rest-resource-catalog-list button { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); }
-:where(.explorer) .rest-entry-editor input,
-:where(.explorer) .rest-entry-editor select,
 :where(.explorer) .rest-auth-fields input,
 :where(.explorer) .rest-auth-fields textarea,
 :where(.explorer) .rest-url-row input,
@@ -378,7 +374,6 @@
 /* Portaled overlays live under body rather than inside .explorer. */
 .account-menu,
 .context-picker-popover,
-.floating-dialog-layer .rest-entry-editor,
 .floating-dialog-layer .rest-action-dialog,
 .floating-dialog-layer .rest-hardware-dialog { color: var(--color-text); background: var(--color-bg-panel-strong); border-color: var(--color-border); }
 .account-menu button,
