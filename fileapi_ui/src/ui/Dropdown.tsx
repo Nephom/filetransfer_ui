@@ -51,17 +51,20 @@ export function Dropdown({ label, value, options, onChange, disabled = false, pl
       const rect = triggerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const width = Math.max(rect.width, 190);
-      const maxHeight = Math.min(320, Math.max(140, window.innerHeight - 24));
       const gap = 6;
-      const belowTop = rect.bottom + gap;
-      const aboveTop = rect.top - gap - maxHeight;
-      const top = belowTop + maxHeight <= window.innerHeight - 12
-        ? belowTop
-        : aboveTop >= 12
-          ? aboveTop
-          : Math.max(12, Math.min(belowTop, window.innerHeight - maxHeight - 12));
+      const spaceBelow = window.innerHeight - rect.bottom - gap - 12;
+      const spaceAbove = rect.top - gap - 12;
       const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
-      setPopoverStyle({ top, left, width, maxHeight, visibility: "visible" });
+      // Anchor to the trigger's own edge (top via `bottom`, or bottom via
+      // `top`) instead of computing an absolute `top` from an assumed
+      // fixed maxHeight -- a short menu (e.g. 2 options) opening "above"
+      // used to jump to `rect.top - 320px`, stranding it far from the
+      // trigger instead of sitting flush against it.
+      if (spaceBelow >= Math.min(140, spaceBelow) && spaceBelow >= spaceAbove) {
+        setPopoverStyle({ top: rect.bottom + gap, left, width, maxHeight: Math.max(80, spaceBelow), visibility: "visible" });
+      } else {
+        setPopoverStyle({ bottom: window.innerHeight - rect.top + gap, left, width, maxHeight: Math.max(80, spaceAbove), visibility: "visible" });
+      }
     };
     reposition();
     window.addEventListener("resize", reposition);
