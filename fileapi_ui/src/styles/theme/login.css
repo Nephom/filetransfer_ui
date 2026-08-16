@@ -63,7 +63,7 @@
   gap: clamp(6px, 1vh, 10px);
   margin: 0;
   color: var(--color-text);
-  font-size: 16px;
+  font-size: clamp(14px, 1.4vh, var(--font-size-mobile-base));
   font-weight: 600;
 }
 
@@ -86,14 +86,14 @@
 
 .login form > button:not(.only-terminal-corner-button) {
   justify-self: start;
-  min-width: 142px;
-  min-height: 48px;
-  margin-top: 4px;
-  padding: 12px 22px;
+  min-width: clamp(120px, 14vw, 142px);
+  min-height: clamp(40px, 5vh, 48px);
+  margin-top: var(--space-1);
+  padding: clamp(10px, 1.4vh, 12px) clamp(16px, 2.2vw, 22px);
   border-radius: 12px;
   color: var(--color-bg);
   background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
-  font-size: 16px;
+  font-size: clamp(14px, 1.4vh, var(--font-size-mobile-base));
   font-weight: 700;
   box-shadow: 0 12px 30px color-mix(in srgb, var(--color-primary) 22%, transparent);
 }
