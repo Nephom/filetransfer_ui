@@ -435,22 +435,31 @@ function CommandBarOverflowMenu({ label, actions }: { label: string; actions: Co
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
+
+  const closeMenu = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
 
   useEffect(() => {
     if (!open) return undefined;
     const close = (event: MouseEvent) => {
       if (!rootRef.current?.contains(event.target as Node) && !(event.target as HTMLElement).closest(".commandbar-overflow-options")) setOpen(false);
     };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
     document.addEventListener("click", close);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("click", close);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
+    return () => document.removeEventListener("click", close);
+  }, [open]);
+
+  // T-133: match ui/Dropdown.tsx's keyboard matrix -- Escape/Arrow keys/
+  // Home/End are handled by the portaled menu's own onKeyDown below, and
+  // opening focuses the first action so this menu does not depend on a
+  // mouse click to be usable.
+  useEffect(() => {
+    if (!open) return;
+    const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not(:disabled)") || []);
+    buttons[0]?.focus();
   }, [open]);
 
   useEffect(() => {
@@ -489,6 +498,12 @@ function CommandBarOverflowMenu({ label, actions }: { label: string; actions: Co
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
         onClick={(event) => {
           event.stopPropagation();
           setOpen((value) => !value);
@@ -498,7 +513,30 @@ function CommandBarOverflowMenu({ label, actions }: { label: string; actions: Co
         <span aria-hidden="true">{open ? <ChevronLeftIcon /> : <ChevronRightIcon />}</span>
       </button>
       {open && createPortal(
-        <div className="mobile-choice-options commandbar-overflow-options" style={popoverStyle} role="menu" aria-label={label}>
+        <div
+          ref={menuRef}
+          className="mobile-choice-options commandbar-overflow-options"
+          style={popoverStyle}
+          role="menu"
+          aria-label={label}
+          onKeyDown={(event) => {
+            const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not(:disabled)") || []);
+            const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
+            if (event.key === "Escape") {
+              event.preventDefault();
+              closeMenu();
+            } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              const nextIndex = event.key === "ArrowDown"
+                ? Math.min(currentIndex + 1, buttons.length - 1)
+                : Math.max(currentIndex - 1, 0);
+              buttons[nextIndex]?.focus();
+            } else if (event.key === "Home" || event.key === "End") {
+              event.preventDefault();
+              buttons[event.key === "Home" ? 0 : buttons.length - 1]?.focus();
+            }
+          }}
+        >
           {actions.map((action) => (
             <button
               key={action.key}
@@ -508,7 +546,7 @@ function CommandBarOverflowMenu({ label, actions }: { label: string; actions: Co
               title={action.title}
               onClick={() => {
                 action.onClick();
-                setOpen(false);
+                closeMenu();
               }}
             >
               {action.label}
