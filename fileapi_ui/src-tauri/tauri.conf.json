@@ -4,7 +4,7 @@
   "version": "3.3.3",
   "identifier": "com.nephom.nfterm",
   "build": { "frontendDist": "../dist", "devUrl": "http://localhost:5173", "beforeDevCommand": "npm run dev", "beforeBuildCommand": "npm run build" },
-  "app": { "windows": [{ "title": "nFterm", "width": 1100, "height": 720, "minWidth": 800, "minHeight": 600, "dragDropEnabled": false }] },
+  "app": { "windows": [{ "title": "nFterm", "width": 1100, "height": 720, "minWidth": 940, "minHeight": 620, "dragDropEnabled": false }] },
   "bundle": {
     "active": true,
     "targets": "all",
