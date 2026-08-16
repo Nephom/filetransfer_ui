@@ -884,6 +884,16 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
     document.addEventListener("keydown", closeOnEscape);
     return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", closeOnEscape); };
   }, [profileMenuOpen]);
+  // Auto profile sizing must flip to Mobile at the exact same threshold as
+  // DesktopApp's own mobileLayout check, via the one shared resolver --
+  // not a hand-copied CSS media query mirroring the same numbers (T-027).
+  const [loginViewport, setLoginViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  useEffect(() => {
+    const updateViewport = () => setLoginViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener("resize", updateViewport);
+    return () => window.removeEventListener("resize", updateViewport);
+  }, []);
+  const loginMobileLayout = uiProfile === "mobile" || (uiProfile === "auto" && isMobileViewport(loginViewport));
   const profileLabel = uiProfile === "mobile" ? "Mobile" : "Auto";
   const updateSaveUserInformation = (enabled: boolean) => {
     setSession((current) => ({ ...current, saveUserInformation: enabled }));
@@ -896,7 +906,7 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
   };
 
   return (
-    <main className={`login ui-profile-${uiProfile}`}>
+    <main className={`login ui-profile-${uiProfile} ui-layout-${loginMobileLayout ? "mobile" : "desktop"}`}>
       <form onSubmit={onSubmit}>
         <div className="login-mark" aria-hidden="true"><span /></div>
         <h1>nFterm {appVersion && <small className="login-version">{appVersion}</small>}</h1>

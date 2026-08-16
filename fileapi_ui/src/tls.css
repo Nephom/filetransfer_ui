@@ -39,9 +39,9 @@
 .login.ui-profile-mobile .login-toggle-button { font-size: 16px; }
 .login.ui-profile-mobile .login-toggle-help { font-size: 14px !important; }
 
-/* The Auto-profile equivalent of the three rules above lives in the shared
-   @media (max-width:1023px),(max-height:767px) block in login.css, so this
-   breakpoint is declared in exactly one file. */
+/* The Auto-profile equivalent of the three rules above lives in the
+   .login.ui-profile-auto.ui-layout-mobile rules in login.css, driven by
+   the shared isMobileViewport() resolver instead of a raw media query. */
 
 .login .login-toggle-button {
   display: inline-flex;

@@ -37,14 +37,21 @@ body {
 .login.ui-profile-mobile h1 { font-size: 28px !important; }
 .login.ui-profile-mobile small { font-size: 14px !important; }
 
-@media (max-width: 1023px), (max-height: 767px) {
-  .login.ui-profile-auto :is(h1, h2, h3, p, label, button, input, select, textarea, output, span, small, strong) { font-size: 16px !important; }
-  .login.ui-profile-auto h1 { font-size: 28px !important; }
-  .login.ui-profile-auto small { font-size: 14px !important; }
-  .login.ui-profile-auto .login-toggle-row { flex-wrap: nowrap; align-items: stretch; }
-  .login.ui-profile-auto .login-profile-menu { flex: 1 1 0; min-width: 0; }
-  .login.ui-profile-auto .login-profile-trigger { width: 100%; min-width: 0; font-size: 16px; }
-}
+/* Auto profile at Mobile-sized viewports (T-027/T-036): driven by the same
+   isMobileViewport() resolver + ui-layout-mobile class DesktopApp uses,
+   not a hand-copied "@media (max-width: 1023px), (max-height: 767px)"
+   mirror of those same numbers. Nothing here is a genuine narrow-viewport
+   rule independent of Mobile-profile detection, so none of it moves to a
+   real media query (T-037) -- the only real width-driven rule in this file
+   is the 720px .login-profile-trigger max-width above, which stays a
+   media query since it's about running out of horizontal room for the
+   trigger label, not about detecting the Mobile profile. */
+.login.ui-profile-auto.ui-layout-mobile :is(h1, h2, h3, p, label, button, input, select, textarea, output, span, small, strong) { font-size: 16px !important; }
+.login.ui-profile-auto.ui-layout-mobile h1 { font-size: 28px !important; }
+.login.ui-profile-auto.ui-layout-mobile small { font-size: 14px !important; }
+.login.ui-profile-auto.ui-layout-mobile .login-toggle-row { flex-wrap: nowrap; align-items: stretch; }
+.login.ui-profile-auto.ui-layout-mobile .login-profile-menu { flex: 1 1 0; min-width: 0; }
+.login.ui-profile-auto.ui-layout-mobile .login-profile-trigger { width: 100%; min-width: 0; font-size: 16px; }
 
 .login form {
   width: min(470px, 100%);
