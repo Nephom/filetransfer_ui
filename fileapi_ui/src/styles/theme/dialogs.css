@@ -82,8 +82,12 @@
 .account-menu button,
 .context-picker-popover button { color: var(--color-text); }
 .account-menu button:hover,
+.account-menu button:focus-visible,
 .context-picker-popover button:hover,
+.context-picker-popover button:focus-visible,
 .context-picker-popover button.selected { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 17%, var(--color-bg-panel-strong)); }
+.account-menu button:focus-visible,
+.context-picker-popover button:focus-visible { outline: var(--dropdown-focus-ring); outline-offset: -2px; }
 
 /* Portaled account surface: always anchors below the titlebar control. */
 .account-menu {
@@ -91,7 +95,7 @@
   border: 1px solid color-mix(in srgb, var(--color-primary) 42%, var(--color-border));
   border-radius: 18px;
   background: linear-gradient(145deg, color-mix(in srgb, var(--color-bg-panel-strong) 78%, transparent), color-mix(in srgb, var(--color-bg) 72%, transparent));
-  box-shadow: 0 22px 55px color-mix(in srgb, var(--color-bg) 72%, transparent), var(--shadow-inset);
+  box-shadow: var(--shadow-panel), 0 22px 55px color-mix(in srgb, var(--color-bg) 72%, transparent), var(--shadow-inset);
   backdrop-filter: blur(26px) saturate(165%);
   overflow: hidden auto;
 }
