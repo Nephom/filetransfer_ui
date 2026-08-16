@@ -1,0 +1,102 @@
+/* Explorer layout, part 7: persistent scrollbar rail, remote navigation
+ * items, Split mode's LOCAL pane (breadcrumbs, actions, tree, file list,
+ * privileged/elevated styling), and the Mobile/Large narrow-window
+ * stacking rules for the terminal and split workspace. Split out of the
+ * former monolithic explorer-parity.css (T-202 follow-up). See
+ * styles/layout/README.md. */
+
+/* Both panes use a custom rail so it remains visible when content fits. */
+.persistent-scrollbar { position: relative; align-self: stretch; flex: 0 0 14px; width: 14px; min-height: 0; background: var(--color-bg); border-left: 1px solid var(--color-border); }
+.persistent-scrollbar-thumb { position: absolute; top: 0; left: 2px; width: 10px; min-height: 28px; border-radius: 7px; background: var(--color-border); cursor: grab; }
+.persistent-scrollbar-thumb:hover { background: var(--color-border-strong); }
+.persistent-scrollbar-thumb:active { cursor: grabbing; }
+.folder-tree-scroll + .persistent-scrollbar, .file-area + .persistent-scrollbar { cursor: pointer; }
+.folder-tree-scroll + .persistent-scrollbar .persistent-scrollbar-thumb, .file-area + .persistent-scrollbar .persistent-scrollbar-thumb { cursor: grab; }
+.file-pane .file-area { overscroll-behavior: contain; }
+.remote-navigation-items { display: flex; gap: 6px; padding: 6px 8px 0; }
+.remote-navigation-items button { padding: 4px 9px; color: var(--color-text); background: var(--color-bg-panel); border-color: var(--color-border); font-size: 11px; }
+.remote-navigation-items button:hover:not(:disabled) { color: var(--color-text); border-color: var(--color-primary); }
+.remote-navigation-items button:disabled { opacity: .45; cursor: not-allowed; }
+.split-workspace { gap: 0; }
+.split-workspace .desktop-folder-tree { display: none; }
+/* T-209: max-width is a CSS-level safety net, independent of the JS
+   drag-resize clamp (resizePane in main.tsx) and its viewport-resize
+   re-clamp (T-206) -- if either ever fails to run (e.g. a future direct
+   state write bypassing both), the pane still cannot render wider than
+   leaves at least 300px for its sibling REMOTE content, matching
+   resizePane's own `window.innerWidth - 300` ceiling. */
+.local-pane { display: flex; flex: 0 0 auto; min-width: min(220px, 100%); max-width: calc(100% - 300px); min-height: 0; flex-direction: column; background: rgba(8, 24, 42, .92); border-right: 1px solid var(--color-border); }
+/* Visual "you are here" indicator for whichever pane the toolbar
+   (New folder/Rename/Delete/View/Select all) currently acts on, only shown
+   in Split mode where LOCAL and REMOTE are both on screen at once. */
+.local-pane.active-pane { box-shadow: inset 0 0 0 2px var(--color-primary); }
+.desktop-content.active-pane { box-shadow: inset 0 0 0 2px var(--color-primary); }
+.active-pane-indicator { padding: 4px 10px; margin-right: 4px; color: var(--color-text-muted); font-size: 11px; background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: 999px; white-space: nowrap; }
+.active-pane-indicator strong { color: var(--color-primary); }
+.pane-resize-handle { flex: 0 0 6px; min-height: 0; background: transparent; cursor: col-resize; border-left: 1px solid var(--color-border); }
+.pane-resize-handle:hover, .pane-resize-handle:active { background: var(--color-primary); border-left-color: var(--color-primary); }
+.local-pane-heading { display: flex; flex-direction: column; gap: 2px; padding: 14px 14px 8px; color: var(--color-text); }
+.local-pane-heading .sidebar-label { padding: 0; color: var(--color-success); }
+.pane-breadcrumbs { width: 100%; min-width: 0; height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-2); }
+.pane-breadcrumbs button { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; }
+.content-heading .pane-breadcrumbs { margin-top: 4px; }
+.content-heading > div { min-width: 0; flex: 1 1 auto; }
+.remote-navigation-row { display: flex; align-items: center; min-width: 0; gap: 10px; }
+.remote-navigation-row .pane-breadcrumbs { flex: 1 1 auto; }
+.remote-navigation-row .search-control { flex: 0 1 290px; }
+.remote-navigation-row h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-pane-actions { display: flex; gap: 6px; padding: 0 14px 10px; border-bottom: 1px solid var(--color-border); }
+.local-pane-actions button { padding: 5px 9px; color: var(--color-text); background: var(--color-bg-panel); border-color: var(--color-border); }
+.local-pane-body { display: flex; flex: 1; min-height: 0; }
+.local-pane-body.drop-target { outline: 2px solid var(--color-primary); outline-offset: -2px; background: rgba(18, 81, 106, .25); }
+.file-area.drop-target { outline: 2px solid var(--color-primary); outline-offset: -2px; background: rgba(18, 81, 106, .25); }
+/* The LOCAL pane is no longer confined to HOME while running elevated
+   (root/Administrator) -- see `isLocalElevated` in main.tsx. Everything
+   about that pane turns red as a standing reminder that drag-and-drop moves
+   and deletes here can now reach anywhere on disk, not just HOME. */
+.local-pane.privileged { border-right-color: var(--color-danger); box-shadow: inset 0 0 0 1px rgba(255, 77, 109, .45); }
+.local-pane.privileged.active-pane { box-shadow: inset 0 0 0 2px var(--color-danger); }
+.local-pane.privileged .local-pane-heading { color: var(--color-text); }
+.local-pane.privileged .local-pane-heading .sidebar-label { color: var(--color-danger); }
+.local-pane.privileged .local-pane-body.drop-target { outline-color: var(--color-danger); background: rgba(255, 77, 109, .25); }
+.local-pane.privileged .file-tile.drop-target,
+.local-pane.privileged .file-row.drop-target,
+.local-pane.privileged .local-file.drop-target { outline: 2px solid var(--color-danger); outline-offset: -2px; border-color: var(--color-danger); background: rgba(255, 77, 109, .2); box-shadow: none; }
+.local-pane.privileged .tree-node.drop-target { color: var(--color-text); background: color-mix(in srgb, var(--color-danger) 25%, var(--color-bg-panel)); border-color: var(--color-danger); box-shadow: inset 3px 0 var(--color-danger); }
+.privileged-badge { color: var(--color-danger); font-weight: 700; }
+.local-pane-tree { flex: 0 0 auto; min-width: min(80px, 100%); min-height: 0; overflow-y: auto; padding: var(--space-2); }
+.local-file-list { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
+.local-file { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 7px; align-items: center; width: 100%; padding: 8px 7px; border: 1px solid transparent; border-radius: 4px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
+.file-row, .local-file, .file-tile { content-visibility: auto; contain-intrinsic-size: 40px; }
+.local-file:hover, .local-file.selected { background: var(--color-bg-panel); border-color: var(--color-border); }
+.local-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-file small { color: var(--color-text-muted); }
+.local-pane-footer { padding: 7px 14px; color: var(--color-text-muted); border-top: 1px solid var(--color-border); font-size: 12px; }
+/* T-038: .sessions-layout's single-column rule already lives in
+   desktop-ui.css (co-located with its base .sessions-layout rule, both
+   scoped by .ui-layout-mobile) -- the duplicate that used to be here,
+   gated by a raw @media (max-width: 720px) query, is removed rather than
+   migrated. */
+.explorer.ui-layout-mobile .terminal-header { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 12px; }
+.explorer.ui-layout-mobile .terminal-tabs { max-width: 100%; overflow-x: auto; }
+.explorer.ui-layout-mobile .terminal-actions { width: 100%; justify-content: flex-end; }
+
+.explorer.ui-layout-mobile .split-workspace { gap: 8px; overflow: auto; }
+/* max-width: 100% overrides the desktop-only T-209 safety-net ceiling
+   above -- Mobile/Large's split-workspace stacks LOCAL/REMOTE vertically
+   (each taking the full row width in turn), so the desktop assumption of
+   "leave 300px for a horizontal sibling" does not apply here. */
+.explorer.ui-layout-mobile .split-workspace .local-pane { min-width: 260px; max-width: 100%; flex: 0 0 100%; min-height: 260px; }
+.explorer.ui-layout-mobile .split-workspace .desktop-folder-tree { flex: 0 0 100%; }
+.explorer.ui-layout-mobile .local-pane-actions { flex-wrap: wrap; gap: 8px; }
+.explorer.ui-layout-mobile .local-pane-actions button { min-height: 40px; }
+.explorer.ui-layout-mobile .file-table th { height: 42px; font-size: var(--ui-small-font-size); }
+.explorer.ui-layout-mobile .file-row { height: var(--control-height-mobile-lg); }
+.explorer.ui-layout-mobile .file-row td { padding-inline: 10px; }
+
+@media (max-width: 900px), (max-height: 640px) {
+  .explorer.ui-layout-mobile .desktop-workspace { flex-direction: column; }
+  .explorer.ui-layout-mobile .split-workspace { flex-direction: column; }
+  .explorer.ui-layout-mobile .split-workspace .local-pane { flex: 0 0 auto; min-height: 260px; }
+  .explorer.ui-layout-mobile .desktop-folder-tree { flex: 0 0 auto; max-height: 220px; }
+}

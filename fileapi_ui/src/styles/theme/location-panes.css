@@ -1,0 +1,83 @@
+/* Theme surface layer, part 4: Location's LOCAL/REMOTE panes and the
+ * shared terminal dock. Split out of the former theme-overrides.css and
+ * surface-overrides.css (T-202). See styles/theme/README.md. */
+
+/* LOCAL and REMOTE panes share the same themed surface language. */
+:where(.explorer) .local-pane,
+:where(.explorer) .desktop-folder-tree,
+:where(.explorer) .file-pane {
+  border-color: var(--color-border);
+  background: color-mix(in srgb, var(--color-bg-panel) 88%, var(--color-bg));
+}
+:where(.explorer) .local-pane-heading,
+:where(.explorer) .local-pane-footer { border-color: var(--color-border); color: var(--color-text); }
+:where(.explorer) .local-pane-heading .sidebar-label { color: var(--color-primary); }
+:where(.explorer) .local-pane-actions button { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); }
+:where(.explorer) .local-pane-actions button:hover:not(:disabled) { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
+:where(.explorer) .local-file { border-color: transparent; color: var(--color-text); background: transparent; }
+:where(.explorer) .local-file small,
+:where(.explorer) .local-pane-footer { color: var(--color-text-muted); }
+:where(.explorer) .local-file:hover,
+:where(.explorer) .local-file.selected { border-color: var(--color-border); background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel-strong)); }
+:where(.explorer) .folder-mini { background: var(--color-warning); }
+:where(.explorer) .folder-mini::before { background: color-mix(in srgb, var(--color-warning) 75%, white); }
+:where(.explorer) .file-area.drop-target,
+:where(.explorer) .local-pane-body.drop-target { outline-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 12%, transparent); }
+:where(.explorer) .persistent-scrollbar-thumb { background: var(--color-border-strong); }
+
+:where(.explorer) .navigation,
+:where(.explorer) .desktop-content,
+:where(.explorer) .desktop-folder-tree,
+:where(.explorer) .local-pane {
+  background: color-mix(in srgb, var(--color-bg-panel) 88%, var(--color-bg));
+}
+
+:where(.explorer) .tree-node.drop-target,
+:where(.explorer) .marquee-select,
+:where(.explorer) .local-pane-body.drop-target,
+:where(.explorer) .file-area.drop-target {
+  border-color: var(--color-primary);
+  outline-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel));
+}
+
+:where(.explorer) .local-pane.privileged {
+  border-right-color: var(--color-danger);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-danger) 45%, transparent);
+}
+
+:where(.explorer) .local-pane.privileged .local-pane-body.drop-target,
+:where(.explorer) .local-pane.privileged .local-file.drop-target {
+  outline-color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 20%, var(--color-bg-panel));
+}
+
+/* Terminal surface and controls. */
+:where(.explorer) .terminal-dock { border-color: var(--color-border); background: var(--color-bg-panel); box-shadow: 0 -10px 25px color-mix(in srgb, var(--color-bg) 70%, transparent); }
+:where(.explorer) .terminal-header { border-color: var(--color-border); }
+:where(.explorer) .terminal-tabs button,
+:where(.explorer) .terminal-actions button { color: var(--color-text-muted); background: transparent; }
+:where(.explorer) .terminal-tabs button.active,
+:where(.explorer) .terminal-tabs button:hover,
+:where(.explorer) .terminal-actions button:hover { border-color: var(--color-border); color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
+:where(.explorer) .ssh-tab { border-color: var(--color-border); background: var(--color-bg-panel-strong); }
+:where(.explorer) .ssh-tab.active { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-panel-strong)); }
+:where(.explorer) .ssh-tab-status.connected { background: var(--color-success); box-shadow: 0 0 6px color-mix(in srgb, var(--color-success) 75%, transparent); }
+:where(.explorer) .ssh-tab-status.disconnected { background: var(--color-danger); box-shadow: 0 0 6px color-mix(in srgb, var(--color-danger) 65%, transparent); }
+:where(.explorer) .xterm-host,
+:where(.explorer) .ssh-output { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg); }
+:where(.explorer) .ssh-quick-list { border-color: var(--color-border); background: var(--color-bg-panel); }
+:where(.explorer) .ssh-quick-list-heading,
+:where(.explorer) .ssh-quick-list-group-label { color: var(--color-text-muted); }
+:where(.explorer) .ssh-quick-list-entry { color: var(--color-text); }
+:where(.explorer) .ssh-quick-list-entry:hover,
+:where(.explorer) .ssh-quick-list-entry.active { background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel-strong)); }
+:where(.explorer) .ssh-quick-list-entry.active { box-shadow: inset 2px 0 var(--color-primary); }
+:where(.explorer) .terminal-inline-note,
+:where(.explorer) .terminal-placeholder { color: var(--color-text-muted); }
+:where(.explorer) .palette-select,
+:where(.explorer) .ssh-controls select,
+:where(.explorer) .ssh-profile-form input { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); }
+:where(.explorer) .palette-select:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-panel-strong)); }
+:where(.explorer) .terminal-restore { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel); }

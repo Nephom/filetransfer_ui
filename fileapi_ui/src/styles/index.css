@@ -3,39 +3,80 @@
  * Contract: token/base CSS loads first, feature-component CSS loads in the
  * middle (their relative order among themselves does not matter -- they
  * were verified to have no colliding selectors against each other), and
- * override CSS (theme-overrides.css, surface-overrides.css) loads LAST so
- * it always wins the cascade for anything it targets, instead of relying on
- * hand-maintained import order in main.tsx where a future addition could
- * accidentally land after an override file and silently stop being
- * overridden.
+ * the styles/theme/ override modules load LAST so they always win the
+ * cascade for anything they target, instead of relying on hand-maintained
+ * import order in main.tsx where a future addition could accidentally land
+ * after an override file and silently stop being overridden.
  *
  * This is a straight re-expression of main.tsx's previous 18 separate
  * `import "*.css"` statements as `@import` here, with exactly one change:
- * theme-overrides.css and surface-overrides.css moved from the middle of
- * the list to the end. That move was verified safe before making it --
- * the only selector those two files share with anything now ordered after
- * them (`.context-picker-popover`, shared with mobile-ui.css) sets a
- * different CSS property on each side (color/background vs. a
- * mobile-profile-only, !important, higher-specificity font-size rule), so
- * reordering them changes no computed style. */
+ * the override rules moved from the middle of the list to the end. That
+ * move was verified safe before making it -- the only selector the override
+ * modules share with anything now ordered after them
+ * (`.context-picker-popover`, shared with mobile-ui.css) sets a different
+ * CSS property on each side (color/background vs. a mobile-profile-only,
+ * !important, higher-specificity font-size rule), so reordering them
+ * changes no computed style.
+ *
+ * T-201: every global stylesheet imported below now lives under this
+ * styles/ directory (the 10 files that used to sit directly under src/ --
+ * account-menu.css, context-picker.css, desktop-ui.css, explorer-parity.css,
+ * location-control.css, login.css, settings.css, starship-bridge.css,
+ * tls.css, webui-shell.css -- were moved here unchanged, though
+ * explorer-parity.css itself was then further split per T-202 below).
+ * Component-scoped CSS that a single feature file imports directly next to
+ * its own .tsx (log-view.css, proxmox-vnc.css, rest-api.css,
+ * ui/dropdown.css, ui/mobile-choice-menu.css, help/help.css) intentionally
+ * stays colocated with that component instead of moving here -- this
+ * file's contract is for *global* stylesheets only, i.e. anything wired
+ * through this one ordered entry point rather than a component's own
+ * `import "./foo.css"`.
+ *
+ * T-202: two pairs of former monolithic files were each split into their
+ * own module directory, grouped by feature instead of by which file a rule
+ * happened to be added to first:
+ *   - theme-overrides.css + surface-overrides.css -> styles/theme/*.css
+ *     (theme-sensitive color/background/border/box-shadow rules).
+ *   - explorer-parity.css -> styles/layout/*.css (Location/Explorer
+ *     layout: folder tree, file table/grid, terminal dock, Workspace
+ *     Manager and other dialogs, Split-mode panes, pane-collapse controls,
+ *     generic button semantics).
+ * See styles/theme/README.md and styles/layout/README.md for the full
+ * module maps, load order, and the ownership rule for adding new rules to
+ * either directory. */
 
 @import "./tokens.css";
 @import "./overlays.css";
 
-@import "../login.css";
-@import "../location-control.css";
-@import "../context-picker.css";
-@import "../settings.css";
-@import "../account-menu.css";
-@import "../tls.css";
-@import "../webui-shell.css";
-@import "../explorer-parity.css";
-@import "../desktop-ui.css";
-@import "../starship-bridge.css";
+@import "./login.css";
+@import "./location-control.css";
+@import "./context-picker.css";
+@import "./settings.css";
+@import "./account-menu.css";
+@import "./tls.css";
+@import "./webui-shell.css";
+@import "./layout/folder-tree.css";
+@import "./layout/context-menu.css";
+@import "./layout/workspace-dialogs.css";
+@import "./layout/file-table.css";
+@import "./layout/terminal.css";
+@import "./layout/queue-settings-dialogs.css";
+@import "./layout/panes.css";
+@import "./layout/collapse-controls.css";
+@import "./layout/buttons.css";
+@import "./desktop-ui.css";
+@import "./starship-bridge.css";
 @import "./mode-switcher.css";
 @import "./vnc-interactions.css";
 @import "./commandbar.css";
 @import "./mobile-ui.css";
 
-@import "./theme-overrides.css";
-@import "./surface-overrides.css";
+@import "./theme/base.css";
+@import "./theme/location-controls.css";
+@import "./theme/location-panes.css";
+@import "./theme/rest.css";
+@import "./theme/vnc.css";
+@import "./theme/help.css";
+@import "./theme/log-view.css";
+@import "./theme/dialogs.css";
+@import "./theme/login.css";

@@ -1,0 +1,109 @@
+/* Theme surface layer, part 6: Queue/Viewer/Sessions/Share-links/Workspace
+ * dialogs, REST helper popovers, and generic modal surfaces (including
+ * portaled ones targeted via .modal-cover / .floating-dialog-layer / the
+ * bare .account-menu / .context-picker-popover selectors that render
+ * outside .explorer via createPortal). Split out of the former
+ * theme-overrides.css and surface-overrides.css (T-202). See
+ * styles/theme/README.md. */
+:where(.explorer) .queue-item,
+:where(.explorer) .session-card,
+:where(.explorer) .workspace-card,
+:where(.explorer) .share-link-card,
+:where(.explorer) .settings-section { border-color: var(--color-border); background: var(--color-bg-panel); }
+:where(.explorer) .queue-item-route,
+:where(.explorer) .queue-item-progress,
+:where(.explorer) .share-link-card small,
+:where(.explorer) .session-entry small,
+:where(.explorer) .workspace-entry-button span { color: var(--color-text-muted); }
+:where(.explorer) .queue-item-detail,
+:where(.explorer) .queue-item-route code { color: var(--color-text); }
+:where(.explorer) .queue-status.running { color: var(--color-primary); }
+:where(.explorer) .queue-status.completed { color: var(--color-success); }
+:where(.explorer) .queue-status.failed { color: var(--color-danger); }
+:where(.explorer) .queue-status.cancelled { color: var(--color-warning); }
+:where(.explorer) .file-viewer { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg); }
+:where(.explorer) .workspace-card.selected,
+:where(.explorer) .session-card.selected { border-color: var(--color-primary); box-shadow: inset 0 0 0 1px var(--color-primary), var(--shadow-panel); }
+:where(.explorer) .workspace-name,
+:where(.explorer) .workspace-entry-button,
+:where(.explorer) .session-entry { color: var(--color-text); background: var(--color-bg-panel); }
+:where(.explorer) .workspace-entry-button:hover,
+:where(.explorer) .session-entry:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
+:where(.explorer) .share-link-group-heading,
+:where(.explorer) .workspace-list-heading,
+:where(.explorer) .workspace-modal-footer { border-color: var(--color-border); }
+:where(.explorer) .share-link-status { border-color: var(--color-border); color: var(--color-primary); }
+:where(.explorer) .storage-info { border-color: var(--color-border); color: var(--color-text-muted); background: var(--color-bg); }
+
+:where(.explorer) .workspace-card,
+:where(.explorer) .share-link-card,
+:where(.explorer) .settings-inline-action,
+:where(.explorer) .session-card {
+  border-color: var(--color-border);
+  background: var(--color-bg-panel);
+  box-shadow: var(--shadow-inset);
+}
+
+:where(.explorer) .modal-cover,
+:where(.explorer) .floating-dialog-layer {
+  z-index: var(--z-modal);
+  background: color-mix(in srgb, var(--color-bg) 72%, transparent);
+}
+
+:where(.explorer) .modal,
+:where(.explorer) .rest-action-dialog,
+:where(.explorer) .rest-hardware-dialog,
+:where(.explorer) .rest-session-help,
+:where(.explorer) .token-path-help-popup {
+  border-color: var(--color-border);
+  background: var(--color-bg-panel-strong);
+  box-shadow: var(--shadow-panel), var(--shadow-inset);
+}
+
+/* REST helpers and login share the same theme contract outside the explorer pane. */
+:where(.explorer) .rest-help-button,
+:where(.explorer) .token-path-help-button,
+:where(.explorer) .rest-session-help-close,
+:where(.explorer) .token-path-help-close { border-color: var(--color-border); color: var(--color-primary); background: var(--color-bg-panel); }
+:where(.explorer) .rest-help-button:hover,
+:where(.explorer) .token-path-help-button:hover,
+:where(.explorer) .rest-session-help-close:hover,
+:where(.explorer) .token-path-help-close:hover { color: var(--color-bg); background: var(--color-primary); }
+:where(.explorer) .rest-session-help,
+:where(.explorer) .token-path-help-popup,
+:where(.explorer) .rest-action-dialog { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); }
+:where(.explorer) .token-path-help-popup pre { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg); }
+
+/* Portaled overlays live under body rather than inside .explorer. */
+.account-menu,
+.context-picker-popover,
+.floating-dialog-layer .rest-action-dialog,
+.floating-dialog-layer .rest-hardware-dialog { color: var(--color-text); background: var(--color-bg-panel-strong); border-color: var(--color-border); }
+.account-menu button,
+.context-picker-popover button { color: var(--color-text); }
+.account-menu button:hover,
+.context-picker-popover button:hover,
+.context-picker-popover button.selected { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 17%, var(--color-bg-panel-strong)); }
+
+/* Portaled account surface: always anchors below the titlebar control. */
+.account-menu {
+  z-index: var(--z-context);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 42%, var(--color-border));
+  border-radius: 18px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--color-bg-panel-strong) 78%, transparent), color-mix(in srgb, var(--color-bg) 72%, transparent));
+  box-shadow: 0 22px 55px color-mix(in srgb, var(--color-bg) 72%, transparent), var(--shadow-inset);
+  backdrop-filter: blur(26px) saturate(165%);
+  overflow: hidden auto;
+}
+
+.account-menu::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  content: "";
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--color-primary) 75%, white), transparent);
+  pointer-events: none;
+}
+
+.account-menu .account-summary { background: color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.account-menu button:hover { background: color-mix(in srgb, var(--color-primary) 16%, transparent); }

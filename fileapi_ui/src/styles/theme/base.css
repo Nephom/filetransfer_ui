@@ -1,0 +1,73 @@
+/* Theme surface layer, part 1: base explorer surface, generic controls,
+ * titlebar/commandbar/navigation/statusbar, modals, and semantic text
+ * colors (danger/log-level). Split out of the former theme-overrides.css
+ * (T-202) -- see styles/theme/README.md for the full module map and the
+ * ownership boundary against styles/theme/surfaces-*.css. */
+:where(.explorer) {
+  color: var(--color-text);
+  background: radial-gradient(circle at 80% -10%, color-mix(in srgb, var(--color-primary) 18%, transparent), transparent 35%), var(--color-bg);
+}
+
+:where(.explorer) button,
+:where(.explorer) input,
+:where(.explorer) select,
+:where(.explorer) textarea {
+  border-color: var(--color-border);
+  color: var(--color-text);
+  background: var(--color-bg-panel-strong);
+}
+
+:where(.explorer) button:hover:not(:disabled),
+:where(.explorer) .nav-button:hover:not(:disabled),
+:where(.explorer) .commandbar button:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel-strong));
+}
+
+:where(.explorer) .titlebar,
+:where(.explorer) .commandbar,
+:where(.explorer) .navigation,
+:where(.explorer) .statusbar {
+  border-color: var(--color-border);
+  background: var(--color-bg-panel);
+}
+
+:where(.explorer) .desktop-content,
+:where(.explorer) .vnc-reader {
+  background: color-mix(in srgb, var(--color-bg-panel) 72%, transparent);
+}
+
+:where(.explorer) .modal,
+:where(.explorer) .modal input,
+:where(.explorer) .modal select,
+:where(.explorer) .modal textarea {
+  border-color: var(--color-border);
+  color: var(--color-text);
+  background: var(--color-bg-panel-strong);
+}
+
+:where(.explorer) .modal-cover,
+:where(.explorer) .floating-dialog-layer {
+  background: color-mix(in srgb, var(--color-bg) 76%, transparent);
+}
+
+:where(.explorer) .modal p,
+:where(.explorer) .muted,
+:where(.explorer) .field-help,
+:where(.explorer) .settings-check small {
+  color: var(--color-text-muted);
+}
+
+:where(.explorer) .confirm,
+:where(.explorer) .modal-actions .confirm,
+:where(.explorer) .commandbar .primary {
+  border-color: var(--color-primary);
+  background: linear-gradient(135deg, var(--color-secondary), color-mix(in srgb, var(--color-primary) 62%, var(--color-secondary)));
+  color: var(--color-text);
+}
+
+:where(.explorer) .danger,
+:where(.explorer) .log-level-error { color: var(--color-danger); }
+:where(.explorer) .log-level-info { color: var(--color-primary); }
+:where(.explorer) .log-level-warn { color: var(--color-warning); }
+:where(.explorer) .log-level-debug { color: var(--color-text-muted); }

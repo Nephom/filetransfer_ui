@@ -1,0 +1,40 @@
+/* Explorer layout, part 8: Location's left/right pane-collapse control
+ * rail, native <select> styling, and the modal-cover/modal shell. Split
+ * out of the former monolithic explorer-parity.css (T-202 follow-up). See
+ * styles/layout/README.md. */
+
+/* These collapse-control rules must stay outside a media query: the
+   [<]/[>] Location collapse buttons need their base style at every window
+   size, not only below a narrow-window breakpoint. */
+.location-main-pane-collapse-controls { display: flex; flex: 0 0 48px; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); border-inline: 1px solid var(--color-border); background: var(--color-bg-panel); }
+.location-main-pane-collapse-controls button { width: var(--control-height-mobile); min-width: var(--control-height-mobile); min-height: var(--control-height-mobile) !important; padding: 0 !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: var(--icon-size-lg) !important; }
+.location-main-pane-collapse-controls button:not(:disabled):hover { color: var(--color-bg); background: var(--color-primary); border-color: var(--color-primary); }
+.location-main-pane-collapse-controls button:disabled { cursor: not-allowed; opacity: .38; }
+.desktop-workspace.pane-collapse-left.split-workspace .local-pane,
+.desktop-workspace.pane-collapse-left:not(.split-workspace) .desktop-folder-tree { display: none; }
+.desktop-workspace.pane-collapse-right.split-workspace .desktop-content { display: none; }
+/* .local-pane is normally flex: 0 0 auto (a fixed, user-resizable width) --
+   .desktop-content already grows via its own flex: 1 when the LOCAL side
+   is collapsed (see the plain `.desktop-content { flex: 1; ... }` rule in
+   styles/layout/folder-tree.css), but collapsing the REMOTE side left
+   .local-pane pinned at its fixed width with the vacated space going
+   unclaimed by any flex-grow sibling, leaving a blank area instead of
+   LOCAL expanding into it. */
+.desktop-workspace.pane-collapse-right.split-workspace .local-pane { flex: 1 1 auto; }
+.desktop-workspace.pane-collapse-left .location-main-pane-collapse-controls button:first-child,
+.desktop-workspace.pane-collapse-right .location-main-pane-collapse-controls button:last-child { opacity: .38; }
+.explorer.ui-layout-mobile .location-main-pane-collapse-controls { flex-basis: 52px; }
+.explorer.ui-layout-mobile .location-main-pane-collapse-controls button { width: var(--control-height-mobile-lg); min-width: var(--control-height-mobile-lg); min-height: var(--control-height-mobile-lg) !important; font-size: var(--icon-size-lg) !important; }
+
+/* Match native controls to the LOCATION menu palette. */
+select { color: var(--color-text); background-color: var(--color-bg-panel-strong); border: 1px solid var(--color-border); }
+select option, select optgroup { color: var(--color-text); background-color: var(--color-bg-panel-strong); }
+select option:checked { color: var(--color-text); background-color: var(--color-bg-panel); }
+select:hover, select:focus { border-color: var(--color-primary); outline: none; }
+
+/* Sessions and the queue must float over the workspace and terminal, never join their flex flow. */
+.modal-cover { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(0, 6, 14, .72); backdrop-filter: blur(7px); }
+.modal { width: min(900px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; box-shadow: 0 24px 70px rgba(0, 0, 0, .58), 0 0 0 1px rgba(71, 205, 241, .08), 0 0 34px rgba(38, 155, 210, .1); }
+.sessions-modal { width: min(980px, calc(100vw - 48px)); }
+.modal-drag-handle { cursor: grab; user-select: none; }
+.modal-drag-handle:active { cursor: grabbing; }

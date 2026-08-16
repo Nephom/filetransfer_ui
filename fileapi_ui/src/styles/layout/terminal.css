@@ -1,0 +1,51 @@
+/* Explorer layout, part 5: the SSH terminal dock, tabs, quick list, and
+ * profile selector. Split out of the former monolithic explorer-parity.css
+ * (T-202 follow-up). See styles/layout/README.md. */
+.terminal-dock { position: relative; order: 10; flex: 0 0 auto; min-height: 160px; display: flex; flex-direction: column; background: var(--color-bg); border-top: 1px solid var(--color-border); box-shadow: 0 -10px 25px rgba(0, 0, 0, .2); }
+.terminal-dock { z-index: 10; }
+.terminal-resize-handle { position: absolute; top: -4px; right: 0; left: 0; z-index: 2; height: 8px; cursor: row-resize; }
+.terminal-resize-handle:hover { background: var(--color-primary); }
+.terminal-header { display: flex; align-items: center; justify-content: space-between; min-height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-3); border-bottom: 1px solid var(--color-border); }
+.terminal-tabs, .terminal-actions { display: flex; align-items: center; gap: 6px; }
+.terminal-tabs button, .terminal-actions button { padding: 5px 10px; border: 1px solid transparent; color: var(--color-text-muted); background: transparent; }
+.terminal-tabs button.active, .terminal-tabs button:hover, .terminal-actions button:hover { color: var(--color-text); border-color: var(--color-border); background: var(--color-bg-panel); }
+.ssh-tab { display: inline-flex; align-items: center; gap: 0; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-panel-strong); }
+.ssh-tab.active { border-color: var(--color-primary); background: var(--color-bg-panel); }
+.ssh-tab > button:first-child { border: 0; padding-right: 5px; }
+.ssh-tab-status { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; vertical-align: 1px; }
+.ssh-tab-status.connected { background: var(--color-success); box-shadow: 0 0 6px rgba(65, 217, 138, .75); }
+.ssh-tab-status.disconnected { background: var(--color-danger); box-shadow: 0 0 6px rgba(239, 98, 98, .65); }
+.ssh-tab .ssh-tab-close { min-width: 24px; padding: 4px 6px; border: 0; color: var(--color-text-muted); }
+.ssh-tab .ssh-tab-close:hover { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel)); }
+.terminal-content { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: 8px; padding: 10px 12px 12px; }
+.xterm-host { flex: 1; min-height: 0; overflow: hidden; padding: 8px; background: var(--color-bg); border: 1px solid var(--color-border); }
+.xterm-host .xterm { height: 100%; }
+.terminal-content { position: relative; }
+.terminal-body { display: flex; flex: 1; min-height: 0; }
+.ssh-quick-list { flex: 0 0 200px; min-height: 0; overflow-y: auto; padding: 8px 6px; border-right: 1px solid var(--color-border); background: var(--color-bg-panel); }
+.ssh-quick-list-heading { padding: 4px 8px 8px; color: var(--color-text-muted); font-size: 10px; letter-spacing: .1em; font-weight: 700; text-transform: uppercase; }
+.ssh-quick-list-group { margin-bottom: 8px; }
+.ssh-quick-list-group-label { display: block; padding: 4px 8px; color: var(--color-text-muted); font-size: 11px; font-weight: 600; }
+.ssh-quick-list-entry { display: flex; align-items: center; width: 100%; padding: 6px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--color-text); text-align: left; cursor: pointer; }
+.ssh-quick-list-entry:hover { background: var(--color-bg-panel); }
+.ssh-quick-list-entry.active { background: var(--color-bg-panel); box-shadow: inset 2px 0 var(--color-primary); }
+.terminal-maximized .terminal-resize-handle { background: var(--color-border); }
+.terminal-placeholder { align-items: flex-start; justify-content: center; color: var(--color-text-muted); }
+.terminal-placeholder p { margin: 0; }
+.terminal-inline-note { margin: 0; color: var(--color-text-muted); font-size: 12px; }
+.ssh-terminal-content { gap: 5px; }
+.ssh-controls { display: flex; align-items: end; gap: 5px; flex-wrap: wrap; }
+.ssh-controls .palette-select-control { min-width: 165px; }
+.ssh-controls .palette-select { padding: 5px 7px; font-size: 12px; }
+.ssh-controls label { min-width: 220px; margin: 0; }
+.palette-select-control { position: relative; min-width: 220px; }
+.palette-select { width: 100%; min-width: 0; max-width: none; padding: 8px; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-panel-strong); font-size: 13px; font-weight: 400; }
+.palette-select:hover { border-color: var(--color-primary); background: var(--color-bg-panel); }
+.palette-select-menu { top: calc(100% + 5px); right: 0; left: 0; min-width: 100%; max-width: none; }
+.palette-select-menu.menu-up { top: auto; bottom: calc(100% + 5px); max-height: 180px; overflow-y: auto; }
+.ssh-controls select, .ssh-profile-form input { width: 100%; margin-top: 5px; padding: 8px; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; }
+.ssh-output { flex: 1; min-height: 80px; overflow: auto; margin: 0; padding: 12px; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); white-space: pre-wrap; font: 13px/1.45 monospace; }
+.ssh-profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; overflow: auto; }
+.ssh-profile-form label { margin: 0; }
+.ssh-profile-form label:last-of-type { grid-column: 1 / -1; }
+.ssh-recording-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

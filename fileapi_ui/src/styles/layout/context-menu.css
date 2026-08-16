@@ -1,0 +1,19 @@
+/* Explorer layout, part 2: context menu and marquee/text-selection
+ * suppression. Split out of the former monolithic explorer-parity.css
+ * (T-202 follow-up). See styles/layout/README.md. */
+.context-menu { position: fixed; z-index: 60; min-width: 160px; padding: 4px; }
+.context-menu button { display: block; width: 100%; border: 0; border-radius: 3px; padding: 8px 10px; background: transparent; color: var(--color-text); text-align: left; cursor: pointer; }
+.context-menu button:hover:not(:disabled) { background: var(--color-bg-panel); }
+.context-menu hr { margin: 4px 0; border: 0; border-top: 1px solid var(--color-border); }
+.marquee-select { border: 1px solid var(--color-primary); background: color-mix(in srgb, var(--color-primary) 15%, transparent); }
+/* Rubber-band marquee select (see beginMarqueeSelect in main.tsx) drags
+   from empty space inside these containers; without user-select:none the
+   browser's native text/drag selection fires at the same time, highlighting
+   filenames underneath the marquee box instead of just drawing it. Scoped
+   to the list containers themselves (not shared ancestors) so real text
+   inputs (search box, terminal, file viewer) are never affected. */
+.file-table, .file-grid, .local-file-list, .marquee-select {
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+}

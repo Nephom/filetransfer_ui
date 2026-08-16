@@ -36,6 +36,54 @@ export const themePresets: Record<ThemePreset, { label: string; variables: Theme
   },
 };
 
+// T-214: parses a #rrggbb hex string into 0-255 RGB components. Returns
+// null for anything that isn't a well-formed 6-digit hex color (the same
+// shape validated elsewhere by /^#[0-9a-f]{6}$/i).
+const hexToRgb = (hex: string): [number, number, number] | null => {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!match) return null;
+  return [parseInt(match[1], 16), parseInt(match[2], 16), parseInt(match[3], 16)];
+};
+
+// T-214: perceptual-ish Euclidean distance in RGB space, normalized to a
+// 0-1 scale (0 = identical, 1 = maximum possible distance, i.e. black vs.
+// white). This is a coarse approximation (not a real perceptual color
+// model like CIEDE2000) deliberately -- it only needs to be good enough to
+// flag "these two colors are close enough to visually collide," not to
+// rank colors precisely.
+const colorDistance = (a: string, b: string): number | null => {
+  const rgbA = hexToRgb(a);
+  const rgbB = hexToRgb(b);
+  if (!rgbA || !rgbB) return null;
+  const sumSquares = rgbA.reduce((total, channel, index) => total + (channel - rgbB[index]) ** 2, 0);
+  return Math.sqrt(sumSquares) / Math.sqrt(3 * 255 ** 2);
+};
+
+// T-214: below this normalized distance, two colors are treated as
+// visually colliding for the purposes of the accent-color warning in
+// Desktop Settings -- e.g. picking an accent close to the active theme's
+// danger/warning color would make delete buttons or elevated/danger
+// drop-target highlighting hard to tell apart from the newly "selected"/
+// focus-ring accent color.
+const ACCENT_COLLISION_THRESHOLD = 0.16;
+
+export type AccentCollision = { withDanger: boolean; withWarning: boolean };
+
+// T-214: reports whether a candidate accent color would visually collide
+// with the active theme preset's danger (red) or warning (amber) color.
+// Exported so Desktop Settings' accent-color picker can surface an inline
+// warning without duplicating the color-distance logic or the preset
+// lookup.
+export const accentCollidesWithSemanticColor = (preset: ThemePreset, accentColor: string): AccentCollision => {
+  const variables = themePresets[preset].variables;
+  const dangerDistance = colorDistance(accentColor, variables.red);
+  const warningDistance = colorDistance(accentColor, variables.amber);
+  return {
+    withDanger: dangerDistance !== null && dangerDistance < ACCENT_COLLISION_THRESHOLD,
+    withWarning: warningDistance !== null && warningDistance < ACCENT_COLLISION_THRESHOLD,
+  };
+};
+
 export const themeStyle = (preset: ThemePreset, accentColor?: string): React.CSSProperties => {
   const variables = themePresets[preset].variables;
   const accent = accentColor && /^#[0-9a-f]{6}$/i.test(accentColor) ? accentColor : variables.cyan;

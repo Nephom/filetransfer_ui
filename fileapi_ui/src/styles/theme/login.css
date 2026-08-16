@@ -1,0 +1,120 @@
+/* Theme surface layer, part 9: login screen. Split out of the former
+ * theme-overrides.css and surface-overrides.css (T-202). This still
+ * contains two independent rule blocks for .login (one color-only, one
+ * layout-with-color) kept in their original relative order and content --
+ * see styles/theme/README.md for why a real merge is deferred. */
+:where(.login) { color: var(--color-text); background: var(--color-bg); }
+:where(.login) form { border-color: var(--color-border); background: var(--color-bg-panel-strong); }
+:where(.login) input { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg); }
+:where(.login) input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 1px var(--color-primary); }
+:where(.login) button { border-color: var(--color-primary); color: var(--color-text); background: linear-gradient(135deg, var(--color-secondary), var(--color-primary)); }
+:where(.login) label,
+:where(.login) p { color: var(--color-text-muted); }
+
+.login {
+  display: grid;
+  /* `place-items: center` when content is taller than the viewport lets
+     the browser overflow equally above AND below the scrollport, and the
+     part that overflows above is not reachable by scrolling -- only the
+     part below is, which looked like the form's bottom border was
+     permanently clipped no matter how far you scrolled. `start` (plus
+     `justify-items: center` to keep horizontal centering) anchors content
+     to the top instead, so any overflow is entirely below and reachable
+     by scrolling down. */
+  align-items: start;
+  justify-items: center;
+  width: 100%;
+  /* height (not min-height): html/body/#root force overflow:hidden
+     (styles/webui-shell.css), so a min-height container that grows taller
+     than the viewport just gets clipped by that ancestor -- overflow-y:auto
+     on THIS element never gets a chance to run because this element itself
+     never became smaller than its content. Locking .login to exactly the
+     ancestor height makes it the actual scroll container whenever its
+     content (e.g. Large's uniformly enlarged form) is taller than it.
+     Uses 100% (not 100dvh) to exactly match the html/body/#root chain
+     (index.html, styles/webui-shell.css), which is also 100% -- mixing dvh
+     with an ancestor chain sized in % risks .login computing even slightly
+     taller than #root in this webview, which would just move the same
+     clipping bug up to #root's own overflow:hidden instead of fixing it. */
+  height: 100%;
+  min-height: 0;
+  padding: clamp(12px, 3vh, 48px) clamp(16px, 4vw, 64px);
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.login form {
+  position: relative;
+  display: grid;
+  gap: clamp(8px, 1.5vh, 18px);
+  width: min(90vw, 52rem);
+  min-height: 0;
+  padding: clamp(20px, 3.2vh, 48px) clamp(24px, 4vw, 56px);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 42%, var(--color-border));
+  border-radius: 28px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--color-secondary) 24%, var(--color-bg-panel-strong)), color-mix(in srgb, var(--color-bg) 82%, var(--color-bg-panel)));
+  box-shadow: 0 28px 80px color-mix(in srgb, var(--color-bg) 72%, transparent), var(--shadow-panel), var(--shadow-inset);
+  backdrop-filter: blur(26px) saturate(140%);
+}
+
+.login form > label:not(.tls-option) {
+  display: grid;
+  gap: clamp(6px, 1vh, 10px);
+  margin: 0;
+  color: var(--color-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.login form > label:not(.tls-option) input {
+  width: 100%;
+  min-height: clamp(42px, 4.8vh, 52px);
+  box-sizing: border-box;
+  padding: clamp(9px, 1.4vh, 13px) 16px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, var(--color-border));
+  border-radius: 12px;
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-bg) 72%, transparent);
+  font-size: 16px;
+}
+
+.login form > label:not(.tls-option) input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent), 0 0 24px color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+
+.login form > button:not(.only-terminal-corner-button) {
+  justify-self: start;
+  min-width: 142px;
+  min-height: 48px;
+  margin-top: 4px;
+  padding: 12px 22px;
+  border-radius: 12px;
+  color: var(--color-bg);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--color-primary) 22%, transparent);
+}
+
+.login form > button:not(.only-terminal-corner-button):hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 36px color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+
+@media (max-width: 640px) {
+  .login { padding: 12px; }
+  .login form { width: min(100%, 560px); padding: 24px 20px; border-radius: 22px; }
+}
+
+@media (max-height: 760px) and (min-width: 641px) {
+  .login { padding-block: 16px; }
+  .login form { gap: 8px; padding-block: 18px; }
+  .login-mark { margin-bottom: 10px; }
+  .login h1 { font-size: 24px; }
+  .login p { margin-bottom: 8px; }
+}
+
+@media (max-height: 620px) {
+  .login form { max-height: calc(100dvh - 24px); overflow-y: auto; scrollbar-width: thin; }
+}

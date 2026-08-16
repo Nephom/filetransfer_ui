@@ -43,6 +43,77 @@
         <div class="label">Loading nFterm&hellip;</div>
       </div>
     </div>
+    <script>
+      // T-211: apply the user's persisted theme/accent BEFORE the module
+      // script below (main.tsx) even starts downloading, let alone parses,
+      // executes, and runs its own theme-application useEffect. Without
+      // this, every cold start briefly painted the loading screen (and the
+      // very first application frame) in the Bridge preset's colors --
+      // hardcoded above and in styles/tokens.css/starship-bridge.css's
+      // :root defaults -- even when the user had selected Graphite/Emerald/
+      // Tech-silver, because CSS custom properties only reflect whatever
+      // is currently set on documentElement, and nothing overrode Bridge's
+      // defaults until React mounted and ran its own effect. This performs
+      // the exact same localStorage read + property mapping as
+      // styles/theme.ts's themeStyle(), duplicated here deliberately (a
+      // module import is not an option before the bundle loads) -- kept in
+      // sync by design: any new theme preset or renamed CSS variable added
+      // to styles/theme.ts must be mirrored here too.
+      (function () {
+        try {
+          var THEME_PRESETS = {
+            bridge: { void: "#020711", space: "#061322", panel: "rgba(8, 27, 46, .72)", panelStrong: "rgba(10, 34, 56, .9)", line: "rgba(107, 201, 239, .26)", cyan: "#63e6ff", blue: "#318bff", green: "#5df2bd", amber: "#f2bd63", red: "#ff657f", text: "#e9f8ff", muted: "#8caec5" },
+            graphite: { void: "#0b0c12", space: "#151622", panel: "rgba(29, 30, 45, .84)", panelStrong: "rgba(37, 38, 57, .96)", line: "rgba(190, 181, 255, .28)", cyan: "#c1b7ff", blue: "#8f82ff", green: "#6ee7b7", amber: "#f5c66d", red: "#ff879c", text: "#f2f0ff", muted: "#aaa6c4" },
+            emerald: { void: "#03100d", space: "#062019", panel: "rgba(7, 39, 31, .8)", panelStrong: "rgba(9, 51, 40, .94)", line: "rgba(93, 242, 189, .28)", cyan: "#67f4c2", blue: "#4cb8ff", green: "#8ff7b5", amber: "#f2d37b", red: "#ff8294", text: "#e8fff5", muted: "#91c6b4" },
+            "tech-silver": { void: "#0a0f15", space: "#121a23", panel: "rgba(24, 34, 45, .86)", panelStrong: "rgba(32, 44, 57, .96)", line: "rgba(184, 199, 217, .3)", cyan: "#c5d5e6", blue: "#8da9c4", green: "#7ed6b0", amber: "#e5c27e", red: "#f08f9b", text: "#eef3f8", muted: "#a9b8c7" }
+          };
+          var saved = JSON.parse(localStorage.getItem("nfterm-settings") || "null") || {};
+          var preset = THEME_PRESETS[saved.theme] || THEME_PRESETS.bridge;
+          var accent = typeof saved.accentColor === "string" && /^#[0-9a-f]{6}$/i.test(saved.accentColor)
+            ? saved.accentColor
+            : preset.cyan;
+          var root = document.documentElement.style;
+          root.setProperty("--bridge-void", preset.void);
+          root.setProperty("--bridge-space", preset.space);
+          root.setProperty("--bridge-panel", preset.panel);
+          root.setProperty("--bridge-panel-strong", preset.panelStrong);
+          root.setProperty("--bridge-line", preset.line);
+          root.setProperty("--bridge-line-bright", accent);
+          root.setProperty("--bridge-cyan", accent);
+          root.setProperty("--bridge-blue", preset.blue);
+          root.setProperty("--bridge-green", preset.green);
+          root.setProperty("--bridge-amber", preset.amber);
+          root.setProperty("--bridge-red", preset.red);
+          root.setProperty("--bridge-text", preset.text);
+          root.setProperty("--bridge-muted", preset.muted);
+          root.setProperty("--bridge-popover", preset.panelStrong);
+          root.setProperty("--bridge-account-popover", preset.panelStrong);
+          root.setProperty("--bridge-popover-border", preset.line);
+          root.setProperty("--color-bg", preset.void);
+          root.setProperty("--color-bg-panel", preset.panel);
+          root.setProperty("--color-bg-panel-strong", preset.panelStrong);
+          root.setProperty("--color-text", preset.text);
+          root.setProperty("--color-text-muted", preset.muted);
+          root.setProperty("--color-primary", accent);
+          root.setProperty("--color-secondary", preset.blue);
+          root.setProperty("--color-success", preset.green);
+          root.setProperty("--color-warning", preset.amber);
+          root.setProperty("--color-danger", preset.red);
+          root.setProperty("--color-border", preset.line);
+          root.setProperty("--color-border-strong", accent);
+          // Also repaint the inlined loading-screen background/spinner above
+          // (they use their own literal hex, not CSS variables, since this
+          // <style> block must be self-contained before any stylesheet
+          // loads) so the loading screen itself matches the selected theme
+          // rather than only the app frame that replaces it.
+          document.documentElement.style.background = preset.void;
+        } catch (error) {
+          // Any failure here (corrupt localStorage, disabled storage, etc.)
+          // just leaves the Bridge :root defaults in place -- never blocks
+          // the app from loading.
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

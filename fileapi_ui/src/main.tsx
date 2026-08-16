@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useRef, useState } from "react";
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -27,11 +27,12 @@ import { Dropdown } from "./ui/Dropdown";
 // here, which TypeScript/esbuild erases entirely at build time (no runtime
 // cost, so it doesn't defeat the point of the dynamic import below).
 import type { Terminal } from "@xterm/xterm";
-import { themePresets, themeStyle, type ThemePreset } from "./styles/theme";
+import { accentCollidesWithSemanticColor, themePresets, themeStyle, type ThemePreset } from "./styles/theme";
 // Single ordered global-style entry point (T-018): tokens/base CSS first,
-// feature-component CSS in the middle, override CSS (theme-overrides.css,
-// surface-overrides.css) always last. See styles/index.css for the full
-// contract and why the previous 18 separate imports here were consolidated.
+// feature-component CSS in the middle, the styles/theme/ override modules
+// always last. See styles/index.css and styles/theme/README.md for the
+// full contract and why the previous 18 separate imports here were
+// consolidated, and how the override layer is split into modules (T-202).
 import "./styles/index.css";
 import { helpPages, helpSections } from "./help/help-content";
 import type { OperationLogRecord } from "./log-view";
@@ -581,6 +582,47 @@ const readPersistedQueue = (): TransferQueueItem[] => {
     return [];
   }
 };
+// T-210: reads the raw persisted file-table column widths with the same
+// per-field fallback defaults as before, but WITHOUT normalizing them --
+// normalizeColumnWidths (below) is applied separately by every caller so a
+// corrupt or drifted persisted value (see its own comment) can never reach
+// the <col> widths unnormalized.
+const readPersistedColumnWidths = (): Record<ColumnKey, number> => {
+  try {
+    const saved = JSON.parse(localStorage.getItem("fileapi-column-widths") || "{}");
+    return {
+      name: Number(saved.name) || 50,
+      modified: Number(saved.modified) || 30,
+      size: Number(saved.size) || 20,
+    };
+  } catch {
+    return { name: 50, modified: 30, size: 20 };
+  }
+};
+// T-210: the file table renders each column's width as a literal percent
+// (main.tsx's <col style={{ width: `${columnWidths.x}%` }} />), with no
+// runtime guarantee the three persisted percentages actually sum to 100 --
+// e.g. a manually edited localStorage value, or a future bug in the
+// column-resize drag handler, could persist widths that sum to well over
+// or under 100%, which would either overflow the table horizontally or
+// leave a visibly too-narrow/wide column. This proportionally rescales
+// whatever was read so the three columns always sum to exactly 100 before
+// they're ever used to size a <col>, regardless of what was persisted.
+const normalizeColumnWidths = (widths: Record<ColumnKey, number>): Record<ColumnKey, number> => {
+  const sanitized = {
+    name: Number.isFinite(widths.name) && widths.name > 0 ? widths.name : 50,
+    modified: Number.isFinite(widths.modified) && widths.modified > 0 ? widths.modified : 30,
+    size: Number.isFinite(widths.size) && widths.size > 0 ? widths.size : 20,
+  };
+  const total = sanitized.name + sanitized.modified + sanitized.size;
+  if (!Number.isFinite(total) || total <= 0) return { name: 50, modified: 30, size: 20 };
+  const scale = 100 / total;
+  return {
+    name: sanitized.name * scale,
+    modified: sanitized.modified * scale,
+    size: sanitized.size * scale,
+  };
+};
 const defaultDesktopSettings: DesktopSettings = {
   uiProfile: "auto",
   theme: "bridge",
@@ -598,6 +640,61 @@ const defaultDesktopSettings: DesktopSettings = {
   // behaviour). Users who need a bare URL for BMC/tooling must opt in.
   shareLinkMode: "secure",
   confirmations: { delete: true, overwrite: true, recursive: true, crossSourceMove: true },
+};
+
+// T-215: a single shared validate/merge function replaces what used to be
+// an ever-growing inline sequence of individual `saved?.field === ... ?
+// saved.field : default.field` checks at the desktopSettings useState
+// initializer. Adding a new settings field now means adding one line here
+// instead of extending that inline block; every field's own validator is
+// intentionally still spelled out explicitly (no generic schema-inference
+// magic) so a field's exact accepted shape stays easy to read and audit,
+// the same as the individual checks being replaced.
+const normalizeDesktopSettings = (raw: unknown): DesktopSettings => {
+  const saved = (raw && typeof raw === "object" ? raw : {}) as Partial<DesktopSettings> & Record<string, unknown>;
+  const pick = <T,>(value: unknown, isValid: (value: unknown) => boolean, fallback: T): T =>
+    isValid(value) ? (value as T) : fallback;
+  return {
+    ...defaultDesktopSettings,
+    ...saved,
+    uiProfile: pick(saved.uiProfile, (value) => value === "auto" || value === "mobile", defaultDesktopSettings.uiProfile),
+    theme: pick(
+      saved.theme,
+      (value) => typeof value === "string" && Object.prototype.hasOwnProperty.call(themePresets, value),
+      defaultDesktopSettings.theme,
+    ),
+    accentColor: pick(
+      saved.accentColor,
+      (value) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value),
+      defaultDesktopSettings.accentColor,
+    ),
+    operationLogLevel: pick(
+      saved.operationLogLevel,
+      (value) => typeof value === "string" && ["DEBUG", "INFO", "WARN", "ERROR"].includes(value),
+      defaultDesktopSettings.operationLogLevel,
+    ),
+    shareLinkExpirationDays: pick(
+      saved.shareLinkExpirationDays,
+      (value) => typeof value === "number" && Number.isFinite(value) && value >= 0,
+      defaultDesktopSettings.shareLinkExpirationDays,
+    ),
+    shareLinkMode: pick(
+      saved.shareLinkMode,
+      (value) => value === "secure" || value === "direct",
+      defaultDesktopSettings.shareLinkMode,
+    ),
+    proxmoxVncModeEnabled: pick(
+      saved.proxmoxVncModeEnabled,
+      (value) => typeof value === "boolean",
+      defaultDesktopSettings.proxmoxVncModeEnabled,
+    ),
+    collapseMainPaneEnabled: pick(
+      saved.collapseMainPaneEnabled,
+      (value) => typeof value === "boolean",
+      defaultDesktopSettings.collapseMainPaneEnabled,
+    ),
+    confirmations: { ...defaultDesktopSettings.confirmations, ...(saved.confirmations || {}) },
+  };
 };
 
 const readError = async (response: {
@@ -1005,60 +1102,49 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPanel, setSettingsPanel] = useState<SettingsPanel | null>(null);
   useEffect(() => { if (!settingsOpen) setSettingsPanel(null); }, [settingsOpen]);
+  // T-216: captures the theme/accent that was active when Settings was
+  // opened, so selecting a theme in the picker can apply it live (a
+  // "preview", since it takes effect immediately the same way it always
+  // has) while still letting Revert restore exactly what was active
+  // before Settings was opened -- without this, the only way back to the
+  // previous theme was re-selecting it by hand from the dropdown.
+  const themeSnapshotRef = useRef<{ theme: ThemePreset; accentColor: string } | null>(null);
+  useEffect(() => {
+    if (settingsOpen) themeSnapshotRef.current = { theme: desktopSettings.theme, accentColor: desktopSettings.accentColor };
+  }, [settingsOpen]);
   const [saveLogNameOpen, setSaveLogNameOpen] = useState(false);
   const [saveLogNameDraft, setSaveLogNameDraft] = useState("");
   const [saveLogDestinationPath, setSaveLogDestinationPath] = useState("");
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
-      const uiProfile = ["auto", "mobile"].includes(saved?.uiProfile)
-        ? saved.uiProfile
-        : defaultDesktopSettings.uiProfile;
-      const theme = Object.prototype.hasOwnProperty.call(themePresets, saved?.theme)
-        ? saved.theme as ThemePreset
-        : defaultDesktopSettings.theme;
-      const accentColor = typeof saved?.accentColor === "string" && /^#[0-9a-f]{6}$/i.test(saved.accentColor)
-        ? saved.accentColor
-        : defaultDesktopSettings.accentColor;
-      const operationLogLevel = ["DEBUG", "INFO", "WARN", "ERROR"].includes(saved?.operationLogLevel)
-        ? saved.operationLogLevel
-        : defaultDesktopSettings.operationLogLevel;
-      const shareLinkExpirationDays =
-        Number.isFinite(saved?.shareLinkExpirationDays) && saved.shareLinkExpirationDays >= 0
-          ? saved.shareLinkExpirationDays
-          : defaultDesktopSettings.shareLinkExpirationDays;
-      const shareLinkMode = ["secure", "direct"].includes(saved?.shareLinkMode)
-        ? saved.shareLinkMode
-        : defaultDesktopSettings.shareLinkMode;
-      const proxmoxVncModeEnabled = typeof saved?.proxmoxVncModeEnabled === "boolean"
-        ? saved.proxmoxVncModeEnabled
-        : defaultDesktopSettings.proxmoxVncModeEnabled;
-      const collapseMainPaneEnabled = typeof saved?.collapseMainPaneEnabled === "boolean"
-        ? saved.collapseMainPaneEnabled
-        : defaultDesktopSettings.collapseMainPaneEnabled;
-      return {
-        ...defaultDesktopSettings,
-        ...saved,
-        uiProfile,
-        theme,
-        accentColor,
-        operationLogLevel,
-        shareLinkExpirationDays,
-        shareLinkMode,
-        proxmoxVncModeEnabled,
-        collapseMainPaneEnabled,
-        confirmations: { ...defaultDesktopSettings.confirmations, ...(saved?.confirmations || {}) },
-      };
+      return normalizeDesktopSettings(JSON.parse(localStorage.getItem(desktopSettingsKey) || "null"));
     } catch {
       return defaultDesktopSettings;
     }
   });
+  // T-212: compute themeStyle()'s result once per theme/accent change and
+  // reuse it both for the documentElement side-effect below and for
+  // AppShell's inline style prop further down, instead of calling
+  // themeStyle() a second, independent time at the AppShell call site.
+  // Portaled surfaces (.account-menu, .context-picker-popover, the
+  // commandbar overflow menu, the REST Token JSON Path help popup) render
+  // outside AppShell's own DOM subtree via createPortal(..., document.
+  // body), so they read theme colors from document.documentElement's CSS
+  // custom properties -- set by the effect below -- rather than from
+  // AppShell's inline style; T-213 confirmed this by construction: nothing
+  // about consolidating the *computation* into one memo changes which of
+  // the two consumers (documentElement vs. AppShell) any given surface
+  // reads from, so portaled surfaces keep recoloring immediately on theme
+  // change exactly as before.
+  const themeVariables = useMemo(
+    () => themeStyle(desktopSettings.theme, desktopSettings.accentColor),
+    [desktopSettings.theme, desktopSettings.accentColor],
+  );
   useEffect(() => {
-    const variables = themeStyle(desktopSettings.theme, desktopSettings.accentColor);
-    Object.entries(variables).forEach(([name, value]) => {
+    Object.entries(themeVariables).forEach(([name, value]) => {
       if (typeof value === "string") document.documentElement.style.setProperty(name, value);
     });
-  }, [desktopSettings.theme, desktopSettings.accentColor]);
+  }, [themeVariables]);
   useEffect(() => {
     if (!desktopSettings.proxmoxVncModeEnabled && appMode === "vnc") setAppMode("location");
   }, [desktopSettings.proxmoxVncModeEnabled, appMode]);
@@ -1133,18 +1219,9 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // LOCAL pane, which crowded the screen. A small toggle (mirroring the
   // Terminal panel's show/hide button) lets it be opened on demand.
   const [localTreeOpen, setLocalTreeOpen] = useState(false);
-  const [columnWidths, setColumnWidths] = useState<Record<ColumnKey, number>>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem("fileapi-column-widths") || "{}");
-      return {
-        name: Number(saved.name) || 50,
-        modified: Number(saved.modified) || 30,
-        size: Number(saved.size) || 20,
-      };
-    } catch {
-      return { name: 50, modified: 30, size: 20 };
-    }
-  });
+  const [columnWidths, setColumnWidths] = useState<Record<ColumnKey, number>>(() =>
+    normalizeColumnWidths(readPersistedColumnWidths()),
+  );
   const [remoteSortKey, setRemoteSortKey] = useState<SortKey>("name");
   const [remoteSortDirection, setRemoteSortDirection] = useState<SortDirection>("asc");
   const [remoteDirectoriesFirst, setRemoteDirectoriesFirst] = useState(false);
@@ -1430,7 +1507,19 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       } else if (sessionsOpen) {
         setSessionsOpen(false);
       } else if (settingsOpen) {
-        setSettingsOpen(false);
+        // T-216: if the theme/accent currently applied differs from what
+        // was active when Settings opened (a pending, unconfirmed
+        // preview), the first Escape reverts that preview instead of
+        // immediately closing the whole Settings window -- matching the
+        // Revert button's own behavior and the "or Escape" requirement.
+        // A second Escape (nothing left to revert) closes Settings as
+        // before.
+        const snapshot = themeSnapshotRef.current;
+        if (snapshot && (snapshot.theme !== desktopSettings.theme || snapshot.accentColor !== desktopSettings.accentColor)) {
+          setDesktopSettings((current) => ({ ...current, theme: snapshot.theme, accentColor: snapshot.accentColor }));
+        } else {
+          setSettingsOpen(false);
+        }
       } else if (helpOpen) {
         setHelpOpen(false);
       } else if (logViewOpen) {
@@ -1462,6 +1551,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     archiveFormatOpen,
     changePasswordOpen,
     contextMenu,
+    desktopSettings.accentColor,
+    desktopSettings.theme,
     helpOpen,
     logViewOpen,
     locationMenuOpen,
@@ -1649,6 +1740,29 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     const maxHeight = Math.max(160, viewport.height - 180);
     setTerminalHeight((current) => Math.min(current, maxHeight));
   }, [viewport.height]);
+
+  // T-206/T-207: localPaneWidth (Split mode's LOCAL pane) and
+  // folderPaneWidth (non-split mode's REMOTE folder tree) were previously
+  // clamped only at drag time (resizePane's own Math.min(maxWidth, ...)) --
+  // unlike terminalHeight just above, shrinking the window after dragging
+  // either pane to a wide value left it pinned at that now-stale width,
+  // which could push the sibling pane (REMOTE, or the file list) off
+  // screen instead of shrinking together with the window. Mirrors the same
+  // maxWidth formula resizePane already uses at drag time.
+  useEffect(() => {
+    const maxWidth = Math.max(220, Math.min(720, viewport.width - 300));
+    setLocalPaneWidth((current) => Math.min(current, maxWidth));
+    setFolderPaneWidth((current) => Math.min(current, maxWidth));
+  }, [viewport.width]);
+
+  // T-208: localTreeWidth (the LOCAL mini folder-tree column) had the same
+  // drag-time-only clamping gap -- re-clamp it against the current
+  // localPaneWidth any time either the window or the LOCAL pane itself
+  // shrinks, using the same ceiling formula resizeLocalTree already uses.
+  useEffect(() => {
+    const maxTreeWidth = Math.max(80, Math.min(Math.max(160, localPaneWidth - 160), viewport.width));
+    setLocalTreeWidth((current) => Math.min(current, maxTreeWidth));
+  }, [viewport.width, localPaneWidth]);
 
   useEffect(() => {
     if (managedSessions.length || !sshProfiles.length) return;
@@ -3556,7 +3670,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     // native text/drag selection (since the mousedown lands on a text node
     // inside a row/header), highlighting filenames underneath the marquee
     // box instead of just drawing it. The CSS `user-select: none` on
-    // .file-table/.file-grid/.local-file-list (see explorer-parity.css)
+    // .file-table/.file-grid/.local-file-list (see styles/layout/context-menu.css)
     // covers clicks that land exactly on text; this covers the drag itself.
     event.preventDefault();
     setActivePane(pane);
@@ -5655,7 +5769,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   };
 
       return (
-    <AppShell style={themeStyle(desktopSettings.theme, desktopSettings.accentColor)} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
+    <AppShell style={themeVariables} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
       <Suspense fallback={null}>
       <DesktopTitlebar
         appMode={appMode}
@@ -6647,12 +6761,43 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                <section className="settings-section">
                  <h3>Color theme</h3>
                  <div className="settings-check settings-theme-row">
-                   <span><strong>Application palette</strong><small>Changes the shared colors used by the main view, overlays, buttons, and status states.</small></span>
+                   <span><strong>Application palette</strong><small>Changes the shared colors used by the main view, overlays, buttons, and status states. Selecting a theme previews it immediately; use Revert below to go back to what was active before you opened Settings.</small></span>
                    <select value={desktopSettings.theme} onChange={(event) => { const theme = event.target.value as ThemePreset; setDesktopSettings((current) => ({ ...current, theme, accentColor: themePresets[theme].variables.cyan })); }}>
                      {(Object.entries(themePresets) as [ThemePreset, { label: string }][]) .map(([value, theme]) => <option key={value} value={value}>{theme.label}</option>)}
                    </select>
                    <label className="theme-accent-control">Accent <input type="color" value={desktopSettings.accentColor} onChange={(event) => setDesktopSettings((current) => ({ ...current, accentColor: event.target.value }))} /></label>
                  </div>
+                 {(() => {
+                   // T-216: only shown once the previewed theme/accent actually
+                   // diverges from the snapshot captured when Settings opened,
+                   // so Revert never appears as a no-op action.
+                   const snapshot = themeSnapshotRef.current;
+                   if (!snapshot || (snapshot.theme === desktopSettings.theme && snapshot.accentColor === desktopSettings.accentColor)) return null;
+                   return (
+                     <button
+                       type="button"
+                       className="settings-theme-revert"
+                       onClick={() => setDesktopSettings((current) => ({ ...current, theme: snapshot.theme, accentColor: snapshot.accentColor }))}
+                     >
+                       Revert to {themePresets[snapshot.theme].label}
+                     </button>
+                   );
+                 })()}
+                 {(() => {
+                   // T-214: warn (not block) when the chosen accent color is close
+                   // enough to the active theme's danger/warning color that
+                   // destructive-action styling (delete buttons, privileged/
+                   // danger drop-target highlighting) could become visually
+                   // ambiguous with the newly "selected"/focus-ring accent.
+                   const collision = accentCollidesWithSemanticColor(desktopSettings.theme, desktopSettings.accentColor);
+                   if (!collision.withDanger && !collision.withWarning) return null;
+                   const withLabel = [collision.withDanger && "danger", collision.withWarning && "warning"].filter(Boolean).join(" and ");
+                   return (
+                     <p className="settings-accent-warning" role="alert">
+                       <WarningIcon size={12} /> This accent color is close to this theme&apos;s {withLabel} color. Destructive-action buttons and status highlights may be harder to tell apart from the selected/focus accent.
+                     </p>
+                   );
+                 })()}
                </section>
                <section className="settings-section">
                 <h3>Interface features</h3>

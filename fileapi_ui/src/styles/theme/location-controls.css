@@ -1,0 +1,54 @@
+/* Theme surface layer, part 7: Location control, ContextPicker trigger,
+ * account control, and the shared dropdown-like popover surfaces
+ * (.location-menu / .account-menu / .context-menu / .context-picker-popover
+ * / .palette-select-menu). Split out of the former theme-overrides.css and
+ * surface-overrides.css (T-202). See styles/theme/README.md. */
+:where(.explorer) .location-control,
+:where(.explorer) .context-picker-trigger,
+:where(.explorer) .account { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel); }
+:where(.explorer) .location-control:hover,
+:where(.explorer) .context-picker-trigger:hover,
+:where(.explorer) .context-picker-trigger[aria-expanded="true"],
+:where(.explorer) .account:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
+:where(.explorer) .location-select,
+:where(.explorer) .location-single,
+:where(.explorer) .workspace-select,
+:where(.explorer) .account-role,
+:where(.explorer) .location-label,
+:where(.explorer) .location-chevron { color: var(--color-text); }
+:where(.explorer) .location-menu button,
+:where(.explorer) .account-menu button,
+:where(.explorer) .context-menu button,
+:where(.explorer) .context-picker-option,
+:where(.explorer) .palette-select-menu button { color: var(--color-text); }
+:where(.explorer) .location-menu button:hover,
+:where(.explorer) .location-menu button.selected,
+:where(.explorer) .account-menu button:hover,
+:where(.explorer) .context-menu button:hover,
+:where(.explorer) .context-picker-option:hover,
+:where(.explorer) .context-picker-option.selected,
+:where(.explorer) .palette-select-menu button:hover,
+:where(.explorer) .palette-select-menu button.selected { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 17%, var(--color-bg-panel-strong)); }
+:where(.explorer) .health-dot.online { background: var(--color-success); }
+:where(.explorer) .health-dot:not(.online) { background: var(--color-danger); }
+
+/* .location-menu/.account-menu here additionally declare border-color and
+ * background because those two selectors are shared with the generic
+ * dropdown-menu family below (.context-menu/.context-picker-popover);
+ * .account-menu's own portaled surface (background/border/shadow/blur) is
+ * further specialized in styles/theme/dialogs.css, which loads after this
+ * file and intentionally wins for that selector's background. */
+:where(.explorer) .location-menu,
+:where(.explorer) .account-menu,
+:where(.explorer) .context-menu,
+:where(.explorer) .context-picker-popover,
+:where(.explorer) .palette-select-menu { border-color: var(--color-border); background: var(--color-bg-popover); }
+
+:where(.explorer) .context-menu,
+:where(.explorer) .location-menu,
+:where(.explorer) .context-picker-popover {
+  z-index: var(--z-context);
+  border-color: var(--color-border);
+  background: var(--color-bg-popover);
+  box-shadow: var(--shadow-panel);
+}

@@ -1,0 +1,25 @@
+/* Theme surface layer, part 3: VNC surfaces. VNC keeps its own layout rules
+ * in styles/vnc-interactions.css and proxmox-vnc.css; only theme-sensitive
+ * color/surface rules live here. Split out of the former
+ * theme-overrides.css and surface-overrides.css (T-202). See
+ * styles/theme/README.md. */
+:where(.explorer) .vnc-entry-pane,
+:where(.explorer) .vnc-reader,
+:where(.explorer) .vnc-auth-panel,
+:where(.explorer) .vnc-entry-auth {
+  border-color: var(--color-border);
+  background: var(--color-bg-panel);
+}
+:where(.explorer) .vnc-entry,
+:where(.explorer) .vnc-vm-list button,
+:where(.explorer) .vnc-display-toolbar button { color: var(--color-text); background: var(--color-bg-panel-strong); }
+:where(.explorer) .vnc-entry:hover,
+:where(.explorer) .vnc-vm-list button:hover,
+:where(.explorer) .vnc-display-toolbar button:hover:not(:disabled) { border-color: var(--color-primary); }
+:where(.explorer) .vnc-entry.active { border-color: var(--color-primary); box-shadow: inset 3px 0 var(--color-primary); }
+
+/* VNC keeps its layout rules local while all theme-sensitive surfaces stay here. */
+:where(.explorer) .vnc-entry-pane,
+:where(.explorer) .vnc-reader { border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-bg-panel) 88%, var(--color-bg)); box-shadow: var(--shadow-panel), var(--shadow-inset); }
+:where(.explorer) .vnc-auth-panel { border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }
+:where(.explorer) .vnc-display-toolbar { border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }

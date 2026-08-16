@@ -1,0 +1,27 @@
+/* Theme surface layer, part 5: HelpModal surfaces. Split out of the former
+ * theme-overrides.css (T-202). See styles/theme/README.md. */
+:where(.explorer) .help-heading { border-color: var(--color-border); background: linear-gradient(110deg, color-mix(in srgb, var(--color-secondary) 35%, var(--color-bg-panel-strong)), var(--color-bg-panel-strong) 68%); }
+:where(.explorer) .help-heading .help-icon,
+:where(.explorer) .help-breadcrumb,
+:where(.explorer) .help-tree-toggle[aria-expanded="true"] { color: var(--color-primary); }
+:where(.explorer) .help-heading h2,
+:where(.explorer) .help-content h3,
+:where(.explorer) .help-page-copy strong { color: var(--color-text); }
+:where(.explorer) .help-heading p,
+:where(.explorer) .help-summary,
+:where(.explorer) .help-page-copy,
+:where(.explorer) .help-tree-page,
+:where(.explorer) .help-footer { color: var(--color-text-muted); }
+:where(.explorer) .help-close,
+:where(.explorer) .help-page-nav button { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel); }
+:where(.explorer) .help-close:hover,
+:where(.explorer) .help-page-nav button:hover:not(:disabled) { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
+:where(.explorer) .help-tree { border-color: var(--color-border); background: var(--color-bg); }
+:where(.explorer) .help-tree-toggle,
+:where(.explorer) .help-tree-page { color: var(--color-text); }
+:where(.explorer) .help-tree-toggle:hover,
+:where(.explorer) .help-tree-page:hover { background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
+:where(.explorer) .help-tree-page.active { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 20%, var(--color-bg-panel-strong)); box-shadow: inset 2px 0 var(--color-primary); }
+:where(.explorer) .help-tree-page.active::before { background: var(--color-primary); }
+:where(.explorer) .help-content { background: radial-gradient(circle at 90% 0%, color-mix(in srgb, var(--color-secondary) 18%, transparent), transparent 35%), var(--color-bg-panel-strong); }
+:where(.explorer) .help-about-grid { border-color: var(--color-border); background: var(--color-bg); }

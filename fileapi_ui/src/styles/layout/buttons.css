@@ -1,0 +1,152 @@
+/* Explorer layout, part 9: generic desktop button semantics (confirm/
+ * danger/ghost) and the shared modal-actions/ssh-entry-actions/ssh-
+ * controls/ssh-recording-actions button family. Split out of the former
+ * monolithic explorer-parity.css (T-202 follow-up). See
+ * styles/layout/README.md.
+ *
+ * T-205: hover-state text color used to be a literal #ffffff; replaced
+ * with var(--color-text) (the same token every other hover/emphasis state
+ * in this file already uses) so hover text stays legible against every
+ * theme preset's text color instead of assuming pure white always
+ * contrasts against --color-bg-panel. */
+
+/* Desktop buttons inherit the dark palette; semantic variants only opt into emphasis. */
+:where(.explorer) button {
+  border-color: var(--color-border);
+  color: var(--color-text);
+  background: var(--color-bg-panel);
+}
+:where(.explorer) button:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-text);
+  background: var(--color-bg-panel);
+}
+:where(.explorer) button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+:where(.explorer) button:disabled {
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  background: var(--color-bg-panel-strong);
+}
+:where(.explorer) button.confirm {
+  border-color: var(--color-primary);
+  color: var(--color-text);
+  background: linear-gradient(135deg, var(--color-secondary), var(--color-secondary));
+  box-shadow: 0 0 14px rgba(37, 185, 231, .16);
+}
+:where(.explorer) button.confirm:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: linear-gradient(135deg, var(--color-secondary), var(--color-primary));
+}
+:where(.explorer) button.danger,
+:where(.explorer) button.session-delete {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel));
+}
+:where(.explorer) button.danger:hover:not(:disabled),
+:where(.explorer) button.session-delete:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-danger) 25%, var(--color-bg-panel));
+}
+:where(.explorer) button.ghost {
+  border-color: transparent;
+  background: transparent;
+}
+:where(.explorer) .palette-select-menu button:hover,
+:where(.explorer) .palette-select-menu button:focus-visible {
+  border-color: var(--color-primary);
+  color: var(--color-text);
+  background: var(--color-bg-panel);
+  font-weight: 700;
+}
+:where(.explorer) .palette-select-menu button.selected {
+  color: var(--color-primary);
+  background: var(--color-bg-panel);
+  font-weight: 600;
+}
+
+/* Keep actions inside the dark desktop surfaces instead of falling back to the global light button. */
+.modal-actions,
+.ssh-entry-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.modal-actions { margin-top: 14px; }
+.modal-actions button,
+.session-list-heading button,
+.session-card-heading button,
+.ssh-entry-actions button,
+.ssh-controls > button,
+.ssh-recording-actions > button {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text);
+  background: var(--color-bg-panel);
+  cursor: pointer;
+  font-size: 12px;
+}
+.modal-actions button:hover:not(:disabled),
+.session-list-heading button:hover:not(:disabled),
+.session-card-heading button:hover:not(:disabled),
+.ssh-entry-actions button:hover:not(:disabled),
+.ssh-controls > button:hover:not(:disabled),
+.ssh-recording-actions > button:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-text);
+  background: var(--color-bg-panel);
+}
+.modal-actions .confirm,
+.session-list-heading .confirm,
+.ssh-entry-actions .confirm,
+.ssh-controls .confirm {
+  border-color: var(--color-primary);
+  color: var(--color-text);
+  background: linear-gradient(135deg, var(--color-secondary), var(--color-secondary));
+  box-shadow: 0 0 14px rgba(37, 185, 231, .16);
+}
+.modal-actions .confirm:hover:not(:disabled),
+.session-list-heading .confirm:hover:not(:disabled),
+.ssh-entry-actions .confirm:hover:not(:disabled),
+.ssh-controls .confirm:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: linear-gradient(135deg, var(--color-secondary), var(--color-primary));
+}
+.modal-actions .danger,
+.session-card-heading .session-delete,
+.ssh-entry-actions .session-delete,
+.ssh-controls .danger,
+.ssh-recording-actions .danger {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel));
+}
+.modal-actions .danger:hover:not(:disabled),
+.session-card-heading .session-delete:hover:not(:disabled),
+.ssh-entry-actions .session-delete:hover:not(:disabled),
+.ssh-controls .danger:hover:not(:disabled),
+.ssh-recording-actions .danger:hover:not(:disabled) {
+  border-color: var(--color-danger);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-danger) 25%, var(--color-bg-panel));
+}
+.modal-actions button:focus-visible,
+.session-list-heading button:focus-visible,
+.session-card-heading button:focus-visible,
+.ssh-entry-actions button:focus-visible,
+.ssh-controls > button:focus-visible,
+.ssh-recording-actions > button:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.modal-actions button:disabled,
+.session-list-heading button:disabled,
+.session-card-heading button:disabled,
+.ssh-entry-actions button:disabled,
+.ssh-controls > button:disabled,
+.ssh-recording-actions > button:disabled {
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  background: var(--color-bg-panel-strong);
+}

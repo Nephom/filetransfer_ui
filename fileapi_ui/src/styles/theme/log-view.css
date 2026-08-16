@@ -1,0 +1,22 @@
+/* Theme surface layer, part 2: LogView surfaces. Split out of the former
+ * theme-overrides.css (T-202). See styles/theme/README.md. */
+:where(.explorer) .log-view-heading {
+  border-color: var(--color-border);
+  background: linear-gradient(110deg, color-mix(in srgb, var(--color-secondary) 35%, var(--color-bg-panel-strong)), var(--color-bg-panel-strong) 68%);
+}
+:where(.explorer) .log-view-heading h2,
+:where(.explorer) .log-table-group-row { color: var(--color-text); }
+:where(.explorer) .log-view-heading p,
+:where(.explorer) .log-view-empty,
+:where(.explorer) .log-view-footer { color: var(--color-text-muted); }
+:where(.explorer) .log-view-export,
+:where(.explorer) .log-view-close,
+:where(.explorer) .log-table-header,
+:where(.explorer) .log-table-group-row { border-color: var(--color-border); background: var(--color-bg-panel); }
+:where(.explorer) .log-view-content,
+:where(.explorer) .log-table-detail-row { color: var(--color-text); background: var(--color-bg); }
+:where(.explorer) .log-table { border-color: var(--color-border); background: var(--color-bg-panel); }
+:where(.explorer) .log-table-header { color: var(--color-primary); }
+:where(.explorer) .log-table-group-row:hover,
+:where(.explorer) .log-table-group-row:focus-visible { background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel)); }
+:where(.explorer) .log-result { color: var(--color-text-muted); }

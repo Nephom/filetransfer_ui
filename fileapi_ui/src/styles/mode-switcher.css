@@ -82,23 +82,27 @@
 }
 
 /* Keep the selected status light tied to the mode, rather than the shared
-   primary selected-button treatment. */
+   primary selected-button treatment. T-204: these used to be the Bridge
+   theme's literal hex values (#63e6ff/#5df2bd/#f2bd63) instead of the
+   semantic tokens they happen to equal under Bridge -- under any other
+   theme preset (graphite/emerald/tech-silver) the dots stayed pinned to
+   Bridge's colors instead of following the active palette. */
 .titlebar-main .mode-switcher.location-active .mode-switch-button.selected .mode-switch-dot {
-  border-color: #63e6ff;
-  background: #63e6ff;
-  box-shadow: 0 0 12px color-mix(in srgb, #63e6ff 68%, transparent);
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-primary) 68%, transparent);
 }
 
 .titlebar-main .mode-switcher.rest-active .mode-switch-button.selected .mode-switch-dot {
-  border-color: #5df2bd;
-  background: #5df2bd;
-  box-shadow: 0 0 12px color-mix(in srgb, #5df2bd 68%, transparent);
+  border-color: var(--color-success);
+  background: var(--color-success);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-success) 68%, transparent);
 }
 
 .titlebar-main .mode-switcher.vnc-active .mode-switch-button.selected .mode-switch-dot {
-  border-color: #f2bd63;
-  background: #f2bd63;
-  box-shadow: 0 0 12px color-mix(in srgb, #f2bd63 68%, transparent);
+  border-color: var(--color-warning);
+  background: var(--color-warning);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-warning) 68%, transparent);
 }
 
 @media (max-width: 720px) {
