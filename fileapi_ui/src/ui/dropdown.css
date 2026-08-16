@@ -75,7 +75,7 @@
   display: flex;
   align-items: center;
   width: 100%;
-  min-height: 34px;
+  min-height: var(--ui-button-height, var(--control-height-base));
   padding: var(--dropdown-option-padding);
   border: 1px solid transparent;
   border-radius: var(--dropdown-option-radius);
@@ -104,9 +104,9 @@
 
 .dropdown-empty {
   display: block;
-  padding: 5px var(--space-2);
+  padding: var(--space-1) var(--space-2);
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: var(--font-size-small);
   font-weight: 700;
   letter-spacing: .08em;
   text-transform: uppercase;
