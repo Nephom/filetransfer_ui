@@ -38,6 +38,13 @@
      control down to the 40px floor). */
   --control-height-mobile-lg: 44px;
   --font-size-mobile-heading: 28px;
+  /* Narrow-window (<=900x640) Mobile/Large floor is intentionally smaller
+     than the standard Mobile/Large floor above -- it only affects text/
+     controls not already pinned by styles/mobile-ui.css's !important
+     text-floor rules, which stay at font-size-mobile-base/-small
+     regardless of window width. */
+  --font-size-mobile-narrow-small: 12px;
+  --terminal-min-height-mobile: 180px;
   --control-focus-ring: 2px solid var(--color-primary);
   --icon-size: 18px;
   --icon-size-lg: 34px;
