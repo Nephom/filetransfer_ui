@@ -3,7 +3,7 @@
 .settings-section { gap: var(--ui-section-gap); margin: var(--ui-section-gap) 0; padding: var(--ui-panel-padding); }
 .settings-check { min-width: 0; gap: var(--ui-control-gap); line-height: 1.25; }
 .settings-check input[type="checkbox"],
-.settings-check input[type="radio"] { flex: 0 0 15px; width: 15px; min-width: 15px; height: 15px; min-height: 15px; margin: var(--space-1) 0 0; padding: 0; accent-color: var(--color-primary); }
+.settings-check input[type="radio"] { flex: 0 0 var(--space-4); width: var(--space-4); min-width: var(--space-4); height: var(--space-4); min-height: var(--space-4); margin: var(--space-1) 0 0; padding: 0; accent-color: var(--color-primary); }
 .settings-check span { min-width: 0; display: grid; gap: var(--space-1); }
 .settings-check strong, .settings-check small { display: block; }
 .settings-check small { line-height: 1.25; overflow-wrap: anywhere; }
@@ -11,13 +11,13 @@
 .settings-theme-row > span { min-width: 0; }
 .settings-theme-row .dropdown { width: 100%; min-width: 0; margin: 0; }
 .theme-accent-control { display: flex; align-items: center; gap: var(--ui-control-gap); margin: 0; white-space: nowrap; }
-.theme-accent-control input[type="color"] { width: 64px; min-width: 64px; height: var(--ui-control-height); margin: 0; padding: var(--space-1); }
+.theme-accent-control input[type="color"] { width: clamp(48px, 6vw, 64px); min-width: clamp(48px, 6vw, 64px); height: var(--ui-control-height); margin: 0; padding: var(--space-1); }
 /* T-214: inline warning shown when the chosen accent color visually
    collides with the active theme's danger or warning color -- styled
    like a compact version of the shared .rest-warning/.rest-error banner
    language, but scoped to Settings since it isn't a REST surface. */
 .settings-accent-warning { display: flex; align-items: flex-start; gap: var(--space-2); margin: var(--ui-control-gap) 0 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--color-warning); border-radius: var(--radius-sm); color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 14%, var(--color-bg-panel)); font-size: var(--font-size-small); line-height: 1.4; }
-.settings-accent-warning svg { flex: 0 0 auto; margin-top: 2px; }
+.settings-accent-warning svg { flex: 0 0 auto; margin-top: var(--space-1); }
 /* T-216: revert-to-previous-theme action, only rendered while the
    previewed theme/accent differs from what was active when Settings
    opened -- kept visually secondary (ghost-style) since it's a
@@ -29,7 +29,7 @@
 .settings-floating-close { min-width: var(--ui-button-height); padding: var(--space-1) var(--space-2); font-size: var(--icon-size); line-height: 1; }
 .settings-floating-footer { display: flex; justify-content: flex-end; gap: var(--ui-control-gap); }
 .settings-panel-menu { display: grid; gap: var(--ui-section-gap); min-height: 0; overflow: auto; padding: var(--ui-panel-padding); }
-.settings-panel-card { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-1) var(--ui-control-gap); min-height: 72px; padding: var(--space-3) 38px var(--space-3) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text); background: linear-gradient(110deg, var(--color-bg-panel-strong), var(--color-bg-panel)); text-align: left; }
+.settings-panel-card { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-1) var(--ui-control-gap); min-height: clamp(58px, 7vh, 72px); padding: var(--space-3) var(--space-6) var(--space-3) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text); background: linear-gradient(110deg, var(--color-bg-panel-strong), var(--color-bg-panel)); text-align: left; }
 .settings-panel-card:hover:not(:disabled) { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-panel-strong)); }
 .settings-panel-card strong { font-size: var(--font-size-base); }
 .settings-panel-card span, .settings-panel-card b { color: var(--color-primary); }
@@ -42,14 +42,14 @@
 .settings-modal.settings-panel-confirmations .settings-section:not(:nth-of-type(3)),
 .settings-modal.settings-panel-sharing .settings-section:not(:nth-of-type(4)),
 .settings-modal.settings-panel-history .settings-section:not(:nth-of-type(5)) { display: none; }
-.settings-subpanel-back { align-self: flex-start; margin-bottom: 8px; }
+.settings-subpanel-back { align-self: flex-start; margin-bottom: var(--space-2); }
 .settings-subpanel { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: auto; padding: var(--ui-panel-padding); animation: settings-subpanel-in 160ms ease-out both; }
 .settings-subpanel-heading { display: flex; align-items: center; gap: var(--ui-control-gap); margin-bottom: var(--ui-section-gap); }
 .settings-subpanel-heading button { min-height: var(--ui-button-height); }
 .settings-subpanel-heading strong { color: var(--color-text); font-size: var(--font-size-heading); }
 .settings-actions { gap: var(--ui-control-gap); margin-top: var(--ui-section-gap); }
 .settings-global-collapse { display: flex; align-items: flex-start; gap: var(--ui-control-gap); margin: 0 var(--ui-panel-padding) var(--ui-section-gap); padding: var(--ui-panel-padding); border: 1px solid var(--color-primary); border-radius: var(--radius-md); color: var(--color-text); background: var(--color-bg-panel); }
-.settings-global-collapse input { flex: 0 0 22px; width: 22px; min-width: 22px; height: 22px; min-height: 22px; margin: var(--space-1) 0 0; accent-color: var(--color-primary); }
+.settings-global-collapse input { flex: 0 0 var(--space-5); width: var(--space-5); min-width: var(--space-5); height: var(--space-5); min-height: var(--space-5); margin: var(--space-1) 0 0; accent-color: var(--color-primary); }
 .settings-global-collapse span { display: grid; gap: var(--space-1); }
 .settings-global-collapse small { color: var(--color-text-muted); line-height: 1.4; }
 

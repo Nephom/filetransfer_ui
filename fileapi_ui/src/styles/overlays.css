@@ -42,7 +42,7 @@
 @keyframes floating-dialog-in { from { opacity: 0; } to { opacity: 1; } }
 
 .floating-window.queue-modal .floating-window-content,
-.floating-window.viewer-modal .floating-window-content { overflow: auto; padding: 0 16px; }
+.floating-window.viewer-modal .floating-window-content { overflow: auto; padding: 0 var(--space-4); }
 
 .floating-window.viewer-modal .file-viewer { flex: 1; min-height: min(65vh, 560px); }
 

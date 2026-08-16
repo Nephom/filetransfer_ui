@@ -101,7 +101,7 @@
   outline-offset: 1px;
 }
 
-.context-picker-option-copy { display: grid; min-width: 0; gap: 2px; }
+.context-picker-option-copy { display: grid; min-width: 0; gap: var(--space-1); }
 .context-picker-option-copy strong,
 .context-picker-option-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .context-picker-option-copy small { color: var(--color-text-muted); font-size: var(--font-size-small); }

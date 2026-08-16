@@ -234,13 +234,13 @@ body { min-width: 320px; }
 .crumbs { display: flex; align-items: center; min-width: 0; flex: 1; padding: 0 var(--space-3); overflow: hidden; white-space: nowrap; }
 .crumbs button { border: 0; padding: 3px var(--space-1); border-radius: 3px; cursor: pointer; }
 .crumbs button:hover { background: var(--color-bg-panel); }
-.crumb-separator { padding: 0 2px; }
+.crumb-separator { padding: 0 var(--space-1); }
 .desktop-content { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .content-heading { display: flex; align-items: center; gap: var(--space-3); }
 .file-area { flex: 1; min-height: 0; overflow: auto; }
 .file-table { width: 100%; border-collapse: collapse; }
 .file-table th { text-align: left; font-weight: 700; }
-.file-table th:first-child, .file-table td:first-child { width: 42px; padding-left: var(--space-3); }
+.file-table th:first-child, .file-table td:first-child { width: clamp(34px, 4vw, 42px); padding-left: var(--space-3); }
 .file-row { height: var(--control-height-mobile); }
 .file-row td { overflow: hidden; padding: 0 var(--space-2); text-overflow: ellipsis; white-space: nowrap; border: 0; }
 .file-name.folder:hover { text-decoration: none; }

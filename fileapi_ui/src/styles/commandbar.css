@@ -36,7 +36,7 @@
   display: inline-flex;
   flex: 0 0 auto;
   min-width: 0;
-  padding: 2px;
+  padding: var(--space-1);
 }
 
 .commandbar .view-switch button {
@@ -49,7 +49,7 @@
 
 .commandbar .context-picker {
   flex: 1 1 clamp(170px, 18vw, 270px);
-  min-width: 140px;
+  min-width: clamp(110px, 14vw, 140px);
   max-width: clamp(220px, 24vw, 340px);
 }
 
@@ -69,7 +69,7 @@
 
 .commandbar .commandbar-overflow-trigger {
   min-width: 0;
-  gap: 6px;
+  gap: var(--space-2);
   padding-inline: clamp(8px, 1vw, 12px);
 }
 
