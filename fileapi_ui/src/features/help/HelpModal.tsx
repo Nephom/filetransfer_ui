@@ -2,6 +2,7 @@ import React from "react";
 import "../../help/help.css";
 import { HelpIcon, type HelpPage, type HelpSection } from "../../help/help-content";
 import { FloatingWindow } from "../../ui/FloatingWindow";
+import { CloseIcon } from "../../ui/icons";
 
 type HelpModalProps = {
   sections: HelpSection[];
@@ -29,7 +30,7 @@ export function HelpModal({ sections, pages, selectedPage, selectedSection, sele
         <div className="help-heading">
           <HelpIcon name="book" />
           <div><h2 id="help-title">nFterm Help</h2><p>操作說明、SSH 指南與技術文件</p></div>
-          <button type="button" className="help-close" onClick={onClose} aria-label="Close Help">×</button>
+          <button type="button" className="help-close" onClick={onClose} aria-label="Close Help"><CloseIcon /></button>
         </div>
       )}
       footer={(

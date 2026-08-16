@@ -16,7 +16,7 @@ import { assertQueueTransition } from "./queue/state";
 import { QueueScheduler } from "./queue/scheduler";
 import { QueueStore } from "./queue/store";
 import { selectActiveQueueItems, selectQueueHistory } from "./queue/selectors";
-import { ChevronDownIcon } from "./ui/icons";
+import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon, CollapseIcon, DiamondIcon, ExpandIcon, SortAscIcon, SortDescIcon, WarningIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
 // `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
 // imported inside the terminal-setup effect below instead of eagerly here:
@@ -594,7 +594,7 @@ function CommandBarOverflowMenu({ label, actions }: { label: string; actions: Co
         }}
       >
         <span>{label}</span>
-        <span aria-hidden="true">{open ? "‹" : "›"}</span>
+        <span aria-hidden="true">{open ? <ChevronLeftIcon /> : <ChevronRightIcon />}</span>
       </button>
       {open && createPortal(
         <div className="mobile-choice-options commandbar-overflow-options" style={popoverStyle} role="menu" aria-label={label}>
@@ -923,7 +923,7 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
             <span className="mode-switch-dot" aria-hidden="true" /><span>SAVE USER INFORMATION</span>
           </button>
           <span className={`login-profile-menu${profileMenuOpen ? " open" : ""}`}>
-            <button type="button" className="login-toggle-button login-profile-trigger" aria-expanded={profileMenuOpen} aria-haspopup="menu" onClick={() => setProfileMenuOpen((open) => !open)}>{profileLabel}<span aria-hidden="true">{profileMenuOpen ? "‹" : "›"}</span></button>
+            <button type="button" className="login-toggle-button login-profile-trigger" aria-expanded={profileMenuOpen} aria-haspopup="menu" onClick={() => setProfileMenuOpen((open) => !open)}>{profileLabel}<span aria-hidden="true">{profileMenuOpen ? <ChevronLeftIcon /> : <ChevronRightIcon />}</span></button>
             {profileMenuOpen && <span className="login-profile-options" role="menu">
               {(["auto", "mobile"] as const).filter((profile) => profile !== uiProfile).map((profile) => <button key={profile} type="button" role="menuitem" onClick={() => { onUiProfileChange(profile); setProfileMenuOpen(false); }}>{profile === "mobile" ? "Mobile (Touch Friendly)" : "Auto"}</button>)}
             </span>}
@@ -933,7 +933,7 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
         <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
         {notice && <output role="alert">{notice}</output>}
       </form>
-      {onlyTerminalAvailable && <button type="button" className="only-terminal-corner-button" disabled={busy} onClick={onOnlyTerminal} title="Skip login and the API server. Local Explorer and SSH Terminal only."><span className="status-glyph" aria-hidden="true">◆</span> Only Terminal</button>}
+      {onlyTerminalAvailable && <button type="button" className="only-terminal-corner-button" disabled={busy} onClick={onOnlyTerminal} title="Skip login and the API server. Local Explorer and SSH Terminal only."><DiamondIcon className="status-glyph" size={10} /> Only Terminal</button>}
     </main>
   );
 }
@@ -3765,8 +3765,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         placeholder="Search files"
       />
       {(search || searching) && (
-        <button className="clear-search" onClick={clearSearch}>
-          ×
+        <button className="clear-search" onClick={clearSearch} aria-label="Clear search">
+          <CloseIcon size={12} />
         </button>
       )}
     </div>
@@ -5473,7 +5473,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           LOCAL
           {isLocalElevated && (
             <span className="privileged-badge" title="Running elevated: LOCAL is not confined to your home directory.">
-              {" "}⚠ ROOT
+              {" "}<WarningIcon size={12} /> ROOT
             </span>
           )}
         </span>
@@ -5493,7 +5493,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           aria-label={localTreeOpen ? "Hide folder tree" : "Show folder tree"}
           title={localTreeOpen ? "Hide folder tree" : "Show folder tree"}
         >
-          {localTreeOpen ? "‹" : "›"}
+          {localTreeOpen ? <ChevronLeftIcon /> : <ChevronRightIcon />}
         </button>
         <span className="view-switch">
           <button
@@ -6124,8 +6124,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         {splitMode && renderLocalPane()}
          {desktopSettings.collapseMainPaneEnabled ? (
            <div className="location-main-pane-collapse-controls" role="group" aria-label="Location pane visibility">
-             <button type="button" onClick={() => setLocationPaneCollapsed(locationPaneCollapsed === "right" ? null : "left")} disabled={locationPaneCollapsed === "left"} aria-label={locationPaneCollapsed === "right" ? "Restore REMOTE pane" : "Collapse left Location pane"}>‹</button>
-             <button type="button" onClick={() => setLocationPaneCollapsed(locationPaneCollapsed === "left" ? null : "right")} disabled={!splitMode && locationPaneCollapsed !== "left" || locationPaneCollapsed === "right"} aria-label={locationPaneCollapsed === "left" ? "Restore LOCAL pane" : "Collapse right Location pane"}>›</button>
+             <button type="button" onClick={() => setLocationPaneCollapsed(locationPaneCollapsed === "right" ? null : "left")} disabled={locationPaneCollapsed === "left"} aria-label={locationPaneCollapsed === "right" ? "Restore REMOTE pane" : "Collapse left Location pane"}><ChevronLeftIcon /></button>
+             <button type="button" onClick={() => setLocationPaneCollapsed(locationPaneCollapsed === "left" ? null : "right")} disabled={!splitMode && locationPaneCollapsed !== "left" || locationPaneCollapsed === "right"} aria-label={locationPaneCollapsed === "left" ? "Restore LOCAL pane" : "Collapse right Location pane"}><ChevronRightIcon /></button>
            </div>
          ) : splitMode ? (
            <PaneResizeHandle ariaLabel="Resize LOCAL and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />
@@ -6356,7 +6356,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                           <span>{column[0].toUpperCase() + column.slice(1)}</span>
                           {remoteSortKey === column && (
                             <span className="sort-indicator" aria-hidden="true">
-                              {remoteSortDirection === "asc" ? "▲" : "▼"}
+                              {remoteSortDirection === "asc" ? <SortAscIcon size={11} /> : <SortDescIcon size={11} />}
                             </span>
                           )}
                         </button>
@@ -6740,11 +6740,11 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
          </div>
        )}
        {settingsOpen && (
-          <FloatingWindow ariaLabel="Desktop Settings" className={`settings-modal settings-panel-${settingsPanel || "menu"}`} style={modalStyle("settings")} onClose={() => setSettingsOpen(false)} onDragStart={beginModalDrag("settings")} header={<div className="settings-floating-heading"><h2 className="modal-drag-handle">Desktop Settings</h2><button type="button" className="settings-floating-close" onClick={() => setSettingsOpen(false)} aria-label="Close Desktop Settings">×</button></div>} footer={<div className="settings-floating-footer"><button type="button" className="confirm" onClick={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}>Save</button><button type="button" onClick={() => settingsPanel === null ? setSettingsOpen(false) : setSettingsPanel(null)}>Close</button></div>}>
+          <FloatingWindow ariaLabel="Desktop Settings" className={`settings-modal settings-panel-${settingsPanel || "menu"}`} style={modalStyle("settings")} onClose={() => setSettingsOpen(false)} onDragStart={beginModalDrag("settings")} header={<div className="settings-floating-heading"><h2 className="modal-drag-handle">Desktop Settings</h2><button type="button" className="settings-floating-close" onClick={() => setSettingsOpen(false)} aria-label="Close Desktop Settings"><CloseIcon /></button></div>} footer={<div className="settings-floating-footer"><button type="button" className="confirm" onClick={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}>Save</button><button type="button" onClick={() => settingsPanel === null ? setSettingsOpen(false) : setSettingsPanel(null)}>Close</button></div>}>
                 <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
-                {settingsPanel !== null && <button type="button" className="settings-subpanel-back" onClick={() => setSettingsPanel(null)}>‹ Settings</button>}
-                {settingsPanel === null && <label className="settings-global-collapse"><input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} /><span><strong>Collapse main split panes</strong><small>Use [‹] and [›] instead of the main resizebar in Location, REST API, and VNC.</small></span></label>}
-                {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"}</span><small>Enable optional workspaces.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b>›</b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b>›</b></button></div>}
+                {settingsPanel !== null && <button type="button" className="settings-subpanel-back" onClick={() => setSettingsPanel(null)}><ChevronLeftIcon size={12} /> Settings</button>}
+                {settingsPanel === null && <label className="settings-global-collapse"><input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} /><span><strong>Collapse main split panes</strong><small>Use the collapse/restore pane controls instead of the main resizebar in Location, REST API, and VNC.</small></span></label>}
+                {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"}</span><small>Enable optional workspaces.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b><ChevronRightIcon size={12} /></b></button></div>}
                <section className="settings-section">
                  <h3>Color theme</h3>
                  <div className="settings-check settings-theme-row">
@@ -6763,7 +6763,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                  </label>
                  <label className="settings-check">
                    <input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} />
-                   <span><strong>Use collapse controls instead of split resizebars</strong><small>Apply the main [‹] and [›] pane controls globally in Location, REST API, and VNC. LOCAL's internal tree controls are unchanged.</small></span>
+                   <span><strong>Use collapse controls instead of split resizebars</strong><small>Apply the main collapse/restore pane controls globally in Location, REST API, and VNC. LOCAL's internal tree controls are unchanged.</small></span>
                  </label>
                </section>
               <section className="settings-section">
@@ -6845,7 +6845,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         {shareLinksOpen && (
           <div className="modal-cover modal-layer-top" onMouseDown={() => setShareLinksOpen(false)}>
              <div className="modal share-links-modal" style={modalStyle("share-links")} onMouseDown={(event) => event.stopPropagation()}>
-               <div className="modal-heading-row modal-drag-handle" onMouseDown={beginModalDrag("share-links")}><div><h2>Share Links</h2><p>Links created by this desktop client.</p></div><button type="button" onClick={() => setShareLinksOpen(false)} aria-label="Close Share Links">×</button></div>
+               <div className="modal-heading-row modal-drag-handle" onMouseDown={beginModalDrag("share-links")}><div><h2>Share Links</h2><p>Links created by this desktop client.</p></div><button type="button" onClick={() => setShareLinksOpen(false)} aria-label="Close Share Links"><CloseIcon /></button></div>
               <div className="share-links-toolbar"><span>{shareLinks.length} link{shareLinks.length === 1 ? "" : "s"}</span><button type="button" onClick={() => void loadShareLinks()} disabled={shareLinksLoading}>{shareLinksLoading ? "Refreshing..." : "Refresh"}</button></div>
                {shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : (
                  <div className="share-link-groups">
@@ -7099,7 +7099,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                     />
                     {tab.title}
                   </button>
-                  <button type="button" className="ssh-tab-close" aria-label={`Close ${tab.title}`} onClick={() => closeSshTab(tab.id)}>×</button>
+                  <button type="button" className="ssh-tab-close" aria-label={`Close ${tab.title}`} onClick={() => closeSshTab(tab.id)}><CloseIcon size={11} /></button>
                 </span>
               ))}
               <button type="button" aria-label="New SSH terminal tab" onClick={() => createSshTab()}>+</button>
@@ -7107,8 +7107,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             <div className="terminal-actions">
                <button onClick={() => openSessionsModal()}>Workspace Manager</button>
                <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length})</button>
-              <button aria-label={terminalMaximized ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMaximized} onClick={toggleTerminalMaximized}>{terminalMaximized ? "⤡" : "⤢"}</button>
-              <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}>⌄</button>
+              <button aria-label={terminalMaximized ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMaximized} onClick={toggleTerminalMaximized}>{terminalMaximized ? <CollapseIcon /> : <ExpandIcon />}</button>
+              <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}><ChevronDownIcon /></button>
             </div>
           </header>
           <div className="terminal-body">
@@ -7188,7 +7188,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       )}
       {!terminalOpen && (
         <button className="terminal-restore" onClick={() => setTerminalOpen(true)} aria-label="Restore terminal">
-          Terminal ⌃
+          Terminal <ChevronUpIcon size={12} />
         </button>
       )}
       {archiveFormatOpen && (

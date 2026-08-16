@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import "./mobile-choice-menu.css";
+import { ChevronLeftIcon, ChevronRightIcon } from "./icons";
 
 export type MobileChoice = { id: string; label: string };
 
@@ -36,7 +37,7 @@ export function MobileChoiceMenu({ label, currentId, options, onSelect, classNam
   return (
     <div ref={rootRef} className={`mobile-choice-menu${open ? " open" : ""}${className ? ` ${className}` : ""}`}>
       <button type="button" className="mobile-choice-trigger" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-        <span>{current?.label || label}</span><span aria-hidden="true">{open ? "‹" : "›"}</span>
+        <span>{current?.label || label}</span><span aria-hidden="true">{open ? <ChevronLeftIcon /> : <ChevronRightIcon />}</span>
       </button>
       {open && <div className="mobile-choice-options" role="menu" aria-label={label}>
         {alternatives.map((option) => <button type="button" role="menuitem" key={option.id} onClick={() => { onSelect(option.id); setOpen(false); }}>{option.label}</button>)}

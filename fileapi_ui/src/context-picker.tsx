@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ChevronDownIcon, DotIcon } from "./ui/icons";
 
 export type ContextPickerOption = { id: string; label: string; detail?: string; selected?: boolean };
 export type ContextPickerGroup = { label: string; options: ContextPickerOption[] };
@@ -62,13 +63,13 @@ export function ContextPicker({ label, value, groups, onSelect, disabled = false
 
   return <div className="context-picker" ref={rootRef} data-context-picker="true">
     <button ref={triggerRef} type="button" className="context-picker-trigger" onClick={(event) => { event.stopPropagation(); setOpen((current) => !current); }} disabled={disabled} aria-expanded={open} aria-haspopup="listbox">
-      <span className="context-picker-label">{label}</span><strong>{value}</strong><span className="context-picker-chevron">⌄</span>
+      <span className="context-picker-label">{label}</span><strong>{value}</strong><span className="context-picker-chevron"><ChevronDownIcon size={12} /></span>
     </button>
     {open && createPortal(<div className="context-picker-popover" style={popoverStyle} role="listbox" aria-label={label}>
       {groups.map((group) => <section className="context-picker-group" key={group.label}>
         <span className="context-picker-group-label">{group.label}</span>
         {group.options.map((option) => <button type="button" role="option" aria-selected={option.selected} className={`context-picker-option${option.selected ? " selected" : ""}`} key={option.id} onClick={() => { onSelect(option.id); setOpen(false); }}>
-          <span className="context-picker-option-copy"><strong>{option.label}</strong>{option.detail && <small>{option.detail}</small>}</span><span className="context-picker-check">{option.selected ? "●" : ""}</span>
+          <span className="context-picker-option-copy"><strong>{option.label}</strong>{option.detail && <small>{option.detail}</small>}</span><span className="context-picker-check">{option.selected && <DotIcon size={8} />}</span>
         </button>)}
       </section>)}
       {!options.length && <span className="context-picker-empty">No available entries</span>}

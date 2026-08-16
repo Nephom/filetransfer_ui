@@ -1,6 +1,7 @@
 import React from "react";
 import { createPortal } from "react-dom";
 import { MobileChoiceMenu } from "../ui/MobileChoiceMenu";
+import { ChevronDownIcon } from "../ui/icons";
 
 type DesktopTitlebarProps = {
   appMode: "location" | "rest" | "vnc";
@@ -62,7 +63,7 @@ export function DesktopTitlebar({
           <button className="account" onClick={onAccountToggle} aria-expanded={accountOpen} aria-haspopup="menu">
             {session.username}
             <span className="account-role">{session.onlyTerminalMode ? "Only Terminal" : session.role === "admin" ? "Admin" : "User"}</span>
-            <span className="account-chevron">⌄</span>
+            <span className="account-chevron"><ChevronDownIcon size={12} /></span>
           </button>
           {accountOpen && createPortal(
             <div className="account-menu" style={accountMenuStyle} role="menu" aria-label="Account menu">

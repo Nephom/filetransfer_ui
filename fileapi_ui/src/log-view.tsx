@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./log-view.css";
 import { FloatingWindow } from "./ui/FloatingWindow";
+import { ChevronDownIcon, ChevronRightIcon, CloseIcon, SortAscIcon, SortDescIcon } from "./ui/icons";
 
 export type OperationLogRecord = Record<string, unknown>;
 type SortKey = "time" | "function" | "level" | "status";
@@ -85,7 +86,7 @@ function LogTable({ records }: { records: OperationLogRecord[] }) {
     if (sortKey === key) setSortDirection((current) => current === "asc" ? "desc" : "asc");
     else { setSortKey(key); setSortDirection(key === "time" ? "desc" : "asc"); }
   };
-  const sortLabel = (key: SortKey) => sortKey === key ? (sortDirection === "asc" ? " ↑" : " ↓") : "";
+  const sortLabel = (key: SortKey) => sortKey === key ? <> {sortDirection === "asc" ? <SortAscIcon size={10} /> : <SortDescIcon size={10} />}</> : null;
 
   return (
     <div className="log-table" role="table" aria-label="Operation log table">
@@ -111,7 +112,7 @@ function LogTable({ records }: { records: OperationLogRecord[] }) {
                 return next;
               })}
             >
-              <span>{isExpanded ? "▾" : "▸"} {displayTime(group.records[0])}</span>
+              <span>{isExpanded ? <ChevronDownIcon size={11} /> : <ChevronRightIcon size={11} />} {displayTime(group.records[0])}</span>
               <strong>{group.operation}</strong>
               <span className={`log-level log-level-${value(group.last, "level", "INFO").toLowerCase()}`}>{value(group.last, "level", "INFO")}</span>
               <span>{value(group.last, "status", "-")}</span>
@@ -163,7 +164,7 @@ export function LogView({ records, onClose, onExport, modalStyle, onDragStart }:
           </div>
           <div className="log-view-heading-actions">
             <button type="button" className="log-view-export" onClick={onExport}>Export log</button>
-            <button ref={closeRef} type="button" className="log-view-close" onClick={onClose} aria-label="Close LogView">×</button>
+            <button ref={closeRef} type="button" className="log-view-close" onClick={onClose} aria-label="Close LogView"><CloseIcon /></button>
           </div>
         </header>
       )}
