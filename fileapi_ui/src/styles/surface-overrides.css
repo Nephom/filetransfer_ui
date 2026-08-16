@@ -136,7 +136,14 @@
   align-items: start;
   justify-items: center;
   width: 100%;
-  min-height: 100dvh;
+  /* height (not min-height): html/body/#root force overflow:hidden
+     (webui-shell.css), so a min-height container that grows taller than
+     the viewport just gets clipped by that ancestor -- overflow-y:auto on
+     THIS element never gets a chance to run because this element itself
+     never became smaller than its content. Locking .login to exactly the
+     viewport height makes it the actual scroll container whenever its
+     content (e.g. Large's uniformly enlarged form) is taller than it. */
+  height: 100dvh;
   padding: clamp(12px, 3vh, 48px) clamp(16px, 4vw, 64px);
   box-sizing: border-box;
   overflow-y: auto;
