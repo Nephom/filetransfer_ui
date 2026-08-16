@@ -6878,12 +6878,17 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                <label className="settings-check"><input type="checkbox" checked={desktopSettings.undoHistoryEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, undoHistoryEnabled: event.target.checked }))} /><span><strong>Enable undo history</strong><small>Disabling this stops new undo records; it does not delete files.</small></span></label>
                 <label className="settings-check"><input type="checkbox" checked={desktopSettings.operationLogEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, operationLogEnabled: event.target.checked }))} /><span><strong>Enable operation log</strong><small>Disabling this stops new audit records; it does not delete unrelated data.</small></span></label>
                 <label className="settings-level">Log detail level
-                  <select value={desktopSettings.operationLogLevel} onChange={(event) => setDesktopSettings((current) => ({ ...current, operationLogLevel: event.target.value as DesktopSettings["operationLogLevel"] }))}>
-                    <option value="DEBUG">DEBUG - diagnostics and operations</option>
-                    <option value="INFO">INFO - normal operations</option>
-                    <option value="WARN">WARN - warnings and failures</option>
-                    <option value="ERROR">ERROR - failures only</option>
-                  </select>
+                  <Dropdown
+                    label="Log detail level"
+                    value={desktopSettings.operationLogLevel}
+                    onChange={(value) => setDesktopSettings((current) => ({ ...current, operationLogLevel: value as DesktopSettings["operationLogLevel"] }))}
+                    options={[
+                      { value: "DEBUG", label: "DEBUG - diagnostics and operations" },
+                      { value: "INFO", label: "INFO - normal operations" },
+                      { value: "WARN", label: "WARN - warnings and failures" },
+                      { value: "ERROR", label: "ERROR - failures only" },
+                    ]}
+                  />
                   <small>DEBUG is enabled by default during development. Lower levels reduce diagnostic detail.</small>
                 </label>
                 {storageInfo && <div className="storage-info"><span>History: {storageInfo.historyPath} ({formatSize(storageInfo.historyBytes)})</span><span>Logs: {storageInfo.logPath} ({formatSize(storageInfo.logBytes)})</span><span>{storageInfo.logFiles.length} log file{storageInfo.logFiles.length === 1 ? "" : "s"} currently retained</span></div>}
