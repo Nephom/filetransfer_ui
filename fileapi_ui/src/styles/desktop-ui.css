@@ -6,8 +6,22 @@
    ceiling below. Mobile/Large keeps its own fixed touch-target sizing
    (unrelated to reading comfort), but that fixed sizing is itself declared
    entirely from styles/tokens.css tokens below (Q3, confirmed: convert
-   all) -- no standalone literal px value remains in this file. */
-.explorer {
+   all) -- no standalone literal px value remains in this file.
+
+   T-221: these --ui-* variables are defined on :root, not .explorer.
+   Custom properties only inherit down the DOM tree that actually got
+   rendered -- every dropdown/context-picker/account/location menu is
+   portaled to document.body (see ui/Dropdown.tsx, context-picker.tsx,
+   app/DesktopTitlebar.tsx, main.tsx's CommandBarOverflowMenu), which puts
+   those nodes OUTSIDE .explorer's subtree entirely. Defining --ui-* on
+   .explorer meant every portaled popover fell back to each property's own
+   var(--ui-x, fallback) default (always the Auto-profile value) no matter
+   which profile was actually active, silently breaking Large/Mobile sizing
+   for exactly the surfaces most likely to need it. Defining on :root plus
+   :root:has(.explorer.ui-layout-mobile) below means every node in the
+   document -- portaled or not -- reads the same live value, with no
+   per-component `body:has(...)` patch required ever again. */
+:root {
   --ui-font-size: clamp(13px, calc(6px + 1.1vmin), 22px);
   --ui-small-font-size: clamp(11px, calc(5px + 0.9vmin), 18px);
   --ui-button-height: clamp(30px, calc(14px + 2.6vmin), 52px);
@@ -18,10 +32,9 @@
   --ui-section-gap: clamp(6px, calc(2px + 0.8vmin), 20px);
   --ui-panel-padding: clamp(8px, calc(3px + 0.9vmin), 22px);
   --ui-terminal-min-height: clamp(160px, calc(100px + 6vmin), 260px);
-  font-size: var(--ui-font-size);
 }
 
-.explorer.ui-layout-mobile {
+:root:has(.explorer.ui-layout-mobile) {
   --ui-font-size: var(--font-size-mobile-base);
   --ui-small-font-size: var(--font-size-mobile-small);
   --ui-button-height: var(--control-height-mobile);
@@ -32,6 +45,10 @@
   --ui-section-gap: var(--space-3);
   --ui-panel-padding: var(--space-3);
   --ui-terminal-min-height: var(--terminal-min-height-mobile);
+}
+
+.explorer {
+  font-size: var(--ui-font-size);
 }
 
 /* The mobile text floor itself (button/input/label/heading font sizes,
@@ -201,7 +218,7 @@
 
 
 @media (max-width: 900px), (max-height: 640px) {
-  .explorer.ui-layout-mobile {
+  :root:has(.explorer.ui-layout-mobile) {
     --ui-font-size: var(--font-size-mobile-small);
     --ui-small-font-size: var(--font-size-mobile-narrow-small);
     --ui-button-height: var(--control-height-mobile);

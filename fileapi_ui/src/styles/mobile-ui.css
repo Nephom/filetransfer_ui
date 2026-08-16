@@ -42,16 +42,21 @@ body:has(.login.ui-profile-auto) .login-profile-menu {
   font-size: var(--mobile-ui-font);
 }
 
-.explorer.ui-layout-mobile :is(.mobile-choice-trigger, .context-picker-trigger, .location-select, .location-single),
-body:has(.explorer.ui-layout-mobile) :is(.account-menu button, .context-picker-option, .location-menu button),
-body:has(.login.ui-profile-mobile) .login-profile-menu .dropdown-trigger,
-body:has(.login.ui-profile-auto) .login-profile-menu .dropdown-trigger {
-  min-height: var(--mobile-ui-control-height) !important;
-  padding: var(--mobile-ui-padding);
-  font-size: var(--mobile-ui-font) !important;
-  line-height: 1.35;
-}
-
+/* T-221: the min-height/padding/font-size overrides that used to live here
+   for every portaled popover (.account-menu, .context-picker-popover,
+   .location-menu, the login-profile-menu Dropdown) are removed -- those
+   selectors already read the shared --ui-button-height, --ui-control-
+   height, --ui-button-padding-x, --ui-button-padding-y, and --ui-font-
+   size tokens directly (see ui/dropdown.css, context-picker.css,
+   account-menu.css, location-control.css, ui/mobile-choice-menu.css),
+   and those tokens now live on :root (see styles/desktop-ui.css) instead
+   of .explorer, so every portaled node already inherits the correct
+   Mobile/Large values with no per-component body:has(...) size patch
+   needed. Only the non-size concerns that were bundled into the same
+   rules -- the Large profile own distinct popover surface color, border,
+   shadow, and its raised menu z-index -- are kept below, since those are
+   a deliberate Large-only visual choice unrelated to the shared UI
+   sizing tokens. */
 .explorer.ui-layout-mobile :is(.mobile-choice-trigger, .context-picker-trigger),
 body:has(.explorer.ui-layout-mobile) :is(.account-menu, .context-picker-popover, .location-menu),
 body:has(.login.ui-profile-mobile) .login-profile-menu .dropdown-menu,
@@ -66,17 +71,6 @@ body:has(.explorer.ui-layout-mobile) :is(.account-menu, .location-menu, .rest-ac
 body:has(.login.ui-profile-mobile) .login-profile-menu .dropdown-menu,
 body:has(.login.ui-profile-auto) .login-profile-menu .dropdown-menu {
   z-index: var(--mobile-ui-menu-z);
-}
-
-.explorer.ui-layout-mobile :is(.mobile-choice-options button, .context-picker-option),
-body:has(.explorer.ui-layout-mobile) :is(.account-menu button, .location-menu button),
-body:has(.login.ui-profile-mobile) .login-profile-menu .dropdown-menu button,
-body:has(.login.ui-profile-auto) .login-profile-menu .dropdown-menu button {
-  min-height: var(--mobile-ui-control-height) !important;
-  padding: var(--mobile-ui-padding);
-  color: var(--color-text);
-  font-size: var(--mobile-ui-font) !important;
-  line-height: 1.35;
 }
 
 .explorer.ui-layout-mobile :is(.mobile-choice-options button, .context-picker-option):focus-visible,
