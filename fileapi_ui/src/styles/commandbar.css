@@ -59,6 +59,28 @@
   max-width: none;
 }
 
+/* Secondary actions (View/Move/Rename/Share/Delete/Undo/Select all) collapse
+   behind this single trigger in Mobile instead of truncating into unreadable
+   ellipsis labels. Overrides MobileChoiceMenu's 190px default trigger width
+   since "More actions" is much shorter than a workspace/entry name. */
+.commandbar .commandbar-overflow {
+  flex: 0 0 auto;
+}
+
+.commandbar .commandbar-overflow-trigger {
+  min-width: 0;
+  gap: 6px;
+  padding-inline: clamp(8px, 1vw, 12px);
+}
+
+.commandbar .commandbar-overflow .mobile-choice-options {
+  right: 0;
+  left: auto;
+  transform: none;
+  width: max-content;
+  min-width: 160px;
+}
+
 @media (max-width: 900px) {
   .commandbar > button { flex-basis: 8ch; max-width: 8ch; }
   .commandbar .context-picker { min-width: 120px; max-width: 32vw; }

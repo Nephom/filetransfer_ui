@@ -525,6 +525,79 @@ function PaletteSelect({
   );
 }
 
+type CommandBarOverflowAction = {
+  key: string;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+};
+
+// Narrow commandbars cannot show every action at full label width (see
+// styles/commandbar.css); rather than truncating every button into an
+// unreadable "…", secondary actions collapse behind this one trigger.
+// Visually matches MobileChoiceMenu (same token-driven chrome) so every
+// commandbar-adjacent menu looks the same regardless of which component
+// renders it.
+function CommandBarOverflowMenu({ label, actions }: { label: string; actions: CommandBarOverflowAction[] }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className={`mobile-choice-menu commandbar-overflow${open ? " open" : ""}`}>
+      <button
+        type="button"
+        className="mobile-choice-trigger commandbar-overflow-trigger"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((value) => !value);
+        }}
+      >
+        <span>{label}</span>
+        <span aria-hidden="true">{open ? "‹" : "›"}</span>
+      </button>
+      {open && (
+        <div className="mobile-choice-options" role="menu" aria-label={label}>
+          {actions.map((action) => (
+            <button
+              key={action.key}
+              type="button"
+              role="menuitem"
+              disabled={action.disabled}
+              title={action.title}
+              onClick={() => {
+                action.onClick();
+                setOpen(false);
+              }}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const defaultHost = import.meta.env.VITE_DEFAULT_SERVER_HOST || "";
 const defaultPort = import.meta.env.VITE_DEFAULT_SERVER_PORT || "9443";
 const appVersion =
@@ -5582,101 +5655,193 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         >
           Download
         </button>
-        <button
-          disabled={
-            splitMode && activePane === "local"
-              ? busy || localSelectedItems.length !== 1 || localSelectedItems[0].isDirectory
-              : busy ||
+        {mobileLayout ? (
+          <CommandBarOverflowMenu
+            label="More actions"
+            actions={[
+              {
+                key: "view",
+                label: "View",
+                disabled: splitMode && activePane === "local"
+                  ? busy || localSelectedItems.length !== 1 || localSelectedItems[0].isDirectory
+                  : busy ||
+                    !locationOnline ||
+                    selectedItems.length !== 1 ||
+                    selectedItems[0].isDirectory ||
+                    !!remoteSshEntryId ||
+                    !hasCapability("read"),
+                onClick: () =>
+                  splitMode && activePane === "local"
+                    ? openLocalViewer(localSelectedItems[0].path)
+                    : openRemoteViewer(selectedItems[0]),
+              },
+              {
+                key: "move",
+                label: "Move",
+                disabled:
+                  busy ||
+                  (splitMode && activePane === "local") ||
+                  !selectedItems.length ||
+                  !(remoteSshEntryId ? true : locationOnline && hasCapability("move")),
+                onClick: () => notify("Drag selected files to a destination folder to move them."),
+              },
+              {
+                key: "rename",
+                label: "Rename",
+                disabled: splitMode && activePane === "local"
+                  ? busy || localSelectedItems.length !== 1
+                  : busy ||
+                    selectedItems.length !== 1 ||
+                    !(remoteSshEntryId ? true : locationOnline && hasCapability("rename")),
+                onClick: rename,
+              },
+              {
+                key: "share",
+                label: "Share",
+                disabled:
+                  busy ||
+                  (splitMode && activePane === "local") ||
+                  !locationOnline ||
+                  selectedItems.length !== 1 ||
+                  selectedItems[0].isDirectory ||
+                  !!remoteSshEntryId ||
+                  !hasCapability("share"),
+                onClick: share,
+              },
+              {
+                key: "delete",
+                label: "Delete",
+                disabled: splitMode && activePane === "local"
+                  ? busy || !localSelectedItems.length
+                  : busy ||
+                    !selectedItems.length ||
+                    !(remoteSshEntryId ? true : locationOnline && hasCapability("delete")),
+                onClick: remove,
+              },
+              {
+                key: "undo",
+                label: "Undo",
+                disabled: busy || !undoStack.length,
+                title: undoStack.length ? `Undo: ${undoStack[undoStack.length - 1].description}` : "No operation to undo",
+                onClick: undoLastOperation,
+              },
+              {
+                key: "select-all",
+                label: "Select all",
+                onClick: () =>
+                  splitMode && activePane === "local"
+                    ? setLocalSelected(
+                        localSelected.length === localFiles.length
+                          ? []
+                          : sortedLocalFiles.map((file) => file.path),
+                      )
+                    : setSelected(
+                        selected.length === files.length
+                          ? []
+                          : sortedFiles.map((file) => file.path),
+                      ),
+              },
+            ]}
+          />
+        ) : (
+          <>
+            <button
+              disabled={
+                splitMode && activePane === "local"
+                  ? busy || localSelectedItems.length !== 1 || localSelectedItems[0].isDirectory
+                  : busy ||
+                    !locationOnline ||
+                    selectedItems.length !== 1 ||
+                    selectedItems[0].isDirectory ||
+                    !!remoteSshEntryId ||
+                    !hasCapability("read")
+              }
+              onClick={() =>
+                splitMode && activePane === "local"
+                  ? openLocalViewer(localSelectedItems[0].path)
+                  : openRemoteViewer(selectedItems[0])
+              }
+            >
+              View
+            </button>
+            <button
+              disabled={
+                busy ||
+                (splitMode && activePane === "local") ||
+                !selectedItems.length ||
+                !(remoteSshEntryId ? true : locationOnline && hasCapability("move"))
+              }
+              onClick={() =>
+                notify("Drag selected files to a destination folder to move them.")
+              }
+            >
+              Move
+            </button>
+            <button
+              disabled={
+                splitMode && activePane === "local"
+                  ? busy || localSelectedItems.length !== 1
+                  : busy ||
+                    selectedItems.length !== 1 ||
+                    !(remoteSshEntryId ? true : locationOnline && hasCapability("rename"))
+              }
+              onClick={rename}
+            >
+              Rename
+            </button>
+            <button
+              disabled={
+                busy ||
+                (splitMode && activePane === "local") ||
                 !locationOnline ||
                 selectedItems.length !== 1 ||
                 selectedItems[0].isDirectory ||
                 !!remoteSshEntryId ||
-                !hasCapability("read")
-          }
-          onClick={() =>
-            splitMode && activePane === "local"
-              ? openLocalViewer(localSelectedItems[0].path)
-              : openRemoteViewer(selectedItems[0])
-          }
-        >
-          View
-        </button>
-        <button
-          disabled={
-            busy ||
-            (splitMode && activePane === "local") ||
-            !selectedItems.length ||
-            !(remoteSshEntryId ? true : locationOnline && hasCapability("move"))
-          }
-          onClick={() =>
-            notify("Drag selected files to a destination folder to move them.")
-          }
-        >
-          Move
-        </button>
-        <button
-          disabled={
-            splitMode && activePane === "local"
-              ? busy || localSelectedItems.length !== 1
-              : busy ||
-                selectedItems.length !== 1 ||
-                !(remoteSshEntryId ? true : locationOnline && hasCapability("rename"))
-          }
-          onClick={rename}
-        >
-          Rename
-        </button>
-        <button
-          disabled={
-            busy ||
-            (splitMode && activePane === "local") ||
-            !locationOnline ||
-            selectedItems.length !== 1 ||
-            selectedItems[0].isDirectory ||
-            !!remoteSshEntryId ||
-            !hasCapability("share")
-          }
-          onClick={share}
-        >
-          Share
-        </button>
-        <button
-          disabled={
-            splitMode && activePane === "local"
-              ? busy || !localSelectedItems.length
-              : busy ||
-                !selectedItems.length ||
-                !(remoteSshEntryId ? true : locationOnline && hasCapability("delete"))
-          }
-          onClick={remove}
-        >
-          Delete
-        </button>
-        <button
-          disabled={busy || !undoStack.length}
-          onClick={undoLastOperation}
-          title={undoStack.length ? `Undo: ${undoStack[undoStack.length - 1].description}` : "No operation to undo"}
-        >
-          Undo
-        </button>
-        <span className="divider" />
-        <button
-          onClick={() =>
-            splitMode && activePane === "local"
-              ? setLocalSelected(
-                  localSelected.length === localFiles.length
-                    ? []
-                    : sortedLocalFiles.map((file) => file.path),
-                )
-              : setSelected(
-                  selected.length === files.length
-                    ? []
-                    : sortedFiles.map((file) => file.path),
-                )
-          }
-        >
-          Select all
-        </button>
+                !hasCapability("share")
+              }
+              onClick={share}
+            >
+              Share
+            </button>
+            <button
+              disabled={
+                splitMode && activePane === "local"
+                  ? busy || !localSelectedItems.length
+                  : busy ||
+                    !selectedItems.length ||
+                    !(remoteSshEntryId ? true : locationOnline && hasCapability("delete"))
+              }
+              onClick={remove}
+            >
+              Delete
+            </button>
+            <button
+              disabled={busy || !undoStack.length}
+              onClick={undoLastOperation}
+              title={undoStack.length ? `Undo: ${undoStack[undoStack.length - 1].description}` : "No operation to undo"}
+            >
+              Undo
+            </button>
+            <span className="divider" />
+            <button
+              onClick={() =>
+                splitMode && activePane === "local"
+                  ? setLocalSelected(
+                      localSelected.length === localFiles.length
+                        ? []
+                        : sortedLocalFiles.map((file) => file.path),
+                    )
+                  : setSelected(
+                      selected.length === files.length
+                        ? []
+                        : sortedFiles.map((file) => file.path),
+                    )
+              }
+            >
+              Select all
+            </button>
+          </>
+        )}
         <span className="view-switch">
           <button
             className={viewMode === "details" ? "active" : ""}
