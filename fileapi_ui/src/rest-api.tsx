@@ -274,79 +274,23 @@ const defaultActionBody = (action: RedfishAction) => /reset/i.test(`${action.nam
   ? '{\n  "ResetType": "ForceRestart"\n}'
   : "{\n  \n}";
 
-function RestEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry" | "onChangeEntries">) {
-  const [editing, setEditing] = useState<RestApiEntry | null>(null);
-  const editorRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!editing) return undefined;
-    const editor = editorRef.current;
-    editor?.querySelector<HTMLInputElement>("input:not([type='checkbox'])")?.focus();
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setEditing(null);
-    };
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.target === event.currentTarget) setEditing(null);
-    };
-    document.addEventListener("keydown", closeOnEscape);
-    const layer = editor?.parentElement;
-    layer?.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => {
-      document.removeEventListener("keydown", closeOnEscape);
-      layer?.removeEventListener("pointerdown", closeOnOutsidePointer);
-    };
-  }, [editing?.id]);
-
-  const createEntry = () => setEditing({
-    id: crypto.randomUUID(),
-    name: "New REST API",
-    baseUrl: "",
-    defaultPath: "/rest/v1",
-    query: [],
-    ignoreTlsErrors: false,
-    authMode: "none",
-    vendor: "none",
-    username: "",
-    loginPath: "/auth/login",
-    loginMethod: "POST",
-    loginBody: '{"username":"{{username}}","password":"{{password}}"}',
-    tokenPath: "data.token",
-    tokenHeader: "X-Auth-Token",
-    tokenSendAs: "X-Auth-Token",
-  });
-
-  const save = () => {
-    const draft = editing;
-    if (!draft || !draft.name.trim() || !draft.baseUrl.trim()) return;
-    onChangeEntries(entries.some((entry) => entry.id === draft.id)
-      ? entries.map((entry) => entry.id === draft.id ? draft : entry)
-      : [...entries, draft]);
-    onSelectEntry(draft.id);
-    setEditing(null);
-  };
-
+// Entry management (add/edit/remove) lives in the Sessions/Workspace
+// Manager, not here -- this sidebar only lists and selects among entries
+// the Workspace already owns, exactly like the SSH terminal panel's own
+// sidebar has no add/edit UI of its own either.
+function RestEntries({ entries, activeEntryId, onSelectEntry }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry">) {
   return <aside className="rest-entry-pane">
     <div className="rest-entry-heading">
       <span className="sidebar-label">REST API ENTRIES</span>
-      <button type="button" className="confirm rest-add-button" onClick={createEntry}>+ Add entry</button>
     </div>
     <MobileChoiceMenu className="rest-entry-choice" label="REST API entry" currentId={activeEntryId} options={entries.map((entry) => ({ id: entry.id, label: entry.name }))} onSelect={onSelectEntry} />
     <div className="rest-entry-list">
-      {!entries.length && <div className="rest-empty">No REST API entries yet.</div>}
+      {!entries.length && <div className="rest-empty">No REST API entries yet. Add one from Sessions → Workspace.</div>}
       {entries.map((entry) => <button type="button" key={entry.id} className={`rest-entry${entry.id === activeEntryId ? " active" : ""}`} onClick={() => onSelectEntry(entry.id)}>
         <span className="rest-entry-dot" />
         <span className="rest-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{normalizePath(entry.defaultPath)}</small></span>
-        <span className="rest-entry-edit" onClick={(event) => { event.stopPropagation(); setEditing(entry); }}>Edit</span>
       </button>)}
     </div>
-    {editing && createPortal(<div className="modal-cover modal-layer-top" role="presentation"><div ref={editorRef} tabIndex={-1} className="modal rest-entry-modal" role="dialog" aria-modal="true" aria-labelledby="rest-entry-editor-title">
-      <h2 id="rest-entry-editor-title">{entries.some((entry) => entry.id === editing.id) ? "Edit REST entry" : "Add REST entry"}</h2>
-      <label>Name<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
-      <label>Base URL<input value={editing.baseUrl} onChange={(event) => setEditing({ ...editing, baseUrl: event.target.value })} placeholder="https://api.example.com" /></label>
-      <label>Default path<input value={editing.defaultPath} onChange={(event) => setEditing({ ...editing, defaultPath: event.target.value })} placeholder="/v1/rest" /></label>
-      <label className="tls-option"><input type="checkbox" checked={editing.ignoreTlsErrors} onChange={(event) => setEditing({ ...editing, ignoreTlsErrors: event.target.checked })} /> Ignore TLS errors</label>
-      <div className="modal-actions">{entries.some((entry) => entry.id === editing.id) && <button type="button" className="danger" onClick={() => { localStorage.removeItem(`rest-api-history:${editing.id}`); onChangeEntries(entries.filter((entry) => entry.id !== editing.id)); setEditing(null); }}>Remove</button>}<button type="button" onClick={() => setEditing(null)}>Cancel</button><button type="button" className="confirm" onClick={save}>Save entry</button></div>
-    </div></div>, document.body)}
   </aside>;
 }
 
@@ -1330,7 +1274,7 @@ export function RestApiWorkspace(props: Props) {
      {restDebugOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-debug-dialog" role="dialog" aria-modal="true" aria-labelledby="rest-debug-title"><div className="rest-editor-heading"><strong id="rest-debug-title">REST DEBUG logs</strong><button type="button" onClick={() => setRestDebugOpen(false)} aria-label="Close REST DEBUG logs">×</button></div><div className="rest-debug-toolbar"><input value={restDebugEntryFilter} onChange={(event) => setRestDebugEntryFilter(event.target.value)} placeholder="Entry" aria-label="Filter REST DEBUG entry" /><input value={restDebugRequestFilter} onChange={(event) => setRestDebugRequestFilter(event.target.value)} placeholder="Request ID" aria-label="Filter REST DEBUG request ID" /><input value={restDebugVendorFilter} onChange={(event) => setRestDebugVendorFilter(event.target.value)} placeholder="Vendor" aria-label="Filter REST DEBUG vendor" /><input value={restDebugOperationFilter} onChange={(event) => setRestDebugOperationFilter(event.target.value)} placeholder="Operation or event" aria-label="Filter REST DEBUG operation" /><input value={restDebugStatusFilter} onChange={(event) => setRestDebugStatusFilter(event.target.value)} placeholder="Status" aria-label="Filter REST DEBUG status" /><label>From<input type="date" value={restDebugFrom} onChange={(event) => setRestDebugFrom(event.target.value)} /></label><label>To<input type="date" value={restDebugTo} onChange={(event) => setRestDebugTo(event.target.value)} /></label><button type="button" onClick={() => void loadRestDebugLogs()} disabled={restDebugLoading}>Refresh</button><button type="button" onClick={() => exportRestDebug("json")} disabled={!visibleRestDebugRecords.length}>JSON</button><button type="button" onClick={() => exportRestDebug("csv")} disabled={!visibleRestDebugRecords.length}>CSV</button></div>{restDebugError && <div className="notice rest-error">{restDebugError}</div>}<div className="rest-debug-summary">Showing {visibleRestDebugRecords.length} of {restDebugRecords.length} REST DEBUG records</div><div className="rest-debug-list">{visibleRestDebugRecords.map((record, index) => { const value = record.detailValue; return <details key={`${record.timestamp}-${String(value.requestId || index)}-${index}`}><summary><span>{new Date(Number(record.timestamp) * 1_000).toLocaleString()}</span><strong>{String(value.event || record.status)}</strong><span>{String(value.entry || record.source)}</span><span>{String(value.status || value.responseStatus || record.status)}</span></summary><pre className="rest-code">{JSON.stringify(value, null, 2)}</pre></details>})}{!restDebugLoading && !restDebugError && !visibleRestDebugRecords.length && <p className="muted">No REST DEBUG records match the current filters.</p>}</div></div></div>}
     {biosEditor}
     {resourceCatalogOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-resource-catalog" role="dialog" aria-modal="true" aria-labelledby="resource-catalog-title"><div className="rest-editor-heading"><strong id="resource-catalog-title">All Resources</strong><button type="button" onClick={() => setResourceCatalogOpen(false)} aria-label="Close resource catalog">×</button></div><p className="muted">Redfish resources advertised by the service root. Select a path to open it.</p><div className="rest-resource-catalog-list">{resourceCatalog.map((resource) => <button type="button" key={`${resource.name}-${resource.target}`} onClick={() => { setResourceCatalogOpen(false); void openPath(resource.target); }}><strong>{resource.name}</strong><code>{resource.target}</code></button>)}</div></div></div>}
-     <div className={`rest-entry-pane-shell${entryPaneCollapsed ? " rest-entry-pane-collapsed" : ""}`} style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries {...props} entries={props.entries} activeEntryId={entry?.id || ""} /></div>
+     <div className={`rest-entry-pane-shell${entryPaneCollapsed ? " rest-entry-pane-collapsed" : ""}`} style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries entries={props.entries} activeEntryId={entry?.id || ""} onSelectEntry={props.onSelectEntry} /></div>
      {props.collapseMainPaneEnabled ? <div className="rest-main-pane-collapse-controls" role="group" aria-label="REST pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse REST entry pane">‹</button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore REST entry pane">›</button></div> : <PaneResizeHandle ariaLabel="Resize REST API entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
     <section className="rest-reader" aria-label="REST API reader" data-raw-request-open={rawRequestOpen}>
        <div className="rest-reader-heading"><div><span className="eyebrow">REST API mode · {props.workspaceName}</span><h1>{entry?.name || "REST API reader"}</h1></div><div className="rest-reader-tools"><MobileChoiceMenu className="rest-vendor-choice" label="REST vendor" currentId={vendor} options={[{ id: "none", label: "None" }, { id: "hpe", label: "HPE" }, { id: "openbmc", label: "OpenBMC" }]} onSelect={(id) => launchVendor(id as RestVendor)} /><div className="rest-vendor-capsule" role="group" aria-label="REST vendor launcher"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => launchVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => launchVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => launchVendor("openbmc")}>OpenBMC</button></div><span className="rest-session-status">{entry && (session["X-Auth-Token"] || secret.cookie) ? "Authenticated" : "Not authenticated"}</span></div></div>

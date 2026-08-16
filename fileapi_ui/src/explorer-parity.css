@@ -41,12 +41,14 @@
 .workspace-entry-section { display: grid; gap: 8px; }
 .workspace-entry-section h3 { margin: 0; color: var(--color-primary); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
 .workspace-entry-list { display: grid; gap: 8px; margin: 0; padding-left: 28px; }
-.workspace-entry-list li { padding-left: 3px; color: var(--color-text-muted); }
-.workspace-entry-button { display: grid; gap: 3px; width: 100%; padding: 5px 8px; border: 1px solid transparent; border-radius: 4px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
+.workspace-entry-list li { display: flex; align-items: center; gap: 6px; padding-left: 3px; color: var(--color-text-muted); }
+.workspace-entry-button { display: grid; flex: 1 1 auto; gap: 3px; min-width: 0; width: 100%; padding: 5px 8px; border: 1px solid transparent; border-radius: 4px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
 .workspace-entry-button:hover { border-color: var(--color-primary); background: var(--color-bg-panel); }
 .workspace-entry-button strong { color: var(--color-text); font-size: 12px; }
 .workspace-entry-button span { color: var(--color-text-muted); font-size: 12px; overflow-wrap: anywhere; }
 .workspace-entry-button.session-entry-summary { gap: 2px; }
+.workspace-entry-edit { flex: 0 0 auto; padding: 4px 9px; border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-primary); background: transparent; font-size: 11px; cursor: pointer; }
+.workspace-entry-edit:hover { border-color: var(--color-primary); background: var(--color-bg-panel); }
 .workspace-entry-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .workspace-empty { margin: 16px 0; }
 .workspace-name-modal { width: min(440px, calc(100vw - 32px)); }
@@ -92,6 +94,23 @@
 .ssh-entry-picker button small { overflow: hidden; color: var(--color-text-muted); text-overflow: ellipsis; white-space: nowrap; }
 .ssh-entry-modal { width: min(480px, calc(100vw - 48px)); display: grid; gap: 10px; }
 .ssh-entry-modal label { margin: 0; }
+/* REST API and Proxmox VNC entry dialogs render from main.tsx (Workspace
+   Manager owns add/edit/remove for every entry type, same as SSH above),
+   so their styling must be eager-loaded here rather than living in
+   rest-api.css/proxmox-vnc.css -- those files are only pulled in once
+   RestApiWorkspace/ProxmoxVncWorkspace's own lazy chunk loads, which may
+   never have happened yet if the dialog is opened straight from Sessions. */
+.rest-entry-modal, .vnc-entry-modal { display: grid; gap: 10px; }
+.rest-entry-modal { width: min(420px, calc(100vw - 48px)); }
+.vnc-entry-modal { width: min(480px, calc(100vw - 48px)); }
+.rest-entry-modal label, .vnc-entry-modal label { display: grid; gap: 4px; margin: 0; color: var(--color-text-muted); font-size: 11px; }
+.rest-entry-modal input, .vnc-entry-modal input { min-width: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }
+.vnc-entry-modal .vnc-form-grid, .vnc-entry-modal .vnc-auth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.vnc-entry-modal .vnc-username-field { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 7px; }
+.vnc-entry-modal .vnc-realm-options { display: flex; gap: 8px; padding-bottom: 7px; color: var(--color-text-muted); font-size: 11px; }
+.vnc-entry-modal .vnc-realm-options label { display: flex; grid-template-columns: none; align-items: center; gap: 3px; white-space: nowrap; }
+.vnc-entry-modal .vnc-realm-options input { min-width: auto; }
+@media (max-width: 720px) { .vnc-entry-modal .vnc-form-grid { grid-template-columns: 1fr; } }
 .session-entry small { overflow: hidden; color: var(--color-text-muted); text-overflow: ellipsis; white-space: nowrap; }
 .field-help { display: block; margin-top: 5px; color: var(--color-text-muted); font-size: 11px; font-weight: 400; }
 .link-button { padding: 0; border: 0; background: transparent; color: var(--color-primary); font-size: 11px; text-decoration: underline; cursor: pointer; }

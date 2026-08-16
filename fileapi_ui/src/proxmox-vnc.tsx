@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import "./proxmox-vnc.css";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { PaneResizeHandle } from "./resizable-pane";
 import { MobileChoiceMenu } from "./ui/MobileChoiceMenu";
@@ -42,67 +41,26 @@ type EntryAuthProps = {
   onLogout: () => void;
 };
 
-const emptyEntry = (): ProxmoxVncEntry => ({
-  id: crypto.randomUUID(), name: "New Proxmox VNC", baseUrl: "https://:8006", username: "root@pam",
-  node: "", vmid: null, guestType: "qemu", proxmoxVersion: "auto", ignoreTlsErrors: false,
-});
-
-const endpointParts = (baseUrl: string) => {
-  // Pure syntactic extraction -- deliberately never routes through `new
-  // URL()`. New URL()'s host parser silently canonicalizes any all-digit or
-  // partial-numeric host into a full IPv4 address (e.g. typing "0" becomes
-  // "0.0.0.0"), and since this runs again on every keystroke the field would
-  // re-snap to that canonical form on every render, making it impossible to
-  // edit or delete. A plain regex just returns whatever text is actually
-  // there, so the field round-trips losslessly no matter what's mid-typed.
-  const match = baseUrl.match(/^https:\/\/(\[[0-9a-fA-F:]*\]|[^/:]*)(?::(\d*))?/i);
-  return { host: match?.[1] ?? "", port: match?.[2] ?? "" };
-};
-
-const usernameParts = (username: string) => {
-  const [account = "root", realm = "pam"] = username.split("@", 2);
-  return { account, realm: realm === "pve" ? "pve" : "pam" };
-};
-
-function VncEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries, password, authenticated, loading, onPasswordChange, onLogin, onLogout }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry" | "onChangeEntries"> & EntryAuthProps) {
-  const [editing, setEditing] = useState<ProxmoxVncEntry | null>(null);
-  const save = () => {
-    const endpoint = editing ? endpointParts(editing.baseUrl) : null;
-    const port = endpoint ? Number(endpoint.port) : 0;
-    const username = editing ? usernameParts(editing.username) : null;
-    if (!editing || !editing.name.trim() || !endpoint?.host || !port || port < 1 || port > 65535 || !username?.account.trim()) return;
-    const next = entries.some((item) => item.id === editing.id)
-      ? entries.map((item) => item.id === editing.id ? editing : item)
-      : [...entries, editing];
-    onChangeEntries(next); onSelectEntry(editing.id); setEditing(null);
-  };
-  const endpoint = editing ? endpointParts(editing.baseUrl) : { host: "", port: "" };
-  const proxmoxUsername = editing ? usernameParts(editing.username) : { account: "root", realm: "pam" };
-  const updateEndpoint = (host: string, port: string) => editing && setEditing({ ...editing, baseUrl: `https://${host}:${port}` });
-  const updateUsername = (account: string, realm: string) => editing && setEditing({ ...editing, username: `${account}@${realm}` });
+// Entry management (add/edit/remove) lives in the Sessions/Workspace
+// Manager, not here -- this sidebar only lists and selects among entries
+// the Workspace already owns, plus the currently-selected entry's Proxmox
+// login/logout (an operational session action, not entry identity data),
+// exactly like the SSH terminal panel's own sidebar has no add/edit UI.
+function VncEntries({ entries, activeEntryId, onSelectEntry, password, authenticated, loading, onPasswordChange, onLogin, onLogout }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry"> & EntryAuthProps) {
   return <aside className="vnc-entry-pane">
-    <div className="vnc-entry-heading"><span className="sidebar-label">PROXMOX VNC ENTRIES</span><button type="button" className="confirm vnc-add-button" onClick={() => setEditing(emptyEntry())}>+ Add entry</button></div>
+    <div className="vnc-entry-heading"><span className="sidebar-label">PROXMOX VNC ENTRIES</span></div>
     <MobileChoiceMenu className="vnc-entry-choice" label="VNC entry" currentId={activeEntryId} options={entries.map((entry) => ({ id: entry.id, label: entry.name }))} onSelect={onSelectEntry} />
     <div className="vnc-entry-list">
-      {!entries.length && <div className="vnc-empty">No Proxmox VNC entries yet.</div>}
+      {!entries.length && <div className="vnc-empty">No Proxmox VNC entries yet. Add one from Sessions → Workspace.</div>}
       {entries.map((entry) => <button type="button" key={entry.id} className={`vnc-entry${entry.id === activeEntryId ? " active" : ""}`} onClick={() => onSelectEntry(entry.id)}>
-        <span className="vnc-entry-dot" /><span className="vnc-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{entry.node || "No node"} / {entry.vmid || "No VMID"}</small></span><span className="vnc-entry-edit" onClick={(event) => { event.stopPropagation(); setEditing(entry); }}>Edit</span>
+        <span className="vnc-entry-dot" /><span className="vnc-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{entry.node || "No node"} / {entry.vmid || "No VMID"}</small></span>
       </button>)}
     </div>
     <div className="vnc-entry-auth">
       <strong>{authenticated ? "Proxmox session active" : "Entry credentials"}</strong>
+      {!authenticated && <input type="password" value={password} onChange={(event) => onPasswordChange(event.target.value)} placeholder="Proxmox password" autoComplete="new-password" />}
       {authenticated ? <button type="button" onClick={onLogout}>Logout</button> : <button type="button" className="confirm" onClick={onLogin} disabled={loading || !password}>{loading ? "Logging in..." : "Login"}</button>}
     </div>
-    {editing && createPortal(<div className="modal-cover modal-layer-top" role="presentation" onMouseDown={() => setEditing(null)}><div className="modal vnc-entry-modal" role="dialog" aria-modal="true" aria-labelledby="vnc-entry-editor-title" onMouseDown={(event) => event.stopPropagation()}>
-      <h2 id="vnc-entry-editor-title">{entries.some((item) => item.id === editing.id) ? "Edit VNC entry" : "Add VNC entry"}</h2>
-      <label>Name<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
-      <div className="vnc-form-grid"><label>Proxmox host<input value={endpoint.host} onChange={(event) => updateEndpoint(event.target.value, endpoint.port)} placeholder="proxmox.example.com" /></label><label>Port<input type="number" min="1" max="65535" value={endpoint.port} onChange={(event) => updateEndpoint(endpoint.host, event.target.value)} placeholder="8006" /></label></div>
-      <div className="vnc-username-field"><label>Username<input value={proxmoxUsername.account} onChange={(event) => updateUsername(event.target.value, proxmoxUsername.realm)} placeholder="root" /></label><div className="vnc-realm-options"><label><input type="radio" name={`realm-${editing.id}`} checked={proxmoxUsername.realm === "pam"} onChange={() => updateUsername(proxmoxUsername.account, "pam")} /> pam</label><label><input type="radio" name={`realm-${editing.id}`} checked={proxmoxUsername.realm === "pve"} onChange={() => updateUsername(proxmoxUsername.account, "pve")} /> pve</label></div></div>
-      <label>Password<input type="password" value={password} onChange={(event) => onPasswordChange(event.target.value)} /></label>
-      <div className="vnc-form-grid"><label>PVE version<Dropdown label="PVE version" value={editing.proxmoxVersion} onChange={(nextVersion) => setEditing({ ...editing, proxmoxVersion: nextVersion as ProxmoxVersion })} options={[{ value: "auto", label: "Auto detect" }, { value: "6.4", label: "6.4" }, { value: "7.x", label: "7.x" }, { value: "8.x", label: "8.x" }, { value: "9.x", label: "9.x" }]} /></label><div className="vnc-entry-login">{authenticated ? <><span>Session active</span><button type="button" onClick={onLogout}>Logout</button></> : <button type="button" className="confirm" onClick={onLogin} disabled={loading || !password}>{loading ? "Logging in..." : "Login"}</button>}</div></div>
-      <label className="tls-option"><input type="checkbox" checked={editing.ignoreTlsErrors} onChange={(event) => setEditing({ ...editing, ignoreTlsErrors: event.target.checked })} /> Ignore TLS certificate errors</label>
-      <div className="modal-actions">{entries.some((item) => item.id === editing.id) && <button type="button" className="danger" onClick={() => { onChangeEntries(entries.filter((item) => item.id !== editing.id)); setEditing(null); }}>Remove</button>}<button type="button" onClick={() => setEditing(null)}>Cancel</button><button type="button" className="confirm" onClick={save}>Save entry</button></div>
-    </div></div>, document.body)}
   </aside>;
 }
 
@@ -297,7 +255,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   };
   const screenExpanded = controlsRatio !== null && controlsRatio < 0.5;
 
-  return <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}`}><div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}><VncEntries entries={entries} activeEntryId={activeEntryId} onSelectEntry={selectEntry} onChangeEntries={onChangeEntries} password={password} authenticated={authenticated} loading={loading} onPasswordChange={updatePassword} onLogin={() => void loginEntry()} onLogout={() => void logoutEntry()} /></div>{collapseMainPaneEnabled ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane">‹</button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane">›</button></div> : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
+  return <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}`}><div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}><VncEntries entries={entries} activeEntryId={activeEntryId} onSelectEntry={selectEntry} password={password} authenticated={authenticated} loading={loading} onPasswordChange={updatePassword} onLogin={() => void loginEntry()} onLogout={() => void logoutEntry()} /></div>{collapseMainPaneEnabled ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane">‹</button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane">›</button></div> : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
     <section ref={vncReaderRef} className="vnc-reader" aria-label="Proxmox VNC workspace">
       <div className="vnc-reader-heading"><div><span className="eyebrow">VNC mode · {workspaceName}</span><h1>{entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
       <div className="vnc-display-split" style={{ "--controls-row": controlsRatio === null ? "auto" : screenExpanded ? "0.333fr" : "1fr", "--screen-row": "1fr" } as React.CSSProperties}><div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}><div className="vnc-auth-heading"><strong>Connection controls</strong><button type="button" onClick={() => { setControlsOpen((value) => !value); setControlsRatio(null); }}>{controlsOpen ? "Collapse" : "Expand"}</button></div>{controlsOpen && <><div className="vnc-auth-grid"><label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label><label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label></div><div className="vnc-actions"><button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button><button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button><button type="button" onClick={() => void logoutEntry()} disabled={!authenticated}>Logout</button></div>{entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}{error && <div className="notice rest-error">{error}</div>}</>}</div><div className="vnc-screen-resize" role="separator" aria-label="Resize Connection controls" title="Drag downward to enlarge Connection controls" onPointerDown={resizeControls} /><div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`}><div className="vnc-display-toolbar"><button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button><button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button><button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button><button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div><div ref={screenRef} className="vnc-screen" /></div></div>

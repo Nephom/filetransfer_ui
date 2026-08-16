@@ -17,6 +17,7 @@ import { QueueScheduler } from "./queue/scheduler";
 import { QueueStore } from "./queue/store";
 import { selectActiveQueueItems, selectQueueHistory } from "./queue/selectors";
 import { ChevronDownIcon } from "./ui/icons";
+import { Dropdown } from "./ui/Dropdown";
 // `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
 // imported inside the terminal-setup effect below instead of eagerly here:
 // they're only ever needed once the user actually opens the SSH terminal
@@ -249,6 +250,8 @@ type ModalDragId =
   | "sessions"
   | "workspace-name"
   | "ssh-entry"
+  | "rest-entry"
+  | "vnc-entry"
   | "share-links"
   | "queue"
   | "viewer";
@@ -1339,8 +1342,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [sessionNameDraft, setSessionNameDraft] = useState("");
   // Session Manager only shows the Workspace list/summary; adding or
   // editing an SSH entry happens in its own floating dialog on top of the
-  // Sessions modal.
+  // Sessions modal. REST API and Proxmox VNC entries use the exact same
+  // pattern (see openAddRestEntryDialog/openAddVncEntryDialog below) --
+  // their own mode's sidebar is read-only, just for selecting among
+  // already-created entries, same as the SSH terminal panel's own sidebar.
   const [sshEntryDialogOpen, setSshEntryDialogOpen] = useState(false);
+  const [restEntryDialogOpen, setRestEntryDialogOpen] = useState(false);
+  const [restEntryDraft, setRestEntryDraft] = useState<RestApiEntry | null>(null);
+  const [vncEntryDialogOpen, setVncEntryDialogOpen] = useState(false);
+  const [vncEntryDraft, setVncEntryDraft] = useState<ProxmoxVncEntry | null>(null);
   const [pendingRemotePath, setPendingRemotePath] = useState<string | null>(null);
   const [folderTree, setFolderTree] = useState<FolderNode>({
     path: "",
@@ -1482,6 +1492,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       sessions: sessionsOpen,
       "workspace-name": workspaceNameDialogOpen,
       "ssh-entry": sshEntryDialogOpen,
+      "rest-entry": restEntryDialogOpen,
+      "vnc-entry": vncEntryDialogOpen,
       "share-links": shareLinksOpen,
       queue: queueOpen,
       viewer: viewerOpen,
@@ -1497,7 +1509,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       });
       return changed ? next : current;
     });
-  }, [helpOpen, logViewOpen, queueOpen, sessionsOpen, settingsOpen, shareLinksOpen, sshEntryDialogOpen, viewerOpen, workspaceNameDialogOpen]);
+  }, [helpOpen, logViewOpen, queueOpen, restEntryDialogOpen, sessionsOpen, settingsOpen, shareLinksOpen, sshEntryDialogOpen, vncEntryDialogOpen, viewerOpen, workspaceNameDialogOpen]);
 
   useEffect(() => {
     const closeTopmostOverlay = (event: KeyboardEvent) => {
@@ -1505,6 +1517,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
       if (sshEntryDialogOpen) {
         setSshEntryDialogOpen(false);
+      } else if (restEntryDialogOpen) {
+        setRestEntryDialogOpen(false);
+      } else if (vncEntryDialogOpen) {
+        setVncEntryDialogOpen(false);
       } else if (workspaceNameDialogOpen) {
         setWorkspaceNameDialogOpen(false);
       } else if (sharePasswordOpen) {
@@ -1554,12 +1570,14 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     logViewOpen,
     locationMenuOpen,
     queueOpen,
+    restEntryDialogOpen,
     saveLogNameOpen,
     sessionsOpen,
     settingsOpen,
     shareLinksOpen,
     sharePasswordOpen,
     sshEntryDialogOpen,
+    vncEntryDialogOpen,
     viewerOpen,
     workspaceNameDialogOpen,
   ]);
@@ -2771,6 +2789,160 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     void invoke("ssh_forget_password", { entryId: entry.id }).catch(() => {});
     startNewSshEntry();
     setSshEntryDialogOpen(false);
+  };
+
+  // REST API and Proxmox VNC entries follow the exact same add/edit/remove
+  // shape as SSH above: the dialog lives here, keyed to whichever Workspace
+  // card it was opened from (setWorkspaceSessionId right before opening).
+  // RestApiWorkspace/ProxmoxVncWorkspace's own sidebar only lists and
+  // selects entries -- it has no add/edit UI of its own, same as the SSH
+  // terminal panel's sidebar.
+  const emptyRestEntry = (): RestApiEntry => ({
+    id: crypto.randomUUID(),
+    name: "New REST API",
+    baseUrl: "",
+    defaultPath: "/rest/v1",
+    query: [],
+    ignoreTlsErrors: false,
+    authMode: "none",
+    vendor: "none",
+    username: "",
+    loginPath: "/auth/login",
+    loginMethod: "POST",
+    loginBody: '{"username":"{{username}}","password":"{{password}}"}',
+    tokenPath: "data.token",
+    tokenHeader: "X-Auth-Token",
+    tokenSendAs: "X-Auth-Token",
+  });
+
+  const openAddRestEntryDialog = (workspaceId: string) => {
+    setWorkspaceSessionId(workspaceId);
+    setRestEntryDraft(emptyRestEntry());
+    setSessionFormError("");
+    setRestEntryDialogOpen(true);
+  };
+
+  const openEditRestEntryDialog = (workspaceId: string, entry: RestApiEntry) => {
+    setWorkspaceSessionId(workspaceId);
+    setRestEntryDraft(entry);
+    setSessionFormError("");
+    setRestEntryDialogOpen(true);
+  };
+
+  const isEditingRestEntry = (workspace: ManagedSession | undefined, draft: RestApiEntry | null) =>
+    Boolean(workspace && draft && workspace.restApiEntries.some((item) => item.id === draft.id));
+
+  const saveRestEntry = () => {
+    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
+    const draft = restEntryDraft;
+    if (!workspace) {
+      setSessionFormError("Save the Workspace name first, then add a REST API entry to it.");
+      return;
+    }
+    if (!draft || !draft.name.trim() || !draft.baseUrl.trim()) {
+      setSessionFormError("Connection name and base URL are required.");
+      return;
+    }
+    const wasEditing = isEditingRestEntry(workspace, draft);
+    setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : {
+      ...item,
+      restApiEntries: wasEditing
+        ? item.restApiEntries.map((candidate) => candidate.id === draft.id ? draft : candidate)
+        : [...item.restApiEntries, draft],
+    }));
+    setActiveRestEntryId(draft.id);
+    setRestEntryDraft(null);
+    setSessionFormError("");
+    setRestEntryDialogOpen(false);
+    notify(`${wasEditing ? "Updated" : "Added"} REST API entry: ${draft.name}`);
+  };
+
+  const removeRestEntry = () => {
+    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
+    const draft = restEntryDraft;
+    if (!workspace || !draft || !isEditingRestEntry(workspace, draft)) return;
+    if (!window.confirm(`Remove REST API entry "${draft.name}"?`)) return;
+    setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, restApiEntries: item.restApiEntries.filter((candidate) => candidate.id !== draft.id) }));
+    localStorage.removeItem(`rest-api-history:${draft.id}`);
+    setRestEntryDraft(null);
+    setRestEntryDialogOpen(false);
+  };
+
+  const emptyVncEntry = (): ProxmoxVncEntry => ({
+    id: crypto.randomUUID(),
+    name: "New Proxmox VNC",
+    baseUrl: "https://:8006",
+    username: "root@pam",
+    node: "",
+    vmid: null,
+    guestType: "qemu",
+    proxmoxVersion: "auto",
+    ignoreTlsErrors: false,
+  });
+
+  const openAddVncEntryDialog = (workspaceId: string) => {
+    setWorkspaceSessionId(workspaceId);
+    setVncEntryDraft(emptyVncEntry());
+    setSessionFormError("");
+    setVncEntryDialogOpen(true);
+  };
+
+  const openEditVncEntryDialog = (workspaceId: string, entry: ProxmoxVncEntry) => {
+    setWorkspaceSessionId(workspaceId);
+    setVncEntryDraft(entry);
+    setSessionFormError("");
+    setVncEntryDialogOpen(true);
+  };
+
+  const isEditingVncEntry = (workspace: ManagedSession | undefined, draft: ProxmoxVncEntry | null) =>
+    Boolean(workspace && draft && workspace.proxmoxVncEntries.some((item) => item.id === draft.id));
+
+  const vncEndpointParts = (baseUrl: string) => {
+    const match = baseUrl.match(/^https:\/\/(\[[0-9a-fA-F:]*\]|[^/:]*)(?::(\d*))?/i);
+    return { host: match?.[1] ?? "", port: match?.[2] ?? "" };
+  };
+  const vncUsernameParts = (username: string) => {
+    const [account = "root", realm = "pam"] = username.split("@", 2);
+    return { account, realm: realm === "pve" ? "pve" : "pam" };
+  };
+
+  const saveVncEntry = () => {
+    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
+    const draft = vncEntryDraft;
+    const endpoint = draft ? vncEndpointParts(draft.baseUrl) : null;
+    const port = endpoint ? Number(endpoint.port) : 0;
+    const username = draft ? vncUsernameParts(draft.username) : null;
+    if (!workspace) {
+      setSessionFormError("Save the Workspace name first, then add a Proxmox VNC entry to it.");
+      return;
+    }
+    if (!draft || !draft.name.trim() || !endpoint?.host || !port || port < 1 || port > 65535 || !username?.account.trim()) {
+      setSessionFormError("Connection name, Proxmox host, and a valid port are required.");
+      return;
+    }
+    const wasEditing = isEditingVncEntry(workspace, draft);
+    setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : {
+      ...item,
+      proxmoxVncEntries: wasEditing
+        ? item.proxmoxVncEntries.map((candidate) => candidate.id === draft.id ? draft : candidate)
+        : [...item.proxmoxVncEntries, draft],
+    }));
+    setActiveVncEntryId(draft.id);
+    setVncEntryDraft(null);
+    setSessionFormError("");
+    setVncEntryDialogOpen(false);
+    notify(`${wasEditing ? "Updated" : "Added"} Proxmox VNC entry: ${draft.name}`);
+  };
+
+  const removeVncEntry = () => {
+    const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
+    const draft = vncEntryDraft;
+    if (!workspace || !draft || !isEditingVncEntry(workspace, draft)) return;
+    if (!window.confirm(`Remove Proxmox VNC entry "${draft.name}"?`)) return;
+    setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, proxmoxVncEntries: item.proxmoxVncEntries.filter((candidate) => candidate.id !== draft.id) }));
+    void invoke("proxmox_forget_secret", { entryId: draft.id, kind: "password" }).catch(() => {});
+    setVncEntryDraft(null);
+    setVncEntryDialogOpen(false);
   };
 
   const connectSsh = () => {
@@ -6753,6 +6925,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                               <strong>{entry.name}</strong>
                               <span>{entry.baseUrl}{entry.defaultPath}</span>
                             </button>
+                            <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditRestEntryDialog(managedSession.id, entry); }}>Edit</button>
                           </li>
                         ))}
                       </ol>
@@ -6767,12 +6940,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                               <strong>{entry.name}</strong>
                               <span>{entry.baseUrl} · {entry.node || "No node"}/{entry.vmid || "No VMID"}</span>
                             </button>
+                            <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditVncEntryDialog(managedSession.id, entry); }}>Edit</button>
                           </li>
                         ))}
                       </ol>
                     </section>}
                     <div className="workspace-entry-actions">
                       <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>Add SSH Entry</button>
+                      <button type="button" className="confirm" onClick={() => openAddRestEntryDialog(managedSession.id)}>Add REST API Entry</button>
+                      {desktopSettings.proxmoxVncModeEnabled && <button type="button" className="confirm" onClick={() => openAddVncEntryDialog(managedSession.id)}>Add Proxmox VNC Entry</button>}
                       <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("rest"); setSessionsOpen(false); }}>Open REST API</button>
                       {desktopSettings.proxmoxVncModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("vnc"); setSessionsOpen(false); }}>Open VNC</button>}
                     </div>
@@ -6853,6 +7029,60 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           </div>
         </div>
       )}
+      {restEntryDialogOpen && restEntryDraft && (
+        <div className="modal-cover modal-layer-top" onMouseDown={() => setRestEntryDialogOpen(false)}>
+          <div className="modal rest-entry-modal" style={modalStyle("rest-entry")} onMouseDown={(event) => event.stopPropagation()}>
+            <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("rest-entry")}>{isEditingRestEntry(activeManagedWorkspace, restEntryDraft) ? "Edit REST API Entry" : "Add REST API Entry"}</h2>
+            <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
+            {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
+            <label>Name<input value={restEntryDraft.name} onChange={(event) => setRestEntryDraft({ ...restEntryDraft, name: event.target.value })} placeholder="Production BMC" /></label>
+            <label>Base URL<input value={restEntryDraft.baseUrl} onChange={(event) => setRestEntryDraft({ ...restEntryDraft, baseUrl: event.target.value })} placeholder="https://api.example.com" /></label>
+            <label>Default path<input value={restEntryDraft.defaultPath} onChange={(event) => setRestEntryDraft({ ...restEntryDraft, defaultPath: event.target.value })} placeholder="/v1/rest" /></label>
+            <label className="tls-option"><input type="checkbox" checked={restEntryDraft.ignoreTlsErrors} onChange={(event) => setRestEntryDraft({ ...restEntryDraft, ignoreTlsErrors: event.target.checked })} /> Ignore TLS errors</label>
+            <small className="field-help">Authentication mode, login path, and token settings are configured from the Authentication panel inside REST API mode once this entry is selected -- they're operational settings you tune while working with the entry, not part of its identity.</small>
+            <div className="modal-actions">
+              <button type="button" onClick={() => setRestEntryDialogOpen(false)}>Cancel</button>
+              {isEditingRestEntry(activeManagedWorkspace, restEntryDraft) && <button type="button" className="session-delete" onClick={removeRestEntry}>Remove</button>}
+              <button type="button" className="confirm" onClick={saveRestEntry}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {vncEntryDialogOpen && vncEntryDraft && (() => {
+        const endpoint = vncEndpointParts(vncEntryDraft.baseUrl);
+        const proxmoxUsername = vncUsernameParts(vncEntryDraft.username);
+        const updateEndpoint = (host: string, port: string) => setVncEntryDraft({ ...vncEntryDraft, baseUrl: `https://${host}:${port}` });
+        const updateUsername = (account: string, realm: string) => setVncEntryDraft({ ...vncEntryDraft, username: `${account}@${realm}` });
+        return (
+          <div className="modal-cover modal-layer-top" onMouseDown={() => setVncEntryDialogOpen(false)}>
+            <div className="modal vnc-entry-modal" style={modalStyle("vnc-entry")} onMouseDown={(event) => event.stopPropagation()}>
+              <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("vnc-entry")}>{isEditingVncEntry(activeManagedWorkspace, vncEntryDraft) ? "Edit Proxmox VNC Entry" : "Add Proxmox VNC Entry"}</h2>
+              <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
+              {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
+              <label>Name<input value={vncEntryDraft.name} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, name: event.target.value })} /></label>
+              <div className="vnc-form-grid">
+                <label>Proxmox host<input value={endpoint.host} onChange={(event) => updateEndpoint(event.target.value, endpoint.port)} placeholder="proxmox.example.com" /></label>
+                <label>Port<input type="number" min="1" max="65535" value={endpoint.port} onChange={(event) => updateEndpoint(endpoint.host, event.target.value)} placeholder="8006" /></label>
+              </div>
+              <div className="vnc-username-field">
+                <label>Username<input value={proxmoxUsername.account} onChange={(event) => updateUsername(event.target.value, proxmoxUsername.realm)} placeholder="root" /></label>
+                <div className="vnc-realm-options">
+                  <label><input type="radio" name={`realm-${vncEntryDraft.id}`} checked={proxmoxUsername.realm === "pam"} onChange={() => updateUsername(proxmoxUsername.account, "pam")} /> pam</label>
+                  <label><input type="radio" name={`realm-${vncEntryDraft.id}`} checked={proxmoxUsername.realm === "pve"} onChange={() => updateUsername(proxmoxUsername.account, "pve")} /> pve</label>
+                </div>
+              </div>
+              <label>PVE version<Dropdown label="PVE version" value={vncEntryDraft.proxmoxVersion} onChange={(nextVersion) => setVncEntryDraft({ ...vncEntryDraft, proxmoxVersion: nextVersion as ProxmoxVncEntry["proxmoxVersion"] })} options={[{ value: "auto", label: "Auto detect" }, { value: "6.4", label: "6.4" }, { value: "7.x", label: "7.x" }, { value: "8.x", label: "8.x" }, { value: "9.x", label: "9.x" }]} /></label>
+              <label className="tls-option"><input type="checkbox" checked={vncEntryDraft.ignoreTlsErrors} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, ignoreTlsErrors: event.target.checked })} /> Ignore TLS certificate errors</label>
+              <small className="field-help">Password, node, and VM selection are configured from the entry's own connection controls once this entry is selected in the VNC mode.</small>
+              <div className="modal-actions">
+                <button type="button" onClick={() => setVncEntryDialogOpen(false)}>Cancel</button>
+                {isEditingVncEntry(activeManagedWorkspace, vncEntryDraft) && <button type="button" className="session-delete" onClick={removeVncEntry}>Remove</button>}
+                <button type="button" className="confirm" onClick={saveVncEntry}>Save</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {terminalOpen && (
         <section className={`terminal-dock${terminalMaximized ? " terminal-maximized" : ""}`} style={{ height: `${terminalHeight}px` }} aria-label="Terminal panel">
 

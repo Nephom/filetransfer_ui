@@ -31,7 +31,6 @@
 .rest-main-pane-collapse-controls button:disabled { cursor: not-allowed; opacity: .38; }
 .rest-entry-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px 10px; border-bottom: 1px solid var(--color-border); }
 .rest-entry-heading .sidebar-label { padding: 0; }
-.rest-add-button { min-height: 26px !important; padding: 3px 7px !important; font-size: 11px !important; }
 .rest-entry-list { flex: 1 1 auto; min-height: 0; padding-top: 10px; overflow: auto; }
 .rest-entry-choice { display: none; }
 .rest-entry { display: flex; align-items: flex-start; gap: 9px; width: 100%; min-height: 0 !important; padding: 9px 8px !important; border: 1px solid transparent; border-radius: 5px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
@@ -42,14 +41,11 @@
 .rest-entry-copy { display: grid; flex: 1 1 auto; gap: 3px; min-width: 0; }
 .rest-entry-copy strong { overflow: hidden; color: var(--color-text); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .rest-entry-copy small { overflow: hidden; color: var(--color-text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.rest-entry-edit { flex: 0 0 auto; color: var(--color-primary); font-size: 10px; opacity: 0; }
-.rest-entry:hover .rest-entry-edit, .rest-entry.active .rest-entry-edit { opacity: 1; }
 .rest-empty, .rest-reader-empty { display: grid; gap: 6px; padding: 22px 12px; color: var(--color-text-muted); font-size: 12px; }
-.rest-entry-modal { width: min(420px, calc(100vw - 48px)); display: grid; gap: 10px; }
 .rest-editor-heading { display: flex; align-items: center; justify-content: space-between; color: var(--color-text); }
 .rest-editor-heading button { min-height: 26px; padding: 2px 8px; border-radius: 50%; }
-.rest-entry-modal label, .rest-auth-fields label { display: grid; gap: 4px; margin: 0; color: var(--color-text-muted); font-size: 11px; }
-.rest-entry-modal input, .rest-auth-fields input, .rest-auth-fields textarea { min-width: 0; margin-top: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }
+.rest-auth-fields label { display: grid; gap: 4px; margin: 0; color: var(--color-text-muted); font-size: 11px; }
+.rest-auth-fields input, .rest-auth-fields textarea { min-width: 0; margin-top: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }
 .rest-reader { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; background: var(--color-bg-panel); }
 .rest-reader-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 20px 10px; }
 .rest-reader-heading h1 { margin: 3px 0 0; color: var(--color-text); font-size: 20px; font-weight: 600; }
@@ -239,7 +235,6 @@
 .explorer.ui-layout-mobile .rest-entry-copy small { font-size: var(--ui-small-font-size); overflow-wrap: anywhere; white-space: normal; }
 .explorer.ui-layout-mobile .rest-entry-choice { display: inline-flex; width: 100%; margin-top: 10px; }
 .explorer.ui-layout-mobile .rest-entry-list { display: none; }
-.explorer.ui-layout-mobile .rest-entry-edit { opacity: 1; font-size: var(--ui-small-font-size); }
 .explorer.ui-layout-mobile .rest-reader-heading h1 { font-size: 22px; }
 .explorer.ui-layout-mobile .rest-auth-fields,
 .explorer.ui-layout-mobile .rest-login-config { grid-template-columns: 1fr; }
