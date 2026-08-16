@@ -1,4 +1,4 @@
-.mode-switcher { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; width: fit-content; max-width: 100%; min-width: 0; margin-left: 0; padding: 4px 7px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel); }
+.mode-switcher { display: flex; flex: 0 0 auto; align-items: center; gap: var(--space-2); width: fit-content; max-width: 100%; min-width: 0; margin-left: 0; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel); }
 .mode-buttons { display: flex; flex: 0 0 auto; gap: 3px; }
 .mode-switch-button { display: inline-flex; flex: 0 0 auto; min-width: 0; align-items: center; justify-content: center; gap: 7px; min-height: 28px; padding: 4px 8px; border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-text); background: var(--color-bg); cursor: pointer; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .mode-switch-button span { margin-left: 0; }
@@ -17,7 +17,7 @@
 .rest-mode .commandbar > :not([data-context-picker="true"]) { opacity: 0; pointer-events: none; max-width: 0; margin: 0; padding-left: 0; padding-right: 0; overflow: hidden; transform: translateY(-3px); transition: opacity .18s ease, max-width .22s ease, transform .18s ease, padding .22s ease; }
 .rest-mode .commandbar > [data-context-picker="true"] { margin-left: auto; }
 .rest-workspace { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; gap: 10px; padding: 10px 12px 12px; }
-.rest-entry-pane { display: flex; flex: 0 0 270px; flex-direction: column; min-width: 0; min-height: 0; padding: 14px 9px; overflow: hidden; border-right: 1px solid var(--color-border); background: var(--color-bg-panel); }
+.rest-entry-pane { display: flex; flex: 0 0 270px; flex-direction: column; min-width: 0; min-height: 0; padding: var(--space-3) var(--space-2); overflow: hidden; border-right: 1px solid var(--color-border); background: var(--color-bg-panel); }
 .rest-entry-pane-shell { display: flex; flex: 0 0 380px; min-width: 220px; min-height: 0; overflow: hidden; }
 .rest-entry-pane-shell > .rest-entry-pane { flex: 1 1 auto; }
 .rest-entry-pane-shell.rest-entry-pane-collapsed { display: none; }
@@ -25,8 +25,8 @@
 /* Mirrors .vnc-main-pane-collapse-controls in proxmox-vnc.css: the
    [<]/[>] buttons shown instead of the drag resizebar when
    collapseMainPaneEnabled is on. */
-.rest-main-pane-collapse-controls { display: flex; flex: 0 0 48px; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border-inline: 1px solid var(--color-border); background: var(--color-bg-panel); }
-.rest-main-pane-collapse-controls button { width: 40px; min-width: 40px; min-height: 40px !important; padding: 0 !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: 24px !important; line-height: 1; }
+.rest-main-pane-collapse-controls { display: flex; flex: 0 0 48px; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); border-inline: 1px solid var(--color-border); background: var(--color-bg-panel); }
+.rest-main-pane-collapse-controls button { width: var(--control-height-mobile); min-width: var(--control-height-mobile); min-height: var(--control-height-mobile) !important; padding: 0 !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: var(--icon-size-lg) !important; line-height: 1; }
 .rest-main-pane-collapse-controls button:not(:disabled):hover { color: var(--color-bg); background: var(--color-primary); border-color: var(--color-primary); }
 .rest-main-pane-collapse-controls button:disabled { cursor: not-allowed; opacity: .38; }
 .rest-entry-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px 10px; border-bottom: 1px solid var(--color-border); }
@@ -151,7 +151,7 @@
 .rest-success { color: #9ff2d2; background: color-mix(in srgb, var(--color-success) 14%, var(--color-bg-panel)); border-color: var(--color-success); }
 .rest-error { justify-content: space-between; color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel)); border-color: var(--color-danger); }
 .rest-error button { color: var(--color-text); background: color-mix(in srgb, var(--color-danger) 25%, var(--color-bg-panel)); border-color: var(--color-danger); }
-.rest-response { display: flex; flex: 0 0 auto; flex-direction: column; width: auto; height: min(50vh, 560px); min-height: 180px; margin: 0 20px 14px; border: 1px solid var(--color-border); border-radius: 6px; overflow: hidden; background: var(--color-bg); }
+.rest-response { display: flex; flex: 0 0 auto; flex-direction: column; width: auto; height: min(50vh, 560px); min-height: 180px; margin: 0 var(--space-5) var(--space-4); border: 1px solid var(--color-border); border-radius: 6px; overflow: hidden; background: var(--color-bg); }
 .rest-response-resize-handle { height: 8px; margin: 0 20px; border: 1px solid var(--color-border); border-bottom: 0; border-radius: 6px 6px 0 0; background: var(--color-bg); cursor: row-resize; touch-action: none; }
 .rest-response-resize-handle:hover, .rest-response-resize-handle:focus-visible { background: var(--color-primary); outline: 0; }
 .rest-response-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 9px 11px; border-bottom: 1px solid var(--color-border); color: var(--color-text-muted); font-size: 11px; }
@@ -163,7 +163,7 @@
 .rest-view-tabs button:hover, .rest-view-tabs button.active { color: var(--color-text); background: var(--color-bg-panel); border-bottom-color: var(--color-primary); }
 .rest-code { flex: 1 1 auto; min-height: 180px; margin: 0; padding: 14px; overflow: auto; color: var(--color-text); background: var(--color-bg); font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; }
 .rest-json-view { flex: 1 1 auto; padding: 7px; overflow: auto; }
-.rest-json-row { display: grid; grid-template-columns: minmax(120px, 1fr) 80px minmax(100px, 1fr); gap: 10px; width: 100%; min-height: 34px !important; padding: 7px 9px !important; border: 1px solid transparent; border-bottom-color: var(--color-border); color: var(--color-text); background: transparent; text-align: left; }
+.rest-json-row { display: grid; grid-template-columns: minmax(120px, 1fr) 80px minmax(100px, 1fr); gap: var(--space-2); width: 100%; min-height: var(--ui-button-height, var(--control-height-base)) !important; padding: var(--space-2) var(--space-2) !important; border: 1px solid transparent; border-bottom-color: var(--color-border); color: var(--color-text); background: transparent; text-align: left; }
 .rest-json-row:hover { background: var(--color-bg-panel); border-color: var(--color-border); }
 .rest-json-row small { color: var(--color-primary); }
 .rest-json-row code { overflow: hidden; color: var(--color-primary); font: inherit; text-overflow: ellipsis; white-space: nowrap; }
@@ -230,18 +230,18 @@
 .explorer.ui-layout-mobile .rest-workspace { gap: 8px; padding: 8px; }
 .explorer.ui-layout-mobile .rest-entry-pane-shell { flex-basis: 300px; }
 .explorer.ui-layout-mobile .rest-entry-pane { flex-basis: 260px; padding: 12px 10px; }
-.explorer.ui-layout-mobile .rest-entry { min-height: 44px !important; padding: 10px !important; }
+.explorer.ui-layout-mobile .rest-entry { min-height: var(--control-height-mobile-lg) !important; padding: var(--space-2) !important; }
 .explorer.ui-layout-mobile .rest-entry-copy strong { font-size: var(--ui-font-size); }
 .explorer.ui-layout-mobile .rest-entry-copy small { font-size: var(--ui-small-font-size); overflow-wrap: anywhere; white-space: normal; }
 .explorer.ui-layout-mobile .rest-entry-choice { display: inline-flex; width: 100%; margin-top: 10px; }
 .explorer.ui-layout-mobile .rest-entry-list { display: none; }
-.explorer.ui-layout-mobile .rest-reader-heading h1 { font-size: 22px; }
+.explorer.ui-layout-mobile .rest-reader-heading h1 { font-size: var(--mobile-ui-heading-font, 20px); }
 .explorer.ui-layout-mobile .rest-auth-fields,
 .explorer.ui-layout-mobile .rest-login-config { grid-template-columns: 1fr; }
 .explorer.ui-layout-mobile .rest-url-row { flex-wrap: wrap; }
 .explorer.ui-layout-mobile .rest-url-row input { flex-basis: calc(100% - 93px); }
 .explorer.ui-layout-mobile .rest-action-button,
-.explorer.ui-layout-mobile .rest-link-button { min-height: 44px !important; }
+.explorer.ui-layout-mobile .rest-link-button { min-height: var(--control-height-mobile-lg) !important; }
 .explorer.ui-layout-mobile .rest-response { min-height: 220px; }
 .explorer.ui-layout-mobile .rest-vendor-choice { display: inline-flex; }
 .explorer.ui-layout-mobile .rest-vendor-capsule { display: none; }
