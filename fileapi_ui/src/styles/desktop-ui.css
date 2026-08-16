@@ -55,7 +55,6 @@
 }
 
 :where(.explorer) input,
-:where(.explorer) select,
 :where(.explorer) textarea,
 :where(.explorer) .palette-select {
   min-height: var(--ui-control-height);
@@ -65,12 +64,11 @@
 
 :where(.explorer.ui-layout-mobile) button,
 :where(.explorer.ui-layout-mobile) input,
-:where(.explorer.ui-layout-mobile) select,
 :where(.explorer.ui-layout-mobile) textarea {
   line-height: 1.35;
 }
 
-:where(.explorer) :is(button, input, select, textarea):focus-visible {
+:where(.explorer) :is(button, input, textarea):focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }

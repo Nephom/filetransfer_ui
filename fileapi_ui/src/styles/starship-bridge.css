@@ -209,7 +209,6 @@ body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI",
 .search:focus,
 .palette-select:focus,
 input:focus,
-select:focus,
 textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99, 230, 255, .16), 0 0 18px rgba(99, 230, 255, .1); outline: none; }
 
 .desktop-workspace { gap: 10px; padding: 10px 12px 12px; }
@@ -458,23 +457,6 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .session-card,
 .archive-format-option {
   background: rgba(3, 19, 33, .28);
-}
-.settings-level select {
-  color: var(--bridge-text);
-  border-color: var(--bridge-line);
-  background: linear-gradient(135deg, rgba(22, 79, 105, .42), rgba(3, 18, 32, .3));
-  box-shadow: var(--bridge-glass-shadow), var(--bridge-inset);
-  backdrop-filter: blur(26px) saturate(160%);
-}
-.settings-level select:hover,
-.settings-level select:focus {
-  border-color: var(--bridge-cyan);
-  background: linear-gradient(135deg, rgba(34, 112, 143, .52), rgba(4, 29, 48, .4));
-}
-.settings-level select option,
-.settings-level select optgroup {
-  color: var(--bridge-text);
-  background: #071d2e;
 }
 
 @keyframes bridge-panel-in { from { opacity: 0; transform: translateY(8px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }

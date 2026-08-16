@@ -58,7 +58,7 @@
 :where(.explorer) .rest-auth-fields input,
 :where(.explorer) .rest-auth-fields textarea,
 :where(.explorer) .rest-url-row input,
-:where(.explorer) .rest-url-row select,
+:where(.explorer) .rest-url-row .dropdown-trigger,
 :where(.explorer) .rest-body-editor textarea,
 :where(.explorer) .rest-query-row input,
 :where(.explorer) .rest-action-dialog textarea,

@@ -9,7 +9,7 @@
 .settings-check small { line-height: 1.25; overflow-wrap: anywhere; }
 .settings-theme-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 220px) auto; align-items: center; gap: var(--ui-control-gap); }
 .settings-theme-row > span { min-width: 0; }
-.settings-theme-row select { width: 100%; min-width: 0; margin: 0; }
+.settings-theme-row .dropdown { width: 100%; min-width: 0; margin: 0; }
 .theme-accent-control { display: flex; align-items: center; gap: var(--ui-control-gap); margin: 0; white-space: nowrap; }
 .theme-accent-control input[type="color"] { width: 64px; min-width: 64px; height: var(--ui-control-height); margin: 0; padding: var(--space-1); }
 /* T-214: inline warning shown when the chosen accent color visually

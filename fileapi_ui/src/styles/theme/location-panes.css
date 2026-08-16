@@ -77,7 +77,7 @@
 :where(.explorer) .terminal-inline-note,
 :where(.explorer) .terminal-placeholder { color: var(--color-text-muted); }
 :where(.explorer) .palette-select,
-:where(.explorer) .ssh-controls select,
+:where(.explorer) .ssh-controls .dropdown-trigger,
 :where(.explorer) .ssh-profile-form input { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); }
 :where(.explorer) .palette-select:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 12%, var(--color-bg-panel-strong)); }
 :where(.explorer) .terminal-restore { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel); }

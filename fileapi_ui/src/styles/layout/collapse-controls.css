@@ -1,6 +1,9 @@
 /* Explorer layout, part 8: Location's left/right pane-collapse control
- * rail, native <select> styling, and the modal-cover/modal shell. Split
- * out of the former monolithic explorer-parity.css (T-202 follow-up). See
+ * rail and the modal-cover/modal shell. Split out of the former monolithic
+ * explorer-parity.css (T-202 follow-up). Native <select> styling was
+ * removed here (T-080): every native <select> in the app was replaced by
+ * the shared ui/Dropdown.tsx component, so a bare `select {...}` rule no
+ * longer matches anything and would only be dead weight. See
  * styles/layout/README.md. */
 
 /* These collapse-control rules must stay outside a media query: the
@@ -25,12 +28,6 @@
 .desktop-workspace.pane-collapse-right .location-main-pane-collapse-controls button:last-child { opacity: .38; }
 .explorer.ui-layout-mobile .location-main-pane-collapse-controls { flex-basis: 52px; }
 .explorer.ui-layout-mobile .location-main-pane-collapse-controls button { width: var(--control-height-mobile-lg); min-width: var(--control-height-mobile-lg); min-height: var(--control-height-mobile-lg) !important; font-size: var(--icon-size-lg) !important; }
-
-/* Match native controls to the LOCATION menu palette. */
-select { color: var(--color-text); background-color: var(--color-bg-panel-strong); border: 1px solid var(--color-border); }
-select option, select optgroup { color: var(--color-text); background-color: var(--color-bg-panel-strong); }
-select option:checked { color: var(--color-text); background-color: var(--color-bg-panel); }
-select:hover, select:focus { border-color: var(--color-primary); outline: none; }
 
 /* Sessions and the queue must float over the workspace and terminal, never join their flex flow. */
 .modal-cover { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(0, 6, 14, .72); backdrop-filter: blur(7px); }

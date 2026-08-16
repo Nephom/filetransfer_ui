@@ -100,7 +100,8 @@
 .token-path-help-close { position: absolute; top: 6px; right: 6px; min-height: 22px !important; padding: 1px 7px !important; border: 1px solid var(--color-border); border-radius: 50%; color: var(--color-primary); background: var(--color-bg-panel); }
 .token-path-help-close:hover { color: var(--color-bg); background: var(--color-primary); }
 .rest-url-row { display: flex; gap: 7px; padding: 0 20px 8px; }
-.rest-url-row select { width: 86px; flex: 0 0 auto; color: var(--color-primary); background: var(--color-bg-panel-strong); border-color: var(--color-border); font-weight: 700; }
+.rest-url-row .dropdown { width: 86px; flex: 0 0 auto; }
+.rest-url-row .dropdown-trigger { color: var(--color-primary); background: var(--color-bg-panel-strong); border-color: var(--color-border); font-weight: 700; }
 .rest-url-row input { min-width: 0; flex: 1 1 auto; margin: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .rest-url-row button { flex: 0 0 auto; min-width: 76px; }
 .rest-body-editor { display: grid; gap: 4px; margin: 0 20px 8px; color: var(--color-text-muted); font-size: 11px; }
@@ -216,7 +217,8 @@
 .hardware-summary-tables { display: grid; min-width: 0; max-width: 100%; gap: 12px; max-height: min(68vh, 680px); overflow: auto; padding-right: 2px; }
 .hardware-summary-table { display: grid; min-width: 0; gap: 5px; }.hardware-summary-table h3 { display: flex; justify-content: space-between; margin: 0; color: var(--color-text); font-size: 13px; }.hardware-summary-table h3 span { color: var(--color-text-muted); font-size: 11px; font-weight: 400; }.hardware-summary-table .rest-hardware-table-wrap { overflow-x: auto; }.hardware-summary-table table { min-width: max-content; }.hardware-summary-table th, .hardware-summary-table td { min-width: 100px; white-space: nowrap; }
 .rest-iml-controls { display: flex; flex-wrap: wrap; gap: 6px; }
-.rest-iml-controls input, .rest-iml-controls select { min-width: 110px; min-height: 28px; color: var(--color-text); background: rgba(7, 25, 42, .76); border-color: rgba(155, 232, 255, .28); }
+.rest-iml-controls input, .rest-iml-controls .dropdown { min-width: 110px; }
+.rest-iml-controls input, .rest-iml-controls .dropdown-trigger { min-height: 28px; color: var(--color-text); background: rgba(7, 25, 42, .76); border-color: rgba(155, 232, 255, .28); }
 .rest-iml-controls button { min-height: 28px !important; padding: 4px 8px !important; color: var(--color-primary); background: rgba(16, 45, 73, .76); border-color: rgba(155, 232, 255, .28); font-size: 11px !important; }
 .rest-iml-terminal { min-height: 260px; max-height: min(52vh, 520px); overflow: auto; padding: 10px; border: 1px solid rgba(155, 232, 255, .22); border-radius: 8px; color: var(--color-text); background: var(--color-bg); font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .rest-iml-terminal div { padding: 2px 0; border-bottom: 1px solid rgba(155, 232, 255, .07); }
@@ -262,7 +264,7 @@
 .rest-bios-editor-card h3 { margin: 0; color: var(--color-text); font-size: 16px; }
 .rest-bios-editor-card p { margin: 0; color: var(--color-text-muted); font-size: 12px; line-height: 1.45; }
 .rest-bios-current { display: flex; flex-wrap: wrap; gap: 12px; color: var(--color-primary); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
-.rest-bios-editor-card select, .rest-bios-editor-card input:not([type="checkbox"]) { min-height: 36px; color: var(--color-text); background: var(--color-bg); border-color: var(--color-primary); }
+.rest-bios-editor-card .dropdown-trigger, .rest-bios-editor-card input:not([type="checkbox"]) { min-height: 36px; color: var(--color-text); background: var(--color-bg); border-color: var(--color-primary); }
 .rest-resource-catalog { width: min(720px, 100%); }
 .rest-resource-catalog-list { display: grid; min-width: 0; max-height: min(62vh, 560px); overflow: auto; gap: 6px; }
 .rest-resource-catalog-list button { display: grid; min-width: 0; gap: 4px; padding: 10px; border: 1px solid rgba(155, 232, 255, .22); border-radius: 7px; color: var(--color-text); background: rgba(16, 45, 73, .55); text-align: left; }

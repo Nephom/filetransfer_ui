@@ -10,7 +10,6 @@
 
 :where(.explorer) button,
 :where(.explorer) input,
-:where(.explorer) select,
 :where(.explorer) textarea {
   border-color: var(--color-border);
   color: var(--color-text);
@@ -39,7 +38,6 @@
 
 :where(.explorer) .modal,
 :where(.explorer) .modal input,
-:where(.explorer) .modal select,
 :where(.explorer) .modal textarea {
   border-color: var(--color-border);
   color: var(--color-text);
