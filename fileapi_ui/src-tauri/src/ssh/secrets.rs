@@ -8,8 +8,14 @@
 // There is deliberately no plaintext or Base64 fallback. If the native
 // credential store is unavailable, saving/loading the secret fails explicitly
 // instead of silently weakening the protection of credentials.
-
-const SERVICE_NAME: &str = "com.nephom.filetransfer.ssh";
+//
+// One consistent service name for every credential this app stores (SSH
+// passwords, REST secrets, Proxmox secrets -- all keyed by prefix under
+// this same service, see save_rest_secret/save_proxmox_secret below), so
+// Keychain Access shows one recognizable name instead of a mix of legacy
+// identifiers. No backward-compat migration for entries saved under any
+// earlier service name -- this app has no shipped users yet.
+const SERVICE_NAME: &str = "com.ndfnet.nFterm";
 fn keyring_entry(entry_id: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE_NAME, entry_id)
         .map_err(|error| format!("Unable to access the OS credential store: {error}"))
