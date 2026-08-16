@@ -16,6 +16,7 @@ import { assertQueueTransition } from "./queue/state";
 import { QueueScheduler } from "./queue/scheduler";
 import { QueueStore } from "./queue/store";
 import { selectActiveQueueItems, selectQueueHistory } from "./queue/selectors";
+import { ChevronDownIcon } from "./ui/icons";
 // `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
 // imported inside the terminal-setup effect below instead of eagerly here:
 // they're only ever needed once the user actually opens the SSH terminal
@@ -477,7 +478,7 @@ function PaletteSelect({
         onClick={() => setOpen((current) => !current)}
       >
         <span>{selected?.label || label}</span>
-        <span className="location-chevron">⌄</span>
+        <ChevronDownIcon className="location-chevron" />
       </button>
       {open && (
         <div
