@@ -48,13 +48,15 @@ const emptyEntry = (): ProxmoxVncEntry => ({
 });
 
 const endpointParts = (baseUrl: string) => {
-  try {
-    const url = new URL(baseUrl);
-    return { host: url.hostname, port: Number(url.port) || 8006 };
-  } catch {
-    const match = baseUrl.match(/^https:\/\/([^/:]+)(?::(\d+))?/i);
-    return { host: match?.[1] || "", port: Number(match?.[2]) || 8006 };
-  }
+  // Pure syntactic extraction -- deliberately never routes through `new
+  // URL()`. New URL()'s host parser silently canonicalizes any all-digit or
+  // partial-numeric host into a full IPv4 address (e.g. typing "0" becomes
+  // "0.0.0.0"), and since this runs again on every keystroke the field would
+  // re-snap to that canonical form on every render, making it impossible to
+  // edit or delete. A plain regex just returns whatever text is actually
+  // there, so the field round-trips losslessly no matter what's mid-typed.
+  const match = baseUrl.match(/^https:\/\/(\[[0-9a-fA-F:]*\]|[^/:]*)(?::(\d*))?/i);
+  return { host: match?.[1] ?? "", port: match?.[2] ?? "" };
 };
 
 const usernameParts = (username: string) => {
@@ -66,16 +68,17 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries, pa
   const [editing, setEditing] = useState<ProxmoxVncEntry | null>(null);
   const save = () => {
     const endpoint = editing ? endpointParts(editing.baseUrl) : null;
+    const port = endpoint ? Number(endpoint.port) : 0;
     const username = editing ? usernameParts(editing.username) : null;
-    if (!editing || !editing.name.trim() || !endpoint?.host || endpoint.port < 1 || endpoint.port > 65535 || !username?.account.trim()) return;
+    if (!editing || !editing.name.trim() || !endpoint?.host || !port || port < 1 || port > 65535 || !username?.account.trim()) return;
     const next = entries.some((item) => item.id === editing.id)
       ? entries.map((item) => item.id === editing.id ? editing : item)
       : [...entries, editing];
     onChangeEntries(next); onSelectEntry(editing.id); setEditing(null);
   };
-  const endpoint = editing ? endpointParts(editing.baseUrl) : { host: "", port: 8006 };
+  const endpoint = editing ? endpointParts(editing.baseUrl) : { host: "", port: "" };
   const proxmoxUsername = editing ? usernameParts(editing.username) : { account: "root", realm: "pam" };
-  const updateEndpoint = (host: string, port: number) => editing && setEditing({ ...editing, baseUrl: `https://${host}:${port || 8006}` });
+  const updateEndpoint = (host: string, port: string) => editing && setEditing({ ...editing, baseUrl: `https://${host}:${port}` });
   const updateUsername = (account: string, realm: string) => editing && setEditing({ ...editing, username: `${account}@${realm}` });
   return <aside className="vnc-entry-pane">
     <div className="vnc-entry-heading"><span className="sidebar-label">PROXMOX VNC ENTRIES</span><button type="button" className="confirm vnc-add-button" onClick={() => setEditing(emptyEntry())}>+ Add entry</button></div>
@@ -90,10 +93,10 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onChangeEntries, pa
       <strong>{authenticated ? "Proxmox session active" : "Entry credentials"}</strong>
       {authenticated ? <button type="button" onClick={onLogout}>Logout</button> : <button type="button" className="confirm" onClick={onLogin} disabled={loading || !password}>{loading ? "Logging in..." : "Login"}</button>}
     </div>
-    {editing && createPortal(<div className="floating-dialog-layer" role="presentation"><div className="vnc-entry-editor" role="dialog" aria-modal="true" aria-labelledby="vnc-entry-editor-title">
-      <div className="vnc-editor-heading"><strong id="vnc-entry-editor-title">{entries.some((item) => item.id === editing.id) ? "Edit VNC entry" : "Add VNC entry"}</strong><button type="button" onClick={() => setEditing(null)} aria-label="Close editor">×</button></div>
+    {editing && createPortal(<div className="modal-cover modal-layer-top" role="presentation" onMouseDown={() => setEditing(null)}><div className="modal vnc-entry-modal" role="dialog" aria-modal="true" aria-labelledby="vnc-entry-editor-title" onMouseDown={(event) => event.stopPropagation()}>
+      <h2 id="vnc-entry-editor-title">{entries.some((item) => item.id === editing.id) ? "Edit VNC entry" : "Add VNC entry"}</h2>
       <label>Name<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
-      <div className="vnc-form-grid"><label>Proxmox host<input value={endpoint.host} onChange={(event) => updateEndpoint(event.target.value, endpoint.port)} placeholder="proxmox.example.com" /></label><label>Port<input type="number" min="1" max="65535" value={endpoint.port} onChange={(event) => updateEndpoint(endpoint.host, Number(event.target.value))} /></label></div>
+      <div className="vnc-form-grid"><label>Proxmox host<input value={endpoint.host} onChange={(event) => updateEndpoint(event.target.value, endpoint.port)} placeholder="proxmox.example.com" /></label><label>Port<input type="number" min="1" max="65535" value={endpoint.port} onChange={(event) => updateEndpoint(endpoint.host, event.target.value)} placeholder="8006" /></label></div>
       <div className="vnc-username-field"><label>Username<input value={proxmoxUsername.account} onChange={(event) => updateUsername(event.target.value, proxmoxUsername.realm)} placeholder="root" /></label><div className="vnc-realm-options"><label><input type="radio" name={`realm-${editing.id}`} checked={proxmoxUsername.realm === "pam"} onChange={() => updateUsername(proxmoxUsername.account, "pam")} /> pam</label><label><input type="radio" name={`realm-${editing.id}`} checked={proxmoxUsername.realm === "pve"} onChange={() => updateUsername(proxmoxUsername.account, "pve")} /> pve</label></div></div>
       <label>Password<input type="password" value={password} onChange={(event) => onPasswordChange(event.target.value)} /></label>
       <div className="vnc-form-grid"><label>PVE version<Dropdown label="PVE version" value={editing.proxmoxVersion} onChange={(nextVersion) => setEditing({ ...editing, proxmoxVersion: nextVersion as ProxmoxVersion })} options={[{ value: "auto", label: "Auto detect" }, { value: "6.4", label: "6.4" }, { value: "7.x", label: "7.x" }, { value: "8.x", label: "8.x" }, { value: "9.x", label: "9.x" }]} /></label><div className="vnc-entry-login">{authenticated ? <><span>Session active</span><button type="button" onClick={onLogout}>Logout</button></> : <button type="button" className="confirm" onClick={onLogin} disabled={loading || !password}>{loading ? "Logging in..." : "Login"}</button>}</div></div>
