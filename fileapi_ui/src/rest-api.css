@@ -24,6 +24,7 @@
 .rest-entry-heading .sidebar-label { padding: 0; }
 .rest-add-button { min-height: 26px !important; padding: 3px 7px !important; font-size: 11px !important; }
 .rest-entry-list { flex: 1 1 auto; min-height: 0; padding-top: 10px; overflow: auto; }
+.rest-entry-choice { display: none; }
 .rest-entry { display: flex; align-items: flex-start; gap: 9px; width: 100%; min-height: 0 !important; padding: 9px 8px !important; border: 1px solid transparent; border-radius: 5px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
 .rest-entry:hover { background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); border-color: var(--color-border); }
 .rest-entry.active { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-panel-strong)); box-shadow: inset 3px 0 var(--color-primary); }
@@ -48,6 +49,7 @@
 .rest-vendor-capsule button { min-height: 25px !important; padding: 3px 8px !important; border: 0; border-radius: 999px; color: var(--color-text-muted); background: transparent; font-size: 10px !important; font-weight: 700; letter-spacing: .03em; opacity: 0; animation: rest-vendor-button-in .42s cubic-bezier(.22, 1.28, .34, 1) forwards; transition: transform .2s ease, filter .2s ease, background .2s ease; }
 .rest-vendor-capsule button:nth-child(2) { animation-delay: .05s; }
 .rest-vendor-capsule button:nth-child(3) { animation-delay: .1s; }
+.rest-vendor-choice { display: none; }
 .rest-vendor-capsule button:hover { transform: translateY(-1px) scale(1.04); filter: brightness(1.1); }
 .rest-vendor-capsule button:hover, .rest-vendor-capsule button.selected { color: var(--color-bg); background: rgba(155, 239, 255, .9); box-shadow: 0 2px 9px rgba(107, 229, 255, .25); }
 .rest-session-status { padding: 5px 8px; border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-text-muted); font-size: 11px; white-space: nowrap; }
@@ -218,6 +220,34 @@
 .rest-bios-toolbar { display: flex; flex-wrap: wrap; gap: 6px; }.rest-bios-toolbar input { flex: 1 1 220px; min-width: 0; color: var(--color-text); background: rgba(7, 25, 42, .76); border-color: rgba(155, 232, 255, .28); }.rest-bios-toolbar button { min-height: 28px !important; padding: 4px 8px !important; color: var(--color-primary); background: rgba(16, 45, 73, .76); border-color: rgba(155, 232, 255, .28); font-size: 11px !important; }
 .rest-bios-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: min(48vh, 460px); overflow: auto; }.rest-bios-grid label { display: grid; gap: 4px; margin: 0; color: var(--color-text-muted); font-size: 11px; }.rest-bios-grid input { min-width: 0; color: var(--color-text); background: rgba(7, 25, 42, .76); border-color: rgba(155, 232, 255, .28); }.rest-bios-grid input[type="checkbox"] { width: 18px; }
 @media (max-width: 600px) { .rest-bios-grid { grid-template-columns: 1fr; } }
+
+/* Mobile profile is a readable, mouse-friendly compact workspace, not a touch-only mode. */
+.explorer.ui-layout-mobile .rest-workspace { gap: 8px; padding: 8px; }
+.explorer.ui-layout-mobile .rest-entry-pane-shell { flex-basis: 300px; }
+.explorer.ui-layout-mobile .rest-entry-pane { flex-basis: 260px; padding: 12px 10px; }
+.explorer.ui-layout-mobile .rest-entry { min-height: 44px !important; padding: 10px !important; }
+.explorer.ui-layout-mobile .rest-entry-copy strong { font-size: var(--ui-font-size); }
+.explorer.ui-layout-mobile .rest-entry-copy small { font-size: var(--ui-small-font-size); overflow-wrap: anywhere; white-space: normal; }
+.explorer.ui-layout-mobile .rest-entry-choice { display: inline-flex; width: 100%; margin-top: 10px; }
+.explorer.ui-layout-mobile .rest-entry-list { display: none; }
+.explorer.ui-layout-mobile .rest-entry-edit { opacity: 1; font-size: var(--ui-small-font-size); }
+.explorer.ui-layout-mobile .rest-reader-heading h1 { font-size: 22px; }
+.explorer.ui-layout-mobile .rest-auth-fields,
+.explorer.ui-layout-mobile .rest-login-config { grid-template-columns: 1fr; }
+.explorer.ui-layout-mobile .rest-url-row { flex-wrap: wrap; }
+.explorer.ui-layout-mobile .rest-url-row input { flex-basis: calc(100% - 93px); }
+.explorer.ui-layout-mobile .rest-action-button,
+.explorer.ui-layout-mobile .rest-link-button { min-height: 44px !important; }
+.explorer.ui-layout-mobile .rest-response { min-height: 220px; }
+.explorer.ui-layout-mobile .rest-vendor-choice { display: inline-flex; }
+.explorer.ui-layout-mobile .rest-vendor-capsule { display: none; }
+
+@media (max-width: 900px), (max-height: 640px) {
+  .explorer.ui-layout-mobile .rest-workspace { flex-direction: column; overflow: auto; }
+  .explorer.ui-layout-mobile .rest-entry-pane-shell { order: 2; flex: 0 0 auto; max-height: min(34vh, 250px); }
+  .explorer.ui-layout-mobile .rest-entry-pane { flex: 0 0 auto; border-right: 0; border-top: 1px solid var(--color-border); }
+  .explorer.ui-layout-mobile .rest-reader { order: 1; min-height: 0; overflow: visible; }
+}
 .rest-reader[data-raw-request-open="false"] > .rest-url-row, .rest-reader[data-raw-request-open="false"] > .rest-body-editor, .rest-reader[data-raw-request-open="false"] > .rest-query-editor { display: none; }
 .rest-hardware-dialog:has(#firmware-title) .rest-hardware-toolbar > button:not(:first-of-type) { display: none; }
 .rest-hardware-dialog:has(#firmware-title) > .modal-actions > .danger { font-size: 0; }
@@ -236,4 +266,4 @@
 .rest-resource-catalog-list code { overflow-wrap: anywhere; color: var(--color-primary); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
 @keyframes rest-vendor-button-in { from { opacity: 0; transform: translateY(-7px) scale(.78); filter: blur(5px); } to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); } }
 @media (prefers-reduced-motion: reduce) { .rest-vendor-capsule button { opacity: 1; animation: none; transition: none; } }
-.rest-entry-pane, .rest-reader { border: 1px solid var(--bridge-line); border-radius: var(--bridge-radius); background: linear-gradient(135deg, rgba(112, 226, 246, .12), transparent 30%), linear-gradient(315deg, rgba(49, 139, 255, .12), transparent 46%), rgba(8, 27, 46, .28); box-shadow: var(--bridge-glass-shadow), var(--bridge-inset); backdrop-filter: blur(18px) saturate(125%); }
+.rest-entry-pane, .rest-reader { border: 1px solid var(--color-border); border-radius: var(--radius-md); background: linear-gradient(135deg, rgba(112, 226, 246, .12), transparent 30%), linear-gradient(315deg, rgba(49, 139, 255, .12), transparent 46%), rgba(8, 27, 46, .28); box-shadow: var(--shadow-panel), var(--shadow-inset); backdrop-filter: blur(18px) saturate(125%); }

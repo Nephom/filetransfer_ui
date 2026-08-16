@@ -21,14 +21,32 @@
   --space-5: 24px;
   --space-6: 32px;
 
+  /* Fluid values are the base for Auto profile sizing. */
+  --font-size-base: clamp(12px, calc(10px + 0.35vmin), 16px);
+  --font-size-small: clamp(10px, calc(8px + 0.3vmin), 14px);
+  --font-size-heading: clamp(20px, calc(16px + 0.6vmin), 28px);
+  --font-size-mobile-base: 16px;
+  --font-size-mobile-small: 14px;
+  --control-height-base: clamp(30px, calc(24px + 0.7vmin), 40px);
+  --button-height-base: var(--control-height-base);
+  --control-gap-base: clamp(6px, calc(4px + 0.25vmin), 10px);
+  --panel-padding-base: clamp(9px, calc(7px + 0.4vmin), 15px);
+  --control-focus-ring: 2px solid var(--color-primary);
+  --icon-size: 18px;
+
   --radius-sm: var(--bridge-radius-sm, 6px);
   --radius-md: var(--bridge-radius, 10px);
   --shadow-panel: var(--bridge-glass-shadow, 0 18px 50px rgba(0, 0, 0, .42));
   --shadow-inset: var(--bridge-inset, inset 0 1px 0 rgba(214, 248, 255, .12));
   --shadow-glow: var(--bridge-glow-shadow, 0 0 18px color-mix(in srgb, var(--color-primary) 28%, transparent));
   --transition-fast: var(--bridge-transition, 180ms ease-out);
+  /* Named motion scale: every interactive hover/focus transition should
+     reference one of these two durations instead of a one-off value. */
+  --motion-fast: var(--transition-fast);
+  --motion-base: 240ms ease-out;
   --font-family-ui: "Segoe UI", system-ui, sans-serif;
   --font-family-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+  --dropdown-menu-gap: 6px;
   --z-dropdown: 400;
   --z-context: 450;
   --z-modal: 500;

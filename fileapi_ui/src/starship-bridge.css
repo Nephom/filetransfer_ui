@@ -27,7 +27,7 @@
 }
 
 html, body, #root { background: var(--bridge-void); }
-body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif; }
+body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI", system-ui, sans-serif); }
 
 .explorer,
 .login {
@@ -108,10 +108,12 @@ body { color: var(--bridge-text); font-family: "Segoe UI", system-ui, sans-serif
   overflow: hidden;
 }
 .titlebar-brand, .titlebar-main, .titlebar-account { min-width: 0; display: flex; align-items: center; }
+.explorer > .titlebar { overflow: visible; }
 .titlebar-brand { gap: 10px; overflow: hidden; }
 .titlebar-brand > span { margin-left: 0; }
 .titlebar-brand .app-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .titlebar-main { justify-content: center; }
+.titlebar-main { position: relative; }
 .titlebar-main .mode-switcher { width: fit-content; max-width: 100%; min-width: 0; margin-left: 0; flex: 0 0 auto; }
 .titlebar-account { justify-content: flex-end; }
 .titlebar-account .account-control { margin-left: 0; }
