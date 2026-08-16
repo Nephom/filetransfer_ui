@@ -31,43 +31,43 @@
    declared once in styles/mobile-ui.css, not duplicated here. */
 
 .explorer.ui-density-compact {
-  --ui-font-size: 12px;
-  --ui-small-font-size: 10px;
-  --ui-button-height: 27px;
-  --ui-control-height: 27px;
-  --ui-button-padding-x: 7px;
+  --ui-font-size: 11px;
+  --ui-small-font-size: 9px;
+  --ui-button-height: 26px;
+  --ui-control-height: 26px;
+  --ui-button-padding-x: 6px;
   --ui-button-padding-y: 3px;
-  --ui-control-gap: 5px;
-  --ui-section-gap: 7px;
-  --ui-panel-padding: 9px;
-  --ui-terminal-min-height: 170px;
+  --ui-control-gap: 4px;
+  --ui-section-gap: 6px;
+  --ui-panel-padding: 8px;
+  --ui-terminal-min-height: 165px;
 }
 
 .explorer.ui-density-comfortable {
-  --ui-font-size: 14px;
-  --ui-small-font-size: 12px;
-  --ui-button-height: 34px;
-  --ui-control-height: 34px;
-  --ui-button-padding-x: 11px;
-  --ui-button-padding-y: 6px;
-  --ui-control-gap: 8px;
-  --ui-section-gap: 13px;
-  --ui-panel-padding: 15px;
-  --ui-terminal-min-height: 200px;
+  --ui-font-size: 16px;
+  --ui-small-font-size: 13px;
+  --ui-button-height: 38px;
+  --ui-control-height: 38px;
+  --ui-button-padding-x: 14px;
+  --ui-button-padding-y: 9px;
+  --ui-control-gap: 10px;
+  --ui-section-gap: 16px;
+  --ui-panel-padding: 18px;
+  --ui-terminal-min-height: 220px;
 }
 
 @media (max-width: 1100px), (max-height: 760px) {
   .explorer.ui-density-auto {
-    --ui-font-size: 12px;
-    --ui-small-font-size: 10px;
-    --ui-button-height: 27px;
-    --ui-control-height: 27px;
-    --ui-button-padding-x: 7px;
+    --ui-font-size: 11px;
+    --ui-small-font-size: 9px;
+    --ui-button-height: 26px;
+    --ui-control-height: 26px;
+    --ui-button-padding-x: 6px;
     --ui-button-padding-y: 3px;
-    --ui-control-gap: 5px;
-    --ui-section-gap: 7px;
-    --ui-panel-padding: 9px;
-    --ui-terminal-min-height: 170px;
+    --ui-control-gap: 4px;
+    --ui-section-gap: 6px;
+    --ui-panel-padding: 8px;
+    --ui-terminal-min-height: 165px;
   }
 }
 

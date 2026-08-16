@@ -20,6 +20,15 @@
 .rest-entry-pane { display: flex; flex: 0 0 270px; flex-direction: column; min-width: 0; min-height: 0; padding: 14px 9px; overflow: hidden; border-right: 1px solid var(--color-border); background: var(--color-bg-panel); }
 .rest-entry-pane-shell { display: flex; flex: 0 0 380px; min-width: 220px; min-height: 0; overflow: hidden; }
 .rest-entry-pane-shell > .rest-entry-pane { flex: 1 1 auto; }
+.rest-entry-pane-shell.rest-entry-pane-collapsed { display: none; }
+
+/* Mirrors .vnc-main-pane-collapse-controls in proxmox-vnc.css: the
+   [<]/[>] buttons shown instead of the drag resizebar when
+   collapseMainPaneEnabled is on. */
+.rest-main-pane-collapse-controls { display: flex; flex: 0 0 48px; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border-inline: 1px solid var(--color-border); background: var(--color-bg-panel); }
+.rest-main-pane-collapse-controls button { width: 40px; min-width: 40px; min-height: 40px !important; padding: 0 !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: 24px !important; line-height: 1; }
+.rest-main-pane-collapse-controls button:not(:disabled):hover { color: var(--color-bg); background: var(--color-primary); border-color: var(--color-primary); }
+.rest-main-pane-collapse-controls button:disabled { cursor: not-allowed; opacity: .38; }
 .rest-entry-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px 10px; border-bottom: 1px solid var(--color-border); }
 .rest-entry-heading .sidebar-label { padding: 0; }
 .rest-add-button { min-height: 26px !important; padding: 3px 7px !important; font-size: 11px !important; }
