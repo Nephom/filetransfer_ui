@@ -311,6 +311,35 @@
 @media (max-width: 720px) { .terminal-header { align-items: flex-start; flex-direction: column; gap: 6px; padding: 8px 12px; }.terminal-tabs { max-width: 100%; overflow-x: auto; }.terminal-actions { width: 100%; justify-content: flex-end; } }
 @media (max-width: 720px) { .split-workspace { overflow: auto; }.split-workspace .local-pane { flex: 0 0 100%; min-height: 260px; }.split-workspace .desktop-folder-tree { flex: 0 0 100%; } }
 
+.explorer.ui-layout-mobile .split-workspace { gap: 8px; overflow: auto; }
+.explorer.ui-layout-mobile .split-workspace .local-pane { min-width: 260px; }
+.explorer.ui-layout-mobile .local-pane-actions { flex-wrap: wrap; gap: 8px; }
+.explorer.ui-layout-mobile .local-pane-actions button { min-height: 40px; }
+.explorer.ui-layout-mobile .file-table th { height: 42px; font-size: var(--ui-small-font-size); }
+.explorer.ui-layout-mobile .file-row { height: 44px; }
+.explorer.ui-layout-mobile .file-row td { padding-inline: 10px; }
+
+@media (max-width: 900px), (max-height: 640px) {
+  .explorer.ui-layout-mobile .split-workspace { flex-direction: column; }
+  .explorer.ui-layout-mobile .split-workspace .local-pane { flex: 0 0 auto; min-height: 260px; }
+  .explorer.ui-layout-mobile .desktop-folder-tree { flex: 0 0 auto; max-height: 220px; }
+}
+
+/* These collapse-control rules must stay outside the media query above:
+   the [<]/[>] Location collapse buttons need their base style at every
+   window size, not only below the 900x640 breakpoint. */
+.location-main-pane-collapse-controls { display: flex; flex: 0 0 48px; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border-inline: 1px solid var(--color-border); background: var(--color-bg-panel); }
+.location-main-pane-collapse-controls button { width: 40px; min-width: 40px; min-height: 40px !important; padding: 0 !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: 24px !important; }
+.location-main-pane-collapse-controls button:not(:disabled):hover { color: var(--color-bg); background: var(--color-primary); border-color: var(--color-primary); }
+.location-main-pane-collapse-controls button:disabled { cursor: not-allowed; opacity: .38; }
+.desktop-workspace.pane-collapse-left.split-workspace .local-pane,
+.desktop-workspace.pane-collapse-left:not(.split-workspace) .desktop-folder-tree { display: none; }
+.desktop-workspace.pane-collapse-right.split-workspace .desktop-content { display: none; }
+.desktop-workspace.pane-collapse-left .location-main-pane-collapse-controls button:first-child,
+.desktop-workspace.pane-collapse-right .location-main-pane-collapse-controls button:last-child { opacity: .38; }
+.explorer.ui-layout-mobile .location-main-pane-collapse-controls { flex-basis: 52px; }
+.explorer.ui-layout-mobile .location-main-pane-collapse-controls button { width: 44px; min-width: 44px; min-height: 44px !important; font-size: 26px !important; }
+
 /* Match native controls to the LOCATION menu palette. */
 select { color: var(--color-text); background-color: var(--color-bg-panel-strong); border: 1px solid var(--color-border); }
 select option, select optgroup { color: var(--color-text); background-color: var(--color-bg-panel-strong); }
