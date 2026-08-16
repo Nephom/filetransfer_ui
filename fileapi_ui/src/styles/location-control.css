@@ -14,11 +14,12 @@
 .location-label { color: var(--color-primary); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .location-select, .location-single { min-width: 110px; max-width: 190px; overflow: hidden; border: 0; color: var(--color-text); background: transparent; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .location-select { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0; cursor: pointer; text-align: left; }
-.location-select:focus { outline: 1px solid var(--color-primary); outline-offset: 2px; }
+.location-select:focus-visible { outline: var(--dropdown-focus-ring); outline-offset: 2px; }
 .location-chevron { display: inline-flex; flex: 0 0 auto; align-items: center; color: var(--color-primary); }
 .location-menu { position: absolute; z-index: 50; top: calc(100% + 7px); right: 8px; min-width: 180px; max-width: 260px; overflow: hidden; padding: 4px; }
 .location-menu button { display: block; width: 100%; overflow: hidden; border: 0; border-radius: 3px; padding: 8px 10px; color: var(--color-text); background: transparent; cursor: pointer; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
-.location-menu button:hover, .location-menu button.selected { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 17%, var(--color-bg-panel-strong)); }
+.location-menu button:hover, .location-menu button:focus-visible, .location-menu button.selected { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 17%, var(--color-bg-panel-strong)); }
+.location-menu button:focus-visible { outline: var(--dropdown-focus-ring); outline-offset: -2px; }
 .health-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: var(--color-danger); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 18%, transparent); }
 .health-dot.online { background: var(--color-success); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 18%, transparent); }
 @media (max-width: 720px) { .location-control { margin-left: auto; } .location-label { display: none; } .location-select, .location-single { min-width: 78px; max-width: 120px; } }
