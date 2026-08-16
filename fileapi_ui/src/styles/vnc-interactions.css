@@ -6,7 +6,7 @@
 
 .vnc-display-split {
   display: grid;
-  grid-template-rows: minmax(0, var(--controls-row, 1fr)) 12px minmax(0, var(--screen-row, 1fr));
+  grid-template-rows: minmax(0, var(--controls-row, 1fr)) var(--space-3) minmax(0, var(--screen-row, 1fr));
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -16,14 +16,14 @@
   height: auto;
   flex: none;
   min-height: 0;
-  margin: 0 20px;
+  margin: 0 var(--space-5);
   overflow: hidden;
 }
 
 .vnc-screen-shell {
   grid-row: 3;
   flex: none;
-  margin: 0 20px;
+  margin: 0 var(--space-5);
   min-height: 0;
 }
 
@@ -31,8 +31,8 @@
   position: relative;
   display: grid;
   place-items: center;
-  height: 12px;
-  flex: 0 0 12px;
+  height: var(--space-3);
+  flex: 0 0 var(--space-3);
   cursor: ns-resize;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
@@ -40,10 +40,10 @@
   transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
-.vnc-screen-resize { grid-row: 2; margin: 0 20px; }
+.vnc-screen-resize { grid-row: 2; margin: 0 var(--space-5); }
 
 .vnc-screen-resize::before {
-  width: 42px;
+  width: clamp(32px, 4vw, 42px);
   height: 3px;
   content: "";
   border-top: 1px solid var(--color-text-muted);
