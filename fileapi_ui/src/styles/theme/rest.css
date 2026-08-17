@@ -10,7 +10,6 @@
 :where(.explorer) .rest-history,
 :where(.explorer) .rest-links,
 :where(.explorer) .rest-response,
-:where(.explorer) .rest-operation-section,
 :where(.explorer) .rest-audit-panel { border-color: var(--color-border); background: var(--color-bg-panel); }
 :where(.explorer) .mode-switch-button,
 :where(.explorer) .workspace-select,
@@ -19,8 +18,6 @@
 :where(.explorer) .rest-history-toggle,
 :where(.explorer) .rest-history-item,
 :where(.explorer) .rest-link-button,
-:where(.explorer) .rest-operation-toggle,
-:where(.explorer) .rest-operation-body button,
 :where(.explorer) .rest-view-tabs button { color: var(--color-text); background: transparent; }
 :where(.explorer) .mode-switch-button:hover,
 :where(.explorer) .mode-switch-button.selected,
@@ -30,8 +27,7 @@
 :where(.explorer) .rest-link-button:hover,
 :where(.explorer) .rest-json-row:hover,
 :where(.explorer) .rest-view-tabs button:hover,
-:where(.explorer) .rest-view-tabs button.active,
-:where(.explorer) .rest-operation-toggle:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 15%, var(--color-bg-panel-strong)); }
+:where(.explorer) .rest-view-tabs button.active { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 15%, var(--color-bg-panel-strong)); }
 :where(.explorer) .mode-switch-dot,
 :where(.explorer) .rest-entry-dot { background: var(--color-text-muted); }
 :where(.explorer) .rest-active .mode-switch-dot,
@@ -41,7 +37,6 @@
 :where(.explorer) .rest-entry-copy strong,
 :where(.explorer) .rest-reader-heading h1,
 :where(.explorer) .rest-response-heading strong,
-:where(.explorer) .rest-operation-toggle,
 :where(.explorer) .rest-links-heading { color: var(--color-text); }
 :where(.explorer) .rest-entry-copy small,
 :where(.explorer) .rest-empty,
@@ -49,7 +44,6 @@
 :where(.explorer) .rest-session-status,
 :where(.explorer) .rest-history-item small,
 :where(.explorer) .rest-breadcrumbs,
-:where(.explorer) .rest-debug-summary,
 :where(.explorer) .rest-audit-heading span { color: var(--color-text-muted); }
 :where(.explorer) .rest-action-dialog,
 :where(.explorer) .rest-hardware-dialog,
@@ -100,7 +94,6 @@
 :where(.explorer) .rest-auth-panel,
 :where(.explorer) .rest-history,
 :where(.explorer) .rest-links,
-:where(.explorer) .rest-operation-section,
 :where(.explorer) .rest-audit-panel,
 :where(.explorer) .rest-toolbox-group {
   border-color: var(--color-border);

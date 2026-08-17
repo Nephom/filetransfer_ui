@@ -13,8 +13,6 @@ export type { RestApiEntry, RestApiSecret, RestAuthMode, RestMethod, RestVendor 
 import { csvCell, debugRest, downloadText, hardwareTools, jsonCell, sanitizeHeaders, sanitizeJson, sanitizeText, tableCell, type HardwareTool } from "./rest-utils";
 type RestHistoryItem = { url: string; timestamp: number };
 type RestAuditItem = { id: string; timestamp: number; method: RestMethod; url: string; status: number | null; durationMs: number; body: string; error?: string };
-type OperationLogRecord = { timestamp: string; level: string; operation: string; status: string; source: string; destination: string; detail: string };
-type RestDebugRecord = OperationLogRecord & { detailValue: Record<string, JsonValue> };
 type BiosAttributeMetadata = { type?: string; allowableValues?: string[]; description?: string; readOnly?: boolean; format?: string };
 
 type Props = {
@@ -319,8 +317,7 @@ export function RestApiWorkspace(props: Props) {
   const [message, setMessage] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<Record<string, RestHistoryItem[]>>({});
-  const [hpeToolsOpen, setHpeToolsOpen] = useState(false);
-  const [openBmcToolsOpen, setOpenBmcToolsOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [openBmcCapabilities, setOpenBmcCapabilities] = useState<Record<string, string>>({});
   const [openBmcPowerState, setOpenBmcPowerState] = useState("Unknown");
   const [openBmcMessage, setOpenBmcMessage] = useState("");
@@ -381,17 +378,6 @@ export function RestApiWorkspace(props: Props) {
   const [firmwareSupportsTarget, setFirmwareSupportsTarget] = useState(false);
   const [firmwareSupportsRepository, setFirmwareSupportsRepository] = useState(false);
   const [auditItems, setAuditItems] = useState<RestAuditItem[]>([]);
-  const [restDebugOpen, setRestDebugOpen] = useState(false);
-  const [restDebugRecords, setRestDebugRecords] = useState<RestDebugRecord[]>([]);
-  const [restDebugLoading, setRestDebugLoading] = useState(false);
-  const [restDebugError, setRestDebugError] = useState("");
-  const [restDebugEntryFilter, setRestDebugEntryFilter] = useState("");
-  const [restDebugRequestFilter, setRestDebugRequestFilter] = useState("");
-  const [restDebugVendorFilter, setRestDebugVendorFilter] = useState("");
-  const [restDebugOperationFilter, setRestDebugOperationFilter] = useState("");
-  const [restDebugStatusFilter, setRestDebugStatusFilter] = useState("");
-  const [restDebugFrom, setRestDebugFrom] = useState("");
-  const [restDebugTo, setRestDebugTo] = useState("");
   const [actionInfo, setActionInfo] = useState<JsonValue | null>(null);
   const [actionForm, setActionForm] = useState<Record<string, JsonValue>>({});
   const [resetOpen, setResetOpen] = useState(false);
@@ -409,6 +395,7 @@ export function RestApiWorkspace(props: Props) {
   const [entryPaneWidth, setEntryPaneWidth] = useState(() => Number(localStorage.getItem("fileapi-rest-entry-pane-width")) || 380);
   const [entryPaneCollapsed, setEntryPaneCollapsed] = useState(false);
   const entryPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null);
 
   const stopEntryPaneResize = () => {
     entryPaneResizeRef.current = null;
@@ -430,6 +417,10 @@ export function RestApiWorkspace(props: Props) {
   useEffect(() => {
     localStorage.setItem("fileapi-rest-entry-pane-width", String(entryPaneWidth));
   }, [entryPaneWidth]);
+  useEffect(() => {
+    setToolbarHost(document.querySelector<HTMLElement>(".commandbar"));
+    return () => setToolbarHost(null);
+  }, []);
   useEffect(() => () => stopEntryPaneResize(), []);
   useEffect(() => () => imlControllerRef.current?.stop("unmount"), []);
   useEffect(() => {
@@ -719,30 +710,6 @@ export function RestApiWorkspace(props: Props) {
     }
   };
 
-  const loadRestDebugLogs = async () => {
-    setRestDebugLoading(true);
-    setRestDebugError("");
-    try {
-      const records = await invoke<OperationLogRecord[]>("read_operation_logs");
-      const restRecords = records.flatMap((record) => {
-        if (record.level.toUpperCase() !== "DEBUG") return [];
-        const parsed = parseJson(record.detail);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-        const detailValue = parsed as Record<string, JsonValue>;
-        const event = typeof detailValue.event === "string" ? detailValue.event : "";
-        if (!event || (!event.startsWith("workflow.") && !event.startsWith("poll."))) return [];
-        return [{ ...record, detailValue }];
-      });
-      setRestDebugRecords(restRecords.reverse());
-      setRestDebugOpen(true);
-    } catch (loadError) {
-      setRestDebugError(loadError instanceof Error ? loadError.message : String(loadError));
-      setRestDebugOpen(true);
-    } finally {
-      setRestDebugLoading(false);
-    }
-  };
-
   const execute = async () => {
     if (!entry) return;
     setLoading(true); setError(""); setMessage("");
@@ -799,10 +766,10 @@ export function RestApiWorkspace(props: Props) {
 
   const openPath = async (nextPath: string) => {
     if (!entry) return;
-    const nextUrl = resolveEntryResource(entry, nextPath);
     setLoading(true);
     setError("");
     try {
+      const nextUrl = resolveEntryResource(entry, nextPath);
       await runRequest("GET", nextUrl);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
@@ -1356,42 +1323,6 @@ export function RestApiWorkspace(props: Props) {
   const biosType = String(selectedBiosMetadata.type || (typeof biosDraft[selectedBiosAttribute] === "boolean" ? "boolean" : typeof biosDraft[selectedBiosAttribute] === "number" ? "number" : "string"));
   const biosEditor = biosOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-bios-dialog-v2" role="dialog" aria-modal="true" aria-labelledby="bios-title-v2"><div className="rest-editor-heading"><strong id="bios-title-v2">BIOS settings {biosRaw?.Version ? `· ${String(biosRaw.Version)}` : ""}</strong><button type="button" onClick={() => setBiosOpen(false)} aria-label="Close BIOS settings"><CloseIcon size={12} /></button></div><div className="rest-bios-toolbar"><input value={biosSearch} onChange={(event) => setBiosSearch(event.target.value)} placeholder="Search attributes" aria-label="BIOS attribute search" /><Dropdown label="Select BIOS attribute" value={selectedBiosAttribute} onChange={setSelectedBiosAttribute} placeholder="Select a BIOS item to edit" options={visibleBiosKeys.map((key) => ({ value: key, label: key }))} /><button type="button" onClick={() => void loadBios()}>Refresh</button><button type="button" onClick={exportBiosJson}>Export JSON</button><button type="button" onClick={() => void enterBiosSetup()}>Enter BIOS Setup</button></div>{selectedBiosAttribute ? <div className="rest-bios-editor-card"><h3>{selectedBiosAttribute}</h3><p>{String(selectedBiosMetadata.description || "Edit this BIOS attribute, then review the exact PATCH payload before applying.")}</p><div className="rest-bios-current"><span>Current: {jsonCell((biosRaw?.Attributes && typeof biosRaw.Attributes === "object" && !Array.isArray(biosRaw.Attributes) ? (biosRaw.Attributes as Record<string, JsonValue>)[selectedBiosAttribute] : undefined))}</span><span>Pending: {jsonCell(biosCompare?.[selectedBiosAttribute])}</span></div>{biosAllowableValues.length ? <Dropdown label={`${selectedBiosAttribute} value`} value={String(biosDraft[selectedBiosAttribute] ?? "")} onChange={updateBiosValue} options={biosAllowableValues.map((value) => ({ value, label: value }))} /> : biosType === "boolean" ? <label className="tls-option"><input type="checkbox" checked={Boolean(biosDraft[selectedBiosAttribute])} onChange={(event) => updateBiosValue(event.target.checked)} /> Enabled</label> : <input type={selectedBiosMetadata.format === "email" ? "email" : biosType === "number" ? "number" : "text"} value={String(biosDraft[selectedBiosAttribute] ?? "")} onChange={(event) => updateBiosValue(biosType === "number" ? Number(event.target.value) : event.target.value)} />}</div> : <p className="muted">Select a BIOS item from the list to see its meaning and edit control.</p>}<details><summary>Exact PATCH payload preview ({Object.keys(biosPatch).length} changed)</summary><pre className="rest-code">{JSON.stringify({ Attributes: biosPatch }, null, 2)}</pre></details><div className="modal-actions"><button type="button" className="confirm" onClick={() => void applyBios()} disabled={!Object.keys(biosPatch).length}>PATCH changed BIOS attributes</button></div>{biosMessage && <div className="notice">{biosMessage}</div>}</div></div>;
   const visibleFirmwareInventory = firmwareInventory.filter((item) => !firmwareFilter || JSON.stringify(item).toLowerCase().includes(firmwareFilter.toLowerCase()));
-  const visibleRestDebugRecords = restDebugRecords.filter((record) => {
-    const value = record.detailValue;
-    const text = (field: string) => typeof value[field] === "string" ? String(value[field]).toLowerCase() : "";
-    const timestamp = Number(record.timestamp) * 1_000;
-    const from = restDebugFrom ? Date.parse(`${restDebugFrom}T00:00:00`) : Number.NEGATIVE_INFINITY;
-    const to = restDebugTo ? Date.parse(`${restDebugTo}T23:59:59.999`) : Number.POSITIVE_INFINITY;
-    return (!restDebugEntryFilter || text("entry").includes(restDebugEntryFilter.toLowerCase()))
-      && (!restDebugRequestFilter || text("requestId").includes(restDebugRequestFilter.toLowerCase()))
-      && (!restDebugVendorFilter || text("vendor") === restDebugVendorFilter.toLowerCase())
-      && (!restDebugOperationFilter || `${record.operation} ${text("workflow")} ${text("event")}`.toLowerCase().includes(restDebugOperationFilter.toLowerCase()))
-      && (!restDebugStatusFilter || `${record.status} ${text("status")} ${text("responseStatus")}`.toLowerCase().includes(restDebugStatusFilter.toLowerCase()))
-      && timestamp >= from && timestamp <= to;
-  });
-  const exportRestDebug = (format: "json" | "csv") => {
-    const rows = visibleRestDebugRecords.map((record) => ({
-      timestamp: record.timestamp,
-      requestId: record.detailValue.requestId || "",
-      workflowId: record.detailValue.workflowId || "",
-      event: record.detailValue.event || "",
-      entry: record.detailValue.entry || record.source,
-      vendor: record.detailValue.vendor || "",
-      operation: record.detailValue.workflow || record.operation,
-      method: record.detailValue.method || "",
-      url: record.detailValue.url || record.destination,
-      status: record.detailValue.status || record.detailValue.responseStatus || record.status,
-      durationMs: record.detailValue.durationMs || "",
-      detail: record.detailValue,
-    }));
-    if (format === "json") {
-      downloadText(`${entry?.name || "rest"}-debug.json`, JSON.stringify(rows, null, 2), "application/json");
-      return;
-    }
-    const headers = ["timestamp", "requestId", "workflowId", "event", "entry", "vendor", "operation", "method", "url", "status", "durationMs"];
-    const lines = rows.map((row) => [row.timestamp, row.requestId, row.workflowId, row.event, row.entry, row.vendor, row.operation, row.method, row.url, row.status, row.durationMs].map((item) => csvCell(String(item))).join(","));
-    downloadText(`${entry?.name || "rest"}-debug.csv`, [headers.join(","), ...lines].join("\n"), "text/csv;charset=utf-8");
-  };
   const exportFirmwareJson = () => downloadText(`${entry?.name || "rest"}-firmware.json`, JSON.stringify(sanitizeJson({ inventory: firmwareInventory, raw: firmwareRaw }), null, 2), "application/json");
   const exportFirmwareCsv = () => {
     const rows = visibleFirmwareInventory.map((item) => {
@@ -1408,16 +1339,44 @@ export function RestApiWorkspace(props: Props) {
   }, {});
 
   return <><div className="rest-workspace">
-     {restDebugOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-debug-dialog" role="dialog" aria-modal="true" aria-labelledby="rest-debug-title"><div className="rest-editor-heading"><strong id="rest-debug-title">REST DEBUG logs</strong><button type="button" onClick={() => setRestDebugOpen(false)} aria-label="Close REST DEBUG logs"><CloseIcon size={12} /></button></div><div className="rest-debug-toolbar"><input value={restDebugEntryFilter} onChange={(event) => setRestDebugEntryFilter(event.target.value)} placeholder="Entry" aria-label="Filter REST DEBUG entry" /><input value={restDebugRequestFilter} onChange={(event) => setRestDebugRequestFilter(event.target.value)} placeholder="Request ID" aria-label="Filter REST DEBUG request ID" /><input value={restDebugVendorFilter} onChange={(event) => setRestDebugVendorFilter(event.target.value)} placeholder="Vendor" aria-label="Filter REST DEBUG vendor" /><input value={restDebugOperationFilter} onChange={(event) => setRestDebugOperationFilter(event.target.value)} placeholder="Operation or event" aria-label="Filter REST DEBUG operation" /><input value={restDebugStatusFilter} onChange={(event) => setRestDebugStatusFilter(event.target.value)} placeholder="Status" aria-label="Filter REST DEBUG status" /><label>From<input type="date" value={restDebugFrom} onChange={(event) => setRestDebugFrom(event.target.value)} /></label><label>To<input type="date" value={restDebugTo} onChange={(event) => setRestDebugTo(event.target.value)} /></label><button type="button" onClick={() => void loadRestDebugLogs()} disabled={restDebugLoading}>Refresh</button><button type="button" onClick={() => exportRestDebug("json")} disabled={!visibleRestDebugRecords.length}>JSON</button><button type="button" onClick={() => exportRestDebug("csv")} disabled={!visibleRestDebugRecords.length}>CSV</button></div>{restDebugError && <div className="notice rest-error">{restDebugError}</div>}<div className="rest-debug-summary">Showing {visibleRestDebugRecords.length} of {restDebugRecords.length} REST DEBUG records</div><div className="rest-debug-list">{visibleRestDebugRecords.map((record, index) => { const value = record.detailValue; return <details key={`${record.timestamp}-${String(value.requestId || index)}-${index}`}><summary><span>{new Date(Number(record.timestamp) * 1_000).toLocaleString()}</span><strong>{String(value.event || record.status)}</strong><span>{String(value.entry || record.source)}</span><span>{String(value.status || value.responseStatus || record.status)}</span></summary><pre className="rest-code">{JSON.stringify(value, null, 2)}</pre></details>})}{!restDebugLoading && !restDebugError && !visibleRestDebugRecords.length && <p className="muted">No REST DEBUG records match the current filters.</p>}</div></div></div>}
     {biosEditor}
     {resourceCatalogOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-resource-catalog" role="dialog" aria-modal="true" aria-labelledby="resource-catalog-title"><div className="rest-editor-heading"><strong id="resource-catalog-title">All Resources</strong><button type="button" onClick={() => setResourceCatalogOpen(false)} aria-label="Close resource catalog"><CloseIcon size={12} /></button></div><p className="muted">Redfish resources advertised by the service root. Select a path to open it.</p><div className="rest-resource-catalog-list">{resourceCatalog.map((resource) => <button type="button" key={`${resource.name}-${resource.target}`} onClick={() => { setResourceCatalogOpen(false); void openPath(resource.target); }}><strong>{resource.name}</strong><code>{resource.target}</code></button>)}</div></div></div>}
      <div className={`rest-entry-pane-shell${entryPaneCollapsed ? " rest-entry-pane-collapsed" : ""}`} style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries entries={props.entries} activeEntryId={entry?.id || ""} onSelectEntry={props.onSelectEntry} /></div>
      {props.collapseMainPaneEnabled ? <div className="rest-main-pane-collapse-controls" role="group" aria-label="REST pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse REST entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore REST entry pane"><ChevronRightIcon /></button></div> : <PaneResizeHandle ariaLabel="Resize REST API entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
-    <section className="rest-reader" aria-label="REST API reader" data-raw-request-open={rawRequestOpen}>
-       <div className="rest-reader-heading"><div><span className="eyebrow">REST API mode · {props.workspaceName}</span><h1>{entry?.name || "REST API reader"}</h1></div><div className="rest-reader-tools"><MobileChoiceMenu className="rest-vendor-choice" label="REST vendor" currentId={vendor} options={[{ id: "none", label: "None" }, { id: "hpe", label: "HPE" }, { id: "openbmc", label: "OpenBMC" }]} onSelect={(id) => launchVendor(id as RestVendor)} /><div className="rest-vendor-capsule" role="group" aria-label="REST vendor launcher"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => launchVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => launchVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => launchVendor("openbmc")}>OpenBMC</button></div><span className="rest-session-status">{entry && (session["X-Auth-Token"] || secret.cookie) ? "Authenticated" : "Not authenticated"}</span></div></div>
+     {toolbarHost && createPortal(<nav className="rest-toolbar" data-rest-toolbar="true" aria-label="REST API tools">
+          <button type="button" className="rest-toolbar-toggle" onClick={() => setToolsOpen((value) => !value)} aria-expanded={toolsOpen}>
+            Tools
+          </button>
+          <button type="button" className="rest-toolbar-toggle" onClick={() => setHistoryOpen((value) => !value)} aria-expanded={historyOpen} disabled={!currentHistory.length}>
+            History
+          </button>
+          <button type="button" className="rest-toolbar-toggle" onClick={() => setRawRequestOpen((value) => !value)} aria-expanded={rawRequestOpen}>
+            Raw Request
+          </button>
+          {vendor === "hpe" && toolsOpen && <div className="rest-toolbar-panel" role="group" aria-label="HPE Tools">
+            <button type="button" onClick={() => void loadAllHardware()}>All hardware inventory</button>
+            <button type="button" onClick={() => void openAllResources()}>All Resources</button>
+            <button type="button" onClick={() => void discoverPower()}>Power controls</button>
+            <button type="button" onClick={() => void loadBios()}>BIOS settings</button>
+            <button type="button" onClick={() => void loadFirmware()}>Firmware update</button>
+            <button type="button" onClick={() => void resetLogs()}>Clear logs / reset</button>
+            <button type="button" onClick={() => void openDevices()}>Devices table</button>
+            <button type="button" onClick={() => { setImlOpen(true); void fetchIml(); }}>IML monitor</button>
+          </div>}
+          {vendor === "openbmc" && toolsOpen && <div className="rest-toolbar-panel" role="group" aria-label="OpenBMC Tools">
+            <button type="button" onClick={() => void discoverOpenBmc()}>Discover capabilities</button>
+            <button type="button" onClick={() => void openBmcInventory()}>System inventory</button>
+            <button type="button" onClick={() => void openPath(joinUrl(entry?.baseUrl || "", openBmcCapabilities.Chassis || "/redfish/v1/Chassis"))}>Chassis inventory</button>
+            <button type="button" onClick={() => void runOpenBmcPower("On")}>Power On</button>
+            <button type="button" onClick={() => void runOpenBmcPower("GracefulShutdown")}>Graceful Shutdown</button>
+            <button type="button" onClick={() => void runOpenBmcPower("ForceOff")}>Force Off</button>
+          </div>}
+        </nav>, toolbarHost)}
+     <section className="rest-reader" aria-label="REST API reader" data-raw-request-open={rawRequestOpen}>
+        <div className="rest-reader-heading"><div><span className="eyebrow">REST API mode · {props.workspaceName}</span><h1>{entry?.name || "REST API reader"}</h1></div><div className="rest-reader-tools"><MobileChoiceMenu className="rest-vendor-choice" label="REST vendor" currentId={vendor} options={[{ id: "none", label: "None" }, { id: "hpe", label: "HPE" }, { id: "openbmc", label: "OpenBMC" }]} onSelect={(id) => launchVendor(id as RestVendor)} /><div className="rest-vendor-capsule" role="group" aria-label="REST vendor launcher"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => launchVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => launchVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => launchVendor("openbmc")}>OpenBMC</button></div><span className="rest-session-status">{entry && (session["X-Auth-Token"] || secret.cookie) ? "Authenticated" : "Not authenticated"}</span></div></div>
       {entry && <>
         <section className={`rest-auth-panel${authOpen ? " open" : ""}`}>
-          <button type="button" className="rest-section-toggle" onClick={() => setAuthOpen((value) => !value)}><span>Authentication</span><span>{authOpen ? "−" : "+"}</span></button>
+           <div className="rest-section-toggle"><button type="button" onClick={() => setAuthOpen((value) => !value)}><span>Authentication</span><span aria-hidden="true">{authOpen ? "−" : "+"}</span></button><span className="rest-auth-heading-tools"><span className="rest-vendor-capsule" role="group" aria-label="REST vendor"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => launchVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => launchVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => launchVendor("openbmc")}>OpenBMC</button></span></span></div>
           {authOpen && <div className="rest-auth-fields">
             <label>Mode<Dropdown label="Mode" value={entry.authMode} onChange={(value) => changeAuthMode(value as RestAuthMode)} options={Object.entries(authLabels).map(([value, label]) => ({ value, label }))} /></label>
             {(entry.authMode === "basic" || entry.authMode === "login") && <label>Username<input value={entry.username} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, username: event.target.value } : item))} /></label>}
@@ -1431,12 +1390,6 @@ export function RestApiWorkspace(props: Props) {
            </div>}
           {entry.authMode === "login" && <div className="token-path-help" style={tokenPathHelpPosition}><span>Token JSON Path</span><button ref={tokenPathHelpButtonRef} type="button" className="token-path-help-button" onClick={() => setTokenPathHelpOpen((value) => !value)} aria-label="What is Token JSON Path" aria-expanded={tokenPathHelpOpen}>?</button>{tokenPathHelpOpen && createPortal(<div className="token-path-help-popup" role="note" style={tokenPathHelpPopupStyle} onClick={(event) => event.stopPropagation()}><button type="button" className="token-path-help-close" onClick={() => setTokenPathHelpOpen(false)} aria-label="Close Token JSON Path help"><CloseIcon size={12} /></button><strong>Token JSON Path</strong><p>Use this only when the login response returns the token inside a JSON response body.</p><pre>{'{\n  "data": {\n    "token": "abc123"\n  }\n}'}</pre><p>Enter <code>data.token</code>. For HPE iLO and OpenBMC Redfish SessionService, leave this empty when the token is returned in the <code>X-Auth-Token</code> response header.</p></div>, document.body)}</div>}
         </section>
-         <section className="rest-operation-sections" aria-label="REST operations">
-              {vendor === "hpe" && <div className="rest-operation-section"><button type="button" className="rest-operation-toggle" onClick={() => setHpeToolsOpen((value) => !value)} aria-expanded={hpeToolsOpen}><span>HPE Tools</span><span>{hpeToolsOpen ? "−" : "+"}</span></button>{hpeToolsOpen && <div className="rest-operation-body"><button type="button" onClick={() => void loadAllHardware()}>All hardware inventory</button><button type="button" onClick={() => void openAllResources()}>All Resources</button><button type="button" onClick={() => void discoverPower()}>Power controls</button><button type="button" onClick={() => void loadBios()}>BIOS settings</button><button type="button" onClick={() => void loadFirmware()}>Firmware update</button><button type="button" onClick={() => void resetLogs()}>Clear logs / reset</button><button type="button" onClick={() => void openDevices()}>Devices table</button><button type="button" onClick={() => { setImlOpen(true); void fetchIml(); }}>IML monitor</button></div>}</div>}
-              {vendor === "openbmc" && <div className="rest-operation-section"><button type="button" className="rest-operation-toggle" onClick={() => setOpenBmcToolsOpen((value) => !value)} aria-expanded={openBmcToolsOpen}><span>OpenBMC Tools</span><span>{openBmcToolsOpen ? "−" : "+"}</span></button>{openBmcToolsOpen && <div className="rest-operation-body"><button type="button" onClick={() => void discoverOpenBmc()}>Discover OpenBMC capabilities</button><button type="button" onClick={() => void openBmcInventory()}>System inventory</button><button type="button" onClick={() => void openPath(joinUrl(entry?.baseUrl || "", openBmcCapabilities.Chassis || "/redfish/v1/Chassis"))}>Chassis inventory</button><button type="button" onClick={() => void runOpenBmcPower("On")}>Power On</button><button type="button" onClick={() => void runOpenBmcPower("GracefulShutdown")}>Graceful Shutdown</button><button type="button" onClick={() => void runOpenBmcPower("ForceOff")}>Force Off</button><span className="muted">PowerState: {openBmcPowerState}</span>{openBmcMessage && <span className="muted">{openBmcMessage}</span>}<details><summary>Advertised OpenBMC targets</summary><pre className="rest-code">{JSON.stringify(openBmcCapabilities, null, 2)}</pre></details></div>}</div>}
-             <div className="rest-operation-section"><button type="button" className="rest-operation-toggle" onClick={() => setRawRequestOpen((value) => !value)} aria-expanded={rawRequestOpen}><span>Raw Request</span><span>{rawRequestOpen ? "−" : "+"}</span></button></div>
-             <div className="rest-operation-section"><button type="button" className="rest-operation-toggle" onClick={() => void loadRestDebugLogs()}><span>REST DEBUG logs</span><span>{restDebugLoading ? "..." : "View"}</span></button></div>
-         </section>
          <div className="rest-url-row"><Dropdown label="HTTP method" value={method} onChange={(value) => setMethod(value as RestMethod)} options={[{ value: "GET", label: "GET" }, { value: "POST", label: "POST" }, { value: "PATCH", label: "PATCH" }]} /><input value={urlDraft} onChange={(event) => setUrlDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void execute(); }} aria-label="REST request URL" /><button type="button" className="primary" onClick={() => void execute()} disabled={loading}>{loading ? "Sending..." : method}</button></div>
         {method !== "GET" && <label className="rest-body-editor">JSON request body<textarea value={bodyDraft} onChange={(event) => setBodyDraft(event.target.value)} spellCheck={false} /></label>}
         <div className="rest-query-editor"><span>Query parameters</span>{entry.query.map((item, index) => <div className="rest-query-row" key={`${entry.id}-query-${index}`}><input value={item.name} placeholder="name" onChange={(event) => updateQuery(entry.query.map((current, currentIndex) => currentIndex === index ? { ...current, name: event.target.value } : current))} /><input value={item.value} placeholder="value" onChange={(event) => updateQuery(entry.query.map((current, currentIndex) => currentIndex === index ? { ...current, value: event.target.value } : current))} /><button type="button" onClick={() => updateQuery(entry.query.filter((_, currentIndex) => currentIndex !== index))} aria-label="Remove query parameter"><CloseIcon size={12} /></button></div>)}<button type="button" className="rest-query-add" onClick={() => updateQuery([...entry.query, { name: "", value: "" }])}>+ Add parameter</button></div>
