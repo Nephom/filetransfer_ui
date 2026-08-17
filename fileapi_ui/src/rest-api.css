@@ -68,9 +68,9 @@
 .rest-vendor-bar .rest-vendor-toggle { display: none; }
 .rest-session-status { padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-text-muted); font-size: var(--font-size-small); white-space: nowrap; }
 .rest-auth-panel { position: relative; margin: 0 var(--space-5) var(--space-3); border: 1px solid var(--color-border); border-radius: 6px; background: rgba(7, 25, 42, .58); }
-.rest-section-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: var(--space-6) !important; padding: var(--space-2) var(--space-3) !important; border: 0; color: var(--color-text); background: transparent; text-align: left; }
+.rest-section-toggle { box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: var(--space-6) !important; padding: var(--space-2) var(--space-3) !important; border: 0; color: var(--color-text); background: transparent; text-align: left; }
 .rest-section-toggle > button { display: flex; align-items: center; justify-content: space-between; flex: 1 1 auto; min-height: var(--space-6) !important; padding: 0 !important; border: 0; color: inherit; background: transparent; text-align: left; }
-.rest-auth-heading-tools { display: flex; flex: 0 0 auto; align-items: center; gap: var(--space-2); margin-left: var(--space-3); }
+.rest-auth-heading-tools { display: flex; flex: 0 0 auto; align-items: center; gap: var(--space-2); margin: 0 var(--space-2) 0 var(--space-3); }
 .rest-auth-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); padding: 0 var(--space-3) var(--space-3); }
 .rest-auth-action { display: flex; align-items: end; }
 .rest-login-config { display: grid; order: 1; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
