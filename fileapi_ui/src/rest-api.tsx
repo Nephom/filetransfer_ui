@@ -14,6 +14,10 @@ import { csvCell, debugRest, downloadText, hardwareTools, jsonCell, sanitizeHead
 type RestHistoryItem = { url: string; timestamp: number };
 type RestAuditItem = { id: string; timestamp: number; method: RestMethod; url: string; status: number | null; durationMs: number; body: string; error?: string };
 type BiosAttributeMetadata = { type?: string; allowableValues?: string[]; description?: string; readOnly?: boolean; format?: string };
+type RestDialogDragSession = {
+  onMove: (event: PointerEvent) => void;
+  onUp: () => void;
+};
 
 type Props = {
   workspaceName: string;
@@ -396,6 +400,7 @@ export function RestApiWorkspace(props: Props) {
   const [entryPaneCollapsed, setEntryPaneCollapsed] = useState(false);
   const entryPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null);
+  const restDialogDragRef = useRef<RestDialogDragSession | null>(null);
 
   const stopEntryPaneResize = () => {
     entryPaneResizeRef.current = null;
@@ -420,6 +425,62 @@ export function RestApiWorkspace(props: Props) {
   useEffect(() => {
     setToolbarHost(document.querySelector<HTMLElement>(".commandbar"));
     return () => setToolbarHost(null);
+  }, []);
+  useEffect(() => {
+    const stopDragging = () => {
+      const active = restDialogDragRef.current;
+      if (!active) return;
+      window.removeEventListener("pointermove", active.onMove);
+      window.removeEventListener("pointerup", active.onUp);
+      window.removeEventListener("pointercancel", active.onUp);
+      document.body.style.removeProperty("user-select");
+      document.body.style.removeProperty("cursor");
+      restDialogDragRef.current = null;
+    };
+
+    const startDragging = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const target = event.target as HTMLElement | null;
+      const header = target?.closest<HTMLElement>(".rest-editor-heading, .rest-action-dialog-heading");
+      if (!header || target?.closest("button, input, select, textarea, a, [role=button]")) return;
+      const dialog = header.closest<HTMLElement>("[role=dialog]");
+      if (!dialog) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      stopDragging();
+
+      const rect = dialog.getBoundingClientRect();
+      const handleHeight = Math.max(header.getBoundingClientRect().height, 32);
+      const minVisibleWidth = Math.min(160, rect.width);
+      const minLeft = -rect.width + minVisibleWidth;
+      const maxLeft = window.innerWidth - minVisibleWidth;
+      const minTop = 8;
+      const maxTop = Math.max(minTop, window.innerHeight - handleHeight - 8);
+      const startX = Number.parseFloat(dialog.style.getPropertyValue("--rest-dialog-x")) || 0;
+      const startY = Number.parseFloat(dialog.style.getPropertyValue("--rest-dialog-y")) || 0;
+
+      const onMove = (moveEvent: PointerEvent) => {
+        const nextLeft = Math.max(minLeft, Math.min(maxLeft, rect.left + moveEvent.clientX - event.clientX));
+        const nextTop = Math.max(minTop, Math.min(maxTop, rect.top + moveEvent.clientY - event.clientY));
+        dialog.style.setProperty("--rest-dialog-x", `${startX + nextLeft - rect.left}px`);
+        dialog.style.setProperty("--rest-dialog-y", `${startY + nextTop - rect.top}px`);
+      };
+      const onUp = () => stopDragging();
+
+      restDialogDragRef.current = { onMove, onUp };
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "grabbing";
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    };
+
+    window.addEventListener("pointerdown", startDragging, true);
+    return () => {
+      window.removeEventListener("pointerdown", startDragging, true);
+      stopDragging();
+    };
   }, []);
   useEffect(() => () => stopEntryPaneResize(), []);
   useEffect(() => () => imlControllerRef.current?.stop("unmount"), []);
