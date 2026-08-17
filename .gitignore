@@ -17,6 +17,10 @@ backup
 .docs
 openspec/
 openspec/**
+.pi-task/
+.pi-task/**
+.planning/
+.planning/**
 
 # Local work documents and workflow notes
 **/*WORKFLOW*.md
