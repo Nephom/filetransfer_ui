@@ -1234,8 +1234,14 @@ export function RestApiWorkspace(props: Props) {
     if (collection.errors.length) setError(`Partial failure: ${collection.errors.join("; ")}`);
     setImlRows((current) => {
       const merged = [...members, ...current];
-      const unique = new Map(merged.map((row, index) => [String(row["@odata.id"] || row.Id || `${row.Message}-${row.Created || index}`), row]));
-      return [...unique.values()].slice(0, 500);
+      const unique = new Map<string, Record<string, JsonValue>>();
+      merged.forEach((row) => unique.set(imlEntryKey(row), row));
+      const sorted = [...unique.values()].sort((left, right) => {
+        const leftTime = Date.parse(String(left.Created || left.EventTimestamp || "")) || 0;
+        const rightTime = Date.parse(String(right.Created || right.EventTimestamp || "")) || 0;
+        return rightTime - leftTime;
+      });
+      return sorted.slice(0, 50);
     });
     return members;
   };
