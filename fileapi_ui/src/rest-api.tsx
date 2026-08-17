@@ -816,7 +816,11 @@ export function RestApiWorkspace(props: Props) {
     setResponseText(text);
     setUrlDraft(requestUrl);
     recordHistory(requestMethod, requestUrl);
-      if (throwHttpError && responseValue.status >= 400) throw new Error(formatRedfishError(parseRedfishError(responseValue.status, text)));
+      if (throwHttpError && responseValue.status >= 400) {
+        const failure = new Error(formatRedfishError(parseRedfishError(responseValue.status, text))) as Error & { status?: number };
+        failure.status = responseValue.status;
+        throw failure;
+      }
     try {
       const parsed = new URL(requestUrl);
       setPath(parsed.pathname || "/");
@@ -1300,9 +1304,9 @@ export function RestApiWorkspace(props: Props) {
       workflowId,
       intervalMs: imlInterval,
       login: async () => {
-        if (!sessionToken && !secret.cookie) {
+        if (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie) {
           await login();
-          if (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.cookie) {
+          if (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie) {
             throw new Error("IML monitor could not establish a REST session.");
           }
         }
