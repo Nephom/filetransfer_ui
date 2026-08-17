@@ -357,6 +357,10 @@ export function RestApiWorkspace(props: Props) {
   const [imlNewestFirst, setImlNewestFirst] = useState(true);
   const [imlPolling, setImlPolling] = useState(false);
   const [imlInterval, setImlInterval] = useState(5000);
+  const [imlManualStopped, setImlManualStopped] = useState(false);
+  const [ahsTarget, setAhsTarget] = useState("");
+  const [ahsMessage, setAhsMessage] = useState("");
+  const ahsTimerRef = useRef<number | null>(null);
   const imlControllerRef = useRef<ImlMonitorController<Record<string, JsonValue>> | null>(null);
   const imlStateRef = useRef<ImlMonitorState>("stopped");
   const imlTargetsRef = useRef<HpeTargets | null>(null);
@@ -505,6 +509,7 @@ export function RestApiWorkspace(props: Props) {
   }, [entry?.id]);
   useEffect(() => () => {
     imlControllerRef.current?.stop("unmount");
+    clearAhsTimer();
     clearSessionForEntry(entry?.id);
   }, []);
 
@@ -636,7 +641,7 @@ export function RestApiWorkspace(props: Props) {
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (imlOpen) stopImlPolling();
+        if (imlOpen) stopImlPolling("close");
         setDevicesOpen(false); setHardwareOpen(false); setHardwareSummaryOpen(false); setImlOpen(false); setPowerOpen(false); setBiosOpen(false); setFirmwareOpen(false); setResetOpen(false); setActionOpen(false);
         return;
       }
@@ -993,6 +998,7 @@ export function RestApiWorkspace(props: Props) {
     biosSettings: string;
     firmwareInventory: string;
     powerSystem: string;
+    ahs: string;
   };
   type CollectionResult = {
     root: Record<string, JsonValue>;
@@ -1077,6 +1083,7 @@ export function RestApiWorkspace(props: Props) {
       biosSettings: bios ? `${bios}/Settings` : "",
       firmwareInventory: link(updateServiceResource, "FirmwareInventory") || (updateService ? `${updateService}/FirmwareInventory` : ""),
       powerSystem: system,
+      ahs: "",
     };
   };
   const openDevices = async () => {
@@ -1275,6 +1282,10 @@ export function RestApiWorkspace(props: Props) {
   };
   const startImlPolling = () => {
     if (imlInterval < 3000 || !entry) return;
+    clearAhsTimer();
+    setImlManualStopped(false);
+    setAhsTarget("");
+    setAhsMessage("");
     const workflowId = crypto.randomUUID();
     const controller = new ImlMonitorController<Record<string, JsonValue>>();
     imlControllerRef.current?.stop("replaced");
@@ -1310,9 +1321,66 @@ export function RestApiWorkspace(props: Props) {
     });
     setImlPolling(true);
   };
-  const stopImlPolling = () => {
-    imlControllerRef.current?.stop("manual");
+  const clearAhsTimer = () => {
+    if (ahsTimerRef.current !== null) window.clearTimeout(ahsTimerRef.current);
+    ahsTimerRef.current = null;
+  };
+  const discoverAhs = async () => {
+    if (!entry) return "";
+    const root = await readJsonResource("/redfish/v1");
+    const candidates: string[] = [];
+    const walk = (value: JsonValue) => {
+      if (Array.isArray(value)) return value.forEach(walk);
+      if (!value || typeof value !== "object") return;
+      Object.entries(value).forEach(([key, child]) => {
+        if (typeof child === "string" && /(?:ahs|activehealthsystem|download)/i.test(`${key} ${child}`)) candidates.push(child);
+        walk(child);
+      });
+    };
+    walk(root);
+    const target = candidates.find((candidate) => {
+      try { resolveEntryResource(entry, candidate); return true; } catch { return false; }
+    }) || "";
+    setAhsTarget(target);
+    return target;
+  };
+  const startAhsWindow = () => {
+    clearAhsTimer();
+    ahsTimerRef.current = window.setTimeout(() => {
+      clearSession();
+      setAhsTarget("");
+      setAhsMessage("AHS download window expired.");
+    }, 60_000);
+  };
+  const downloadAhs = async () => {
+    if (!entry || !ahsTarget) return;
+    clearAhsTimer();
+    setLoading(true); setError(""); setAhsMessage("");
+    try {
+      await downloadResource(ahsTarget);
+      clearSession();
+      setAhsTarget("");
+      setAhsMessage("AHS download completed.");
+    } catch (downloadError) {
+      setError(downloadError instanceof Error ? downloadError.message : String(downloadError));
+      startAhsWindow();
+    } finally { setLoading(false); }
+  };
+  const stopImlPolling = (reason: "manual" | "close" = "manual") => {
+    imlControllerRef.current?.stop(reason);
     setImlPolling(false);
+    if (reason !== "manual") {
+      clearAhsTimer();
+      setImlManualStopped(false);
+      setAhsTarget("");
+      clearSession();
+      return;
+    }
+    setImlManualStopped(true);
+    void discoverAhs().then((target) => {
+      if (target) startAhsWindow();
+      else setAhsMessage("This iLO does not advertise an AHS download resource.");
+    }).catch((error) => setAhsMessage(error instanceof Error ? error.message : String(error)));
   };
   const discoverPower = async () => {
     if (!entry) return;
@@ -1608,7 +1676,7 @@ export function RestApiWorkspace(props: Props) {
         {response && <section className="rest-response"><div className="rest-response-heading"><strong>Response</strong><span className={response.status >= 400 ? "rest-status-error" : "rest-status-ok"}>{response.status}</span><span>{response.headers?.find(([name]) => name.toLowerCase() === "content-type")?.[1] || "unknown content type"}</span><span>{response.body.length} bytes</span></div><div className="rest-view-tabs"><button type="button" className={view === "pretty" ? "active" : ""} onClick={() => setView("pretty")}>Pretty</button><button type="button" className={view === "raw" ? "active" : ""} onClick={() => setView("raw")}>Raw</button><button type="button" className={view === "headers" ? "active" : ""} onClick={() => setView("headers")}>Headers</button></div>{view === "headers" ? <div className="rest-headers">{(response.headers || []).map(([name, value], index) => <div key={`${name}-${index}`}><strong>{name}</strong><span>{name.toLowerCase().includes("authorization") || name.toLowerCase().includes("cookie") || name.toLowerCase().includes("token") ? "••••••••" : value}</span></div>)}</div> : view === "raw" || !json ? <pre className="rest-code">{responseText || "(empty response)"}</pre> : <div className="rest-json-view">{rows.length ? rows.map(([name, value]) => { const resourceLink = value && typeof value === "object" && !Array.isArray(value) && typeof (value as Record<string, unknown>)["@odata.id"] === "string" ? String((value as Record<string, unknown>)["@odata.id"]) : ""; const href = value && typeof value === "object" && !Array.isArray(value) && typeof (value as Record<string, unknown>).href === "string" ? String((value as Record<string, unknown>).href) : ""; const link = resourceLink || href; const target = link || `${normalizePath(path)}/${encodeURIComponent(name)}`; const isLink = Boolean(link); return <button type="button" className="rest-json-row" key={name} onClick={() => value && typeof value === "object" ? void openPath(target) : undefined}><span>{responseEntryName(value, name)}</span><small>{isLink ? "link" : Array.isArray(value) ? "array" : value && typeof value === "object" ? "object" : typeof value}</small><code>{isLink ? link : typeof value === "object" ? "[Open]" : String(value)}</code></button>; }) : <pre className="rest-code">{prettyJson(json)}</pre>}</div>}</section>}
           {devicesOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog" role="dialog" aria-modal="true" aria-labelledby="rest-devices-title"><div className="rest-editor-heading"><strong id="rest-devices-title">HPE Devices</strong><button type="button" onClick={() => setDevicesOpen(false)} aria-label="Close devices table"><CloseIcon size={12} /></button></div><div className="rest-hardware-table-wrap"><table><thead><tr><th>Name</th><th>Location</th><th>Status</th><th>Firmware</th></tr></thead><tbody>{deviceRows.map((device, index) => <tr key={`${String(device.Id || device.Name || "device")}-${index}`}><td>{String(device.Name || device.Id || "Unknown")}</td><td>{String(device.Location || "-")}</td><td>{typeof device.Status === "object" && device.Status && !Array.isArray(device.Status) ? String((device.Status as { [key: string]: JsonValue }).Health || (device.Status as { [key: string]: JsonValue }).State || "-") : String(device.Status || "-")}</td><td>{String(device.FirmwareVersion || device.Version || "-")}</td></tr>)}</tbody></table>{!deviceRows.length && <p className="muted">The resource returned no device members.</p>}</div></div></div>}
           {hardwareOpen && hardwareTool && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog" role="dialog" aria-modal="true" aria-labelledby="hardware-title"><div className="rest-editor-heading"><strong id="hardware-title">{hardwareTool.label}</strong><button type="button" onClick={() => setHardwareOpen(false)} aria-label="Close hardware inventory"><CloseIcon size={12} /></button></div><div className="rest-hardware-toolbar"><span>{hardwareLoading ? "Refreshing..." : hardwareError || `${hardwareRows.length} rows · ${hardwareUpdatedAt ? new Date(hardwareUpdatedAt).toLocaleString() : "not loaded"}${hardwareDurationMs === null ? "" : ` · ${hardwareDurationMs}ms`}`}</span><button type="button" onClick={() => void loadHardware(hardwareTool)} disabled={hardwareLoading}>Refresh</button><button type="button" onClick={exportHardwareJson} disabled={hardwareLoading}>JSON</button><button type="button" onClick={exportHardwareCsv} disabled={hardwareLoading}>CSV</button></div>{hardwareError ? <div className="notice rest-error">{hardwareError}</div> : <div className="rest-hardware-table-wrap"><table><thead><tr>{hardwareTool.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{hardwareRows.map((row, index) => <tr key={`${hardwareTool.id}-${index}`}>{hardwareTool.columns.map((column) => <td key={column}>{tableCell(row[column])}</td>)}</tr>)}</tbody></table>{!hardwareRows.length && !hardwareLoading && <p className="muted">No inventory members were returned.</p>}</div>}<details><summary>Raw Redfish resource</summary><pre className="rest-code">{hardwareRaw ? JSON.stringify(hardwareRaw, null, 2) : "(empty)"}</pre></details></div></div>}
-          {imlOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-iml-dialog" role="dialog" aria-modal="true" aria-labelledby="iml-title"><div className="rest-editor-heading"><strong id="iml-title">Integrated Management Log</strong><button type="button" onClick={() => { stopImlPolling(); setImlOpen(false); }} aria-label="Close IML"><CloseIcon size={12} /></button></div><div className="rest-iml-controls"><input value={imlKeyword} onChange={(event) => setImlKeyword(event.target.value)} placeholder="Keyword" aria-label="IML keyword" /><Dropdown label="IML severity" value={imlSeverity} onChange={setImlSeverity} options={[{ value: "all", label: "All severity" }, { value: "critical", label: "Critical" }, { value: "warning", label: "Warning" }, { value: "ok", label: "OK" }]} /><Dropdown label="IML polling interval" value={String(imlInterval)} onChange={(value) => setImlInterval(Number(value))} options={[{ value: "3000", label: "3 seconds" }, { value: "5000", label: "5 seconds" }, { value: "10000", label: "10 seconds" }]} /><button type="button" onClick={() => void fetchIml()}>Refresh</button><button type="button" onClick={imlPolling ? stopImlPolling : startImlPolling}>{imlPolling ? "Stop" : "Start"}</button><button type="button" onClick={() => setImlNewestFirst((value) => !value)}>{imlNewestFirst ? "Newest" : "Oldest"}</button><span className="muted">CSV: {imlCsvPathRef.current || "created when Start completes discovery"}</span></div><div className="rest-iml-terminal" aria-label="IML live terminal">{visibleImlRows.map((row, index) => <div key={`${String(row["@odata.id"] || row.Id || index)}-${index}`}><span>{String(row.Created || row.EventTimestamp || "-")}</span> <b>{String(row.Severity || "UNKNOWN")}</b> {String(row.Message || row.MessageId || "-")}</div>)}</div></div></div>}
+          {imlOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-iml-dialog" role="dialog" aria-modal="true" aria-labelledby="iml-title"><div className="rest-editor-heading"><strong id="iml-title">Integrated Management Log</strong><button type="button" onClick={() => { stopImlPolling("close"); setImlOpen(false); }} aria-label="Close IML"><CloseIcon size={12} /></button></div><div className="rest-iml-controls"><input value={imlKeyword} onChange={(event) => setImlKeyword(event.target.value)} placeholder="Keyword" aria-label="IML keyword" /><Dropdown label="IML severity" value={imlSeverity} onChange={setImlSeverity} options={[{ value: "all", label: "All severity" }, { value: "critical", label: "Critical" }, { value: "warning", label: "Warning" }, { value: "ok", label: "OK" }]} /><Dropdown label="IML polling interval" value={String(imlInterval)} onChange={(value) => setImlInterval(Number(value))} options={[{ value: "3000", label: "3 seconds" }, { value: "5000", label: "5 seconds" }, { value: "10000", label: "10 seconds" }]} /><button type="button" onClick={() => void fetchIml()}>Refresh</button><button type="button" onClick={imlPolling ? () => stopImlPolling() : startImlPolling}>{imlPolling ? "Stop" : "Start"}</button><button type="button" onClick={() => setImlNewestFirst((value) => !value)}>{imlNewestFirst ? "Newest" : "Oldest"}</button>{imlManualStopped && <button type="button" onClick={() => void downloadAhs()} disabled={!ahsTarget || loading}>{loading ? "Downloading AHS..." : "Download complete AHS log"}</button>}<span className="muted">CSV: {imlCsvPathRef.current || "created when Start completes discovery"}</span></div>{ahsMessage && <div className="notice">{ahsMessage}</div>}<div className="rest-iml-terminal" aria-label="IML live terminal">{visibleImlRows.map((row, index) => <div key={`${String(row["@odata.id"] || row.Id || index)}-${index}`}><span>{String(row.Created || row.EventTimestamp || "-")}</span> <b>{String(row.Severity || "UNKNOWN")}</b> {String(row.Message || row.MessageId || "-")}</div>)}</div></div></div>}
           {powerOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-power-dialog" role="dialog" aria-modal="true" aria-labelledby="power-title"><div className="rest-editor-heading"><strong id="power-title">Power control</strong><button type="button" onClick={() => setPowerOpen(false)} aria-label="Close power controls"><CloseIcon size={12} /></button></div><p>Current PowerState: <strong>{powerState}</strong></p><div className="rest-operation-body"><button type="button" onClick={() => void runPowerAction("On")} disabled={powerBusy || Boolean(powerResetTypes.length && !powerResetTypes.includes("On"))}>On</button><button type="button" onClick={() => void runPowerAction("Off")} disabled={powerBusy || Boolean(powerResetTypes.length && !powerResetTypes.includes("GracefulShutdown"))}>Off</button><button type="button" onClick={() => void runPowerAction("ForceOff")} disabled={powerBusy || Boolean(powerResetTypes.length && !powerResetTypes.includes("ForceOff"))}>Force Off</button><button type="button" onClick={() => void runPowerAction("Reset")} disabled={powerBusy || !powerActions.length}>Reset</button>{powerButtonTypes.includes("Press") && <button type="button" onClick={() => void pressPowerButton("Press")} disabled={powerBusy}>Push Power Button</button>}{powerButtonTypes.includes("PressAndHold") && <button type="button" onClick={() => void pressPowerButton("PressAndHold")} disabled={powerBusy}>Press and Hold</button>}<button type="button" onClick={() => void discoverPower()} disabled={powerBusy}>Refresh capabilities</button></div>{powerMessage && <div className="notice">{powerMessage}</div>}<details><summary>Advertised reset and HPE PowerButton capabilities</summary><pre className="rest-code">{JSON.stringify({ powerActions, resetTarget: powerResetTarget, resetTypes: powerResetTypes, powerButtonTarget, pushTypes: powerButtonTypes, lastRequest: powerLastRequest }, null, 2)}</pre></details></div></div>}
           {biosOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-bios-dialog" role="dialog" aria-modal="true" aria-labelledby="bios-title"><div className="rest-editor-heading"><strong id="bios-title">BIOS settings {biosRaw?.Version ? `· ${String(biosRaw.Version)}` : ""}</strong><button type="button" onClick={() => setBiosOpen(false)} aria-label="Close BIOS settings"><CloseIcon size={12} /></button></div><div className="rest-bios-toolbar"><input value={biosSearch} onChange={(event) => setBiosSearch(event.target.value)} placeholder="Search attribute or value" aria-label="BIOS attribute search" /><button type="button" onClick={() => void loadBios()}>Refresh</button><button type="button" onClick={() => downloadText(`${entry?.name || "rest"}-bios.json`, JSON.stringify(biosRaw, null, 2), "application/json")}>Export JSON</button><button type="button" onClick={() => void enterBiosSetup()}>Enter BIOS Setup</button></div><div className="rest-bios-grid">{visibleBiosKeys.map((key) => { const value = biosDraft[key]; const pending = biosCompare?.[key]; const changed = pending !== undefined && JSON.stringify(pending) !== JSON.stringify(value); const update = (next: JsonValue) => setBiosDraft((current) => ({ ...current, [key]: next })); return <label key={key}><span>{key}{changed ? " · changed" : ""}</span>{typeof value === "boolean" ? <input type="checkbox" checked={value} onChange={(event) => update(event.target.checked)} /> : typeof value === "number" ? <input type="number" value={value} onChange={(event) => update(Number(event.target.value))} /> : <input value={jsonCell(value)} onChange={(event) => update(event.target.value)} />}</label>; })}</div><details><summary>Exact PATCH payload preview</summary><pre className="rest-code">{JSON.stringify({ Attributes: biosDraft }, null, 2)}</pre></details><div className="modal-actions"><button type="button" className="confirm" onClick={() => void applyBios()}>Apply BIOS PATCH</button></div>{biosMessage && <div className="notice">{biosMessage}</div>}<p className="muted">Pending changes are compared with current values; BIOS PATCH responses may require reboot or reset.</p></div></div>}
           {firmwareOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog" role="dialog" aria-modal="true" aria-labelledby="firmware-title"><div className="rest-editor-heading"><strong id="firmware-title">Firmware update</strong><button type="button" onClick={() => setFirmwareOpen(false)} aria-label="Close firmware"><CloseIcon size={12} /></button></div><div className="rest-hardware-toolbar"><input value={firmwareFilter} onChange={(event) => setFirmwareFilter(event.target.value)} placeholder="Search firmware inventory" aria-label="Firmware inventory filter" /><span>{visibleFirmwareInventory.length}/{firmwareInventory.length} inventory items</span><button type="button" onClick={() => void loadFirmware()}>Refresh inventory</button><button type="button" onClick={exportFirmwareJson}>JSON</button><button type="button" onClick={exportFirmwareCsv}>CSV</button></div><div className="rest-hardware-table-wrap"><table><thead><tr><th>Component</th><th>Version</th><th>Location</th><th>Updateable</th><th>Status</th></tr></thead><tbody>{visibleFirmwareInventory.map((item, index) => <tr key={String(item.Id || index)}><td>{jsonCell(item.Name)}</td><td>{jsonCell(item.Version)}</td><td>{jsonCell(item.Location)}</td><td>{jsonCell(item.Updateable)}</td><td>{tableCell(item.Status)}</td></tr>)}</tbody></table>{!visibleFirmwareInventory.length && <p className="muted">No matching firmware inventory items.</p>}</div><details><summary>Raw FirmwareInventory response</summary><pre className="rest-code">{firmwareRaw ? JSON.stringify(firmwareRaw, null, 2) : "(empty)"}</pre></details><label>Firmware URI<input value={firmwareUri} onChange={(event) => setFirmwareUri(event.target.value)} placeholder="https://updates.example.test/ilo.bin" /></label>{firmwareSupportsTarget && <label>Update target<Dropdown label="Update target" value={firmwareTarget} onChange={setFirmwareTarget} placeholder="Service default" options={firmwareInventory.filter((item) => typeof item["@odata.id"] === "string").map((item) => ({ value: String(item["@odata.id"]), label: String(item.Name || item.Id || item["@odata.id"]) }))} /></label>}{firmwareSupportsTpm && <label className="tls-option"><input type="checkbox" checked={firmwareTpmOverride} onChange={(event) => setFirmwareTpmOverride(event.target.checked)} /> TPM override</label>}{firmwareSupportsRepository && <label>Update repository<input value={firmwareUpdateRepository} onChange={(event) => setFirmwareUpdateRepository(event.target.value)} placeholder="Repository name or URI" /></label>}<p className="muted">Endpoint: {firmwareAction || "No advertised SimpleUpdate/AddFromUri action"}</p><div className="modal-actions"><button type="button" className="danger" onClick={() => void startFirmware()} disabled={!firmwareAction}>Build payload preview</button></div>{firmwareMessage && <div className="notice">{firmwareMessage}</div>}{firmwarePreview && <div className="firmware-preview"><strong>Exact POST preview</strong><p><strong>{String(firmwarePreview.method)}</strong> {String(firmwarePreview.endpoint)}</p><pre className="rest-code">{JSON.stringify(firmwarePreview.payload, null, 2)}</pre><div className="modal-actions"><button type="button" onClick={() => setFirmwarePreview(null)}>Cancel</button><button type="button" className="danger" onClick={() => void applyFirmware()}>Confirm and POST</button></div></div>}</div></div>}
