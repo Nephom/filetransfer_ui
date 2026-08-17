@@ -152,6 +152,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const downloadInProgress = React.useRef(false);
     const locationsLoaded = React.useRef(false);
     const locationRefreshInProgress = React.useRef(false);
+    const filesRequestGeneration = React.useRef(0);
     const queueItemsRef = React.useRef([]);
     const queueJobsRef = React.useRef(new Map());
     const queueAbortControllersRef = React.useRef(new Map());
@@ -197,18 +198,48 @@ const FileBrowser = ({ token, user, onLogout }) => {
         }
     };
 
-    const loadFiles = async (path = currentPath, requestedLocationId = locationId) => {
+    const loadFiles = async (path = currentPath, requestedLocationId = locationId, { forceReload = false } = {}) => {
+        const requestGeneration = ++filesRequestGeneration.current;
         setLoading(true); setError(''); setContext(null);
         try {
-            const response = await fetch(`/api/files?path=${encodeURIComponent(path)}&sort=${encodeURIComponent(sortKey)}&order=${sortDirection}`, { headers: headersForLocation(requestedLocationId) });
+            const response = await fetch(`/api/files?path=${encodeURIComponent(path)}&sort=${encodeURIComponent(sortKey)}&order=${sortDirection}`, {
+                headers: headersForLocation(requestedLocationId),
+                ...(forceReload ? { cache: 'no-store' } : {})
+            });
             if (!response.ok) throw new Error('Unable to load this folder.');
             const data = await response.json();
+            if (requestGeneration !== filesRequestGeneration.current) return;
             setFiles((data.files || []).filter((file) => file && file.name));
             setCurrentPath(data.currentPath || '');
             setDisplayPath(data.currentPath || '/');
             setSearching(false); setSearch(''); setSelected([]);
-        } catch (requestError) { setError(requestError.message); }
-        finally { setLoading(false); }
+        } catch (requestError) {
+            if (requestGeneration === filesRequestGeneration.current) setError(requestError.message);
+        } finally {
+            if (requestGeneration === filesRequestGeneration.current) setLoading(false);
+        }
+    };
+
+    const refreshCurrentDirectory = async () => {
+        const refreshPath = currentPath;
+        const refreshLocationId = locationId;
+        setLoading(true); setError('');
+        try {
+            const response = await fetch('/api/files/refresh-cache', {
+                method: 'POST',
+                headers: { ...headersForLocation(refreshLocationId), 'Content-Type': 'application/json' },
+                body: JSON.stringify({ directoryPath: refreshPath }),
+                cache: 'no-store'
+            });
+            if (!response.ok) throw new Error('Unable to refresh this folder.');
+            await Promise.all([
+                loadLocations(),
+                loadFiles(refreshPath, refreshLocationId, { forceReload: true })
+            ]);
+        } catch (requestError) {
+            setError(requestError.message);
+            setLoading(false);
+        }
     };
 
     const updateTreeNode = (node, targetPath, update) => {
@@ -1000,7 +1031,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
               <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={startDownload}>{downloading ? 'Preparing download...' : 'Download'}</button><button className="optional" onClick={() => setQueueOpen((open) => !open)}>Transfer Queue{queueItems.some((item) => ['queued', 'running', 'retrying'].includes(item.status)) ? ` (${queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length})` : ''}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
               <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setCreatedShareLinks(null); setModal('share'); }}>Share</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
-               <button className="optional" onClick={selectAll}>Select all</button><label className="sort-control">Sort<select value={sortKey} onChange={(event) => setSortKey(event.target.value)} aria-label="Sort files"><option value="name">Name</option><option value="modified">Modified</option><option value="size">Size</option><option value="directory">Directory first</option></select><button type="button" onClick={() => setSortDirection((current) => current === 'asc' ? 'desc' : 'asc')} aria-label={`Sort ${sortDirection === 'asc' ? 'descending' : 'ascending'}`}>{sortDirection === 'asc' ? 'Ascending' : 'Descending'}</button></label><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button className="optional" onClick={openShareLinks}>Share Links</button><button onClick={() => { loadLocations(); loadFiles(currentPath); }}>Refresh</button>
+               <button className="optional" onClick={selectAll}>Select all</button><label className="sort-control">Sort<select value={sortKey} onChange={(event) => setSortKey(event.target.value)} aria-label="Sort files"><option value="name">Name</option><option value="modified">Modified</option><option value="size">Size</option><option value="directory">Directory first</option></select><button type="button" onClick={() => setSortDirection((current) => current === 'asc' ? 'desc' : 'asc')} aria-label={`Sort ${sortDirection === 'asc' ? 'descending' : 'ascending'}`}>{sortDirection === 'asc' ? 'Ascending' : 'Descending'}</button></label><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button className="optional" onClick={openShareLinks}>Share Links</button><button onClick={() => { void refreshCurrentDirectory(); }} disabled={loading}>Refresh</button>
         </nav>
          <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
           <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{locationsLoading && locations.length === 0 ? <span className="tree-loading">Loading Locations...</span> : locations.map((location) => <section className="location-section" key={location.id}><div className={`tree-node ${location.id === locationId ? 'active' : ''}`} onDragOver={(event) => { if (isExternalFileDrag(event)) return; if (isValidMoveTarget(dragItems, '', location.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(`${location.id}:`); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event) => { if (isExternalFileDrag(event)) return; event.preventDefault(); endDrag(); moveItems(dragItems, '', location.id); }}><button className="tree-toggle" aria-label={`${expandedLocations[location.id] ? 'Collapse' : 'Expand'} ${location.displayName}`} onClick={() => toggleLocation(location.id)}>{expandedLocations[location.id] ? '−' : '+'}</button><button className={`tree-folder ${dropTarget === `${location.id}:` ? 'drop-target' : ''}`} onClick={() => selectLocation(location.id)}><span className="folder-mini" />{location.displayName}</button><span className={`location-status-dot ${location.status === 'online' ? 'online' : ''}`} title={location.status || 'unknown'} aria-label={location.status || 'unknown'} /></div>{expandedLocations[location.id] && renderLocationTree(location.id)}</section>)}</aside>
