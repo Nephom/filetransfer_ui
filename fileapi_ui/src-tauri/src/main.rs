@@ -443,6 +443,43 @@ async fn save_text_file(name: String, content: String) -> Result<Option<String>,
     Ok(Some(selected.path().display().to_string()))
 }
 
+fn sanitize_iml_file_component(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') { character } else { '_' })
+        .collect();
+    let trimmed = sanitized.trim_matches(['.', ' ']);
+    if trimmed.is_empty() { "unknown".to_string() } else { trimmed.chars().take(120).collect() }
+}
+
+#[tauri::command]
+fn create_iml_csv_session(serial_number: String, timestamp: String, header: String) -> Result<String, String> {
+    let desktop = local_home()?.join("Desktop");
+    std::fs::create_dir_all(&desktop).map_err(|error| error.to_string())?;
+    let serial = sanitize_iml_file_component(&serial_number);
+    let stamp = sanitize_iml_file_component(&timestamp);
+    let base = format!("HPE{serial}-iml-{stamp}.csv");
+    let mut path = desktop.join(&base);
+    let mut attempt = 1u32;
+    while path.exists() {
+        path = desktop.join(format!("HPE{serial}-iml-{stamp}_({attempt}).csv"));
+        attempt += 1;
+    }
+    std::fs::write(&path, header.as_bytes()).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn append_iml_csv_session(path: String, content: String) -> Result<(), String> {
+    let target = PathBuf::from(path);
+    let desktop = local_home()?.join("Desktop");
+    let target = canonicalize(target.parent().ok_or_else(|| "IML CSV path has no parent directory".to_string())?)?.join(target.file_name().ok_or_else(|| "IML CSV path has no file name".to_string())?);
+    if !target.starts_with(canonicalize(desktop)?) { return Err("IML CSV path must remain on the user's Desktop".to_string()); }
+    let mut file = std::fs::OpenOptions::new().create(false).append(true).open(&target).map_err(|error| error.to_string())?;
+    file.write_all(content.as_bytes()).map_err(|error| error.to_string())?;
+    file.flush().map_err(|error| error.to_string())
+}
+
 /// Build the `name_(n).ext` candidate for the n-th collision-avoidance
 /// attempt on `name` (e.g. `video.mp4` -> `video_(1).mp4` -> `video_(2).mp4`).
 /// Matching Windows/macOS Explorer's own "keep both files" convention, this
@@ -2389,6 +2426,8 @@ fn main() {
             pick_upload_files,
             pick_local_directory,
             save_text_file,
+            create_iml_csv_session,
+            append_iml_csv_session,
             local_list_directory,
             local_list_directories,
             local_create_directory,
