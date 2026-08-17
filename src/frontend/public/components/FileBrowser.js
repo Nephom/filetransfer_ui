@@ -625,6 +625,16 @@ const FileBrowser = ({ token, user, onLogout }) => {
     // instead of always bundling the selection into a single archive first.
     const supportsDirectoryPicker = () => typeof window.showDirectoryPicker === 'function';
 
+    const describeDirectoryPickerError = (error) => {
+        const name = String(error?.name || 'UnknownError');
+        const message = String(error?.message || '').trim();
+        if (name === 'AbortError') return 'Destination folder selection was cancelled.';
+        if (name === 'NotAllowedError' || name === 'SecurityError') {
+            return `Destination folder permission was denied by the browser (${name}${message ? `: ${message}` : ''}).`;
+        }
+        return `Unable to access the destination folder (${name}${message ? `: ${message}` : ''}).`;
+    };
+
     const writeFileIntoDirectoryHandle = async (rootHandle, relativePath, blob) => {
         const segments = relativePath.split('/').filter(Boolean);
         const fileName = segments.pop();
@@ -639,6 +649,18 @@ const FileBrowser = ({ token, user, onLogout }) => {
     };
 
     const enqueueQueueDownload = async (items) => {
+        let directoryHandle = null;
+        if (supportsDirectoryPicker()) {
+            try {
+                // Request the folder while this function is still running from
+                // the download button's user gesture, before any network await.
+                directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite', startIn: 'downloads' });
+            } catch (pickerError) {
+                setError(describeDirectoryPickerError(pickerError));
+                return;
+            }
+        }
+
         const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const label = items.length === 1 ? items[0].name : `${items.length} selected items`;
         setModal(null);
@@ -654,16 +676,6 @@ const FileBrowser = ({ token, user, onLogout }) => {
             const targetFiles = flattenData.files || [];
             if (!targetFiles.length) throw new Error('The selection has no files to download.');
             const totalBytes = targetFiles.reduce((sum, file) => sum + (Number(file.size) || 0), 0) || null;
-
-            let directoryHandle = null;
-            const useFileSystemAccess = supportsDirectoryPicker();
-            if (useFileSystemAccess) {
-                try {
-                    directoryHandle = await window.showDirectoryPicker();
-                } catch (pickerError) {
-                    throw new Error('Destination folder selection was cancelled.');
-                }
-            }
 
             let completed = 0;
             for (const file of targetFiles) {
