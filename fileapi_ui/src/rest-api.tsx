@@ -1290,17 +1290,27 @@ export function RestApiWorkspace(props: Props) {
     try {
        const result = await runRequest("POST", joinUrl(entry.baseUrl, target), JSON.stringify(body), [["Content-Type", "application/json"], ...makeHeaders(entry, secret, session)]);
        if (result) setPowerLastRequest({ target: joinUrl(entry.baseUrl, target), payload: JSON.stringify(body, null, 2), status: result.responseValue.status });
-       const expected = ["On", "Reset", "GracefulRestart", "ColdBoot"].includes(action) ? "On" : "Off";
-       let next = "Unknown";
-       for (let attempt = 1; attempt <= 5; attempt += 1) {
-         const verify = await runRequest("GET", joinUrl(entry.baseUrl, powerSystemTarget), undefined, makeHeaders(entry, secret, session));
-         const value = verify ? parseJson(verify.text) : null;
-         next = value && typeof value === "object" && !Array.isArray(value) ? String((value as Record<string, JsonValue>).PowerState || "Unknown") : "Unknown";
-         setPowerState(next);
-         if (next === expected) break;
-         if (attempt < 5) await new Promise((resolve) => window.setTimeout(resolve, 3_000));
-       }
-       setPowerMessage(next === expected ? `${action} completed; PowerState is ${next}.` : `${action} request returned, but verification found PowerState ${next} (expected ${expected}).`);
+        const expected = ["On", "Reset", "GracefulRestart", "ColdBoot"].includes(action) ? "On" : "Off";
+        const verificationTimeoutMs = 120_000;
+        const verificationIntervalMs = 3_000;
+        const verificationStartedAt = Date.now();
+        const verificationDeadline = verificationStartedAt + verificationTimeoutMs;
+        let next = "Unknown";
+        let attempt = 0;
+        while (Date.now() <= verificationDeadline) {
+          attempt += 1;
+          const elapsedSeconds = Math.min(verificationTimeoutMs / 1_000, Math.floor((Date.now() - verificationStartedAt) / 1_000));
+          setPowerMessage(`Waiting for ${action} confirmation... ${elapsedSeconds}/${verificationTimeoutMs / 1_000}s (attempt ${attempt})`);
+          const verify = await runRequest("GET", joinUrl(entry.baseUrl, powerSystemTarget), undefined, makeHeaders(entry, secret, session));
+          const value = verify ? parseJson(verify.text) : null;
+          next = value && typeof value === "object" && !Array.isArray(value) ? String((value as Record<string, JsonValue>).PowerState || "Unknown") : "Unknown";
+          setPowerState(next);
+          if (next === expected) break;
+          const remainingMs = verificationDeadline - Date.now();
+          if (remainingMs <= 0) break;
+          await new Promise((resolve) => window.setTimeout(resolve, Math.min(verificationIntervalMs, remainingMs)));
+        }
+        setPowerMessage(next === expected ? `${action} completed; PowerState is ${next}.` : `${action} request returned, but verification timed out after ${verificationTimeoutMs / 1_000}s with PowerState ${next} (expected ${expected}).`);
     } catch (error) { setPowerMessage(error instanceof Error ? error.message : String(error)); }
     finally { setPowerBusy(false); }
   };
