@@ -623,8 +623,11 @@ cmd_build() {
 }
 
 cmd_test() {
-  if ! compgen -G "$ROOT_DIR/test/*.test.js" >/dev/null; then
-    echo "No backend test files were found under $ROOT_DIR/test; refusing to report a false pass." >&2
+  if ! find "$ROOT_DIR" \
+    -path "$ROOT_DIR/node_modules" -prune -o \
+    -path "$ROOT_DIR/fileapi_ui/node_modules" -prune -o \
+    -type f -name '*.test.js' -print -quit | grep -q .; then
+    echo "No backend test files were found under $ROOT_DIR; refusing to report a false pass." >&2
     return 1
   fi
   npm test --prefix "$ROOT_DIR"
@@ -664,10 +667,6 @@ preflight_upstream() {
 
   echo "Upgrade: validating dependencies and tests before changing the active checkout..."
   ROOT_DIR="$checkout"
-  if compgen -G "$old_root/test/*.test.js" >/dev/null; then
-    mkdir -p "$checkout/test"
-    cp "$old_root"/test/*.test.js "$checkout/test/"
-  fi
   if ! ensure_node || ! install_server_node_dependencies || ! cmd_test; then
     cleanup_preflight
     echo "Upgrade preflight failed; the active checkout was not changed." >&2
