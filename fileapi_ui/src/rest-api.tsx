@@ -6,7 +6,7 @@ import { PaneResizeHandle } from "./resizable-pane";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
 import { MobileChoiceMenu } from "./ui/MobileChoiceMenu";
-import { RestPollingController } from "./rest-polling";
+import { ImlMonitorController } from "./iml-monitor";
 import { monitorRedfishTask } from "./rest-task";
 import type { ImlMonitorState, JsonValue, NativeApiResponse, RestApiEntry, RestApiSecret, RestAuthMode, RestFailureType, RestMethod, RestSession, RestVendor } from "./rest-contracts";
 export type { RestApiEntry, RestApiSecret, RestAuthMode, RestMethod, RestVendor } from "./rest-contracts";
@@ -357,7 +357,9 @@ export function RestApiWorkspace(props: Props) {
   const [imlNewestFirst, setImlNewestFirst] = useState(true);
   const [imlPolling, setImlPolling] = useState(false);
   const [imlInterval, setImlInterval] = useState(5000);
-  const imlControllerRef = useRef<RestPollingController | null>(null);
+  const imlControllerRef = useRef<ImlMonitorController<Record<string, JsonValue>> | null>(null);
+  const imlStateRef = useRef<ImlMonitorState>("stopped");
+  const imlTargetsRef = useRef<HpeTargets | null>(null);
   const [powerOpen, setPowerOpen] = useState(false);
   const [powerState, setPowerState] = useState("Unknown");
   const [powerActions, setPowerActions] = useState<string[]>([]);
@@ -489,13 +491,15 @@ export function RestApiWorkspace(props: Props) {
     };
   }, []);
   useEffect(() => () => stopEntryPaneResize(), []);
+  const previousEntryIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    const previousEntryId = entry?.id;
-    return () => {
+    const previousEntryId = previousEntryIdRef.current;
+    if (previousEntryId && previousEntryId !== entry?.id) {
       imlControllerRef.current?.stop("entry-switch");
       setImlPolling(false);
       clearSessionForEntry(previousEntryId);
-    };
+    }
+    previousEntryIdRef.current = entry?.id;
   }, [entry?.id]);
   useEffect(() => () => {
     imlControllerRef.current?.stop("unmount");
@@ -1217,7 +1221,8 @@ export function RestApiWorkspace(props: Props) {
   };
   const fetchIml = async (workflowId = crypto.randomUUID()) => {
     if (!entry) return;
-    const targets = await discoverHpeTargets();
+    const targets = imlTargetsRef.current || await discoverHpeTargets();
+    imlTargetsRef.current = targets;
     if (!targets.iml) throw new Error("HPE IML resource was not advertised.");
     const collection = await readCollection(targets.iml);
     const members = collection.members;
@@ -1227,17 +1232,46 @@ export function RestApiWorkspace(props: Props) {
       const unique = new Map(merged.map((row, index) => [String(row["@odata.id"] || row.Id || `${row.Message}-${row.Created || index}`), row]));
       return [...unique.values()].slice(0, 500);
     });
+    return members;
   };
   const startImlPolling = () => {
-    if (imlInterval < 3000) return;
-    const controller = new RestPollingController();
+    if (imlInterval < 3000 || !entry) return;
     const workflowId = crypto.randomUUID();
+    const controller = new ImlMonitorController<Record<string, JsonValue>>();
     imlControllerRef.current?.stop("replaced");
     imlControllerRef.current = controller;
-    controller.start({ workflowId, operation: "IML monitoring", intervalMs: imlInterval, poll: async () => { await fetchIml(workflowId); }, onStop: () => setImlPolling(false) });
+    imlTargetsRef.current = null;
+    controller.start({
+      workflowId,
+      intervalMs: imlInterval,
+      login: async () => {
+        if (!sessionToken && !secret.cookie) {
+          await login();
+          if (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.cookie) {
+            throw new Error("IML monitor could not establish a REST session.");
+          }
+        }
+      },
+      discover: async () => {
+        imlTargetsRef.current = await discoverHpeTargets();
+      },
+      fetch: async () => {
+        await fetchIml(workflowId);
+        return { entries: imlRows, receivedAt: Date.now(), connectionGeneration: 0, sessionGeneration: 0 };
+      },
+      onState: (state) => {
+        imlStateRef.current = state;
+        setImlPolling(state !== "stopped" && state !== "stopped-by-user");
+      },
+      onError: (monitorError) => setError(monitorError.message),
+      onStop: () => setImlPolling(false),
+    });
     setImlPolling(true);
   };
-  const stopImlPolling = () => { imlControllerRef.current?.stop("manual"); setImlPolling(false); };
+  const stopImlPolling = () => {
+    imlControllerRef.current?.stop("manual");
+    setImlPolling(false);
+  };
   const discoverPower = async () => {
     if (!entry) return;
     setPowerOpen(true); setPowerMessage("");
