@@ -89,6 +89,7 @@ body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI",
   inset: 0;
   z-index: 100;
 }
+.explorer > .floating-dialog-layer { z-index: var(--z-modal); }
 .account-control,
 .location-control { z-index: 2; }
 .account-menu,
