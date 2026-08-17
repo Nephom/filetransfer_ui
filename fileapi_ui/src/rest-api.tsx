@@ -355,7 +355,7 @@ export function RestApiWorkspace(props: Props) {
   const [powerState, setPowerState] = useState("Unknown");
   const [powerActions, setPowerActions] = useState<string[]>([]);
   const [powerResetTarget, setPowerResetTarget] = useState("");
-  const [powerSystemTarget, setPowerSystemTarget] = useState("/redfish/v1/Systems/1");
+  const [powerSystemTarget, setPowerSystemTarget] = useState("");
   const [powerResetTypes, setPowerResetTypes] = useState<string[]>([]);
   const [powerButtonTarget, setPowerButtonTarget] = useState("");
   const [powerButtonTypes, setPowerButtonTypes] = useState<string[]>([]);
@@ -892,15 +892,112 @@ export function RestApiWorkspace(props: Props) {
       }
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
   };
+  type HpeTargets = {
+    system: string;
+    chassis: string;
+    manager: string;
+    updateService: string;
+    iml: string;
+    devices: string;
+    bios: string;
+    biosSettings: string;
+    firmwareInventory: string;
+    powerSystem: string;
+  };
+  type CollectionResult = {
+    root: Record<string, JsonValue>;
+    members: Record<string, JsonValue>[];
+    errors: string[];
+  };
+  const readJsonResource = async (target: string) => {
+    if (!entry || !target) throw new Error("Redfish resource target is missing.");
+    const result = await runRequest("GET", joinUrl(entry.baseUrl, target));
+    const value = result ? parseJson(result.text) : null;
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Redfish resource did not return an object: ${target}`);
+    return value as Record<string, JsonValue>;
+  };
+  const readCollection = async (target: string, inlineKeys: string[] = []): Promise<CollectionResult> => {
+    const members: Record<string, JsonValue>[] = [];
+    const errors: string[] = [];
+    let next = target;
+    let firstRoot: Record<string, JsonValue> = {};
+    const visited = new Set<string>();
+    while (next && !visited.has(next)) {
+      visited.add(next);
+      const root = await readJsonResource(next);
+      if (!Object.keys(firstRoot).length) firstRoot = root;
+      const inline = inlineKeys.flatMap((key) => Array.isArray(root[key]) ? root[key] : []).filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item)));
+      const collectionMembers = Array.isArray(root.Members) ? root.Members : inline;
+      for (const member of collectionMembers) {
+        if (!member || typeof member !== "object" || Array.isArray(member)) continue;
+        const memberTarget = typeof member["@odata.id"] === "string" ? String(member["@odata.id"]) : "";
+        if (!memberTarget || Object.keys(member).some((key) => !key.startsWith("@odata."))) {
+          members.push(member);
+          continue;
+        }
+        try {
+          members.push(await readJsonResource(memberTarget));
+        } catch (error) {
+          errors.push(`${memberTarget}: ${error instanceof Error ? error.message : String(error)}`);
+          members.push(member);
+        }
+      }
+      const nextTarget = root["Members@odata.nextLink"] || root["@odata.nextLink"];
+      next = typeof nextTarget === "string" ? nextTarget : "";
+    }
+    return { root: firstRoot, members, errors };
+  };
+  const discoverHpeTargets = async (): Promise<HpeTargets> => {
+    const root = await readJsonResource("/redfish/v1");
+    const link = (resource: Record<string, JsonValue>, key: string) => {
+      const value = resource[key];
+      return value && typeof value === "object" && !Array.isArray(value) && typeof value["@odata.id"] === "string" ? String(value["@odata.id"]) : "";
+    };
+    const firstMember = async (target: string) => {
+      if (!target) return "";
+      const collection = await readJsonResource(target);
+      const first = Array.isArray(collection.Members) ? collection.Members.find((item) => item && typeof item === "object" && !Array.isArray(item) && typeof item["@odata.id"] === "string") : null;
+      return first && typeof first === "object" && !Array.isArray(first) ? String(first["@odata.id"]) : target;
+    };
+    const systems = link(root, "Systems");
+    const chassis = link(root, "Chassis");
+    const managers = link(root, "Managers");
+    const updateService = link(root, "UpdateService");
+    const system = await firstMember(systems);
+    const chassisTarget = await firstMember(chassis);
+    const manager = await firstMember(managers);
+    const systemResource = system ? await readJsonResource(system) : {};
+    const chassisResource = chassisTarget ? await readJsonResource(chassisTarget) : {};
+    const managerResource = manager ? await readJsonResource(manager) : {};
+    const updateServiceResource = updateService ? await readJsonResource(updateService) : {};
+    const logServices = link(systemResource, "LogServices");
+    const managerLogServices = link(managerResource, "LogServices");
+    const iml = logServices ? `${logServices}/IML/Entries` : "";
+    const devices = link(chassisResource, "Devices") || (chassisTarget ? `${chassisTarget}/Devices` : "");
+    const bios = link(systemResource, "Bios") || (system ? `${system}/Bios` : "");
+    return {
+      system,
+      chassis: chassisTarget,
+      manager,
+      updateService,
+      iml: iml || (managerLogServices ? `${managerLogServices}/IML/Entries` : ""),
+      devices,
+      bios,
+      biosSettings: bios ? `${bios}/Settings` : "",
+      firmwareInventory: link(updateServiceResource, "FirmwareInventory") || (updateService ? `${updateService}/FirmwareInventory` : ""),
+      powerSystem: system,
+    };
+  };
   const openDevices = async () => {
     if (!entry) return;
     setLoading(true); setError("");
     try {
-      const result = await runRequest("GET", joinUrl(entry.baseUrl, "/redfish/v1/Chassis/1/Devices"));
-      if (result) {
-        setDevicesData(parseJson(result.text));
-        setDevicesOpen(true);
-      }
+      const targets = await discoverHpeTargets();
+      if (!targets.devices) throw new Error("HPE Chassis Devices resource was not advertised.");
+      const collection = await readCollection(targets.devices);
+      setDevicesData({ ...collection.root, Members: collection.members });
+      setDevicesOpen(true);
+      if (collection.errors.length) setError(`Partial failure: ${collection.errors.join("; ")}`);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally { setLoading(false); }
@@ -961,24 +1058,17 @@ export function RestApiWorkspace(props: Props) {
     const started = performance.now();
     setHardwareTool(tool); setHardwareOpen(true); setHardwareLoading(true); setHardwareError("");
     try {
-      const result = await runRequest("GET", joinUrl(entry.baseUrl, tool.path));
-      const parsed = result ? parseJson(result.text) : null;
-      const root = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, JsonValue> : {};
-      const members = Array.isArray(root.Members)
-        ? root.Members.filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
-        : [root];
-      setHardwareRows(members); setHardwareRaw(parsed); setHardwareUpdatedAt(Date.now());
+      const collection = await readCollection(tool.path, ["PowerSupplies", "Temperatures"]);
+      setHardwareRows(collection.members.length ? collection.members : [collection.root]);
+      setHardwareRaw(collection.root); setHardwareUpdatedAt(Date.now());
+      if (collection.errors.length) setHardwareError(`Partial failure: ${collection.errors.join("; ")}`);
     } catch (requestError) {
       setHardwareError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally { setHardwareDurationMs(Math.round(performance.now() - started)); setHardwareLoading(false); }
   };
   const discoverHardwareTools = async (): Promise<HardwareTool[]> => {
     if (!entry) return [];
-    const read = async (path: string) => {
-      const result = await runRequest("GET", joinUrl(entry.baseUrl, path));
-      const value = result ? parseJson(result.text) : null;
-      return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {};
-    };
+    const read = readJsonResource;
     const link = (resource: Record<string, JsonValue>, key: string) => {
       const value = resource[key];
       return value && typeof value === "object" && !Array.isArray(value) && typeof value["@odata.id"] === "string" ? value["@odata.id"] : "";
@@ -1015,11 +1105,10 @@ export function RestApiWorkspace(props: Props) {
     const discoveredTools = await discoverHardwareTools();
     for (const tool of discoveredTools) {
       try {
-        const result = await runRequest("GET", joinUrl(entry.baseUrl, tool.path));
-        const parsed = result ? parseJson(result.text) : null;
-        raw[tool.id] = parsed;
-        const root = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, JsonValue> : {};
-        const members = Array.isArray(root.Members) ? root.Members : Array.isArray(root.PowerSupplies) ? root.PowerSupplies : Array.isArray(root.Temperatures) ? root.Temperatures : [root];
+        const collection = await readCollection(tool.path, ["PowerSupplies", "Temperatures"]);
+        raw[tool.id] = collection.root;
+        const root = collection.root;
+        const members = collection.members.length ? collection.members : [root];
         const groupRows: Record<string, JsonValue>[] = [];
         members.filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item))).forEach((item) => {
           const status = item.Status && typeof item.Status === "object" && !Array.isArray(item.Status)
@@ -1029,6 +1118,7 @@ export function RestApiWorkspace(props: Props) {
           rows.push(row); groupRows.push(row);
         });
         groups.push({ tool, rows: groupRows });
+        if (collection.errors.length) failures.push(`${tool.label}: ${collection.errors.join(", ")}`);
       } catch (error) { failures.push(`${tool.label}: ${error instanceof Error ? error.message : String(error)}`); }
     }
     setHardwareSummaryGroups(groups); setHardwareRows(rows); setHardwareRaw(raw); setHardwareUpdatedAt(Date.now()); setHardwareDurationMs(Math.round(performance.now() - started)); setHardwareLoading(false); setHardwareError(failures.length ? `Partial failure: ${failures.join("; ")}` : "");
@@ -1044,11 +1134,11 @@ export function RestApiWorkspace(props: Props) {
   };
   const fetchIml = async (workflowId = crypto.randomUUID()) => {
     if (!entry) return;
-    const result = await runRequest("GET", joinUrl(entry.baseUrl, "/redfish/v1/Systems/1/LogServices/IML/Entries"), undefined, makeHeaders(entry, secret, session), workflowId);
-    if (!result) return;
-    const parsed = parseJson(result.text);
-    const root = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, JsonValue> : {};
-    const members = Array.isArray(root.Members) ? root.Members.filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
+    const targets = await discoverHpeTargets();
+    if (!targets.iml) throw new Error("HPE IML resource was not advertised.");
+    const collection = await readCollection(targets.iml);
+    const members = collection.members;
+    if (collection.errors.length) setError(`Partial failure: ${collection.errors.join("; ")}`);
     setImlRows((current) => {
       const merged = [...members, ...current];
       const unique = new Map(merged.map((row, index) => [String(row["@odata.id"] || row.Id || `${row.Message}-${row.Created || index}`), row]));
@@ -1069,11 +1159,12 @@ export function RestApiWorkspace(props: Props) {
     if (!entry) return;
     setPowerOpen(true); setPowerMessage("");
     try {
-       const result = await runRequest("GET", joinUrl(entry.baseUrl, powerSystemTarget));
+       const targets = await discoverHpeTargets();
+       const result = await runRequest("GET", joinUrl(entry.baseUrl, targets.powerSystem));
       const value = result ? parseJson(result.text) : null;
       if (!value || typeof value !== "object" || Array.isArray(value)) return;
        const root = value as Record<string, JsonValue>;
-       if (typeof root["@odata.id"] === "string") setPowerSystemTarget(String(root["@odata.id"]));
+        if (typeof root["@odata.id"] === "string") setPowerSystemTarget(String(root["@odata.id"]));
        setPowerState(String(root.PowerState || "Unknown"));
        const actions = root.Actions && typeof root.Actions === "object" && !Array.isArray(root.Actions) ? root.Actions as Record<string, JsonValue> : {};
        const reset = Object.entries(actions).find(([key]) => /Reset$|ComputerSystem\.Reset/i.test(key));
@@ -1103,7 +1194,9 @@ export function RestApiWorkspace(props: Props) {
   const loadBios = async () => {
     if (!entry) return;
     try {
-      const result = await runRequest("GET", joinUrl(entry.baseUrl, "/redfish/v1/Systems/1/Bios"));
+       const targets = await discoverHpeTargets();
+       if (!targets.bios) throw new Error("HPE BIOS resource was not advertised.");
+       const result = await runRequest("GET", joinUrl(entry.baseUrl, targets.bios));
       const value = result ? parseJson(result.text) : null;
       if (!value || typeof value !== "object" || Array.isArray(value)) return;
       const root = value as Record<string, JsonValue>;
@@ -1116,30 +1209,25 @@ export function RestApiWorkspace(props: Props) {
      const payload = { Attributes: biosPatch };
      if (!Object.keys(payload.Attributes).length) { setBiosMessage("No BIOS changes are pending."); return; }
     if (!window.confirm(`Apply BIOS payload?\n${JSON.stringify(payload, null, 2)}`)) return;
-     try { const result = await runRequest("PATCH", joinUrl(entry.baseUrl, "/redfish/v1/Systems/1/Bios/Settings"), JSON.stringify(payload), [["Content-Type", "application/json"], ...makeHeaders(entry, secret, session)]); const response = result ? parseJson(result.text) : null; setBiosMessage(`${response && typeof response === "object" && !Array.isArray(response) && response.RebootRequired ? "BIOS PATCH applied. Reboot required." : "BIOS PATCH applied."} Payload: ${JSON.stringify(payload.Attributes)}`); await loadBios(); }
+      try { const targets = await discoverHpeTargets(); if (!targets.biosSettings) throw new Error("HPE BIOS settings resource was not advertised."); const result = await runRequest("PATCH", joinUrl(entry.baseUrl, targets.biosSettings), JSON.stringify(payload), [["Content-Type", "application/json"], ...makeHeaders(entry, secret, session)]); const response = result ? parseJson(result.text) : null; setBiosMessage(`${response && typeof response === "object" && !Array.isArray(response) && response.RebootRequired ? "BIOS PATCH applied. Reboot required." : "BIOS PATCH applied."} Payload: ${JSON.stringify(payload.Attributes)}`); await loadBios(); }
     catch (error) { setBiosMessage(error instanceof Error ? error.message : String(error)); }
   };
   const enterBiosSetup = async () => {
     if (!window.confirm("Schedule BIOS Setup for the next boot? The server will require a reboot and may interrupt services.")) return;
     if (!entry) return;
-     try { const result = await runRequest("PATCH", joinUrl(entry.baseUrl, "/redfish/v1/Systems/1"), JSON.stringify({ Boot: { BootSourceOverrideTarget: "BiosSetup", BootSourceOverrideEnabled: "Once" } }), [["Content-Type", "application/json"], ...makeHeaders(entry, secret, session)]); const response = result ? parseJson(result.text) : null; setBiosMessage(response && typeof response === "object" && !Array.isArray(response) && response.RebootRequired ? "BIOS Setup scheduled for next boot. Reboot required." : "BIOS Setup request accepted."); }
+      try { const targets = await discoverHpeTargets(); if (!targets.system) throw new Error("HPE System resource was not advertised."); const result = await runRequest("PATCH", joinUrl(entry.baseUrl, targets.system), JSON.stringify({ Boot: { BootSourceOverrideTarget: "BiosSetup", BootSourceOverrideEnabled: "Once" } }), [["Content-Type", "application/json"], ...makeHeaders(entry, secret, session)]); const response = result ? parseJson(result.text) : null; setBiosMessage(response && typeof response === "object" && !Array.isArray(response) && response.RebootRequired ? "BIOS Setup scheduled for next boot. Reboot required." : "BIOS Setup request accepted."); }
     catch (error) { setBiosMessage(error instanceof Error ? error.message : String(error)); }
   };
   const loadFirmware = async () => {
     if (!entry) return;
     try {
-      const inventory = await runRequest("GET", joinUrl(entry.baseUrl, "/redfish/v1/UpdateService/FirmwareInventory"));
-      const parsedInventory = inventory ? parseJson(inventory.text) : null;
-      const root = parsedInventory && typeof parsedInventory === "object" && !Array.isArray(parsedInventory) ? parsedInventory as Record<string, JsonValue> : {};
-      const inventoryRefs = Array.isArray(root.Members) ? root.Members.filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item))) : [];
-      const inventoryRows = (await Promise.all(inventoryRefs.map(async (item) => {
-        const target = typeof item["@odata.id"] === "string" ? String(item["@odata.id"]) : "";
-        if (!target) return item;
-        try { const result = await runRequest("GET", joinUrl(entry.baseUrl, target)); const value = result ? parseJson(result.text) : null; return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : item; }
-        catch { return item; }
-      }))).filter((item): item is Record<string, JsonValue> => Boolean(item && typeof item === "object" && !Array.isArray(item)));
-      setFirmwareInventory(inventoryRows); setFirmwareRaw(root);
-      const service = await runRequest("GET", joinUrl(entry.baseUrl, "/redfish/v1/UpdateService"));
+       const targets = await discoverHpeTargets();
+       if (!targets.updateService) throw new Error("HPE UpdateService resource was not advertised.");
+        if (!targets.firmwareInventory) throw new Error("HPE FirmwareInventory resource was not advertised.");
+        const collection = await readCollection(targets.firmwareInventory);
+       const inventoryRows = collection.members;
+       setFirmwareInventory(inventoryRows); setFirmwareRaw(collection.root);
+       const service = await runRequest("GET", joinUrl(entry.baseUrl, targets.updateService));
       const serviceValue = service ? parseJson(service.text) : null;
       const actions = serviceValue && typeof serviceValue === "object" && !Array.isArray(serviceValue) ? collectRedfishActions(serviceValue) : [];
       const action = actions.find((item) => /SimpleUpdate|AddFromUri/.test(item.name));
@@ -1149,8 +1237,8 @@ export function RestApiWorkspace(props: Props) {
       const advertised = JSON.stringify(serviceRecord).toLowerCase();
       setFirmwareSupportsTpm(advertised.includes("tpm"));
       setFirmwareSupportsTarget(advertised.includes("updatetarget") || inventoryRows.some((item) => typeof item["@odata.id"] === "string"));
-      setFirmwareSupportsRepository(advertised.includes("updaterepository"));
-      setFirmwareOpen(true); setFirmwareMessage("");
+       setFirmwareSupportsRepository(advertised.includes("updaterepository"));
+       setFirmwareOpen(true); setFirmwareMessage(collection.errors.length ? `Partial failure: ${collection.errors.join("; ")}` : "");
     } catch (error) { setFirmwareMessage(error instanceof Error ? error.message : String(error)); }
   };
   const startFirmware = async () => {
@@ -1191,12 +1279,16 @@ export function RestApiWorkspace(props: Props) {
   };
   const resetLogs = async () => {
     if (!entry || !window.confirm(`Clear IEL, IML, AHS and reset iLO for ${entry.baseUrl}?`)) return;
-    const targets = [
-      ["IEL", "/redfish/v1/Managers/1/LogServices/IEL/Actions/LogService.ClearLog"],
-      ["IML", "/redfish/v1/Systems/1/LogServices/IML/Actions/LogService.ClearLog"],
-      ["AHS", "/redfish/v1/Managers/1/ActiveHealthSystem/Actions/HpeiLOActiveHealthSystem.ClearLog"],
-      ["iLO reset", "/redfish/v1/Managers/1/Actions/Manager.Reset"],
-    ];
+     let hpeTargets: HpeTargets;
+     try { hpeTargets = await discoverHpeTargets(); }
+     catch (error) { setResetMessage(error instanceof Error ? error.message : String(error)); return; }
+     if (!hpeTargets.manager || !hpeTargets.system) { setResetMessage("HPE Manager or System resource was not advertised."); return; }
+     const targets = [
+       ["IEL", `${hpeTargets.manager}/LogServices/IEL/Actions/LogService.ClearLog`],
+       ["IML", `${hpeTargets.system}/LogServices/IML/Actions/LogService.ClearLog`],
+       ["AHS", `${hpeTargets.manager}/ActiveHealthSystem/Actions/HpeiLOActiveHealthSystem.ClearLog`],
+       ["iLO reset", `${hpeTargets.manager}/Actions/Manager.Reset`],
+     ];
     setResetOpen(true); setResetMessage(""); setResetSteps([]);
     let managerResetRequested = false;
     for (const [name, path] of targets) {
