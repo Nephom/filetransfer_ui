@@ -1345,6 +1345,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const shellInputRef = useRef("");
   const dragPreparationRef = useRef(new Map<string, Promise<string>>());
   const queueProgressSamplesRef = useRef(new Map<string, { bytes: number; at: number }[]>());
+  const latestQueueProgressRef = useRef(new Map<string, QueueProgress>());
   const queueCompletionHandlersRef = useRef(new Map<string, (destination: string) => Promise<void>>());
   const dragExpandTimerRef = useRef<number | undefined>(undefined);
   const dragScrollIntervalRef = useRef<number | null>(null);
@@ -3262,6 +3263,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       previousSample,
     );
     queueProgressSamplesRef.current.set(id, [...previousSample, { bytes: completedBytes, at: now }].filter((sample) => now - sample.at <= 3000));
+    latestQueueProgressRef.current.set(id, progress);
     updateQueueItem(id, { progress, detail: `${formatSize(completedBytes)}${totalBytes ? ` / ${formatSize(totalBytes)}` : ""}${formatQueueProgress(progress)}` });
     return progress;
   };
@@ -3272,6 +3274,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     if (!current || ["completed", "failed", "cancelled"].includes(current.status)) return;
     cancelledQueueItemsRef.current.add(id);
     queueProgressSamplesRef.current.delete(id);
+    latestQueueProgressRef.current.delete(id);
     queueCompletionHandlersRef.current.delete(id);
     void invoke("cancel_transfer", { transferId: id })
       .then(() => logQueueEvent(current, "cancel_requested", { backendCancelSucceeded: true, alreadyRunning: current.status === "running" }))
@@ -3287,6 +3290,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     }
     cancelledQueueItemsRef.current.add(id);
     queueProgressSamplesRef.current.delete(id);
+    latestQueueProgressRef.current.delete(id);
     queueCompletionHandlersRef.current.delete(id);
     setTransferQueue((current) => current.filter((item) => item.id !== id));
   };
@@ -3444,7 +3448,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       (event) => {
         if (event.payload.transferId !== item.id) return;
         const { bytesCompleted, bytesTotal } = event.payload;
-        updateQueueProgress(item.id, bytesCompleted, bytesTotal ?? null);
+        const knownTotalBytes = latestQueueProgressRef.current.get(item.id)?.totalBytes
+          ?? item.progress?.totalBytes
+          ?? null;
+        updateQueueProgress(item.id, bytesCompleted, bytesTotal ?? knownTotalBytes);
       },
     );
     try {
@@ -3469,9 +3476,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         queueCompletionHandlersRef.current.delete(item.id);
       }
       if (isQueueItemCancelled(item.id)) return;
+      const latestProgress = latestQueueProgressRef.current.get(item.id) || item.progress;
       updateQueueItem(item.id, {
         status: "completed",
-        detail: `Downloaded to ${destination}.${item.progress ? formatQueueProgress(item.progress) : ""}`,
+        detail: `Downloaded to ${destination}.${formatQueueProgress(latestProgress)}`,
       });
       writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded to ${destination}.`);
     } catch (error) {
