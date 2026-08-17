@@ -945,8 +945,8 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
         <label>HTTPS port<input inputMode="numeric" value={session.port} onChange={(event) => setSession((current) => ({ ...current, port: event.target.value }))} /></label>
         <label>Username<input value={session.username} onChange={(event) => setSession((current) => ({ ...current, username: event.target.value }))} /></label>
         <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-        <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
         <div className="login-toggle-row" role="group" aria-label="Login options">
+          <button type="submit" className="login-submit-button" disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
           <button type="button" className={`login-toggle-button${session.ignoreTlsErrors ? " enabled" : ""}`} aria-pressed={session.ignoreTlsErrors} onClick={() => setSession((current) => ({ ...current, ignoreTlsErrors: !current.ignoreTlsErrors }))} title="Disable HTTPS certificate verification for this API server">
             <span className="mode-switch-dot" aria-hidden="true" /><span>IGNORE SSL</span>
           </button>

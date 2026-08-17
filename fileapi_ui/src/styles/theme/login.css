@@ -103,6 +103,22 @@
   box-shadow: 0 16px 36px color-mix(in srgb, var(--color-primary) 30%, transparent);
 }
 
+/* The primary action shares the options row on compact windows. Keep its
+   sizing independent from the direct-child form button contract above. */
+.login .login-submit-button {
+  justify-self: auto;
+  min-width: clamp(120px, 14vw, 142px);
+  min-height: clamp(40px, 5vh, 48px);
+  margin-top: 0;
+  padding: clamp(10px, 1.4vh, 12px) clamp(16px, 2.2vw, 22px);
+  border-radius: 12px;
+  color: var(--color-bg);
+  background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+  font-size: clamp(14px, 1.4vh, var(--font-size-mobile-base));
+  font-weight: 700;
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--color-primary) 22%, transparent);
+}
+
 @media (max-width: 640px) {
   .login { padding: 12px; }
   .login form { width: min(100%, 560px); padding: 24px 20px; border-radius: 22px; }
