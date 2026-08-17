@@ -359,6 +359,8 @@ export function RestApiWorkspace(props: Props) {
   const [imlState, setImlState] = useState<ImlMonitorState>("stopped");
   const [imlRetryCount, setImlRetryCount] = useState(0);
   const [imlLastFetchAt, setImlLastFetchAt] = useState<number | null>(null);
+  const [imlCsvError, setImlCsvError] = useState("");
+  const [imlNextRetryAt, setImlNextRetryAt] = useState<number | null>(null);
   const [imlInterval, setImlInterval] = useState(5000);
   const [imlManualStopped, setImlManualStopped] = useState(false);
   const [ahsTarget, setAhsTarget] = useState("");
@@ -369,6 +371,7 @@ export function RestApiWorkspace(props: Props) {
   const imlTargetsRef = useRef<HpeTargets | null>(null);
   const imlCsvPathRef = useRef<string | null>(null);
   const imlCsvKeysRef = useRef<Set<string>>(new Set());
+  const imlSnapshotRef = useRef<{ keys: Set<string>; count: number; newestTimestamp: number } | null>(null);
   const [powerOpen, setPowerOpen] = useState(false);
   const [powerState, setPowerState] = useState("Unknown");
   const [powerActions, setPowerActions] = useState<string[]>([]);
@@ -506,14 +509,14 @@ export function RestApiWorkspace(props: Props) {
     if (previousEntryId && previousEntryId !== entry?.id) {
       imlControllerRef.current?.stop("entry-switch");
       setImlPolling(false);
-      clearSessionForEntry(previousEntryId);
+      void cleanupRemoteSessionForEntry(previousEntryId);
     }
     previousEntryIdRef.current = entry?.id;
   }, [entry?.id]);
   useEffect(() => () => {
     imlControllerRef.current?.stop("unmount");
     clearAhsTimer();
-    clearSessionForEntry(entry?.id);
+    void cleanupRemoteSessionForEntry(entry?.id);
   }, []);
 
   useEffect(() => {
@@ -751,6 +754,21 @@ export function RestApiWorkspace(props: Props) {
     props.onChangeSecret(entryId, { ...(props.secrets[entryId] || {}), token: undefined, cookie: undefined });
     props.onChangeSessionHeaders(entryId, {});
   };
+  const cleanupRemoteSessionForEntry = async (entryId: string | undefined) => {
+    if (!entryId) return;
+    const targetEntry = props.entries.find((item) => item.id === entryId);
+    const token = sessionTokenRef.current[entryId] || props.sessionHeaders[entryId] || props.secrets[entryId]?.token || "";
+    const location = sessionLocationRef.current[entryId];
+    try {
+      if (targetEntry && token && location) {
+        await requestRest(targetEntry, { ...props.secrets[entryId], token }, {}, "DELETE", resolveEntryResource(targetEntry, location), undefined, makeHeaders(targetEntry, { ...props.secrets[entryId], token }, {}));
+      }
+    } catch (cleanupError) {
+      debugRest({ event: "iml.monitor.session_cleanup", entry: targetEntry?.name, entryId, cleanupFailure: cleanupError instanceof Error ? cleanupError.message : String(cleanupError) });
+    } finally {
+      clearSessionForEntry(entryId);
+    }
+  };
   const clearSession = () => clearSessionForEntry(entry?.id);
 
   const logout = async () => {
@@ -762,15 +780,11 @@ export function RestApiWorkspace(props: Props) {
     setImlPolling(false);
     const location = sessionLocationRef.current[entry.id];
     try {
-      if (location && sessionToken) {
-        const logoutUrl = resolveEntryResource(entry, location);
-        await runRequest("DELETE", logoutUrl, undefined, makeHeaders(entry, { ...secret, token: sessionToken }, {}), crypto.randomUUID(), false);
-      }
+      await cleanupRemoteSessionForEntry(entry.id);
       setMessage("REST session logged out.");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally {
-      clearSession();
       setLoading(false);
     }
   };
@@ -847,7 +861,8 @@ export function RestApiWorkspace(props: Props) {
     } finally { setLoading(false); }
   };
 
-  const login = async () => {
+  const login = async (force = false) => {
+    if (force) clearSessionForEntry(entry?.id);
     if (loginPromiseRef.current) return loginPromiseRef.current;
     const operation = (async () => {
     if (!entry) return;
@@ -1244,6 +1259,15 @@ export function RestApiWorkspace(props: Props) {
     if (!targets.iml) throw new Error("HPE IML resource was not advertised.");
     const collection = await readCollection(targets.iml);
     const members = collection.members;
+    const currentKeys = new Set(members.map(imlEntryKey));
+    const newestTimestamp = members.reduce((latest, row) => Math.max(latest, Date.parse(String(row.Created || row.EventTimestamp || "")) || 0), 0);
+    const previousSnapshot = imlSnapshotRef.current;
+    const snapshotChanged = Boolean(previousSnapshot && (members.length < previousSnapshot.count || newestTimestamp < previousSnapshot.newestTimestamp || [...previousSnapshot.keys].some((key) => !currentKeys.has(key))));
+    if (snapshotChanged) {
+      setAhsMessage("IML snapshot changed; existing local entries were retained.");
+      debugRest({ event: "iml.monitor.snapshot_changed", workflowId, previousCount: previousSnapshot?.count, currentCount: members.length, boundaryReason: "clear-suspected" });
+    }
+    imlSnapshotRef.current = { keys: currentKeys, count: members.length, newestTimestamp };
     await appendImlCsvRows(members);
     if (collection.errors.length) setError(`Partial failure: ${collection.errors.join("; ")}`);
     setImlRows((current) => {
@@ -1271,8 +1295,16 @@ export function RestApiWorkspace(props: Props) {
     if (!targets.serialNumber) throw new Error("HPE ComputerSystem SerialNumber was not advertised.");
     const fields = ["@odata.id", "Id", "Created", "EventTimestamp", "Severity", "MessageId", "Message", "MessageArgs", "receivedAt", "connectionGeneration"];
     const timestamp = new Date().toISOString().replace(/T/, "_").replace(/:/g, "").replace(/\..+Z$/, "");
-    imlCsvPathRef.current = await invoke<string>("create_iml_csv_session", { serialNumber: targets.serialNumber, timestamp, header: `${fields.join(",")}\n` });
-    imlCsvKeysRef.current = new Set();
+    try {
+      imlCsvPathRef.current = await invoke<string>("create_iml_csv_session", { serialNumber: targets.serialNumber, timestamp, header: `${fields.join(",")}\n` });
+      imlCsvKeysRef.current = new Set();
+      setImlCsvError("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setImlCsvError(message);
+      debugRest({ event: "iml.monitor.csv_write_failed", error: message });
+      throw error;
+    }
   };
   const appendImlCsvRows = async (rows: Record<string, JsonValue>[]) => {
     if (!imlCsvPathRef.current || !rows.length) return;
@@ -1285,7 +1317,15 @@ export function RestApiWorkspace(props: Props) {
     });
     if (!newRows.length) return;
     const content = newRows.map((row) => ["@odata.id", "Id", "Created", "EventTimestamp", "Severity", "MessageId", "Message", "MessageArgs"].map((key) => csvField(row[key])).concat([csvField(receivedAt), csvField(1)]).join(",")).join("\n") + "\n";
-    await invoke("append_iml_csv_session", { path: imlCsvPathRef.current, content });
+    try {
+      await invoke("append_iml_csv_session", { path: imlCsvPathRef.current, content });
+      setImlCsvError("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setImlCsvError(message);
+      debugRest({ event: "iml.monitor.csv_write_failed", path: imlCsvPathRef.current, error: message });
+      throw error;
+    }
   };
   const startImlPolling = () => {
     if (imlInterval < 3000 || !entry) return;
@@ -1300,12 +1340,14 @@ export function RestApiWorkspace(props: Props) {
     imlTargetsRef.current = null;
     imlCsvPathRef.current = null;
     imlCsvKeysRef.current = new Set();
+    imlSnapshotRef.current = null;
     controller.start({
       workflowId,
       intervalMs: imlInterval,
-      login: async () => {
-        if (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie) {
-          await login();
+      login: async (_signal, force) => {
+        if (force) clearSessionForEntry(entry.id);
+        if (force || (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie)) {
+          await login(force);
           if (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie) {
             throw new Error("IML monitor could not establish a REST session.");
           }
@@ -1328,8 +1370,9 @@ export function RestApiWorkspace(props: Props) {
         setImlRetryCount(retry);
         setError(monitorError.message);
       },
-      onSnapshot: () => setImlLastFetchAt(Date.now()),
-      onStop: () => setImlPolling(false),
+      onSnapshot: () => { setImlLastFetchAt(Date.now()); setImlNextRetryAt(null); },
+      onRetryScheduled: (_retry, nextAttemptAt) => setImlNextRetryAt(nextAttemptAt),
+      onStop: () => { setImlPolling(false); setImlNextRetryAt(null); },
     });
     setImlPolling(true);
   };
@@ -1368,13 +1411,18 @@ export function RestApiWorkspace(props: Props) {
     if (!entry || !ahsTarget) return;
     clearAhsTimer();
     setLoading(true); setError(""); setAhsMessage("");
+    const target = ahsTarget;
+    debugRest({ event: "iml.monitor.ahs_download_start", targetPath: target });
     try {
-      await downloadResource(ahsTarget);
-      clearSession();
+      await downloadResource(target);
+      await cleanupRemoteSessionForEntry(entry.id);
       setAhsTarget("");
       setAhsMessage("AHS download completed.");
+      debugRest({ event: "iml.monitor.ahs_download_complete", targetPath: target });
     } catch (downloadError) {
       setError(downloadError instanceof Error ? downloadError.message : String(downloadError));
+      setAhsMessage("AHS download failed. Retry while the selection window remains open.");
+      debugRest({ event: "iml.monitor.ahs_download_failed", targetPath: target, error: downloadError instanceof Error ? downloadError.message : String(downloadError) });
       startAhsWindow();
     } finally { setLoading(false); }
   };
@@ -1385,14 +1433,14 @@ export function RestApiWorkspace(props: Props) {
       clearAhsTimer();
       setImlManualStopped(false);
       setAhsTarget("");
-      clearSession();
+      void cleanupRemoteSessionForEntry(entry?.id);
       return;
     }
     setImlManualStopped(true);
     void discoverAhs().then((target) => {
       if (target) startAhsWindow();
       else {
-        clearSession();
+        void cleanupRemoteSessionForEntry(entry?.id);
         setAhsMessage("This iLO does not advertise an AHS download resource.");
       }
     }).catch((error) => setAhsMessage(error instanceof Error ? error.message : String(error)));
@@ -1691,7 +1739,7 @@ export function RestApiWorkspace(props: Props) {
         {response && <section className="rest-response"><div className="rest-response-heading"><strong>Response</strong><span className={response.status >= 400 ? "rest-status-error" : "rest-status-ok"}>{response.status}</span><span>{response.headers?.find(([name]) => name.toLowerCase() === "content-type")?.[1] || "unknown content type"}</span><span>{response.body.length} bytes</span></div><div className="rest-view-tabs"><button type="button" className={view === "pretty" ? "active" : ""} onClick={() => setView("pretty")}>Pretty</button><button type="button" className={view === "raw" ? "active" : ""} onClick={() => setView("raw")}>Raw</button><button type="button" className={view === "headers" ? "active" : ""} onClick={() => setView("headers")}>Headers</button></div>{view === "headers" ? <div className="rest-headers">{(response.headers || []).map(([name, value], index) => <div key={`${name}-${index}`}><strong>{name}</strong><span>{name.toLowerCase().includes("authorization") || name.toLowerCase().includes("cookie") || name.toLowerCase().includes("token") ? "••••••••" : value}</span></div>)}</div> : view === "raw" || !json ? <pre className="rest-code">{responseText || "(empty response)"}</pre> : <div className="rest-json-view">{rows.length ? rows.map(([name, value]) => { const resourceLink = value && typeof value === "object" && !Array.isArray(value) && typeof (value as Record<string, unknown>)["@odata.id"] === "string" ? String((value as Record<string, unknown>)["@odata.id"]) : ""; const href = value && typeof value === "object" && !Array.isArray(value) && typeof (value as Record<string, unknown>).href === "string" ? String((value as Record<string, unknown>).href) : ""; const link = resourceLink || href; const target = link || `${normalizePath(path)}/${encodeURIComponent(name)}`; const isLink = Boolean(link); return <button type="button" className="rest-json-row" key={name} onClick={() => value && typeof value === "object" ? void openPath(target) : undefined}><span>{responseEntryName(value, name)}</span><small>{isLink ? "link" : Array.isArray(value) ? "array" : value && typeof value === "object" ? "object" : typeof value}</small><code>{isLink ? link : typeof value === "object" ? "[Open]" : String(value)}</code></button>; }) : <pre className="rest-code">{prettyJson(json)}</pre>}</div>}</section>}
           {devicesOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog" role="dialog" aria-modal="true" aria-labelledby="rest-devices-title"><div className="rest-editor-heading"><strong id="rest-devices-title">HPE Devices</strong><button type="button" onClick={() => setDevicesOpen(false)} aria-label="Close devices table"><CloseIcon size={12} /></button></div><div className="rest-hardware-table-wrap"><table><thead><tr><th>Name</th><th>Location</th><th>Status</th><th>Firmware</th></tr></thead><tbody>{deviceRows.map((device, index) => <tr key={`${String(device.Id || device.Name || "device")}-${index}`}><td>{String(device.Name || device.Id || "Unknown")}</td><td>{String(device.Location || "-")}</td><td>{typeof device.Status === "object" && device.Status && !Array.isArray(device.Status) ? String((device.Status as { [key: string]: JsonValue }).Health || (device.Status as { [key: string]: JsonValue }).State || "-") : String(device.Status || "-")}</td><td>{String(device.FirmwareVersion || device.Version || "-")}</td></tr>)}</tbody></table>{!deviceRows.length && <p className="muted">The resource returned no device members.</p>}</div></div></div>}
           {hardwareOpen && hardwareTool && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog" role="dialog" aria-modal="true" aria-labelledby="hardware-title"><div className="rest-editor-heading"><strong id="hardware-title">{hardwareTool.label}</strong><button type="button" onClick={() => setHardwareOpen(false)} aria-label="Close hardware inventory"><CloseIcon size={12} /></button></div><div className="rest-hardware-toolbar"><span>{hardwareLoading ? "Refreshing..." : hardwareError || `${hardwareRows.length} rows · ${hardwareUpdatedAt ? new Date(hardwareUpdatedAt).toLocaleString() : "not loaded"}${hardwareDurationMs === null ? "" : ` · ${hardwareDurationMs}ms`}`}</span><button type="button" onClick={() => void loadHardware(hardwareTool)} disabled={hardwareLoading}>Refresh</button><button type="button" onClick={exportHardwareJson} disabled={hardwareLoading}>JSON</button><button type="button" onClick={exportHardwareCsv} disabled={hardwareLoading}>CSV</button></div>{hardwareError ? <div className="notice rest-error">{hardwareError}</div> : <div className="rest-hardware-table-wrap"><table><thead><tr>{hardwareTool.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{hardwareRows.map((row, index) => <tr key={`${hardwareTool.id}-${index}`}>{hardwareTool.columns.map((column) => <td key={column}>{tableCell(row[column])}</td>)}</tr>)}</tbody></table>{!hardwareRows.length && !hardwareLoading && <p className="muted">No inventory members were returned.</p>}</div>}<details><summary>Raw Redfish resource</summary><pre className="rest-code">{hardwareRaw ? JSON.stringify(hardwareRaw, null, 2) : "(empty)"}</pre></details></div></div>}
-          {imlOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-iml-dialog" role="dialog" aria-modal="true" aria-labelledby="iml-title"><div className="rest-editor-heading"><strong id="iml-title">Integrated Management Log</strong><button type="button" onClick={() => { stopImlPolling("close"); setImlOpen(false); }} aria-label="Close IML"><CloseIcon size={12} /></button></div><div className="rest-iml-controls"><input value={imlKeyword} onChange={(event) => setImlKeyword(event.target.value)} placeholder="Keyword" aria-label="IML keyword" /><Dropdown label="IML severity" value={imlSeverity} onChange={setImlSeverity} options={[{ value: "all", label: "All severity" }, { value: "critical", label: "Critical" }, { value: "warning", label: "Warning" }, { value: "ok", label: "OK" }]} /><Dropdown label="IML polling interval" value={String(imlInterval)} onChange={(value) => setImlInterval(Number(value))} options={[{ value: "3000", label: "3 seconds" }, { value: "5000", label: "5 seconds" }, { value: "10000", label: "10 seconds" }]} /><button type="button" onClick={() => void fetchIml()}>Refresh</button><span className="muted">Status: {imlState}{imlRetryCount ? ` · retry ${imlRetryCount}` : ""}{imlLastFetchAt ? ` · last fetch ${new Date(imlLastFetchAt).toLocaleTimeString()}` : ""}</span><button type="button" onClick={imlPolling ? () => stopImlPolling() : startImlPolling}>{imlPolling ? "Stop" : "Start"}</button><button type="button" onClick={() => setImlNewestFirst((value) => !value)}>{imlNewestFirst ? "Newest" : "Oldest"}</button>{imlManualStopped && <button type="button" onClick={() => void downloadAhs()} disabled={!ahsTarget || loading}>{loading ? "Downloading AHS..." : "Download complete AHS log"}</button>}<span className="muted">CSV: {imlCsvPathRef.current || "created when Start completes discovery"}</span></div>{ahsMessage && <div className="notice">{ahsMessage}</div>}<div className="rest-iml-terminal" aria-label="IML live terminal">{visibleImlRows.map((row, index) => <div key={`${String(row["@odata.id"] || row.Id || index)}-${index}`}><span>{String(row.Created || row.EventTimestamp || "-")}</span> <b>{String(row.Severity || "UNKNOWN")}</b> {String(row.Message || row.MessageId || "-")}</div>)}</div></div></div>}
+          {imlOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-iml-dialog" role="dialog" aria-modal="true" aria-labelledby="iml-title"><div className="rest-editor-heading"><strong id="iml-title">Integrated Management Log</strong><button type="button" onClick={() => { stopImlPolling("close"); setImlOpen(false); }} aria-label="Close IML"><CloseIcon size={12} /></button></div><div className="rest-iml-controls"><input value={imlKeyword} onChange={(event) => setImlKeyword(event.target.value)} placeholder="Keyword" aria-label="IML keyword" /><Dropdown label="IML severity" value={imlSeverity} onChange={setImlSeverity} options={[{ value: "all", label: "All severity" }, { value: "critical", label: "Critical" }, { value: "warning", label: "Warning" }, { value: "ok", label: "OK" }]} /><Dropdown label="IML polling interval" value={String(imlInterval)} onChange={(value) => setImlInterval(Number(value))} options={[{ value: "3000", label: "3 seconds" }, { value: "5000", label: "5 seconds" }, { value: "10000", label: "10 seconds" }]} /><button type="button" onClick={() => void fetchIml()}>Refresh</button><span className="muted">Status: {imlState}{imlRetryCount ? ` · retry ${imlRetryCount}` : ""}{imlNextRetryAt ? ` · next retry ${new Date(imlNextRetryAt).toLocaleTimeString()}` : ""}{imlLastFetchAt ? ` · last fetch ${new Date(imlLastFetchAt).toLocaleTimeString()}` : ""}</span><button type="button" onClick={imlPolling ? () => stopImlPolling() : startImlPolling}>{imlPolling ? "Stop" : "Start"}</button><button type="button" onClick={() => setImlNewestFirst((value) => !value)}>{imlNewestFirst ? "Newest" : "Oldest"}</button>{imlManualStopped && <button type="button" onClick={() => void downloadAhs()} disabled={!ahsTarget || loading}>{loading ? "Downloading AHS..." : "Download complete AHS log"}</button>}<span className={imlCsvError ? "rest-status-error" : "muted"}>CSV: {imlCsvError || imlCsvPathRef.current || "created when Start completes discovery"}</span></div>{ahsMessage && <div className="notice">{ahsMessage}</div>}<div className="rest-iml-terminal" aria-label="IML live terminal">{visibleImlRows.map((row, index) => <div key={`${String(row["@odata.id"] || row.Id || index)}-${index}`}><span>{String(row.Created || row.EventTimestamp || "-")}</span> <b>{String(row.Severity || "UNKNOWN")}</b> {String(row.Message || row.MessageId || "-")}</div>)}</div></div></div>}
           {powerOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-power-dialog" role="dialog" aria-modal="true" aria-labelledby="power-title"><div className="rest-editor-heading"><strong id="power-title">Power control</strong><button type="button" onClick={() => setPowerOpen(false)} aria-label="Close power controls"><CloseIcon size={12} /></button></div><p>Current PowerState: <strong>{powerState}</strong></p><div className="rest-operation-body"><button type="button" onClick={() => void runPowerAction("On")} disabled={powerBusy || Boolean(powerResetTypes.length && !powerResetTypes.includes("On"))}>On</button><button type="button" onClick={() => void runPowerAction("Off")} disabled={powerBusy || Boolean(powerResetTypes.length && !powerResetTypes.includes("GracefulShutdown"))}>Off</button><button type="button" onClick={() => void runPowerAction("ForceOff")} disabled={powerBusy || Boolean(powerResetTypes.length && !powerResetTypes.includes("ForceOff"))}>Force Off</button><button type="button" onClick={() => void runPowerAction("Reset")} disabled={powerBusy || !powerActions.length}>Reset</button>{powerButtonTypes.includes("Press") && <button type="button" onClick={() => void pressPowerButton("Press")} disabled={powerBusy}>Push Power Button</button>}{powerButtonTypes.includes("PressAndHold") && <button type="button" onClick={() => void pressPowerButton("PressAndHold")} disabled={powerBusy}>Press and Hold</button>}<button type="button" onClick={() => void discoverPower()} disabled={powerBusy}>Refresh capabilities</button></div>{powerMessage && <div className="notice">{powerMessage}</div>}<details><summary>Advertised reset and HPE PowerButton capabilities</summary><pre className="rest-code">{JSON.stringify({ powerActions, resetTarget: powerResetTarget, resetTypes: powerResetTypes, powerButtonTarget, pushTypes: powerButtonTypes, lastRequest: powerLastRequest }, null, 2)}</pre></details></div></div>}
           {biosOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-bios-dialog" role="dialog" aria-modal="true" aria-labelledby="bios-title"><div className="rest-editor-heading"><strong id="bios-title">BIOS settings {biosRaw?.Version ? `· ${String(biosRaw.Version)}` : ""}</strong><button type="button" onClick={() => setBiosOpen(false)} aria-label="Close BIOS settings"><CloseIcon size={12} /></button></div><div className="rest-bios-toolbar"><input value={biosSearch} onChange={(event) => setBiosSearch(event.target.value)} placeholder="Search attribute or value" aria-label="BIOS attribute search" /><button type="button" onClick={() => void loadBios()}>Refresh</button><button type="button" onClick={() => downloadText(`${entry?.name || "rest"}-bios.json`, JSON.stringify(biosRaw, null, 2), "application/json")}>Export JSON</button><button type="button" onClick={() => void enterBiosSetup()}>Enter BIOS Setup</button></div><div className="rest-bios-grid">{visibleBiosKeys.map((key) => { const value = biosDraft[key]; const pending = biosCompare?.[key]; const changed = pending !== undefined && JSON.stringify(pending) !== JSON.stringify(value); const update = (next: JsonValue) => setBiosDraft((current) => ({ ...current, [key]: next })); return <label key={key}><span>{key}{changed ? " · changed" : ""}</span>{typeof value === "boolean" ? <input type="checkbox" checked={value} onChange={(event) => update(event.target.checked)} /> : typeof value === "number" ? <input type="number" value={value} onChange={(event) => update(Number(event.target.value))} /> : <input value={jsonCell(value)} onChange={(event) => update(event.target.value)} />}</label>; })}</div><details><summary>Exact PATCH payload preview</summary><pre className="rest-code">{JSON.stringify({ Attributes: biosDraft }, null, 2)}</pre></details><div className="modal-actions"><button type="button" className="confirm" onClick={() => void applyBios()}>Apply BIOS PATCH</button></div>{biosMessage && <div className="notice">{biosMessage}</div>}<p className="muted">Pending changes are compared with current values; BIOS PATCH responses may require reboot or reset.</p></div></div>}
           {firmwareOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog" role="dialog" aria-modal="true" aria-labelledby="firmware-title"><div className="rest-editor-heading"><strong id="firmware-title">Firmware update</strong><button type="button" onClick={() => setFirmwareOpen(false)} aria-label="Close firmware"><CloseIcon size={12} /></button></div><div className="rest-hardware-toolbar"><input value={firmwareFilter} onChange={(event) => setFirmwareFilter(event.target.value)} placeholder="Search firmware inventory" aria-label="Firmware inventory filter" /><span>{visibleFirmwareInventory.length}/{firmwareInventory.length} inventory items</span><button type="button" onClick={() => void loadFirmware()}>Refresh inventory</button><button type="button" onClick={exportFirmwareJson}>JSON</button><button type="button" onClick={exportFirmwareCsv}>CSV</button></div><div className="rest-hardware-table-wrap"><table><thead><tr><th>Component</th><th>Version</th><th>Location</th><th>Updateable</th><th>Status</th></tr></thead><tbody>{visibleFirmwareInventory.map((item, index) => <tr key={String(item.Id || index)}><td>{jsonCell(item.Name)}</td><td>{jsonCell(item.Version)}</td><td>{jsonCell(item.Location)}</td><td>{jsonCell(item.Updateable)}</td><td>{tableCell(item.Status)}</td></tr>)}</tbody></table>{!visibleFirmwareInventory.length && <p className="muted">No matching firmware inventory items.</p>}</div><details><summary>Raw FirmwareInventory response</summary><pre className="rest-code">{firmwareRaw ? JSON.stringify(firmwareRaw, null, 2) : "(empty)"}</pre></details><label>Firmware URI<input value={firmwareUri} onChange={(event) => setFirmwareUri(event.target.value)} placeholder="https://updates.example.test/ilo.bin" /></label>{firmwareSupportsTarget && <label>Update target<Dropdown label="Update target" value={firmwareTarget} onChange={setFirmwareTarget} placeholder="Service default" options={firmwareInventory.filter((item) => typeof item["@odata.id"] === "string").map((item) => ({ value: String(item["@odata.id"]), label: String(item.Name || item.Id || item["@odata.id"]) }))} /></label>}{firmwareSupportsTpm && <label className="tls-option"><input type="checkbox" checked={firmwareTpmOverride} onChange={(event) => setFirmwareTpmOverride(event.target.checked)} /> TPM override</label>}{firmwareSupportsRepository && <label>Update repository<input value={firmwareUpdateRepository} onChange={(event) => setFirmwareUpdateRepository(event.target.value)} placeholder="Repository name or URI" /></label>}<p className="muted">Endpoint: {firmwareAction || "No advertised SimpleUpdate/AddFromUri action"}</p><div className="modal-actions"><button type="button" className="danger" onClick={() => void startFirmware()} disabled={!firmwareAction}>Build payload preview</button></div>{firmwareMessage && <div className="notice">{firmwareMessage}</div>}{firmwarePreview && <div className="firmware-preview"><strong>Exact POST preview</strong><p><strong>{String(firmwarePreview.method)}</strong> {String(firmwarePreview.endpoint)}</p><pre className="rest-code">{JSON.stringify(firmwarePreview.payload, null, 2)}</pre><div className="modal-actions"><button type="button" onClick={() => setFirmwarePreview(null)}>Cancel</button><button type="button" className="danger" onClick={() => void applyFirmware()}>Confirm and POST</button></div></div>}</div></div>}

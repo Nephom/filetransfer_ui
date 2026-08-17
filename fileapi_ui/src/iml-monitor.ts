@@ -20,12 +20,13 @@ export type ImlMonitorSnapshot<T> = {
 export type ImlMonitorOptions<T> = {
   intervalMs: number;
   workflowId: string;
-  login: (signal: AbortSignal) => Promise<void>;
+  login: (signal: AbortSignal, force: boolean) => Promise<void>;
   discover: (signal: AbortSignal) => Promise<void>;
   fetch: (signal: AbortSignal) => Promise<ImlMonitorSnapshot<T>>;
   onState?: (state: ImlMonitorState) => void;
   onSnapshot?: (snapshot: ImlMonitorSnapshot<T>) => void;
   onError?: (error: ImlMonitorError, retry: number) => void;
+  onRetryScheduled?: (retry: number, nextAttemptAt: number) => void;
   onStop?: (reason: ImlMonitorStopReason) => void;
 };
 
@@ -70,6 +71,7 @@ export class ImlMonitorController<T> {
     this.retry = 0;
     this.connectionGeneration = 0;
     this.sessionGeneration = 0;
+    debugRest({ event: "iml.monitor.start", workflowId: options.workflowId });
     this.setState("connecting");
     void this.run(controller, generation, options);
     return () => this.stop("manual");
@@ -102,17 +104,19 @@ export class ImlMonitorController<T> {
 
   private async connect(controller: AbortController, generation: number, options: ImlMonitorOptions<T>) {
     this.ensureActive(controller, generation);
-    await options.login(controller.signal);
+    await options.login(controller.signal, false);
     this.ensureActive(controller, generation);
     this.sessionGeneration += 1;
     await options.discover(controller.signal);
     this.ensureActive(controller, generation);
     this.connectionGeneration += 1;
     this.retry = 0;
+    debugRest({ event: "iml.monitor.connected", workflowId: options.workflowId, connectionGeneration: this.connectionGeneration, sessionGeneration: this.sessionGeneration });
   }
 
   private async waitBeforeRetry(controller: AbortController, generation: number) {
     const delay = reconnectDelayMs(this.retry);
+    this.options?.onRetryScheduled?.(this.retry, Date.now() + delay);
     await new Promise<void>((resolve, reject) => {
       if (controller.signal.aborted || generation !== this.generation) return reject(abortError());
       const timer = window.setTimeout(resolve, delay);
@@ -124,6 +128,7 @@ export class ImlMonitorController<T> {
   }
 
   private async run(controller: AbortController, generation: number, options: ImlMonitorOptions<T>) {
+    let authenticationRetried = false;
     try {
       await this.connect(controller, generation, options);
       this.setState("monitoring");
@@ -134,10 +139,23 @@ export class ImlMonitorController<T> {
           this.ensureActive(controller, generation);
           options.onSnapshot?.(snapshot);
           this.retry = 0;
+          authenticationRetried = false;
           await this.waitForPoll(controller, generation, options.intervalMs);
         } catch (error) {
           const typed = error as ImlMonitorError;
-          if (classifyImlError(error) === "aborted") return;
+          const kind = classifyImlError(error);
+          if (kind === "aborted") return;
+          if (kind === "authentication" && !authenticationRetried) {
+            authenticationRetried = true;
+            this.setState("reconnecting");
+            await options.login(controller.signal, true);
+            this.sessionGeneration += 1;
+            await options.discover(controller.signal);
+            this.connectionGeneration += 1;
+            this.retry = 0;
+            this.setState("monitoring");
+            continue;
+          }
           await this.recover(typed, controller, generation, options);
         }
       }
@@ -161,6 +179,7 @@ export class ImlMonitorController<T> {
     options.onError?.(error, this.retry);
     if (kind === "authentication") {
       this.setState("authentication-failed");
+      debugRest({ event: "iml.monitor.authentication_failed", workflowId: options.workflowId, status: error.status });
       throw error;
     }
     if (kind === "resource") {
@@ -168,10 +187,12 @@ export class ImlMonitorController<T> {
       throw error;
     }
     this.retry += 1;
+    debugRest({ event: "iml.monitor.disconnected", workflowId: options.workflowId, retry: this.retry, error: error.message });
     this.setState("disconnected");
     await this.waitBeforeRetry(controller, generation);
     this.ensureActive(controller, generation);
     this.setState("reconnecting");
+    debugRest({ event: "iml.monitor.reconnecting", workflowId: options.workflowId, retry: this.retry });
     await this.connect(controller, generation, options);
     this.setState("monitoring");
   }

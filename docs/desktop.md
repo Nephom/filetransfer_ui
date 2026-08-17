@@ -99,6 +99,34 @@ credentials. Switching entries, disconnecting, or unmounting the workspace
 cancels a pending relay. There is no fixed idle timeout while the user remains
 on the same entry.
 
+## HPE IML Monitor
+
+REST API mode includes an HPE IML Monitor for Redfish polling. The monitor
+creates one new CSV session file on the user's Desktop after it discovers the
+HPE `ComputerSystem.SerialNumber`. Each newly received, de-duplicated IML entry
+is appended and flushed immediately. The in-memory display retains at most 50
+entries; the CSV retains the entries received during that monitor workflow.
+
+The monitor uses a process-local Redfish session. It saves the session
+`Location` and sends `DELETE` during logout or workflow cleanup when the
+location is available. Login operations are serialized per workspace. A
+transient request failure enters disconnected/reconnecting states and uses
+bounded backoff with jitter. A 401 causes one session re-login and one retry of
+the failed monitor request. A second authentication failure enters the
+`authentication-failed` state and stops automatic login looping.
+
+Manual `Stop` cancels polling, retry timers, pending discovery, and automatic
+login. Manual Stop retains the session for up to one minute so the user can
+request the complete advertised AHS resource. AHS download has no date-range
+selector and the client does not filter the response by date. Dialog close,
+entry switch, unmount, AHS completion, and selection-window expiry clean up the
+session. AHS discovery accepts only advertised resources on the configured
+entry origin.
+
+IML cannot recover events that iLO loses, clears, or overwrites while the client
+is disconnected. A suspected snapshot change retains local entries and records
+a snapshot boundary; it does not claim recovery of remote history.
+
 ## Operation Logs
 
 Operation logs are JSON Lines stored in the application data directory. They
