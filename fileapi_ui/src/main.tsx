@@ -963,7 +963,6 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
             ]}
           />
         </div>
-        <p className="login-toggle-help">Ignore SSL disables certificate verification. Save User Information stores the username and password in the OS credential store.</p>
         <button disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
         {notice && <output role="alert">{notice}</output>}
       </form>

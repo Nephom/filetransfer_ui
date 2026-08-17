@@ -38,7 +38,6 @@
    fixed flex-basis here keeps the trigger label ("Large") readable instead
    of losing a `flex: 1 1 0` shrink contest against the two toggle buttons. */
 .login.ui-layout-mobile .login-toggle-button { font-size: var(--font-size-mobile-base); }
-.login.ui-layout-mobile .login-toggle-help { font-size: var(--font-size-mobile-small) !important; }
 
 .login .login-toggle-button {
   display: inline-flex;
@@ -77,10 +76,4 @@
   border-color: var(--color-success);
   background: var(--color-success);
   box-shadow: 0 0 10px color-mix(in srgb, var(--color-success) 68%, transparent);
-}
-
-.login-toggle-help {
-  margin: 0 0 var(--space-1) !important;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-small) !important;
 }
