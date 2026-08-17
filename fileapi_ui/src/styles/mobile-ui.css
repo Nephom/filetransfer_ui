@@ -4,10 +4,10 @@
 :root {
   --mobile-ui-font: var(--font-size-mobile-base);
   --mobile-ui-secondary-font: var(--font-size-mobile-small);
-  --mobile-ui-heading-font: 20px;
+  --mobile-ui-heading-font: 16px;
   --mobile-ui-control-height: var(--control-height-mobile);
-  --mobile-ui-gap: 8px;
-  --mobile-ui-padding: 9px 12px;
+  --mobile-ui-gap: 6.4px;
+  --mobile-ui-padding: 7.2px 9.6px;
   --mobile-ui-border: var(--color-border);
   --mobile-ui-background: var(--color-bg-panel-strong);
   --mobile-ui-focus: var(--control-focus-ring);

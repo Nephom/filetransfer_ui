@@ -48,11 +48,6 @@
 .settings-subpanel-heading button { min-height: var(--ui-button-height); }
 .settings-subpanel-heading strong { color: var(--color-text); font-size: var(--font-size-heading); }
 .settings-actions { gap: var(--ui-control-gap); margin-top: var(--ui-section-gap); }
-.settings-global-collapse { display: flex; align-items: flex-start; gap: var(--ui-control-gap); margin: 0 var(--ui-panel-padding) var(--ui-section-gap); padding: var(--ui-panel-padding); border: 1px solid var(--color-primary); border-radius: var(--radius-md); color: var(--color-text); background: var(--color-bg-panel); }
-.settings-global-collapse input { flex: 0 0 var(--space-5); width: var(--space-5); min-width: var(--space-5); height: var(--space-5); min-height: var(--space-5); margin: var(--space-1) 0 0; accent-color: var(--color-primary); }
-.settings-global-collapse span { display: grid; gap: var(--space-1); }
-.settings-global-collapse small { color: var(--color-text-muted); line-height: 1.4; }
-
 @keyframes settings-subpanel-in { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
 
 @media (max-width: 720px) {

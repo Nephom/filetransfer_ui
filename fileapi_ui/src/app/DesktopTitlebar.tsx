@@ -6,7 +6,7 @@ import { ChevronDownIcon } from "../ui/icons";
 type DesktopTitlebarProps = {
   appMode: "location" | "rest" | "vnc";
   vncEnabled: boolean;
-  session: { username: string; onlyTerminalMode: boolean; role: string };
+  session: { username: string; role: string };
   accountOpen: boolean;
   accountControl: React.Ref<HTMLDivElement>;
   accountMenuStyle: React.CSSProperties;
@@ -62,18 +62,18 @@ export function DesktopTitlebar({
         <div className="account-control" ref={accountControl}>
           <button className="account" onClick={onAccountToggle} aria-expanded={accountOpen} aria-haspopup="menu">
             {session.username}
-            <span className="account-role">{session.onlyTerminalMode ? "Only Terminal" : session.role === "admin" ? "Admin" : "User"}</span>
+            <span className="account-role">{session.role === "admin" ? "Admin" : "User"}</span>
             <span className="account-chevron"><ChevronDownIcon size={12} /></span>
           </button>
           {accountOpen && createPortal(
             <div className="account-menu" style={accountMenuStyle} role="menu" aria-label="Account menu">
               <div className="account-summary">
                 <strong>{session.username}</strong>
-                <span>{session.onlyTerminalMode ? "Offline dev session — no API server connected" : session.role === "admin" ? "System administrator" : "Standard user"}</span>
+                <span>{session.role === "admin" ? "System administrator" : "Standard user"}</span>
               </div>
               <button role="menuitem" onClick={onOpenSessions}>Workspace Manager</button>
               <button role="menuitem" onClick={onOpenSettings}>Settings</button>
-              {!session.onlyTerminalMode && session.role !== "admin" && <button role="menuitem" onClick={onChangePassword}>Change password</button>}
+              {session.role !== "admin" && <button role="menuitem" onClick={onChangePassword}>Change password</button>}
               <button role="menuitem" onClick={onOpenLogView}>LogView</button>
               <button role="menuitem" onClick={onOpenHelp}>Help</button>
               <hr />

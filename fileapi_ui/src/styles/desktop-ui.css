@@ -22,16 +22,16 @@
    document -- portaled or not -- reads the same live value, with no
    per-component `body:has(...)` patch required ever again. */
 :root {
-  --ui-font-size: clamp(13px, calc(6px + 1.1vmin), 22px);
-  --ui-small-font-size: clamp(11px, calc(5px + 0.9vmin), 18px);
-  --ui-button-height: clamp(30px, calc(14px + 2.6vmin), 52px);
+  --ui-font-size: clamp(10.4px, calc(4.8px + 0.88vmin), 17.6px);
+  --ui-small-font-size: clamp(8.8px, calc(4px + 0.72vmin), 14.4px);
+  --ui-button-height: clamp(24px, calc(11.2px + 2.08vmin), 41.6px);
   --ui-control-height: var(--ui-button-height);
-  --ui-button-padding-x: clamp(7px, calc(3px + 0.7vmin), 16px);
-  --ui-button-padding-y: clamp(3px, calc(1px + 0.35vmin), 10px);
-  --ui-control-gap: clamp(4px, calc(1px + 0.5vmin), 12px);
-  --ui-section-gap: clamp(6px, calc(2px + 0.8vmin), 20px);
-  --ui-panel-padding: clamp(8px, calc(3px + 0.9vmin), 22px);
-  --ui-terminal-min-height: clamp(160px, calc(100px + 6vmin), 260px);
+  --ui-button-padding-x: clamp(5.6px, calc(2.4px + 0.56vmin), 12.8px);
+  --ui-button-padding-y: clamp(2.4px, calc(0.8px + 0.28vmin), 8px);
+  --ui-control-gap: clamp(3.2px, calc(0.8px + 0.4vmin), 9.6px);
+  --ui-section-gap: clamp(4.8px, calc(1.6px + 0.64vmin), 16px);
+  --ui-panel-padding: clamp(6.4px, calc(2.4px + 0.72vmin), 17.6px);
+  --ui-terminal-min-height: clamp(128px, calc(80px + 4.8vmin), 208px);
 }
 
 :root:has(.explorer.ui-layout-mobile) {

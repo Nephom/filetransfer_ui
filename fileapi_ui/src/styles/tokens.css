@@ -14,61 +14,54 @@
   --color-border: var(--bridge-line, rgba(107, 201, 239, .26));
   --color-border-strong: var(--bridge-line-bright, #63e6ff);
 
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
+  --space-1: 3.2px;
+  --space-2: 6.4px;
+  --space-3: 9.6px;
+  --space-4: 12.8px;
+  --space-5: 19.2px;
+  --space-6: 25.6px;
 
   /* Fluid values are the base for Auto profile sizing. */
-  --font-size-base: clamp(12px, calc(10px + 0.35vmin), 16px);
-  --font-size-small: clamp(10px, calc(8px + 0.3vmin), 14px);
-  --font-size-heading: clamp(20px, calc(16px + 0.6vmin), 28px);
-  --font-size-mobile-base: 16px;
-  --font-size-mobile-small: 14px;
-  --control-height-base: clamp(30px, calc(24px + 0.7vmin), 40px);
+  --font-size-base: clamp(9.6px, calc(8px + 0.28vmin), 12.8px);
+  --font-size-small: clamp(8px, calc(6.4px + 0.24vmin), 11.2px);
+  --font-size-heading: clamp(16px, calc(12.8px + 0.48vmin), 22.4px);
+  --font-size-mobile-base: 12.8px;
+  --font-size-mobile-small: 11.2px;
+  --control-height-base: clamp(24px, calc(19.2px + 0.56vmin), 32px);
   --button-height-base: var(--control-height-base);
-  --control-gap-base: clamp(6px, calc(4px + 0.25vmin), 10px);
-  --panel-padding-base: clamp(9px, calc(7px + 0.4vmin), 15px);
-  --control-height-mobile: 40px;
+  --control-gap-base: clamp(4.8px, calc(3.2px + 0.2vmin), 8px);
+  --panel-padding-base: clamp(7.2px, calc(5.6px + 0.32vmin), 12px);
+  --control-height-mobile: 32px;
   /* Roomier fixed mobile/Large touch-target height used by dropdown options
      and other "comfortable" mobile controls that were already 44px before
      token conversion (kept as its own token instead of forcing every 44px
      control down to the 40px floor). */
-  --control-height-mobile-lg: 44px;
-  --font-size-mobile-heading: 28px;
+  --control-height-mobile-lg: 35.2px;
+  --font-size-mobile-heading: 22.4px;
   /* Narrow-window (<=900x640) Mobile/Large floor is intentionally smaller
      than the standard Mobile/Large floor above -- it only affects text/
      controls not already pinned by styles/mobile-ui.css's !important
      text-floor rules, which stay at font-size-mobile-base/-small
      regardless of window width. */
-  --font-size-mobile-narrow-small: 12px;
-  --terminal-min-height-mobile: 180px;
+  --font-size-mobile-narrow-small: 9.6px;
+  --terminal-min-height-mobile: 144px;
   /* Location Split-mode LOCAL pane minimum footprint under Mobile/Large,
      where LOCAL/REMOTE stack vertically instead of sitting side by side. */
-  --pane-min-size-mobile: 260px;
+  --pane-min-size-mobile: 208px;
   /* Mobile/Large's file-table header row height and stacked-row inline
      padding; kept as their own tokens (not reused from control-height-
      mobile-lg/space-3) because they were already distinct fixed values
      before token conversion. */
-  --file-table-header-height-mobile: 42px;
-  --file-row-padding-inline-mobile: 10px;
+  --file-table-header-height-mobile: 33.6px;
+  --file-row-padding-inline-mobile: 8px;
   /* Narrow-window (<=900x640) folder-tree ceiling under Mobile/Large. */
-  --folder-tree-max-height-mobile-narrow: 220px;
+  --folder-tree-max-height-mobile-narrow: 176px;
   --control-focus-ring: 2px solid var(--color-primary);
-  --icon-size: 18px;
-  --icon-size-lg: 34px;
-  /* Decorative login mark glyph dimensions, tokenized so login.css has no
-     standalone literal px. */
-  --login-mark-width: 34px;
-  --login-mark-height: 28px;
-  --login-mark-accent-width: 14px;
-  --login-mark-accent-height: 5px;
-  /* Titlebar app-mark glyph (smaller sibling of --login-mark-*, ported
-     from webui-shell.css under T-190). */
-  --app-mark-width: 24px;
-  --app-mark-height: 20px;
+  --icon-size: 14.4px;
+  --icon-size-lg: 27.2px;
+  /* Titlebar app-mark glyph, ported from webui-shell.css under T-190. */
+  --app-mark-width: 19.2px;
+  --app-mark-height: 16px;
 
   --radius-sm: var(--bridge-radius-sm, 6px);
   --radius-md: var(--bridge-radius, 10px);
@@ -82,7 +75,7 @@
   --motion-base: 240ms ease-out;
   --font-family-ui: "Segoe UI", system-ui, sans-serif;
   --font-family-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
-  --dropdown-menu-gap: 6px;
+  --dropdown-menu-gap: 4.8px;
   --z-dropdown: 400;
   --z-context: 450;
   --z-modal: 500;
@@ -96,6 +89,6 @@
   --dropdown-border: 1px solid var(--color-border);
   --dropdown-surface: var(--color-bg-popover);
   --dropdown-option-radius: var(--radius-sm);
-  --dropdown-option-padding: 6px var(--space-2);
+  --dropdown-option-padding: 4.8px var(--space-2);
   --dropdown-focus-ring: var(--control-focus-ring);
 }

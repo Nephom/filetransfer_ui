@@ -96,15 +96,6 @@ export function WarningIcon({ size, className }: IconProps) {
   );
 }
 
-// Diamond marker for corner badges (replaces the standalone "◆" glyph).
-export function DiamondIcon({ size, className }: IconProps) {
-  return (
-    <svg {...base(size)} className={className}>
-      <path d="M8 2.5L13.5 8L8 13.5L2.5 8L8 2.5Z" fill="currentColor" />
-    </svg>
-  );
-}
-
 // Sort-direction icons (replace the "▲"/"▼" glyphs).
 export function SortAscIcon({ size, className }: IconProps) {
   return (

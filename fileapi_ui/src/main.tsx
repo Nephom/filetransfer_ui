@@ -16,7 +16,7 @@ import { assertQueueTransition } from "./queue/state";
 import { QueueScheduler } from "./queue/scheduler";
 import { QueueStore } from "./queue/store";
 import { selectActiveQueueItems, selectQueueHistory } from "./queue/selectors";
-import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon, CollapseIcon, DiamondIcon, ExpandIcon, SortAscIcon, SortDescIcon, WarningIcon } from "./ui/icons";
+import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon, CollapseIcon, ExpandIcon, SortAscIcon, SortDescIcon, WarningIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
 // `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
 // imported inside the terminal-setup effect below instead of eagerly here:
@@ -79,7 +79,6 @@ type Session = {
   locationId: string;
   ignoreTlsErrors: boolean;
   saveUserInformation: boolean;
-  onlyTerminalMode: boolean;
 };
 type ShareResponse = {
   data?: {
@@ -565,12 +564,6 @@ const appVersion =
   import.meta.env.VITE_APP_VERSION_DISPLAY ||
   import.meta.env.VITE_APP_VERSION ||
   "";
-// "Only Terminal" lets a developer reach the Local Explorer + SSH Terminal
-// without signing in or running the API server at all. It's available
-// automatically in `npm run dev` / `npm run tauri dev` builds; production
-// builds only expose it if VITE_ENABLE_ONLY_TERMINAL_MODE=true is baked in.
-const onlyTerminalAvailable =
-  import.meta.env.DEV || import.meta.env.VITE_ENABLE_ONLY_TERMINAL_MODE === "true";
 const initialSession: Session = {
   host: defaultHost,
   port: defaultPort,
@@ -582,7 +575,6 @@ const initialSession: Session = {
   locationId: "",
   ignoreTlsErrors: false,
   saveUserInformation: false,
-  onlyTerminalMode: false,
 };
 const sessionRegistryKey = "fileapi-session-registry";
 const desktopSettingsKey = "nfterm-settings";
@@ -904,10 +896,9 @@ type LoginScreenProps = {
   uiProfile: "auto" | "mobile";
   onUiProfileChange: (profile: "auto" | "mobile") => void;
   onSubmit: (event: React.FormEvent) => void;
-  onOnlyTerminal: () => void;
 };
 
-function LoginScreen({ session, setSession, password, setPassword, busy, notice, uiProfile, onUiProfileChange, onSubmit, onOnlyTerminal }: LoginScreenProps) {
+function LoginScreen({ session, setSession, password, setPassword, busy, notice, uiProfile, onUiProfileChange, onSubmit }: LoginScreenProps) {
   // Auto profile sizing must flip to Mobile at the exact same threshold as
   // DesktopApp's own mobileLayout check, via the one shared resolver --
   // not a hand-copied CSS media query mirroring the same numbers (T-027).
@@ -938,13 +929,11 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
   return (
     <main className={`login ui-profile-${uiProfile} ui-layout-${loginMobileLayout ? "mobile" : "desktop"}`}>
       <form onSubmit={onSubmit}>
-        <div className="login-mark" aria-hidden="true"><span /></div>
         <h1>nFterm {appVersion && <small className="login-version">{appVersion}</small>}</h1>
-        <p>Sign in to your API server over HTTPS.</p>
-        <label>Server address<input placeholder="files.example.internal" value={session.host} onChange={(event) => setSession((current) => ({ ...current, host: event.target.value }))} /></label>
-        <label>HTTPS port<input inputMode="numeric" value={session.port} onChange={(event) => setSession((current) => ({ ...current, port: event.target.value }))} /></label>
-        <label>Username<input value={session.username} onChange={(event) => setSession((current) => ({ ...current, username: event.target.value }))} /></label>
-        <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        <label className="login-field-server">Server address<input placeholder="files.example.internal" value={session.host} onChange={(event) => setSession((current) => ({ ...current, host: event.target.value }))} /></label>
+        <label className="login-field-port">HTTPS port<input inputMode="numeric" value={session.port} onChange={(event) => setSession((current) => ({ ...current, port: event.target.value }))} /></label>
+        <label className="login-field-username">Username<input value={session.username} onChange={(event) => setSession((current) => ({ ...current, username: event.target.value }))} /></label>
+        <label className="login-field-password">Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
         <div className="login-toggle-row" role="group" aria-label="Login options">
           <button type="submit" className="login-submit-button" disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
           <button type="button" className={`login-toggle-button${session.ignoreTlsErrors ? " enabled" : ""}`} aria-pressed={session.ignoreTlsErrors} onClick={() => setSession((current) => ({ ...current, ignoreTlsErrors: !current.ignoreTlsErrors }))} title="Disable HTTPS certificate verification for this API server">
@@ -966,7 +955,6 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
         </div>
         {notice && <output role="alert">{notice}</output>}
       </form>
-      {onlyTerminalAvailable && <button type="button" className="only-terminal-corner-button" disabled={busy} onClick={onOnlyTerminal} title="Skip login and the API server. Local Explorer and SSH Terminal only."><DiamondIcon className="status-glyph" size={10} /> Only Terminal</button>}
     </main>
   );
 }
@@ -1071,13 +1059,7 @@ function App() {
     }
   };
 
-  const enterOnlyTerminalMode = () => {
-    setPassword("");
-    setSession((current) => ({ ...current, token: "only-terminal-mode", username: "only-terminal", userId: 0, role: "test", permissions: [], locationId: "", onlyTerminalMode: true }));
-    setNotice("Only Terminal: skipped login and API server connection. Local Explorer and SSH Terminal are available; remote (REMOTE) features are disabled.");
-  };
-
-  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} uiProfile={uiProfile} onUiProfileChange={changeUiProfile} onSubmit={login} onOnlyTerminal={enterOnlyTerminalMode} />;
+  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} uiProfile={uiProfile} onUiProfileChange={changeUiProfile} onSubmit={login} />;
   return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} />;
 }
 
@@ -2276,7 +2258,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   };
 
   useEffect(() => {
-    if (session.token && !session.onlyTerminalMode) {
+    if (session.token) {
       void loadLocations().catch((error) =>
         setNotice(error instanceof Error ? error.message : String(error)),
       );
@@ -2290,10 +2272,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       return () => window.clearInterval(healthTimer);
     }
     return undefined;
-  }, [session.token, session.onlyTerminalMode]);
+  }, [session.token]);
 
   useEffect(() => {
-    if (!session.token && !session.onlyTerminalMode) return undefined;
+    if (!session.token) return undefined;
     void (async () => {
       try {
         await loadLocalFiles("");
@@ -2302,10 +2284,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       }
     })();
     return undefined;
-  }, [session.token, session.onlyTerminalMode]);
+  }, [session.token]);
 
   useEffect(() => {
-    if (!session.token && !session.onlyTerminalMode) return undefined;
+    if (!session.token) return undefined;
     void (async () => {
       try {
         const elevated = await invoke<boolean>("is_local_elevated");
@@ -2328,16 +2310,16 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       }
     })();
     return undefined;
-  }, [session.token, session.onlyTerminalMode]);
+  }, [session.token]);
 
   useEffect(() => {
-    if (session.token && session.locationId && !session.onlyTerminalMode) {
+    if (session.token && session.locationId) {
       const nextPath = pendingRemotePath ?? "";
       if (pendingRemotePath !== null) setPendingRemotePath(null);
       void loadFiles(nextPath).catch((error) => setNotice(error.message));
       void loadTreeChildren("").catch((error) => setNotice(error.message));
     }
-  }, [session.token, session.locationId, session.onlyTerminalMode]);
+  }, [session.token, session.locationId]);
 
   const selectLocation = (locationId: string) => {
     const wasSsh = Boolean(remoteSshEntryId);
@@ -3780,7 +3762,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     };
   }, []);
 
-  const canSearchRemote = Boolean(session.token && session.locationId && !session.onlyTerminalMode && !remoteSshEntryId);
+  const canSearchRemote = Boolean(session.token && session.locationId && !remoteSshEntryId);
 
   const searchFiles = () => {
     if (!canSearchRemote) return;
@@ -5108,7 +5090,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     });
 
   const loadShareLinks = async () => {
-    if (!session.token || session.onlyTerminalMode) return;
+    if (!session.token) return;
     setShareLinksLoading(true);
     try {
       const response = await api(session.role === "admin" ? "/api/admin/share-links" : "/api/files/shares");
@@ -5312,7 +5294,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       userId: null,
       role: "",
       permissions: [],
-      onlyTerminalMode: false,
     }));
   };
 
@@ -6801,7 +6782,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           <FloatingWindow ariaLabel="Desktop Settings" className={`settings-modal settings-panel-${settingsPanel || "menu"}`} style={modalStyle("settings")} onClose={() => setSettingsOpen(false)} onDragStart={beginModalDrag("settings")} header={<div className="settings-floating-heading"><h2 className="modal-drag-handle">Desktop Settings</h2><button type="button" className="settings-floating-close" onClick={() => setSettingsOpen(false)} aria-label="Close Desktop Settings"><CloseIcon /></button></div>} footer={<div className="settings-floating-footer"><button type="button" className="confirm" onClick={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}>Save</button><button type="button" onClick={() => settingsPanel === null ? setSettingsOpen(false) : setSettingsPanel(null)}>Close</button></div>}>
                 <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
                 {settingsPanel !== null && <button type="button" className="settings-subpanel-back" onClick={() => setSettingsPanel(null)}><ChevronLeftIcon size={12} /> Settings</button>}
-                {settingsPanel === null && <label className="settings-global-collapse"><input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} /><span><strong>Collapse main split panes</strong><small>Use the collapse/restore pane controls instead of the main resizebar in Location, REST API, and VNC.</small></span></label>}
                 {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"}</span><small>Enable optional workspaces.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b><ChevronRightIcon size={12} /></b></button></div>}
                <section className="settings-section">
                  <h3>Color theme</h3>
@@ -6914,7 +6894,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                 </label>
                 <div className="settings-inline-action">
                   <div><strong>Share link management</strong><small>Review, copy, or revoke links created by this desktop client.</small></div>
-                  <button type="button" onClick={openShareLinks} disabled={!session.token || session.onlyTerminalMode}>Manage Share Links</button>
+                  <button type="button" onClick={openShareLinks} disabled={!session.token}>Manage Share Links</button>
                 </div>
               </section>
              <section className="settings-section">

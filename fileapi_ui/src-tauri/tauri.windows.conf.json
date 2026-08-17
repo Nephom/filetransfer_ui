@@ -6,8 +6,8 @@
         "title": "nFterm",
         "width": 1100,
         "height": 720,
-        "minWidth": 760,
-        "minHeight": 520,
+        "minWidth": 940,
+        "minHeight": 620,
         "dragDropEnabled": false
       }
     ]

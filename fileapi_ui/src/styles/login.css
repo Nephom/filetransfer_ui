@@ -61,57 +61,9 @@ body {
 .login form > label { display: grid; gap: var(--space-2); margin: 0; }
 .login form > label input { width: 100%; box-sizing: border-box; }
 
-.login-mark {
-  width: var(--login-mark-width);
-  height: var(--login-mark-height);
-  margin-bottom: var(--space-4);
-  border-radius: var(--radius-sm);
-  background: linear-gradient(var(--color-primary) 0 30%, var(--color-secondary) 30%);
-  position: relative;
-  box-shadow: var(--shadow-glow);
-}
-
-.login-mark span {
-  position: absolute;
-  width: var(--login-mark-accent-width);
-  height: var(--login-mark-accent-height);
-  top: -4px;
-  left: 3px;
-  border-radius: 2px 2px 0 0;
-  background: var(--color-primary);
-}
-
 .login label { color: var(--color-text); }
 .login input { color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }
 .login input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 1px var(--color-primary); }
 .login button { margin-top: var(--space-2); background: linear-gradient(135deg, var(--color-secondary), var(--color-primary)); border-color: var(--color-primary); }
 .login-version { display: inline-block; margin-left: var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-small); font-weight: 400; vertical-align: middle; }
 .tls-option small { color: var(--color-text-muted); }
-
-/* "Only Terminal" is a dev-only escape hatch (skips login + API server).
-   Kept physically separate from the sign-in form, in a low-key corner
-   affordance, so it can't be fat-fingered while trying to sign in. */
-.only-terminal-corner-button {
-  position: fixed;
-  right: var(--space-4);
-  bottom: var(--space-4);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--font-size-small);
-  color: var(--color-text-muted);
-  background: var(--color-bg-panel);
-  border: 1px dashed var(--color-border);
-  border-radius: 999px;
-  opacity: .55;
-  transition: opacity var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
-}
-.only-terminal-corner-button:hover,
-.only-terminal-corner-button:focus-visible {
-  opacity: 1;
-  color: var(--color-text);
-  border-color: var(--color-primary);
-  border-style: solid;
-}
-.only-terminal-corner-button:disabled {
-  opacity: .3;
-  cursor: not-allowed;
-}
