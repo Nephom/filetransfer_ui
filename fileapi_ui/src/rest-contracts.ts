@@ -1,6 +1,23 @@
 export type RestAuthMode = "none" | "basic" | "bearer" | "api-key" | "cookie" | "login";
-export type RestMethod = "GET" | "POST" | "PATCH";
+export type RestMethod = "GET" | "POST" | "PATCH" | "DELETE";
 export type RestVendor = "hpe" | "openbmc" | "none";
+
+export type ImlMonitorState =
+  | "stopped"
+  | "connecting"
+  | "monitoring"
+  | "disconnected"
+  | "reconnecting"
+  | "authentication-failed"
+  | "stopped-by-user";
+
+export type RestFailureType = "http" | "tls" | "timeout" | "network" | "parse" | "request";
+
+export type RestSession = {
+  token: string;
+  location?: string;
+  createdAt: number;
+};
 
 export type RestApiEntry = {
   id: string;

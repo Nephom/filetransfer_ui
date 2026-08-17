@@ -8,7 +8,7 @@ import { Dropdown } from "./ui/Dropdown";
 import { MobileChoiceMenu } from "./ui/MobileChoiceMenu";
 import { RestPollingController } from "./rest-polling";
 import { monitorRedfishTask } from "./rest-task";
-import type { JsonValue, NativeApiResponse, RestApiEntry, RestApiSecret, RestAuthMode, RestMethod, RestVendor } from "./rest-contracts";
+import type { ImlMonitorState, JsonValue, NativeApiResponse, RestApiEntry, RestApiSecret, RestAuthMode, RestFailureType, RestMethod, RestSession, RestVendor } from "./rest-contracts";
 export type { RestApiEntry, RestApiSecret, RestAuthMode, RestMethod, RestVendor } from "./rest-contracts";
 import { csvCell, debugRest, downloadText, hardwareTools, jsonCell, sanitizeHeaders, sanitizeJson, sanitizeText, tableCell, type HardwareTool } from "./rest-utils";
 type RestHistoryItem = { url: string; timestamp: number };
@@ -153,7 +153,6 @@ const formatRedfishError = (details: RedfishErrorDetails) => {
   return `[${details.code}] ${details.message}${info.length ? ` | ExtendedInfo: ${info.join("; ")}` : ""}`;
 };
 
-type RestFailureType = "http" | "tls" | "timeout" | "network" | "parse" | "request";
 type RestFailureDetails = {
   failureType: RestFailureType;
   error: string;
@@ -304,7 +303,13 @@ export function RestApiWorkspace(props: Props) {
   const vendorPreset = vendorPresets[vendor];
   const secret = entry ? props.secrets[entry.id] || {} : {};
   const sessionTokenRef = useRef<Record<string, string>>({});
+  const sessionLocationRef = useRef<Record<string, string | undefined>>({});
+  const sessionCreatedAtRef = useRef<Record<string, number>>({});
   const sessionToken = entry ? props.sessionHeaders[entry.id] || secret.token || sessionTokenRef.current[entry.id] || "" : "";
+  const activeSession: RestSession | null = sessionToken
+    ? { token: sessionToken, location: entry ? sessionLocationRef.current[entry.id] : undefined, createdAt: entry ? sessionCreatedAtRef.current[entry.id] || 0 : 0 }
+    : null;
+  const isSessionAuthenticated = entry?.authMode === "login" && Boolean(sessionToken || secret.cookie);
   const session: Record<string, string> = entry && sessionToken
     ? { "X-Auth-Token": sessionToken }
     : {};
@@ -715,6 +720,37 @@ export function RestApiWorkspace(props: Props) {
     props.onChangeSecret(entry.id, { ...secret, token: value });
     props.onChangeSessionHeaders(entry.id, value ? { "X-Auth-Token": value } : {});
   };
+
+  const clearSession = () => {
+    if (!entry) return;
+    delete sessionTokenRef.current[entry.id];
+    delete sessionLocationRef.current[entry.id];
+    delete sessionCreatedAtRef.current[entry.id];
+    props.onChangeSecret(entry.id, { ...secret, token: undefined, cookie: undefined });
+    props.onChangeSessionHeaders(entry.id, {});
+  };
+
+  const logout = async () => {
+    if (!entry) return;
+    setLoading(true);
+    setError("");
+    setMessage("");
+    imlControllerRef.current?.stop("manual");
+    setImlPolling(false);
+    const location = sessionLocationRef.current[entry.id];
+    try {
+      if (location && sessionToken) {
+        const logoutUrl = resolveEntryResource(entry, location);
+        await runRequest("DELETE", logoutUrl, undefined, makeHeaders(entry, { ...secret, token: sessionToken }, {}), crypto.randomUUID(), false);
+      }
+      setMessage("REST session logged out.");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally {
+      clearSession();
+      setLoading(false);
+    }
+  };
   const updateQuery = (query: { name: string; value: string }[]) => {
     if (!entry) return;
     props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, query } : item));
@@ -775,9 +811,10 @@ export function RestApiWorkspace(props: Props) {
     if (!entry) return;
     setLoading(true); setError(""); setMessage("");
     try {
-      if ((method === "POST" || method === "PATCH") && !window.confirm(`${method} may modify remote data. Send this request?`)) return;
+      if ((method === "POST" || method === "PATCH" || method === "DELETE") && !window.confirm(`${method} may modify remote data. Send this request?`)) return;
       const requestUrl = urlDraft.trim() ? resolveEntryResource(entry, urlDraft.trim()) : joinUrl(entry.baseUrl, path);
-      await runRequest(method, requestUrl, method === "GET" ? undefined : bodyDraft, [["Content-Type", "application/json"], ...makeHeaders(entry, secret, session)]);
+      const requestBody = method === "GET" || method === "DELETE" ? undefined : bodyDraft;
+      await runRequest(method, requestUrl, requestBody, method === "DELETE" ? makeHeaders(entry, secret, session) : [["Content-Type", "application/json"], ...makeHeaders(entry, secret, session)]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : String(requestError));
     } finally { setLoading(false); }
@@ -797,6 +834,9 @@ export function RestApiWorkspace(props: Props) {
        if (!loginResult) return;
        if (loginResult.responseValue.status >= 400) throw new Error(formatRedfishError(parseRedfishError(loginResult.responseValue.status, loginResult.text)));
        const tokenHeader = (loginResult.responseValue.headers || []).find(([name]) => name.toLowerCase() === entry.tokenHeader.toLowerCase())?.[1] || "";
+       const location = (loginResult.responseValue.headers || []).find(([name]) => name.toLowerCase() === "location")?.[1] || "";
+       if (location) sessionLocationRef.current[entry.id] = location;
+       sessionCreatedAtRef.current[entry.id] = Date.now();
        const json = parseJson(loginResult.text);
        const token = tokenHeader || (json ? String(getJsonPath(json, entry.tokenPath) || getJsonPath(json, "data.token") || getJsonPath(json, "token") || "") : "");
       const cookie = extractCookies(loginResult.responseValue.headers);
@@ -1456,13 +1496,13 @@ export function RestApiWorkspace(props: Props) {
             {entry.authMode === "api-key" && <label>API key<input type="password" value={secret.apiKey || ""} onChange={(event) => updateSecret({ apiKey: event.target.value })} /></label>}
             {entry.authMode === "cookie" && <label>Cookie header<input value={secret.cookie || ""} onChange={(event) => updateSecret({ cookie: event.target.value })} placeholder="session=..." /></label>}
             {entry.authMode !== "login" && <div className="rest-auth-action"><button type="button" className="confirm" onClick={() => void authenticate()} disabled={loading}>{loading ? "Logging in..." : "Login"}</button></div>}
-            {entry.authMode === "login" && <div className="rest-vendor-bar"><button type="button" className="rest-help-button" onClick={() => setSessionHelpOpen((value) => !value)} aria-label="How to use the selected Session Auth preset" aria-expanded={sessionHelpOpen}>?</button><div className="rest-vendor-toggle" role="group" aria-label="REST API vendor"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => selectVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => selectVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => selectVendor("openbmc")}>OpenBMC</button></div><button type="button" className="rest-vendor-preset" onClick={applyVendorPreset}>{vendor === "openbmc" ? "Use OpenBMC /login preset" : "Use Redfish SessionService preset"}</button><button type="button" className="confirm rest-login-button" onClick={() => void login()} disabled={loading}>{loading ? "Logging in..." : "Login"}</button>{sessionHelpOpen && <div className="rest-session-help" role="note" onClick={(event) => event.stopPropagation()}><button type="button" className="rest-session-help-close" onClick={() => setSessionHelpOpen(false)} aria-label="Close Session Auth help"><CloseIcon size={12} /></button><strong>{vendor === "openbmc" ? "OpenBMC /login session" : `${vendorPreset.label} Redfish SessionService login`}</strong><ol><li>Set Authentication Mode to <strong>Session Auth</strong>.</li><li>Enter your Redfish username.</li><li>Enter your Redfish password.</li><li>Apply the vendor preset shown above.</li><li>Click <strong>Login</strong>.</li><li>Confirm that <strong>REST session established for this entry.</strong> appears.</li><li>Click <strong>GET</strong> to read the current Redfish resource.</li></ol><pre>{vendorPreset.referenceJson}</pre><p>The session token is kept for this REST API entry and reused by history, breadcrumbs, links, actions, and downloads.</p></div>}</div>}
-            {entry.authMode === "login" && <div className="rest-login-config"><label>Login path<input value={entry.loginPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginPath: event.target.value } : item))} /></label><label>Token JSON path<input value={entry.tokenPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenPath: event.target.value } : item))} /></label><label>Token header<input value={entry.tokenHeader} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenHeader: event.target.value } : item))} /></label><label>Login body<textarea value={entry.loginBody} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginBody: event.target.value } : item))} /></label><div className="rest-session-preset"><button type="button" className="rest-help-button" onClick={() => setSessionHelpOpen((value) => !value)} aria-label="How to use Redfish SessionService preset" aria-expanded={sessionHelpOpen}>?</button><button type="button" onClick={() => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginPath: "/redfish/v1/SessionService/Sessions", tokenPath: "", tokenHeader: "X-Auth-Token", tokenSendAs: "X-Auth-Token", loginBody: '{"UserName":"{{username}}","Password":"{{password}}"}' } : item))}>Use Redfish SessionService preset</button><button type="button" className="confirm" onClick={() => void login()} disabled={loading}>{loading ? "Logging in..." : "Login"}</button>{sessionHelpOpen && <div className="rest-session-help" role="note" onClick={(event) => event.stopPropagation()}><button type="button" className="rest-session-help-close" onClick={() => setSessionHelpOpen(false)} aria-label="Close Session Auth help"><CloseIcon size={12} /></button><strong>Redfish SessionService login</strong><ol><li>Set Authentication Mode to <strong>Session Auth</strong>.</li><li>Enter your Redfish username.</li><li>Enter your Redfish password.</li><li>Click <strong>Use Redfish SessionService preset</strong>.</li><li>Click <strong>Login</strong>.</li><li>Confirm that <strong>REST session established for this entry.</strong> appears.</li><li>Click <strong>GET</strong> to read the current Redfish resource.</li></ol><p>The session token is kept for this REST API entry and reused by history, breadcrumbs, links, actions, and downloads.</p></div>}</div></div>}
+            {entry.authMode === "login" && <div className="rest-vendor-bar"><button type="button" className="rest-help-button" onClick={() => setSessionHelpOpen((value) => !value)} aria-label="How to use the selected Session Auth preset" aria-expanded={sessionHelpOpen}>?</button><div className="rest-vendor-toggle" role="group" aria-label="REST API vendor"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => selectVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => selectVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => selectVendor("openbmc")}>OpenBMC</button></div><button type="button" className="rest-vendor-preset" onClick={applyVendorPreset}>{vendor === "openbmc" ? "Use OpenBMC /login preset" : "Use Redfish SessionService preset"}</button><button type="button" className="confirm rest-login-button" onClick={() => void (isSessionAuthenticated ? logout() : login())} disabled={loading}>{loading ? (isSessionAuthenticated ? "Logging out..." : "Logging in...") : (isSessionAuthenticated ? "Logout" : "Login")}</button>{sessionHelpOpen && <div className="rest-session-help" role="note" onClick={(event) => event.stopPropagation()}><button type="button" className="rest-session-help-close" onClick={() => setSessionHelpOpen(false)} aria-label="Close Session Auth help"><CloseIcon size={12} /></button><strong>{vendor === "openbmc" ? "OpenBMC /login session" : `${vendorPreset.label} Redfish SessionService login`}</strong><ol><li>Set Authentication Mode to <strong>Session Auth</strong>.</li><li>Enter your Redfish username.</li><li>Enter your Redfish password.</li><li>Apply the vendor preset shown above.</li><li>Click <strong>Login</strong>.</li><li>Confirm that <strong>REST session established for this entry.</strong> appears.</li><li>Click <strong>GET</strong> to read the current Redfish resource.</li></ol><pre>{vendorPreset.referenceJson}</pre><p>The session token is kept for this REST API entry and reused by history, breadcrumbs, links, actions, and downloads.</p></div>}</div>}
+            {entry.authMode === "login" && <div className="rest-login-config"><label>Login path<input value={entry.loginPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginPath: event.target.value } : item))} /></label><label>Token JSON path<input value={entry.tokenPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenPath: event.target.value } : item))} /></label><label>Token header<input value={entry.tokenHeader} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenHeader: event.target.value } : item))} /></label><label>Login body<textarea value={entry.loginBody} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginBody: event.target.value } : item))} /></label><div className="rest-session-preset"><button type="button" className="rest-help-button" onClick={() => setSessionHelpOpen((value) => !value)} aria-label="How to use Redfish SessionService preset" aria-expanded={sessionHelpOpen}>?</button><button type="button" onClick={() => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginPath: "/redfish/v1/SessionService/Sessions", tokenPath: "", tokenHeader: "X-Auth-Token", tokenSendAs: "X-Auth-Token", loginBody: '{"UserName":"{{username}}","Password":"{{password}}"}' } : item))}>Use Redfish SessionService preset</button><button type="button" className="confirm" onClick={() => void (isSessionAuthenticated ? logout() : login())} disabled={loading}>{loading ? (isSessionAuthenticated ? "Logging out..." : "Logging in...") : (isSessionAuthenticated ? "Logout" : "Login")}</button>{sessionHelpOpen && <div className="rest-session-help" role="note" onClick={(event) => event.stopPropagation()}><button type="button" className="rest-session-help-close" onClick={() => setSessionHelpOpen(false)} aria-label="Close Session Auth help"><CloseIcon size={12} /></button><strong>Redfish SessionService login</strong><ol><li>Set Authentication Mode to <strong>Session Auth</strong>.</li><li>Enter your Redfish username.</li><li>Enter your Redfish password.</li><li>Click <strong>Use Redfish SessionService preset</strong>.</li><li>Click <strong>Login</strong>.</li><li>Confirm that <strong>REST session established for this entry.</strong> appears.</li><li>Click <strong>GET</strong> to read the current Redfish resource.</li></ol><p>The session token is kept for this REST API entry and reused by history, breadcrumbs, links, actions, and downloads.</p></div>}</div></div>}
            </div>}
           {entry.authMode === "login" && <div className="token-path-help" style={tokenPathHelpPosition}><span>Token JSON Path</span><button ref={tokenPathHelpButtonRef} type="button" className="token-path-help-button" onClick={() => setTokenPathHelpOpen((value) => !value)} aria-label="What is Token JSON Path" aria-expanded={tokenPathHelpOpen}>?</button>{tokenPathHelpOpen && createPortal(<div className="token-path-help-popup" role="note" style={tokenPathHelpPopupStyle} onClick={(event) => event.stopPropagation()}><button type="button" className="token-path-help-close" onClick={() => setTokenPathHelpOpen(false)} aria-label="Close Token JSON Path help"><CloseIcon size={12} /></button><strong>Token JSON Path</strong><p>Use this only when the login response returns the token inside a JSON response body.</p><pre>{'{\n  "data": {\n    "token": "abc123"\n  }\n}'}</pre><p>Enter <code>data.token</code>. For HPE iLO and OpenBMC Redfish SessionService, leave this empty when the token is returned in the <code>X-Auth-Token</code> response header.</p></div>, document.body)}</div>}
         </section>
-         <div className="rest-url-row"><Dropdown label="HTTP method" value={method} onChange={(value) => setMethod(value as RestMethod)} options={[{ value: "GET", label: "GET" }, { value: "POST", label: "POST" }, { value: "PATCH", label: "PATCH" }]} /><input value={urlDraft} onChange={(event) => setUrlDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void execute(); }} aria-label="REST request URL" /><button type="button" className="primary" onClick={() => void execute()} disabled={loading}>{loading ? "Sending..." : method}</button></div>
-        {method !== "GET" && <label className="rest-body-editor">JSON request body<textarea value={bodyDraft} onChange={(event) => setBodyDraft(event.target.value)} spellCheck={false} /></label>}
+         <div className="rest-url-row"><Dropdown label="HTTP method" value={method} onChange={(value) => setMethod(value as RestMethod)} options={[{ value: "GET", label: "GET" }, { value: "POST", label: "POST" }, { value: "PATCH", label: "PATCH" }, { value: "DELETE", label: "DELETE" }]} /><input value={urlDraft} onChange={(event) => setUrlDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void execute(); }} aria-label="REST request URL" /><button type="button" className="primary" onClick={() => void execute()} disabled={loading}>{loading ? "Sending..." : method}</button></div>
+        {method !== "GET" && method !== "DELETE" && <label className="rest-body-editor">JSON request body<textarea value={bodyDraft} onChange={(event) => setBodyDraft(event.target.value)} spellCheck={false} /></label>}
         <div className="rest-query-editor"><span>Query parameters</span>{entry.query.map((item, index) => <div className="rest-query-row" key={`${entry.id}-query-${index}`}><input value={item.name} placeholder="name" onChange={(event) => updateQuery(entry.query.map((current, currentIndex) => currentIndex === index ? { ...current, name: event.target.value } : current))} /><input value={item.value} placeholder="value" onChange={(event) => updateQuery(entry.query.map((current, currentIndex) => currentIndex === index ? { ...current, value: event.target.value } : current))} /><button type="button" onClick={() => updateQuery(entry.query.filter((_, currentIndex) => currentIndex !== index))} aria-label="Remove query parameter"><CloseIcon size={12} /></button></div>)}<button type="button" className="rest-query-add" onClick={() => updateQuery([...entry.query, { name: "", value: "" }])}>+ Add parameter</button></div>
         {!!currentHistory.length && <section className="rest-history"><button type="button" className="rest-history-toggle" onClick={() => setHistoryOpen((value) => !value)}><span>Recent GET paths</span><span>{historyOpen ? "−" : "+"}</span></button>{historyOpen && <div className="rest-history-list">{currentHistory.map((item) => <button type="button" className="rest-history-item" key={`${item.url}-${item.timestamp}`} onClick={() => void openPath(item.url)}><span>{item.url}</span><small>{new Date(item.timestamp).toLocaleTimeString()}</small></button>)}<button type="button" className="rest-history-clear" onClick={() => setHistory((current) => ({ ...current, [entry.id]: [] }))}>Clear history</button></div>}</section>}
           <div className="rest-breadcrumbs" aria-label="REST path">{crumbs.map((crumb) => <React.Fragment key={crumb.value}><button type="button" onClick={() => void openPath(crumb.value)}>{crumb.label}</button>{crumb.value !== crumbs[crumbs.length - 1].value && <span><ChevronRightIcon size={11} /></span>}</React.Fragment>)}</div>
