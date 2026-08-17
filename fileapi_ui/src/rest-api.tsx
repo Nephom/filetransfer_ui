@@ -303,6 +303,7 @@ export function RestApiWorkspace(props: Props) {
   const vendorPreset = vendorPresets[vendor];
   const secret = entry ? props.secrets[entry.id] || {} : {};
   const sessionTokenRef = useRef<Record<string, string>>({});
+  const loginPromiseRef = useRef<Promise<void> | null>(null);
   const sessionLocationRef = useRef<Record<string, string | undefined>>({});
   const sessionCreatedAtRef = useRef<Record<string, number>>({});
   const sessionToken = entry ? props.sessionHeaders[entry.id] || secret.token || sessionTokenRef.current[entry.id] || "" : "";
@@ -488,11 +489,18 @@ export function RestApiWorkspace(props: Props) {
     };
   }, []);
   useEffect(() => () => stopEntryPaneResize(), []);
-  useEffect(() => () => imlControllerRef.current?.stop("unmount"), []);
   useEffect(() => {
-    imlControllerRef.current?.stop("entry-switch");
-    setImlPolling(false);
+    const previousEntryId = entry?.id;
+    return () => {
+      imlControllerRef.current?.stop("entry-switch");
+      setImlPolling(false);
+      clearSessionForEntry(previousEntryId);
+    };
   }, [entry?.id]);
+  useEffect(() => () => {
+    imlControllerRef.current?.stop("unmount");
+    clearSessionForEntry(entry?.id);
+  }, []);
 
   useEffect(() => {
     const nextPath = entry ? defaultRequestPath(entry.authMode) : "/";
@@ -721,14 +729,15 @@ export function RestApiWorkspace(props: Props) {
     props.onChangeSessionHeaders(entry.id, value ? { "X-Auth-Token": value } : {});
   };
 
-  const clearSession = () => {
-    if (!entry) return;
-    delete sessionTokenRef.current[entry.id];
-    delete sessionLocationRef.current[entry.id];
-    delete sessionCreatedAtRef.current[entry.id];
-    props.onChangeSecret(entry.id, { ...secret, token: undefined, cookie: undefined });
-    props.onChangeSessionHeaders(entry.id, {});
+  const clearSessionForEntry = (entryId: string | undefined) => {
+    if (!entryId) return;
+    delete sessionTokenRef.current[entryId];
+    delete sessionLocationRef.current[entryId];
+    delete sessionCreatedAtRef.current[entryId];
+    props.onChangeSecret(entryId, { ...(props.secrets[entryId] || {}), token: undefined, cookie: undefined });
+    props.onChangeSessionHeaders(entryId, {});
   };
+  const clearSession = () => clearSessionForEntry(entry?.id);
 
   const logout = async () => {
     if (!entry) return;
@@ -821,6 +830,8 @@ export function RestApiWorkspace(props: Props) {
   };
 
   const login = async () => {
+    if (loginPromiseRef.current) return loginPromiseRef.current;
+    const operation = (async () => {
     if (!entry) return;
     setLoading(true); setError(""); setMessage("");
     try {
@@ -847,6 +858,10 @@ export function RestApiWorkspace(props: Props) {
       setMessage("REST session established for this entry.");
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
     finally { setLoading(false); }
+    })();
+    loginPromiseRef.current = operation;
+    void operation.finally(() => { loginPromiseRef.current = null; });
+    return operation;
   };
 
   const verifyAuthentication = async () => {
