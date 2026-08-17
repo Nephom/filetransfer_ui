@@ -94,9 +94,10 @@
 .explorer.ui-layout-mobile .file-row { height: var(--control-height-mobile-lg); }
 .explorer.ui-layout-mobile .file-row td { padding-inline: var(--file-row-padding-inline-mobile); }
 
-/* Keep this breakpoint aligned with isMobileViewport(). Otherwise mobile pane
-   widths apply while the workspace is still horizontal, causing overlap. */
-@media (max-width: 1024px), (max-height: 768px) {
+/* Large changes control density, not the two-pane orientation. Keep the
+   workspace horizontal at the 937x588-sized window used by the desktop
+   layout; stack only when the width is genuinely too narrow for both panes. */
+@media (max-width: 720px), (max-height: 520px) {
   .explorer.ui-layout-mobile .desktop-workspace { flex-direction: column; }
   .explorer.ui-layout-mobile .split-workspace { flex-direction: column; }
   .explorer.ui-layout-mobile .split-workspace .local-pane { flex: 0 0 auto; min-height: var(--pane-min-size-mobile); }

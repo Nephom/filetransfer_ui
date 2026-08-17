@@ -248,7 +248,7 @@
 .explorer.ui-layout-mobile .rest-vendor-choice { display: inline-flex; }
 .explorer.ui-layout-mobile .rest-vendor-capsule { display: none; }
 
-@media (max-width: 1024px), (max-height: 768px) {
+@media (max-width: 720px), (max-height: 520px) {
   .explorer.ui-layout-mobile .rest-workspace { flex-direction: column; overflow: auto; }
   .explorer.ui-layout-mobile .rest-entry-pane-shell { order: 2; flex: 0 0 auto; max-height: min(34vh, 250px); }
   .explorer.ui-layout-mobile .rest-entry-pane { flex: 0 0 auto; border-right: 0; border-top: 1px solid var(--color-border); }
