@@ -116,6 +116,20 @@
   .login p { margin-bottom: 8px; }
 }
 
+/* Keep the four-field login form inside a short desktop viewport when width
+   is still sufficient. The 620px fallback below remains scrollable for truly
+   constrained windows. */
+@media (max-height: 900px) and (min-height: 761px) and (min-width: 641px) {
+  .login { padding-block: clamp(12px, 2vh, 20px); }
+  .login form { gap: clamp(6px, 1vh, 10px); padding-block: clamp(14px, 2vh, 24px); }
+  .login-mark { margin-bottom: 10px; }
+  .login h1 { font-size: clamp(22px, 3vh, 26px); }
+  .login p { margin-bottom: 8px; }
+  .login form > label:not(.tls-option) { gap: 6px; }
+  .login form > label:not(.tls-option) input { min-height: clamp(38px, 4vh, 44px); padding-block: 7px; }
+  .login form > button:not(.only-terminal-corner-button) { min-height: clamp(38px, 4vh, 44px); padding-block: 8px; }
+}
+
 @media (max-height: 620px) {
   .login form { max-height: calc(100dvh - 24px); overflow-y: auto; scrollbar-width: thin; }
 }

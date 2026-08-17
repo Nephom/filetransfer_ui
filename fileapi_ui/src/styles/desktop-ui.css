@@ -217,7 +217,7 @@
 }
 
 
-@media (max-width: 900px), (max-height: 640px) {
+@media (max-width: 1024px), (max-height: 768px) {
   :root:has(.explorer.ui-layout-mobile) {
     --ui-font-size: var(--font-size-mobile-small);
     --ui-small-font-size: var(--font-size-mobile-narrow-small);

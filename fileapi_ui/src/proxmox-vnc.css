@@ -43,7 +43,7 @@
 .explorer.ui-layout-mobile .vnc-auth-grid { grid-template-columns: 1fr; }
 .explorer.ui-layout-mobile .vnc-screen-shell { min-height: var(--pane-min-size-mobile); }
 
-@media (max-width: 900px), (max-height: 640px) {
+@media (max-width: 1024px), (max-height: 768px) {
   .explorer.ui-layout-mobile .vnc-workspace { flex-direction: column; overflow: auto; }
   .explorer.ui-layout-mobile .vnc-entry-pane-shell { order: 2; flex: 0 0 auto; max-height: min(34vh, 250px); }
   .explorer.ui-layout-mobile .vnc-entry-pane { flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--color-border); }
