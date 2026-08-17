@@ -21,6 +21,7 @@ openspec/**
 .pi-task/**
 .planning/
 .planning/**
+*plan.md
 
 # Local work documents and workflow notes
 **/*WORKFLOW*.md
