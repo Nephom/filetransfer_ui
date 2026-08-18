@@ -1261,9 +1261,19 @@ export function RestApiWorkspace(props: Props) {
     const rows = [hardwareTool.columns, ...hardwareRows.map((row) => hardwareTool.columns.map((column) => tableCell(row[column])))];
     downloadText(`${entry?.name || "rest"}-${hardwareTool.id}.csv`, rows.map((row) => row.map(csvCell).join(",")).join("\n"), "text/csv;charset=utf-8");
   };
+  const ensureImlSession = async (force = false) => {
+    if (!entry) throw new Error("Select a REST API entry before refreshing IML.");
+    if (force) clearSessionForEntry(entry.id);
+    const hasSession = Boolean(sessionTokenRef.current[entry.id] || props.secrets[entry.id]?.token || props.secrets[entry.id]?.cookie);
+    if (force || !hasSession) await login(force, true);
+    if (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie) {
+      throw new Error("IML monitor could not establish a REST session.");
+    }
+  };
   const fetchIml = async (workflowId = crypto.randomUUID(), propagateError = false) => {
     if (!entry) return [];
     try {
+    await ensureImlSession();
     const targets = imlTargetsRef.current || await discoverHpeTargets();
     imlTargetsRef.current = targets;
     if (!targets.iml) throw new Error("HPE IML resource was not advertised.");
@@ -1297,6 +1307,15 @@ export function RestApiWorkspace(props: Props) {
     } catch (fetchError) {
       const message = fetchError instanceof Error ? fetchError.message : String(fetchError);
       setImlError(message);
+      const status = (fetchError as { status?: number } | null)?.status;
+      if (!propagateError && (status === 401 || status === 403)) {
+        try {
+          await ensureImlSession(true);
+          return await fetchIml(workflowId, false);
+        } catch (retryError) {
+          setImlError(retryError instanceof Error ? retryError.message : String(retryError));
+        }
+      }
       if (propagateError) throw fetchError;
       return [];
     }
@@ -1368,13 +1387,7 @@ export function RestApiWorkspace(props: Props) {
       workflowId,
       intervalMs: imlInterval,
       login: async (_signal, force) => {
-        if (force) clearSessionForEntry(entry.id);
-        if (force || (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie)) {
-          await login(force, true);
-          if (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie) {
-            throw new Error("IML monitor could not establish a REST session.");
-          }
-        }
+        await ensureImlSession(force);
       },
       discover: async () => {
         imlTargetsRef.current = await discoverHpeTargets();
