@@ -102,9 +102,9 @@ export class ImlMonitorController<T> {
     if (controller.signal.aborted || generation !== this.generation) throw abortError();
   }
 
-  private async connect(controller: AbortController, generation: number, options: ImlMonitorOptions<T>) {
+  private async connect(controller: AbortController, generation: number, options: ImlMonitorOptions<T>, forceLogin = false) {
     this.ensureActive(controller, generation);
-    await options.login(controller.signal, false);
+    await options.login(controller.signal, forceLogin);
     this.ensureActive(controller, generation);
     this.sessionGeneration += 1;
     await options.discover(controller.signal);
@@ -128,41 +128,41 @@ export class ImlMonitorController<T> {
   }
 
   private async run(controller: AbortController, generation: number, options: ImlMonitorOptions<T>) {
-    let authenticationRetried = false;
+    let forceLogin = false;
     try {
-      await this.connect(controller, generation, options);
-      this.setState("monitoring");
       while (true) {
         this.ensureActive(controller, generation);
         try {
-          const snapshot = await options.fetch(controller.signal);
-          this.ensureActive(controller, generation);
-          options.onSnapshot?.(snapshot);
+          await this.connect(controller, generation, options, forceLogin);
+          forceLogin = false;
           this.retry = 0;
-          authenticationRetried = false;
-          await this.waitForPoll(controller, generation, options.intervalMs);
+          this.setState("monitoring");
+          while (true) {
+            this.ensureActive(controller, generation);
+            try {
+              const snapshot = await options.fetch(controller.signal);
+              this.ensureActive(controller, generation);
+              options.onSnapshot?.(snapshot);
+              this.retry = 0;
+              await this.waitForPoll(controller, generation, options.intervalMs);
+            } catch (error) {
+              const typed = error as ImlMonitorError;
+              if (classifyImlError(error) === "aborted") return;
+              forceLogin = classifyImlError(error) === "authentication";
+              await this.recover(typed, controller, generation, options);
+              break;
+            }
+          }
         } catch (error) {
           const typed = error as ImlMonitorError;
-          const kind = classifyImlError(error);
-          if (kind === "aborted") return;
-          if (kind === "authentication" && !authenticationRetried) {
-            authenticationRetried = true;
-            this.setState("reconnecting");
-            await options.login(controller.signal, true);
-            this.sessionGeneration += 1;
-            await options.discover(controller.signal);
-            this.connectionGeneration += 1;
-            this.retry = 0;
-            this.setState("monitoring");
-            continue;
-          }
+          if (classifyImlError(error) === "aborted") return;
+          forceLogin = classifyImlError(error) === "authentication";
           await this.recover(typed, controller, generation, options);
         }
       }
     } catch (error) {
       const typed = error as ImlMonitorError;
       if (classifyImlError(error) !== "aborted") {
-        options.onError?.(typed, this.retry);
         this.setState(classifyImlError(error) === "authentication" ? "authentication-failed" : "stopped");
       }
     } finally {
@@ -178,9 +178,7 @@ export class ImlMonitorController<T> {
     const kind = classifyImlError(error);
     options.onError?.(error, this.retry);
     if (kind === "authentication") {
-      this.setState("authentication-failed");
       debugRest({ event: "iml.monitor.authentication_failed", workflowId: options.workflowId, status: error.status });
-      throw error;
     }
     if (kind === "resource") {
       this.setState("stopped");
@@ -188,13 +186,11 @@ export class ImlMonitorController<T> {
     }
     this.retry += 1;
     debugRest({ event: "iml.monitor.disconnected", workflowId: options.workflowId, retry: this.retry, error: error.message });
-    this.setState("disconnected");
+    this.setState(kind === "authentication" ? "authentication-failed" : "disconnected");
     await this.waitBeforeRetry(controller, generation);
     this.ensureActive(controller, generation);
     this.setState("reconnecting");
     debugRest({ event: "iml.monitor.reconnecting", workflowId: options.workflowId, retry: this.retry });
-    await this.connect(controller, generation, options);
-    this.setState("monitoring");
   }
 
   private async waitForPoll(controller: AbortController, generation: number, intervalMs: number) {

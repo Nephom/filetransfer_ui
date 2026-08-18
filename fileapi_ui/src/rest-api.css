@@ -165,6 +165,10 @@
 .rest-success { color: #9ff2d2; background: color-mix(in srgb, var(--color-success) 14%, var(--color-bg-panel)); border-color: var(--color-success); }
 .rest-error { justify-content: space-between; color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel)); border-color: var(--color-danger); }
 .rest-error button { color: var(--color-text); background: color-mix(in srgb, var(--color-danger) 25%, var(--color-bg-panel)); border-color: var(--color-danger); }
+.rest-iml-notification { position: fixed; z-index: var(--z-toast); top: clamp(12px, 3vh, 28px); left: 50%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); width: min(620px, calc(100vw - 32px)); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 8px; color: var(--color-text); background: var(--color-bg-panel-strong); box-shadow: var(--shadow-panel), 0 14px 36px rgba(0, 0, 0, .35); transform: translateX(-50%); }
+.rest-iml-notification.error { color: var(--color-danger); border-color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel-strong)); }
+.rest-iml-notification span { min-width: 0; overflow-wrap: anywhere; }
+.rest-iml-notification button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) !important; color: inherit; background: transparent; border-color: currentColor; }
 .rest-response { display: flex; flex: 0 0 auto; flex-direction: column; width: auto; height: min(50vh, 560px); min-height: clamp(140px, 18vh, 180px); margin: 0 var(--space-5) var(--space-4); border: 1px solid var(--color-border); border-radius: 6px; overflow: hidden; background: var(--color-bg); }
 .rest-response-resize-handle { height: var(--space-2); margin: 0 var(--space-5); border: 1px solid var(--color-border); border-bottom: 0; border-radius: 6px 6px 0 0; background: var(--color-bg); cursor: row-resize; touch-action: none; }
 .rest-response-resize-handle:hover, .rest-response-resize-handle:focus-visible { background: var(--color-primary); outline: 0; }

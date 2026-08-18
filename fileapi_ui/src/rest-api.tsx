@@ -357,6 +357,8 @@ export function RestApiWorkspace(props: Props) {
   const [imlNewestFirst, setImlNewestFirst] = useState(true);
   const [imlPolling, setImlPolling] = useState(false);
   const [imlState, setImlState] = useState<ImlMonitorState>("stopped");
+  const [imlError, setImlError] = useState("");
+  const [imlNotice, setImlNotice] = useState("");
   const [imlRetryCount, setImlRetryCount] = useState(0);
   const [imlLastFetchAt, setImlLastFetchAt] = useState<number | null>(null);
   const [imlCsvError, setImlCsvError] = useState("");
@@ -917,7 +919,7 @@ export function RestApiWorkspace(props: Props) {
     } finally { setLoading(false); }
   };
 
-  const login = async (force = false) => {
+  const login = async (force = false, throwOnError = false) => {
     if (force) clearSessionForEntry(entry?.id);
     if (loginPromiseRef.current) return loginPromiseRef.current;
     const operation = (async () => {
@@ -932,7 +934,11 @@ export function RestApiWorkspace(props: Props) {
          loginResult = await runRequest("POST", joinUrl(entry.baseUrl, "/login"), legacyBody, [["Content-Type", "application/json"]], crypto.randomUUID(), false);
        }
        if (!loginResult) return;
-       if (loginResult.responseValue.status >= 400) throw new Error(formatRedfishError(parseRedfishError(loginResult.responseValue.status, loginResult.text)));
+       if (loginResult.responseValue.status >= 400) {
+         const failure = new Error(formatRedfishError(parseRedfishError(loginResult.responseValue.status, loginResult.text))) as Error & { status?: number };
+         failure.status = loginResult.responseValue.status;
+         throw failure;
+       }
        const tokenHeader = (loginResult.responseValue.headers || []).find(([name]) => name.toLowerCase() === entry.tokenHeader.toLowerCase())?.[1] || "";
        const location = (loginResult.responseValue.headers || []).find(([name]) => name.toLowerCase() === "location")?.[1] || "";
        if (location) sessionLocationRef.current[entry.id] = location;
@@ -945,11 +951,14 @@ export function RestApiWorkspace(props: Props) {
       else if (cookie) updateSecret({ cookie });
       else throw new Error("Login succeeded but no configured token or cookie was found.");
       setMessage("REST session established for this entry.");
-    } catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+      if (throwOnError) throw requestError;
+    }
     finally { setLoading(false); }
     })();
     loginPromiseRef.current = operation;
-    void operation.finally(() => { loginPromiseRef.current = null; });
+    void operation.finally(() => { loginPromiseRef.current = null; }).catch(() => {});
     return operation;
   };
 
@@ -1308,8 +1317,9 @@ export function RestApiWorkspace(props: Props) {
     const rows = [hardwareTool.columns, ...hardwareRows.map((row) => hardwareTool.columns.map((column) => tableCell(row[column])))];
     downloadText(`${entry?.name || "rest"}-${hardwareTool.id}.csv`, rows.map((row) => row.map(csvCell).join(",")).join("\n"), "text/csv;charset=utf-8");
   };
-  const fetchIml = async (workflowId = crypto.randomUUID()) => {
+  const fetchIml = async (workflowId = crypto.randomUUID(), propagateError = false) => {
     if (!entry) return;
+    try {
     const targets = imlTargetsRef.current || await discoverHpeTargets();
     imlTargetsRef.current = targets;
     if (!targets.iml) throw new Error("HPE IML resource was not advertised.");
@@ -1320,12 +1330,12 @@ export function RestApiWorkspace(props: Props) {
     const previousSnapshot = imlSnapshotRef.current;
     const snapshotChanged = Boolean(previousSnapshot && (members.length < previousSnapshot.count || newestTimestamp < previousSnapshot.newestTimestamp || [...previousSnapshot.keys].some((key) => !currentKeys.has(key))));
     if (snapshotChanged) {
-      setAhsMessage("IML snapshot changed; existing local entries were retained.");
+      setImlNotice("IML resource snapshot changed; existing local entries were retained.");
       debugRest({ event: "iml.monitor.snapshot_changed", workflowId, previousCount: previousSnapshot?.count, currentCount: members.length, boundaryReason: "clear-suspected" });
     }
     imlSnapshotRef.current = { keys: currentKeys, count: members.length, newestTimestamp };
     await appendImlCsvRows(members);
-    if (collection.errors.length) setError(`Partial failure: ${collection.errors.join("; ")}`);
+    if (collection.errors.length) setImlError(`Partial IML refresh failure: ${collection.errors.join("; ")}`);
     setImlRows((current) => {
       const merged = [...members, ...current];
       const unique = new Map<string, Record<string, JsonValue>>();
@@ -1337,7 +1347,15 @@ export function RestApiWorkspace(props: Props) {
       });
       return sorted.slice(0, 50);
     });
+    setImlError("");
+    setImlLastFetchAt(Date.now());
     return members;
+    } catch (fetchError) {
+      const message = fetchError instanceof Error ? fetchError.message : String(fetchError);
+      setImlError(message);
+      if (propagateError) throw fetchError;
+      return [];
+    }
   };
   const imlEntryKey = (row: Record<string, JsonValue>) => {
     if (typeof row["@odata.id"] === "string") return String(row["@odata.id"]);
@@ -1384,8 +1402,13 @@ export function RestApiWorkspace(props: Props) {
     }
   };
   const startImlPolling = () => {
-    if (imlInterval < 3000 || !entry) return;
+    if (imlInterval < 3000 || !entry) {
+      setImlError(!entry ? "Select a REST API entry before starting the IML monitor." : "IML polling interval must be at least 3 seconds.");
+      return;
+    }
     clearAhsTimer();
+    setImlError("");
+    setImlNotice("Starting IML monitor and establishing the REST session...");
     setImlManualStopped(false);
     setAhsTarget("");
     setAhsMessage("");
@@ -1403,7 +1426,7 @@ export function RestApiWorkspace(props: Props) {
       login: async (_signal, force) => {
         if (force) clearSessionForEntry(entry.id);
         if (force || (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie)) {
-          await login(force);
+          await login(force, true);
           if (!sessionTokenRef.current[entry.id] && !props.secrets[entry.id]?.token && !props.secrets[entry.id]?.cookie) {
             throw new Error("IML monitor could not establish a REST session.");
           }
@@ -1414,17 +1437,18 @@ export function RestApiWorkspace(props: Props) {
         if (!imlCsvPathRef.current) await createImlCsvSession(imlTargetsRef.current);
       },
       fetch: async () => {
-        await fetchIml(workflowId);
+        await fetchIml(workflowId, true);
         return { entries: imlRows, receivedAt: Date.now(), connectionGeneration: 0, sessionGeneration: 0 };
       },
       onState: (state) => {
         imlStateRef.current = state;
         setImlState(state);
         setImlPolling(state !== "stopped" && state !== "stopped-by-user");
+        setImlNotice(state === "connecting" ? "Connecting to the IML resource..." : state === "reconnecting" ? "IML session disconnected; reconnecting automatically..." : state === "monitoring" ? "IML monitor is running." : state === "authentication-failed" ? "IML session authentication failed; retrying with a new session..." : state === "disconnected" ? "IML connection lost; waiting before retrying..." : state === "stopped" ? "IML monitor stopped." : "");
       },
       onError: (monitorError, retry) => {
         setImlRetryCount(retry);
-        setError(monitorError.message);
+        setImlError(monitorError.message);
       },
       onSnapshot: () => { setImlLastFetchAt(Date.now()); setImlNextRetryAt(null); },
       onRetryScheduled: (_retry, nextAttemptAt) => setImlNextRetryAt(nextAttemptAt),
@@ -1728,6 +1752,7 @@ export function RestApiWorkspace(props: Props) {
   }, {});
 
   return <><div className="rest-workspace">
+    {imlOpen && (imlError || imlNotice) && <div className={`rest-iml-notification${imlError ? " error" : ""}`} role="alert"><strong>{imlError ? "IML monitor error" : "IML monitor"}</strong><span>{imlError || imlNotice}</span><button type="button" onClick={() => { setImlError(""); setImlNotice(""); }} aria-label="Dismiss IML notification"><CloseIcon size={12} /></button></div>}
     {biosEditor}
     {resourceCatalogOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-resource-catalog" role="dialog" aria-modal="true" aria-labelledby="resource-catalog-title"><div className="rest-editor-heading"><strong id="resource-catalog-title">All Resources</strong><button type="button" onClick={() => setResourceCatalogOpen(false)} aria-label="Close resource catalog"><CloseIcon size={12} /></button></div><p className="muted">Redfish resources advertised by the service root. Select a path to open it.</p><div className="rest-resource-catalog-list">{resourceCatalog.map((resource) => <button type="button" key={`${resource.name}-${resource.target}`} onClick={() => { setResourceCatalogOpen(false); void openPath(resource.target); }}><strong>{resource.name}</strong><code>{resource.target}</code></button>)}</div></div></div>}
      <div className={`rest-entry-pane-shell${entryPaneCollapsed ? " rest-entry-pane-collapsed" : ""}`} style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries entries={props.entries} activeEntryId={entry?.id || ""} onSelectEntry={props.onSelectEntry} /></div>
