@@ -351,7 +351,6 @@ export function RestApiWorkspace(props: Props) {
   const [hardwareSummaryOpen, setHardwareSummaryOpen] = useState(false);
   const [hardwareSummaryGroups, setHardwareSummaryGroups] = useState<{ tool: HardwareTool; rows: Record<string, JsonValue>[] }[]>([]);
   const [imlOpen, setImlOpen] = useState(false);
-  const [imlRows, setImlRows] = useState<Record<string, JsonValue>[]>([]);
   const [imlKeyword, setImlKeyword] = useState("");
   const [imlSeverity, setImlSeverity] = useState("all");
   const [imlNewestFirst, setImlNewestFirst] = useState(true);
@@ -359,7 +358,6 @@ export function RestApiWorkspace(props: Props) {
   const [imlState, setImlState] = useState<ImlMonitorState>("stopped");
   const [imlError, setImlError] = useState("");
   const [imlNotice, setImlNotice] = useState("");
-  const [imlDialogHost, setImlDialogHost] = useState<HTMLElement | null>(null);
   const [imlRetryCount, setImlRetryCount] = useState(0);
   const [imlLastFetchAt, setImlLastFetchAt] = useState<number | null>(null);
   const [imlCsvError, setImlCsvError] = useState("");
@@ -375,10 +373,6 @@ export function RestApiWorkspace(props: Props) {
   const imlCsvPathRef = useRef<string | null>(null);
   const imlCsvKeysRef = useRef<Set<string>>(new Set());
   const imlSnapshotRef = useRef<{ keys: Set<string>; count: number; newestTimestamp: number } | null>(null);
-  const imlTerminalRef = useRef<HTMLElement | null>(null);
-  const imlAutoFollowRef = useRef(true);
-  const imlManualAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
-  const imlScrollFrameRef = useRef<number | null>(null);
   const [powerOpen, setPowerOpen] = useState(false);
   const [powerState, setPowerState] = useState("Unknown");
   const [powerActions, setPowerActions] = useState<string[]>([]);
@@ -671,67 +665,6 @@ export function RestApiWorkspace(props: Props) {
     window.setTimeout(focusDialog, 0);
     return () => { document.removeEventListener("keydown", onKeyDown); previous?.focus(); };
   }, [devicesOpen, hardwareOpen, hardwareSummaryOpen, imlOpen, powerOpen, biosOpen, firmwareOpen, resetOpen, actionOpen]);
-
-  useEffect(() => {
-    if (!imlOpen) {
-      imlTerminalRef.current = null;
-      return undefined;
-    }
-    const terminal = document.querySelector<HTMLElement>(".rest-iml-dialog .rest-iml-records");
-    if (!terminal) return undefined;
-    imlTerminalRef.current = terminal;
-    imlAutoFollowRef.current = true;
-    imlManualAnchorRef.current = null;
-    const updateFollowState = () => {
-      const distanceFromBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight;
-      if (distanceFromBottom <= 2) {
-        imlAutoFollowRef.current = true;
-        imlManualAnchorRef.current = null;
-      } else {
-        imlAutoFollowRef.current = false;
-        imlManualAnchorRef.current = { scrollTop: terminal.scrollTop, scrollHeight: terminal.scrollHeight };
-      }
-    };
-    terminal.addEventListener("scroll", updateFollowState, { passive: true });
-    return () => {
-      terminal.removeEventListener("scroll", updateFollowState);
-      if (imlTerminalRef.current === terminal) imlTerminalRef.current = null;
-    };
-  }, [imlOpen]);
-
-  useEffect(() => {
-    if (!imlOpen) return undefined;
-    const terminal = imlTerminalRef.current;
-    if (!terminal) return undefined;
-    if (!imlAutoFollowRef.current) {
-      const anchor = imlManualAnchorRef.current;
-      if (anchor && terminal.scrollHeight !== anchor.scrollHeight) {
-        terminal.scrollTop = Math.max(0, anchor.scrollTop + terminal.scrollHeight - anchor.scrollHeight);
-        imlManualAnchorRef.current = { scrollTop: terminal.scrollTop, scrollHeight: terminal.scrollHeight };
-      }
-      return undefined;
-    }
-    if (imlScrollFrameRef.current !== null) cancelAnimationFrame(imlScrollFrameRef.current);
-    imlScrollFrameRef.current = requestAnimationFrame(() => {
-      imlScrollFrameRef.current = null;
-      if (imlAutoFollowRef.current) terminal.scrollTop = terminal.scrollHeight;
-    });
-    return () => {
-      if (imlScrollFrameRef.current !== null) {
-        cancelAnimationFrame(imlScrollFrameRef.current);
-        imlScrollFrameRef.current = null;
-      }
-    };
-  }, [imlRows, imlOpen]);
-
-  useEffect(() => {
-    if (!imlOpen) {
-      setImlDialogHost(null);
-      return undefined;
-    }
-    const frame = requestAnimationFrame(() => setImlDialogHost(document.querySelector<HTMLElement>(".rest-iml-dialog")));
-    return () => cancelAnimationFrame(frame);
-  }, [imlOpen]);
 
   useEffect(() => {
     const updateTokenHelpPosition = () => {
@@ -1328,7 +1261,7 @@ export function RestApiWorkspace(props: Props) {
     downloadText(`${entry?.name || "rest"}-${hardwareTool.id}.csv`, rows.map((row) => row.map(csvCell).join(",")).join("\n"), "text/csv;charset=utf-8");
   };
   const fetchIml = async (workflowId = crypto.randomUUID(), propagateError = false) => {
-    if (!entry) return;
+    if (!entry) return [];
     try {
     const targets = imlTargetsRef.current || await discoverHpeTargets();
     imlTargetsRef.current = targets;
@@ -1346,17 +1279,6 @@ export function RestApiWorkspace(props: Props) {
     imlSnapshotRef.current = { keys: currentKeys, count: members.length, newestTimestamp };
     await appendImlCsvRows(members);
     if (collection.errors.length) setImlError(`Partial IML refresh failure: ${collection.errors.join("; ")}`);
-    setImlRows((current) => {
-      const merged = [...members, ...current];
-      const unique = new Map<string, Record<string, JsonValue>>();
-      merged.forEach((row) => unique.set(imlEntryKey(row), row));
-      const sorted = [...unique.values()].sort((left, right) => {
-        const leftTime = Date.parse(String(left.Created || left.EventTimestamp || "")) || 0;
-        const rightTime = Date.parse(String(right.Created || right.EventTimestamp || "")) || 0;
-        return rightTime - leftTime;
-      });
-      return sorted.slice(0, 50);
-    });
     setImlError("");
     setImlLastFetchAt(Date.now());
     return members;
@@ -1447,8 +1369,8 @@ export function RestApiWorkspace(props: Props) {
         if (!imlCsvPathRef.current) await createImlCsvSession(imlTargetsRef.current);
       },
       fetch: async () => {
-        await fetchIml(workflowId, true);
-        return { entries: imlRows, receivedAt: Date.now(), connectionGeneration: 0, sessionGeneration: 0 };
+        const entries = await fetchIml(workflowId, true);
+        return { entries, receivedAt: Date.now(), connectionGeneration: 0, sessionGeneration: 0 };
       },
       onState: (state) => {
         imlStateRef.current = state;
@@ -1735,7 +1657,7 @@ export function RestApiWorkspace(props: Props) {
   const deviceRows = devicesData && typeof devicesData === "object" && !Array.isArray(devicesData) && Array.isArray(devicesData.Members)
     ? devicesData.Members.filter((item): item is { [key: string]: JsonValue } => Boolean(item && typeof item === "object" && !Array.isArray(item)))
     : [];
-  const visibleImlRows = imlRows.filter((row) => (!imlKeyword || JSON.stringify(row).toLowerCase().includes(imlKeyword.toLowerCase())) && (imlSeverity === "all" || String(row.Severity || "").toLowerCase() === imlSeverity)).sort((left, right) => { const a = Date.parse(String(left.Created || left.EventTimestamp || "")) || 0; const b = Date.parse(String(right.Created || right.EventTimestamp || "")) || 0; return imlNewestFirst ? b - a : a - b; });
+  const visibleImlRows: Record<string, JsonValue>[] = [];
   const visibleBiosKeys = Object.keys(biosDraft).filter((key) => !biosSearch || `${key} ${jsonCell(biosDraft[key])}`.toLowerCase().includes(biosSearch.toLowerCase()));
   const biosMetadata = biosRaw?.AttributeMetadata && typeof biosRaw.AttributeMetadata === "object" && !Array.isArray(biosRaw.AttributeMetadata) ? biosRaw.AttributeMetadata as Record<string, JsonValue> : {};
   const selectedBiosMetadata = selectedBiosAttribute && biosMetadata[selectedBiosAttribute] && typeof biosMetadata[selectedBiosAttribute] === "object" && !Array.isArray(biosMetadata[selectedBiosAttribute]) ? biosMetadata[selectedBiosAttribute] as Record<string, JsonValue> : {};
@@ -1763,7 +1685,6 @@ export function RestApiWorkspace(props: Props) {
 
   return <><div className="rest-workspace">
     {imlOpen && (imlError || imlNotice) && <div className={`rest-iml-notification${imlError ? " error" : ""}`} role="alert"><strong>{imlError ? "IML monitor error" : "IML monitor"}</strong><span>{imlError || imlNotice}</span><button type="button" onClick={() => { setImlError(""); setImlNotice(""); }} aria-label="Dismiss IML notification"><CloseIcon size={12} /></button></div>}
-    {imlDialogHost && createPortal(<div className="rest-iml-records" aria-label="Current IML records"><div className="rest-iml-records-heading"><strong>Current IML records</strong><span>{visibleImlRows.length} records</span></div>{visibleImlRows.length ? visibleImlRows.map((row, index) => <div className="rest-iml-record" key={`${imlEntryKey(row)}-${index}`}><div><strong>{String(row.Severity || "Unknown")}</strong><span>{String(row.Created || row.EventTimestamp || "Unknown time")}</span></div><p>{String(row.Message || row.MessageId || row.Id || "No message")}</p><code>{String(row["@odata.id"] || row.Id || "-")}</code></div>) : <p className="muted">No IML records returned.</p>}</div>, imlDialogHost)}
     {biosEditor}
     {resourceCatalogOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-resource-catalog" role="dialog" aria-modal="true" aria-labelledby="resource-catalog-title"><div className="rest-editor-heading"><strong id="resource-catalog-title">All Resources</strong><button type="button" onClick={() => setResourceCatalogOpen(false)} aria-label="Close resource catalog"><CloseIcon size={12} /></button></div><p className="muted">Redfish resources advertised by the service root. Select a path to open it.</p><div className="rest-resource-catalog-list">{resourceCatalog.map((resource) => <button type="button" key={`${resource.name}-${resource.target}`} onClick={() => { setResourceCatalogOpen(false); void openPath(resource.target); }}><strong>{resource.name}</strong><code>{resource.target}</code></button>)}</div></div></div>}
      <div className={`rest-entry-pane-shell${entryPaneCollapsed ? " rest-entry-pane-collapsed" : ""}`} style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries entries={props.entries} activeEntryId={entry?.id || ""} onSelectEntry={props.onSelectEntry} /></div>
