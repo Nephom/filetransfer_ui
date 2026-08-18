@@ -351,6 +351,7 @@ export function RestApiWorkspace(props: Props) {
   const [hardwareSummaryOpen, setHardwareSummaryOpen] = useState(false);
   const [hardwareSummaryGroups, setHardwareSummaryGroups] = useState<{ tool: HardwareTool; rows: Record<string, JsonValue>[] }[]>([]);
   const [imlOpen, setImlOpen] = useState(false);
+  const [imlRows, setImlRows] = useState<Record<string, JsonValue>[]>([]);
   const [imlKeyword, setImlKeyword] = useState("");
   const [imlSeverity, setImlSeverity] = useState("all");
   const [imlNewestFirst, setImlNewestFirst] = useState(true);
@@ -1279,6 +1280,16 @@ export function RestApiWorkspace(props: Props) {
     imlSnapshotRef.current = { keys: currentKeys, count: members.length, newestTimestamp };
     await appendImlCsvRows(members);
     if (collection.errors.length) setImlError(`Partial IML refresh failure: ${collection.errors.join("; ")}`);
+    setImlRows((current) => {
+      const merged = [...members, ...current];
+      const unique = new Map<string, Record<string, JsonValue>>();
+      merged.forEach((row) => unique.set(imlEntryKey(row), row));
+      return [...unique.values()].sort((left, right) => {
+        const leftTime = Date.parse(String(left.Created || left.EventTimestamp || "")) || 0;
+        const rightTime = Date.parse(String(right.Created || right.EventTimestamp || "")) || 0;
+        return rightTime - leftTime;
+      }).slice(0, 50);
+    });
     setImlError("");
     setImlLastFetchAt(Date.now());
     setImlNotice(`Fetched ${members.length} current IML entries.`);
@@ -1658,7 +1669,11 @@ export function RestApiWorkspace(props: Props) {
   const deviceRows = devicesData && typeof devicesData === "object" && !Array.isArray(devicesData) && Array.isArray(devicesData.Members)
     ? devicesData.Members.filter((item): item is { [key: string]: JsonValue } => Boolean(item && typeof item === "object" && !Array.isArray(item)))
     : [];
-  const visibleImlRows: Record<string, JsonValue>[] = [];
+  const visibleImlRows = imlRows.filter((row) => (!imlKeyword || JSON.stringify(row).toLowerCase().includes(imlKeyword.toLowerCase())) && (imlSeverity === "all" || String(row.Severity || "").toLowerCase() === imlSeverity)).sort((left, right) => {
+    const leftTime = Date.parse(String(left.Created || left.EventTimestamp || "")) || 0;
+    const rightTime = Date.parse(String(right.Created || right.EventTimestamp || "")) || 0;
+    return imlNewestFirst ? rightTime - leftTime : leftTime - rightTime;
+  });
   const visibleBiosKeys = Object.keys(biosDraft).filter((key) => !biosSearch || `${key} ${jsonCell(biosDraft[key])}`.toLowerCase().includes(biosSearch.toLowerCase()));
   const biosMetadata = biosRaw?.AttributeMetadata && typeof biosRaw.AttributeMetadata === "object" && !Array.isArray(biosRaw.AttributeMetadata) ? biosRaw.AttributeMetadata as Record<string, JsonValue> : {};
   const selectedBiosMetadata = selectedBiosAttribute && biosMetadata[selectedBiosAttribute] && typeof biosMetadata[selectedBiosAttribute] === "object" && !Array.isArray(biosMetadata[selectedBiosAttribute]) ? biosMetadata[selectedBiosAttribute] as Record<string, JsonValue> : {};
