@@ -372,6 +372,10 @@ export function RestApiWorkspace(props: Props) {
   const imlCsvPathRef = useRef<string | null>(null);
   const imlCsvKeysRef = useRef<Set<string>>(new Set());
   const imlSnapshotRef = useRef<{ keys: Set<string>; count: number; newestTimestamp: number } | null>(null);
+  const imlTerminalRef = useRef<HTMLElement | null>(null);
+  const imlAutoFollowRef = useRef(true);
+  const imlManualAnchorRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
+  const imlScrollFrameRef = useRef<number | null>(null);
   const [powerOpen, setPowerOpen] = useState(false);
   const [powerState, setPowerState] = useState("Unknown");
   const [powerActions, setPowerActions] = useState<string[]>([]);
@@ -664,6 +668,58 @@ export function RestApiWorkspace(props: Props) {
     window.setTimeout(focusDialog, 0);
     return () => { document.removeEventListener("keydown", onKeyDown); previous?.focus(); };
   }, [devicesOpen, hardwareOpen, hardwareSummaryOpen, imlOpen, powerOpen, biosOpen, firmwareOpen, resetOpen, actionOpen]);
+
+  useEffect(() => {
+    if (!imlOpen) {
+      imlTerminalRef.current = null;
+      return undefined;
+    }
+    const terminal = document.querySelector<HTMLElement>(".rest-iml-dialog .rest-iml-terminal");
+    if (!terminal) return undefined;
+    imlTerminalRef.current = terminal;
+    imlAutoFollowRef.current = true;
+    imlManualAnchorRef.current = null;
+    const updateFollowState = () => {
+      const distanceFromBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight;
+      if (distanceFromBottom <= 2) {
+        imlAutoFollowRef.current = true;
+        imlManualAnchorRef.current = null;
+      } else {
+        imlAutoFollowRef.current = false;
+        imlManualAnchorRef.current = { scrollTop: terminal.scrollTop, scrollHeight: terminal.scrollHeight };
+      }
+    };
+    terminal.addEventListener("scroll", updateFollowState, { passive: true });
+    return () => {
+      terminal.removeEventListener("scroll", updateFollowState);
+      if (imlTerminalRef.current === terminal) imlTerminalRef.current = null;
+    };
+  }, [imlOpen]);
+
+  useEffect(() => {
+    if (!imlOpen) return undefined;
+    const terminal = imlTerminalRef.current;
+    if (!terminal) return undefined;
+    if (!imlAutoFollowRef.current) {
+      const anchor = imlManualAnchorRef.current;
+      if (anchor && terminal.scrollHeight !== anchor.scrollHeight) {
+        terminal.scrollTop = Math.max(0, anchor.scrollTop + terminal.scrollHeight - anchor.scrollHeight);
+        imlManualAnchorRef.current = { scrollTop: terminal.scrollTop, scrollHeight: terminal.scrollHeight };
+      }
+      return undefined;
+    }
+    if (imlScrollFrameRef.current !== null) cancelAnimationFrame(imlScrollFrameRef.current);
+    imlScrollFrameRef.current = requestAnimationFrame(() => {
+      imlScrollFrameRef.current = null;
+      if (imlAutoFollowRef.current) terminal.scrollTop = terminal.scrollHeight;
+    });
+    return () => {
+      if (imlScrollFrameRef.current !== null) {
+        cancelAnimationFrame(imlScrollFrameRef.current);
+        imlScrollFrameRef.current = null;
+      }
+    };
+  }, [imlRows, imlOpen]);
 
   useEffect(() => {
     const updateTokenHelpPosition = () => {
