@@ -220,7 +220,7 @@
 .rest-hardware-dialog > .rest-hardware-table-wrap,
 .rest-hardware-dialog > .rest-iml-records { min-height: 0; max-height: min(68vh, 680px); }
 .rest-hardware-dialog > .rest-hardware-table-wrap { overflow: auto; }
-.rest-iml-dialog { width: min(1120px, 100%); max-height: min(90dvh, 820px); min-height: min(360px, calc(100dvh - 32px)); }
+.rest-iml-dialog { width: min(1120px, 100%); height: min(78dvh, 720px); max-height: calc(100dvh - 32px); min-height: min(360px, calc(100dvh - 32px)); grid-template-rows: auto auto minmax(0, 1fr); }
 .rest-iml-dialog > .rest-iml-records { min-height: 0; max-height: none; overflow: auto; overscroll-behavior: contain; }
 .rest-hardware-dialog::after { content: ""; position: absolute; right: 4px; bottom: 4px; width: 12px; height: 12px; border-right: 2px solid rgba(155, 232, 255, .55); border-bottom: 2px solid rgba(155, 232, 255, .55); pointer-events: none; }
 .rest-editor-heading { cursor: grab; user-select: none; touch-action: none; }
