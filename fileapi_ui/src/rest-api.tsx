@@ -359,6 +359,7 @@ export function RestApiWorkspace(props: Props) {
   const [imlState, setImlState] = useState<ImlMonitorState>("stopped");
   const [imlError, setImlError] = useState("");
   const [imlNotice, setImlNotice] = useState("");
+  const [imlDialogHost, setImlDialogHost] = useState<HTMLElement | null>(null);
   const [imlRetryCount, setImlRetryCount] = useState(0);
   const [imlLastFetchAt, setImlLastFetchAt] = useState<number | null>(null);
   const [imlCsvError, setImlCsvError] = useState("");
@@ -676,7 +677,7 @@ export function RestApiWorkspace(props: Props) {
       imlTerminalRef.current = null;
       return undefined;
     }
-    const terminal = document.querySelector<HTMLElement>(".rest-iml-dialog .rest-iml-terminal");
+    const terminal = document.querySelector<HTMLElement>(".rest-iml-dialog .rest-iml-records");
     if (!terminal) return undefined;
     imlTerminalRef.current = terminal;
     imlAutoFollowRef.current = true;
@@ -722,6 +723,15 @@ export function RestApiWorkspace(props: Props) {
       }
     };
   }, [imlRows, imlOpen]);
+
+  useEffect(() => {
+    if (!imlOpen) {
+      setImlDialogHost(null);
+      return undefined;
+    }
+    const frame = requestAnimationFrame(() => setImlDialogHost(document.querySelector<HTMLElement>(".rest-iml-dialog")));
+    return () => cancelAnimationFrame(frame);
+  }, [imlOpen]);
 
   useEffect(() => {
     const updateTokenHelpPosition = () => {
@@ -1753,6 +1763,7 @@ export function RestApiWorkspace(props: Props) {
 
   return <><div className="rest-workspace">
     {imlOpen && (imlError || imlNotice) && <div className={`rest-iml-notification${imlError ? " error" : ""}`} role="alert"><strong>{imlError ? "IML monitor error" : "IML monitor"}</strong><span>{imlError || imlNotice}</span><button type="button" onClick={() => { setImlError(""); setImlNotice(""); }} aria-label="Dismiss IML notification"><CloseIcon size={12} /></button></div>}
+    {imlDialogHost && createPortal(<div className="rest-iml-records" aria-label="Current IML records"><div className="rest-iml-records-heading"><strong>Current IML records</strong><span>{visibleImlRows.length} records</span></div>{visibleImlRows.length ? visibleImlRows.map((row, index) => <div className="rest-iml-record" key={`${imlEntryKey(row)}-${index}`}><div><strong>{String(row.Severity || "Unknown")}</strong><span>{String(row.Created || row.EventTimestamp || "Unknown time")}</span></div><p>{String(row.Message || row.MessageId || row.Id || "No message")}</p><code>{String(row["@odata.id"] || row.Id || "-")}</code></div>) : <p className="muted">No IML records returned.</p>}</div>, imlDialogHost)}
     {biosEditor}
     {resourceCatalogOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-resource-catalog" role="dialog" aria-modal="true" aria-labelledby="resource-catalog-title"><div className="rest-editor-heading"><strong id="resource-catalog-title">All Resources</strong><button type="button" onClick={() => setResourceCatalogOpen(false)} aria-label="Close resource catalog"><CloseIcon size={12} /></button></div><p className="muted">Redfish resources advertised by the service root. Select a path to open it.</p><div className="rest-resource-catalog-list">{resourceCatalog.map((resource) => <button type="button" key={`${resource.name}-${resource.target}`} onClick={() => { setResourceCatalogOpen(false); void openPath(resource.target); }}><strong>{resource.name}</strong><code>{resource.target}</code></button>)}</div></div></div>}
      <div className={`rest-entry-pane-shell${entryPaneCollapsed ? " rest-entry-pane-collapsed" : ""}`} style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries entries={props.entries} activeEntryId={entry?.id || ""} onSelectEntry={props.onSelectEntry} /></div>

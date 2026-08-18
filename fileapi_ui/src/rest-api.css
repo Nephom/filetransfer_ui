@@ -218,10 +218,10 @@
 .rest-audit-detail .rest-code { max-height: clamp(90px, 12vh, 120px); margin: 0; }
 .rest-hardware-dialog { width: min(920px, 100%); max-width: 100%; max-height: 100%; min-width: 0; min-height: 0; overflow: hidden; resize: both; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); box-sizing: border-box; padding: var(--space-4); border: 1px solid rgba(155, 232, 255, .5); border-radius: 14px; color: var(--color-text); background: linear-gradient(145deg, rgba(18, 53, 79, .88), rgba(5, 19, 34, .86)); box-shadow: inset 0 1px rgba(255, 255, 255, .16), 0 24px 60px rgba(0, 0, 0, .55); backdrop-filter: blur(24px) saturate(150%); transform: translate(var(--rest-dialog-x, 0px), var(--rest-dialog-y, 0px)); }
 .rest-hardware-dialog > .rest-hardware-table-wrap,
-.rest-hardware-dialog > .rest-iml-terminal { min-height: 0; max-height: min(68vh, 680px); }
+.rest-hardware-dialog > .rest-iml-records { min-height: 0; max-height: min(68vh, 680px); }
 .rest-hardware-dialog > .rest-hardware-table-wrap { overflow: auto; }
 .rest-iml-dialog { width: min(1120px, 100%); max-height: min(90dvh, 820px); min-height: min(360px, calc(100dvh - 32px)); }
-.rest-iml-dialog > .rest-iml-terminal { min-height: 0; max-height: none; overflow: auto; overscroll-behavior: contain; }
+.rest-iml-dialog > .rest-iml-records { min-height: 0; max-height: none; overflow: auto; overscroll-behavior: contain; }
 .rest-hardware-dialog::after { content: ""; position: absolute; right: 4px; bottom: 4px; width: 12px; height: 12px; border-right: 2px solid rgba(155, 232, 255, .55); border-bottom: 2px solid rgba(155, 232, 255, .55); pointer-events: none; }
 .rest-editor-heading { cursor: grab; user-select: none; touch-action: none; }
 .rest-editor-heading:active { cursor: grabbing; }
@@ -241,10 +241,19 @@
 .rest-iml-controls { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .rest-iml-controls input, .rest-iml-controls .dropdown { min-width: clamp(90px, 10vw, 110px); }
 .rest-iml-controls input, .rest-iml-controls .dropdown-trigger { min-height: var(--control-height-mobile); color: var(--color-text); background: rgba(7, 25, 42, .76); border-color: rgba(155, 232, 255, .28); }
-.rest-iml-controls button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-2) !important; color: var(--color-primary); background: rgba(16, 45, 73, .76); border-color: rgba(155, 232, 255, .28); font-size: var(--font-size-small) !important; }
+.rest-iml-controls button { min-height: 26px !important; height: 26px; padding: 0 var(--space-2) !important; color: var(--color-primary); background: rgba(16, 45, 73, .76); border-color: rgba(155, 232, 255, .28); font-size: var(--font-size-small) !important; line-height: 1.1; }
 .rest-iml-terminal { min-height: clamp(200px, 26vh, 260px); max-height: min(52vh, 520px); overflow: auto; padding: var(--space-3); border: 1px solid rgba(155, 232, 255, .22); border-radius: 8px; color: var(--color-text); background: var(--color-bg); font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .rest-iml-terminal div { padding: var(--space-1) 0; border-bottom: 1px solid rgba(155, 232, 255, .07); }
 .rest-iml-terminal span { color: var(--color-text-muted); }.rest-iml-terminal b { color: var(--color-warning); }
+.rest-iml-records { min-height: 0; overflow: auto; padding: var(--space-2); border: 1px solid rgba(155, 232, 255, .22); border-radius: 8px; background: var(--color-bg); }
+.rest-iml-records-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding-bottom: var(--space-2); color: var(--color-primary); font-size: var(--font-size-small); }
+.rest-iml-records-heading span { color: var(--color-text-muted); }
+.rest-iml-record { display: grid; gap: var(--space-1); padding: var(--space-2) 0; border-bottom: 1px solid rgba(155, 232, 255, .1); }
+.rest-iml-record:last-child { border-bottom: 0; }
+.rest-iml-record > div { display: flex; justify-content: space-between; gap: var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-small); }
+.rest-iml-record > div strong { color: var(--color-warning); }
+.rest-iml-record p { margin: 0; color: var(--color-text); overflow-wrap: anywhere; }
+.rest-iml-record code { color: var(--color-primary); overflow-wrap: anywhere; }
 .rest-toolbox-groups { display: grid; gap: var(--space-2); padding: var(--space-2); }.rest-toolbox-group { padding: var(--space-2); border: 1px solid rgba(155, 232, 255, .2); border-radius: 8px; background: rgba(7, 25, 42, .35); }.rest-toolbox-group h3 { display: flex; justify-content: space-between; margin: 0 0 var(--space-2); color: var(--color-primary); font-size: var(--font-size-small); text-transform: uppercase; letter-spacing: .05em; }.rest-toolbox-group h3 span { color: var(--color-text-muted); }.rest-toolbox .rest-actions-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-2); }.rest-toolbox .rest-action-button { min-height: var(--control-height-mobile-lg); padding: var(--space-2) var(--space-2) !important; border: 1px solid rgba(155, 232, 255, .22); border-radius: 7px; background: rgba(16, 45, 73, .66); text-align: left; }.rest-toolbox .rest-action-button:hover { border-color: var(--color-primary); background: rgba(107, 229, 255, .14); }.rest-toolbox .rest-action-button small { display: block; overflow: hidden; margin-top: 3px; color: var(--color-text-muted); text-overflow: ellipsis; white-space: nowrap; }
 .rest-bios-toolbar { display: flex; flex-wrap: wrap; gap: var(--space-2); }.rest-bios-toolbar input { flex: 1 1 220px; min-width: 0; color: var(--color-text); background: rgba(7, 25, 42, .76); border-color: rgba(155, 232, 255, .28); }.rest-bios-toolbar button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-2) !important; color: var(--color-primary); background: rgba(16, 45, 73, .76); border-color: rgba(155, 232, 255, .28); font-size: var(--font-size-small) !important; }
 .rest-bios-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); max-height: min(48vh, 460px); overflow: auto; }.rest-bios-grid label { display: grid; gap: var(--space-1); margin: 0; color: var(--color-text-muted); font-size: var(--font-size-small); }.rest-bios-grid input { min-width: 0; color: var(--color-text); background: rgba(7, 25, 42, .76); border-color: rgba(155, 232, 255, .28); }.rest-bios-grid input[type="checkbox"] { width: var(--space-4); }
