@@ -1281,6 +1281,7 @@ export function RestApiWorkspace(props: Props) {
     if (collection.errors.length) setImlError(`Partial IML refresh failure: ${collection.errors.join("; ")}`);
     setImlError("");
     setImlLastFetchAt(Date.now());
+    setImlNotice(`Fetched ${members.length} current IML entries.`);
     return members;
     } catch (fetchError) {
       const message = fetchError instanceof Error ? fetchError.message : String(fetchError);

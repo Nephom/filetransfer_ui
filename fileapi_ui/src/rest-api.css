@@ -219,7 +219,7 @@
 .rest-hardware-dialog { width: min(920px, 100%); max-width: 100%; max-height: 100%; min-width: 0; min-height: 0; overflow: hidden; resize: both; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); box-sizing: border-box; padding: var(--space-4); border: 1px solid rgba(155, 232, 255, .5); border-radius: 14px; color: var(--color-text); background: linear-gradient(145deg, rgba(18, 53, 79, .88), rgba(5, 19, 34, .86)); box-shadow: inset 0 1px rgba(255, 255, 255, .16), 0 24px 60px rgba(0, 0, 0, .55); backdrop-filter: blur(24px) saturate(150%); transform: translate(var(--rest-dialog-x, 0px), var(--rest-dialog-y, 0px)); }
 .rest-hardware-dialog > .rest-hardware-table-wrap { min-height: 0; max-height: min(68vh, 680px); }
 .rest-hardware-dialog > .rest-hardware-table-wrap { overflow: auto; }
-.rest-iml-dialog { width: min(1120px, 100%); max-height: min(90dvh, 820px); min-height: min(360px, calc(100dvh - 32px)); }
+.rest-iml-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(90dvh, 820px); min-height: min(360px, calc(100dvh - 32px)); }
 .rest-hardware-dialog::after { content: ""; position: absolute; right: 4px; bottom: 4px; width: 12px; height: 12px; border-right: 2px solid rgba(155, 232, 255, .55); border-bottom: 2px solid rgba(155, 232, 255, .55); pointer-events: none; }
 .rest-editor-heading { cursor: grab; user-select: none; touch-action: none; }
 .rest-editor-heading:active { cursor: grabbing; }
