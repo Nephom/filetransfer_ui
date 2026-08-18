@@ -220,8 +220,8 @@
 .rest-hardware-dialog > .rest-hardware-table-wrap,
 .rest-hardware-dialog > .rest-iml-records { min-height: 0; max-height: min(68vh, 680px); }
 .rest-hardware-dialog > .rest-hardware-table-wrap { overflow: auto; }
-.rest-iml-dialog { width: min(1120px, 100%); height: min(78dvh, 720px); max-height: calc(100dvh - 32px); min-height: min(360px, calc(100dvh - 32px)); grid-template-rows: auto auto minmax(0, 1fr); }
-.rest-iml-dialog > .rest-iml-records { min-height: 0; max-height: none; overflow: auto; overscroll-behavior: contain; }
+.rest-iml-dialog { width: min(1120px, 100%); height: min(78dvh, 720px); max-height: calc(100dvh - 32px); min-height: min(360px, calc(100dvh - 32px)); overflow: hidden; grid-template-rows: auto auto minmax(0, 1fr); }
+.rest-iml-dialog > .rest-iml-records { min-height: 0; height: 100%; max-height: 100%; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 .rest-hardware-dialog::after { content: ""; position: absolute; right: 4px; bottom: 4px; width: 12px; height: 12px; border-right: 2px solid rgba(155, 232, 255, .55); border-bottom: 2px solid rgba(155, 232, 255, .55); pointer-events: none; }
 .rest-editor-heading { cursor: grab; user-select: none; touch-action: none; }
 .rest-editor-heading:active { cursor: grabbing; }
@@ -245,7 +245,7 @@
 .rest-iml-terminal { min-height: clamp(200px, 26vh, 260px); max-height: min(52vh, 520px); overflow: auto; padding: var(--space-3); border: 1px solid rgba(155, 232, 255, .22); border-radius: 8px; color: var(--color-text); background: var(--color-bg); font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .rest-iml-terminal div { padding: var(--space-1) 0; border-bottom: 1px solid rgba(155, 232, 255, .07); }
 .rest-iml-terminal span { color: var(--color-text-muted); }.rest-iml-terminal b { color: var(--color-warning); }
-.rest-iml-records { min-height: 0; overflow: auto; padding: var(--space-2); border: 1px solid rgba(155, 232, 255, .22); border-radius: 8px; background: var(--color-bg); }
+.rest-iml-records { min-height: 0; box-sizing: border-box; overflow-y: auto; overflow-x: hidden; padding: var(--space-2); border: 1px solid rgba(155, 232, 255, .22); border-radius: 8px; background: var(--color-bg); }
 .rest-iml-records-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding-bottom: var(--space-2); color: var(--color-primary); font-size: var(--font-size-small); }
 .rest-iml-records-heading span { color: var(--color-text-muted); }
 .rest-iml-record { display: grid; gap: var(--space-1); padding: var(--space-2) 0; border-bottom: 1px solid rgba(155, 232, 255, .1); }
