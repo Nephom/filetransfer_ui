@@ -1,19 +1,22 @@
 import { useEffect, useRef, type MutableRefObject, type RefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 
-export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutput, boundaryGuard, onData, onResize }: {
+export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutput, replayKey, boundaryGuard, onData, onResize }: {
   enabled: boolean;
   hostRef: RefObject<HTMLDivElement>;
   terminalRef: MutableRefObject<Terminal | null>;
   replayOutput: string;
+  replayKey: string;
   boundaryGuard: string;
   onData: (data: string, replaying: boolean) => void;
   onResize: (cols: number, rows: number) => void;
 }) {
   const dataRef = useRef(onData);
   const resizeRef = useRef(onResize);
+  const replayOutputRef = useRef(replayOutput);
   dataRef.current = onData;
   resizeRef.current = onResize;
+  replayOutputRef.current = replayOutput;
   useEffect(() => {
     if (!enabled || !hostRef.current) return undefined;
     let disposed = false;
@@ -28,7 +31,7 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
       terminal.focus();
       terminalRef.current = terminal;
       let replaying = true;
-      terminal.write(`${replayOutput}${boundaryGuard}`, () => { replaying = false; });
+      terminal.write(`${replayOutputRef.current}${boundaryGuard}`, () => { replaying = false; });
       const resize = () => { fit.fit(); resizeRef.current(terminal.cols, terminal.rows); };
       const observer = new ResizeObserver(resize);
       observer.observe(hostRef.current);
@@ -37,5 +40,5 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
       cleanup = () => { input.dispose(); observer.disconnect(); terminal.dispose(); terminalRef.current = null; };
     });
     return () => { disposed = true; cleanup?.(); };
-  }, [boundaryGuard, enabled, hostRef, replayOutput, terminalRef]);
+  }, [boundaryGuard, enabled, hostRef, replayKey, terminalRef]);
 }

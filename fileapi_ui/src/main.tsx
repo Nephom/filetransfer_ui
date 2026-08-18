@@ -1822,6 +1822,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     hostRef: terminalHostRef,
     terminalRef: terminalInstanceRef,
     replayOutput: sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n",
+    replayKey: `${activeSshTabId}:${sshTabsRef.current.find((item) => item.id === activeSshTabId)?.sessionId || ""}`,
     boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
     onResize: (cols, rows) => {
       const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
