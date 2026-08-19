@@ -35,7 +35,7 @@
 .terminal-inline-note { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-small); }
 .ssh-terminal-content { gap: var(--space-1); }
 .ssh-controls { display: flex; align-items: end; gap: var(--space-1); flex-wrap: wrap; }
-.ssh-controls .palette-select-control { width: 92px; min-width: 92px; box-sizing: border-box; }
+.ssh-controls .palette-select-control, .ssh-controls > button { width: 92px; min-width: 92px; box-sizing: border-box; }
 .ssh-controls .palette-select { padding: var(--space-1) var(--space-2); font-size: var(--font-size-small); }
 .ssh-controls label { min-width: clamp(180px, 18vw, 220px); margin: 0; }
 .palette-select-control { position: relative; min-width: clamp(180px, 18vw, 220px); }
@@ -43,7 +43,8 @@
 .palette-select:hover { border-color: var(--color-primary); background: var(--color-bg-panel); }
 .palette-select-menu { top: calc(100% + var(--space-1)); right: 0; left: 0; min-width: 100%; max-width: none; }
 .palette-select-menu.menu-up { top: auto; bottom: calc(100% + var(--space-1)); max-height: clamp(140px, 18vh, 180px); overflow-y: auto; }
-.ssh-controls .dropdown, .ssh-profile-form input { width: 100%; margin-top: var(--space-1); }
+.ssh-controls .dropdown { width: 92px; margin-top: var(--space-1); }
+.ssh-profile-form input { width: 100%; margin-top: var(--space-1); }
 .ssh-controls .dropdown-trigger, .ssh-profile-form input { padding: var(--space-2); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; }
 .ssh-output { flex: 1; min-height: clamp(60px, 8vh, 80px); overflow: auto; margin: 0; padding: var(--space-3); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); white-space: pre-wrap; font: 13px/1.45 monospace; }
 .ssh-profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); overflow: auto; }
