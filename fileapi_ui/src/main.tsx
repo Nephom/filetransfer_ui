@@ -7227,22 +7227,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                   options={workspaceSessions.map((workspace) => ({ value: workspace.id, label: workspace.name }))}
                   onChange={selectWorkspaceSession}
                 />
-                {activeWorkspaceSession && (
-                  <Dropdown
-                    className="palette-select-control"
-                    label="Select an SSH entry"
-                    value={selectedSshEntryId}
-                    options={activeWorkspaceSession.sshEntries.map((entry) => ({ value: entry.id, label: entry.name }))}
-                    onChange={(id) => {
-                      const entry = activeWorkspaceSession.sshEntries.find((item) => item.id === id);
-                      setSelectedSshEntryId(id);
-                      if (entry) {
-                        setSshProfileId(entry.id);
-                        loadSshProfileDraft(entry);
-                      }
-                    }}
-                  />
-                )}
                 {!activeSshTab?.connected ? (
                   <button className="confirm" onClick={connectSsh} disabled={activeSshTab?.connecting}>{activeSshTab?.connecting ? "Connecting…" : "Connect"}</button>
                 ) : (
