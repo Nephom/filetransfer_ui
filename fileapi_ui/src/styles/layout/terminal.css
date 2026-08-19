@@ -11,6 +11,8 @@
 .terminal-tabs button.active, .terminal-tabs button:hover, .terminal-actions button:hover { color: var(--color-text); border-color: var(--color-border); background: var(--color-bg-panel); }
 .ssh-tab { display: inline-flex; align-items: center; gap: 0; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-panel-strong); }
 .ssh-tab.active { border-color: var(--color-primary); background: var(--color-bg-panel); }
+.ssh-tab.dragging { opacity: .45; }
+.ssh-tab.drop-target { box-shadow: inset 3px 0 var(--color-primary); }
 .ssh-tab > button:first-child { border: 0; padding-right: var(--space-1); }
 .ssh-tab-status { display: inline-block; width: var(--space-2); height: var(--space-2); margin-right: var(--space-2); border-radius: 50%; vertical-align: 1px; }
 .ssh-tab-status.connected { background: var(--color-success); box-shadow: 0 0 6px rgba(65, 217, 138, .75); }

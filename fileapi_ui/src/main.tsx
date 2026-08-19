@@ -212,6 +212,7 @@ type DesktopSettings = {
   accentColor: string;
   proxmoxVncModeEnabled: boolean;
   collapseMainPaneEnabled: boolean;
+  bracketedPasteControlEnabled: boolean;
   undoHistoryEnabled: boolean;
   operationLogEnabled: boolean;
   operationLogLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
@@ -659,6 +660,7 @@ const defaultDesktopSettings: DesktopSettings = {
   accentColor: "#63e6ff",
   proxmoxVncModeEnabled: false,
   collapseMainPaneEnabled: false,
+  bracketedPasteControlEnabled: false,
   undoHistoryEnabled: true,
   operationLogEnabled: true,
   operationLogLevel: "DEBUG",
@@ -722,6 +724,11 @@ const normalizeDesktopSettings = (raw: unknown): DesktopSettings => {
       saved.collapseMainPaneEnabled,
       (value) => typeof value === "boolean",
       defaultDesktopSettings.collapseMainPaneEnabled,
+    ),
+    bracketedPasteControlEnabled: pick(
+      saved.bracketedPasteControlEnabled,
+      (value) => typeof value === "boolean",
+      defaultDesktopSettings.bracketedPasteControlEnabled,
     ),
     confirmations: { ...defaultDesktopSettings.confirmations, ...(saved.confirmations || {}) },
   };
@@ -1324,6 +1331,9 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const pendingSshConnectRequestsRef = useRef<Record<string, string>>({});
   const connectAttemptRef = useRef<Record<string, string>>({});
   const sshTabsRef = useRef<SshTerminalTab[]>([]);
+  const draggedSshTabIdRef = useRef<string | null>(null);
+  const [draggedSshTabId, setDraggedSshTabId] = useState<string | null>(null);
+  const [sshTabDropTargetId, setSshTabDropTargetId] = useState<string | null>(null);
   const shellInputRef = useRef("");
   const dragPreparationRef = useRef(new Map<string, Promise<string>>());
   const queueProgressSamplesRef = useRef(new Map<string, { bytes: number; at: number }[]>());
@@ -1824,6 +1834,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     replayOutput: sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n",
     replayKey: `${activeSshTabId}:${sshTabsRef.current.find((item) => item.id === activeSshTabId)?.sessionId || ""}`,
     boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
+    bracketedPasteControlEnabled: desktopSettings.bracketedPasteControlEnabled,
     onResize: (cols, rows) => {
       const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
       if (tab?.sessionId) void invoke("ssh_resize", { sessionId: tab.sessionId, cols, rows });
@@ -6838,6 +6849,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                    <input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} />
                    <span><strong>Use collapse controls instead of split resizebars</strong><small>Apply the main collapse/restore pane controls globally in Location, REST API, and VNC. LOCAL's internal tree controls are unchanged.</small></span>
                  </label>
+                 <label className="settings-check">
+                   <input type="checkbox" checked={desktopSettings.bracketedPasteControlEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, bracketedPasteControlEnabled: event.target.checked }))} />
+                   <span><strong>Enable bracketed-paste control</strong><small>Handle bracketed-paste markers in terminal paste input to avoid visible control sequences in remote programs.</small></span>
+                 </label>
                </section>
               <section className="settings-section">
                <h3>Risk confirmations</h3>
@@ -7170,8 +7185,47 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                  Workspaces
               </button>
               {sshTabs.map((tab) => (
-                <span className={`ssh-tab ${tab.id === activeSshTabId ? "active" : ""}`} key={tab.id}>
-                  <button type="button" onClick={() => selectSshTab(tab)}>
+                <span
+                  className={`ssh-tab ${tab.id === activeSshTabId ? "active" : ""}${tab.id === draggedSshTabId ? " dragging" : ""}${tab.id === sshTabDropTargetId ? " drop-target" : ""}`}
+                  key={tab.id}
+                  draggable
+                  onDragStart={(event) => {
+                    draggedSshTabIdRef.current = tab.id;
+                    setDraggedSshTabId(tab.id);
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", tab.id);
+                  }}
+                  onDragOver={(event) => {
+                    if (draggedSshTabIdRef.current && draggedSshTabIdRef.current !== tab.id) {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = "move";
+                      setSshTabDropTargetId(tab.id);
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const draggedId = draggedSshTabIdRef.current;
+                    if (!draggedId || draggedId === tab.id) return;
+                    setSshTabs((current) => {
+                      const from = current.findIndex((item) => item.id === draggedId);
+                      const to = current.findIndex((item) => item.id === tab.id);
+                      if (from < 0 || to < 0) return current;
+                      const next = [...current];
+                      const [moved] = next.splice(from, 1);
+                      next.splice(to, 0, moved);
+                      return next;
+                    });
+                    draggedSshTabIdRef.current = null;
+                    setDraggedSshTabId(null);
+                    setSshTabDropTargetId(null);
+                  }}
+                  onDragEnd={() => {
+                    draggedSshTabIdRef.current = null;
+                    setDraggedSshTabId(null);
+                    setSshTabDropTargetId(null);
+                  }}
+                >
+                  <button type="button" onClick={() => selectSshTab(tab)} draggable={false}>
                     <span
                       className={`ssh-tab-status ${tab.connected ? "connected" : "disconnected"}`}
                       aria-label={tab.connected ? "Connected" : "Disconnected"}
@@ -7179,7 +7233,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                     />
                     {tab.title}
                   </button>
-                  <button type="button" className="ssh-tab-close" aria-label={`Close ${tab.title}`} onClick={() => closeSshTab(tab.id)}><CloseIcon size={11} /></button>
+                  <button type="button" className="ssh-tab-close" aria-label={`Close ${tab.title}`} draggable={false} onClick={() => closeSshTab(tab.id)}><CloseIcon size={11} /></button>
                 </span>
               ))}
               <button type="button" aria-label="New SSH terminal tab" onClick={() => createSshTab()}>+</button>
