@@ -654,44 +654,9 @@ const FileBrowser = ({ token, user, onLogout }) => {
     // "Queue" download mode: fetch every individual file under the selection
     // (via /api/files/flatten) and track each one in the Transfer Queue,
     // instead of always bundling the selection into a single archive first.
-    const supportsDirectoryPicker = () => typeof window.showDirectoryPicker === 'function';
-
-    const describeDirectoryPickerError = (error) => {
-        const name = String(error?.name || 'UnknownError');
-        const message = String(error?.message || '').trim();
-        if (name === 'AbortError') return 'Destination folder selection was cancelled.';
-        if (name === 'NotAllowedError' || name === 'SecurityError') {
-            return `Destination folder permission was denied by the browser (${name}${message ? `: ${message}` : ''}).`;
-        }
-        return `Unable to access the destination folder (${name}${message ? `: ${message}` : ''}).`;
-    };
-
-    const writeFileIntoDirectoryHandle = async (rootHandle, relativePath, blob) => {
-        const segments = relativePath.split('/').filter(Boolean);
-        const fileName = segments.pop();
-        let directoryHandle = rootHandle;
-        for (const segment of segments) {
-            directoryHandle = await directoryHandle.getDirectoryHandle(segment, { create: true });
-        }
-        const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
-        const writable = await fileHandle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-    };
-
+    // The browser owns the destination so this flow does not request local
+    // folder permissions or depend on the File System Access API.
     const enqueueQueueDownload = async (items) => {
-        let directoryHandle = null;
-        if (supportsDirectoryPicker()) {
-            try {
-                // Request the folder while this function is still running from
-                // the download button's user gesture, before any network await.
-                directoryHandle = await window.showDirectoryPicker({ mode: 'readwrite', startIn: 'downloads' });
-            } catch (pickerError) {
-                setError(describeDirectoryPickerError(pickerError));
-                return;
-            }
-        }
-
         const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const label = items.length === 1 ? items[0].name : `${items.length} selected items`;
         setModal(null);
@@ -714,21 +679,16 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 const response = await fetch(`/api/files/download/${encodeURIComponent(file.remotePath)}`, { headers: authHeaders, signal });
                 if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Failed to download ${file.relativePath}.`);
                 const blob = await streamResponse(queueId, response, Number(response.headers.get('Content-Length')) || file.size || null);
-                if (directoryHandle) {
-                    await writeFileIntoDirectoryHandle(directoryHandle, file.relativePath, blob);
-                } else {
-                    // No File System Access API support (Firefox/Safari): fall
-                    // back to individual browser downloads. Folder structure
-                    // cannot be preserved this way, so flatten the name.
-                    downloadBlob(blob, file.relativePath.replace(/\//g, '_'));
-                    await new Promise((resolve) => window.setTimeout(resolve, 150));
-                }
+                // Let the browser apply its own download-directory and
+                // permission policy for every queued file.
+                downloadBlob(blob, file.relativePath.replace(/\//g, '_'));
+                await new Promise((resolve) => window.setTimeout(resolve, 150));
                 completed += 1;
                 const completedBytes = targetFiles.slice(0, completed).reduce((sum, current) => sum + (Number(current.size) || 0), 0);
                 const percentage = totalBytes ? completedBytes / totalBytes * 100 : null;
                 updateQueueItem(id, { detail: `Downloading ${completed}/${targetFiles.length} files${percentage === null ? '' : ` (${Math.round(percentage)}%)`}`, progress: { completedBytes, totalBytes, percentage, bytesPerSecond: null, etaSeconds: null, completedItems: completed, totalItems: targetFiles.length, updatedAt: Date.now() } });
             }
-            return directoryHandle ? `Downloaded ${completed} file(s) into the selected folder.` : `Downloaded ${completed} file(s) individually (folder structure not preserved in this browser).`;
+            return `Downloaded ${completed} file(s) using the browser's download settings.`;
         });
     };
     const cancelQueueItem = (id) => {
