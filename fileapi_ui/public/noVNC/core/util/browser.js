@@ -21,6 +21,12 @@ import Base64 from '../base64.js';
  * the user elected to disable clipboard.
  */
 export async function browserAsyncClipboardSupport() {
+    // Tauri's WebView origin cannot receive browser clipboard permissions.
+    // Use noVNC's fallback clipboard event instead of prompting for
+    // clipboard-read/write permission from tauri.localhost.
+    if (window.location.hostname === 'tauri.localhost') {
+        return 'unsupported';
+    }
     if (!(navigator?.permissions?.query &&
           navigator?.clipboard?.writeText &&
           navigator?.clipboard?.readText)) {
