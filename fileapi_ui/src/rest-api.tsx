@@ -10,7 +10,7 @@ import { ImlMonitorController } from "./iml-monitor";
 import { monitorRedfishTask } from "./rest-task";
 import type { ImlMonitorState, JsonValue, NativeApiResponse, RestApiEntry, RestApiSecret, RestAuthMode, RestFailureType, RestMethod, RestSession, RestVendor } from "./rest-contracts";
 export type { RestApiEntry, RestApiSecret, RestAuthMode, RestMethod, RestVendor } from "./rest-contracts";
-import { csvCell, debugRest, downloadText, hardwareTools, jsonCell, sanitizeHeaders, sanitizeJson, sanitizeText, tableCell, type HardwareTool } from "./rest-utils";
+import { buildOpenBmcSpecRows, csvCell, debugRest, downloadText, hardwareTools, jsonCell, openBmcInventoryTableRows, openBmcSpecCsv, sanitizeHeaders, sanitizeJson, sanitizeText, tableCell, type HardwareTool, type OpenBmcInventorySnapshot, type OpenBmcSpecRow } from "./rest-utils";
 type RestHistoryItem = { url: string; timestamp: number };
 type RestAuditItem = { id: string; timestamp: number; method: RestMethod; url: string; status: number | null; durationMs: number; body: string; error?: string };
 type BiosAttributeMetadata = { type?: string; allowableValues?: string[]; description?: string; readOnly?: boolean; format?: string };
@@ -56,11 +56,13 @@ const vendorPresets: Record<RestVendor, { label: string; referenceJson: string; 
   },
   openbmc: {
     label: "OpenBMC",
-    referenceJson: '{\n  "username": "{{username}}",\n  "password": "{{password}}"\n}',
-    loginPath: "/login",
-    loginBody: '{"username":"{{username}}","password":"{{password}}"}',
+    referenceJson: '{\n  "UserName": "{{username}}",\n  "Password": "{{password}}"\n}',
+    loginPath: "/redfish/v1/SessionService/Sessions",
+    loginBody: '{"UserName":"{{username}}","Password":"{{password}}"}',
   },
 };
+
+const sessionAuthPreset = vendorPresets.hpe;
 
 const normalizePath = (value: string) => {
   const path = value.trim() || "/";
@@ -299,8 +301,8 @@ function RestEntries({ entries, activeEntryId, onSelectEntry }: Pick<Props, "ent
 
 export function RestApiWorkspace(props: Props) {
   const entry = props.entries.find((item) => item.id === props.activeEntryId) || props.entries[0];
-  const vendor: RestVendor = entry?.vendor === "hpe" || entry?.vendor === "openbmc" ? entry.vendor : "none";
-  const vendorPreset = vendorPresets[vendor];
+  const [toolbarVendor, setToolbarVendor] = useState<RestVendor>(entry?.vendor || "none");
+  const vendor: RestVendor = toolbarVendor;
   const secret = entry ? props.secrets[entry.id] || {} : {};
   const sessionTokenRef = useRef<Record<string, string>>({});
   const loginPromiseRef = useRef<Promise<void> | null>(null);
@@ -331,6 +333,17 @@ export function RestApiWorkspace(props: Props) {
   const [openBmcCapabilities, setOpenBmcCapabilities] = useState<Record<string, string>>({});
   const [openBmcPowerState, setOpenBmcPowerState] = useState("Unknown");
   const [openBmcMessage, setOpenBmcMessage] = useState("");
+  const [openBmcInventoryOpen, setOpenBmcInventoryOpen] = useState(false);
+  const [openBmcInventoryLoading, setOpenBmcInventoryLoading] = useState(false);
+  const [openBmcInventoryError, setOpenBmcInventoryError] = useState("");
+  const [openBmcInventorySnapshot, setOpenBmcInventorySnapshot] = useState<OpenBmcInventorySnapshot>({});
+  const [openBmcInventoryRows, setOpenBmcInventoryRows] = useState<Record<string, JsonValue>[]>([]);
+  const [openBmcSpecRows, setOpenBmcSpecRows] = useState<OpenBmcSpecRow[]>([]);
+  const [openBmcResourceOpen, setOpenBmcResourceOpen] = useState(false);
+  const [openBmcResourceTarget, setOpenBmcResourceTarget] = useState("");
+  const [openBmcResourceRows, setOpenBmcResourceRows] = useState<Record<string, JsonValue>[]>([]);
+  const [openBmcResourceRaw, setOpenBmcResourceRaw] = useState<JsonValue | null>(null);
+  const [openBmcResourceLoading, setOpenBmcResourceLoading] = useState(false);
   const [resourceCatalogOpen, setResourceCatalogOpen] = useState(false);
   const [resourceCatalog, setResourceCatalog] = useState<RedfishLink[]>([]);
   const [rawRequestOpen, setRawRequestOpen] = useState(true);
@@ -532,6 +545,10 @@ export function RestApiWorkspace(props: Props) {
   }, [entry?.id, entry?.authMode]);
 
   useEffect(() => {
+    setToolbarVendor(entry?.vendor || "none");
+  }, [entry?.id, entry?.vendor]);
+
+  useEffect(() => {
     const loaded: Record<string, RestHistoryItem[]> = {};
     props.entries.forEach((item) => {
       try {
@@ -640,7 +657,7 @@ export function RestApiWorkspace(props: Props) {
   }, [tokenPathHelpOpen]);
 
   useEffect(() => {
-    const hasDialog = devicesOpen || hardwareOpen || hardwareSummaryOpen || imlOpen || powerOpen || biosOpen || firmwareOpen || resetOpen || actionOpen;
+    const hasDialog = devicesOpen || hardwareOpen || hardwareSummaryOpen || openBmcInventoryOpen || openBmcResourceOpen || resourceCatalogOpen || imlOpen || powerOpen || biosOpen || firmwareOpen || resetOpen || actionOpen;
     if (!hasDialog) return undefined;
     const previous = document.activeElement as HTMLElement | null;
     const focusDialog = () => {
@@ -650,7 +667,7 @@ export function RestApiWorkspace(props: Props) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         if (imlOpen) stopImlPolling("close");
-        setDevicesOpen(false); setHardwareOpen(false); setHardwareSummaryOpen(false); setImlOpen(false); setPowerOpen(false); setBiosOpen(false); setFirmwareOpen(false); setResetOpen(false); setActionOpen(false);
+        setDevicesOpen(false); setHardwareOpen(false); setHardwareSummaryOpen(false); setOpenBmcInventoryOpen(false); setOpenBmcResourceOpen(false); setResourceCatalogOpen(false); setImlOpen(false); setPowerOpen(false); setBiosOpen(false); setFirmwareOpen(false); setResetOpen(false); setActionOpen(false);
         return;
       }
       if (event.key !== "Tab") return;
@@ -665,7 +682,7 @@ export function RestApiWorkspace(props: Props) {
     document.addEventListener("keydown", onKeyDown);
     window.setTimeout(focusDialog, 0);
     return () => { document.removeEventListener("keydown", onKeyDown); previous?.focus(); };
-  }, [devicesOpen, hardwareOpen, hardwareSummaryOpen, imlOpen, powerOpen, biosOpen, firmwareOpen, resetOpen, actionOpen]);
+  }, [devicesOpen, hardwareOpen, hardwareSummaryOpen, openBmcInventoryOpen, openBmcResourceOpen, resourceCatalogOpen, imlOpen, powerOpen, biosOpen, firmwareOpen, resetOpen, actionOpen]);
 
   useEffect(() => {
     const updateTokenHelpPosition = () => {
@@ -707,39 +724,20 @@ export function RestApiWorkspace(props: Props) {
   };
   const changeAuthMode = (authMode: RestAuthMode) => {
     if (!entry) return;
-    props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, authMode, defaultPath: defaultRequestPath(authMode) } : item));
+    const sessionFields = authMode === "login"
+      ? { loginPath: sessionAuthPreset.loginPath, tokenPath: "", tokenHeader: "X-Auth-Token", tokenSendAs: "X-Auth-Token", loginBody: sessionAuthPreset.loginBody }
+      : {};
+    props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, authMode, defaultPath: defaultRequestPath(authMode), ...sessionFields } : item));
     resetRequestPath(authMode);
     setResponse(null);
     setResponseText("");
     setError("");
     setMessage("");
   };
-  const selectVendor = (nextVendor: RestVendor) => {
-    if (!entry) return;
-    const preset = vendorPresets[nextVendor];
-    props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, vendor: nextVendor, defaultPath: "/redfish/v1", loginPath: preset.loginPath, tokenPath: "", tokenHeader: "X-Auth-Token", tokenSendAs: "X-Auth-Token", loginBody: preset.loginBody } : item));
-    resetRequestPath("login");
-  };
-  const applyVendorPreset = () => {
-    if (!entry) return;
-    props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, authMode: "login", defaultPath: "/redfish/v1", loginPath: vendorPreset.loginPath, tokenPath: "", tokenHeader: "X-Auth-Token", tokenSendAs: "X-Auth-Token", loginBody: vendorPreset.loginBody } : item));
-    resetRequestPath("login");
-  };
   const launchVendor = (nextVendor: RestVendor) => {
-    if (!entry) return;
-    const preset = vendorPresets[nextVendor];
-    props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? {
-      ...item,
-      vendor: nextVendor,
-      authMode: "login",
-      defaultPath: "/redfish/v1",
-      loginPath: preset.loginPath,
-      tokenPath: "",
-      tokenHeader: "X-Auth-Token",
-      tokenSendAs: "X-Auth-Token",
-      loginBody: preset.loginBody,
-    } : item));
-    setAuthOpen(true);
+    if (nextVendor === "none") return;
+    setToolbarVendor(nextVendor);
+    setToolsOpen(true);
   };
   const setSessionHeader = (value: string) => {
     if (!entry) return;
@@ -872,12 +870,7 @@ export function RestApiWorkspace(props: Props) {
     try {
       const body = entry.loginBody.replace(/\{\{username\}\}/g, entry.username).replace(/\{\{password\}\}/g, secret.password || "");
       let loginResult = await runRequest(entry.loginMethod, joinUrl(entry.baseUrl, entry.loginPath), body, [["Content-Type", "application/json"]], crypto.randomUUID(), false);
-       if (!loginResult) return;
-       if (loginResult.responseValue.status >= 400 && vendor === "openbmc") {
-         const legacyBody = JSON.stringify({ username: entry.username, password: secret.password || "" });
-         loginResult = await runRequest("POST", joinUrl(entry.baseUrl, "/login"), legacyBody, [["Content-Type", "application/json"]], crypto.randomUUID(), false);
-       }
-       if (!loginResult) return;
+        if (!loginResult) return;
        if (loginResult.responseValue.status >= 400) {
          const failure = new Error(formatRedfishError(parseRedfishError(loginResult.responseValue.status, loginResult.text))) as Error & { status?: number };
          failure.status = loginResult.responseValue.status;
@@ -1151,8 +1144,76 @@ export function RestApiWorkspace(props: Props) {
     } catch (requestError) { setError(requestError instanceof Error ? requestError.message : String(requestError)); }
   };
   const openBmcInventory = async () => {
-    const target = openBmcCapabilities.Systems || "/redfish/v1/Systems";
-    await openPath(joinUrl(entry?.baseUrl || "", target));
+    if (!entry) return;
+    setOpenBmcInventoryOpen(true);
+    setOpenBmcInventoryLoading(true);
+    setOpenBmcInventoryError("");
+    try {
+      const root = await readJsonResource("/redfish/v1");
+      const link = (resource: Record<string, JsonValue>, key: string) => {
+        const value = resource[key];
+        return value && typeof value === "object" && !Array.isArray(value) && typeof value["@odata.id"] === "string" ? String(value["@odata.id"]) : "";
+      };
+      const firstMember = async (target: string) => {
+        if (!target) return { path: "", resource: {} as Record<string, JsonValue> };
+        const collection = await readJsonResource(target);
+        const member = Array.isArray(collection.Members) ? collection.Members.find((item) => item && typeof item === "object" && !Array.isArray(item) && typeof item["@odata.id"] === "string") : null;
+        const path = member && typeof member === "object" && !Array.isArray(member) ? String(member["@odata.id"]) : target;
+        return { path, resource: await readJsonResource(path) };
+      };
+      const safeCollection = async (target: string, inlineKeys: string[] = []) => {
+        if (!target) return { root: {}, members: [], errors: [] } as CollectionResult;
+        try { return await readCollection(target, inlineKeys); }
+        catch (error) { return { root: {}, members: [], errors: [error instanceof Error ? error.message : String(error)] }; }
+      };
+      const systemTarget = await firstMember(link(root, "Systems"));
+      const chassisTarget = await firstMember(link(root, "Chassis"));
+      const managerTarget = await firstMember(link(root, "Managers"));
+      const updateService = link(root, "UpdateService");
+      const system = systemTarget.resource;
+      const chassis = chassisTarget.resource;
+      const manager = managerTarget.resource;
+      const processors = await safeCollection(link(system, "Processors"));
+      const memory = await safeCollection(link(system, "Memory"));
+      const pcie = await safeCollection(link(system, "PCIeDevices"));
+      const storage = await safeCollection(link(system, "Storage"));
+      const power = await safeCollection(link(chassis, "Power"), ["PowerSupplies"]);
+      const slots = await safeCollection(link(chassis, "PCIeSlots"), ["Slots"]);
+      const firmware = await safeCollection(link(await safeCollection(updateService).then((value) => value.root), "FirmwareInventory"));
+      const driveCollections = await Promise.all(storage.members.map((item) => safeCollection(link(item, "Drives"))));
+      const drives = driveCollections.flatMap((value) => value.members);
+      const snapshot: OpenBmcInventorySnapshot = {
+        root, system, chassis, manager,
+        processors: processors.members, memory: memory.members, pcieDevices: pcie.members,
+        storage: storage.members, drives, powerSupplies: power.members, pcieSlots: slots.members,
+        firmwareInventory: firmware.members, secureBoot: link(system, "SecureBoot") ? await readJsonResource(link(system, "SecureBoot")) : {},
+      };
+      const failures = [processors, memory, pcie, storage, power, slots, firmware, ...driveCollections].flatMap((value) => value.errors);
+      setOpenBmcInventorySnapshot(snapshot);
+      setOpenBmcInventoryRows(openBmcInventoryTableRows(snapshot));
+      setOpenBmcSpecRows(buildOpenBmcSpecRows(snapshot));
+      if (failures.length) setOpenBmcInventoryError(`Partial failure: ${failures.join("; ")}`);
+    } catch (requestError) {
+      setOpenBmcInventoryError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally { setOpenBmcInventoryLoading(false); }
+  };
+  const exportOpenBmcSpecCsv = () => {
+    if (!entry || !openBmcSpecRows.length) return;
+    downloadText(`${entry.name || "openbmc"}-hardware-spec.csv`, openBmcSpecCsv(openBmcSpecRows), "text/csv;charset=utf-8");
+  };
+  const openBmcResource = async (target: string) => {
+    if (!entry) return;
+    setOpenBmcResourceTarget(target);
+    setOpenBmcResourceOpen(true);
+    setOpenBmcResourceLoading(true);
+    try {
+      const resource = await readJsonResource(target);
+      const rows = openBmcInventoryTableRows({ resource });
+      setOpenBmcResourceRaw(resource);
+      setOpenBmcResourceRows(rows);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : String(requestError));
+    } finally { setOpenBmcResourceLoading(false); }
   };
   const runOpenBmcPower = async (resetType: "On" | "ForceOff" | "GracefulShutdown" | "ForceRestart") => {
     if (!entry) return;
@@ -1714,8 +1775,10 @@ export function RestApiWorkspace(props: Props) {
 
   return <><div className="rest-workspace">
     {imlOpen && (imlError || imlNotice) && <div className={`rest-iml-notification${imlError ? " error" : ""}`} role="alert"><strong>{imlError ? "IML monitor error" : "IML monitor"}</strong><span>{imlError || imlNotice}</span><button type="button" onClick={() => { setImlError(""); setImlNotice(""); }} aria-label="Dismiss IML notification"><CloseIcon size={12} /></button></div>}
-    {biosEditor}
-    {resourceCatalogOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-resource-catalog" role="dialog" aria-modal="true" aria-labelledby="resource-catalog-title"><div className="rest-editor-heading"><strong id="resource-catalog-title">All Resources</strong><button type="button" onClick={() => setResourceCatalogOpen(false)} aria-label="Close resource catalog"><CloseIcon size={12} /></button></div><p className="muted">Redfish resources advertised by the service root. Select a path to open it.</p><div className="rest-resource-catalog-list">{resourceCatalog.map((resource) => <button type="button" key={`${resource.name}-${resource.target}`} onClick={() => { setResourceCatalogOpen(false); void openPath(resource.target); }}><strong>{resource.name}</strong><code>{resource.target}</code></button>)}</div></div></div>}
+     {biosEditor}
+     {openBmcResourceOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-openbmc-resource-dialog" role="dialog" aria-modal="true" aria-labelledby="openbmc-resource-title"><div className="rest-editor-heading"><strong id="openbmc-resource-title">OpenBMC resource</strong><button type="button" onClick={() => setOpenBmcResourceOpen(false)} aria-label="Close OpenBMC resource"><CloseIcon size={12} /></button></div><div className="rest-hardware-toolbar"><span>{openBmcResourceLoading ? "Loading resource..." : openBmcResourceTarget}</span><button type="button" onClick={() => void openBmcResource(openBmcResourceTarget)} disabled={openBmcResourceLoading}>Refresh</button></div><div className="rest-hardware-table-wrap"><table><thead><tr><th>Resource</th><th>Property</th><th>Value</th></tr></thead><tbody>{openBmcResourceRows.map((item, index) => <tr key={`${String(item.Property)}-${index}`}><td>{jsonCell(item.Resource)}</td><td>{jsonCell(item.Property)}</td><td>{tableCell(item.Value)}</td></tr>)}</tbody></table>{!openBmcResourceRows.length && !openBmcResourceLoading && <p className="muted">No resource values were returned.</p>}</div><details><summary>Raw Redfish resource</summary><pre className="rest-code">{openBmcResourceRaw ? JSON.stringify(openBmcResourceRaw, null, 2) : "(empty)"}</pre></details></div></div>}
+     {openBmcInventoryOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-openbmc-inventory-dialog" role="dialog" aria-modal="true" aria-labelledby="openbmc-inventory-title"><div className="rest-editor-heading"><strong id="openbmc-inventory-title">OpenBMC System inventory</strong><button type="button" onClick={() => setOpenBmcInventoryOpen(false)} aria-label="Close OpenBMC system inventory"><CloseIcon size={12} /></button></div><div className="rest-hardware-toolbar"><span>{openBmcInventoryLoading ? "Collecting Redfish inventory..." : `${openBmcInventoryRows.length} values`}</span><button type="button" onClick={() => void openBmcInventory()} disabled={openBmcInventoryLoading}>Refresh</button><button type="button" onClick={exportOpenBmcSpecCsv} disabled={openBmcInventoryLoading || !openBmcSpecRows.length}>Export CSV</button></div>{openBmcInventoryError && <div className="notice rest-error">{openBmcInventoryError}</div>}<div className="rest-hardware-table-wrap"><table><thead><tr><th>Resource</th><th>Property</th><th>Value</th></tr></thead><tbody>{openBmcInventoryRows.map((item, index) => <tr key={`${String(item.Resource)}-${String(item.Property)}-${index}`}><td>{jsonCell(item.Resource)}</td><td>{jsonCell(item.Property)}</td><td>{tableCell(item.Value)}</td></tr>)}</tbody></table>{!openBmcInventoryRows.length && !openBmcInventoryLoading && <p className="muted">No inventory values were returned.</p>}</div><details><summary>Collected Redfish snapshot</summary><pre className="rest-code">{JSON.stringify(openBmcInventorySnapshot, null, 2)}</pre></details></div></div>}
+     {resourceCatalogOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-resource-catalog" role="dialog" aria-modal="true" aria-labelledby="resource-catalog-title"><div className="rest-editor-heading"><strong id="resource-catalog-title">All Resources</strong><button type="button" onClick={() => setResourceCatalogOpen(false)} aria-label="Close resource catalog"><CloseIcon size={12} /></button></div><p className="muted">Redfish resources advertised by the service root. Select a path to open it.</p><div className="rest-resource-catalog-list">{resourceCatalog.map((resource) => <button type="button" key={`${resource.name}-${resource.target}`} onClick={() => { setResourceCatalogOpen(false); void openPath(resource.target); }}><strong>{resource.name}</strong><code>{resource.target}</code></button>)}</div></div></div>}
      <div className={`rest-entry-pane-shell${entryPaneCollapsed ? " rest-entry-pane-collapsed" : ""}`} style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries entries={props.entries} activeEntryId={entry?.id || ""} onSelectEntry={props.onSelectEntry} /></div>
      {props.collapseMainPaneEnabled ? <div className="rest-main-pane-collapse-controls" role="group" aria-label="REST pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse REST entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore REST entry pane"><ChevronRightIcon /></button></div> : <PaneResizeHandle ariaLabel="Resize REST API entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
      {toolbarHost && createPortal(<nav className="rest-toolbar" data-rest-toolbar="true" aria-label="REST API tools">
@@ -1741,17 +1804,17 @@ export function RestApiWorkspace(props: Props) {
           {vendor === "openbmc" && toolsOpen && <div className="rest-toolbar-panel" role="group" aria-label="OpenBMC Tools">
             <button type="button" onClick={() => void discoverOpenBmc()}>Discover capabilities</button>
             <button type="button" onClick={() => void openBmcInventory()}>System inventory</button>
-            <button type="button" onClick={() => void openPath(joinUrl(entry?.baseUrl || "", openBmcCapabilities.Chassis || "/redfish/v1/Chassis"))}>Chassis inventory</button>
+             <button type="button" onClick={() => void openBmcResource(openBmcCapabilities.Chassis || "/redfish/v1/Chassis")}>Chassis inventory</button>
             <button type="button" onClick={() => void runOpenBmcPower("On")}>Power On</button>
             <button type="button" onClick={() => void runOpenBmcPower("GracefulShutdown")}>Graceful Shutdown</button>
             <button type="button" onClick={() => void runOpenBmcPower("ForceOff")}>Force Off</button>
           </div>}
         </nav>, toolbarHost)}
      <section className="rest-reader" aria-label="REST API reader" data-raw-request-open={rawRequestOpen}>
-        <div className="rest-reader-heading"><div><span className="eyebrow">REST API mode · {props.workspaceName}</span><h1>{entry?.name || "REST API reader"}</h1></div><div className="rest-reader-tools"><MobileChoiceMenu className="rest-vendor-choice" label="REST vendor" currentId={vendor} options={[{ id: "none", label: "None" }, { id: "hpe", label: "HPE" }, { id: "openbmc", label: "OpenBMC" }]} onSelect={(id) => launchVendor(id as RestVendor)} /><div className="rest-vendor-capsule" role="group" aria-label="REST vendor launcher"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => launchVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => launchVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => launchVendor("openbmc")}>OpenBMC</button></div><span className="rest-session-status">{entry && (session["X-Auth-Token"] || secret.cookie) ? "Authenticated" : "Not authenticated"}</span></div></div>
+         <div className="rest-reader-heading"><div><span className="eyebrow">REST API mode · {props.workspaceName}</span><h1>{entry?.name || "REST API reader"}</h1></div><div className="rest-reader-tools"><MobileChoiceMenu className="rest-vendor-choice" label="REST toolbar" currentId={vendor} options={[{ id: "hpe", label: "HPE" }, { id: "openbmc", label: "OpenBMC" }]} onSelect={(id) => launchVendor(id as RestVendor)} /><div className="rest-vendor-capsule" role="group" aria-label="REST toolbar vendor"><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => launchVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => launchVendor("openbmc")}>OpenBMC</button></div><span className="rest-session-status">{entry && (session["X-Auth-Token"] || secret.cookie) ? "Authenticated" : "Not authenticated"}</span></div></div>
       {entry && <>
         <section className={`rest-auth-panel${authOpen ? " open" : ""}`}>
-            <div className="rest-section-toggle"><button type="button" onClick={() => { if (authOpen) { setSessionHelpOpen(false); setTokenPathHelpOpen(false); } setAuthOpen((value) => !value); }} aria-label={`${authOpen ? "Collapse" : "Expand"} Authentication`} title={`${authOpen ? "Collapse" : "Expand"} Authentication`}><span>Authentication</span><span aria-hidden="true">{authOpen ? "−" : "+"}</span></button><span className="rest-auth-heading-tools"><span className="rest-vendor-capsule" role="group" aria-label="REST vendor"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => launchVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => launchVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => launchVendor("openbmc")}>OpenBMC</button></span></span></div>
+             <div className="rest-section-toggle"><button type="button" onClick={() => { if (authOpen) { setSessionHelpOpen(false); setTokenPathHelpOpen(false); } setAuthOpen((value) => !value); }} aria-label={`${authOpen ? "Collapse" : "Expand"} Authentication`} title={`${authOpen ? "Collapse" : "Expand"} Authentication`}><span>Authentication</span><span aria-hidden="true">{authOpen ? "−" : "+"}</span></button></div>
           {authOpen && <div className="rest-auth-fields">
             <label>Mode<Dropdown label="Mode" value={entry.authMode} onChange={(value) => changeAuthMode(value as RestAuthMode)} options={Object.entries(authLabels).map(([value, label]) => ({ value, label }))} /></label>
             {(entry.authMode === "basic" || entry.authMode === "login") && <label>Username<input value={entry.username} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, username: event.target.value } : item))} /></label>}
@@ -1760,8 +1823,8 @@ export function RestApiWorkspace(props: Props) {
             {entry.authMode === "api-key" && <label>API key<input type="password" value={secret.apiKey || ""} onChange={(event) => updateSecret({ apiKey: event.target.value })} /></label>}
             {entry.authMode === "cookie" && <label>Cookie header<input value={secret.cookie || ""} onChange={(event) => updateSecret({ cookie: event.target.value })} placeholder="session=..." /></label>}
             {entry.authMode !== "login" && <div className="rest-auth-action"><button type="button" className="confirm" onClick={() => void authenticate()} disabled={loading}>{loading ? "Logging in..." : "Login"}</button></div>}
-            {entry.authMode === "login" && <div className="rest-vendor-bar"><button type="button" className="rest-help-button" onClick={() => setSessionHelpOpen((value) => !value)} aria-label="How to use the selected Session Auth preset" aria-expanded={sessionHelpOpen}>?</button><div className="rest-vendor-toggle" role="group" aria-label="REST API vendor"><button type="button" className={vendor === "none" ? "selected" : ""} onClick={() => selectVendor("none")}>None</button><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => selectVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => selectVendor("openbmc")}>OpenBMC</button></div><button type="button" className="rest-vendor-preset" onClick={applyVendorPreset}>{vendor === "openbmc" ? "Use OpenBMC /login preset" : "Use Redfish SessionService preset"}</button><button type="button" className="confirm rest-login-button" onClick={() => void (isSessionAuthenticated ? logout() : login())} disabled={loading}>{loading ? (isSessionAuthenticated ? "Logging out..." : "Logging in...") : (isSessionAuthenticated ? "Logout" : "Login")}</button>{sessionHelpOpen && <div className="rest-session-help" role="note" onClick={(event) => event.stopPropagation()}><button type="button" className="rest-session-help-close" onClick={() => setSessionHelpOpen(false)} aria-label="Close Session Auth help"><CloseIcon size={12} /></button><strong>{vendor === "openbmc" ? "OpenBMC /login session" : `${vendorPreset.label} Redfish SessionService login`}</strong><ol><li>Set Authentication Mode to <strong>Session Auth</strong>.</li><li>Enter your Redfish username.</li><li>Enter your Redfish password.</li><li>Apply the vendor preset shown above.</li><li>Click <strong>Login</strong>.</li><li>Confirm that <strong>REST session established for this entry.</strong> appears.</li><li>Click <strong>GET</strong> to read the current Redfish resource.</li></ol><pre>{vendorPreset.referenceJson}</pre><p>The session token is kept for this REST API entry and reused by history, breadcrumbs, links, actions, and downloads.</p></div>}</div>}
-            {entry.authMode === "login" && <div className="rest-login-config"><label>Login path<input value={entry.loginPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginPath: event.target.value } : item))} /></label><label>Token JSON path<input value={entry.tokenPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenPath: event.target.value } : item))} /></label><label>Token header<input value={entry.tokenHeader} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenHeader: event.target.value } : item))} /></label><label>Login body<textarea value={entry.loginBody} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginBody: event.target.value } : item))} /></label><div className="rest-session-preset"><button type="button" className="rest-help-button" onClick={() => setSessionHelpOpen((value) => !value)} aria-label="How to use Redfish SessionService preset" aria-expanded={sessionHelpOpen}>?</button><button type="button" onClick={() => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginPath: "/redfish/v1/SessionService/Sessions", tokenPath: "", tokenHeader: "X-Auth-Token", tokenSendAs: "X-Auth-Token", loginBody: '{"UserName":"{{username}}","Password":"{{password}}"}' } : item))}>Use Redfish SessionService preset</button><button type="button" className="confirm" onClick={() => void (isSessionAuthenticated ? logout() : login())} disabled={loading}>{loading ? (isSessionAuthenticated ? "Logging out..." : "Logging in...") : (isSessionAuthenticated ? "Logout" : "Login")}</button>{sessionHelpOpen && <div className="rest-session-help" role="note" onClick={(event) => event.stopPropagation()}><button type="button" className="rest-session-help-close" onClick={() => setSessionHelpOpen(false)} aria-label="Close Session Auth help"><CloseIcon size={12} /></button><strong>Redfish SessionService login</strong><ol><li>Set Authentication Mode to <strong>Session Auth</strong>.</li><li>Enter your Redfish username.</li><li>Enter your Redfish password.</li><li>Click <strong>Use Redfish SessionService preset</strong>.</li><li>Click <strong>Login</strong>.</li><li>Confirm that <strong>REST session established for this entry.</strong> appears.</li><li>Click <strong>GET</strong> to read the current Redfish resource.</li></ol><p>The session token is kept for this REST API entry and reused by history, breadcrumbs, links, actions, and downloads.</p></div>}</div></div>}
+            {entry.authMode === "login" && <div className="rest-vendor-bar"><button type="button" className="confirm rest-login-button" onClick={() => void (isSessionAuthenticated ? logout() : login())} disabled={loading}>{loading ? (isSessionAuthenticated ? "Logging out..." : "Logging in...") : (isSessionAuthenticated ? "Logout" : "Login")}</button></div>}
+            {entry.authMode === "login" && <div className="rest-login-config"><label>Login path<input value={entry.loginPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginPath: event.target.value } : item))} /></label><label>Token JSON path<input value={entry.tokenPath} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenPath: event.target.value } : item))} /></label><label>Token header<input value={entry.tokenHeader} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, tokenHeader: event.target.value } : item))} /></label><label>Login body<textarea value={entry.loginBody} onChange={(event) => props.onChangeEntries(props.entries.map((item) => item.id === entry.id ? { ...item, loginBody: event.target.value } : item))} /></label></div>}
              </div>}
            {authOpen && entry.authMode === "login" && <div className="token-path-help" style={tokenPathHelpPosition}><span>Token JSON Path</span><button ref={tokenPathHelpButtonRef} type="button" className="token-path-help-button" onClick={() => setTokenPathHelpOpen((value) => !value)} aria-label="What is Token JSON Path" aria-expanded={tokenPathHelpOpen}>?</button>{tokenPathHelpOpen && createPortal(<div className="token-path-help-popup" role="note" style={tokenPathHelpPopupStyle} onClick={(event) => event.stopPropagation()}><button type="button" className="token-path-help-close" onClick={() => setTokenPathHelpOpen(false)} aria-label="Close Token JSON Path help"><CloseIcon size={12} /></button><strong>Token JSON Path</strong><p>Use this only when the login response returns the token inside a JSON response body.</p><pre>{'{\n  "data": {\n    "token": "abc123"\n  }\n}'}</pre><p>Enter <code>data.token</code>. For HPE iLO and OpenBMC Redfish SessionService, leave this empty when the token is returned in the <code>X-Auth-Token</code> response header.</p></div>, document.body)}</div>}
          </section>
