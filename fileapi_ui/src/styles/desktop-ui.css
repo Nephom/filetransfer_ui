@@ -213,7 +213,8 @@
 }
 
 .explorer.ui-layout-mobile .ssh-controls .palette-select-control {
-  min-width: min(100%, 220px);
+  width: 92px;
+  min-width: 92px;
 }
 
 
