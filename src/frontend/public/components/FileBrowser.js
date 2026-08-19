@@ -1009,7 +1009,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             <p>Download {selectedItems.length} selected item{selectedItems.length === 1 ? '' : 's'} as a single archive, or queue every file individually (preserving the original folder structure where your browser supports it).</p>
             <label className="archive-format-option"><input type="radio" name="downloadMode" checked={downloadModeDraft === 'tar.gz'} onChange={() => setDownloadModeDraft('tar.gz')} /><span><strong>tar.gz archive</strong></span></label>
             <label className="archive-format-option"><input type="radio" name="downloadMode" checked={downloadModeDraft === 'zip'} onChange={() => setDownloadModeDraft('zip')} /><span><strong>zip archive</strong></span></label>
-            <label className="archive-format-option"><input type="radio" name="downloadMode" checked={downloadModeDraft === 'queue'} onChange={() => setDownloadModeDraft('queue')} /><span><strong>Queue (one file at a time)</strong>{!supportsDirectoryPicker() && <small> Your browser cannot preserve folder structure for queued downloads; files will download individually with flattened names.</small>}</span></label>
+            <label className="archive-format-option"><input type="radio" name="downloadMode" checked={downloadModeDraft === 'queue'} onChange={() => setDownloadModeDraft('queue')} /><span><strong>Queue (one file at a time)</strong><small> Files are downloaded individually using the browser's download settings.</small></span></label>
             <div className="modal-actions">
                 <button type="button" className="confirm" onClick={() => {
                     if (downloadModeDraft === 'queue') { setModal(null); void enqueueQueueDownload(selectedItems); return; }
