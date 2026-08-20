@@ -53,10 +53,6 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
         event.stopImmediatePropagation();
         pasteText(text);
       };
-      const pasteFromClipboard = () => {
-        if (!navigator.clipboard) return;
-        void navigator.clipboard.readText().then(pasteText).catch(() => undefined);
-      };
       let selectionAtMouseDown = "";
       const onMouseDown = (event: MouseEvent) => {
         if (event.button === 0) selectionAtMouseDown = terminal.getSelection();
@@ -69,29 +65,15 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
         }
         selectionAtMouseDown = "";
       };
-      const onContextMenu = (event: MouseEvent) => {
-        event.preventDefault();
-        pasteFromClipboard();
-      };
-      terminal.attachCustomKeyEventHandler((event) => {
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
-          event.preventDefault();
-          pasteFromClipboard();
-          return false;
-        }
-        return true;
-      });
       const host = hostRef.current;
       host?.addEventListener("paste", onPaste, true);
       host?.addEventListener("mousedown", onMouseDown);
       host?.addEventListener("mouseup", onMouseUp);
-      host?.addEventListener("contextmenu", onContextMenu);
       cleanup = () => {
         input.dispose();
         host?.removeEventListener("paste", onPaste, true);
         host?.removeEventListener("mousedown", onMouseDown);
         host?.removeEventListener("mouseup", onMouseUp);
-        host?.removeEventListener("contextmenu", onContextMenu);
         observer.disconnect();
         terminal.dispose();
         terminalRef.current = null;
