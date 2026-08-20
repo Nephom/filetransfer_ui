@@ -53,21 +53,45 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
         event.stopImmediatePropagation();
         pasteText(text);
       };
+      const pasteFromClipboard = () => {
+        if (!navigator.clipboard) return;
+        void navigator.clipboard.readText().then(pasteText).catch(() => undefined);
+      };
+      let selectionAtMouseDown = "";
+      const onMouseDown = (event: MouseEvent) => {
+        if (event.button === 0) selectionAtMouseDown = terminal.getSelection();
+      };
+      const onMouseUp = (event: MouseEvent) => {
+        if (event.button !== 0) return;
+        const selection = terminal.getSelection();
+        if (selection && selection !== selectionAtMouseDown && navigator.clipboard) {
+          void navigator.clipboard.writeText(selection).catch(() => undefined);
+        }
+        selectionAtMouseDown = "";
+      };
+      const onContextMenu = (event: MouseEvent) => {
+        event.preventDefault();
+        pasteFromClipboard();
+      };
       terminal.attachCustomKeyEventHandler((event) => {
-        // Cmd+C remains the browser/xterm copy shortcut; only Ctrl+C without
-        // a selection is the terminal interrupt key.
-        if (event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "c" && !terminal.hasSelection()) {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
           event.preventDefault();
-          terminal.input("\u0003");
+          pasteFromClipboard();
           return false;
         }
         return true;
       });
       const host = hostRef.current;
       host?.addEventListener("paste", onPaste, true);
+      host?.addEventListener("mousedown", onMouseDown);
+      host?.addEventListener("mouseup", onMouseUp);
+      host?.addEventListener("contextmenu", onContextMenu);
       cleanup = () => {
         input.dispose();
         host?.removeEventListener("paste", onPaste, true);
+        host?.removeEventListener("mousedown", onMouseDown);
+        host?.removeEventListener("mouseup", onMouseUp);
+        host?.removeEventListener("contextmenu", onContextMenu);
         observer.disconnect();
         terminal.dispose();
         terminalRef.current = null;
