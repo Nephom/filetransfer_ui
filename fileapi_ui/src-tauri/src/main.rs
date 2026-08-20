@@ -343,7 +343,7 @@ fn api_client(ignore_tls_errors: bool) -> Result<Client, String> {
 
 fn download_client(ignore_tls_errors: bool) -> Result<Client, String> {
     Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(300))
         .no_gzip()
         .danger_accept_invalid_certs(ignore_tls_errors)
         .danger_accept_invalid_hostnames(ignore_tls_errors)
