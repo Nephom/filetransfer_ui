@@ -6851,7 +6851,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                  </label>
                  <label className="settings-check">
                    <input type="checkbox" checked={desktopSettings.bracketedPasteControlEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, bracketedPasteControlEnabled: event.target.checked }))} />
-                   <span><strong>Enable bracketed-paste control</strong><small>Handle bracketed-paste markers in terminal paste input to avoid visible control sequences in remote programs.</small></span>
+                   <span><strong>Sanitize bracketed-paste markers</strong><small>Remove pasted bracketed-paste control markers from clipboard text before sending it to the remote terminal.</small></span>
                  </label>
                </section>
               <section className="settings-section">
