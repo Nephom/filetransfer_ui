@@ -34,6 +34,16 @@ server_port() {
   printf '%s' "${port:-9400}"
 }
 
+https_port() {
+  local port
+  # Keep the same precedence as the backend: .env first, then config.ini.
+  # HTTPS_PORT is accepted as a legacy alias for SSL_HTTPS_PORT.
+  port="$(read_env_value SSL_HTTPS_PORT)"
+  [[ -n "$port" ]] || port="$(read_env_value HTTPS_PORT)"
+  [[ -n "$port" ]] || port="$(read_ini_value httpsPort)"
+  printf '%s' "${port:-9443}"
+}
+
 storage_path() {
   local path
   path="$(read_env_value FILESYSTEM_STORAGE_PATH)"
