@@ -12,7 +12,7 @@ type QueueModalProps = {
   modalStyle: React.CSSProperties;
   onDragStart: (event: React.MouseEvent<HTMLElement>) => void;
   onClose: () => void;
-  onClearStatus: (status: "completed" | "failed" | "cancelled") => void;
+  onClearStatus: (status: "completed" | "failed" | "cancelled" | "needs_user_action") => void;
   onClearHistory: () => void;
 };
 
@@ -30,7 +30,8 @@ export function QueueModal({ items, activeItems, historyItems, renderItem, modal
           {items.some((item) => item.status === "completed") && <button type="button" onClick={() => onClearStatus("completed")}>Clear completed</button>}
           {items.some((item) => item.status === "failed") && <button type="button" onClick={() => onClearStatus("failed")}>Clear failed</button>}
           {items.some((item) => item.status === "cancelled") && <button type="button" onClick={() => onClearStatus("cancelled")}>Clear cancelled</button>}
-          {items.some((item) => ["completed", "failed", "cancelled"].includes(item.status)) && <button type="button" onClick={onClearHistory}>Clear history</button>}
+          {items.some((item) => item.status === "needs_user_action") && <button type="button" onClick={() => onClearStatus("needs_user_action")}>Clear needs action</button>}
+          {items.some((item) => ["completed", "failed", "cancelled", "needs_user_action"].includes(item.status)) && <button type="button" onClick={onClearHistory}>Clear history</button>}
           <button type="button" onClick={onClose}>Close</button>
         </div>
       )}

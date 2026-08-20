@@ -101,6 +101,7 @@ export const pruneQueueHistory = <T extends { status: string; finishedAt?: numbe
     completed: { max: 20, ttlMs: 24 * 60 * 60 * 1000 },
     cancelled: { max: 10, ttlMs: 24 * 60 * 60 * 1000 },
     failed: { max: 20, ttlMs: 7 * 24 * 60 * 60 * 1000 },
+    needs_user_action: { max: 20, ttlMs: 7 * 24 * 60 * 60 * 1000 },
   },
 ) => {
   const terminal = new Map<string, T[]>();

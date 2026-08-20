@@ -1740,14 +1740,19 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   useEffect(() => {
     if (!desktopSettings.operationLogEnabled) return undefined;
-    void invoke("initialize_operation_log").then(() => invoke("append_operation_log", {
+    void invoke("set_operation_log_config", {
+      enabled: desktopSettings.operationLogEnabled,
       level: desktopSettings.operationLogLevel,
-      operation: "app",
-      status: "started",
-      sourceLabel: "Desktop",
-      destinationLabel: "",
-      detail: "nFterm started.",
-    })).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+    }).then(() => invoke("initialize_operation_log"))
+      .then(() => invoke("append_operation_log", {
+        level: desktopSettings.operationLogLevel,
+        operation: "app",
+        status: "started",
+        sourceLabel: "Desktop",
+        destinationLabel: "",
+        detail: "nFterm started.",
+      }))
+      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
     return () => {
       void invoke("append_operation_log", {
         level: desktopSettings.operationLogLevel,
@@ -3180,7 +3185,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       ...(isFailure && !structuredDetail.errorCategory ? { errorCategory: "unknown" } : {}),
       ...(isFailure && structuredDetail.recoverable === undefined ? { recoverable: false } : {}),
       ...(isFailure && structuredDetail.needsUserAction === undefined ? { needsUserAction: true } : {}),
-    }).catch(() => {});
+    }).catch((error) => console.error("Operation log write failed", error));
   };
   const logQueueEvent = (item: TransferQueueItem, event: string, fields: Record<string, unknown> = {}, level: DesktopSettings["operationLogLevel"] = "INFO") => {
     const destination = item.kind === "upload"
@@ -3218,7 +3223,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         if (item.id !== id) return item;
         // A late invoke/listener callback must not resurrect a cancelled item.
         if (item.status === "cancelled" && update.status && update.status !== "cancelled") return item;
-        const terminal = update.status === "completed" || update.status === "failed" || update.status === "cancelled";
+        const terminal = update.status === "completed" || update.status === "failed" || update.status === "cancelled" || update.status === "needs_user_action";
         if (update.status && update.status !== item.status) {
           assertQueueTransition(item.status, update.status);
         }
@@ -3265,7 +3270,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const cancelledQueueItemsRef = useRef(new Set<string>());
   const cancelQueueItem = (id: string) => {
     const current = transferQueue.find((item) => item.id === id);
-    if (!current || ["completed", "failed", "cancelled"].includes(current.status)) return;
+    if (!current || ["completed", "failed", "cancelled", "needs_user_action"].includes(current.status)) return;
     cancelledQueueItemsRef.current.add(id);
     queueProgressSamplesRef.current.delete(id);
     latestQueueProgressRef.current.delete(id);
@@ -3279,6 +3284,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const removeQueueItem = (id: string) => {
     const current = transferQueue.find((item) => item.id === id);
     if (current && !["completed", "failed", "cancelled"].includes(current.status)) {
+      if (current.status === "needs_user_action") {
+        logQueueEvent(current, "removed", { reason: "user_removed_needs_action", finalStatus: current.status }, "INFO");
+        cancelledQueueItemsRef.current.add(id);
+        queueProgressSamplesRef.current.delete(id);
+        latestQueueProgressRef.current.delete(id);
+        queueCompletionHandlersRef.current.delete(id);
+        setTransferQueue((items) => items.filter((item) => item.id !== id));
+        return;
+      }
       cancelQueueItem(id);
       return;
     }
@@ -3289,13 +3303,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     setTransferQueue((current) => current.filter((item) => item.id !== id));
   };
   const clearQueueHistory = () => {
-    setTransferQueue((current) => current.filter((item) => !["completed", "failed", "cancelled"].includes(item.status)));
+    setTransferQueue((current) => current.filter((item) => !["completed", "failed", "cancelled", "needs_user_action"].includes(item.status)));
   };
   const clearQueueStatus = (status: TransferQueueItem["status"]) => {
     setTransferQueue((current) => current.filter((item) => item.status !== status));
   };
   const clearFinishedQueue = () => {
-    setTransferQueue((current) => current.filter((item) => !["completed", "failed", "cancelled"].includes(item.status)));
+    setTransferQueue((current) => current.filter((item) => !["completed", "failed", "cancelled", "needs_user_action"].includes(item.status)));
   };
   const isQueueItemCancelled = (id: string) => cancelledQueueItemsRef.current.has(id);
 
@@ -3431,7 +3445,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const executeQueuedDownload = async (item: TransferQueueItem) => {
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
-    writeOperationLog("download", "started", item.label, destinationLabel, "Transfer queue download started.", "DEBUG");
+    logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, archiveFormat: item.archiveFormat || null }, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? `Preparing ${item.archiveFormat} archive...` : "Downloading..." });
     // download_to_disk streams the response and emits "download-progress"
     // events tagged with this item's id so the queue can show byte-level
@@ -3475,7 +3489,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         status: "completed",
         detail: `Downloaded to ${destination}.${formatQueueProgress(latestProgress)}`,
       });
-      writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded to ${destination}.`);
+       logQueueEvent(item, "completed", { transferId: item.id, destination, bytesCompleted: latestProgress?.completedBytes || 0, bytesTotal: latestProgress?.totalBytes || null }, "INFO");
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
       const recovery = classifyQueueError(error);
@@ -3491,7 +3505,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       }
       if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
       updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail}`, errorCategory: recovery.category });
-      writeOperationLog("download", "failed", item.label, destinationLabel, `Download failed: ${detail}`, "ERROR");
+       logQueueEvent(item, "failed", { transferId: item.id, errorMessage: detail, errorCategory: recovery.category, retryCount }, "ERROR");
     } finally {
       unlistenProgress();
     }
@@ -3500,7 +3514,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const executeQueuedDownloadSet = async (item: TransferQueueItem) => {
     const files = item.setFiles || [];
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
-    writeOperationLog("download", "started", item.label, destinationLabel, `Queued download of ${files.length} file(s) started.`, "DEBUG");
+    logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, itemCount: files.length }, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${files.length} files...`, setCompleted: 0 });
     const headers: [string, string][] = session.token
       ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
@@ -3533,7 +3547,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         updateQueueProgress(item.id, completedBytes, totalBytes, completed, files.length);
       }
       updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || destinationLabel}.` });
-      writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded ${completed} file(s).`);
+       logQueueEvent(item, "completed", { transferId: item.id, completedItems: completed, totalItems: files.length }, "INFO");
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
       const recovery = classifyQueueError(error);
@@ -3549,7 +3563,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       }
       if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
       updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail} (${completed}/${files.length} completed before failing)`, errorCategory: recovery.category });
-      writeOperationLog("download", "failed", item.label, destinationLabel, `Queued download failed: ${detail}`, "ERROR");
+       logQueueEvent(item, "failed", { transferId: item.id, errorMessage: detail, errorCategory: recovery.category, completedItems: completed, totalItems: files.length, retryCount }, "ERROR");
     }
   };
 
@@ -4425,7 +4439,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           (item.kind !== "download" || Boolean(item.sshEntryId) || Boolean(item.downloadUrl)) && (
           <button type="button" onClick={() => retryDesktopQueueItem(item)}>Retry</button>
         )}
-        {(["completed", "failed", "cancelled"].includes(item.status)) && (
+         {(["completed", "failed", "cancelled", "needs_user_action"].includes(item.status)) && (
           <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>
         )}
       </div>

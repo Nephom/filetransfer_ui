@@ -29,4 +29,4 @@ export const assertQueueTransition = (from: QueueStatus, to: QueueStatus) => {
 };
 
 export const isQueueTerminal = (status: QueueStatus) =>
-  status === "completed" || status === "failed" || status === "cancelled";
+  status === "completed" || status === "failed" || status === "cancelled" || status === "needs_user_action";

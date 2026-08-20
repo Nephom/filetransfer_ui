@@ -341,6 +341,16 @@ fn api_client(ignore_tls_errors: bool) -> Result<Client, String> {
         .map_err(describe_error)
 }
 
+fn download_client(ignore_tls_errors: bool) -> Result<Client, String> {
+    Client::builder()
+        .timeout(Duration::from_secs(30))
+        .no_gzip()
+        .danger_accept_invalid_certs(ignore_tls_errors)
+        .danger_accept_invalid_hostnames(ignore_tls_errors)
+        .build()
+        .map_err(describe_error)
+}
+
 fn apply_headers(
     request: reqwest::RequestBuilder,
     headers: Vec<(String, String)>,
@@ -530,26 +540,40 @@ pub fn sanitize_archive_name(value: &str) -> String {
     }
 }
 
-fn create_unique_file(path: &Path) -> Result<(PathBuf, std::fs::File), String> {
-    let mut candidate = path.to_path_buf();
+fn create_unique_download_file(path: &Path) -> Result<(PathBuf, PathBuf, std::fs::File), String> {
     let mut attempt = 1;
     loop {
+        let candidate = if attempt == 1 {
+            path.to_path_buf()
+        } else {
+            path.parent()
+                .unwrap_or_else(|| Path::new(""))
+                .join(dedupe_candidate_name(
+                    path.file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("download"),
+                    attempt - 1,
+                ))
+        };
+        if candidate.exists() {
+            attempt += 1;
+            continue;
+        }
+        let file_name = candidate
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "Invalid download filename".to_string())?;
+        let temporary = candidate
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(format!(".{file_name}.part"));
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&candidate)
+            .open(&temporary)
         {
-            Ok(file) => return Ok((candidate, file)),
+            Ok(file) => return Ok((candidate, temporary, file)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                candidate =
-                    path.parent()
-                        .unwrap_or_else(|| Path::new(""))
-                        .join(dedupe_candidate_name(
-                            path.file_name()
-                                .and_then(|value| value.to_str())
-                                .unwrap_or("download"),
-                            attempt,
-                        ));
                 attempt += 1;
             }
             Err(error) => return Err(error.to_string()),
@@ -1427,7 +1451,8 @@ async fn download_to_disk(
     let method = method
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
-    let request = apply_headers(api_client(ignore_tls_errors)?.request(method, url), headers);
+    let request = apply_headers(download_client(ignore_tls_errors)?.request(method, url), headers)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity");
     let request = if let Some(body) = body {
         request.body(body)
     } else {
@@ -1455,25 +1480,26 @@ async fn download_to_disk(
     // it doesn't exist yet (e.g. a first-time literal "Downloads").
     let destination_root = resolve_local_download_destination(&destination_folder)?;
     let requested_destination = destination_root.join(safe_name);
-    let (destination, mut file) = create_unique_file(&requested_destination)?;
+    let (destination, temporary, mut file) = create_unique_download_file(&requested_destination)?;
     let mut bytes_completed: u64 = 0;
+    let expected_bytes = bytes_total;
     let mut last_emit = Instant::now();
     while let Some(chunk) = match response.chunk().await {
         Ok(chunk) => chunk,
         Err(error) => {
             drop(file);
-            let _ = std::fs::remove_file(&destination);
-            return Err(error.to_string());
+            let _ = std::fs::remove_file(&temporary);
+            return Err(describe_error(error));
         }
     } {
         if is_transfer_cancelled(&transfer_id) {
             drop(file);
-            let _ = std::fs::remove_file(&destination);
+            let _ = std::fs::remove_file(&temporary);
             return Err("Transfer cancelled".to_string());
         }
         if let Err(error) = file.write_all(&chunk) {
             drop(file);
-            let _ = std::fs::remove_file(&destination);
+            let _ = std::fs::remove_file(&temporary);
             return Err(error.to_string());
         }
         bytes_completed += chunk.len() as u64;
@@ -1489,6 +1515,19 @@ async fn download_to_disk(
             last_emit = Instant::now();
         }
     }
+    drop(file);
+    if let Some(expected) = expected_bytes {
+        if bytes_completed != expected {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!(
+                "Incomplete download: received {bytes_completed} of {expected} bytes"
+            ));
+        }
+    }
+    std::fs::rename(&temporary, &destination).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        error.to_string()
+    })?;
     let _ = app.emit(
         "download-progress",
         DownloadProgressEvent {
@@ -1530,7 +1569,8 @@ async fn download_to_disk_at(
     let method = method
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
-    let request = apply_headers(api_client(ignore_tls_errors)?.request(method, url), headers);
+    let request = apply_headers(download_client(ignore_tls_errors)?.request(method, url), headers)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity");
     let request = if let Some(body) = body {
         request.body(body)
     } else {
@@ -1544,26 +1584,42 @@ async fn download_to_disk_at(
             .unwrap_or_else(|_| "Download failed".to_string()));
     }
     let requested_destination = resolve_local_download_file(&destination_folder, &relative_path)?;
-    let (destination, mut file) = create_unique_file(&requested_destination)?;
+    let (destination, temporary, mut file) = create_unique_download_file(&requested_destination)?;
+    let expected_bytes = response.content_length();
+    let mut bytes_completed = 0u64;
     while let Some(chunk) = match response.chunk().await {
         Ok(chunk) => chunk,
         Err(error) => {
             drop(file);
-            let _ = std::fs::remove_file(&destination);
-            return Err(error.to_string());
+            let _ = std::fs::remove_file(&temporary);
+            return Err(describe_error(error));
         }
     } {
         if is_transfer_cancelled(&transfer_id) {
             drop(file);
-            let _ = std::fs::remove_file(&destination);
+            let _ = std::fs::remove_file(&temporary);
             return Err("Transfer cancelled".to_string());
         }
         if let Err(error) = file.write_all(&chunk) {
             drop(file);
-            let _ = std::fs::remove_file(&destination);
+            let _ = std::fs::remove_file(&temporary);
             return Err(error.to_string());
         }
+        bytes_completed += chunk.len() as u64;
     }
+    drop(file);
+    if let Some(expected) = expected_bytes {
+        if bytes_completed != expected {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(format!(
+                "Incomplete download: received {bytes_completed} of {expected} bytes"
+            ));
+        }
+    }
+    std::fs::rename(&temporary, &destination).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        error.to_string()
+    })?;
     Ok(destination.display().to_string())
 }
 
@@ -2371,7 +2427,10 @@ fn set_operation_log_config(enabled: bool, level: String) {
 
 #[cfg(test)]
 mod phase1_filename_tests {
-    use super::{decode_text_file, dedupe_candidate_name, sanitize_archive_name};
+    use super::{
+        create_unique_download_file, decode_text_file, dedupe_candidate_name, sanitize_archive_name,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn decodes_utf8_and_utf8_bom() {
@@ -2414,6 +2473,25 @@ mod phase1_filename_tests {
     fn archive_names_cannot_escape_the_destination() {
         assert_eq!(sanitize_archive_name("machine:/logs?"), "machine--logs-");
         assert_eq!(sanitize_archive_name("..."), "nFterm");
+    }
+
+    #[test]
+    fn download_uses_a_hidden_part_file_until_completion() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("nfterm-download-{suffix}"));
+        std::fs::create_dir_all(&directory).expect("temporary directory should be created");
+        let requested = directory.join("ubuntu.iso");
+        let (destination, temporary, file) = create_unique_download_file(&requested)
+            .expect("download part file should be created");
+        assert_eq!(destination, requested);
+        assert!(temporary.file_name().unwrap().to_string_lossy().ends_with(".part"));
+        assert!(!destination.exists());
+        assert!(temporary.exists());
+        drop(file);
+        let _ = std::fs::remove_dir_all(directory);
     }
 }
 
