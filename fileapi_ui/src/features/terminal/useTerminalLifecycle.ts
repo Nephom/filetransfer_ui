@@ -4,6 +4,30 @@ import type { Terminal } from "@xterm/xterm";
 export const normalizeTerminalPaste = (text: string, sanitizeBracketedMarkers: boolean) =>
   sanitizeBracketedMarkers ? text.replace(/\x1b\[200~/g, "").replace(/\x1b\[201~/g, "") : text;
 
+// Tauri's WebView does not grant navigator.clipboard permission for the
+// tauri.localhost origin. execCommand uses the document clipboard event path,
+// which is also the fallback used by noVNC in the desktop client.
+export const copyTerminalText = async (text: string) => {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-1000px";
+  textarea.style.left = "-1000px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } finally {
+    textarea.remove();
+  }
+  if (!copied && navigator.clipboard) {
+    await navigator.clipboard.writeText(text);
+  }
+  return copied;
+};
+
 export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutput, replayKey, boundaryGuard, bracketedPasteControlEnabled, onData, onResize }: {
   enabled: boolean;
   hostRef: RefObject<HTMLDivElement>;
@@ -55,25 +79,27 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
       };
       let selectionAtMouseDown = "";
       const onMouseDown = (event: MouseEvent) => {
-        if (event.button === 0) selectionAtMouseDown = terminal.getSelection();
+        if (event.button !== 0) return;
+        selectionAtMouseDown = terminal.getSelection();
+        terminal.focus();
       };
       const onMouseUp = (event: MouseEvent) => {
         if (event.button !== 0) return;
         const selection = terminal.getSelection();
-        if (selection && selection !== selectionAtMouseDown && navigator.clipboard) {
-          void navigator.clipboard.writeText(selection).catch(() => undefined);
+        if (selection && selection !== selectionAtMouseDown) {
+          void copyTerminalText(selection).catch(() => undefined);
         }
         selectionAtMouseDown = "";
       };
       const host = hostRef.current;
       host?.addEventListener("paste", onPaste, true);
-      host?.addEventListener("mousedown", onMouseDown);
-      host?.addEventListener("mouseup", onMouseUp);
+      host?.addEventListener("mousedown", onMouseDown, true);
+      host?.addEventListener("mouseup", onMouseUp, true);
       cleanup = () => {
         input.dispose();
         host?.removeEventListener("paste", onPaste, true);
-        host?.removeEventListener("mousedown", onMouseDown);
-        host?.removeEventListener("mouseup", onMouseUp);
+        host?.removeEventListener("mousedown", onMouseDown, true);
+        host?.removeEventListener("mouseup", onMouseUp, true);
         observer.disconnect();
         terminal.dispose();
         terminalRef.current = null;
