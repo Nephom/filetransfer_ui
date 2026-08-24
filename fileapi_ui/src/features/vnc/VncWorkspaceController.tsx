@@ -10,6 +10,9 @@ export type VncWorkspaceControllerProps = {
   onSelectEntry: (id: string) => void;
   onChangeEntries: (entries: ProxmoxVncEntry[]) => void;
   onChangeSecret: (entryId: string, secret: ProxmoxVncSecret) => void;
+  onAddEntry: () => void;
+  onEditEntry: (entry: ProxmoxVncEntry) => void;
+  onRemoveEntry: (entry: ProxmoxVncEntry) => void;
 };
 
 export function VncWorkspaceController(props: VncWorkspaceControllerProps) {

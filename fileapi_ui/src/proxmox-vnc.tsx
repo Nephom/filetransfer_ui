@@ -31,6 +31,9 @@ type Props = {
   onSelectEntry: (id: string) => void;
   onChangeEntries: (entries: ProxmoxVncEntry[]) => void;
   onChangeSecret: (entryId: string, secret: ProxmoxVncSecret) => void;
+  onAddEntry: () => void;
+  onEditEntry: (entry: ProxmoxVncEntry) => void;
+  onRemoveEntry: (entry: ProxmoxVncEntry) => void;
 };
 
 type EntryAuthProps = {
@@ -42,20 +45,31 @@ type EntryAuthProps = {
   onLogout: () => void;
 };
 
-// Entry management (add/edit/remove) lives in the Sessions/Workspace
-// Manager, not here -- this sidebar only lists and selects among entries
-// the Workspace already owns, plus the currently-selected entry's Proxmox
-// login/logout (an operational session action, not entry identity data),
-// exactly like the SSH terminal panel's own sidebar has no add/edit UI.
-function VncEntries({ entries, activeEntryId, onSelectEntry, password, authenticated, loading, onPasswordChange, onLogin, onLogout }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry"> & EntryAuthProps) {
+// Entry management: adding a Workspace and its first entry, or bulk edits
+// via onChangeEntries, is still driven from the Sessions/Workspace Manager,
+// but the sidebar itself now owns Add/Edit/Remove for individual entries
+// (see T-218) so switching entries no longer requires leaving VNC mode to
+// reach the Workspace Manager. The currently-selected entry's Proxmox
+// login/logout stays here too (an operational session action, not entry
+// identity data).
+function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditEntry, onRemoveEntry, password, authenticated, loading, onPasswordChange, onLogin, onLogout }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry" | "onAddEntry" | "onEditEntry" | "onRemoveEntry"> & EntryAuthProps) {
   return <aside className="vnc-entry-pane">
-    <div className="vnc-entry-heading"><span className="sidebar-label">PROXMOX VNC ENTRIES</span></div>
+    <div className="vnc-entry-heading">
+      <span className="sidebar-label">PROXMOX VNC ENTRIES</span>
+      <button type="button" className="vnc-entry-add" onClick={onAddEntry}>+ Add</button>
+    </div>
     <MobileChoiceMenu className="vnc-entry-choice" label="VNC entry" currentId={activeEntryId} options={entries.map((entry) => ({ id: entry.id, label: entry.name }))} onSelect={onSelectEntry} />
     <div className="vnc-entry-list">
-      {!entries.length && <div className="vnc-empty">No Proxmox VNC entries yet. Add one from Sessions → Workspace.</div>}
-      {entries.map((entry) => <button type="button" key={entry.id} className={`vnc-entry${entry.id === activeEntryId ? " active" : ""}`} onClick={() => onSelectEntry(entry.id)}>
-        <span className="vnc-entry-dot" /><span className="vnc-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{entry.node || "No node"} / {entry.vmid || "No VMID"}</small></span>
-      </button>)}
+      {!entries.length && <div className="vnc-empty">No Proxmox VNC entries yet. Use the Add button above to create one.</div>}
+      {entries.map((entry) => <div className="vnc-entry-row" key={entry.id}>
+        <button type="button" className={`vnc-entry${entry.id === activeEntryId ? " active" : ""}`} onClick={() => onSelectEntry(entry.id)}>
+          <span className="vnc-entry-dot" /><span className="vnc-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{entry.node || "No node"} / {entry.vmid || "No VMID"}</small></span>
+        </button>
+        <div className="vnc-entry-row-actions">
+          <button type="button" className="vnc-entry-action-edit" aria-label={`Edit ${entry.name}`} onClick={() => onEditEntry(entry)}>Edit</button>
+          <button type="button" className="vnc-entry-action-remove" aria-label={`Remove ${entry.name}`} onClick={() => onRemoveEntry(entry)}>Remove</button>
+        </div>
+      </div>)}
     </div>
     <div className="vnc-entry-auth">
       <strong>{authenticated ? "Proxmox session active" : "Entry credentials"}</strong>
@@ -65,7 +79,7 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, password, authentic
   </aside>;
 }
 
-export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, secrets, collapseMainPaneEnabled, onSelectEntry, onChangeEntries, onChangeSecret }: Props) {
+export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, secrets, collapseMainPaneEnabled, onSelectEntry, onChangeEntries, onChangeSecret, onAddEntry, onEditEntry, onRemoveEntry }: Props) {
   const entry = entries.find((item) => item.id === activeEntryId) || entries[0];
   const secret = entry ? secrets[entry.id] || {} : {};
   const screenRef = useRef<HTMLDivElement>(null);
@@ -255,7 +269,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     if (rfbRef.current) rfbRef.current.viewOnly = next;
   };
 
-  return <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}`}><div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}><VncEntries entries={entries} activeEntryId={activeEntryId} onSelectEntry={selectEntry} password={password} authenticated={authenticated} loading={loading} onPasswordChange={updatePassword} onLogin={() => void loginEntry()} onLogout={() => void logoutEntry()} /></div>{collapseMainPaneEnabled ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane"><ChevronRightIcon /></button></div> : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
+  return <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}`}><div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}><VncEntries entries={entries} activeEntryId={activeEntryId} onSelectEntry={selectEntry} onAddEntry={onAddEntry} onEditEntry={onEditEntry} onRemoveEntry={onRemoveEntry} password={password} authenticated={authenticated} loading={loading} onPasswordChange={updatePassword} onLogin={() => void loginEntry()} onLogout={() => void logoutEntry()} /></div>{collapseMainPaneEnabled ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane"><ChevronRightIcon /></button></div> : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
     <section ref={vncReaderRef} className="vnc-reader" aria-label="Proxmox VNC workspace">
       <div className="vnc-reader-heading"><div><span className="eyebrow">VNC mode · {workspaceName}</span><h1>{entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
       <div className="vnc-display-split" style={{ "--controls-row": controlsRatio === null ? "auto" : `${controlsRatio}fr`, "--screen-row": controlsRatio === null ? "1fr" : `${1 - controlsRatio}fr` } as React.CSSProperties}><div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}><div className="vnc-auth-heading"><strong>Connection controls</strong><button type="button" onClick={() => { setControlsOpen((value) => !value); setControlsRatio(null); }}>{controlsOpen ? "Collapse" : "Expand"}</button></div>{controlsOpen && <><div className="vnc-auth-grid"><label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label><label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label></div><div className="vnc-actions"><button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button><button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button><button type="button" onClick={() => void logoutEntry()} disabled={!authenticated}>Logout</button></div>{entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}{error && <div className="notice rest-error">{error}</div>}</>}</div><div className="vnc-screen-resize" role="separator" aria-label="Resize Connection controls" title="Drag downward to enlarge Connection controls" onPointerDown={resizeControls} /><div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`}><div className="vnc-display-toolbar"><button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button><button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button><button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button><button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div><div ref={screenRef} className="vnc-screen" /></div></div>

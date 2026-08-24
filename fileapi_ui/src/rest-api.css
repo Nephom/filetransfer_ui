@@ -33,9 +33,19 @@
 .rest-main-pane-collapse-controls button:disabled { cursor: not-allowed; opacity: .38; }
 .rest-entry-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 0 var(--space-1) var(--space-3); border-bottom: 1px solid var(--color-border); }
 .rest-entry-heading .sidebar-label { padding: 0; }
+.rest-entry-add { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-primary); border-radius: 4px; color: var(--color-primary); background: transparent; font-size: var(--font-size-small); cursor: pointer; }
+.rest-entry-add:hover { color: var(--color-bg); background: var(--color-primary); }
 .rest-entry-list { flex: 1 1 auto; min-height: 0; padding-top: 10px; overflow: auto; }
 .rest-entry-choice { display: none; }
-.rest-entry { display: flex; align-items: flex-start; gap: var(--space-2); width: 100%; min-height: 0 !important; padding: var(--space-2) var(--space-2) !important; border: 1px solid transparent; border-radius: 5px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
+.rest-entry-row { display: flex; align-items: center; gap: var(--space-1); width: 100%; }
+.rest-entry-row + .rest-entry-row { margin-top: var(--space-1); }
+.rest-entry-row-actions { display: flex; flex: 0 0 auto; gap: var(--space-1); }
+.rest-entry-action-edit, .rest-entry-action-remove { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 4px; background: transparent; font-size: var(--font-size-small); cursor: pointer; }
+.rest-entry-action-edit { color: var(--color-primary); }
+.rest-entry-action-edit:hover { border-color: var(--color-primary); background: var(--color-bg-panel); }
+.rest-entry-action-remove { color: var(--color-danger); }
+.rest-entry-action-remove:hover { color: var(--color-bg); background: var(--color-danger); border-color: var(--color-danger); }
+.rest-entry { display: flex; align-items: flex-start; gap: var(--space-2); flex: 1 1 auto; min-width: 0; min-height: 0 !important; padding: var(--space-2) var(--space-2) !important; border: 1px solid transparent; border-radius: 5px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
 .rest-entry:hover { background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); border-color: var(--color-border); }
 .rest-entry.active { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-panel-strong)); box-shadow: inset 3px 0 var(--color-primary); }
 .rest-entry-dot { width: var(--space-2); height: var(--space-2); flex: 0 0 auto; margin-top: 5px; border-radius: 50%; background: var(--color-text-muted); }

@@ -2838,6 +2838,22 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     setSshEntryDialogOpen(false);
   };
 
+  // Direct removal (no Edit dialog required) used by the Sessions/Workspace
+  // Manager's inline per-entry Remove buttons -- see T-217. Mirrors the
+  // cleanup performed by removeSshEntry above, but is parameterized so it
+  // can run without any dialog/draft state being open.
+  const removeSshEntryDirect = (workspaceId: string, entry: SshProfile) => {
+    if (!window.confirm(`Remove SSH entry "${entry.name}"?`)) return;
+    setManagedSessions((current) => current.map((item) => item.id !== workspaceId ? item : { ...item, sshEntries: item.sshEntries.filter((candidate) => candidate.id !== entry.id) }));
+    setSshProfiles((current) => current.filter((item) => item.id !== entry.id));
+    void invoke("ssh_forget_password", { entryId: entry.id }).catch(() => {});
+    if (sshEntryDraftId === entry.id) {
+      startNewSshEntry();
+      setSshEntryDialogOpen(false);
+    }
+    notify(`Removed SSH entry: ${entry.name}`);
+  };
+
   // REST API and Proxmox VNC entries follow the exact same add/edit/remove
   // shape as SSH above: the dialog lives here, keyed to whichever Workspace
   // card it was opened from (setWorkspaceSessionId right before opening).
@@ -2915,6 +2931,23 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     setRestEntryDialogOpen(false);
   };
 
+  // Direct removal (no Edit dialog required) -- see T-217/T-218. Mirrors the
+  // cleanup performed by removeRestEntry above, but is parameterized so it
+  // can be triggered from the Sessions modal's inline Remove button or the
+  // REST API sidebar's own Remove button without first opening the Edit
+  // dialog.
+  const removeRestEntryDirect = (workspaceId: string, entry: RestApiEntry) => {
+    if (!window.confirm(`Remove REST API entry "${entry.name}"?`)) return;
+    setManagedSessions((current) => current.map((item) => item.id !== workspaceId ? item : { ...item, restApiEntries: item.restApiEntries.filter((candidate) => candidate.id !== entry.id) }));
+    localStorage.removeItem(`rest-api-history:${entry.id}`);
+    if (restEntryDraft?.id === entry.id) {
+      setRestEntryDraft(null);
+      setRestEntryDialogOpen(false);
+    }
+    if (activeRestEntryId === entry.id) setActiveRestEntryId("");
+    notify(`Removed REST API entry: ${entry.name}`);
+  };
+
   const emptyVncEntry = (): ProxmoxVncEntry => ({
     id: crypto.randomUUID(),
     name: "New Proxmox VNC",
@@ -2990,6 +3023,23 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     void invoke("proxmox_forget_secret", { entryId: draft.id, kind: "password" }).catch(() => {});
     setVncEntryDraft(null);
     setVncEntryDialogOpen(false);
+  };
+
+  // Direct removal (no Edit dialog required) -- see T-217/T-218. Mirrors the
+  // cleanup performed by removeVncEntry above, but is parameterized so it
+  // can be triggered from the Sessions modal's inline Remove button or the
+  // Proxmox VNC sidebar's own Remove button without first opening the Edit
+  // dialog.
+  const removeVncEntryDirect = (workspaceId: string, entry: ProxmoxVncEntry) => {
+    if (!window.confirm(`Remove Proxmox VNC entry "${entry.name}"?`)) return;
+    setManagedSessions((current) => current.map((item) => item.id !== workspaceId ? item : { ...item, proxmoxVncEntries: item.proxmoxVncEntries.filter((candidate) => candidate.id !== entry.id) }));
+    void invoke("proxmox_forget_secret", { entryId: entry.id, kind: "password" }).catch(() => {});
+    if (vncEntryDraft?.id === entry.id) {
+      setVncEntryDraft(null);
+      setVncEntryDialogOpen(false);
+    }
+    if (activeVncEntryId === entry.id) setActiveVncEntryId("");
+    notify(`Removed Proxmox VNC entry: ${entry.name}`);
   };
 
   const connectSsh = () => {
@@ -3639,6 +3689,26 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const activeManagedWorkspace = managedSessions.find((item) => item.id === workspaceSessionId);
   const restWorkspace = activeManagedWorkspace || managedSessions.find((item) => item.restApiEntries.length) || managedSessions[0];
   const vncWorkspace = activeManagedWorkspace || managedSessions.find((item) => item.proxmoxVncEntries.length) || managedSessions[0];
+
+  // Returns the current REST/VNC Workspace's id, creating a "Default"
+  // Workspace on the fly (same fallback RestApiWorkspace/ProxmoxVncWorkspace
+  // already use in onChangeEntries below) when none exists yet -- lets the
+  // REST API/VNC sidebar's own "Add" button work even before any Workspace
+  // has been created via the Sessions/Workspace Manager. See T-218.
+  const ensureRestWorkspaceId = () => {
+    if (restWorkspace) return restWorkspace.id;
+    const id = crypto.randomUUID();
+    setManagedSessions((current) => [...current, { id, name: "Default", sshEntries: [], restApiEntries: [], proxmoxVncEntries: [] }]);
+    setWorkspaceSessionId(id);
+    return id;
+  };
+  const ensureVncWorkspaceId = () => {
+    if (vncWorkspace) return vncWorkspace.id;
+    const id = crypto.randomUUID();
+    setManagedSessions((current) => [...current, { id, name: "Default", sshEntries: [], restApiEntries: [], proxmoxVncEntries: [] }]);
+    setWorkspaceSessionId(id);
+    return id;
+  };
   const toggle = (file: FileItem, checked: boolean) => {
     setActivePane("remote");
     selectionAnchorRef.current = file.path;
@@ -6160,6 +6230,9 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
               if (token) void invoke("rest_save_secret", { entryId, kind: "token", value: token });
               else void invoke("rest_forget_secret", { entryId, kind: "token" });
             }}
+            onAddEntry={() => openAddRestEntryDialog(ensureRestWorkspaceId())}
+            onEditEntry={(entry) => restWorkspace && openEditRestEntryDialog(restWorkspace.id, entry)}
+            onRemoveEntry={(entry) => restWorkspace && removeRestEntryDirect(restWorkspace.id, entry)}
           />
          ) : appMode === "vnc" ? (
             <VncWorkspaceController
@@ -6184,6 +6257,9 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                if (secret.password) void invoke("proxmox_save_secret", { entryId, kind: "password", value: secret.password });
                else void invoke("proxmox_forget_secret", { entryId, kind: "password" });
              }}
+             onAddEntry={() => openAddVncEntryDialog(ensureVncWorkspaceId())}
+             onEditEntry={(entry) => vncWorkspace && openEditVncEntryDialog(vncWorkspace.id, entry)}
+             onRemoveEntry={(entry) => vncWorkspace && removeVncEntryDirect(vncWorkspace.id, entry)}
            />
          ) : <>
         {splitMode && renderLocalPane()}
@@ -7017,6 +7093,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                               <strong>{entry.name}</strong>
                               <span>{entry.username}@{entry.host}:{entry.port}</span>
                             </button>
+                            <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeSshEntryDirect(managedSession.id, entry); }}>Remove</button>
                           </li>
                         ))}
                       </ol>
@@ -7032,6 +7109,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                               <span>{entry.baseUrl}{entry.defaultPath}</span>
                             </button>
                             <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditRestEntryDialog(managedSession.id, entry); }}>Edit</button>
+                            <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeRestEntryDirect(managedSession.id, entry); }}>Remove</button>
                           </li>
                         ))}
                       </ol>
@@ -7047,6 +7125,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                               <span>{entry.baseUrl} · {entry.node || "No node"}/{entry.vmid || "No VMID"}</span>
                             </button>
                             <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditVncEntryDialog(managedSession.id, entry); }}>Edit</button>
+                            <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeVncEntryDirect(managedSession.id, entry); }}>Remove</button>
                           </li>
                         ))}
                       </ol>
@@ -7062,7 +7141,19 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                 ))}
               </div>
               <div className="workspace-modal-footer">
-                <button type="button" className="danger" disabled={!activeManagedWorkspace || managedSessions.length === 1} onClick={() => activeManagedWorkspace && removeSession(activeManagedWorkspace.id)}>Remove</button>
+                {managedSessions.length > 1 ? (
+                  <button
+                    type="button"
+                    className="danger"
+                    disabled={!activeManagedWorkspace}
+                    title={activeManagedWorkspace ? undefined : "請先選擇一個 Workspace 才能移除"}
+                    onClick={() => activeManagedWorkspace && removeSession(activeManagedWorkspace.id)}
+                  >
+                    Remove Workspace
+                  </button>
+                ) : (
+                  <span className="muted workspace-remove-hint">僅有 1 個 Workspace，如需移除請先建立另一個 Workspace</span>
+                )}
                 <button type="button" className="confirm" onClick={() => setSessionsOpen(false)}>Close</button>
               </div>
             </div>

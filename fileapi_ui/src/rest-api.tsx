@@ -30,6 +30,9 @@ type Props = {
   onChangeEntries: (entries: RestApiEntry[]) => void;
   onChangeSecret: (entryId: string, secret: RestApiSecret) => void;
   onChangeSessionHeaders: (entryId: string, headers: Record<string, string>) => void;
+  onAddEntry: () => void;
+  onEditEntry: (entry: RestApiEntry) => void;
+  onRemoveEntry: (entry: RestApiEntry) => void;
 };
 
 const authLabels: Record<RestAuthMode, string> = {
@@ -279,22 +282,30 @@ const defaultActionBody = (action: RedfishAction) => /reset/i.test(`${action.nam
   ? '{\n  "ResetType": "ForceRestart"\n}'
   : "{\n  \n}";
 
-// Entry management (add/edit/remove) lives in the Sessions/Workspace
-// Manager, not here -- this sidebar only lists and selects among entries
-// the Workspace already owns, exactly like the SSH terminal panel's own
-// sidebar has no add/edit UI of its own either.
-function RestEntries({ entries, activeEntryId, onSelectEntry }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry">) {
+// Entry management: adding a Workspace and its first entry, or bulk edits
+// via onChangeEntries, is still driven from the Sessions/Workspace Manager,
+// but the sidebar itself now owns Add/Edit/Remove for individual entries
+// (see T-218) so switching entries no longer requires leaving REST API
+// mode to reach the Workspace Manager.
+function RestEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditEntry, onRemoveEntry }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry" | "onAddEntry" | "onEditEntry" | "onRemoveEntry">) {
   return <aside className="rest-entry-pane">
     <div className="rest-entry-heading">
       <span className="sidebar-label">REST API ENTRIES</span>
+      <button type="button" className="rest-entry-add" onClick={onAddEntry}>+ Add</button>
     </div>
     <MobileChoiceMenu className="rest-entry-choice" label="REST API entry" currentId={activeEntryId} options={entries.map((entry) => ({ id: entry.id, label: entry.name }))} onSelect={onSelectEntry} />
     <div className="rest-entry-list">
-      {!entries.length && <div className="rest-empty">No REST API entries yet. Add one from Sessions → Workspace.</div>}
-      {entries.map((entry) => <button type="button" key={entry.id} className={`rest-entry${entry.id === activeEntryId ? " active" : ""}`} onClick={() => onSelectEntry(entry.id)}>
-        <span className="rest-entry-dot" />
-        <span className="rest-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{normalizePath(entry.defaultPath)}</small></span>
-      </button>)}
+      {!entries.length && <div className="rest-empty">No REST API entries yet. Use the Add button above to create one.</div>}
+      {entries.map((entry) => <div className="rest-entry-row" key={entry.id}>
+        <button type="button" className={`rest-entry${entry.id === activeEntryId ? " active" : ""}`} onClick={() => onSelectEntry(entry.id)}>
+          <span className="rest-entry-dot" />
+          <span className="rest-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{normalizePath(entry.defaultPath)}</small></span>
+        </button>
+        <div className="rest-entry-row-actions">
+          <button type="button" className="rest-entry-action-edit" aria-label={`Edit ${entry.name}`} onClick={() => onEditEntry(entry)}>Edit</button>
+          <button type="button" className="rest-entry-action-remove" aria-label={`Remove ${entry.name}`} onClick={() => onRemoveEntry(entry)}>Remove</button>
+        </div>
+      </div>)}
     </div>
   </aside>;
 }
@@ -1779,7 +1790,7 @@ export function RestApiWorkspace(props: Props) {
      {openBmcResourceOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-openbmc-resource-dialog" role="dialog" aria-modal="true" aria-labelledby="openbmc-resource-title"><div className="rest-editor-heading"><strong id="openbmc-resource-title">OpenBMC resource</strong><button type="button" onClick={() => setOpenBmcResourceOpen(false)} aria-label="Close OpenBMC resource"><CloseIcon size={12} /></button></div><div className="rest-hardware-toolbar"><span>{openBmcResourceLoading ? "Loading resource..." : openBmcResourceTarget}</span><button type="button" onClick={() => void openBmcResource(openBmcResourceTarget)} disabled={openBmcResourceLoading}>Refresh</button></div><div className="rest-hardware-table-wrap"><table><thead><tr><th>Resource</th><th>Property</th><th>Value</th></tr></thead><tbody>{openBmcResourceRows.map((item, index) => <tr key={`${String(item.Property)}-${index}`}><td>{jsonCell(item.Resource)}</td><td>{jsonCell(item.Property)}</td><td>{tableCell(item.Value)}</td></tr>)}</tbody></table>{!openBmcResourceRows.length && !openBmcResourceLoading && <p className="muted">No resource values were returned.</p>}</div><details><summary>Raw Redfish resource</summary><pre className="rest-code">{openBmcResourceRaw ? JSON.stringify(openBmcResourceRaw, null, 2) : "(empty)"}</pre></details></div></div>}
      {openBmcInventoryOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-openbmc-inventory-dialog" role="dialog" aria-modal="true" aria-labelledby="openbmc-inventory-title"><div className="rest-editor-heading"><strong id="openbmc-inventory-title">OpenBMC System inventory</strong><button type="button" onClick={() => setOpenBmcInventoryOpen(false)} aria-label="Close OpenBMC system inventory"><CloseIcon size={12} /></button></div><div className="rest-hardware-toolbar"><span>{openBmcInventoryLoading ? "Collecting Redfish inventory..." : `${openBmcInventoryRows.length} values`}</span><button type="button" onClick={() => void openBmcInventory()} disabled={openBmcInventoryLoading}>Refresh</button><button type="button" onClick={exportOpenBmcSpecCsv} disabled={openBmcInventoryLoading || !openBmcSpecRows.length}>Export CSV</button></div>{openBmcInventoryError && <div className="notice rest-error">{openBmcInventoryError}</div>}<div className="rest-hardware-table-wrap"><table><thead><tr><th>Resource</th><th>Property</th><th>Value</th></tr></thead><tbody>{openBmcInventoryRows.map((item, index) => <tr key={`${String(item.Resource)}-${String(item.Property)}-${index}`}><td>{jsonCell(item.Resource)}</td><td>{jsonCell(item.Property)}</td><td>{tableCell(item.Value)}</td></tr>)}</tbody></table>{!openBmcInventoryRows.length && !openBmcInventoryLoading && <p className="muted">No inventory values were returned.</p>}</div><details><summary>Collected Redfish snapshot</summary><pre className="rest-code">{JSON.stringify(openBmcInventorySnapshot, null, 2)}</pre></details></div></div>}
      {resourceCatalogOpen && <div className="floating-dialog-layer" role="presentation"><div className="rest-hardware-dialog rest-resource-catalog" role="dialog" aria-modal="true" aria-labelledby="resource-catalog-title"><div className="rest-editor-heading"><strong id="resource-catalog-title">All Resources</strong><button type="button" onClick={() => setResourceCatalogOpen(false)} aria-label="Close resource catalog"><CloseIcon size={12} /></button></div><p className="muted">Redfish resources advertised by the service root. Select a path to open it.</p><div className="rest-resource-catalog-list">{resourceCatalog.map((resource) => <button type="button" key={`${resource.name}-${resource.target}`} onClick={() => { setResourceCatalogOpen(false); void openPath(resource.target); }}><strong>{resource.name}</strong><code>{resource.target}</code></button>)}</div></div></div>}
-     <div className={`rest-entry-pane-shell${entryPaneCollapsed ? " rest-entry-pane-collapsed" : ""}`} style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries entries={props.entries} activeEntryId={entry?.id || ""} onSelectEntry={props.onSelectEntry} /></div>
+     <div className={`rest-entry-pane-shell${entryPaneCollapsed ? " rest-entry-pane-collapsed" : ""}`} style={{ flexBasis: `${entryPaneWidth}px` }}><RestEntries entries={props.entries} activeEntryId={entry?.id || ""} onSelectEntry={props.onSelectEntry} onAddEntry={props.onAddEntry} onEditEntry={props.onEditEntry} onRemoveEntry={props.onRemoveEntry} /></div>
      {props.collapseMainPaneEnabled ? <div className="rest-main-pane-collapse-controls" role="group" aria-label="REST pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse REST entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore REST entry pane"><ChevronRightIcon /></button></div> : <PaneResizeHandle ariaLabel="Resize REST API entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
      {toolbarHost && createPortal(<nav className="rest-toolbar" data-rest-toolbar="true" aria-label="REST API tools">
           <button type="button" className="rest-toolbar-toggle" onClick={() => setToolsOpen((value) => !value)} aria-expanded={toolsOpen}>
