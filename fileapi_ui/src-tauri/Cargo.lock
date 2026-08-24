@@ -2913,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "nFterm"
-version = "3.3.3"
+version = "3.4.0"
 dependencies = [
  "dirs",
  "futures-util",

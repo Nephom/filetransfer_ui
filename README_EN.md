@@ -1,6 +1,6 @@
 [正體中文](README.md)
 
-# File Transfer Platform 3.3.3
+# File Transfer Platform 3.4.0
 
 This repository contains two product surfaces: the browser-based WebUI and the nFterm Desktop App. They share the API server and permission model, but their execution environments and local-file capabilities are different.
 
