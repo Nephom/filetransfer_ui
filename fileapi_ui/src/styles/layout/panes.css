@@ -77,16 +77,20 @@
    scoped by .ui-layout-mobile) -- the duplicate that used to be here,
    gated by a raw @media (max-width: 720px) query, is removed rather than
    migrated. */
-.explorer.ui-layout-mobile .terminal-header { align-items: flex-start; flex-direction: column; gap: var(--space-2); padding: var(--space-2) var(--space-3); }
-/* T-219: .terminal-tabs picked up `flex: 1 1 auto` + `justify-content:
- * center` for the desktop (row) header so the tab cluster centers itself
- * in the free width instead of leaving one huge gap. In this column
- * layout that same flex-grow would apply to the *vertical* axis instead
- * (stretching the tab row's height) and the centering can strand the
- * scroll position when there are more tabs than fit -- reset both back
- * to the mobile-appropriate values. */
-.explorer.ui-layout-mobile .terminal-tabs { flex: 0 0 auto; max-width: 100%; justify-content: flex-start; overflow-x: auto; }
-.explorer.ui-layout-mobile .terminal-actions { width: 100%; justify-content: flex-end; }
+/* Issue #219 follow-up: Large/Mobile profile used to force
+   .terminal-header into `flex-direction: column` (tabs row on top,
+   actions row below) unconditionally, i.e. regardless of the window
+   actually being narrow. Since .terminal-tabs/.terminal-actions here
+   were then reset back to their own fixed/left-aligned sizing to fit that
+   column, the net effect at a normal (non-narrow) window size was a
+   single overlong flex row that looked like it "wrapped" into two lines
+   with a huge blank gap in between -- not a clean stacked layout. The
+   shared desktop rule (styles/layout/terminal.css: .terminal-tabs grows
+   and centers itself with its own overflow-x:auto scroll for when there
+   are more tabs than fit, .terminal-actions stays a fixed cluster pinned
+   to the right) is already safe at any width, narrow included, so Large
+   profile now just reuses it instead of carrying its own now-redundant
+   column layout. */
 
 .explorer.ui-layout-mobile .split-workspace { gap: var(--space-2); overflow: auto; }
 /* max-width: 100% overrides the desktop-only T-209 safety-net ceiling

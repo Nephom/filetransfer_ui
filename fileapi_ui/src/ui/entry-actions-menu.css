@@ -1,14 +1,28 @@
-/* T-219: shared Edit/Remove floating menu for the REST API and Proxmox
-   VNC entry sidebars (see ui/EntryActionsMenu.tsx). Replaces what used to
-   be two always-visible text buttons per row -- those didn't fit next to
-   the entry name in a narrow pane (or the Large profile), which is why
-   the whole per-entry row list used to be hidden there entirely (issue
-   #219). A single compact kebab trigger + small popup fits at any pane
-   width, so the row list no longer needs to hide. */
+/* T-219 follow-up: shared Edit/Remove floating menu for the REST API and
+   Proxmox VNC entry sidebars (see ui/EntryActionsMenu.tsx). Replaces what
+   used to be two always-visible text buttons per row -- those didn't fit
+   next to the entry name in a narrow pane (or the Large profile), which
+   is why the whole per-entry row list used to be hidden there entirely
+   (issue #219). A single compact kebab trigger + small popup fits at any
+   pane width, so the row list no longer needs to hide. */
 .entry-actions-menu-root { position: relative; flex: 0 0 auto; }
 .entry-actions-trigger { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: var(--control-height-mobile); min-width: var(--control-height-mobile); min-height: var(--control-height-mobile) !important; padding: 0 !important; color: var(--color-text-muted); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
 .entry-actions-trigger:hover, .entry-actions-trigger[aria-expanded="true"] { color: var(--color-text); border-color: var(--color-border); background: var(--color-bg-panel); }
-.entry-actions-popover { position: absolute; top: calc(100% + var(--space-1)); right: 0; z-index: 5; min-width: clamp(110px, 12vw, 150px); padding: var(--space-1); border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel-strong); box-shadow: 0 8px 20px rgba(0, 0, 0, .35); }
+/* Portaled to document.body and positioned via inline style computed from
+   the trigger's getBoundingClientRect() (see EntryActionsMenu.tsx) -- this
+   used to be `position: absolute; top: calc(100% + ...); right: 0;
+   z-index: 5` anchored inside the row, which sits inside
+   .rest-entry-list / .vnc-entry-list (`overflow: auto`). That clipped the
+   popover whenever the row was near the bottom of the visible scroll
+   area, instead of it floating on top of everything. `position: fixed` +
+   the shared --z-dropdown layer (same one .dropdown-menu and
+   .mobile-choice-options use) guarantees it always renders above
+   everything, unclipped, regardless of scroll position. */
+.entry-actions-popover { z-index: var(--z-dropdown); overflow: auto; padding: var(--space-1); border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel-strong); box-shadow: 0 8px 20px rgba(0, 0, 0, .35); animation: entry-actions-popover-in .16s ease-out both; }
+@keyframes entry-actions-popover-in {
+  from { opacity: 0; transform: translateY(-4px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
 .entry-actions-popover button { display: block; width: 100%; min-height: var(--control-height-mobile); padding: var(--space-1) var(--space-2); border: 0; border-radius: 4px; background: transparent; text-align: left; font-size: var(--font-size-small); cursor: pointer; }
 .entry-actions-popover .entry-action-edit { color: var(--color-primary); }
 .entry-actions-popover .entry-action-edit:hover { background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel)); }

@@ -27,7 +27,23 @@
  * floating menu instead (shared with rest-api.tsx's RestEntries; see
  * ui/entry-actions-menu.css), so the row always fits regardless of pane
  * width. */
-.vnc-entry-auth { display: grid; gap: var(--space-2); margin-top: 10px; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }.vnc-entry-auth strong { color: var(--color-text); font-size: var(--font-size-small); }.vnc-entry-auth label { display: grid; gap: var(--space-1); color: var(--color-text-muted); font-size: var(--font-size-small); }.vnc-entry-auth input { min-width: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }.vnc-entry-auth button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-3) !important; font-size: var(--font-size-small) !important; }
+/* Issue #219 follow-up: this used to be a fixed `margin-top: 10px`, so the
+ * panel just sat directly under .vnc-entry-list in normal document flow.
+ * Since .vnc-entry-pane always stretches to the full available sidebar
+ * height (see .vnc-entry-pane-shell above) but neither .vnc-entry-list
+ * (flex: 0 1 auto, sized to its own content since the earlier #219 fix)
+ * nor this panel grow to fill it, any leftover height in the column was
+ * left stranded below this panel -- reading as "the credentials panel is
+ * floating above a big blank gap" when there are only one or two
+ * entries. `margin-top: auto` is a standard flexbox trick: it makes this
+ * item's own top margin absorb all of the flex column's positive free
+ * space, pushing the panel down to sit flush against the bottom of
+ * .vnc-entry-pane instead -- so any blank space ends up between the
+ * entry list and this panel, never below it. When there's no free space
+ * left (enough entries that .vnc-entry-list's own overflow:auto scrolling
+ * kicks in), the auto margin resolves to 0 and this panel simply follows
+ * the list like before. */
+.vnc-entry-auth { display: grid; gap: var(--space-2); margin-top: auto; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }.vnc-entry-auth strong { color: var(--color-text); font-size: var(--font-size-small); }.vnc-entry-auth label { display: grid; gap: var(--space-1); color: var(--color-text-muted); font-size: var(--font-size-small); }.vnc-entry-auth input { min-width: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }.vnc-entry-auth button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-3) !important; font-size: var(--font-size-small) !important; }
 .vnc-entry { display: flex; align-items: flex-start; gap: var(--space-2); flex: 1 1 auto; min-width: 0; padding: var(--space-2) var(--space-2) !important; border: 1px solid transparent; border-radius: 5px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
 .vnc-entry:hover { background: var(--color-bg-panel); border-color: var(--color-border); }
 .vnc-entry.active { border-color: var(--color-warning); background: linear-gradient(90deg, color-mix(in srgb, var(--color-warning) 18%, transparent), color-mix(in srgb, var(--color-secondary) 62%, var(--color-bg-panel))); box-shadow: inset 3px 0 var(--color-warning); }
