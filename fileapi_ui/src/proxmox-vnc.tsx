@@ -3,6 +3,7 @@ import "./proxmox-vnc.css";
 import { invoke } from "@tauri-apps/api/core";
 import { PaneResizeHandle } from "./resizable-pane";
 import { MobileChoiceMenu } from "./ui/MobileChoiceMenu";
+import { EntryActionsMenu } from "./ui/EntryActionsMenu";
 import { ChevronLeftIcon, ChevronRightIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
 
@@ -65,10 +66,7 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditE
         <button type="button" className={`vnc-entry${entry.id === activeEntryId ? " active" : ""}`} onClick={() => onSelectEntry(entry.id)}>
           <span className="vnc-entry-dot" /><span className="vnc-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{entry.node || "No node"} / {entry.vmid || "No VMID"}</small></span>
         </button>
-        <div className="vnc-entry-row-actions">
-          <button type="button" className="vnc-entry-action-edit" aria-label={`Edit ${entry.name}`} onClick={() => onEditEntry(entry)}>Edit</button>
-          <button type="button" className="vnc-entry-action-remove" aria-label={`Remove ${entry.name}`} onClick={() => onRemoveEntry(entry)}>Remove</button>
-        </div>
+        <EntryActionsMenu entryName={entry.name} onEdit={() => onEditEntry(entry)} onRemove={() => onRemoveEntry(entry)} />
       </div>)}
     </div>
     <div className="vnc-entry-auth">

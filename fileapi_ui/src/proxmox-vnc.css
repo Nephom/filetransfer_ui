@@ -8,16 +8,25 @@
 .vnc-entry-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 0 var(--space-1) var(--space-3); border-bottom: 1px solid var(--color-border); }
 .vnc-entry-add { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-warning); border-radius: 4px; color: var(--color-warning); background: transparent; font-size: var(--font-size-small); cursor: pointer; }
 .vnc-entry-add:hover { color: var(--color-bg); background: var(--color-warning); }
-.vnc-entry-list { flex: 1 1 auto; min-height: 0; padding-top: 10px; overflow: auto; }
+/* T-219: this used to be `flex: 1 1 auto`, which stretched the list to
+ * fill every bit of the pane's leftover vertical space even when there
+ * were only one or two entries -- on a tall window that shoved the fixed
+ * "Entry credentials" panel far down below a big blank gap (issue #219,
+ * "Login password輸入欄會變超高"). `0 1 auto` sizes the list to its own
+ * content (still shrinking, and still scrollable via overflow:auto, when
+ * there are enough entries to exceed the available height) and leaves any
+ * true leftover space at the bottom of the pane instead. */
+.vnc-entry-list { flex: 0 1 auto; min-height: 0; padding-top: 10px; overflow: auto; }
 .vnc-entry-choice { display: none; }
-.vnc-entry-row { display: flex; align-items: center; gap: var(--space-1); width: 100%; }
+.vnc-entry-row { position: relative; display: flex; align-items: center; gap: var(--space-1); width: 100%; }
 .vnc-entry-row + .vnc-entry-row { margin-top: var(--space-1); }
-.vnc-entry-row-actions { display: flex; flex: 0 0 auto; gap: var(--space-1); }
-.vnc-entry-action-edit, .vnc-entry-action-remove { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 4px; background: transparent; font-size: var(--font-size-small); cursor: pointer; }
-.vnc-entry-action-edit { color: var(--color-primary); }
-.vnc-entry-action-edit:hover { border-color: var(--color-primary); background: var(--color-bg-panel); }
-.vnc-entry-action-remove { color: var(--color-danger); }
-.vnc-entry-action-remove:hover { color: var(--color-bg); background: var(--color-danger); border-color: var(--color-danger); }
+/* T-219: Edit/Remove used to be two always-visible text buttons; in a
+ * narrow sidebar (or the Large profile) they didn't fit next to the
+ * entry name and were the reason the whole row list got hidden there.
+ * ui/EntryActionsMenu.tsx now renders a single compact trigger + small
+ * floating menu instead (shared with rest-api.tsx's RestEntries; see
+ * ui/entry-actions-menu.css), so the row always fits regardless of pane
+ * width. */
 .vnc-entry-auth { display: grid; gap: var(--space-2); margin-top: 10px; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }.vnc-entry-auth strong { color: var(--color-text); font-size: var(--font-size-small); }.vnc-entry-auth label { display: grid; gap: var(--space-1); color: var(--color-text-muted); font-size: var(--font-size-small); }.vnc-entry-auth input { min-width: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }.vnc-entry-auth button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-3) !important; font-size: var(--font-size-small) !important; }
 .vnc-entry { display: flex; align-items: flex-start; gap: var(--space-2); flex: 1 1 auto; min-width: 0; padding: var(--space-2) var(--space-2) !important; border: 1px solid transparent; border-radius: 5px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
 .vnc-entry:hover { background: var(--color-bg-panel); border-color: var(--color-border); }
@@ -62,4 +71,10 @@
 }
 
 .explorer.ui-layout-mobile .vnc-entry-choice { display: inline-flex; width: 100%; margin-top: 10px; }
-.explorer.ui-layout-mobile .vnc-entry-list { display: none; }
+/* T-219: this used to be `display: none`, hiding the whole per-entry row
+ * list (and with it, the only way to reach Edit/Remove) whenever Large
+ * profile/mobile layout was active. Edit/Remove now live behind the
+ * compact EntryActionsMenu kebab (see above) instead of two
+ * always-visible text buttons, so the list fits this narrower pane width
+ * fine and can stay visible -- MobileChoiceMenu (.vnc-entry-choice)
+ * above is left untouched as the existing quick-switch shortcut. */

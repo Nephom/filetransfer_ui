@@ -121,3 +121,17 @@ export function DotIcon({ size = 8, className }: IconProps) {
   );
 }
 
+// T-219: vertical "more actions" kebab, used to collapse the always-visible
+// Edit/Remove text buttons in the REST API / Proxmox VNC entry sidebars
+// into a single compact trigger that opens a small floating menu instead
+// (see rest-api.tsx's RestEntries and proxmox-vnc.tsx's VncEntries).
+export function MoreIcon({ size, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <circle cx="8" cy="3.5" r="1.3" fill="currentColor" />
+      <circle cx="8" cy="8" r="1.3" fill="currentColor" />
+      <circle cx="8" cy="12.5" r="1.3" fill="currentColor" />
+    </svg>
+  );
+}
+

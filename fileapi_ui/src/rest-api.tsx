@@ -6,6 +6,7 @@ import { PaneResizeHandle } from "./resizable-pane";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
 import { MobileChoiceMenu } from "./ui/MobileChoiceMenu";
+import { EntryActionsMenu } from "./ui/EntryActionsMenu";
 import { ImlMonitorController } from "./iml-monitor";
 import { monitorRedfishTask } from "./rest-task";
 import type { ImlMonitorState, JsonValue, NativeApiResponse, RestApiEntry, RestApiSecret, RestAuthMode, RestFailureType, RestMethod, RestSession, RestVendor } from "./rest-contracts";
@@ -301,10 +302,7 @@ function RestEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEdit
           <span className="rest-entry-dot" />
           <span className="rest-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{normalizePath(entry.defaultPath)}</small></span>
         </button>
-        <div className="rest-entry-row-actions">
-          <button type="button" className="rest-entry-action-edit" aria-label={`Edit ${entry.name}`} onClick={() => onEditEntry(entry)}>Edit</button>
-          <button type="button" className="rest-entry-action-remove" aria-label={`Remove ${entry.name}`} onClick={() => onRemoveEntry(entry)}>Remove</button>
-        </div>
+        <EntryActionsMenu entryName={entry.name} onEdit={() => onEditEntry(entry)} onRemove={() => onRemoveEntry(entry)} />
       </div>)}
     </div>
   </aside>;

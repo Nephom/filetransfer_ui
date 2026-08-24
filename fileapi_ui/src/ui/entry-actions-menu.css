@@ -1,0 +1,16 @@
+/* T-219: shared Edit/Remove floating menu for the REST API and Proxmox
+   VNC entry sidebars (see ui/EntryActionsMenu.tsx). Replaces what used to
+   be two always-visible text buttons per row -- those didn't fit next to
+   the entry name in a narrow pane (or the Large profile), which is why
+   the whole per-entry row list used to be hidden there entirely (issue
+   #219). A single compact kebab trigger + small popup fits at any pane
+   width, so the row list no longer needs to hide. */
+.entry-actions-menu-root { position: relative; flex: 0 0 auto; }
+.entry-actions-trigger { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: var(--control-height-mobile); min-width: var(--control-height-mobile); min-height: var(--control-height-mobile) !important; padding: 0 !important; color: var(--color-text-muted); background: transparent; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+.entry-actions-trigger:hover, .entry-actions-trigger[aria-expanded="true"] { color: var(--color-text); border-color: var(--color-border); background: var(--color-bg-panel); }
+.entry-actions-popover { position: absolute; top: calc(100% + var(--space-1)); right: 0; z-index: 5; min-width: clamp(110px, 12vw, 150px); padding: var(--space-1); border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel-strong); box-shadow: 0 8px 20px rgba(0, 0, 0, .35); }
+.entry-actions-popover button { display: block; width: 100%; min-height: var(--control-height-mobile); padding: var(--space-1) var(--space-2); border: 0; border-radius: 4px; background: transparent; text-align: left; font-size: var(--font-size-small); cursor: pointer; }
+.entry-actions-popover .entry-action-edit { color: var(--color-primary); }
+.entry-actions-popover .entry-action-edit:hover { background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel)); }
+.entry-actions-popover .entry-action-remove { color: var(--color-danger); }
+.entry-actions-popover .entry-action-remove:hover { color: var(--color-bg); background: var(--color-danger); }
