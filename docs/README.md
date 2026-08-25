@@ -39,6 +39,9 @@ The complete API documentation is available in the `api/` directory:
 - **[nFterm Desktop Architecture](./desktop.md)** - Supported desktop runtime
   boundaries, secrets, local filesystem protection, queue, SSH/SFTP, and
   Proxmox VNC behavior.
+- **[Frontend Architecture](./frontend-architecture.md)** - Desktop UI tech
+  stack, CSS design token reference, and the Proxmox VNC workspace's
+  component/state/function breakdown.
 - **[Transfer Queue](./queue.md)** - Queue lifecycle, progress, retry, cleanup,
   persistence, and failure decisions.
 

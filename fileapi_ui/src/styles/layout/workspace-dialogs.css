@@ -92,6 +92,19 @@
 .vnc-entry-modal .vnc-realm-options label { display: flex; grid-template-columns: none; align-items: center; gap: var(--space-1); white-space: nowrap; }
 .vnc-entry-modal .vnc-realm-options input { min-width: auto; }
 @media (max-width: 720px) { .vnc-entry-modal .vnc-form-grid { grid-template-columns: 1fr; } }
+/* T-221: the Add/Edit Proxmox VNC Entry modal used to show every field --
+ * the Proxmox connection identity, the VM SSH credentials, and the Host
+ * SSH (jump) credentials -- in one long always-visible column, which made
+ * the dialog grow very tall. These three pill buttons (sitting directly
+ * under the modal's <h2> title, matching the pattern .vnc-view-tab used
+ * elsewhere used to establish) now page between those three sections
+ * instead; only one section's fields render at a time (see main.tsx's
+ * vncEntryModalTab state). */
+.vnc-entry-modal-tabs { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.vnc-entry-modal-tab { flex: 1 1 auto; min-height: var(--control-height-mobile); padding: var(--space-1) var(--space-3); border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-text-muted); background: transparent; font-size: var(--font-size-small); text-align: center; cursor: pointer; }
+.vnc-entry-modal-tab.active { color: var(--color-bg); background: var(--color-warning); border-color: var(--color-warning); }
+.vnc-entry-modal-tab:hover:not(.active) { color: var(--color-text); border-color: var(--color-primary); }
+
 .session-entry small { overflow: hidden; color: var(--color-text-muted); text-overflow: ellipsis; white-space: nowrap; }
 .field-help { display: block; margin-top: var(--space-1); color: var(--color-text-muted); font-size: var(--font-size-small); font-weight: 400; }
 .link-button { padding: 0; border: 0; background: transparent; color: var(--color-primary); font-size: var(--font-size-small); text-decoration: underline; cursor: pointer; }

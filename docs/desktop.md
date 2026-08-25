@@ -99,6 +99,45 @@ credentials. Switching entries, disconnecting, or unmounting the workspace
 cancels a pending relay. There is no fixed idle timeout while the user remains
 on the same entry.
 
+### VNC file transfer
+
+Once a VNC session connects, the client probes for a route to move files
+into/out of the guest, in this priority order:
+
+1. **direct-sftp** -- the VM's own IP (from the QEMU Guest Agent's network
+   interfaces, or the entry's manual `fileTransferIpOverride` fallback for
+   LXC/agent-less guests) is directly reachable on its SSH port from this
+   desktop client. Full SFTP via the same pure-Rust `russh`/`russh-sftp`
+   stack LOCATION mode's SSH Remote uses.
+2. **jump-sftp** -- the VM isn't directly reachable, but the Proxmox host is;
+   SFTP is tunneled through the host via an SSH `direct-tcpip` channel
+   (`src-tauri/src/ssh/mod.rs::connect_transport`). Still full SFTP.
+3. **guest-agent** -- neither is reachable (or no SSH credentials are
+   configured); falls back to the Proxmox QEMU Guest Agent REST API
+   (qemu-only, Linux/Unix guest commands only, size-limited uploads,
+   no directory download).
+
+Reachability probes are pure-Rust `tokio::net` TCP checks (`tcp_check_reachable`),
+never a system `ssh`/`ping`/`telnet` binary, so behavior is identical across
+Windows, macOS, and Linux clients. VM SSH and Host SSH (jump) credentials are
+identity fields on the `ProxmoxVncEntry` (see the "VM SSH" / "Host SSH (jump)"
+pages of the Add/Edit Proxmox VNC Entry dialog); their passwords are never
+stored in Session data -- they live in the OS keyring under the synthetic
+profile ids `vncvm:<entryId>` / `vncjump:<entryId>` (`vmSshProfileId` /
+`hostSshProfileId` in `proxmox-vnc.tsx`), reusing the exact same
+`ssh_save_password`/`ssh_forget_password`/`ssh_has_password` commands a
+regular Terminal SSH entry uses.
+
+Once a route is found, the VNC workspace's left sidebar swaps its Proxmox
+entries list for a multi-select remote file browser (Upload / Download /
+Refresh toolbar, breadcrumb, and a file table identical to LOCATION mode's
+own) so files can be browsed and transferred without ever unmounting the
+Connection Controls + VNC screen on the right -- disconnecting, or clicking
+"&larr; Entries" in the sidebar, returns to the entries list without logging
+out of the Proxmox web session. See
+[`docs/frontend-architecture.md`](./frontend-architecture.md) for the
+component/state breakdown of this screen.
+
 ## HPE IML Monitor
 
 REST API mode includes an HPE IML Monitor for Redfish polling. The monitor

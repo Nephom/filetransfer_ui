@@ -57,7 +57,6 @@ type Connection = { id: string; websocketUrl: string; password: string };
 //      (qemu-only, Linux/Unix guest commands only, chunked so large
 //      uploads are rejected up front -- see src-tauri/src/proxmox.rs).
 export type VmFileEntry = { name: string; path: string; isDirectory: boolean; size: number; modified: number };
-type VncFolderNode = { path: string; name: string; expanded: boolean; loaded: boolean; children: VncFolderNode[] };
 export type VncTransferMode = "unknown" | "detecting" | "direct-sftp" | "jump-sftp" | "guest-agent" | "unavailable";
 type VncQueueStatus = "queued" | "running" | "retrying" | "completed" | "failed";
 type VncQueueItem = {
@@ -132,29 +131,6 @@ const formatQueueDetailProgress = (progress: QueueProgress | undefined) => {
   return `${percentage}${rate}${eta}`;
 };
 
-const emptyRemoteTree = (): VncFolderNode => ({ path: "/", name: "/", expanded: true, loaded: false, children: [] });
-
-const updateTreeNode = (node: VncFolderNode, targetPath: string, updater: (node: VncFolderNode) => VncFolderNode): VncFolderNode =>
-  node.path === targetPath ? updater(node) : { ...node, children: node.children.map((child) => updateTreeNode(child, targetPath, updater)) };
-
-function VncTreeNode({ node, activePath, onToggle, onSelect }: { node: VncFolderNode; activePath: string; onToggle: (node: VncFolderNode) => void; onSelect: (path: string) => void }) {
-  return (
-    <div className="folder-tree">
-      <div className={`tree-node${node.path === activePath ? " active" : ""}`}>
-        <button type="button" className="tree-toggle" aria-label={`${node.expanded ? "Collapse" : "Expand"} ${node.name}`} onClick={() => onToggle(node)}>{node.expanded ? "\u2212" : "+"}</button>
-        <button type="button" className="tree-folder" onClick={() => onSelect(node.path)}><span className="folder-mini" />{node.name}</button>
-      </div>
-      {node.expanded && (
-        <div className="tree-children">
-          {node.loaded
-            ? node.children.map((child) => <VncTreeNode key={child.path} node={child} activePath={activePath} onToggle={onToggle} onSelect={onSelect} />)
-            : <span className="tree-loading">Loading folders...</span>}
-        </div>
-      )}
-    </div>
-  );
-}
-
 type Props = {
   workspaceName: string;
   entries: ProxmoxVncEntry[];
@@ -181,14 +157,24 @@ type EntryAuthProps = {
 type FileBrowserProps = {
   visible: boolean;
   loading: boolean;
-  error: string;
   modeLabel: string;
   mode: VncTransferMode;
-  root: VncFolderNode;
-  activePath: string;
-  onToggle: (node: VncFolderNode) => void;
-  onSelect: (path: string) => void;
+  guestIp: string;
+  filesReady: boolean;
+  path: string;
+  files: VmFileEntry[];
+  filesLoading: boolean;
+  filesError: string;
+  transferError: string;
+  selectedPaths: Set<string>;
+  queue: VncQueueItem[];
   onBack: () => void;
+  onNavigate: (path: string) => void;
+  onToggleSelect: (path: string) => void;
+  onUpload: () => void;
+  onDownload: () => void;
+  onRefresh: () => void;
+  onRemoveQueueItem: (id: string) => void;
 };
 
 // Entry management: adding a Workspace and its first entry, or bulk edits
@@ -198,22 +184,67 @@ type FileBrowserProps = {
 // reach the Workspace Manager. The currently-selected entry's Proxmox
 // login/logout stays here too (an operational session action, not entry
 // identity data). Once a file-transfer route to the connected VM is found,
-// this same pane switches from the entries list to a lazily-loaded remote
-// directory tree (fileBrowser.visible) so the user can browse the VM's
-// filesystem to pick an upload/download target, exactly like LOCATION
-// mode's folder tree -- with a "Entries" back button to return.
+// this same pane switches from the entries list to the VM's remote file
+// browser (fileBrowser.visible) -- the same multi-select file table used
+// by LOCATION mode's own file browser (see styles/layout/file-table.css)
+// with an inline Upload/Download/Refresh toolbar so uploads/downloads can
+// be driven from this sidebar while Connection Controls and the VNC
+// screen stay mounted (and connected) on the right the whole time -- with
+// a "Entries" back button to return to the entries list.
 function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditEntry, onRemoveEntry, password, authenticated, loading, onPasswordChange, onLogin, onLogout, fileBrowser }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry" | "onAddEntry" | "onEditEntry" | "onRemoveEntry"> & EntryAuthProps & { fileBrowser: FileBrowserProps }) {
   if (fileBrowser.visible) {
     return <aside className="vnc-entry-pane vnc-entry-pane-files">
       <div className="vnc-entry-heading">
         <button type="button" className="vnc-entry-back" onClick={fileBrowser.onBack}>&larr; Entries</button>
-        <span className="vnc-reachability-status" data-mode={fileBrowser.mode}>{fileBrowser.modeLabel}</span>
+        <span className="vnc-reachability-status" data-mode={fileBrowser.mode}>{fileBrowser.modeLabel}{fileBrowser.guestIp ? ` · ${fileBrowser.guestIp}` : ""}</span>
       </div>
-      <div className="vnc-tree-scroll">
-        {fileBrowser.loading && <div className="vnc-empty">Detecting how to reach this VM for file transfer...</div>}
-        {!fileBrowser.loading && fileBrowser.error && <div className="notice rest-error">{fileBrowser.error}</div>}
-        {!fileBrowser.loading && !fileBrowser.error && <VncTreeNode node={fileBrowser.root} activePath={fileBrowser.activePath} onToggle={fileBrowser.onToggle} onSelect={fileBrowser.onSelect} />}
+      <div className="vnc-files-toolbar">
+        <button type="button" className="confirm" onClick={fileBrowser.onUpload} disabled={!fileBrowser.filesReady}>Upload</button>
+        <button type="button" onClick={fileBrowser.onDownload} disabled={!fileBrowser.filesReady || !fileBrowser.selectedPaths.size}>Download{fileBrowser.selectedPaths.size ? ` (${fileBrowser.selectedPaths.size})` : ""}</button>
+        <button type="button" onClick={fileBrowser.onRefresh} disabled={!fileBrowser.filesReady || fileBrowser.filesLoading}>Refresh</button>
+        <span className="vnc-files-breadcrumb" title={fileBrowser.path}>{fileBrowser.path}</span>
       </div>
+      {fileBrowser.loading && <div className="vnc-empty">Detecting how to reach this VM for file transfer...</div>}
+      {!fileBrowser.loading && fileBrowser.transferError && <div className="notice rest-error">{fileBrowser.transferError}</div>}
+      {fileBrowser.filesError && <div className="notice rest-error">{fileBrowser.filesError}</div>}
+      {fileBrowser.filesReady && <div className="vnc-files-table-wrap">
+        <table className="file-table">
+          <thead>
+            <tr>
+              <th className="selection-column" aria-label="Select" />
+              <th>Name</th>
+              <th>Size</th>
+              <th>Modified</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fileBrowser.path !== "/" && <tr className="file-row">
+              <td className="selection-column" />
+              <td><button type="button" className="tree-folder" onClick={() => fileBrowser.onNavigate(fileBrowser.path.split("/").slice(0, -1).join("/") || "/")}>.. (up)</button></td>
+              <td />
+              <td />
+            </tr>}
+            {!fileBrowser.filesLoading && !fileBrowser.files.length && <tr className="file-row"><td colSpan={4} className="vnc-files-empty">This folder is empty.</td></tr>}
+            {fileBrowser.files.map((file) => <tr className="file-row" key={file.path}>
+              <td className="selection-column">
+                {(!file.isDirectory || fileBrowser.mode !== "guest-agent") && <input type="checkbox" checked={fileBrowser.selectedPaths.has(file.path)} onChange={() => fileBrowser.onToggleSelect(file.path)} aria-label={`Select ${file.name}`} />}
+              </td>
+              <td>{file.isDirectory
+                ? <button type="button" className="tree-folder" onClick={() => fileBrowser.onNavigate(file.path)}><span className="folder-mini" />{file.name}</button>
+                : <span className="vnc-file-name-cell">{file.name}</span>}</td>
+              <td>{file.isDirectory ? "--" : formatFileSize(file.size)}</td>
+              <td>{formatModifiedDate(file.modified)}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </div>}
+      {fileBrowser.queue.length > 0 && <div className="vnc-transfer-queue">
+        {fileBrowser.queue.map((item) => <div className="queue-item" key={item.id}>
+          <div className="queue-item-header"><span className="queue-item-label">{item.kind === "upload" ? "Upload" : "Download"}: {item.label}</span><span className={`queue-status ${item.status}`}>{item.status}</span></div>
+          <div className="queue-item-detail">{item.detail}</div>
+          {(item.status === "completed" || item.status === "failed") && <div className="queue-item-actions"><button type="button" onClick={() => fileBrowser.onRemoveQueueItem(item.id)}>Remove</button></div>}
+        </div>)}
+      </div>}
     </aside>;
   }
   return <aside className="vnc-entry-pane">
@@ -253,7 +284,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [loading, setLoading] = useState(false);
   const [vms, setVms] = useState<VmSummary[]>([]);
   const [controlsOpen, setControlsOpen] = useState(true);
-  const [controlsRatio, setControlsRatio] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewOnly, setViewOnly] = useState(false);
   const screenShellRef = useRef<HTMLDivElement>(null);
@@ -264,7 +294,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const entryPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   // --- File transfer state --------------------------------------------
-  const [activeView, setActiveView] = useState<"screen" | "files">("screen");
   const [transferMode, setTransferMode] = useState<VncTransferMode>("unknown");
   const [transferError, setTransferError] = useState("");
   const [guestIp, setGuestIp] = useState("");
@@ -273,7 +302,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [remoteFilesLoading, setRemoteFilesLoading] = useState(false);
   const [remoteFilesError, setRemoteFilesError] = useState("");
   const [selectedRemotePaths, setSelectedRemotePaths] = useState<Set<string>>(new Set());
-  const [remoteTree, setRemoteTree] = useState<VncFolderNode>(emptyRemoteTree());
   const [vncQueue, setVncQueue] = useState<VncQueueItem[]>([]);
   const progressSamplesRef = useRef<Record<string, { bytes: number; at: number }[]>>({});
 
@@ -300,7 +328,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   useEffect(() => () => stopEntryPaneResize(), []);
 
   const resetTransferState = () => {
-    setActiveView("screen");
     setTransferMode("unknown");
     setTransferError("");
     setGuestIp("");
@@ -308,7 +335,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     setRemoteFiles([]);
     setRemoteFilesError("");
     setSelectedRemotePaths(new Set());
-    setRemoteTree(emptyRemoteTree());
     setVncQueue([]);
     progressSamplesRef.current = {};
   };
@@ -350,25 +376,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     document.addEventListener("fullscreenchange", updateFullscreen);
     return () => document.removeEventListener("fullscreenchange", updateFullscreen);
   }, []);
-
-  const resizeControls = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const startY = event.clientY;
-    const reader = vncReaderRef.current;
-    if (!reader) return;
-    const startRatio = controlsRatio ?? 0.25;
-    const availableHeight = Math.max(1, reader.clientHeight - 12);
-    const move = (moveEvent: PointerEvent) => {
-      const deltaRatio = (moveEvent.clientY - startY) / availableHeight;
-      setControlsRatio(Math.max(0.2, Math.min(0.8, startRatio + deltaRatio)));
-    };
-    const stop = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
-  };
 
   const toggleFullscreen = async () => {
     if (!screenShellRef.current) return;
@@ -470,18 +477,16 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     );
   };
 
-  // Once a transfer route is found, load the root of the remote directory
-  // tree and the file list for "/" -- this is what makes the sidebar
-  // automatically switch to the VM's filesystem once VNC connects. Depends
-  // on transferMode/guestIp directly (not called inline from
-  // detectTransferMode) so it always sees the just-committed state instead
-  // of a stale closure captured before those setters ran.
+  // Once a transfer route is found, load the file list for "/" -- this is
+  // what makes the sidebar automatically switch to the VM's filesystem
+  // once VNC connects. Depends on transferMode/guestIp directly (not
+  // called inline from detectTransferMode) so it always sees the
+  // just-committed state instead of a stale closure captured before those
+  // setters ran.
   useEffect(() => {
     if (transferMode === "direct-sftp" || transferMode === "jump-sftp" || transferMode === "guest-agent") {
       setRemotePath("/");
-      setRemoteTree(emptyRemoteTree());
       void loadRemoteFiles("/");
-      void loadTreeChildren("/");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transferMode, guestIp]);
@@ -524,28 +529,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     } finally {
       setRemoteFilesLoading(false);
     }
-  };
-
-  const loadTreeChildren = async (path: string) => {
-    if (!nativeEntry) return;
-    try {
-      const result = transferMode === "guest-agent"
-        ? await invoke<{ path: string; files: VmFileEntry[] }>("proxmox_agent_list_directory", { entry: nativeEntry, sessionId: authSessions[nativeEntry.id], path })
-        : await invoke<{ path: string; files: VmFileEntry[] }>("ssh_list_directory", { profile: buildSshProfile(), path });
-      const children: VncFolderNode[] = result.files
-        .filter((file) => file.isDirectory)
-        .map((file) => ({ path: file.path, name: file.name, expanded: false, loaded: false, children: [] }))
-        .sort((left, right) => left.name.localeCompare(right.name));
-      setRemoteTree((current) => updateTreeNode(current, path, (node) => ({ ...node, loaded: true, children })));
-    } catch {
-      setRemoteTree((current) => updateTreeNode(current, path, (node) => ({ ...node, loaded: true, children: [] })));
-    }
-  };
-
-  const toggleTreeNode = (node: VncFolderNode) => {
-    const willExpand = !node.expanded;
-    setRemoteTree((current) => updateTreeNode(current, node.path, (item) => ({ ...item, expanded: willExpand })));
-    if (willExpand && !node.loaded) void loadTreeChildren(node.path);
   };
 
   const selectRemotePath = (path: string) => {
@@ -746,64 +729,80 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const fileBrowserVisible = transferMode !== "unknown";
   const filesReady = transferMode === "direct-sftp" || transferMode === "jump-sftp" || transferMode === "guest-agent";
 
-  return <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}`}><div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}><VncEntries entries={entries} activeEntryId={activeEntryId} onSelectEntry={selectEntry} onAddEntry={onAddEntry} onEditEntry={onEditEntry} onRemoveEntry={onRemoveEntry} password={password} authenticated={authenticated} loading={loading} onPasswordChange={updatePassword} onLogin={() => void loginEntry()} onLogout={() => void logoutEntry()} fileBrowser={{ visible: fileBrowserVisible, loading: transferMode === "detecting", error: transferMode === "unavailable" ? transferError : "", modeLabel: transferModeLabel(transferMode), mode: transferMode, root: remoteTree, activePath: remotePath, onToggle: toggleTreeNode, onSelect: selectRemotePath, onBack: () => setTransferMode("unknown") }} /></div>{collapseMainPaneEnabled ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane"><ChevronRightIcon /></button></div> : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
+  return <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}`}>
+    <div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}>
+      <VncEntries
+        entries={entries}
+        activeEntryId={activeEntryId}
+        onSelectEntry={selectEntry}
+        onAddEntry={onAddEntry}
+        onEditEntry={onEditEntry}
+        onRemoveEntry={onRemoveEntry}
+        password={password}
+        authenticated={authenticated}
+        loading={loading}
+        onPasswordChange={updatePassword}
+        onLogin={() => void loginEntry()}
+        onLogout={() => void logoutEntry()}
+        fileBrowser={{
+          visible: fileBrowserVisible,
+          loading: transferMode === "detecting",
+          modeLabel: transferModeLabel(transferMode),
+          mode: transferMode,
+          guestIp,
+          filesReady,
+          path: remotePath,
+          files: remoteFiles,
+          filesLoading: remoteFilesLoading,
+          filesError: remoteFilesError,
+          transferError,
+          selectedPaths: selectedRemotePaths,
+          queue: vncQueue,
+          onBack: () => setTransferMode("unknown"),
+          onNavigate: selectRemotePath,
+          onToggleSelect: toggleRemoteSelection,
+          onUpload: () => void pickAndUpload(),
+          onDownload: () => void pickAndDownload(),
+          onRefresh: () => void loadRemoteFiles(remotePath),
+          onRemoveQueueItem: removeQueueItem,
+        }}
+      />
+    </div>
+    {collapseMainPaneEnabled
+      ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane"><ChevronRightIcon /></button></div>
+      : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
     <section ref={vncReaderRef} className="vnc-reader" aria-label="Proxmox VNC workspace">
       <div className="vnc-reader-heading"><div><span className="eyebrow">VNC mode · {workspaceName}</span><h1>{entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
-      <div className="vnc-view-tabs" role="tablist" aria-label="VNC view">
-        <button type="button" role="tab" aria-selected={activeView === "screen"} className={`vnc-view-tab${activeView === "screen" ? " active" : ""}`} onClick={() => setActiveView("screen")}>Screen</button>
-        <button type="button" role="tab" aria-selected={activeView === "files"} className={`vnc-view-tab${activeView === "files" ? " active" : ""}`} onClick={() => setActiveView("files")} disabled={!filesReady}>Files</button>
+      <div className={`vnc-display-split${controlsOpen ? "" : " controls-collapsed"}`}>
+        <div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}>
+          <div className="vnc-auth-heading">
+            <strong>Connection controls</strong>
+            <button type="button" onClick={() => setControlsOpen((value) => !value)}>{controlsOpen ? "Collapse" : "Expand"}</button>
+          </div>
+          {controlsOpen && <>
+            <div className="vnc-auth-grid">
+              <label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label>
+              <label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label>
+            </div>
+            <div className="vnc-actions">
+              <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button>
+              <button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button>
+              <button type="button" onClick={() => void logoutEntry()} disabled={!authenticated}>Logout</button>
+            </div>
+            {entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}
+            {error && <div className="notice rest-error">{error}</div>}
+          </>}
+        </div>
+        <div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`}>
+          <div className="vnc-display-toolbar">
+            <button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button>
+            <button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button>
+            <button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button>
+            <button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
+          </div>
+          <div ref={screenRef} className="vnc-screen" />
+        </div>
       </div>
-      {activeView === "screen" && <div className="vnc-display-split" style={{ "--controls-row": controlsRatio === null ? "auto" : `${controlsRatio}fr`, "--screen-row": controlsRatio === null ? "1fr" : `${1 - controlsRatio}fr` } as React.CSSProperties}><div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}><div className="vnc-auth-heading"><strong>Connection controls</strong><button type="button" onClick={() => { setControlsOpen((value) => !value); setControlsRatio(null); }}>{controlsOpen ? "Collapse" : "Expand"}</button></div>{controlsOpen && <><div className="vnc-auth-grid"><label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label><label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label></div><div className="vnc-actions"><button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button><button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button><button type="button" onClick={() => void logoutEntry()} disabled={!authenticated}>Logout</button></div>{entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}{error && <div className="notice rest-error">{error}</div>}</>}</div><div className="vnc-screen-resize" role="separator" aria-label="Resize Connection controls" title="Drag downward to enlarge Connection controls" onPointerDown={resizeControls} /><div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`}><div className="vnc-display-toolbar"><button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button><button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button><button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button><button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button></div><div ref={screenRef} className="vnc-screen" /></div></div>}
-      {activeView === "files" && <div className="vnc-files-pane">
-        <div className="vnc-files-toolbar">
-          <button type="button" className="confirm" onClick={() => void pickAndUpload()} disabled={!filesReady}>Upload</button>
-          <button type="button" onClick={() => void pickAndDownload()} disabled={!filesReady || !selectedRemotePaths.size}>Download{selectedRemotePaths.size ? ` (${selectedRemotePaths.size})` : ""}</button>
-          <button type="button" onClick={() => void loadRemoteFiles(remotePath)} disabled={!filesReady || remoteFilesLoading}>Refresh</button>
-          <span className="vnc-files-breadcrumb" title={remotePath}>{remotePath}</span>
-          <span className="vnc-reachability-status" data-mode={transferMode}>{transferModeLabel(transferMode)}{guestIp ? ` · ${guestIp}` : ""}</span>
-        </div>
-        {transferError && <div className="notice rest-error">{transferError}</div>}
-        {remoteFilesError && <div className="notice rest-error">{remoteFilesError}</div>}
-        <div className="vnc-files-table-wrap">
-          <table className="file-table">
-            <thead>
-              <tr>
-                <th className="selection-column" aria-label="Select" />
-                <th>Name</th>
-                <th>Size</th>
-                <th>Modified</th>
-              </tr>
-            </thead>
-            <tbody>
-              {remotePath !== "/" && <tr className="file-row">
-                <td className="selection-column" />
-                <td><button type="button" className="tree-folder" onClick={() => selectRemotePath(remotePath.split("/").slice(0, -1).join("/") || "/")}>.. (up)</button></td>
-                <td />
-                <td />
-              </tr>}
-              {!remoteFilesLoading && !remoteFiles.length && <tr className="file-row"><td colSpan={4} className="vnc-files-empty">This folder is empty.</td></tr>}
-              {remoteFiles.map((file) => <tr className="file-row" key={file.path}>
-                <td className="selection-column">
-                  {!file.isDirectory && <input type="checkbox" checked={selectedRemotePaths.has(file.path)} onChange={() => toggleRemoteSelection(file.path)} aria-label={`Select ${file.name}`} />}
-                  {file.isDirectory && transferMode !== "guest-agent" && <input type="checkbox" checked={selectedRemotePaths.has(file.path)} onChange={() => toggleRemoteSelection(file.path)} aria-label={`Select ${file.name}`} />}
-                </td>
-                <td>{file.isDirectory
-                  ? <button type="button" className="tree-folder" onClick={() => selectRemotePath(file.path)}><span className="folder-mini" />{file.name}</button>
-                  : <span className="vnc-file-name-cell">{file.name}</span>}</td>
-                <td>{file.isDirectory ? "--" : formatFileSize(file.size)}</td>
-                <td>{formatModifiedDate(file.modified)}</td>
-              </tr>)}
-            </tbody>
-          </table>
-        </div>
-        {vncQueue.length > 0 && <div className="vnc-transfer-queue">
-          {vncQueue.map((item) => <div className="queue-item" key={item.id}>
-            <div className="queue-item-header"><span className="queue-item-label">{item.kind === "upload" ? "Upload" : "Download"}: {item.label}</span><span className={`queue-status ${item.status}`}>{item.status}</span></div>
-            <div className="queue-item-detail">{item.detail}</div>
-            {(item.status === "completed" || item.status === "failed") && <div className="queue-item-actions"><button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button></div>}
-          </div>)}
-        </div>}
-      </div>}
     </section>
   </div>;
 }
