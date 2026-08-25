@@ -85,7 +85,15 @@
 .vnc-auth-panel { flex: 0 1 auto; min-height: 0; max-height: min(56vh, 640px); overflow-y: auto; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 6px; background: rgba(7, 25, 42, .58); }
 .vnc-auth-panel.collapsed { flex: 0 0 auto; max-height: none; padding-block: 6px; overflow: visible; }
 .vnc-screen-shell { position: relative; flex: 1 1 auto; min-height: clamp(220px, 30vh, 280px); overflow: hidden; border: 1px solid var(--color-border); border-radius: 6px; background: #02060c; }
-.vnc-display-split.controls-collapsed .vnc-screen-shell { flex: 0 0 80%; }
+/* T-222: this used to be `flex: 0 0 80%` (grow: 0) -- an exact, non-growing
+ * 80% share that left whatever the collapsed .vnc-auth-panel didn't use of
+ * the remaining 20% as genuinely dead space (flex column layout with the
+ * default `justify-content: flex-start` pools unclaimed free space after
+ * the last item, i.e. below the VNC screen), so the screen could never
+ * reach the pane's true bottom edge. `flex: 1 1 80%` keeps 80% as the
+ * starting basis but also grows (grow: 1) to absorb that leftover space,
+ * since the collapsed auth panel has grow: 0 and won't compete for it. */
+.vnc-display-split.controls-collapsed .vnc-screen-shell { flex: 1 1 80%; }
 .vnc-screen-shell.fullscreen { width: 100vw; height: 100vh; min-height: 0; margin: 0; border: 0; border-radius: 0; }
 .vnc-screen { width: 100%; height: 100%; min-height: 0; }
 .vnc-auth-grid input { min-width: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }

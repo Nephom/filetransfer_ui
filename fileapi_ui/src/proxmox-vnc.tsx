@@ -156,6 +156,7 @@ type EntryAuthProps = {
 
 type FileBrowserProps = {
   visible: boolean;
+  hasRoute: boolean;
   loading: boolean;
   modeLabel: string;
   mode: VncTransferMode;
@@ -169,6 +170,7 @@ type FileBrowserProps = {
   selectedPaths: Set<string>;
   queue: VncQueueItem[];
   onBack: () => void;
+  onReturn: () => void;
   onNavigate: (path: string) => void;
   onToggleSelect: (path: string) => void;
   onUpload: () => void;
@@ -249,7 +251,9 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditE
   }
   return <aside className="vnc-entry-pane">
     <div className="vnc-entry-heading">
-      <span className="sidebar-label">PROXMOX VNC ENTRIES</span>
+      {fileBrowser.hasRoute
+        ? <button type="button" className="vnc-entry-back" onClick={fileBrowser.onReturn}>Files &rarr;</button>
+        : <span className="sidebar-label">PROXMOX VNC ENTRIES</span>}
       <button type="button" className="vnc-entry-add" onClick={onAddEntry}>+ Add</button>
     </div>
     <MobileChoiceMenu className="vnc-entry-choice" label="VNC entry" currentId={activeEntryId} options={entries.map((entry) => ({ id: entry.id, label: entry.name }))} onSelect={onSelectEntry} />
@@ -304,6 +308,14 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [selectedRemotePaths, setSelectedRemotePaths] = useState<Set<string>>(new Set());
   const [vncQueue, setVncQueue] = useState<VncQueueItem[]>([]);
   const progressSamplesRef = useRef<Record<string, { bytes: number; at: number }[]>>({});
+  // T-222: whether the user has manually navigated the sidebar back to the
+  // Entries list (via "<- Entries") while a file-transfer route is still
+  // known/detected. Deliberately kept separate from `transferMode` (the
+  // detection result itself) so going back to the entries list doesn't
+  // throw away guestIp/remoteFiles/the queue -- a "Files ->" button in the
+  // entries list can flip this back to false to return to file browsing
+  // without redetecting or touching the still-live VNC session.
+  const [preferEntriesList, setPreferEntriesList] = useState(false);
 
   const stopEntryPaneResize = () => {
     entryPaneResizeRef.current = null;
@@ -337,6 +349,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     setSelectedRemotePaths(new Set());
     setVncQueue([]);
     progressSamplesRef.current = {};
+    setPreferEntriesList(false);
   };
 
   const stopConnection = (updateStatus = true) => {
@@ -427,6 +440,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     setTransferMode("detecting");
     setTransferError("");
     setGuestIp("");
+    setPreferEntriesList(false);
     const sessionId = authSessions[entry.id];
     const vmSshPort = entry.vmSshPort || 22;
     const hostSshPort = entry.hostSshPort || 22;
@@ -726,7 +740,8 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     if (rfbRef.current) rfbRef.current.viewOnly = next;
   };
 
-  const fileBrowserVisible = transferMode !== "unknown";
+  const hasFileRoute = transferMode !== "unknown";
+  const fileBrowserVisible = hasFileRoute && !preferEntriesList;
   const filesReady = transferMode === "direct-sftp" || transferMode === "jump-sftp" || transferMode === "guest-agent";
 
   return <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}`}>
@@ -746,6 +761,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         onLogout={() => void logoutEntry()}
         fileBrowser={{
           visible: fileBrowserVisible,
+          hasRoute: hasFileRoute,
           loading: transferMode === "detecting",
           modeLabel: transferModeLabel(transferMode),
           mode: transferMode,
@@ -758,7 +774,8 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
           transferError,
           selectedPaths: selectedRemotePaths,
           queue: vncQueue,
-          onBack: () => setTransferMode("unknown"),
+          onBack: () => setPreferEntriesList(true),
+          onReturn: () => setPreferEntriesList(false),
           onNavigate: selectRemotePath,
           onToggleSelect: toggleRemoteSelection,
           onUpload: () => void pickAndUpload(),
