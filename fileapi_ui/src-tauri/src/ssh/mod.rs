@@ -34,6 +34,28 @@ pub struct SshProfile {
     pub port: u16,
     pub username: String,
     pub private_key_path: Option<String>,
+    /// Jump host (SSH `ProxyJump`-equivalent). When set, `connect_transport`
+    /// first opens and authenticates its own SSH session to
+    /// `jump_host:jump_port`, then asks it for a `direct-tcpip` forwarding
+    /// channel to this profile's `host:port` and layers a second SSH
+    /// session on top of that tunneled channel -- entirely through
+    /// `russh`'s own SSH-protocol-level channel API, never by shelling out
+    /// to a system `ssh -J`/`plink -J`.
+    #[serde(default)]
+    pub jump_host: Option<String>,
+    #[serde(default)]
+    pub jump_port: Option<u16>,
+    #[serde(default)]
+    pub jump_username: Option<String>,
+    #[serde(default)]
+    pub jump_private_key_path: Option<String>,
+    /// Profile id used to look up (and, from "Install SSH key", write) the
+    /// jump host's own stored password/identity in the OS keyring, kept
+    /// separate from this profile's own `id` so the jump host and the
+    /// target it tunnels to can each have an independently stored password
+    /// without colliding. Falls back to `"{id}::jump"` when not given.
+    #[serde(default)]
+    pub jump_profile_id: Option<String>,
 }
 
 /// Incrementally decodes SSH channel bytes to UTF-8, buffering a trailing
@@ -195,8 +217,51 @@ impl client::Handler for ClientHandler {
 }
 
 struct SshSession {
-    handle: client::Handle<ClientHandler>,
+    handle: ClientSession,
     write: russh::ChannelWriteHalf<client::Msg>,
+}
+
+/// A connected (and, once returned by `open_client_session`, authenticated)
+/// SSH client handle to `SshProfile.host:port`. When the profile configures
+/// a `jump_host`, this bundles the otherwise-unused-by-callers jump-host
+/// handle alongside the inner handle to the real target, so the jump
+/// connection -- and therefore the tunneled channel the inner handle's
+/// traffic actually flows over -- is kept alive for exactly as long as
+/// `handle` is. `Deref`/`DerefMut` to the inner `client::Handle` let every
+/// existing call site (`channel_open_session()`, `is_closed()`,
+/// `disconnect()`, ...) keep working unchanged.
+pub(crate) struct ClientSession {
+    handle: client::Handle<ClientHandler>,
+    jump_handle: Option<client::Handle<ClientHandler>>,
+}
+
+impl std::ops::Deref for ClientSession {
+    type Target = client::Handle<ClientHandler>;
+    fn deref(&self) -> &Self::Target {
+        &self.handle
+    }
+}
+
+impl std::ops::DerefMut for ClientSession {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.handle
+    }
+}
+
+impl ClientSession {
+    /// Best-effort disconnect of both the target handle and (if this
+    /// session was tunneled) the jump-host handle it depends on.
+    async fn disconnect_all(&self) {
+        let _ = self
+            .handle
+            .disconnect(russh::Disconnect::ByApplication, "", "en")
+            .await;
+        if let Some(jump_handle) = &self.jump_handle {
+            let _ = jump_handle
+                .disconnect(russh::Disconnect::ByApplication, "", "en")
+                .await;
+        }
+    }
 }
 
 static SESSIONS: OnceLock<Arc<AsyncMutex<HashMap<String, SshSession>>>> = OnceLock::new();
@@ -220,6 +285,28 @@ fn validate_profile(profile: &SshProfile) -> Result<(), String> {
     }
     if profile.port == 0 {
         return Err("SSH port must be between 1 and 65535".to_string());
+    }
+    if let Some(jump_host) = profile.jump_host.as_deref().map(str::trim) {
+        if !jump_host.is_empty() {
+            if jump_host.chars().any(char::is_whitespace) {
+                return Err("SSH jump host must not contain whitespace".to_string());
+            }
+            if profile.jump_username.as_deref().unwrap_or("").trim().is_empty() {
+                return Err("SSH jump host username is required".to_string());
+            }
+            if profile
+                .jump_username
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .any(char::is_whitespace)
+            {
+                return Err("SSH jump host username must not contain whitespace".to_string());
+            }
+            if profile.jump_port.map(|port| port == 0).unwrap_or(false) {
+                return Err("SSH jump host port must be between 1 and 65535".to_string());
+            }
+        }
     }
     if let Some(key_path) = profile.private_key_path.as_deref().map(str::trim) {
         if !key_path.is_empty() {
@@ -593,6 +680,131 @@ async fn authenticate(
 /// for the UI to recover.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// Open a raw (not yet authenticated) SSH transport directly to
+/// `profile.host:profile.port`, ignoring any `jump_host` on `profile` --
+/// used both for a plain direct connection and, when tunneling, for the
+/// jump host's own leg of the trip.
+async fn connect_direct(profile: &SshProfile) -> Result<client::Handle<ClientHandler>, String> {
+    let handler = ClientHandler {
+        host: profile.host.clone(),
+        port: profile.port,
+    };
+    let addr = format!("{}:{}", profile.host, profile.port);
+    match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        client::connect(default_config(), addr, handler),
+    )
+    .await
+    {
+        Ok(Ok(handle)) => Ok(handle),
+        Ok(Err(error)) => Err(format!("Unable to connect: {error}")),
+        Err(_) => Err(format!(
+            "Connection to {}:{} timed out after {} seconds.",
+            profile.host,
+            profile.port,
+            CONNECT_TIMEOUT.as_secs()
+        )),
+    }
+}
+
+/// Open a raw (not yet authenticated) SSH transport to `profile.host:port`,
+/// tunneling through `profile.jump_host` first when configured. This is the
+/// one place jump-host support lives: every caller (the interactive
+/// terminal's `connect()`, the SFTP browser's `open_connection()`, and key
+/// installation's `install_key_inner()`) goes through this function, so all
+/// three automatically gain jump-host support from a single implementation.
+///
+/// The jump host's own handle is bundled into the returned `ClientSession`
+/// (see its doc comment) rather than being dropped once the tunnel is
+/// established, because dropping it would tear down the tunneled channel
+/// the returned handle's traffic flows over.
+async fn connect_transport(profile: &SshProfile) -> Result<ClientSession, String> {
+    let jump_host = profile
+        .jump_host
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let Some(jump_host) = jump_host else {
+        let handle = connect_direct(profile).await?;
+        return Ok(ClientSession {
+            handle,
+            jump_handle: None,
+        });
+    };
+    let jump_profile = SshProfile {
+        id: profile
+            .jump_profile_id
+            .clone()
+            .unwrap_or_else(|| format!("{}::jump", profile.id)),
+        name: format!("{} (jump host)", profile.name),
+        host: jump_host.to_string(),
+        port: profile.jump_port.filter(|port| *port != 0).unwrap_or(22),
+        username: profile.jump_username.clone().unwrap_or_default(),
+        private_key_path: profile.jump_private_key_path.clone(),
+        jump_host: None,
+        jump_port: None,
+        jump_username: None,
+        jump_private_key_path: None,
+        jump_profile_id: None,
+    };
+    let mut jump_handle = connect_direct(&jump_profile).await?;
+    authenticate(&mut jump_handle, &jump_profile)
+        .await
+        .map_err(|error| format!("Jump host authentication failed: {error}"))?;
+    let channel = jump_handle
+        .channel_open_direct_tcpip(profile.host.clone(), profile.port as u32, "127.0.0.1", 0)
+        .await
+        .map_err(|error| {
+            format!(
+                "Unable to open a tunnel to {}:{} via jump host {}: {error}",
+                profile.host, profile.port, jump_profile.host
+            )
+        })?;
+    let stream = channel.into_stream();
+    let handler = ClientHandler {
+        host: profile.host.clone(),
+        port: profile.port,
+    };
+    let handle = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        client::connect_stream(default_config(), stream, handler),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "Connection to {}:{} via jump host {} timed out.",
+            profile.host, profile.port, jump_profile.host
+        )
+    })?
+    .map_err(|error| {
+        format!(
+            "Unable to connect to {}:{} via jump host {}: {error}",
+            profile.host, profile.port, jump_profile.host
+        )
+    })?;
+    Ok(ClientSession {
+        handle,
+        jump_handle: Some(jump_handle),
+    })
+}
+
+/// Open and fully authenticate an SSH transport to `profile` (transparently
+/// tunneling through `profile.jump_host` when configured). `connect()` below
+/// and `sftp::open_connection()` inline these same two steps themselves
+/// (rather than calling this) so each can log its own "tcp_connected" vs.
+/// "authenticated" milestones separately; `install_key_inner()` uses
+/// `connect_transport()` directly instead of this, since it always
+/// authenticates with the stored password specifically (never a key), even
+/// for entries that already have a usable key configured. Kept as the
+/// single obvious place to wire up a caller that doesn't need that
+/// granularity.
+#[allow(dead_code)]
+async fn open_client_session(profile: &SshProfile) -> Result<ClientSession, String> {
+    let mut session = connect_transport(profile).await?;
+    authenticate(&mut session.handle, profile).await?;
+    Ok(session)
+}
+
 pub async fn connect(
     app: tauri::AppHandle,
     profile: SshProfile,
@@ -614,44 +826,16 @@ pub async fn connect(
         "terminal",
         &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "target": format!("{}:{}", profile.host, profile.port)}).to_string(),
     );
-    let handler = ClientHandler {
-        host: profile.host.clone(),
-        port: profile.port,
-    };
-    let addr = format!("{}:{}", profile.host, profile.port);
-    let mut handle = match tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        client::connect(default_config(), addr, handler),
-    )
-    .await
-    {
-        Ok(Ok(handle)) => handle,
-        Ok(Err(error)) => {
-            let message = format!("Unable to connect: {error}");
+    let mut session = match connect_transport(&profile).await {
+        Ok(session) => session,
+        Err(message) => {
             crate::oplog::log(
                 "ERROR",
                 "ssh_connect",
                 "failed",
                 &label,
                 "terminal",
-                &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "network", "error": message}).to_string(),
-            );
-            return Err(message);
-        }
-        Err(_) => {
-            let message = format!(
-                "Connection to {}:{} timed out after {} seconds.",
-                profile.host,
-                profile.port,
-                CONNECT_TIMEOUT.as_secs()
-            );
-            crate::oplog::log(
-                "ERROR",
-                "ssh_connect",
-                "failed",
-                &label,
-                "terminal",
-                &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "timeout", "error": message}).to_string(),
+                &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "network", "error": message}).to_string(),
             );
             return Err(message);
         }
@@ -665,9 +849,10 @@ pub async fn connect(
         &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "phase": "key_exchange"}).to_string(),
     );
 
-    if let Err(error) = tokio::time::timeout(CONNECT_TIMEOUT, authenticate(&mut handle, &profile))
-        .await
-        .unwrap_or_else(|_| Err("Authentication timed out.".to_string()))
+    if let Err(error) =
+        tokio::time::timeout(CONNECT_TIMEOUT, authenticate(&mut session.handle, &profile))
+            .await
+            .unwrap_or_else(|_| Err("Authentication timed out.".to_string()))
     {
         crate::oplog::log(
             "ERROR",
@@ -680,7 +865,7 @@ pub async fn connect(
         return Err(error);
     }
 
-    let channel = match handle.channel_open_session().await {
+    let channel = match session.channel_open_session().await {
         Ok(channel) => channel,
         Err(error) => {
             let message = error.to_string();
@@ -703,7 +888,7 @@ pub async fn connect(
     sessions().lock().await.insert(
         session_id.clone(),
         SshSession {
-            handle,
+            handle: session,
             write: write_half,
         },
     );
@@ -883,10 +1068,7 @@ pub async fn resize(session_id: String, cols: u16, rows: u16) -> Result<(), Stri
 pub async fn disconnect(session_id: String) -> Result<(), String> {
     if let Some(session) = sessions().lock().await.remove(&session_id) {
         let _ = session.write.close().await;
-        let _ = session
-            .handle
-            .disconnect(russh::Disconnect::ByApplication, "", "en")
-            .await;
+        session.handle.disconnect_all().await;
         crate::oplog::log(
             "INFO",
             "ssh_connect",
@@ -971,19 +1153,9 @@ async fn install_key_inner(profile: SshProfile) -> Result<String, String> {
             .to_string()
     })?;
 
-    let handler = ClientHandler {
-        host: profile.host.clone(),
-        port: profile.port,
-    };
-    let addr = format!("{}:{}", profile.host, profile.port);
-    let mut handle = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        client::connect(default_config(), addr, handler),
-    )
-    .await
-    .map_err(|_| format!("Connection to {}:{} timed out.", profile.host, profile.port))?
-    .map_err(|error| format!("Unable to connect: {error}"))?;
-    let result = handle
+    let mut session = connect_transport(&profile).await?;
+    let result = session
+        .handle
         .authenticate_password(profile.username.clone(), stored_password)
         .await
         .map_err(|error| error.to_string())?;
@@ -1000,7 +1172,7 @@ async fn install_key_inner(profile: SshProfile) -> Result<String, String> {
         return Err(message);
     }
 
-    let channel = handle
+    let channel = session
         .channel_open_session()
         .await
         .map_err(|error| error.to_string())?;
@@ -1028,9 +1200,7 @@ async fn install_key_inner(profile: SshProfile) -> Result<String, String> {
             _ => {}
         }
     }
-    let _ = handle
-        .disconnect(russh::Disconnect::ByApplication, "", "en")
-        .await;
+    session.disconnect_all().await;
 
     match exit_status {
         Some(0) => {

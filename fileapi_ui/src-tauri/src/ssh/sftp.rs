@@ -5,7 +5,7 @@
 // and so the file browser can be opened before or after connecting a
 // terminal tab for the same entry).
 
-use super::{authenticate, default_config, ClientHandler, SshProfile};
+use super::{authenticate, connect_transport, ClientHandler, ClientSession, SshProfile};
 use russh::client;
 use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
@@ -31,7 +31,7 @@ async fn write_remote_file(sftp: &SftpSession, path: String, data: &[u8]) -> Res
 }
 
 struct SftpConnection {
-    handle: client::Handle<ClientHandler>,
+    handle: ClientSession,
     sftp: SftpSession,
 }
 
@@ -51,25 +51,9 @@ async fn open_connection(profile: &SshProfile) -> Result<SftpConnection, String>
         "sftp",
         "Opening a new SFTP connection.",
     );
-    let handler = ClientHandler {
-        host: profile.host.clone(),
-        port: profile.port,
-    };
-    let addr = format!("{}:{}", profile.host, profile.port);
-    let mut handle = match tokio::time::timeout(
-        super::CONNECT_TIMEOUT,
-        client::connect(default_config(), addr, handler),
-    )
-    .await
-    {
-        Ok(Ok(handle)) => handle,
-        Ok(Err(error)) => {
-            let message = format!("Unable to connect: {error}");
-            crate::oplog::log("ERROR", "sftp_connect", "failed", &label, "sftp", &message);
-            return Err(message);
-        }
-        Err(_) => {
-            let message = format!("Connection to {}:{} timed out.", profile.host, profile.port);
+    let mut handle = match connect_transport(profile).await {
+        Ok(handle) => handle,
+        Err(message) => {
             crate::oplog::log("ERROR", "sftp_connect", "failed", &label, "sftp", &message);
             return Err(message);
         }
@@ -217,10 +201,7 @@ pub async fn list_directory(
 pub async fn disconnect(entry_id: String) -> Result<(), String> {
     if let Some(connection) = sftp_sessions().lock().await.remove(&entry_id) {
         let _ = connection.sftp.close().await;
-        let _ = connection
-            .handle
-            .disconnect(russh::Disconnect::ByApplication, "", "en")
-            .await;
+        connection.handle.disconnect_all().await;
         crate::oplog::log(
             "INFO",
             "sftp_connect",

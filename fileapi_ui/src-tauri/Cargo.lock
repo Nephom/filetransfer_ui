@@ -2915,6 +2915,7 @@ dependencies = [
 name = "nFterm"
 version = "3.4.0"
 dependencies = [
+ "base64 0.22.1",
  "dirs",
  "futures-util",
  "http",

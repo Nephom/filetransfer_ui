@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod netcheck;
 mod oplog;
 mod proxmox;
 mod ssh;
@@ -45,6 +46,15 @@ fn reset_transfer_cancellation(transfer_id: &str) {
     if let Ok(mut ids) = cancelled_transfer_ids().lock() {
         ids.remove(transfer_id);
     }
+}
+
+/// Client-side TCP reachability probe (see `netcheck.rs`). Used by VNC mode
+/// to decide, from the desktop machine's own point of view, whether a Proxmox
+/// guest VM (or the Proxmox host itself, for an SSH jump) can be reached
+/// directly before falling back to the QEMU guest-agent API transfer path.
+#[tauri::command]
+async fn tcp_check_reachable(host: String, port: u16, timeout_ms: u64) -> bool {
+    netcheck::is_port_reachable(&host, port, timeout_ms).await
 }
 
 #[derive(Serialize)]
@@ -1927,6 +1937,75 @@ async fn proxmox_vnc_cancel(connection_id: String) -> Result<(), String> {
     proxmox::cancel(connection_id).await
 }
 
+/// QEMU Guest Agent file-transfer fallback commands (see `proxmox.rs`). Used
+/// only when neither a direct nor a jump-host SFTP route to the VM is
+/// reachable from this client.
+#[tauri::command]
+async fn proxmox_agent_ping(entry: proxmox::VncEntry, session_id: String) -> Result<(), String> {
+    proxmox::agent_ping(entry, session_id).await
+}
+
+#[tauri::command]
+async fn proxmox_agent_network_interfaces(
+    entry: proxmox::VncEntry,
+    session_id: String,
+) -> Result<Vec<String>, String> {
+    proxmox::agent_network_interfaces(entry, session_id).await
+}
+
+#[tauri::command]
+async fn proxmox_agent_list_directory(
+    entry: proxmox::VncEntry,
+    session_id: String,
+    path: String,
+) -> Result<LocalDirectory, String> {
+    proxmox::agent_list_directory(entry, session_id, path).await
+}
+
+#[tauri::command]
+async fn proxmox_agent_download_file(
+    app: tauri::AppHandle,
+    entry: proxmox::VncEntry,
+    session_id: String,
+    transfer_id: String,
+    remote_path: String,
+    destination_folder: String,
+) -> Result<String, String> {
+    proxmox::agent_download_file(
+        app,
+        entry,
+        session_id,
+        transfer_id,
+        remote_path,
+        destination_folder,
+    )
+    .await
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn proxmox_agent_upload_file(
+    app: tauri::AppHandle,
+    entry: proxmox::VncEntry,
+    session_id: String,
+    transfer_id: String,
+    local_path: String,
+    remote_path: String,
+    size_limit_bytes: u64,
+) -> Result<(), String> {
+    let local_path = resolve_local_transfer_path(&local_path)?;
+    proxmox::agent_upload_file(
+        app,
+        entry,
+        session_id,
+        transfer_id,
+        local_path.display().to_string(),
+        remote_path,
+        size_limit_bytes,
+    )
+    .await
+}
+
 #[tauri::command]
 async fn ssh_list_directory(
     profile: ssh::SshProfile,
@@ -2501,6 +2580,7 @@ fn main() {
         .plugin(tauri_plugin_drag::init())
         .invoke_handler(tauri::generate_handler![
             api_request,
+            tcp_check_reachable,
             pick_upload_files,
             pick_local_directory,
             save_text_file,
@@ -2548,6 +2628,11 @@ fn main() {
             proxmox_vnc_start_session,
             proxmox_vnc_start,
             proxmox_vnc_cancel,
+            proxmox_agent_ping,
+            proxmox_agent_network_interfaces,
+            proxmox_agent_list_directory,
+            proxmox_agent_download_file,
+            proxmox_agent_upload_file,
             ssh_list_directory,
             ssh_sftp_disconnect,
             scp_download,

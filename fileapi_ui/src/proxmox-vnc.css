@@ -64,6 +64,39 @@
 .vnc-display-toolbar button:hover:not(:disabled) { border-color: var(--color-primary); }
 .vnc-display-toolbar button:disabled { opacity: .45; }
 
+/* File transfer: Screen/Files tab switch, the Files pane toolbar/table, the
+ * inline transfer queue, and the sidebar's "Entries <-> remote directory
+ * tree" swap. Sizing here deliberately follows the same rules as the rest
+ * of this file: CSS custom properties (--space-*, --color-*, --font-size-*)
+ * and clamp()/min()/vh-relative bounds instead of literal pixel sizes,
+ * except for button min-heights (which intentionally pin to the shared
+ * --control-height-* tokens so every button in the app stays the same
+ * height). The file table itself reuses the global .file-table/.file-row/
+ * .selection-column rules (see styles/desktop-ui.css and
+ * styles/layout/file-table.css) and the tree reuses .folder-tree/.tree-*
+ * (styles/layout/folder-tree.css) so both look identical to LOCATION mode's
+ * own file browser without duplicating any styling. */
+.vnc-view-tabs { display: flex; gap: var(--space-2); padding: 0 var(--space-5) var(--space-2); }
+.vnc-view-tab { flex: 0 0 auto; min-height: var(--control-height-mobile); padding: var(--space-1) var(--space-3); border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-text-muted); background: transparent; font-size: var(--font-size-small); cursor: pointer; }
+.vnc-view-tab.active { color: var(--color-bg); background: var(--color-warning); border-color: var(--color-warning); }
+.vnc-view-tab:hover:not(:disabled):not(.active) { color: var(--color-text); border-color: var(--color-primary); }
+.vnc-view-tab:disabled { cursor: not-allowed; opacity: .45; }
+.vnc-files-pane { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; margin: 0 var(--space-5) var(--space-3); gap: var(--space-2); overflow: hidden; }
+.vnc-files-toolbar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.vnc-files-toolbar button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-3) !important; font-size: var(--font-size-small) !important; }
+.vnc-files-breadcrumb { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--color-text-muted); font-size: var(--font-size-small); text-overflow: ellipsis; white-space: nowrap; }
+.vnc-files-table-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.vnc-files-empty { padding: var(--space-5) var(--space-3); color: var(--color-text-muted); font-size: var(--font-size-small); text-align: center; }
+.vnc-file-name-cell { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vnc-transfer-queue { display: grid; gap: 0; max-height: clamp(140px, 24vh, 260px); overflow: auto; flex: 0 0 auto; }
+.vnc-entry-pane-files { gap: var(--space-2); }
+.vnc-entry-back { align-self: flex-start; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-text-muted); background: transparent; font-size: var(--font-size-small); cursor: pointer; }
+.vnc-entry-back:hover { color: var(--color-text); border-color: var(--color-primary); }
+.vnc-tree-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding-top: var(--space-2); }
+.vnc-reachability-status { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-warning); font-size: var(--font-size-small); white-space: nowrap; }
+.vnc-reachability-status[data-mode="direct-sftp"], .vnc-reachability-status[data-mode="jump-sftp"] { color: var(--color-success); border-color: var(--color-success); }
+.vnc-reachability-status[data-mode="unavailable"] { color: var(--color-danger); border-color: var(--color-danger); }
+
 .vnc-main-pane-collapse-controls { display: flex; flex: 0 0 48px; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); border-inline: 1px solid var(--color-border); background: var(--color-bg-panel); }
 .vnc-main-pane-collapse-controls button { width: var(--control-height-mobile); min-width: var(--control-height-mobile); min-height: var(--control-height-mobile) !important; padding: 0 !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font-size: var(--icon-size-lg) !important; line-height: 1; }
 .vnc-main-pane-collapse-controls button:not(:disabled):hover { color: var(--color-bg); background: var(--color-primary); border-color: var(--color-primary); }
@@ -78,6 +111,10 @@
 .explorer.ui-layout-mobile .vnc-entry-copy small { font-size: var(--ui-small-font-size); overflow-wrap: anywhere; white-space: normal; }
 .explorer.ui-layout-mobile .vnc-auth-grid { grid-template-columns: 1fr; }
 .explorer.ui-layout-mobile .vnc-screen-shell { min-height: var(--pane-min-size-mobile); }
+.explorer.ui-layout-mobile .vnc-view-tab { min-height: var(--control-height-mobile-lg); font-size: var(--ui-font-size); }
+.explorer.ui-layout-mobile .vnc-files-toolbar button { min-height: var(--control-height-mobile-lg) !important; font-size: var(--ui-font-size) !important; }
+.explorer.ui-layout-mobile .vnc-files-breadcrumb, .explorer.ui-layout-mobile .vnc-reachability-status { font-size: var(--ui-small-font-size); }
+.explorer.ui-layout-mobile .queue-item { font-size: var(--ui-small-font-size); }
 
 @media (max-width: 720px), (max-height: 520px) {
   .explorer.ui-layout-mobile .vnc-workspace { flex-direction: column; overflow: auto; }

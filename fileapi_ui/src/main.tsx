@@ -38,6 +38,7 @@ import { helpPages, helpSections } from "./help/help-content";
 import type { OperationLogRecord } from "./log-view";
 import type { RestApiEntry, RestApiSecret } from "./rest-api";
 import type { ProxmoxVncEntry, ProxmoxVncSecret } from "./proxmox-vnc";
+import { hostSshProfileId, proxmoxHostFromBaseUrl, vmSshProfileId } from "./proxmox-vnc";
 import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 import { AppShell } from "./app/AppShell";
@@ -1287,6 +1288,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   });
   const [sshPasswordSaved, setSshPasswordSaved] = useState(false);
   const [sshEntryDraftId, setSshEntryDraftId] = useState("");
+  // Proxmox VNC entry file-transfer credentials (VM SSH / Host SSH jump).
+  // Mirrors sshProfileDraft/sshPasswordSaved above: passwords are held only
+  // transiently here for the dialog form, then written to the OS keyring
+  // via ssh_save_password (keyed by vmSshProfileId/hostSshProfileId) on
+  // Save, never stored in the ProxmoxVncEntry object itself.
+  const [vmSshPasswordDraft, setVmSshPasswordDraft] = useState("");
+  const [vmSshPasswordSaved, setVmSshPasswordSaved] = useState(false);
+  const [hostSshPasswordDraft, setHostSshPasswordDraft] = useState("");
+  const [hostSshPasswordSaved, setHostSshPasswordSaved] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
@@ -2958,11 +2968,22 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     guestType: "qemu",
     proxmoxVersion: "auto",
     ignoreTlsErrors: false,
+    vmSshUsername: "root",
+    vmSshPort: 22,
+    vmSshPrivateKeyPath: "",
+    hostSshUsername: "root",
+    hostSshPort: 22,
+    hostSshPrivateKeyPath: "",
+    fileTransferIpOverride: "",
   });
 
   const openAddVncEntryDialog = (workspaceId: string) => {
     setWorkspaceSessionId(workspaceId);
     setVncEntryDraft(emptyVncEntry());
+    setVmSshPasswordDraft("");
+    setVmSshPasswordSaved(false);
+    setHostSshPasswordDraft("");
+    setHostSshPasswordSaved(false);
     setSessionFormError("");
     setVncEntryDialogOpen(true);
   };
@@ -2970,6 +2991,12 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const openEditVncEntryDialog = (workspaceId: string, entry: ProxmoxVncEntry) => {
     setWorkspaceSessionId(workspaceId);
     setVncEntryDraft(entry);
+    setVmSshPasswordDraft("");
+    setHostSshPasswordDraft("");
+    setVmSshPasswordSaved(false);
+    setHostSshPasswordSaved(false);
+    void invoke<boolean>("ssh_has_password", { entryId: vmSshProfileId(entry.id) }).then(setVmSshPasswordSaved).catch(() => setVmSshPasswordSaved(false));
+    void invoke<boolean>("ssh_has_password", { entryId: hostSshProfileId(entry.id) }).then(setHostSshPasswordSaved).catch(() => setHostSshPasswordSaved(false));
     setSessionFormError("");
     setVncEntryDialogOpen(true);
   };
@@ -3008,6 +3035,18 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         : [...item.proxmoxVncEntries, draft],
     }));
     setActiveVncEntryId(draft.id);
+    if (vmSshPasswordDraft) {
+      void invoke("ssh_save_password", { entryId: vmSshProfileId(draft.id), password: vmSshPasswordDraft })
+        .then(() => setVmSshPasswordSaved(true))
+        .catch((saveError) => setNotice(saveError instanceof Error ? saveError.message : String(saveError)));
+    }
+    if (hostSshPasswordDraft) {
+      void invoke("ssh_save_password", { entryId: hostSshProfileId(draft.id), password: hostSshPasswordDraft })
+        .then(() => setHostSshPasswordSaved(true))
+        .catch((saveError) => setNotice(saveError instanceof Error ? saveError.message : String(saveError)));
+    }
+    setVmSshPasswordDraft("");
+    setHostSshPasswordDraft("");
     setVncEntryDraft(null);
     setSessionFormError("");
     setVncEntryDialogOpen(false);
@@ -3021,6 +3060,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     if (!window.confirm(`Remove Proxmox VNC entry "${draft.name}"?`)) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, proxmoxVncEntries: item.proxmoxVncEntries.filter((candidate) => candidate.id !== draft.id) }));
     void invoke("proxmox_forget_secret", { entryId: draft.id, kind: "password" }).catch(() => {});
+    void invoke("ssh_forget_password", { entryId: vmSshProfileId(draft.id) }).catch(() => {});
+    void invoke("ssh_forget_password", { entryId: hostSshProfileId(draft.id) }).catch(() => {});
     setVncEntryDraft(null);
     setVncEntryDialogOpen(false);
   };
@@ -3034,12 +3075,56 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     if (!window.confirm(`Remove Proxmox VNC entry "${entry.name}"?`)) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspaceId ? item : { ...item, proxmoxVncEntries: item.proxmoxVncEntries.filter((candidate) => candidate.id !== entry.id) }));
     void invoke("proxmox_forget_secret", { entryId: entry.id, kind: "password" }).catch(() => {});
+    void invoke("ssh_forget_password", { entryId: vmSshProfileId(entry.id) }).catch(() => {});
+    void invoke("ssh_forget_password", { entryId: hostSshProfileId(entry.id) }).catch(() => {});
     if (vncEntryDraft?.id === entry.id) {
       setVncEntryDraft(null);
       setVncEntryDialogOpen(false);
     }
     if (activeVncEntryId === entry.id) setActiveVncEntryId("");
     notify(`Removed Proxmox VNC entry: ${entry.name}`);
+  };
+
+  // Pushes the app's managed public key (see ssh_storage_dir on the Rust
+  // side -- the same "<install dir>/.ssh" or "%USERPROFILE%\.ssh" location
+  // every Terminal SSH entry's key lives in) onto the VM's or the Proxmox
+  // host's own `~/.ssh/authorized_keys`, reusing the exact same
+  // ssh_install_key command a regular SSH entry's "Install SSH key" button
+  // uses -- it takes a generic SshProfile, so this needs no backend
+  // changes. Requires that profile's password to already be saved (typed
+  // into the field just above and Saved at least once), since key
+  // installation authenticates with the stored password.
+  const installVncSshKey = async (kind: "vm" | "host") => {
+    const draft = vncEntryDraft;
+    if (!draft) return;
+    const isVm = kind === "vm";
+    const host = isVm ? draft.fileTransferIpOverride?.trim() : proxmoxHostFromBaseUrl(draft.baseUrl);
+    if (!host) {
+      setSessionFormError(isVm
+        ? "Enter the VM's IP in \"Fallback VM IP\" above first, then Save, before installing a key onto it."
+        : "The Proxmox host field above must have a valid host before installing a key onto it.");
+      return;
+    }
+    const profileId = isVm ? vmSshProfileId(draft.id) : hostSshProfileId(draft.id);
+    const username = (isVm ? draft.vmSshUsername : draft.hostSshUsername)?.trim() || "root";
+    const port = (isVm ? draft.vmSshPort : draft.hostSshPort) || 22;
+    const passwordDraft = isVm ? vmSshPasswordDraft : hostSshPasswordDraft;
+    const alreadySaved = isVm ? vmSshPasswordSaved : hostSshPasswordSaved;
+    try {
+      if (passwordDraft) {
+        await invoke("ssh_save_password", { entryId: profileId, password: passwordDraft });
+        if (isVm) setVmSshPasswordSaved(true); else setHostSshPasswordSaved(true);
+      } else if (!alreadySaved) {
+        setSessionFormError(`Enter and Save a ${isVm ? "VM SSH" : "Host SSH"} password above before installing a key with it.`);
+        return;
+      }
+      const message = await invoke<string>("ssh_install_key", {
+        profile: { id: profileId, name: `${draft.name} (${isVm ? "VM" : "host"} SSH)`, host, port, username, privateKeyPath: (isVm ? draft.vmSshPrivateKeyPath : draft.hostSshPrivateKeyPath) || null },
+      });
+      notify(message);
+    } catch (installError) {
+      setSessionFormError(installError instanceof Error ? installError.message : String(installError));
+    }
   };
 
   const connectSsh = () => {
@@ -7271,6 +7356,25 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
               <label>PVE version<Dropdown label="PVE version" value={vncEntryDraft.proxmoxVersion} onChange={(nextVersion) => setVncEntryDraft({ ...vncEntryDraft, proxmoxVersion: nextVersion as ProxmoxVncEntry["proxmoxVersion"] })} options={[{ value: "auto", label: "Auto detect" }, { value: "6.4", label: "6.4" }, { value: "7.x", label: "7.x" }, { value: "8.x", label: "8.x" }, { value: "9.x", label: "9.x" }]} /></label>
               <label className="tls-option"><input type="checkbox" checked={vncEntryDraft.ignoreTlsErrors} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, ignoreTlsErrors: event.target.checked })} /> Ignore TLS certificate errors</label>
               <small className="field-help">Password, node, and VM selection are configured from the entry's own connection controls once this entry is selected in the VNC mode.</small>
+              <strong>File transfer: VM SSH</strong>
+              <small className="field-help">Credentials for the VM's own SSH/SFTP server, used when this client (or the Proxmox host, as a jump) can reach the VM directly. Leave the password blank to keep a previously saved one.</small>
+              <div className="vnc-form-grid">
+                <label>VM SSH username<input value={vncEntryDraft.vmSshUsername || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, vmSshUsername: event.target.value })} placeholder="root" /></label>
+                <label>VM SSH port<input type="number" min="1" max="65535" value={vncEntryDraft.vmSshPort || 22} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, vmSshPort: Number(event.target.value) || 22 })} /></label>
+              </div>
+              <label>VM SSH private key path (optional)<input value={vncEntryDraft.vmSshPrivateKeyPath || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, vmSshPrivateKeyPath: event.target.value })} placeholder="/home/test/.ssh/id_ed25519" /></label>
+              <label>VM SSH password<input type="password" value={vmSshPasswordDraft} onChange={(event) => setVmSshPasswordDraft(event.target.value)} placeholder={vmSshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" /></label>
+              <label>Fallback VM IP (optional)<input value={vncEntryDraft.fileTransferIpOverride || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, fileTransferIpOverride: event.target.value })} placeholder="Only needed if the Guest Agent can't report it (e.g. LXC)" /></label>
+              <div className="modal-actions"><button type="button" onClick={() => void installVncSshKey("vm")}>Install SSH key on VM</button></div>
+              <strong>File transfer: Host SSH (jump)</strong>
+              <small className="field-help">Only needed when the VM isn't directly reachable from this client -- the Proxmox host itself is then used as an SSH jump to reach the VM's SFTP over a tunneled connection.</small>
+              <div className="vnc-form-grid">
+                <label>Host SSH username<input value={vncEntryDraft.hostSshUsername || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshUsername: event.target.value })} placeholder="root" /></label>
+                <label>Host SSH port<input type="number" min="1" max="65535" value={vncEntryDraft.hostSshPort || 22} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshPort: Number(event.target.value) || 22 })} /></label>
+              </div>
+              <label>Host SSH private key path (optional)<input value={vncEntryDraft.hostSshPrivateKeyPath || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshPrivateKeyPath: event.target.value })} placeholder="/home/test/.ssh/id_ed25519" /></label>
+              <label>Host SSH password<input type="password" value={hostSshPasswordDraft} onChange={(event) => setHostSshPasswordDraft(event.target.value)} placeholder={hostSshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" /></label>
+              <div className="modal-actions"><button type="button" onClick={() => void installVncSshKey("host")}>Install SSH key on host</button></div>
               <div className="modal-actions">
                 <button type="button" onClick={() => setVncEntryDialogOpen(false)}>Cancel</button>
                 {isEditingVncEntry(activeManagedWorkspace, vncEntryDraft) && <button type="button" className="session-delete" onClick={removeVncEntry}>Remove</button>}

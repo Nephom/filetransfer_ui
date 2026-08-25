@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::{Client, Url};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -6,8 +7,10 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use serde::de::{DeserializeOwned, Deserializer, Error as DeError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tauri::Emitter;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
@@ -873,6 +876,758 @@ fn valid_relay_request(uri: &http::Uri, expected_path: &str, expected_token: &st
             .any(|(name, value)| name == "token" && value == expected_token)
 }
 
+// ---------------------------------------------------------------------------
+// QEMU Guest Agent file transfer (VNC-P02)
+//
+// This talks to Proxmox's `qemu/{vmid}/agent/*` REST endpoints, which relay
+// commands to the QEMU Guest Agent daemon running inside the VM over the
+// virtio-serial channel (no VM network reachability required). Only QEMU
+// guests expose this API -- LXC containers have no equivalent. It is used
+// as the last-resort file transfer path when neither a direct nor a
+// jump-host SFTP route to the VM is reachable from this client (see
+// `netcheck::is_port_reachable` and the frontend's `detectTransferMode`).
+//
+// Two hard limits are inherent to the underlying Proxmox API (confirmed
+// against the `qemu-server` PVE::API2::Qemu::Agent source):
+//   - `file-read` is capped at 16 MiB per call, but supports `offset`/`count`
+//     so a large file can be read in a client-driven loop.
+//   - `file-write` always reopens the target with `mode: "wb"` (truncate),
+//     so *the API itself cannot append*. To upload a file larger than one
+//     ~60KB request, each chunk is written to its own small staging file
+//     inside the guest and then concatenated together with `cat` via
+//     `agent_exec` -- see `agent_upload_file` below.
+// ---------------------------------------------------------------------------
+
+/// Maximum bytes read from the guest per `file-read` call. Kept well under
+/// the server's 16 MiB cap so download progress updates smoothly.
+const AGENT_READ_CHUNK_BYTES: u64 = 1024 * 1024;
+
+/// Maximum *raw* (pre-base64) bytes written per `file-write` call. Proxmox
+/// caps the `content` field at 60 KiB; base64 inflates by 4/3, so 44 KiB raw
+/// stays safely under that cap (44 * 1024 * 4 / 3 ~= 58.7 KiB).
+const AGENT_WRITE_CHUNK_BYTES: usize = 44 * 1024;
+
+/// Default guest-agent upload size threshold: uploads larger than this are
+/// rejected up front with a message steering the user toward a reachable
+/// SFTP/jump-host route instead, because chunked guest-agent uploads need
+/// one HTTP round-trip per ~44 KiB and become impractically slow well
+/// before this size.
+pub const AGENT_UPLOAD_DEFAULT_LIMIT_BYTES: u64 = 50 * 1024 * 1024;
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestIpAddress {
+    pub address: String,
+    pub ip_type: String,
+    pub prefix: u8,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestNetInterface {
+    pub name: String,
+    pub mac_address: Option<String>,
+    pub ip_addresses: Vec<GuestIpAddress>,
+}
+
+#[derive(Deserialize)]
+struct RawGuestIpAddress {
+    #[serde(rename = "ip-address")]
+    ip_address: String,
+    #[serde(rename = "ip-address-type", default)]
+    ip_address_type: Option<String>,
+    #[serde(default)]
+    prefix: Option<u8>,
+}
+
+#[derive(Deserialize)]
+struct RawGuestNetInterface {
+    name: String,
+    #[serde(rename = "hardware-address", default)]
+    hardware_address: Option<String>,
+    #[serde(rename = "ip-addresses", default)]
+    ip_addresses: Option<Vec<RawGuestIpAddress>>,
+}
+
+#[derive(Deserialize)]
+struct NetworkInterfacesResult {
+    result: Vec<RawGuestNetInterface>,
+}
+
+#[derive(Deserialize)]
+struct AgentPidResponse {
+    pid: i64,
+}
+
+#[derive(Deserialize)]
+struct AgentExecStatusRaw {
+    #[serde(default)]
+    exited: bool,
+    #[serde(default)]
+    exitcode: Option<i64>,
+    #[serde(default)]
+    signal: Option<i64>,
+    #[serde(rename = "out-data", default)]
+    out_data: Option<String>,
+    #[serde(rename = "err-data", default)]
+    err_data: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AgentFileReadResponse {
+    content: String,
+    #[serde(default)]
+    truncated: bool,
+}
+
+struct AgentExecResult {
+    exit_code: Option<i64>,
+    #[allow(dead_code)]
+    signal: Option<i64>,
+    stdout: String,
+    stderr: String,
+}
+
+/// Resolve `(vmid, "qemu/{vmid}/agent")`, rejecting non-qemu guests: the
+/// Guest Agent REST API only exists under `nodes/{node}/qemu/{vmid}/agent/*`
+/// (LXC has no equivalent endpoint).
+fn agent_base(entry: &VncEntry) -> Result<(u64, String), String> {
+    if entry.guest_type != "qemu" {
+        return Err(
+            "QEMU Guest Agent file transfer is only available for qemu guests".to_string(),
+        );
+    }
+    let vmid = entry
+        .vmid
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "Proxmox node and VMID are required".to_string())?;
+    if entry.node.trim().is_empty() {
+        return Err("Proxmox node and VMID are required".to_string());
+    }
+    Ok((vmid, format!("qemu/{vmid}/agent")))
+}
+
+async fn agent_request<T: DeserializeOwned>(
+    entry: &VncEntry,
+    session_id: &str,
+    method: reqwest::Method,
+    agent_command: &str,
+    query: Option<&str>,
+    json_payload: Option<serde_json::Value>,
+) -> Result<T, String> {
+    let (_, agent_path) = agent_base(entry)?;
+    let auth = session(session_id).await?;
+    let base = normalized_url(&entry.base_url)?;
+    let mut path = format!(
+        "api2/json/nodes/{}/{agent_path}/{agent_command}",
+        entry.node
+    );
+    if let Some(query) = query {
+        path.push('?');
+        path.push_str(query);
+    }
+    let mut request = match method {
+        reqwest::Method::GET => auth.client.get(api_url(&base, &path)?),
+        reqwest::Method::POST => auth.client.post(api_url(&base, &path)?),
+        other => return Err(format!("Unsupported guest agent HTTP method: {other}")),
+    };
+    request = request
+        .header("Cookie", format!("PVEAuthCookie={}", auth.ticket))
+        .header("CSRFPreventionToken", auth.csrf_token.clone());
+    if let Some(json_payload) = json_payload {
+        request = request.json(&json_payload);
+    }
+    let response = request.send().await.map_err(|error| {
+        format!("Unable to reach the Proxmox Guest Agent endpoint \"{agent_command}\": {error}")
+    })?;
+    if !response.status().is_success() {
+        return Err(api_error(&format!("guest agent {agent_command}"), response).await);
+    }
+    let data: ApiEnvelope<T> =
+        decode_api(&format!("guest agent {agent_command}"), response).await?;
+    Ok(data.data)
+}
+
+/// Confirm the QEMU Guest Agent inside the VM is running and responding.
+pub async fn agent_ping(entry: VncEntry, session_id: String) -> Result<(), String> {
+    let label = endpoint_label(&entry);
+    let result = agent_request::<serde_json::Value>(
+        &entry,
+        &session_id,
+        reqwest::Method::POST,
+        "ping",
+        None,
+        None,
+    )
+    .await;
+    match &result {
+        Ok(_) => crate::oplog::log(
+            "DEBUG",
+            "proxmox_agent",
+            "ping_succeeded",
+            &label,
+            "agent",
+            "",
+        ),
+        Err(error) => {
+            crate::oplog::log("WARN", "proxmox_agent", "ping_failed", &label, "agent", error)
+        }
+    }
+    result.map(|_| ())
+}
+
+/// List the VM's network interfaces via the Guest Agent, returning only
+/// usable candidate IPv4 addresses (excludes loopback and link-local
+/// ranges, which are never useful as a direct/jump SFTP connection target).
+pub async fn agent_network_interfaces(
+    entry: VncEntry,
+    session_id: String,
+) -> Result<Vec<String>, String> {
+    let raw: NetworkInterfacesResult = agent_request(
+        &entry,
+        &session_id,
+        reqwest::Method::GET,
+        "network-get-interfaces",
+        None,
+        None,
+    )
+    .await?;
+    let interfaces: Vec<GuestNetInterface> = raw
+        .result
+        .into_iter()
+        .map(|interface| GuestNetInterface {
+            name: interface.name,
+            mac_address: interface.hardware_address,
+            ip_addresses: interface
+                .ip_addresses
+                .unwrap_or_default()
+                .into_iter()
+                .map(|address| GuestIpAddress {
+                    address: address.ip_address,
+                    ip_type: address
+                        .ip_address_type
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    prefix: address.prefix.unwrap_or(0),
+                })
+                .collect(),
+        })
+        .collect();
+    Ok(usable_guest_ipv4_addresses(&interfaces))
+}
+
+/// Candidate usable IPv4 addresses for direct/jump SFTP reachability
+/// probing: excludes loopback (127.0.0.0/8) and link-local (169.254.0.0/16)
+/// ranges, which are never useful as a connection target from the client.
+fn usable_guest_ipv4_addresses(interfaces: &[GuestNetInterface]) -> Vec<String> {
+    interfaces
+        .iter()
+        .flat_map(|interface| interface.ip_addresses.iter())
+        .filter(|address| address.ip_type.eq_ignore_ascii_case("ipv4"))
+        .map(|address| address.address.clone())
+        .filter(|address| !address.starts_with("127.") && !address.starts_with("169.254."))
+        .collect()
+}
+
+/// Start a command inside the guest, returning its pid.
+async fn agent_exec(
+    entry: &VncEntry,
+    session_id: &str,
+    command: Vec<String>,
+) -> Result<i64, String> {
+    let response: AgentPidResponse = agent_request(
+        entry,
+        session_id,
+        reqwest::Method::POST,
+        "exec",
+        None,
+        Some(serde_json::json!({ "command": command })),
+    )
+    .await?;
+    Ok(response.pid)
+}
+
+/// Poll `exec-status` until the command started by `agent_exec` finishes (or
+/// `timeout_secs` elapses), decoding the base64 stdout/stderr the Guest
+/// Agent returns.
+async fn agent_exec_wait(
+    entry: &VncEntry,
+    session_id: &str,
+    pid: i64,
+    timeout_secs: u64,
+) -> Result<AgentExecResult, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs.max(1));
+    loop {
+        let raw: AgentExecStatusRaw = agent_request(
+            entry,
+            session_id,
+            reqwest::Method::GET,
+            "exec-status",
+            Some(&format!("pid={pid}")),
+            None,
+        )
+        .await?;
+        if raw.exited {
+            let decode = |value: Option<String>| -> String {
+                value
+                    .and_then(|text| BASE64.decode(text).ok())
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    .unwrap_or_default()
+            };
+            return Ok(AgentExecResult {
+                exit_code: raw.exitcode,
+                signal: raw.signal,
+                stdout: decode(raw.out_data),
+                stderr: decode(raw.err_data),
+            });
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Guest command (pid {pid}) did not finish within {timeout_secs} seconds"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// Run a command inside the guest to completion and return its result.
+async fn agent_run_command(
+    entry: &VncEntry,
+    session_id: &str,
+    command: Vec<String>,
+    timeout_secs: u64,
+) -> Result<AgentExecResult, String> {
+    let pid = agent_exec(entry, session_id, command).await?;
+    agent_exec_wait(entry, session_id, pid, timeout_secs).await
+}
+
+/// Best-effort cleanup of the per-transfer staging directory used by
+/// `agent_upload_file`. Failures are swallowed (logged elsewhere already, or
+/// simply not worth surfacing) since this only runs on an already-failing or
+/// already-completed path.
+async fn agent_cleanup_staging(entry: &VncEntry, session_id: &str, staging_dir: &str) {
+    let _ = agent_run_command(
+        entry,
+        session_id,
+        vec!["rm".to_string(), "-rf".to_string(), staging_dir.to_string()],
+        10,
+    )
+    .await;
+}
+
+/// Single-quote a value for safe use as one argument in a POSIX shell
+/// command line (handles embedded `'` by closing/reopening the quote).
+fn agent_shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+/// List a directory inside the guest via `find <path> -mindepth 1 -maxdepth
+/// 1 -printf ...` (there is no native Guest Agent "list directory" API).
+/// Linux/Unix guests only -- a Windows guest would need a different command
+/// and output parser, which is out of scope.
+pub async fn agent_list_directory(
+    entry: VncEntry,
+    session_id: String,
+    path: String,
+) -> Result<crate::LocalDirectory, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = endpoint_label(&entry);
+    let normalized_path = if path.trim().is_empty() {
+        "/".to_string()
+    } else {
+        path
+    };
+    crate::oplog::log(
+        "DEBUG",
+        "proxmox_agent_list",
+        "started",
+        &label,
+        &normalized_path,
+        &serde_json::json!({"operationId": operation_id}).to_string(),
+    );
+    let command = vec![
+        "find".to_string(),
+        normalized_path.clone(),
+        "-mindepth".to_string(),
+        "1".to_string(),
+        "-maxdepth".to_string(),
+        "1".to_string(),
+        "-printf".to_string(),
+        "%y\t%s\t%T@\t%f\n".to_string(),
+    ];
+    let result = agent_run_command(&entry, &session_id, command, 20)
+        .await
+        .map_err(|error| {
+            crate::oplog::log(
+                "ERROR",
+                "proxmox_agent_list",
+                "failed",
+                &label,
+                &normalized_path,
+                &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": error}).to_string(),
+            );
+            error
+        })?;
+    if result.exit_code != Some(0) {
+        let message = format!(
+            "Unable to list \"{normalized_path}\": {}",
+            if result.stderr.trim().is_empty() {
+                "the guest command failed"
+            } else {
+                result.stderr.trim()
+            }
+        );
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_agent_list",
+            "failed",
+            &label,
+            &normalized_path,
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": message}).to_string(),
+        );
+        return Err(message);
+    }
+    let mut files = Vec::new();
+    for line in result.stdout.lines() {
+        let mut parts = line.splitn(4, '\t');
+        let (Some(kind), Some(size_text), Some(mtime_text), Some(name)) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let is_directory = kind == "d";
+        let size: u64 = size_text.parse().unwrap_or(0);
+        let modified: u128 = mtime_text
+            .parse::<f64>()
+            .map(|seconds| (seconds * 1000.0).max(0.0) as u128)
+            .unwrap_or(0);
+        let child_path = format!("{}/{}", normalized_path.trim_end_matches('/'), name);
+        files.push(crate::LocalFile {
+            name: name.to_string(),
+            path: child_path,
+            is_directory,
+            size,
+            modified,
+        });
+    }
+    files.sort_by(|left: &crate::LocalFile, right: &crate::LocalFile| {
+        left.name.to_lowercase().cmp(&right.name.to_lowercase())
+    });
+    crate::oplog::log(
+        "INFO",
+        "proxmox_agent_list",
+        "completed",
+        &label,
+        &normalized_path,
+        &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "fileCount": files.len()}).to_string(),
+    );
+    Ok(crate::LocalDirectory {
+        path: normalized_path,
+        files,
+    })
+}
+
+/// Download a file from the guest via chunked `file-read` calls (the server
+/// caps each call at 16 MiB; this client loops with a smaller chunk size so
+/// download progress updates smoothly). EOF is detected the same way the
+/// Proxmox API itself signals it: once `truncated` is absent/false in a
+/// response, the actual end of the file has been reached even if the
+/// requested `count` was not fully satisfied.
+pub async fn agent_download_file(
+    app: tauri::AppHandle,
+    entry: VncEntry,
+    session_id: String,
+    transfer_id: String,
+    remote_path: String,
+    destination_folder: String,
+) -> Result<String, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = endpoint_label(&entry);
+    crate::reset_transfer_cancellation(&transfer_id);
+    if crate::is_transfer_cancelled(&transfer_id) {
+        return Err("Transfer cancelled".to_string());
+    }
+    let file_name = remote_path
+        .rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Invalid remote path".to_string())?
+        .to_string();
+    let destination_root = crate::resolve_local_download_destination(&destination_folder)?;
+    let requested_destination = destination_root.join(&file_name);
+    let (destination, temporary, mut file) =
+        crate::create_unique_download_file(&requested_destination)?;
+    let mut offset: u64 = 0;
+    let mut last_emit = std::time::Instant::now() - Duration::from_secs(1);
+    loop {
+        if crate::is_transfer_cancelled(&transfer_id) {
+            drop(file);
+            let _ = std::fs::remove_file(&temporary);
+            return Err("Transfer cancelled".to_string());
+        }
+        let query = format!(
+            "file={}&offset={offset}&count={AGENT_READ_CHUNK_BYTES}&decode=0",
+            urlencoding::encode(&remote_path)
+        );
+        let response: AgentFileReadResponse = match agent_request(
+            &entry,
+            &session_id,
+            reqwest::Method::GET,
+            "file-read",
+            Some(&query),
+            None,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                drop(file);
+                let _ = std::fs::remove_file(&temporary);
+                crate::oplog::log(
+                    "ERROR",
+                    "proxmox_agent_download",
+                    "failed",
+                    &label,
+                    &remote_path,
+                    &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": error}).to_string(),
+                );
+                return Err(error);
+            }
+        };
+        let chunk = match BASE64.decode(response.content.as_bytes()) {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                drop(file);
+                let _ = std::fs::remove_file(&temporary);
+                return Err(format!("Invalid guest agent file-read response: {error}"));
+            }
+        };
+        let chunk_len = chunk.len() as u64;
+        if let Err(error) = file.write_all(&chunk) {
+            drop(file);
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
+        offset += chunk_len;
+        if last_emit.elapsed().as_millis() >= 200 {
+            let _ = app.emit(
+                "proxmox-agent-download-progress",
+                crate::DownloadProgressEvent {
+                    transfer_id: transfer_id.clone(),
+                    bytes_completed: offset,
+                    bytes_total: None,
+                },
+            );
+            last_emit = std::time::Instant::now();
+        }
+        if !response.truncated || chunk_len == 0 {
+            break;
+        }
+    }
+    drop(file);
+    std::fs::rename(&temporary, &destination).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        error.to_string()
+    })?;
+    let _ = app.emit(
+        "proxmox-agent-download-progress",
+        crate::DownloadProgressEvent {
+            transfer_id,
+            bytes_completed: offset,
+            bytes_total: Some(offset),
+        },
+    );
+    crate::oplog::log(
+        "INFO",
+        "proxmox_agent_download",
+        "completed",
+        &label,
+        &remote_path,
+        &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "bytes": offset}).to_string(),
+    );
+    Ok(destination.display().to_string())
+}
+
+/// Upload a local file into the guest. Because the Proxmox `file-write` API
+/// always truncates on open (there is no append mode), each ~44 KiB chunk is
+/// written to its own small staging file under a per-transfer temp
+/// directory inside the guest, then concatenated together with `cat` via a
+/// single `agent_exec` call and the staging directory is removed -- all
+/// inside the guest, so nothing partial is ever re-downloaded.
+pub async fn agent_upload_file(
+    app: tauri::AppHandle,
+    entry: VncEntry,
+    session_id: String,
+    transfer_id: String,
+    local_path: String,
+    remote_path: String,
+    size_limit_bytes: u64,
+) -> Result<(), String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = endpoint_label(&entry);
+    crate::reset_transfer_cancellation(&transfer_id);
+    if crate::is_transfer_cancelled(&transfer_id) {
+        return Err("Transfer cancelled".to_string());
+    }
+    let local = std::path::Path::new(&local_path);
+    let metadata = std::fs::metadata(local).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Local source file does not exist".to_string());
+    }
+    let total_size = metadata.len();
+    let limit = if size_limit_bytes == 0 {
+        AGENT_UPLOAD_DEFAULT_LIMIT_BYTES
+    } else {
+        size_limit_bytes
+    };
+    if total_size > limit {
+        return Err(format!(
+            "This file is {} MB, which is above the {} MB Guest Agent upload limit. The Proxmox file-write API has no append mode, so large uploads need one HTTP round-trip per ~44 KB chunk and become impractically slow. Use a reachable direct or jump-host SFTP connection instead.",
+            total_size / (1024 * 1024),
+            limit / (1024 * 1024),
+        ));
+    }
+    let staging_dir = format!(
+        "/tmp/.fileapi-agent-upload-{}",
+        transfer_id
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+            .collect::<String>()
+    );
+    let mkdir_result = agent_run_command(
+        &entry,
+        &session_id,
+        vec!["mkdir".to_string(), "-p".to_string(), staging_dir.clone()],
+        10,
+    )
+    .await?;
+    if mkdir_result.exit_code != Some(0) {
+        return Err(format!(
+            "Unable to create a staging directory inside the guest: {}",
+            mkdir_result.stderr.trim()
+        ));
+    }
+    let mut file = std::fs::File::open(local).map_err(|error| error.to_string())?;
+    let mut buffer = vec![0_u8; AGENT_WRITE_CHUNK_BYTES];
+    let mut sent: u64 = 0;
+    let mut chunk_index: u32 = 0;
+    let mut last_emit = std::time::Instant::now() - Duration::from_secs(1);
+    loop {
+        if crate::is_transfer_cancelled(&transfer_id) {
+            agent_cleanup_staging(&entry, &session_id, &staging_dir).await;
+            return Err("Transfer cancelled".to_string());
+        }
+        let read = match file.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) => {
+                agent_cleanup_staging(&entry, &session_id, &staging_dir).await;
+                return Err(error.to_string());
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        let chunk_path = format!("{staging_dir}/chunk-{chunk_index:08}");
+        let encoded = BASE64.encode(&buffer[..read]);
+        let write_result: Result<serde_json::Value, String> = agent_request(
+            &entry,
+            &session_id,
+            reqwest::Method::POST,
+            "file-write",
+            None,
+            Some(serde_json::json!({
+                "file": chunk_path,
+                "content": encoded,
+                "encode": false,
+            })),
+        )
+        .await;
+        if let Err(error) = write_result {
+            agent_cleanup_staging(&entry, &session_id, &staging_dir).await;
+            crate::oplog::log(
+                "ERROR",
+                "proxmox_agent_upload",
+                "failed",
+                &label,
+                &remote_path,
+                &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": error}).to_string(),
+            );
+            return Err(error);
+        }
+        sent += read as u64;
+        chunk_index += 1;
+        if last_emit.elapsed().as_millis() >= 200 {
+            let _ = app.emit(
+                "proxmox-agent-upload-progress",
+                crate::UploadProgressEvent {
+                    transfer_id: transfer_id.clone(),
+                    bytes_completed: sent,
+                    bytes_total: total_size,
+                },
+            );
+            last_emit = std::time::Instant::now();
+        }
+    }
+    if crate::is_transfer_cancelled(&transfer_id) {
+        agent_cleanup_staging(&entry, &session_id, &staging_dir).await;
+        return Err("Transfer cancelled".to_string());
+    }
+    let merge_command = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!(
+            "cat {staging_dir}/chunk-* > {remote} && rm -rf {staging_dir}",
+            staging_dir = agent_shell_quote(&staging_dir),
+            remote = agent_shell_quote(&remote_path),
+        ),
+    ];
+    let merge_result = match agent_run_command(&entry, &session_id, merge_command, 60).await {
+        Ok(result) => result,
+        Err(error) => {
+            agent_cleanup_staging(&entry, &session_id, &staging_dir).await;
+            return Err(error);
+        }
+    };
+    if merge_result.exit_code != Some(0) {
+        agent_cleanup_staging(&entry, &session_id, &staging_dir).await;
+        let message = format!(
+            "Unable to assemble the uploaded file inside the guest: {}",
+            merge_result.stderr.trim()
+        );
+        crate::oplog::log(
+            "ERROR",
+            "proxmox_agent_upload",
+            "failed",
+            &label,
+            &remote_path,
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": message}).to_string(),
+        );
+        return Err(message);
+    }
+    let _ = app.emit(
+        "proxmox-agent-upload-progress",
+        crate::UploadProgressEvent {
+            transfer_id,
+            bytes_completed: total_size,
+            bytes_total: total_size,
+        },
+    );
+    crate::oplog::log(
+        "INFO",
+        "proxmox_agent_upload",
+        "completed",
+        &label,
+        &remote_path,
+        &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "bytes": total_size}).to_string(),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{api_url, normalized_url, valid_relay_request};
@@ -917,5 +1672,45 @@ mod tests {
             "/vnc/connection-1",
             "secret-1"
         ));
+    }
+
+    #[test]
+    fn usable_guest_ipv4_addresses_excludes_loopback_and_link_local() {
+        let interfaces = vec![
+            super::GuestNetInterface {
+                name: "lo".to_string(),
+                mac_address: None,
+                ip_addresses: vec![super::GuestIpAddress {
+                    address: "127.0.0.1".to_string(),
+                    ip_type: "ipv4".to_string(),
+                    prefix: 8,
+                }],
+            },
+            super::GuestNetInterface {
+                name: "eth0".to_string(),
+                mac_address: Some("aa:bb:cc:dd:ee:ff".to_string()),
+                ip_addresses: vec![
+                    super::GuestIpAddress {
+                        address: "169.254.1.5".to_string(),
+                        ip_type: "ipv4".to_string(),
+                        prefix: 16,
+                    },
+                    super::GuestIpAddress {
+                        address: "192.168.10.20".to_string(),
+                        ip_type: "ipv4".to_string(),
+                        prefix: 24,
+                    },
+                    super::GuestIpAddress {
+                        address: "fe80::1".to_string(),
+                        ip_type: "ipv6".to_string(),
+                        prefix: 64,
+                    },
+                ],
+            },
+        ];
+        assert_eq!(
+            super::usable_guest_ipv4_addresses(&interfaces),
+            vec!["192.168.10.20".to_string()],
+        );
     }
 }

@@ -27,6 +27,7 @@ russh-sftp = "2.4"
 keyring = "4"
 dirs = "6"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_UI_Shell"] }
