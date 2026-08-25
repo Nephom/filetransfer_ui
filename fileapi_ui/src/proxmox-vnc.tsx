@@ -54,8 +54,11 @@ type Connection = { id: string; websocketUrl: string; password: string };
 //      (see src-tauri/src/ssh/mod.rs::connect_transport). Still full SFTP.
 //   3. guest-agent: neither is reachable (or no SSH credentials are
 //      configured); falls back to the Proxmox QEMU Guest Agent REST API
-//      (qemu-only, Linux/Unix guest commands only, chunked so large
-//      uploads are rejected up front -- see src-tauri/src/proxmox.rs).
+//      (qemu-only, chunked so large uploads are rejected up front). The
+//      guest OS is auto-detected server-side, so both Linux/Unix and
+//      Windows guests are supported -- Windows guests show a synthetic
+//      drive-list "root" (C:, D:, ...) in place of a single "/" -- see
+//      src-tauri/src/proxmox.rs.
 export type VmFileEntry = { name: string; path: string; isDirectory: boolean; size: number; modified: number };
 export type VncTransferMode = "unknown" | "detecting" | "direct-sftp" | "jump-sftp" | "guest-agent" | "unavailable";
 type VncQueueStatus = "queued" | "running" | "retrying" | "completed" | "failed";

@@ -114,8 +114,17 @@ into/out of the guest, in this priority order:
    (`src-tauri/src/ssh/mod.rs::connect_transport`). Still full SFTP.
 3. **guest-agent** -- neither is reachable (or no SSH credentials are
    configured); falls back to the Proxmox QEMU Guest Agent REST API
-   (qemu-only, Linux/Unix guest commands only, size-limited uploads,
-   no directory download).
+   (qemu-only, size-limited uploads, no directory download). The guest OS is
+   auto-detected (`guest-get-osinfo`, cached per session/VM) so both guest
+   families work:
+   - **Linux/Unix guests**: directory listing via `find`, upload chunks
+     merged with `cat`, all through a POSIX shell.
+   - **Windows guests**: directory listing and upload-chunk merging run via
+     PowerShell (`-EncodedCommand`, never a hand-quoted command line).
+     Windows has no single filesystem root, so the app-internal path `/` is
+     presented as a synthetic "This PC" listing of the guest's drives
+     (`C:`, `D:`, ...); uploads are rejected with a clear error until the
+     user navigates into an actual drive.
 
 Reachability probes are pure-Rust `tokio::net` TCP checks (`tcp_check_reachable`),
 never a system `ssh`/`ping`/`telnet` binary, so behavior is identical across
