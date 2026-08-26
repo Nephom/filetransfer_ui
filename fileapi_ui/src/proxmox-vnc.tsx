@@ -371,7 +371,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     const pendingConnectionId = pendingConnectionIdRef.current;
     pendingConnectionIdRef.current = null;
     if (pendingConnectionId) void invoke("proxmox_vnc_cancel", { connectionId: pendingConnectionId });
-    setVms([]);
     setViewOnly(false);
     resetTransferState();
     if (updateStatus) setStatus("Disconnected");
@@ -380,6 +379,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   useEffect(() => {
     if (previousEntryIdRef.current !== activeEntryId) {
       stopConnection();
+      setVms([]);
       previousEntryIdRef.current = activeEntryId;
     }
     setPassword(entry ? secrets[entry.id]?.password || "" : "");
@@ -424,6 +424,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const logoutEntry = async () => {
     if (!entry) return;
     stopConnection();
+    setVms([]);
     const sessionId = authSessions[entry.id];
     if (sessionId) await invoke("proxmox_logout", { sessionId }).catch(() => undefined);
     setAuthSessions((current) => { const next = { ...current }; delete next[entry.id]; return next; });
@@ -826,7 +827,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
             <div className="vnc-actions">
               <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button>
               <button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button>
-              <button type="button" onClick={() => void logoutEntry()} disabled={!authenticated}>Logout</button>
             </div>
             {entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}
             {error && <div className="notice rest-error">{error}</div>}
