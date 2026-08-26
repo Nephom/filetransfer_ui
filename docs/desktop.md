@@ -126,9 +126,17 @@ into/out of the guest, in this priority order:
      (`C:`, `D:`, ...); uploads are rejected with a clear error until the
      user navigates into an actual drive.
 
-Reachability probes are pure-Rust `tokio::net` TCP checks (`tcp_check_reachable`),
-never a system `ssh`/`ping`/`telnet` binary, so behavior is identical across
-Windows, macOS, and Linux clients. VM SSH and Host SSH (jump) credentials are
+Reachability for **direct-sftp** and **jump-sftp** is verified with a real SSH
+transport handshake (`ssh_check_transport_reachable`, backed by the exact same
+`connect_transport` every real SFTP call uses -- see
+`src-tauri/src/ssh/mod.rs`), not a bare TCP connect: for jump-sftp this means
+actually authenticating to the Proxmox host and opening a `direct-tcpip`
+channel through to the VM's SSH port, so a guest with no SSH server (e.g. a
+stock Windows VM) is correctly detected as unreachable via jump-sftp too,
+instead of the always-up Proxmox host's own SSH port being mistaken for the
+VM being reachable. This is pure-Rust `russh`, never a system
+`ssh`/`ping`/`telnet` binary, so behavior is identical across Windows,
+macOS, and Linux clients. VM SSH and Host SSH (jump) credentials are
 identity fields on the `ProxmoxVncEntry` (see the "VM SSH" / "Host SSH (jump)"
 pages of the Add/Edit Proxmox VNC Entry dialog); their passwords are never
 stored in Session data -- they live in the OS keyring under the synthetic

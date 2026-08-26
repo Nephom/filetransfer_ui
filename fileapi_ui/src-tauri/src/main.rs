@@ -57,6 +57,20 @@ async fn tcp_check_reachable(host: String, port: u16, timeout_ms: u64) -> bool {
     netcheck::is_port_reachable(&host, port, timeout_ms).await
 }
 
+/// Real SSH-transport reachability probe (see
+/// `ssh::check_transport_reachable`). Unlike `tcp_check_reachable`, this
+/// proves a live SSH server actually answers at `profile.host:port` -- and,
+/// when `profile.jump_host` is set, that the jump host's stored credentials
+/// authenticate and it can tunnel through to that target -- rather than
+/// just that *some* process holds the port open. VNC mode's
+/// `detectTransferMode()` uses this (instead of probing the always-up
+/// Proxmox host port) to decide whether `direct-sftp`/`jump-sftp` will
+/// actually work for the VM before falling back to the guest-agent path.
+#[tauri::command]
+async fn ssh_check_transport_reachable(profile: ssh::SshProfile, timeout_ms: u64) -> bool {
+    ssh::check_transport_reachable(profile, timeout_ms).await
+}
+
 #[derive(Serialize)]
 struct ApiResponse {
     status: u16,
@@ -2581,6 +2595,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             api_request,
             tcp_check_reachable,
+            ssh_check_transport_reachable,
             pick_upload_files,
             pick_local_directory,
             save_text_file,

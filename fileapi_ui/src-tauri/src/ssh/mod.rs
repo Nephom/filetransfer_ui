@@ -805,6 +805,81 @@ async fn open_client_session(profile: &SshProfile) -> Result<ClientSession, Stri
     Ok(session)
 }
 
+/// Real reachability probe for a route this desktop client would actually
+/// use for SFTP: unlike a raw TCP connect (which only proves *some* process
+/// is listening on that port), this drives `connect_transport()` -- the
+/// exact function `ssh_list_directory`/`ssh_upload_path`/`ssh_download_path`
+/// use -- so it proves a live SSH server answers at `profile.host:port`,
+/// and, when `profile.jump_host` is set, that the jump host's own stored
+/// credentials actually authenticate and that it can open a `direct-tcpip`
+/// channel through to that target.
+///
+/// This is what VNC file transfer's `detectTransferMode()` uses to decide
+/// between `direct-sftp`/`jump-sftp`/`guest-agent`: probing the jump host's
+/// *own* SSH port (which is always up -- it's the Proxmox hypervisor
+/// itself) would say nothing about whether the VM behind it actually runs
+/// SSH, which is exactly the false-positive this avoids. No credentials for
+/// the tunneled *target* are needed or used here -- `connect_transport`
+/// completes the SSH transport/key-exchange handshake but never
+/// authenticates as a user against `profile.host`, only (when tunneling)
+/// against the jump host.
+///
+/// Never returns `Err`: any failure (invalid profile, jump auth failure,
+/// tunnel refused, target doesn't speak SSH, timeout) is logged and folded
+/// into `false`, matching `netcheck::is_port_reachable`'s contract so the
+/// frontend can treat this as a plain yes/no signal.
+pub async fn check_transport_reachable(profile: SshProfile, timeout_ms: u64) -> bool {
+    let label = profile_label(&profile);
+    if let Err(error) = validate_profile(&profile) {
+        crate::oplog::log(
+            "DEBUG",
+            "ssh_check_transport",
+            "skipped",
+            &label,
+            "",
+            &format!("Invalid probe profile: {error}"),
+        );
+        return false;
+    }
+    let timeout = std::time::Duration::from_millis(timeout_ms.max(1));
+    match tokio::time::timeout(timeout, connect_transport(&profile)).await {
+        Ok(Ok(session)) => {
+            session.disconnect_all().await;
+            crate::oplog::log(
+                "DEBUG",
+                "ssh_check_transport",
+                "reachable",
+                &label,
+                "",
+                "",
+            );
+            true
+        }
+        Ok(Err(error)) => {
+            crate::oplog::log(
+                "DEBUG",
+                "ssh_check_transport",
+                "unreachable",
+                &label,
+                "",
+                &error,
+            );
+            false
+        }
+        Err(_) => {
+            crate::oplog::log(
+                "DEBUG",
+                "ssh_check_transport",
+                "unreachable",
+                &label,
+                "",
+                &format!("Probe timed out after {}ms", timeout_ms),
+            );
+            false
+        }
+    }
+}
+
 pub async fn connect(
     app: tauri::AppHandle,
     profile: SshProfile,
@@ -1279,4 +1354,46 @@ pub fn load_proxmox_secret(entry_id: &str, kind: &str) -> Result<Option<String>,
 
 pub fn forget_proxmox_secret(entry_id: &str, kind: &str) -> Result<(), String> {
     secrets::forget_proxmox_secret(entry_id, kind)
+}
+
+#[cfg(test)]
+mod transport_reachability_tests {
+    use super::{check_transport_reachable, SshProfile};
+
+    fn blank_profile() -> SshProfile {
+        SshProfile {
+            id: "test".to_string(),
+            name: "".to_string(),
+            host: "".to_string(),
+            port: 22,
+            username: "".to_string(),
+            private_key_path: None,
+            jump_host: None,
+            jump_port: None,
+            jump_username: None,
+            jump_private_key_path: None,
+            jump_profile_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_profile_is_reported_unreachable_without_attempting_a_connection() {
+        // An empty host/username fails `validate_profile` -- this must be
+        // rejected immediately (false), never attempt a real TCP/SSH
+        // connect, and never hang waiting on the timeout.
+        let reachable = check_transport_reachable(blank_profile(), 5000).await;
+        assert!(!reachable);
+    }
+
+    #[tokio::test]
+    async fn unreachable_target_reports_false_within_the_timeout() {
+        let profile = SshProfile {
+            host: "192.0.2.1".to_string(), // TEST-NET-1, never routable.
+            username: "probe".to_string(),
+            name: "probe".to_string(),
+            ..blank_profile()
+        };
+        let reachable = check_transport_reachable(profile, 300).await;
+        assert!(!reachable);
+    }
 }

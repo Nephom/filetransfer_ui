@@ -94,7 +94,16 @@ type SshTransferProfile = {
 export const vmSshProfileId = (entryId: string) => `vncvm:${entryId}`;
 export const hostSshProfileId = (entryId: string) => `vncjump:${entryId}`;
 
-const REACHABILITY_TIMEOUT_MS = 1500;
+// Reachability timeouts for `ssh_check_transport_reachable`, which performs
+// a full SSH transport handshake (not a bare TCP connect), so both are more
+// generous than a plain port probe would need:
+//   - direct-sftp: one TCP connect + one SSH banner/key-exchange with the
+//     VM itself.
+//   - jump-sftp: a full authenticated connection to the Proxmox host,
+//     opening a `direct-tcpip` channel, *then* an SSH handshake with the VM
+//     over that tunnel -- inherently a longer chain of round-trips.
+const DIRECT_REACHABILITY_TIMEOUT_MS = 2500;
+const JUMP_REACHABILITY_TIMEOUT_MS = 6000;
 const MAX_TRANSFER_RETRIES = 2;
 
 export const proxmoxHostFromBaseUrl = (baseUrl: string): string => {
@@ -434,10 +443,20 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   // (full SFTP) > a VM IP reachable only via an SSH jump through the
   // Proxmox host (still full SFTP) > the QEMU Guest Agent REST API
   // fallback (qemu guests only, size-limited). All three checks run
-  // entirely from this desktop client -- via pure-Rust `tokio::net`
-  // TCP probes and the pure-Rust `russh`/`russh-sftp` stack, never a
+  // entirely from this desktop client -- via the pure-Rust `russh`
+  // transport (`ssh_check_transport_reachable`, which completes a real SSH
+  // handshake, not just a bare TCP connect) and `russh-sftp` stack, never a
   // system ssh/ping/telnet binary -- so behavior is identical whether the
   // client machine is Windows, macOS, or Linux.
+  //
+  // direct-sftp and jump-sftp are deliberately verified by actually
+  // reaching the VM's own SSH port (through the jump host's real,
+  // authenticated tunnel for jump-sftp) rather than merely checking that
+  // *some* port is open -- probing the Proxmox host's own SSH port would
+  // always succeed (it's the always-up hypervisor) regardless of whether
+  // the VM behind it runs SSH at all, which previously made jump-sftp show
+  // as available for guests (e.g. Windows without an SSH server) it could
+  // never actually work for.
   const detectTransferMode = async () => {
     if (!entry || !nativeEntry) return;
     setTransferMode("detecting");
@@ -445,8 +464,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     setGuestIp("");
     setPreferEntriesList(false);
     const sessionId = authSessions[entry.id];
-    const vmSshPort = entry.vmSshPort || 22;
-    const hostSshPort = entry.hostSshPort || 22;
     const proxmoxHost = proxmoxHostFromBaseUrl(entry.baseUrl);
 
     let agentAlive = false;
@@ -463,7 +480,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     if (entry.fileTransferIpOverride?.trim()) candidates = [entry.fileTransferIpOverride.trim(), ...candidates];
 
     for (const ip of candidates) {
-      const reachable = await invoke<boolean>("tcp_check_reachable", { host: ip, port: vmSshPort, timeoutMs: REACHABILITY_TIMEOUT_MS }).catch(() => false);
+      const reachable = await invoke<boolean>("ssh_check_transport_reachable", { profile: buildSshProfileFor("direct-sftp", ip), timeoutMs: DIRECT_REACHABILITY_TIMEOUT_MS }).catch(() => false);
       if (reachable) {
         setGuestIp(ip);
         setTransferMode("direct-sftp");
@@ -473,8 +490,8 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
     const jumpCandidate = candidates[0];
     if (jumpCandidate && proxmoxHost && entry.hostSshUsername?.trim()) {
-      const hostReachable = await invoke<boolean>("tcp_check_reachable", { host: proxmoxHost, port: hostSshPort, timeoutMs: REACHABILITY_TIMEOUT_MS }).catch(() => false);
-      if (hostReachable) {
+      const jumpReachable = await invoke<boolean>("ssh_check_transport_reachable", { profile: buildSshProfileFor("jump-sftp", jumpCandidate), timeoutMs: JUMP_REACHABILITY_TIMEOUT_MS }).catch(() => false);
+      if (jumpReachable) {
         setGuestIp(jumpCandidate);
         setTransferMode("jump-sftp");
         return;
@@ -508,16 +525,18 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transferMode, guestIp]);
 
-  const buildSshProfile = (): SshTransferProfile => {
+  const buildSshProfile = (): SshTransferProfile => buildSshProfileFor(transferMode, guestIp);
+
+  const buildSshProfileFor = (mode: VncTransferMode, ip: string): SshTransferProfile => {
     const base: SshTransferProfile = {
       id: vmSshProfileId(entry?.id || "unknown"),
       name: `${entry?.name || "VM"} (VM)`,
-      host: guestIp,
+      host: ip,
       port: entry?.vmSshPort || 22,
       username: entry?.vmSshUsername || "root",
       privateKeyPath: entry?.vmSshPrivateKeyPath || "",
     };
-    if (transferMode !== "jump-sftp" || !entry) return base;
+    if (mode !== "jump-sftp" || !entry) return base;
     return {
       ...base,
       jumpHost: proxmoxHostFromBaseUrl(entry.baseUrl),
