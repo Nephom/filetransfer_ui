@@ -1392,14 +1392,25 @@ async fn agent_exec_wait(
 /// first since that's the documented shape; if it doesn't decode as base64
 /// at all, the value must already be plain text, so use it as-is instead of
 /// throwing it away.
+/// Decode a guest-agent payload that's normally base64 but, on at least one
+/// Proxmox/guest-agent combination, comes back as plain text already (see
+/// the module-level `decode_exec_output`/download-compat-mode callers).
+/// Try base64 first (the documented shape); if that fails, the value must
+/// already be plain/raw text, so use its bytes as-is instead of throwing it
+/// away. Returns raw bytes so binary content (e.g. downloaded files) round-
+/// trips correctly; text callers wrap this with `String::from_utf8_lossy`.
+fn decode_agent_bytes(text: &str) -> Vec<u8> {
+    match BASE64.decode(text) {
+        Ok(bytes) => bytes,
+        Err(_) => text.as_bytes().to_vec(),
+    }
+}
+
 fn decode_exec_output(value: Option<String>) -> String {
     let Some(text) = value else {
         return String::new();
     };
-    match BASE64.decode(&text) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(_) => text,
-    }
+    String::from_utf8_lossy(&decode_agent_bytes(&text)).into_owned()
 }
 
 /// Run a command inside the guest to completion and return its result.
@@ -1683,12 +1694,29 @@ fn parse_windows_listing_output(stdout: &str, path: &str) -> Vec<crate::LocalFil
     files
 }
 
+/// True if a guest-agent `file-read` request was rejected because this
+/// Proxmox version's API schema doesn't know about the `offset`/`count`/
+/// `decode` parameters yet (added after the base `file-read` endpoint
+/// already existed) -- as opposed to any other failure (auth, guest agent
+/// down, file not found, etc), which must still be surfaced as a real
+/// error rather than silently swallowed into a fallback attempt.
+fn is_file_read_params_rejected_by_schema(error: &str) -> bool {
+    error.contains("does not allow additional properties")
+}
+
 /// Download a file from the guest via chunked `file-read` calls (the server
 /// caps each call at 16 MiB; this client loops with a smaller chunk size so
 /// download progress updates smoothly). EOF is detected the same way the
 /// Proxmox API itself signals it: once `truncated` is absent/false in a
 /// response, the actual end of the file has been reached even if the
 /// requested `count` was not fully satisfied.
+///
+/// Older Proxmox versions' `file-read` endpoint predates the `offset`/
+/// `count`/`decode` parameters entirely and rejects them with a 400 schema
+/// validation error ("does not allow additional properties") -- if that
+/// happens on the very first request (before any bytes have been written),
+/// this falls back to a single, unparameterized `file-read?file=...` call
+/// that reads the whole file in one shot instead.
 pub async fn agent_download_file(
     app: tauri::AppHandle,
     entry: VncEntry,
@@ -1715,6 +1743,7 @@ pub async fn agent_download_file(
     let (destination, temporary, mut file) =
         crate::create_unique_download_file(&requested_destination)?;
     let mut offset: u64 = 0;
+    let mut chunked_supported = true;
     let mut last_emit = std::time::Instant::now() - Duration::from_secs(1);
     loop {
         if crate::is_transfer_cancelled(&transfer_id) {
@@ -1722,10 +1751,14 @@ pub async fn agent_download_file(
             let _ = std::fs::remove_file(&temporary);
             return Err("Transfer cancelled".to_string());
         }
-        let query = format!(
-            "file={}&offset={offset}&count={AGENT_READ_CHUNK_BYTES}&decode=0",
-            urlencoding::encode(&remote_path)
-        );
+        let query = if chunked_supported {
+            format!(
+                "file={}&offset={offset}&count={AGENT_READ_CHUNK_BYTES}&decode=0",
+                urlencoding::encode(&remote_path)
+            )
+        } else {
+            format!("file={}", urlencoding::encode(&remote_path))
+        };
         let response: AgentFileReadResponse = match agent_request(
             &entry,
             &session_id,
@@ -1738,6 +1771,21 @@ pub async fn agent_download_file(
         {
             Ok(response) => response,
             Err(error) => {
+                if chunked_supported
+                    && offset == 0
+                    && is_file_read_params_rejected_by_schema(&error)
+                {
+                    chunked_supported = false;
+                    crate::oplog::log(
+                        "DEBUG",
+                        "proxmox_agent_download",
+                        "compat_mode_fallback",
+                        &label,
+                        &remote_path,
+                        &serde_json::json!({"operationId": operation_id, "error": error}).to_string(),
+                    );
+                    continue;
+                }
                 drop(file);
                 let _ = std::fs::remove_file(&temporary);
                 crate::oplog::log(
@@ -1751,14 +1799,7 @@ pub async fn agent_download_file(
                 return Err(error);
             }
         };
-        let chunk = match BASE64.decode(response.content.as_bytes()) {
-            Ok(chunk) => chunk,
-            Err(error) => {
-                drop(file);
-                let _ = std::fs::remove_file(&temporary);
-                return Err(format!("Invalid guest agent file-read response: {error}"));
-            }
-        };
+        let chunk = decode_agent_bytes(&response.content);
         let chunk_len = chunk.len() as u64;
         if let Err(error) = file.write_all(&chunk) {
             drop(file);
@@ -1776,6 +1817,29 @@ pub async fn agent_download_file(
                 },
             );
             last_emit = std::time::Instant::now();
+        }
+        if !chunked_supported {
+            // No offset/count means no way to ask for the rest -- this
+            // Proxmox version's single-shot file-read is all we can ever
+            // get, so a truncated result here is a hard limit, not
+            // something a retry could fix.
+            if response.truncated {
+                drop(file);
+                let _ = std::fs::remove_file(&temporary);
+                let message = format!(
+                    "\"{remote_path}\" is larger than this Proxmox version's Guest Agent file-read API can return in a single call. Use a reachable direct or jump-host SFTP connection instead."
+                );
+                crate::oplog::log(
+                    "ERROR",
+                    "proxmox_agent_download",
+                    "failed",
+                    &label,
+                    &remote_path,
+                    &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "error": message}).to_string(),
+                );
+                return Err(message);
+            }
+            break;
         }
         if !response.truncated || chunk_len == 0 {
             break;
@@ -2011,8 +2075,9 @@ Remove-Item -LiteralPath {staging} -Recurse -Force",
 #[cfg(test)]
 mod tests {
     use super::{
-        api_url, decode_exec_output, normalized_url, powershell_command, valid_relay_request,
-        AgentExecStatusRaw, AgentFileReadResponse, BASE64,
+        api_url, decode_agent_bytes, decode_exec_output, is_file_read_params_rejected_by_schema,
+        normalized_url, powershell_command, valid_relay_request, AgentExecStatusRaw,
+        AgentFileReadResponse, BASE64,
     };
     use base64::Engine as _;
 
@@ -2065,6 +2130,39 @@ mod tests {
     #[test]
     fn decode_exec_output_defaults_to_empty_string_when_missing() {
         assert_eq!(decode_exec_output(None), "");
+    }
+
+    #[test]
+    fn decode_agent_bytes_decodes_genuine_base64_to_raw_bytes() {
+        let encoded = BASE64.encode([0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(decode_agent_bytes(&encoded), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn decode_agent_bytes_falls_back_to_raw_text_bytes_when_not_valid_base64() {
+        assert_eq!(
+            decode_agent_bytes("not: valid\r\nbase64"),
+            b"not: valid\r\nbase64".to_vec()
+        );
+    }
+
+    #[test]
+    fn file_read_params_rejected_by_schema_matches_the_observed_proxmox_error() {
+        // Real error seen from an older Proxmox VE whose file-read endpoint
+        // predates the offset/count/decode parameters.
+        let error = r#"Proxmox guest agent file-read failed (400 Bad Request): {"data":null,"errors":{"offset":"property is not defined in schema and the schema does not allow additional properties","decode":"property is not defined in schema and the schema does not allow additional properties","count":"property is not defined in schema and the schema does not allow additional properties"}}"#;
+        assert!(is_file_read_params_rejected_by_schema(error));
+    }
+
+    #[test]
+    fn file_read_params_rejected_by_schema_does_not_match_unrelated_errors() {
+        for error in [
+            "Proxmox guest agent file-read failed (404 Not Found): no such file",
+            "Unable to reach the Proxmox Guest Agent endpoint \"file-read\": timed out",
+            "Proxmox guest agent file-read failed (403 Forbidden): permission denied",
+        ] {
+            assert!(!is_file_read_params_rejected_by_schema(error));
+        }
     }
 
     #[test]
