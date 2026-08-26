@@ -439,14 +439,64 @@ async fn pick_upload_files() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 async fn pick_local_directory(path: String) -> Result<Option<String>, String> {
-    let initial_directory = resolve_local_download_destination(&path)?;
+    // Temporary live-debugging aid for the "Download never shows a folder
+    // picker" investigation: log every step so a failure that happens
+    // before rfd ever gets a chance to show a dialog (or a dialog that
+    // returns something unexpected) is visible in operations.log instead
+    // of only surfacing as an opaque error banner in the UI.
+    oplog::log(
+        "DEBUG",
+        "local_pick_directory",
+        "started",
+        &path,
+        "",
+        "{}",
+    );
+    let initial_directory = match resolve_local_download_destination(&path) {
+        Ok(directory) => directory,
+        Err(error) => {
+            oplog::log(
+                "DEBUG",
+                "local_pick_directory",
+                "initial_directory_failed",
+                &path,
+                "",
+                &serde_json::json!({ "error": error }).to_string(),
+            );
+            return Err(error);
+        }
+    };
+    oplog::log(
+        "DEBUG",
+        "local_pick_directory",
+        "initial_directory_resolved",
+        &path,
+        &initial_directory.display().to_string(),
+        "{}",
+    );
     let selected = rfd::AsyncFileDialog::new()
-        .set_directory(initial_directory)
+        .set_directory(&initial_directory)
         .pick_folder()
         .await;
     let Some(selected) = selected else {
+        oplog::log(
+            "DEBUG",
+            "local_pick_directory",
+            "dialog_cancelled_or_unavailable",
+            &path,
+            &initial_directory.display().to_string(),
+            "{}",
+        );
         return Ok(None);
     };
+    oplog::log(
+        "DEBUG",
+        "local_pick_directory",
+        "dialog_returned_selection",
+        &path,
+        &selected.path().display().to_string(),
+        "{}",
+    );
     let selected_path = canonicalize(selected.path())?;
     let home = canonicalize(local_home()?)?;
     if selected_path.starts_with(&home) {
@@ -845,6 +895,18 @@ fn list_local_roots() -> Vec<String> {
     }
 }
 
+/// Whether an absolute local path is allowed through the "stay inside HOME"
+/// jail: either it actually resolves inside `home`, or the process is
+/// running elevated (which lifts the jail entirely). Pulled out as a pure,
+/// dependency-injected function (rather than calling `is_elevated()`
+/// directly at each call site) so the home-containment branch -- the one
+/// that matters for native-picker-selected paths like a file on the user's
+/// own Desktop -- can be unit-tested deterministically, independent of
+/// whatever real OS privilege level happens to run the test suite.
+fn is_within_home_or_elevated(resolved: &Path, home: &Path, elevated: bool) -> bool {
+    resolved.starts_with(home) || elevated
+}
+
 fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
     let input = Path::new(path);
     if input
@@ -854,13 +916,21 @@ fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
         return Err("Local transfer path must not contain '..'".to_string());
     }
     if input.is_absolute() {
-        if !is_elevated() {
-            return Err(
-                "Local transfer path must remain inside the current user's home directory"
-                    .to_string(),
-            );
+        // Native OS file/folder pickers (used by the Proxmox VNC upload/
+        // download flow) always return absolute paths, even for a file that
+        // is legitimately inside the user's own home directory (e.g. their
+        // Desktop) -- an absolute path alone says nothing about whether it
+        // is inside or outside the jail, so it must actually be checked
+        // against `home` rather than treated as automatically "outside".
+        let resolved = canonicalize(input)?;
+        let home = canonicalize(local_home()?)?;
+        if is_within_home_or_elevated(&resolved, &home, is_elevated()) {
+            return Ok(resolved);
         }
-        return canonicalize(input);
+        return Err(
+            "Local transfer path must remain inside the current user's home directory"
+                .to_string(),
+        );
     }
     let home = canonicalize(local_home()?)?;
     let candidate = home.join(input);
@@ -890,14 +960,19 @@ fn resolve_local_download_destination(path: &str) -> Result<PathBuf, String> {
         return Err("Local transfer path must not contain '..'".to_string());
     }
     if input.is_absolute() {
-        if !is_elevated() {
-            return Err(
-                "Local transfer path must remain inside the current user's home directory"
-                    .to_string(),
-            );
-        }
+        // See resolve_local_transfer_path: an absolute path from a native
+        // picker isn't necessarily outside the jail, so it must be checked
+        // against `home` rather than automatically requiring elevation.
         std::fs::create_dir_all(input).map_err(|error| error.to_string())?;
-        return canonicalize(input);
+        let resolved = canonicalize(input)?;
+        let home = canonicalize(local_home()?)?;
+        if is_within_home_or_elevated(&resolved, &home, is_elevated()) {
+            return Ok(resolved);
+        }
+        return Err(
+            "Local transfer path must remain inside the current user's home directory"
+                .to_string(),
+        );
     }
     let home = canonicalize(local_home()?)?;
     let candidate = home.join(input);
@@ -968,12 +1043,6 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
         return Err("Local transfer path must not contain '..'".to_string());
     }
     if input.is_absolute() {
-        if !is_elevated() {
-            return Err(
-                "Local transfer path must remain inside the current user's home directory"
-                    .to_string(),
-            );
-        }
         let name = input
             .file_name()
             .ok_or_else(|| "Invalid local path".to_string())?
@@ -983,7 +1052,17 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
                 .parent()
                 .ok_or_else(|| "Invalid local path".to_string())?,
         )?;
-        return Ok(parent.join(name));
+        // See resolve_local_transfer_path: an absolute path from a native
+        // picker isn't necessarily outside the jail, so it must be checked
+        // against `home` rather than automatically requiring elevation.
+        let home = canonicalize(local_home()?)?;
+        if is_within_home_or_elevated(&parent, &home, is_elevated()) {
+            return Ok(parent.join(name));
+        }
+        return Err(
+            "Local transfer path must remain inside the current user's home directory"
+                .to_string(),
+        );
     }
     let home = canonicalize(local_home()?)?;
     let candidate = home.join(input);
@@ -2678,7 +2757,88 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{dedupe_candidate_name, resolve_local_download_file, UploadProgressEvent};
+    use super::{
+        dedupe_candidate_name, is_within_home_or_elevated, resolve_local_download_destination,
+        resolve_local_download_file, resolve_local_new_path, resolve_local_transfer_path,
+        UploadProgressEvent,
+    };
+    use std::fs;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // `HOME` is a process-wide env var; serialize every test that mutates it
+    // so they can't stomp on each other when cargo runs tests in parallel
+    // threads (same pattern as oplog::tests::TEST_LOCK).
+    static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_temp_home<T>(run: impl FnOnce(&std::path::Path) -> T) -> T {
+        let _lock = HOME_ENV_LOCK.lock().expect("home env lock should not be poisoned");
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!("nfterm-home-{suffix}"));
+        fs::create_dir_all(&home).expect("temporary home directory should be created");
+        let previous_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+        let result = run(&home);
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = fs::remove_dir_all(&home);
+        result
+    }
+
+    #[test]
+    fn is_within_home_or_elevated_only_allows_containment_or_elevation() {
+        let home = std::path::Path::new("/home/alice");
+        let inside = std::path::Path::new("/home/alice/Desktop/file.txt");
+        let outside = std::path::Path::new("/tmp/file.txt");
+        assert!(is_within_home_or_elevated(inside, home, false));
+        assert!(is_within_home_or_elevated(inside, home, true));
+        assert!(!is_within_home_or_elevated(outside, home, false));
+        assert!(is_within_home_or_elevated(outside, home, true));
+    }
+
+    #[test]
+    fn resolve_local_transfer_path_accepts_an_absolute_path_inside_home() {
+        with_temp_home(|home| {
+            let desktop = home.join("Desktop");
+            fs::create_dir_all(&desktop).expect("Desktop directory should be created");
+            let file = desktop.join("report.txt");
+            fs::write(&file, b"hello").expect("test file should be written");
+            // Regression test for the confirmed bug: a native file-picker
+            // dialog always returns an absolute path, even for a file that
+            // is legitimately inside the user's own home directory -- this
+            // must resolve successfully without requiring elevation.
+            let resolved = resolve_local_transfer_path(&file.display().to_string())
+                .expect("a file inside home should resolve without elevation");
+            assert!(resolved.ends_with("Desktop/report.txt") || resolved.ends_with("Desktop\\report.txt"));
+        });
+    }
+
+    #[test]
+    fn resolve_local_download_destination_accepts_an_absolute_path_inside_home() {
+        with_temp_home(|home| {
+            let downloads = home.join("Downloads");
+            let resolved =
+                resolve_local_download_destination(&downloads.display().to_string())
+                    .expect("a not-yet-existing folder inside home should resolve without elevation");
+            assert!(resolved.ends_with("Downloads"));
+            assert!(resolved.is_dir());
+        });
+    }
+
+    #[test]
+    fn resolve_local_new_path_accepts_an_absolute_parent_inside_home() {
+        with_temp_home(|home| {
+            let target = home.join("notes.txt");
+            let resolved = resolve_local_new_path(&target.display().to_string())
+                .expect("a new file whose parent is inside home should resolve without elevation");
+            assert!(resolved.ends_with("notes.txt"));
+        });
+    }
 
     #[test]
     fn upload_progress_event_keeps_normalized_queue_fields() {

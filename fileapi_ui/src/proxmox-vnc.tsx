@@ -650,6 +650,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const pickAndUpload = async () => {
     if (!entry || transferMode === "unavailable" || transferMode === "unknown" || transferMode === "detecting") return;
+    setTransferError("");
     try {
       const paths = await invoke<string[]>("pick_upload_files");
       paths.forEach((path) => runUpload(path));
@@ -693,6 +694,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const pickAndDownload = async () => {
     if (!entry) return;
+    setTransferError("");
     const items = remoteFiles.filter((file) => selectedRemotePaths.has(file.path));
     if (!items.length) { setTransferError("Select at least one file to download first."); return; }
     if (transferMode === "guest-agent" && items.some((item) => item.isDirectory)) {
