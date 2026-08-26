@@ -152,7 +152,8 @@ own) so files can be browsed and transferred without ever unmounting the
 Connection Controls + VNC screen on the right -- disconnecting, or clicking
 "&larr; Entries" in the sidebar, returns to the entries list without logging
 out of the Proxmox web session. See
-[`docs/frontend-architecture.md`](./frontend-architecture.md) for the
+the mode-specific frontend references ([Location](./location_tech.md),
+[REST API](./restapi_tech.md), and [Proxmox VNC](./proxmox_vnc_tech.md)) for the
 component/state breakdown of this screen.
 
 ## HPE IML Monitor

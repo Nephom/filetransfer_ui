@@ -1,11 +1,10 @@
-# Desktop Frontend Architecture (fileapi_ui)
+# Proxmox VNC frontend architecture (`fileapi_ui`)
 
-This document is a technical reference for the Tauri desktop client's
-frontend (`fileapi_ui/src`) -- what the shared CSS design tokens mean and
-where they're used, and what each function/component in the more involved
-modules is responsible for. It's meant to be extended over time; the
-Proxmox VNC workspace (`proxmox-vnc.tsx`/`proxmox-vnc.css`) is documented in
-full below since it's the most recently reworked area (T-220/T-221).
+This document is the technical reference for the Proxmox VNC workspace in
+`fileapi_ui/src/proxmox-vnc.tsx` and `proxmox-vnc.css`, including its shared
+CSS token dependencies and the VNC-specific component/state/function
+contract. Location and REST API mode are documented separately in
+[`location_tech.md`](./location_tech.md) and [`restapi_tech.md`](./restapi_tech.md).
 
 ## Tech stack
 

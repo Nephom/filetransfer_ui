@@ -39,9 +39,17 @@ The complete API documentation is available in the `api/` directory:
 - **[nFterm Desktop Architecture](./desktop.md)** - Supported desktop runtime
   boundaries, secrets, local filesystem protection, queue, SSH/SFTP, and
   Proxmox VNC behavior.
-- **[Frontend Architecture](./frontend-architecture.md)** - Desktop UI tech
-  stack, CSS design token reference, and the Proxmox VNC workspace's
-  component/state/function breakdown.
+- **[Proxmox VNC frontend architecture](./proxmox_vnc_tech.md)** - VNC
+  workspace component/state/function breakdown and CSS contract.
+- **[Location mode frontend architecture](./location_tech.md)** - LOCAL/REMOTE
+  browsing, Location selection, transfers, sharing, overlays, and the complete
+  Location-mode CSS inventory.
+- **[REST API mode frontend architecture](./restapi_tech.md)** - REST request,
+  authentication, Redfish/HPE/OpenBMC tools, response views, and complete
+  REST CSS contract.
+- **[Frontend CSS custom properties](./css_tokens.md)** - Purpose, fallback
+  chain, profile aliases, z-index, spacing, typography, and ownership of every
+  shared CSS variable.
 - **[Transfer Queue](./queue.md)** - Queue lifecycle, progress, retry, cleanup,
   persistence, and failure decisions.
 
@@ -57,6 +65,10 @@ The complete API documentation is available in the `api/` directory:
 - [Error Handling](./api/error-codes.md)
 - [WebUI Permission Management](./permissions.md)
 - [nFterm Desktop Architecture](./desktop.md)
+- [Location mode frontend architecture](./location_tech.md)
+- [REST API mode frontend architecture](./restapi_tech.md)
+- [Proxmox VNC frontend architecture](./proxmox_vnc_tech.md)
+- [Frontend CSS custom properties](./css_tokens.md)
 
 ### For API Users
 
