@@ -49,7 +49,7 @@ Deployment values belong in protected, ignored `.env` or `src/config.ini` files.
 
 The default HTTP port is `9400`; the default HTTPS port is `9443`. Production deployments should use an operating-system-trusted HTTPS certificate.
 
-## nFterm Desktop 3.4.0-preview3
+## nFterm Desktop 3.4.0-preview4
 
 nFterm is a Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11. It connects to the API server over HTTPS and provides:
 
@@ -57,7 +57,16 @@ nFterm is a Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11. It conn
 - SSH Terminal, SFTP browsing, SSH upload/download, and remote archive operations.
 - A Transfer Queue with progress, cancellation, bounded retry, failure classification, and interrupted-state recovery.
 - REST API workspaces for generic REST, HPE iLO, OpenBMC, Redfish Session Auth, and Redfish Actions.
-- Proxmox VNC workspaces with login, VM discovery, VNC connection, and entry isolation.
+- Proxmox VNC workspaces with login, VM discovery, VNC connection, entry isolation, and file transfers to VMs through the applicable transfer mode. The nFterm execution environment and the Proxmox Host must be on the same network segment.
+- VM file-transfer modes:
+
+  | VM type | Same network segment as the nFterm host (reachable by ping) | Different network segment from the nFterm host (not reachable by ping) |
+  | --- | --- | --- |
+  | Linux VM | SFTP via SSH | SFTP via Host jumping |
+  | Windows VM | Not supported through SSH/SFTP | Not supported through SSH/SFTP |
+  | Windows VM (Proxmox API) | Proxmox-provided API transfer protocol | Proxmox-provided API transfer protocol |
+- Windows VM file transfer through the Proxmox API requires QEMU Guest Agent to be installed. The VM owner's permissions must include `VM.GuestAgent.FileRead`, `VM.GuestAgent.FileWrite`, and `VM.GuestAgent.Unrestricted`. Enabling all `VM.GuestAgent.*` permissions is recommended.
+- **LXC does not support this operation.**
 - Local file viewer/editor, archive operations, operation logs, and undo history.
 
 ### Desktop Build

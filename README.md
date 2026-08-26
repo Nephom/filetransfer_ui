@@ -49,7 +49,7 @@ WebUI 是瀏覽器版檔案管理介面，提供：
 
 預設 HTTP port 為 `9400`，HTTPS port 為 `9443`。正式環境應使用受作業系統信任的 HTTPS 憑證。
 
-## nFterm Desktop 3.4.0-preview3
+## nFterm Desktop 3.4.0-preview4
 
 nFterm 是 Tauri v2 desktop client，支援 Ubuntu 22.04+ 與 Windows 10/11。它使用 HTTPS 連線至 API server，並提供：
 
@@ -57,7 +57,16 @@ nFterm 是 Tauri v2 desktop client，支援 Ubuntu 22.04+ 與 Windows 10/11。�
 - SSH Terminal、SFTP browsing、SSH upload/download 與 remote archive 操作。
 - Transfer Queue、進度、取消、bounded retry、失敗分類與中斷狀態恢復。
 - REST API workspace，支援一般 REST、HPE iLO、OpenBMC、Redfish Session Auth 與 Redfish Actions。
-- Proxmox VNC workspace，支援登入、VM discovery、VNC 連線與 entry 隔離。
+- Proxmox VNC workspace，支援登入、VM discovery、VNC 連線、entry 隔離，以及透過對應模式與 VM 傳輸檔案。nFterm 執行機與 Proxmox Host 必須位於同一網段。
+- VM 檔案傳輸模式：
+
+  | VM 類型 | 與 nFterm 執行機同一網段（可互 ping） | 與 nFterm 執行機不同網段（不可互 ping） |
+  | --- | --- | --- |
+  | Linux VM | SFTP（via SSH） | SFTP（via Host jumping） |
+  | Windows VM | 不支援 SSH/SFTP | 不支援 SSH/SFTP |
+  | Windows VM（Proxmox API） | Proxmox 提供的 API 傳輸協議 | Proxmox 提供的 API 傳輸協議 |
+- Windows VM 透過 Proxmox API 傳輸時，必須安裝 QEMU Guest Agent。VM 擁有者的權限必須包含 `VM.GuestAgent.FileRead`、`VM.GuestAgent.FileWrite` 與 `VM.GuestAgent.Unrestricted`。建議啟用全部 `VM.GuestAgent.*` 權限。
+- **LXC 不支援這項操作。**
 - 本地檔案 viewer、editor、archive、operation log 與 undo history。
 
 ### Desktop Build
