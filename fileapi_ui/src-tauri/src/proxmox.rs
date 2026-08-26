@@ -960,9 +960,32 @@ struct AgentPidResponse {
     pid: i64,
 }
 
+/// Proxmox's Perl API proxies the QEMU Guest Agent's raw JSON response
+/// as-is. When a boolean value is still an unblessed Perl scalar `0`/`1`
+/// (which happens for `false` far more often than for `true`) it gets
+/// re-serialized as a bare JSON integer instead of `true`/`false`. Accept
+/// either shape here so a guest command that is merely still running
+/// (`"exited":0`) doesn't get misreported as a deserialization failure.
+fn deserialize_lenient_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolLike {
+        Bool(bool),
+        Int(i64),
+    }
+
+    match BoolLike::deserialize(deserializer)? {
+        BoolLike::Bool(value) => Ok(value),
+        BoolLike::Int(value) => Ok(value != 0),
+    }
+}
+
 #[derive(Deserialize)]
 struct AgentExecStatusRaw {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     exited: bool,
     #[serde(default)]
     exitcode: Option<i64>,
@@ -977,7 +1000,7 @@ struct AgentExecStatusRaw {
 #[derive(Deserialize)]
 struct AgentFileReadResponse {
     content: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_lenient_bool")]
     truncated: bool,
 }
 
@@ -1926,7 +1949,10 @@ Remove-Item -LiteralPath {staging} -Recurse -Force",
 
 #[cfg(test)]
 mod tests {
-    use super::{api_url, normalized_url, valid_relay_request, BASE64};
+    use super::{
+        api_url, normalized_url, valid_relay_request, AgentExecStatusRaw, AgentFileReadResponse,
+        BASE64,
+    };
     use base64::Engine as _;
 
     #[test]
@@ -1938,6 +1964,37 @@ mod tests {
                 url.as_str(),
                 "https://pve.example:8006/api2/json/access/ticket"
             );
+        }
+    }
+
+    #[test]
+    fn exec_status_exited_accepts_json_bool_and_integer_zero_or_one() {
+        for (body, expected) in [
+            (r#"{"exited":false}"#, false),
+            (r#"{"exited":true}"#, true),
+            (r#"{"exited":0}"#, false),
+            (r#"{"exited":1}"#, true),
+            (r#"{"exited":2}"#, true),
+            (r#"{}"#, false),
+        ] {
+            let status: AgentExecStatusRaw =
+                serde_json::from_str(body).expect("exec-status response should decode");
+            assert_eq!(status.exited, expected, "body was {body}");
+        }
+    }
+
+    #[test]
+    fn file_read_truncated_accepts_json_bool_and_integer_zero_or_one() {
+        for (body, expected) in [
+            (r#"{"content":"","truncated":false}"#, false),
+            (r#"{"content":"","truncated":true}"#, true),
+            (r#"{"content":"","truncated":0}"#, false),
+            (r#"{"content":"","truncated":1}"#, true),
+            (r#"{"content":""}"#, false),
+        ] {
+            let response: AgentFileReadResponse =
+                serde_json::from_str(body).expect("file-read response should decode");
+            assert_eq!(response.truncated, expected, "body was {body}");
         }
     }
 
