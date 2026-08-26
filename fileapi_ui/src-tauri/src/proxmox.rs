@@ -1309,14 +1309,21 @@ fn powershell_encoded_command(script: &str) -> String {
 }
 
 /// Build the `agent_exec` command vector to run a PowerShell script via
-/// `-EncodedCommand`.
+/// `-EncodedCommand`. Every script is prefixed with `$ProgressPreference =
+/// 'SilentlyContinue'` -- without it, PowerShell's module-autoload progress
+/// reporting (e.g. "Preparing modules for first use") gets written to
+/// stderr as a CLIXML-wrapped blob on a guest's first PowerShell
+/// invocation, which would otherwise look like a real error even though
+/// the command actually succeeded.
 fn powershell_command(script: &str) -> Vec<String> {
     vec![
         "powershell.exe".to_string(),
         "-NoProfile".to_string(),
         "-NonInteractive".to_string(),
         "-EncodedCommand".to_string(),
-        powershell_encoded_command(script),
+        powershell_encoded_command(&format!(
+            "$ProgressPreference = 'SilentlyContinue'; {script}"
+        )),
     ]
 }
 
@@ -1359,17 +1366,11 @@ async fn agent_exec_wait(
         )
         .await?;
         if raw.exited {
-            let decode = |value: Option<String>| -> String {
-                value
-                    .and_then(|text| BASE64.decode(text).ok())
-                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                    .unwrap_or_default()
-            };
             return Ok(AgentExecResult {
                 exit_code: raw.exitcode,
                 signal: raw.signal,
-                stdout: decode(raw.out_data),
-                stderr: decode(raw.err_data),
+                stdout: decode_exec_output(raw.out_data),
+                stderr: decode_exec_output(raw.err_data),
             });
         }
         if std::time::Instant::now() >= deadline {
@@ -1378,6 +1379,26 @@ async fn agent_exec_wait(
             ));
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+
+/// Decode an `exec-status` `out-data`/`err-data` field. Per the QMP
+/// `GuestExecStatus` schema this is always base64, but live testing against
+/// a real Proxmox host showed at least one combination of Proxmox/guest
+/// agent versions returns it as plain text already (e.g. `"C:\r\nD:\r\n"`,
+/// which isn't valid base64 at all -- `:`, `\r`, and `\n` aren't in the
+/// base64 alphabet). Blindly trusting the base64 decode and swallowing a
+/// failure into `""` silently discarded real command output. Try base64
+/// first since that's the documented shape; if it doesn't decode as base64
+/// at all, the value must already be plain text, so use it as-is instead of
+/// throwing it away.
+fn decode_exec_output(value: Option<String>) -> String {
+    let Some(text) = value else {
+        return String::new();
+    };
+    match BASE64.decode(&text) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => text,
     }
 }
 
@@ -1990,8 +2011,8 @@ Remove-Item -LiteralPath {staging} -Recurse -Force",
 #[cfg(test)]
 mod tests {
     use super::{
-        api_url, normalized_url, valid_relay_request, AgentExecStatusRaw, AgentFileReadResponse,
-        BASE64,
+        api_url, decode_exec_output, normalized_url, powershell_command, valid_relay_request,
+        AgentExecStatusRaw, AgentFileReadResponse, BASE64,
     };
     use base64::Engine as _;
 
@@ -2021,6 +2042,55 @@ mod tests {
                 serde_json::from_str(body).expect("exec-status response should decode");
             assert_eq!(status.exited, expected, "body was {body}");
         }
+    }
+
+    #[test]
+    fn decode_exec_output_decodes_genuine_base64() {
+        let encoded = BASE64.encode("C:\r\nD:\r\n");
+        assert_eq!(decode_exec_output(Some(encoded)), "C:\r\nD:\r\n");
+    }
+
+    #[test]
+    fn decode_exec_output_falls_back_to_plain_text_when_not_valid_base64() {
+        // Live testing showed at least one Proxmox/guest-agent combination
+        // returns out-data/err-data as plain text rather than the
+        // documented base64 -- ':' and embedded CR/LF are not valid base64
+        // characters, so the decode attempt fails and the raw text must be
+        // used as-is instead of being silently discarded into "".
+        for text in ["C:\r\nD:\r\n", "hello world\n", ""] {
+            assert_eq!(decode_exec_output(Some(text.to_string())), text);
+        }
+    }
+
+    #[test]
+    fn decode_exec_output_defaults_to_empty_string_when_missing() {
+        assert_eq!(decode_exec_output(None), "");
+    }
+
+    #[test]
+    fn powershell_command_always_suppresses_progress_preference() {
+        // Without this, PowerShell's module-autoload progress reporting
+        // writes a CLIXML blob to stderr on a guest's first invocation,
+        // which looks like a real error even though the command succeeded.
+        let command = powershell_command("Get-PSDrive");
+        assert_eq!(
+            command[..4],
+            [
+                "powershell.exe".to_string(),
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-EncodedCommand".to_string(),
+            ]
+        );
+        let encoded = &command[4];
+        let bytes = BASE64.decode(encoded).expect("command should be valid base64");
+        let units: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let script = String::from_utf16(&units).expect("script should be valid UTF-16");
+        assert!(script.starts_with("$ProgressPreference = 'SilentlyContinue'; "));
+        assert!(script.ends_with("Get-PSDrive"));
     }
 
     #[test]
