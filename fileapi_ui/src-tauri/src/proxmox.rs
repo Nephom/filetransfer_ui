@@ -1058,17 +1058,57 @@ async fn agent_request<T: DeserializeOwned>(
     request = request
         .header("Cookie", format!("PVEAuthCookie={}", auth.ticket))
         .header("CSRFPreventionToken", auth.csrf_token.clone());
-    if let Some(json_payload) = json_payload {
-        request = request.json(&json_payload);
+    if let Some(payload) = &json_payload {
+        request = request.json(payload);
     }
+    // Temporary live-debugging aid (see the "guest agent exec never
+    // completes" / "guest agent listing comes back empty" investigation):
+    // every other guest-agent call site here funnels through this one
+    // function, so logging the exact bytes sent and received here -- before
+    // `#[serde(default)]` can silently paper over a field-name/shape
+    // mismatch -- is the only way to see what Proxmox actually sent back
+    // without an integration test against a live guest.
+    crate::oplog::log(
+        "DEBUG",
+        "proxmox_agent_raw",
+        "request",
+        &endpoint_label(entry),
+        agent_command,
+        &serde_json::json!({
+            "method": method.as_str(),
+            "query": query,
+            "payload": json_payload,
+        })
+        .to_string(),
+    );
     let response = request.send().await.map_err(|error| {
         format!("Unable to reach the Proxmox Guest Agent endpoint \"{agent_command}\": {error}")
     })?;
-    if !response.status().is_success() {
-        return Err(api_error(&format!("guest agent {agent_command}"), response).await);
+    let status = response.status();
+    let body = response.bytes().await.map_err(|error| {
+        format!("Unable to read Proxmox guest agent {agent_command} response: {error}")
+    })?;
+    crate::oplog::log(
+        "DEBUG",
+        "proxmox_agent_raw",
+        "response",
+        &endpoint_label(entry),
+        agent_command,
+        &serde_json::json!({
+            "status": status.as_u16(),
+            "body": String::from_utf8_lossy(&body).chars().take(4000).collect::<String>(),
+        })
+        .to_string(),
+    );
+    if !status.is_success() {
+        let preview: String = String::from_utf8_lossy(&body).chars().take(2048).collect();
+        return Err(format!(
+            "Proxmox guest agent {agent_command} failed ({status}): {preview}"
+        ));
     }
-    let data: ApiEnvelope<T> =
-        decode_api(&format!("guest agent {agent_command}"), response).await?;
+    let data: ApiEnvelope<T> = serde_json::from_slice(&body).map_err(|error| {
+        format!("Invalid Proxmox guest agent {agent_command} response: {error}")
+    })?;
     Ok(data.data)
 }
 
