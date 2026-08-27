@@ -27,7 +27,6 @@ import { Dropdown } from "./ui/Dropdown";
 // here, which TypeScript/esbuild erases entirely at build time (no runtime
 // cost, so it doesn't defeat the point of the dynamic import below).
 import type { Terminal } from "@xterm/xterm";
-import { accentCollidesWithSemanticColor, themePresets, themeStyle, type ThemePreset } from "./styles/theme";
 // Single ordered global-style entry point (T-018): tokens/base CSS first,
 // feature-component CSS in the middle, the styles/theme/ override modules
 // always last. See styles/index.css and styles/theme/README.md for the
@@ -43,7 +42,6 @@ import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 import { AppShell } from "./app/AppShell";
 import { DesktopTitlebar } from "./app/DesktopTitlebar";
-import { FloatingWindow } from "./ui/FloatingWindow";
 import { isMobileViewport } from "./styles/breakpoints";
 import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
 import type { SshProfile } from "./features/ssh/ssh-contracts";
@@ -52,6 +50,9 @@ import { appendSshTabOutput, makeSshTabId } from "./features/terminal/terminal-u
 import { useSshTerminal } from "./features/terminal/useSshTerminal";
 import { useSshTerminalState } from "./features/terminal/useSshTerminalState";
 import { useSshTerminalActions } from "./features/terminal/useSshTerminalActions";
+import { formatSize } from "./format-utils";
+import { useDesktopSettings } from "./features/settings/useDesktopSettings";
+import { desktopSettingsKey, type DesktopSettings, type OperationStorageInfo } from "./features/settings/settings-contracts";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
@@ -59,6 +60,7 @@ const QueueModal = lazy(() => import("./features/queue/QueueModal").then(({ Queu
 const ViewerModal = lazy(() => import("./features/viewer/ViewerModal").then(({ ViewerModal: component }) => ({ default: component })));
 const HelpModal = lazy(() => import("./features/help/HelpModal").then(({ HelpModal: component }) => ({ default: component })));
 const LogView = lazy(() => import("./log-view").then(({ LogView: component }) => ({ default: component })));
+const SettingsModal = lazy(() => import("./features/settings/SettingsModal").then(({ SettingsModal: component }) => ({ default: component })));
 
 type FileItem = {
   name: string;
@@ -188,31 +190,6 @@ type UndoEntry = {
   oldPath: string;
   newPath: string;
 };
-type DesktopSettings = {
-  uiProfile: "auto" | "mobile";
-  theme: ThemePreset;
-  accentColor: string;
-  proxmoxVncModeEnabled: boolean;
-  restApiModeEnabled: boolean;
-  collapseMainPaneEnabled: boolean;
-  bracketedPasteControlEnabled: boolean;
-  undoHistoryEnabled: boolean;
-  operationLogEnabled: boolean;
-  operationLogLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
-  shareLinkExpirationDays: number;
-  // "secure": share.html page link (can be password-protected, matches the
-  // web UI's share flow). "direct": a plain, unauthenticated file URL meant
-  // for tools that only accept a bare link (e.g. a BMC firmware page) and
-  // cannot open a web page or send an Authorization header.
-  shareLinkMode: "secure" | "direct";
-  confirmations: {
-    delete: boolean;
-    overwrite: boolean;
-    recursive: boolean;
-    crossSourceMove: boolean;
-  };
-};
-type SettingsPanel = "theme" | "features" | "confirmations" | "sharing" | "history";
 
 type ModalDragId =
   | "log-view"
@@ -230,13 +207,6 @@ type ModalOffset = { x: number; y: number };
 type ModalDragSession = {
   onMove: (event: MouseEvent) => void;
   onUp: () => void;
-};
-type OperationStorageInfo = {
-  historyPath: string;
-  logPath: string;
-  historyBytes: number;
-  logBytes: number;
-  logFiles: string[];
 };
 
 const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
@@ -596,7 +566,6 @@ const initialSession: Session = {
   saveUserInformation: false,
 };
 const sessionRegistryKey = "fileapi-session-registry";
-const desktopSettingsKey = "nfterm-settings";
 const queueStorageKey = "nfterm-transfer-queue";
 const apiCredentialEntryId = "api-login";
 
@@ -672,92 +641,6 @@ const normalizeColumnWidths = (widths: Record<ColumnKey, number>): Record<Column
     size: sanitized.size * scale,
   };
 };
-const defaultDesktopSettings: DesktopSettings = {
-  uiProfile: "auto",
-  theme: "bridge",
-  accentColor: "#63e6ff",
-  proxmoxVncModeEnabled: false,
-  restApiModeEnabled: false,
-  collapseMainPaneEnabled: false,
-  bracketedPasteControlEnabled: false,
-  undoHistoryEnabled: true,
-  operationLogEnabled: true,
-  operationLogLevel: "DEBUG",
-  // 0 = server default (currently 1 day); the server also enforces its own
-  // configured maximum (shareLinks.maxExpiration), so values here that
-  // exceed it are rejected server-side with a clear error.
-  shareLinkExpirationDays: 0,
-  // Defaults to the safer, page-based link (matches the web UI's default
-  // behaviour). Users who need a bare URL for BMC/tooling must opt in.
-  shareLinkMode: "secure",
-  confirmations: { delete: true, overwrite: true, recursive: true, crossSourceMove: true },
-};
-
-// T-215: a single shared validate/merge function replaces what used to be
-// an ever-growing inline sequence of individual `saved?.field === ... ?
-// saved.field : default.field` checks at the desktopSettings useState
-// initializer. Adding a new settings field now means adding one line here
-// instead of extending that inline block; every field's own validator is
-// intentionally still spelled out explicitly (no generic schema-inference
-// magic) so a field's exact accepted shape stays easy to read and audit,
-// the same as the individual checks being replaced.
-const normalizeDesktopSettings = (raw: unknown): DesktopSettings => {
-  const saved = (raw && typeof raw === "object" ? raw : {}) as Partial<DesktopSettings> & Record<string, unknown>;
-  const pick = <T,>(value: unknown, isValid: (value: unknown) => boolean, fallback: T): T =>
-    isValid(value) ? (value as T) : fallback;
-  return {
-    ...defaultDesktopSettings,
-    ...saved,
-    uiProfile: pick(saved.uiProfile, (value) => value === "auto" || value === "mobile", defaultDesktopSettings.uiProfile),
-    theme: pick(
-      saved.theme,
-      (value) => typeof value === "string" && Object.prototype.hasOwnProperty.call(themePresets, value),
-      defaultDesktopSettings.theme,
-    ),
-    accentColor: pick(
-      saved.accentColor,
-      (value) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value),
-      defaultDesktopSettings.accentColor,
-    ),
-    operationLogLevel: pick(
-      saved.operationLogLevel,
-      (value) => typeof value === "string" && ["DEBUG", "INFO", "WARN", "ERROR"].includes(value),
-      defaultDesktopSettings.operationLogLevel,
-    ),
-    shareLinkExpirationDays: pick(
-      saved.shareLinkExpirationDays,
-      (value) => typeof value === "number" && Number.isFinite(value) && value >= 0,
-      defaultDesktopSettings.shareLinkExpirationDays,
-    ),
-    shareLinkMode: pick(
-      saved.shareLinkMode,
-      (value) => value === "secure" || value === "direct",
-      defaultDesktopSettings.shareLinkMode,
-    ),
-    proxmoxVncModeEnabled: pick(
-      saved.proxmoxVncModeEnabled,
-      (value) => typeof value === "boolean",
-      defaultDesktopSettings.proxmoxVncModeEnabled,
-    ),
-    restApiModeEnabled: pick(
-      saved.restApiModeEnabled,
-      (value) => typeof value === "boolean",
-      defaultDesktopSettings.restApiModeEnabled,
-    ),
-    collapseMainPaneEnabled: pick(
-      saved.collapseMainPaneEnabled,
-      (value) => typeof value === "boolean",
-      defaultDesktopSettings.collapseMainPaneEnabled,
-    ),
-    bracketedPasteControlEnabled: pick(
-      saved.bracketedPasteControlEnabled,
-      (value) => typeof value === "boolean",
-      defaultDesktopSettings.bracketedPasteControlEnabled,
-    ),
-    confirmations: { ...defaultDesktopSettings.confirmations, ...(saved.confirmations || {}) },
-  };
-};
-
 const readError = async (response: {
   status: number;
   text: () => Promise<string>;
@@ -817,12 +700,6 @@ const joinSshPath = (directory: string, name: string) =>
   directory === "/" ? `/${name}` : `${directory.replace(/\/+$/, "")}/${name}`;
 const downloadPath = (path: string) =>
   path.split("/").map(encodeURIComponent).join("/");
-const formatSize = (size: number) =>
-  size < 1024
-    ? `${size} B`
-    : size < 1024 ** 2
-      ? `${(size / 1024).toFixed(1)} KB`
-      : `${(size / 1024 ** 2).toFixed(1)} MB`;
 const fileTimestamp = (value: number | string | undefined) => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -1153,52 +1030,17 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [expandedHelpSections, setExpandedHelpSections] = useState<string[]>(["getting-started"]);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsPanel, setSettingsPanel] = useState<SettingsPanel | null>(null);
-  useEffect(() => { if (!settingsOpen) setSettingsPanel(null); }, [settingsOpen]);
-  // T-216: captures the theme/accent that was active when Settings was
-  // opened, so selecting a theme in the picker can apply it live (a
-  // "preview", since it takes effect immediately the same way it always
-  // has) while still letting Revert restore exactly what was active
-  // before Settings was opened -- without this, the only way back to the
-  // previous theme was re-selecting it by hand from the dropdown.
-  const themeSnapshotRef = useRef<{ theme: ThemePreset; accentColor: string } | null>(null);
-  useEffect(() => {
-    if (settingsOpen) themeSnapshotRef.current = { theme: desktopSettings.theme, accentColor: desktopSettings.accentColor };
-  }, [settingsOpen]);
   const [saveLogNameOpen, setSaveLogNameOpen] = useState(false);
   const [saveLogNameDraft, setSaveLogNameDraft] = useState("");
   const [saveLogDestinationPath, setSaveLogDestinationPath] = useState("");
-  const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>(() => {
-    try {
-      return normalizeDesktopSettings(JSON.parse(localStorage.getItem(desktopSettingsKey) || "null"));
-    } catch {
-      return defaultDesktopSettings;
-    }
-  });
-  // T-212: compute themeStyle()'s result once per theme/accent change and
-  // reuse it both for the documentElement side-effect below and for
-  // AppShell's inline style prop further down, instead of calling
-  // themeStyle() a second, independent time at the AppShell call site.
-  // Portaled surfaces (.account-menu, .context-picker-popover, the
-  // commandbar overflow menu, the REST Token JSON Path help popup) render
-  // outside AppShell's own DOM subtree via createPortal(..., document.
-  // body), so they read theme colors from document.documentElement's CSS
-  // custom properties -- set by the effect below -- rather than from
-  // AppShell's inline style; T-213 confirmed this by construction: nothing
-  // about consolidating the *computation* into one memo changes which of
-  // the two consumers (documentElement vs. AppShell) any given surface
-  // reads from, so portaled surfaces keep recoloring immediately on theme
-  // change exactly as before.
-  const themeVariables = useMemo(
-    () => themeStyle(desktopSettings.theme, desktopSettings.accentColor),
-    [desktopSettings.theme, desktopSettings.accentColor],
-  );
-  useEffect(() => {
-    Object.entries(themeVariables).forEach(([name, value]) => {
-      if (typeof value === "string") document.documentElement.style.setProperty(name, value);
-    });
-  }, [themeVariables]);
+  const {
+    settingsOpen, setSettingsOpen,
+    settingsPanel, setSettingsPanel,
+    themeSnapshotRef,
+    desktopSettings, setDesktopSettings,
+    themeVariables,
+    storageInfo, setStorageInfo,
+  } = useDesktopSettings({ setNotice });
   useEffect(() => {
     if (!desktopSettings.proxmoxVncModeEnabled && appMode === "vnc") setAppMode("location");
     if (!desktopSettings.restApiModeEnabled && appMode === "rest") setAppMode("location");
@@ -1207,7 +1049,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     width: window.innerWidth,
     height: window.innerHeight,
   }));
-  const [storageInfo, setStorageInfo] = useState<OperationStorageInfo | null>(null);
   useEffect(() => {
     if (!logViewOpen) return undefined;
     const refresh = () => {
@@ -1730,46 +1571,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   useEffect(() => {
     localStorage.setItem("fileapi-ssh-profiles", JSON.stringify(sshProfiles));
   }, [sshProfiles]);
-
-  useEffect(() => {
-    localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings));
-    // Mirror the enabled/level setting into the Rust process so
-    // Rust-originated log calls (SSH auth attempts, connect/disconnect,
-    // create/rename, drag staging, etc.) respect the same configuration the
-    // user set here instead of only ever using the process's startup
-    // defaults.
-    void invoke("set_operation_log_config", {
-      enabled: desktopSettings.operationLogEnabled,
-      level: desktopSettings.operationLogLevel,
-    }).catch(() => {});
-  }, [desktopSettings]);
-
-  useEffect(() => {
-    if (!desktopSettings.operationLogEnabled) return undefined;
-    void invoke("set_operation_log_config", {
-      enabled: desktopSettings.operationLogEnabled,
-      level: desktopSettings.operationLogLevel,
-    }).then(() => invoke("initialize_operation_log"))
-      .then(() => invoke("append_operation_log", {
-        level: desktopSettings.operationLogLevel,
-        operation: "app",
-        status: "started",
-        sourceLabel: "Desktop",
-        destinationLabel: "",
-        detail: "nFterm started.",
-      }))
-      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
-    return () => {
-      void invoke("append_operation_log", {
-        level: desktopSettings.operationLogLevel,
-        operation: "app",
-        status: "stopped",
-        sourceLabel: "Desktop",
-        destinationLabel: "",
-        detail: "nFterm stopped.",
-      }).catch(() => {});
-    };
-  }, []);
 
   useEffect(() => {
     const updateViewport = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -6729,157 +6530,24 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
            </div>
          </div>
        )}
-       {settingsOpen && (
-          <FloatingWindow ariaLabel="Desktop Settings" className={`settings-modal settings-panel-${settingsPanel || "menu"}`} style={modalStyle("settings")} onClose={() => setSettingsOpen(false)} onDragStart={beginModalDrag("settings")} header={<div className="settings-floating-heading"><h2 className="modal-drag-handle">Desktop Settings</h2><button type="button" className="settings-floating-close" onClick={() => setSettingsOpen(false)} aria-label="Close Desktop Settings"><CloseIcon /></button></div>} footer={<div className="settings-floating-footer"><button type="button" className="confirm" onClick={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}>Save</button><button type="button" onClick={() => settingsPanel === null ? setSettingsOpen(false) : setSettingsPanel(null)}>Close</button></div>}>
-                <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
-                {settingsPanel !== null && <button type="button" className="settings-subpanel-back" onClick={() => setSettingsPanel(null)}><ChevronLeftIcon size={12} /> Settings</button>}
-                {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{[desktopSettings.restApiModeEnabled ? "REST API enabled" : "REST API disabled", desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"].join(" · ")}</span><small>Enable optional workspaces.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b><ChevronRightIcon size={12} /></b></button></div>}
-               <section className="settings-section">
-                 <h3>Color theme</h3>
-                 <div className="settings-check settings-theme-row">
-                   <span><strong>Application palette</strong><small>Changes the shared colors used by the main view, overlays, buttons, and status states. Selecting a theme previews it immediately; use Revert below to go back to what was active before you opened Settings.</small></span>
-                   <Dropdown
-                     label="Application palette"
-                     value={desktopSettings.theme}
-                     onChange={(value) => { const theme = value as ThemePreset; setDesktopSettings((current) => ({ ...current, theme, accentColor: themePresets[theme].variables.cyan })); }}
-                     options={(Object.entries(themePresets) as [ThemePreset, { label: string }][]).map(([value, theme]) => ({ value, label: theme.label }))}
-                   />
-                   <label className="theme-accent-control">Accent <input type="color" value={desktopSettings.accentColor} onChange={(event) => setDesktopSettings((current) => ({ ...current, accentColor: event.target.value }))} /></label>
-                 </div>
-                 {(() => {
-                   // T-216: only shown once the previewed theme/accent actually
-                   // diverges from the snapshot captured when Settings opened,
-                   // so Revert never appears as a no-op action.
-                   const snapshot = themeSnapshotRef.current;
-                   if (!snapshot || (snapshot.theme === desktopSettings.theme && snapshot.accentColor === desktopSettings.accentColor)) return null;
-                   return (
-                     <button
-                       type="button"
-                       className="settings-theme-revert"
-                       onClick={() => setDesktopSettings((current) => ({ ...current, theme: snapshot.theme, accentColor: snapshot.accentColor }))}
-                     >
-                       Revert to {themePresets[snapshot.theme].label}
-                     </button>
-                   );
-                 })()}
-                 {(() => {
-                   // T-214: warn (not block) when the chosen accent color is close
-                   // enough to the active theme's danger/warning color that
-                   // destructive-action styling (delete buttons, privileged/
-                   // danger drop-target highlighting) could become visually
-                   // ambiguous with the newly "selected"/focus-ring accent.
-                   const collision = accentCollidesWithSemanticColor(desktopSettings.theme, desktopSettings.accentColor);
-                   if (!collision.withDanger && !collision.withWarning) return null;
-                   const withLabel = [collision.withDanger && "danger", collision.withWarning && "warning"].filter(Boolean).join(" and ");
-                   return (
-                     <p className="settings-accent-warning" role="alert">
-                       <WarningIcon size={12} /> This accent color is close to this theme&apos;s {withLabel} color. Destructive-action buttons and status highlights may be harder to tell apart from the selected/focus accent.
-                     </p>
-                   );
-                 })()}
-               </section>
-               <section className="settings-section">
-                <h3>Interface features</h3>
-                 <label className="settings-check">
-                   <input type="checkbox" checked={desktopSettings.restApiModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, restApiModeEnabled: event.target.checked }))} />
-                   <span><strong>Enable REST API mode</strong><small>Show the REST API workspace and its mode switcher.</small></span>
-                 </label>
-                 <label className="settings-check">
-                   <input type="checkbox" checked={desktopSettings.proxmoxVncModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, proxmoxVncModeEnabled: event.target.checked }))} />
-                   <span><strong>Enable Proxmox VNC mode</strong><small>Show the Proxmox VNC workspace and its mode switcher.</small></span>
-                 </label>
-                 <label className="settings-check">
-                   <input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} />
-                   <span><strong>Use collapse controls instead of split resizebars</strong><small>Apply the main collapse/restore pane controls globally in Location, REST API, and VNC. LOCAL's internal tree controls are unchanged.</small></span>
-                 </label>
-                 <label className="settings-check">
-                   <input type="checkbox" checked={desktopSettings.bracketedPasteControlEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, bracketedPasteControlEnabled: event.target.checked }))} />
-                   <span><strong>Sanitize bracketed-paste markers</strong><small>Remove pasted bracketed-paste control markers from clipboard text before sending it to the remote terminal.</small></span>
-                 </label>
-               </section>
-              <section className="settings-section">
-               <h3>Risk confirmations</h3>
-               {([
-                 ["delete", "Delete", "Deleting files or folders can permanently remove data."],
-                 ["overwrite", "Overwrite", "Replacing an existing destination can destroy its current contents."],
-                 ["recursive", "Recursive operations", "Applying an operation to a folder also affects its descendants."],
-                 ["crossSourceMove", "Cross-source move", "Moving between sources uses copy and verification before source deletion."],
-               ] as const).map(([key, label, description]) => (
-                 <label className="settings-check" key={key}>
-                   <input
-                     type="checkbox"
-                     checked={desktopSettings.confirmations[key]}
-                     onChange={(event) => setDesktopSettings((current) => ({ ...current, confirmations: { ...current.confirmations, [key]: event.target.checked } }))}
-                   />
-                   <span><strong>{label}</strong><small>{description}</small></span>
-                 </label>
-               ))}
-               <button type="button" onClick={() => setDesktopSettings((current) => ({ ...current, confirmations: { ...defaultDesktopSettings.confirmations } }))}>Restore safe confirmations</button>
-             </section>
-             <section className="settings-section">
-               <h3>Sharing</h3>
-               <label className="settings-check">
-                 <input
-                   type="radio"
-                   name="shareLinkMode"
-                   checked={desktopSettings.shareLinkMode === "secure"}
-                   onChange={() => setDesktopSettings((current) => ({ ...current, shareLinkMode: "secure" }))}
-                 />
-                 <span><strong>Secure share (web page link)</strong><small>Opens the share.html page; supports an optional password. Use for sharing with people.</small></span>
-               </label>
-               <label className="settings-check">
-                 <input
-                   type="radio"
-                   name="shareLinkMode"
-                   checked={desktopSettings.shareLinkMode === "direct"}
-                   onChange={() => setDesktopSettings((current) => ({ ...current, shareLinkMode: "direct" }))}
-                 />
-                 <span><strong>Direct link (for tools like BMC)</strong><small>A plain file URL with no page and no Authorization header, for pasting into tools that only accept a bare link. No password protection.</small></span>
-               </label>
-                <label className="settings-level">Default share link expiration
-                 <Dropdown
-                   label="Default share link expiration"
-                   value={String(desktopSettings.shareLinkExpirationDays)}
-                   onChange={(value) => setDesktopSettings((current) => ({ ...current, shareLinkExpirationDays: Number(value) }))}
-                   options={[
-                     { value: "0", label: "Server default" },
-                     { value: "1", label: "1 day" },
-                     { value: "7", label: "7 days" },
-                     { value: "30", label: "30 days" },
-                     { value: "90", label: "90 days" },
-                   ]}
-                 />
-                  <small>Applied to every new share link created from this desktop app. The server also enforces its own configured maximum, so longer values may be rejected.</small>
-                </label>
-                <div className="settings-inline-action">
-                  <div><strong>Share link management</strong><small>Review, copy, or revoke links created by this desktop client.</small></div>
-                  <button type="button" onClick={openShareLinks} disabled={!session.token}>Manage Share Links</button>
-                </div>
-              </section>
-             <section className="settings-section">
-               <h3>History and operation log</h3>
-               <p>Both are enabled by default. Undo records are reserved for reliable, verifiable reversals. The operation log is append-only, excludes secrets, rotates at 10 MB, and retains at most three files total.</p>
-               <label className="settings-check"><input type="checkbox" checked={desktopSettings.undoHistoryEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, undoHistoryEnabled: event.target.checked }))} /><span><strong>Enable undo history</strong><small>Disabling this stops new undo records; it does not delete files.</small></span></label>
-                <label className="settings-check"><input type="checkbox" checked={desktopSettings.operationLogEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, operationLogEnabled: event.target.checked }))} /><span><strong>Enable operation log</strong><small>Disabling this stops new audit records; it does not delete unrelated data.</small></span></label>
-                <label className="settings-level">Log detail level
-                  <Dropdown
-                    label="Log detail level"
-                    value={desktopSettings.operationLogLevel}
-                    onChange={(value) => setDesktopSettings((current) => ({ ...current, operationLogLevel: value as DesktopSettings["operationLogLevel"] }))}
-                    options={[
-                      { value: "DEBUG", label: "DEBUG - diagnostics and operations" },
-                      { value: "INFO", label: "INFO - normal operations" },
-                      { value: "WARN", label: "WARN - warnings and failures" },
-                      { value: "ERROR", label: "ERROR - failures only" },
-                    ]}
-                  />
-                  <small>DEBUG is enabled by default during development. Lower levels reduce diagnostic detail.</small>
-                </label>
-                {storageInfo && <div className="storage-info"><span>History: {storageInfo.historyPath} ({formatSize(storageInfo.historyBytes)})</span><span>Logs: {storageInfo.logPath} ({formatSize(storageInfo.logBytes)})</span><span>{storageInfo.logFiles.length} log file{storageInfo.logFiles.length === 1 ? "" : "s"} currently retained</span></div>}
-               <div className="modal-actions settings-actions"><button type="button" onClick={clearHistory}>Clear undo history</button><button type="button" className="danger" onClick={clearLogs}>Clear operation logs</button></div>
-             </section>
-          </FloatingWindow>
-       )}
+        {settingsOpen && (
+          <SettingsModal
+            desktopSettings={desktopSettings}
+            setDesktopSettings={setDesktopSettings}
+            settingsPanel={settingsPanel}
+            setSettingsPanel={setSettingsPanel}
+            themeSnapshot={themeSnapshotRef.current}
+            storageInfo={storageInfo}
+            modalStyle={modalStyle("settings")}
+            onDragStart={beginModalDrag("settings")}
+            onClose={() => setSettingsOpen(false)}
+            onSave={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}
+            onManageShareLinks={openShareLinks}
+            canManageShareLinks={Boolean(session.token)}
+            onClearHistory={clearHistory}
+            onClearLogs={clearLogs}
+          />
+        )}
         {shareLinksOpen && (
           <div className="modal-cover modal-layer-top" onMouseDown={() => setShareLinksOpen(false)}>
              <div className="modal share-links-modal" style={modalStyle("share-links")} onMouseDown={(event) => event.stopPropagation()}>
