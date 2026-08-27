@@ -11,7 +11,7 @@
 // keeps a single log level/enabled flag in sync on both sides without
 // threading the setting through every SSH-related command's parameters.
 
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy)]
@@ -21,17 +21,60 @@ struct LogConfig {
 }
 
 // Defaults mirror `defaultDesktopSettings` in the frontend (`main.tsx`):
-// logging on, DEBUG detail, until the frontend's own effect reports the
-// user's actual saved setting shortly after startup.
+// logging on, INFO detail, until the frontend's own effect reports the
+// user's actual saved setting shortly after startup. This was previously
+// DEBUG, which meant every keystroke sent to a connected SSH session (each
+// `ssh_write` invoke logs a DEBUG "started" record, see `write()` below)
+// was persisted to disk during the short window between process start and
+// the frontend's first `set_operation_log_config` call. INFO keeps that
+// startup window quiet while still capturing every connect/disconnect and
+// error, matching the verbosity most users actually want by default.
 static LOG_CONFIG: OnceLock<Mutex<LogConfig>> = OnceLock::new();
 
 fn config() -> &'static Mutex<LogConfig> {
     LOG_CONFIG.get_or_init(|| {
         Mutex::new(LogConfig {
             enabled: true,
-            level: 0,
+            level: 1,
         })
     })
+}
+
+// Keeps the operations-log file handle open across calls instead of
+// re-opening (and re-`fs::metadata`-ing to check the 10MB rotation
+// threshold) on every single log line. A terminal session can easily emit
+// dozens of `ssh_write`/`ssh-output` log lines per second; without this,
+// each one paid for an `OpenOptions::append().open()` + `fs::metadata()` +
+// `write_all()` round trip to disk, which on slower/virtualized storage
+// backends measurably added up and could starve the async runtime of
+// other work queued on the same thread. The writer is keyed by the
+// resolved log path so switching `FILEAPI_DATA_DIR` (as the test suite
+// does per-test) or rotating the file both correctly force a reopen.
+struct LogWriter {
+    path: std::path::PathBuf,
+    file: BufWriter<std::fs::File>,
+    size: u64,
+}
+
+static LOG_WRITER: OnceLock<Mutex<Option<LogWriter>>> = OnceLock::new();
+
+fn log_writer() -> &'static Mutex<Option<LogWriter>> {
+    LOG_WRITER.get_or_init(|| Mutex::new(None))
+}
+
+/// Drops any cached open file handle to `operations.log`, flushing it
+/// first. Must be called before anything renames, truncates, or deletes the
+/// log file out from under `write_line`'s cached handle -- currently
+/// `clear_operation_logs` and `initialize_operation_log` in `main.rs`, both
+/// of which manipulate the file directly on disk without going through
+/// this module. Safe to call even when no handle is currently cached.
+pub fn invalidate_cached_writer() {
+    if let Ok(mut guard) = log_writer().lock() {
+        if let Some(existing) = guard.as_mut() {
+            let _ = existing.file.flush();
+        }
+        *guard = None;
+    }
 }
 
 fn level_rank(level: &str) -> u8 {
@@ -220,34 +263,91 @@ fn write_record(
     write_record_value(record, log_path)
 }
 
+// Rotates `operations.log` -> `.log.1` -> `.log.2` (dropping anything older
+// than `.log.2`), matching the previous behavior exactly. Callers must have
+// already flushed/dropped any open handle to `log_path` before calling this
+// (see `write_line` below), since renaming a file out from under an open
+// `BufWriter` would silently keep writing to the now-unlinked old inode on
+// most platforms and fail outright on Windows.
+fn rotate_log_file(log_path: &std::path::Path) -> Result<(), String> {
+    let rotated_two = log_path.with_extension("log.2");
+    let rotated_one = log_path.with_extension("log.1");
+    let _ = std::fs::remove_file(&rotated_two);
+    if rotated_one.exists() {
+        std::fs::rename(&rotated_one, &rotated_two).map_err(|error| error.to_string())?;
+    }
+    if log_path.exists() {
+        std::fs::rename(log_path, &rotated_one).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+// Opens `operations.log` for appending and records its current on-disk size
+// so subsequent writes can track the 10MB rotation threshold in memory
+// instead of calling `fs::metadata` before every single line (see
+// `write_line`).
+fn open_log_writer(log_path: std::path::PathBuf) -> Result<LogWriter, String> {
+    let size = std::fs::metadata(&log_path).map(|meta| meta.len()).unwrap_or(0);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| error.to_string())?;
+    Ok(LogWriter {
+        path: log_path,
+        file: BufWriter::new(file),
+        size,
+    })
+}
+
+// Appends one already-serialized JSON-lines record, reusing a cached open
+// file handle across calls instead of paying for an `open()` + `fs::
+// metadata()` + `write_all()` + implicit `close()` round trip on every log
+// line (the previous behavior of `write_record_value`). A terminal session
+// with active output can easily emit dozens of log lines per second (one
+// DEBUG/INFO pair per `ssh_write` invoke, plus one per `ssh-output` event),
+// so avoiding the repeated syscalls here matters most on slower/virtualized
+// storage backends where each `open`/`stat`/`close` has outsized latency.
+// The handle is still flushed synchronously on every write (rather than
+// relying on `BufWriter`'s internal buffer + eventual `Drop`) so: (a) a
+// crash can't silently lose recently-written log lines, and (b) callers
+// that read the log file back immediately after writing (notably this
+// module's own tests, and the frontend's LogView polling) always see the
+// line they just wrote.
+fn write_line(log_path: std::path::PathBuf, line: &str) -> Result<(), String> {
+    let mut guard = log_writer().lock().map_err(|_| "operation log writer lock was poisoned".to_string())?;
+    if let Some(existing) = guard.as_mut() {
+        if existing.path != log_path {
+            let _ = existing.file.flush();
+            *guard = None;
+        }
+    }
+    if guard.is_none() {
+        *guard = Some(open_log_writer(log_path.clone())?);
+    }
+    let writer = guard.as_mut().expect("writer was just populated above");
+    if writer.size + line.len() as u64 > 10 * 1024 * 1024 {
+        // Flush and drop the current handle before renaming files out from
+        // under it, then reopen a fresh (empty) file at the same path.
+        writer.file.flush().map_err(|error| error.to_string())?;
+        *guard = None;
+        rotate_log_file(&log_path)?;
+        *guard = Some(open_log_writer(log_path)?);
+    }
+    let writer = guard.as_mut().expect("writer was just populated above");
+    writer.file.write_all(line.as_bytes()).map_err(|error| error.to_string())?;
+    writer.file.flush().map_err(|error| error.to_string())?;
+    writer.size += line.len() as u64;
+    Ok(())
+}
+
 fn write_record_value(mut record: serde_json::Value, log_path: std::path::PathBuf) -> Result<(), String> {
     redact_detail_value(&mut record);
     let line = format!(
         "{}\n",
         serde_json::to_string(&record).map_err(|error| error.to_string())?
     );
-    if std::fs::metadata(&log_path)
-        .map(|meta| meta.len())
-        .unwrap_or(0)
-        + line.len() as u64
-        > 10 * 1024 * 1024
-    {
-        let rotated_two = log_path.with_extension("log.2");
-        let rotated_one = log_path.with_extension("log.1");
-        let _ = std::fs::remove_file(&rotated_two);
-        if rotated_one.exists() {
-            std::fs::rename(&rotated_one, &rotated_two).map_err(|error| error.to_string())?;
-        }
-        if log_path.exists() {
-            std::fs::rename(&log_path, &rotated_one).map_err(|error| error.to_string())?;
-        }
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)
-        .map_err(|error| error.to_string())?;
-    file.write_all(line.as_bytes()).map_err(|error| error.to_string())
+    write_line(log_path, &line)
 }
 
 /// Best-effort operation-log write, filtered by the mirrored
@@ -334,7 +434,7 @@ pub fn log_structured(record: serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{log, set_config};
+    use super::{invalidate_cached_writer, log, set_config, write_line};
     use std::fs;
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -435,6 +535,51 @@ mod tests {
                 assert!(event[field].is_object(), "fixture event {index} must include {field}");
             }
         }
+    }
+
+    // Regression test for the cached-writer change: `write_line` now keeps
+    // an open `BufWriter` + in-memory size counter across calls instead of
+    // re-opening the file and re-`fs::metadata`-ing it every time (see the
+    // module-level `LogWriter`/`log_writer()` docs above). This exercises
+    // three things that change of behavior could break: (1) many
+    // consecutive writes through the cached handle land in the file in
+    // order, (2) crossing the 10MB threshold still rotates .log -> .log.1
+    // -> .log.2 exactly like the old per-call `fs::metadata` check did, and
+    // (3) the just-rotated-into fresh file keeps accepting writes
+    // afterward (i.e. the cache correctly points at the new, empty file --
+    // not a stale handle to the now-renamed one).
+    #[test]
+    fn cached_writer_rotates_at_the_same_threshold_as_before() {
+        let _lock = TEST_LOCK.lock().expect("logging test lock should not be poisoned");
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("nfterm-oplog-rotate-{suffix}"));
+        fs::create_dir_all(&directory).expect("temporary log directory should be created");
+        let log_path = directory.join("operations.log");
+        invalidate_cached_writer();
+
+        // Write enough ~1KB lines through the cached writer to cross the
+        // 10MB rotation threshold at least once.
+        let line = format!("{}\n", "x".repeat(1024));
+        for _ in 0..(10 * 1024 + 5) {
+            write_line(log_path.clone(), &line).expect("cached write should succeed");
+        }
+
+        assert!(log_path.with_extension("log.1").exists(), "rotation should have produced a .log.1 file");
+        let current_len = fs::metadata(&log_path).expect("rotated-into file should exist").len();
+        assert!(current_len > 0, "the fresh file after rotation should have accepted further writes");
+        assert!(current_len < 10 * 1024 * 1024, "the fresh file after rotation should not itself be at the threshold");
+
+        // A write issued right after rotation must land in the new file,
+        // not silently vanish into a stale handle to the renamed one.
+        write_line(log_path.clone(), "marker-after-rotation\n").expect("post-rotation write should succeed");
+        let content = fs::read_to_string(&log_path).expect("post-rotation content should be readable");
+        assert!(content.contains("marker-after-rotation"));
+
+        invalidate_cached_writer();
+        let _ = fs::remove_dir_all(directory);
     }
 
     #[test]

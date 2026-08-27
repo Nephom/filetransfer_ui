@@ -1,5 +1,30 @@
 import { useEffect, useRef, type MutableRefObject, type RefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
+import type { WebglAddon } from "@xterm/addon-webgl";
+
+// Best-effort: attaches the WebGL2 renderer to `terminal` if the runtime
+// supports it, otherwise leaves xterm's default DOM renderer untouched.
+// Exported for tests -- this is the one piece of renderer-selection logic
+// worth covering directly, since a regression here (throwing instead of
+// falling back) would break every terminal tab, not just degrade
+// performance.
+export const loadWebglAddon = (terminal: Terminal, WebglAddonCtor: typeof WebglAddon) => {
+  try {
+    const addon = new WebglAddonCtor();
+    // A lost WebGL context (GPU driver reset, browser resource pressure,
+    // switching GPUs on a laptop, etc.) is recoverable by xterm itself --
+    // dispose the addon and let the terminal keep working via its DOM
+    // renderer rather than leaving it in a half-broken WebGL state.
+    addon.onContextLoss(() => addon.dispose());
+    terminal.loadAddon(addon);
+    return addon;
+  } catch {
+    // No WebGL2 (older/locked-down WebView, software-only VM graphics
+    // stack, etc.) -- xterm's constructor already defaults to its DOM
+    // renderer, so there is nothing further to do here.
+    return undefined;
+  }
+};
 
 export const normalizeTerminalPaste = (text: string, sanitizeBracketedMarkers: boolean) =>
   sanitizeBracketedMarkers ? text.replace(/\x1b\[200~/g, "").replace(/\x1b\[201~/g, "") : text;
@@ -49,12 +74,29 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
     if (!enabled || !hostRef.current) return undefined;
     let disposed = false;
     let cleanup: (() => void) | undefined;
-    void Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit"), import("@xterm/xterm/css/xterm.css")]).then(([{ Terminal }, { FitAddon }]) => {
+    // The WebGL addon is loaded alongside xterm/fit rather than imported
+    // statically so a virtual machine (or sandboxed WebView) with no
+    // WebGL2 support at all still gets a working terminal via xterm's
+    // default DOM renderer -- `loadWebglAddon` below never throws, it only
+    // logs and leaves the DOM renderer in place if anything about WebGL
+    // setup fails.
+    void Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit"), import("@xterm/addon-webgl"), import("@xterm/xterm/css/xterm.css")]).then(([{ Terminal }, { FitAddon }, { WebglAddon: WebglAddonCtor }]) => {
       if (disposed || !hostRef.current) return;
       const terminal = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: "monospace", fontSize: 13, theme: { background: "#020a12", foreground: "#d9eafa", cursor: "#47cdf1" } });
       const fit = new FitAddon();
       terminal.loadAddon(fit);
       terminal.open(hostRef.current);
+      // High-throughput SSH output (builds, `tail -f`, etc.) is markedly
+      // cheaper to render through xterm's WebGL2 renderer than its default
+      // per-glyph DOM renderer, which matters most on resource-constrained
+      // virtual machines -- exactly where DOM-renderer cost compounding
+      // with a busy terminal has been reported to make the whole app feel
+      // like it is hanging. `loadWebglAddon` is entirely best-effort: any
+      // failure (no WebGL2, a `webglcontextlost` event later on, etc.)
+      // falls back to leaving xterm's own default DOM renderer in place,
+      // which is exactly the pre-existing behavior this addon is layered
+      // on top of.
+      const webgl = loadWebglAddon(terminal, WebglAddonCtor);
       fit.fit();
       terminal.focus();
       terminalRef.current = terminal;
@@ -101,6 +143,18 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
         host?.removeEventListener("mousedown", onMouseDown, true);
         host?.removeEventListener("mouseup", onMouseUp, true);
         observer.disconnect();
+        // `terminal.dispose()` already disposes every addon it still has
+        // loaded, but the WebGL addon may have already disposed *itself*
+        // via its own `onContextLoss` handler above (a lost GPU context is
+        // exactly the situation this guard is for) -- disposing an addon a
+        // second time throws in xterm.js, which would otherwise abort this
+        // entire cleanup (including `terminalRef.current = null` below) and
+        // leak the terminal instance.
+        try {
+          webgl?.dispose();
+        } catch {
+          // Already disposed (context loss) or otherwise inert -- no-op.
+        }
         terminal.dispose();
         terminalRef.current = null;
       };

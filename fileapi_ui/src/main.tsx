@@ -327,6 +327,50 @@ const stripAnsi = (value: string) =>
 // actually received.
 const VT_SESSION_BOUNDARY_GUARD = "\u001b\\\u001b[0m";
 
+// Upper bound (in characters) on how much of an SSH tab's `output` this
+// frontend keeps in memory. `output` is the buffer replayed into a fresh
+// xterm.js `Terminal` instance on every tab switch/terminal recreation
+// (see `useTerminalLifecycle`'s `replayOutput` below) and used to seed a
+// new recording's transcript (see `startRecording`'s `rawSeed`/
+// `plainSeed`). Every incoming SSH output chunk previously did an
+// unconditional `item.output + data` with no cap at all, so a long-running
+// session (a `tail -f`, a noisy build, an interactive session left open
+// for hours) grew this string without bound -- and every *subsequent*
+// chunk's `+` copy cost scaled with the *entire* accumulated history, not
+// just the new chunk, so per-chunk cost (and the GC pressure from
+// discarding the old, ever-larger string on each append) grew over the
+// life of the session. That is the direct cause of a Terminal that starts
+// responsive and gets progressively slower over time until it looks like
+// it has nearly hung. 512KB comfortably covers many thousands of lines of
+// scrollback -- far more than xterm's own default 1000-line scrollback
+// buffer will show on a tab switch anyway -- while keeping the append cost
+// bounded.
+const SSH_TAB_OUTPUT_CAP = 512 * 1024;
+
+// Appends `chunk` to `output` and truncates the *front* of the result once
+// it exceeds `SSH_TAB_OUTPUT_CAP`, dropping whole lines only (never partial
+// ones) so a truncation point can never land in the middle of a multi-byte
+// UTF-8 character or, more importantly, in the middle of an ANSI/VT escape
+// sequence -- doing so would leave xterm.js's VT parser replaying a
+// dangling, unterminated control sequence the exact same way
+// `VT_SESSION_BOUNDARY_GUARD` above guards against for reconnects. Cutting
+// only at `\n` boundaries keeps every remaining escape sequence intact,
+// since a bare `\n` can never appear inside one (VT sequences are
+// terminated by their own specific bytes, and any literal `\n` a shell
+// program means to display is itself a sequence boundary). This is used
+// for every `output` append below, replacing the previous unconditional
+// `item.output + data`.
+const appendSshTabOutput = (output: string, chunk: string) => {
+  const next = output + chunk;
+  if (next.length <= SSH_TAB_OUTPUT_CAP) return next;
+  const cutFrom = next.length - SSH_TAB_OUTPUT_CAP;
+  const newlineAt = next.indexOf("\n", cutFrom);
+  // No newline after the cut point (a single enormous line): fall back to
+  // a hard cut rather than keeping the whole oversized line, since the
+  // point of the cap is to bound memory/CPU cost even in that case.
+  return newlineAt === -1 ? next.slice(cutFrom) : next.slice(newlineAt + 1);
+};
+
 type ScrollMetrics = {
   scrollTop: number;
   clientHeight: number;
@@ -1288,7 +1332,14 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [selectedSshEntryId, setSelectedSshEntryId] = useState("");
   const [sshConnected, setSshConnected] = useState(false);
   const [sshSessionId, setSshSessionId] = useState("");
-  const [sshOutput, setSshOutput] = useState("");
+  // No `sshOutput` React state: unlike `sshSessionId`/`recording`/etc.
+  // above, no rendered UI ever reads the active tab's full output text --
+  // xterm.js owns displaying it, and `sshOutputRef` (below) is all the
+  // rest of this component needs for the secret-prompt heuristic. A
+  // mirrored `sshOutput` state used to exist here purely as a write-only
+  // side effect (set on every tab switch, never read), needlessly copying
+  // the current tab's entire scrollback into a second location on every
+  // switch for no observable effect.
   const sshOutputRef = useRef("");
   const [sshProfileDraft, setSshProfileDraft] = useState({
     id: "",
@@ -1653,7 +1704,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     const tab = sshTabs.find((item) => item.id === activeSshTabId);
     setSshConnected(Boolean(tab?.connected));
     setSshSessionId(tab?.sessionId || "");
-    setSshOutput(tab?.output || "");
     setRecording(Boolean(tab?.recording));
     setRecordingStartedAt(tab?.recordingStartedAt || null);
     setSavedLogPaths(tab?.savedLogPaths || []);
@@ -1856,7 +1906,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       const tab = sshTabsRef.current.find((item) => item.id === tabId);
       if (!tab) return;
       if (tab.sessionId !== payload.sessionId) setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, sessionId: payload.sessionId, connected: true } : item));
-      setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, output: item.output + data } : item));
+      setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, output: appendSshTabOutput(item.output, data) } : item));
       if (tab.recording) {
         const plainChunk = stripAnsi(data);
         const previous = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
@@ -1869,10 +1919,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         );
         recordingWriteQueuesRef.current.set(tabId, next);
       }
-      if (tabId === activeSshTabIdRef.current) { sshOutputRef.current += data; terminalInstanceRef.current?.write(data); const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd(); sshSecretPromptRef.current = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText); }
+      if (tabId === activeSshTabIdRef.current) { sshOutputRef.current = appendSshTabOutput(sshOutputRef.current, data); terminalInstanceRef.current?.write(data); const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd(); sshSecretPromptRef.current = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText); }
     },
     onExit: (tabId, payload) => {
-      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connected: false, sessionId: "", output: `${item.output}${VT_SESSION_BOUNDARY_GUARD}\n${payload.data}\n` }));
+      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, `${VT_SESSION_BOUNDARY_GUARD}\n${payload.data}\n`) }));
       if (tabId === activeSshTabIdRef.current) { setSshConnected(false); sshConnectingRef.current = false; }
     },
   });
@@ -2723,14 +2773,14 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           username: profile.username,
           privateKeyPath: profile.privateKeyPath || null,
         };
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${VT_SESSION_BOUNDARY_GUARD}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n` }));
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${VT_SESSION_BOUNDARY_GUARD}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`) }));
         const id = await invoke<string>("ssh_connect", { profile: nativeProfile, requestId: attemptId });
         if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
         setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, connecting: false }));
       } catch (error) {
         if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
         const detail = error instanceof Error ? error.message : String(error);
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${detail}\n`, connecting: false }));
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${detail}\n`), connecting: false }));
         setNotice(detail);
       } finally {
         delete pendingSshConnectRequestsRef.current[attemptId];
@@ -2741,7 +2791,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const cancelSshConnect = (tabId: string) => {
     delete connectAttemptRef.current[tabId];
-    setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: false, output: `${item.output}Connection attempt cancelled.\n` }));
+    setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: false, output: appendSshTabOutput(item.output, "Connection attempt cancelled.\n") }));
     notify("Connection attempt cancelled. The connection may still complete in the background and will be ignored if it does.");
   };
 
@@ -3209,7 +3259,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       return;
     }
     void run(async () => {
-      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}Installing SSH key for ${profile.username}@${profile.host}:${profile.port} using the saved password...\n` }));
+      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `Installing SSH key for ${profile.username}@${profile.host}:${profile.port} using the saved password...\n`) }));
       try {
         const message = await invoke<string>("ssh_install_key", {
           profile: {
@@ -3221,11 +3271,11 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             privateKeyPath: profile.privateKeyPath || null,
           },
         });
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${message}\n` }));
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${message}\n`) }));
         notify(message);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: `${item.output}${detail}\n` }));
+        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${detail}\n`) }));
         setNotice(detail);
       }
     });
@@ -3236,7 +3286,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     if (!tab?.sessionId) return;
     void run(async () => {
       await invoke("ssh_disconnect", { sessionId: tab.sessionId });
-      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, connected: false, sessionId: "", output: `${item.output}\nDisconnected.\n`, recording: false }));
+      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, "\nDisconnected.\n"), recording: false }));
       sshConnectingRef.current = false;
     });
   };
@@ -3250,9 +3300,17 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       // tab (`tab.output`, the scrollback replayed into xterm.js on every
       // tab switch) so a recording started against an already-open session
       // captures its past output too, not just what arrives from now on.
-      // There is no equivalent history for *commands*: past keystrokes were
-      // never retained (only future ones are captured below, in `onData`),
-      // so the commands transcript can only ever start empty here.
+      // `tab.output` is capped at `SSH_TAB_OUTPUT_CAP` (see
+      // `appendSshTabOutput`), so for a session that has been open long
+      // enough to exceed that cap, this seed is only the most recent
+      // ~512KB of scrollback rather than the session's entire history --
+      // an intentional, best-effort tradeoff: bounding memory/CPU growth
+      // for every open tab takes priority over an unbounded recording
+      // seed for the rare case of starting a recording very late into an
+      // extremely long-lived session. There is no equivalent history for
+      // *commands*: past keystrokes were never retained (only future ones
+      // are captured below, in `onData`), so the commands transcript can
+      // only ever start empty here.
       const stats = await invoke<RecordingStats>("start_ssh_recording", {
         tabId: tab.id,
         rawSeed: tab.output,

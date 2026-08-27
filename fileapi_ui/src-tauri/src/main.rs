@@ -2509,6 +2509,12 @@ fn clear_operation_history() -> Result<(), String> {
 
 #[tauri::command]
 fn clear_operation_logs() -> Result<(), String> {
+    // Drop oplog's cached open file handle first: it caches an appending
+    // `BufWriter` across calls (see `oplog::write_line`) to avoid
+    // re-opening the file on every log line, and that handle would
+    // otherwise keep referencing the inode this function is about to
+    // unlink, silently reappending to a now-deleted file on next write.
+    oplog::invalidate_cached_writer();
     let (_, log_path) = operation_paths()?;
     for path in [
         &log_path,
@@ -2529,6 +2535,11 @@ fn clear_operation_logs() -> Result<(), String> {
 
 #[tauri::command]
 fn initialize_operation_log() -> Result<(), String> {
+    // Same reason as in `clear_operation_logs` above: this function
+    // renames/truncates `operations.log` directly on disk, so any cached
+    // open handle in `oplog::write_line` must be dropped first or it would
+    // keep writing through a stale file descriptor.
+    oplog::invalidate_cached_writer();
     let staging_directory = operation_storage_directory()?.join("drag-staging");
     if staging_directory.exists() {
         std::fs::remove_dir_all(&staging_directory).map_err(|error| error.to_string())?;
