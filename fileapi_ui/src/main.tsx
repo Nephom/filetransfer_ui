@@ -55,6 +55,8 @@ import { desktopSettingsKey, type DesktopSettings, type OperationStorageInfo } f
 import { useSessionsState } from "./features/sessions/useSessionsState";
 import { useSessionsActions } from "./features/sessions/useSessionsActions";
 import { type ManagedSession } from "./features/sessions/sessions-contracts";
+import { useShareLinksState } from "./features/share-links/useShareLinksState";
+import { useShareLinksActions } from "./features/share-links/useShareLinksActions";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
@@ -68,6 +70,8 @@ const WorkspaceNameDialog = lazy(() => import("./features/sessions/WorkspaceName
 const SshEntryDialog = lazy(() => import("./features/sessions/SshEntryDialog").then(({ SshEntryDialog: component }) => ({ default: component })));
 const RestEntryDialog = lazy(() => import("./features/sessions/RestEntryDialog").then(({ RestEntryDialog: component }) => ({ default: component })));
 const VncEntryDialog = lazy(() => import("./features/sessions/VncEntryDialog").then(({ VncEntryDialog: component }) => ({ default: component })));
+const SharePasswordDialog = lazy(() => import("./features/share-links/SharePasswordDialog").then(({ SharePasswordDialog: component }) => ({ default: component })));
+const ShareLinksModal = lazy(() => import("./features/share-links/ShareLinksModal").then(({ ShareLinksModal: component }) => ({ default: component })));
 
 type FileItem = {
   name: string;
@@ -94,31 +98,6 @@ type Session = {
   locationId: string;
   ignoreTlsErrors: boolean;
   saveUserInformation: boolean;
-};
-type ShareResponse = {
-  data?: {
-    fullUrl?: string;
-    shareUrl?: string;
-    directDownloadUrl?: string;
-    directDownloadFullUrl?: string;
-  };
-};
-type ShareLink = {
-  shareToken: string;
-  userId?: number | string;
-  creatorUsername?: string;
-  fileName: string;
-  locationId?: string;
-  createdAt?: number;
-  expiresAt?: number | null;
-  maxDownloads: number;
-  downloadCount: number;
-  remainingDownloads?: number | null;
-  isActive: boolean;
-  isExpired?: boolean;
-  isExhausted?: boolean;
-  shareUrl?: string;
-  directDownloadUrl?: string;
 };
 type NativeApiResponse = { status: number; body: number[]; headers?: [string, string][] };
 type UploadSummary = { files: number; directories: number; totalSize: number; sources: { path: string; size: number; modified: number }[] };
@@ -984,14 +963,16 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [path, setPath] = useState("");
   const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
+  const {
+    shareUrl, setShareUrl,
+    shareLinksOpen, setShareLinksOpen,
+    shareLinks, setShareLinks,
+    shareLinksLoading, setShareLinksLoading,
+    sharePasswordOpen, setSharePasswordOpen,
+    sharePasswordDraft, setSharePasswordDraft,
+  } = useShareLinksState();
   const selectionAnchorRef = useRef<string | null>(null);
   const localSelectionAnchorRef = useRef<string | null>(null);
-  const [shareUrl, setShareUrl] = useState("");
-  const [shareLinksOpen, setShareLinksOpen] = useState(false);
-  const [shareLinks, setShareLinks] = useState<ShareLink[]>([]);
-  const [shareLinksLoading, setShareLinksLoading] = useState(false);
-  const [sharePasswordOpen, setSharePasswordOpen] = useState(false);
-  const [sharePasswordDraft, setSharePasswordDraft] = useState("");
   const [accountOpen, setAccountOpen] = useState(false);
   const [accountMenuStyle, setAccountMenuStyle] = useState<React.CSSProperties>({});
   const [helpOpen, setHelpOpen] = useState(false);
@@ -4201,130 +4182,31 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       }
     });
 
-  const createShareLink = (password?: string) =>
-    run(async () => {
-      ensureApiRemote();
-      if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
-      const item = selectedItems[0];
-      const sourceLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${item.path}`;
-      const operationId = crypto.randomUUID();
-      const started = performance.now();
-      writeOperationLog("share", "started", sourceLabel, "Public share link", JSON.stringify({ operationId, locationId: session.locationId, filePath: item.path, mode: desktopSettings.shareLinkMode, expiration: desktopSettings.shareLinkExpirationDays, passwordConfigured: Boolean(password) }), "DEBUG");
-      try {
-        const expiresIn = desktopSettings.shareLinkExpirationDays > 0
-          ? desktopSettings.shareLinkExpirationDays * 86400
-          : undefined;
-        const response = await api("/api/files/share", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            locationId: session.locationId,
-            filePath: item.path,
-            ...(expiresIn ? { expiresIn } : {}),
-            ...(password ? { password } : {}),
-          }),
-        });
-        if (!response.ok) throw new Error(await readError(response));
-        const data = (await response.json()) as ShareResponse;
-        // "direct" mode returns a plain URL that streams the file straight
-        // from the server with no page in between and no Authorization/JWT
-        // header required, for tools that only accept a bare link (e.g. a
-        // BMC firmware page). "secure" mode returns the share.html page
-        // link, which supports the optional password set above.
-        const url =
-          desktopSettings.shareLinkMode === "direct"
-            ? data.data?.directDownloadFullUrl ||
-              (data.data?.directDownloadUrl ? `${serverUrl(session)}${data.data.directDownloadUrl}` : "")
-            : data.data?.fullUrl ||
-              (data.data?.shareUrl ? `${serverUrl(session)}${data.data.shareUrl}` : "");
-        if (!url) throw new Error("The server did not return a share link.");
-        setShareUrl(url);
-        setSharePasswordOpen(false);
-        setSharePasswordDraft("");
-         writeOperationLog("share", "completed", sourceLabel, "Public share link", JSON.stringify({ operationId, locationId: session.locationId, filePath: item.path, mode: desktopSettings.shareLinkMode, expiration: desktopSettings.shareLinkExpirationDays, passwordConfigured: Boolean(password), durationMs: Math.round(performance.now() - started) }));
-        notify("Share link created.");
-      } catch (error) {
-         writeOperationLog("share", "failed", sourceLabel, "Public share link", JSON.stringify({ operationId, locationId: session.locationId, filePath: item.path, mode: desktopSettings.shareLinkMode, expiration: desktopSettings.shareLinkExpirationDays, passwordConfigured: Boolean(password), durationMs: Math.round(performance.now() - started), failureType: "share_request", errorMessage: describeError(error) }), "ERROR");
-        throw error;
-      }
-    });
-
-  const loadShareLinks = async () => {
-    if (!session.token) return;
-    setShareLinksLoading(true);
-    try {
-      const response = await api(session.role === "admin" ? "/api/admin/share-links" : "/api/files/shares");
-      if (!response.ok) throw new Error(await readError(response));
-      const data = (await response.json()) as { data?: ShareLink[] };
-      setShareLinks(data.data || []);
-    } finally {
-      setShareLinksLoading(false);
-    }
-  };
-
-  const openShareLinks = () => {
-    setShareLinksOpen(true);
-    void loadShareLinks();
-  };
-
-  const shareLinkUrl = (link: ShareLink, kind: "secure" | "direct") => {
-    const relative = kind === "direct" ? link.directDownloadUrl : link.shareUrl;
-    return relative ? `${serverUrl(session)}${relative}` : "";
-  };
-
-  const copyManagedShareLink = async (link: ShareLink, kind: "secure" | "direct") => {
-    const url = shareLinkUrl(link, kind);
-    if (!url) throw new Error("The server did not return this share link URL.");
-    await navigator.clipboard.writeText(url);
-    notify(`${kind === "direct" ? "Direct" : "Secure"} link copied.`);
-  };
-
-  const revokeManagedShareLink = (shareToken: string) =>
-    run(async () => {
-      if (!window.confirm("Revoke this share link? Existing downloads will stop working.")) return;
-      const response = await api(`${session.role === "admin" ? "/api/admin/share-links" : "/api/files/share"}/${encodeURIComponent(shareToken)}`, { method: "DELETE" });
-      if (!response.ok) throw new Error(await readError(response));
-      await loadShareLinks();
-      notify("Share link revoked.");
-    });
-
-  const deleteExpiredShareLink = (shareToken: string) =>
-    run(async () => {
-      const response = await api(`${session.role === "admin" ? "/api/admin/share-links" : "/api/files/share"}/${encodeURIComponent(shareToken)}/history`, { method: "DELETE" });
-      if (!response.ok) throw new Error(await readError(response));
-      await loadShareLinks();
-      notify("Expired share link removed from history.");
-    });
-
-  const deleteRevokedShareLink = (shareToken: string) =>
-    run(async () => {
-      const response = await api(`${session.role === "admin" ? "/api/admin/share-links" : "/api/files/share"}/${encodeURIComponent(shareToken)}/history/revoked`, { method: "DELETE" });
-      if (!response.ok) throw new Error(await readError(response));
-      await loadShareLinks();
-      notify("Revoked share link removed from history.");
-    });
-
-  const shareLinkStatus = (link: ShareLink) =>
-    link.isExpired ? "Expired" : link.isExhausted ? "Exhausted" : link.isActive ? "Active" : "Revoked";
-  const shareLinkGroups = [
-    { key: "active", label: "Active", links: shareLinks.filter((link) => shareLinkStatus(link) === "Active") },
-    { key: "revoked", label: "Revoked", links: shareLinks.filter((link) => shareLinkStatus(link) === "Revoked") },
-    { key: "expired", label: "Expired", links: shareLinks.filter((link) => shareLinkStatus(link) === "Expired") },
-    { key: "exhausted", label: "Exhausted", links: shareLinks.filter((link) => shareLinkStatus(link) === "Exhausted") },
-  ].filter((group) => group.links.length > 0);
-
-  const share = () => {
-    if (selectedItems.length !== 1 || selectedItems[0].isDirectory) return;
-    if (desktopSettings.shareLinkMode === "secure") {
-      // The web UI's equivalent flow also lets the user set a password at
-      // share time (it's per-link, not a global default), so ask here too
-      // instead of always sharing without one.
-      setSharePasswordDraft("");
-      setSharePasswordOpen(true);
-      return;
-    }
-    void createShareLink();
-  };
+  const {
+    createShareLink,
+    loadShareLinks,
+    openShareLinks,
+    shareLinkUrl,
+    copyManagedShareLink,
+    revokeManagedShareLink,
+    deleteExpiredShareLink,
+    deleteRevokedShareLink,
+    shareLinkStatus,
+    shareLinkGroups,
+    share,
+  } = useShareLinksActions({
+    run, notify, api, readError,
+    session,
+    serverUrl: () => serverUrl(session),
+    activeLocationDisplayName: activeLocation?.displayName,
+    writeOperationLog, describeError,
+    shareLinkMode: desktopSettings.shareLinkMode,
+    shareLinkExpirationDays: desktopSettings.shareLinkExpirationDays,
+    ensureApiRemote,
+    selectedShareableItem: selectedItems.length === 1 ? selectedItems[0] : undefined,
+    shareLinks, setShareLinks, setShareLinksLoading,
+    setShareUrl, setShareLinksOpen, setSharePasswordOpen, setSharePasswordDraft,
+  });
 
 
   // .zip compression/extraction. LOCAL archives use the active Session name
@@ -5897,27 +5779,12 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           </div>
         )}
         {sharePasswordOpen && (
-          <div className="modal-cover modal-layer-top" onMouseDown={() => setSharePasswordOpen(false)}>
-            <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
-              <h2>Secure share link</h2>
-              <p className="muted">Optional: protect the link with a password. Leave blank to share without one.</p>
-              <label>
-                Password (optional)
-                <input
-                  type="password"
-                  autoFocus
-                  value={sharePasswordDraft}
-                  onChange={(event) => setSharePasswordDraft(event.target.value)}
-                />
-              </label>
-              <div className="modal-actions">
-                <button type="button" className="confirm" onClick={() => void createShareLink(sharePasswordDraft.trim() || undefined)}>
-                  Create link
-                </button>
-                <button type="button" onClick={() => setSharePasswordOpen(false)}>Cancel</button>
-              </div>
-            </div>
-          </div>
+          <SharePasswordDialog
+            sharePasswordDraft={sharePasswordDraft}
+            setSharePasswordDraft={setSharePasswordDraft}
+            onClose={() => setSharePasswordOpen(false)}
+            onCreate={(password) => void createShareLink(password)}
+          />
         )}
        {saveLogNameOpen && (
          <div className="modal-cover" onMouseDown={() => setSaveLogNameOpen(false)}>
@@ -5964,40 +5831,22 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           />
         )}
         {shareLinksOpen && (
-          <div className="modal-cover modal-layer-top" onMouseDown={() => setShareLinksOpen(false)}>
-             <div className="modal share-links-modal" style={modalStyle("share-links")} onMouseDown={(event) => event.stopPropagation()}>
-               <div className="modal-heading-row modal-drag-handle" onMouseDown={beginModalDrag("share-links")}><div><h2>Share Links</h2><p>Links created by this desktop client.</p></div><button type="button" onClick={() => setShareLinksOpen(false)} aria-label="Close Share Links"><CloseIcon /></button></div>
-              <div className="share-links-toolbar"><span>{shareLinks.length} link{shareLinks.length === 1 ? "" : "s"}</span><button type="button" onClick={() => void loadShareLinks()} disabled={shareLinksLoading}>{shareLinksLoading ? "Refreshing..." : "Refresh"}</button></div>
-               {shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : (
-                 <div className="share-link-groups">
-                   {shareLinkGroups.map((group) => (
-                     <section className="share-link-group" key={group.key}>
-                       <div className="share-link-group-heading"><h3>{group.label}</h3><span>{group.links.length}</span></div>
-                       <div className="share-links-list">
-                         {group.links.map((link) => {
-                           const secureUrl = shareLinkUrl(link, "secure");
-                           const directUrl = shareLinkUrl(link, "direct");
-                           const status = shareLinkStatus(link);
-                           return <article className="share-link-card" key={link.shareToken}>
-                             <div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div>
-                             {session.role === "admin" && <small>Created by: {link.creatorUsername || link.userId || "--"}</small>}
-                             <small>Location: {link.locationId || "--"} · Created: {link.createdAt ? new Date(link.createdAt).toLocaleString() : "--"}</small>
-                             <small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : " / unlimited"} · Expires: {link.expiresAt ? new Date(link.expiresAt).toLocaleString() : "never"}</small>
-                             <label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.currentTarget.select()} /></label>
-                             <label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.currentTarget.select()} /></label>
-                             {status === "Active" && <div className="modal-actions"><button type="button" onClick={() => void copyManagedShareLink(link, "secure")} disabled={!secureUrl}>Copy secure</button><button type="button" onClick={() => void copyManagedShareLink(link, "direct")} disabled={!directUrl}>Copy direct</button><button type="button" className="danger" onClick={() => revokeManagedShareLink(link.shareToken)}>Revoke</button></div>}
-                             {status === "Revoked" && <div className="modal-actions"><button type="button" onClick={() => deleteRevokedShareLink(link.shareToken)}>Clear revoked</button></div>}
-                             {status === "Expired" && <div className="modal-actions"><button type="button" onClick={() => deleteExpiredShareLink(link.shareToken)}>Clear expired</button></div>}
-                           </article>;
-                         })}
-                       </div>
-                     </section>
-                   ))}
-                 </div>
-               )}
-              <div className="modal-actions modal-actions-end"><button type="button" className="confirm" onClick={() => setShareLinksOpen(false)}>Close</button></div>
-            </div>
-          </div>
+          <ShareLinksModal
+            shareLinks={shareLinks}
+            shareLinksLoading={shareLinksLoading}
+            shareLinkGroups={shareLinkGroups}
+            isAdmin={session.role === "admin"}
+            modalStyle={modalStyle("share-links")}
+            onDragStart={beginModalDrag("share-links")}
+            onClose={() => setShareLinksOpen(false)}
+            onRefresh={() => void loadShareLinks()}
+            shareLinkUrl={shareLinkUrl}
+            shareLinkStatus={shareLinkStatus}
+            onCopyLink={(link, kind) => void copyManagedShareLink(link, kind)}
+            onRevokeLink={revokeManagedShareLink}
+            onClearRevoked={deleteRevokedShareLink}
+            onClearExpired={deleteExpiredShareLink}
+          />
         )}
         {sessionsOpen && (
           <SessionsModal
