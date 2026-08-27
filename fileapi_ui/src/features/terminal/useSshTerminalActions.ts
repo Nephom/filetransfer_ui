@@ -1,0 +1,258 @@
+import type { MutableRefObject } from "react";
+import type { Terminal } from "@xterm/xterm";
+import { invoke } from "@tauri-apps/api/core";
+import type { SshProfile } from "../ssh/ssh-contracts";
+import type { RecordingStats, SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
+import { appendSshTabOutput, makeSshTabId, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./terminal-utils";
+
+type OperationLogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+
+type Props = {
+  tabs: SshTerminalTab[];
+  setTabs: React.Dispatch<React.SetStateAction<SshTerminalTab[]>>;
+  activeTabId: string;
+  setActiveTabId: (id: string) => void;
+  terminalInstanceRef: MutableRefObject<Terminal | null>;
+  connectAttemptRef: MutableRefObject<Record<string, string>>;
+  pendingRequestsRef: MutableRefObject<Record<string, string>>;
+  connectingRef: MutableRefObject<boolean>;
+  recordingWriteQueuesRef: MutableRefObject<Map<string, Promise<void>>>;
+  workspaces: TerminalWorkspaceSession[];
+  workspaceId: string;
+  setWorkspaceId: (id: string) => void;
+  selectedEntryId: string;
+  setSelectedEntryId: (id: string) => void;
+  setSshProfileId: (id: string) => void;
+  setTerminalOpen: (open: boolean) => void;
+  loadSshProfileDraft: (profile: SshProfile | undefined) => void;
+  onOpenWorkspaceManager: (workspaceId?: string) => void;
+  onNotify: (message: string, duration?: number) => void;
+  onSetNotice: (message: string) => void;
+  run: (action: () => Promise<void>) => void;
+  onWriteOperationLog: (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string, level?: OperationLogLevel) => void;
+};
+
+/** Terminal tab lifecycle, SSH connect/disconnect, and recording start/stop.
+ * Depends on Workspace/Session values via props only -- it never reaches
+ * into DesktopApp state directly, keeping the Terminal feature's app-level
+ * coupling limited to this explicit prop surface. */
+export function useSshTerminalActions({
+  tabs, setTabs, activeTabId, setActiveTabId, terminalInstanceRef, connectAttemptRef,
+  pendingRequestsRef, connectingRef, recordingWriteQueuesRef, workspaces, workspaceId,
+  setWorkspaceId, selectedEntryId, setSelectedEntryId, setSshProfileId, setTerminalOpen,
+  loadSshProfileDraft, onOpenWorkspaceManager, onNotify, onSetNotice, run, onWriteOperationLog,
+}: Props) {
+  const activeTab = tabs.find((item) => item.id === activeTabId);
+  const recordingHasOutput = Boolean(activeTab && (activeTab.recordingRawBytes > 0 || activeTab.recordingPlainBytes > 0));
+
+  const createSshTab = (targetWorkspaceId = workspaceId, entryId = selectedEntryId) => {
+    const workspace = workspaces.find((item) => item.id === targetWorkspaceId);
+    const profile = workspace?.sshEntries.find((item) => item.id === entryId);
+    if (!workspace || !profile) {
+      onOpenWorkspaceManager();
+      onSetNotice("Select an SSH entry before opening a terminal tab.");
+      return "";
+    }
+    const tab: SshTerminalTab = {
+      id: makeSshTabId(),
+      title: profile.name || `${profile.username}@${profile.host}`,
+      workspaceId: targetWorkspaceId,
+      sshEntryId: profile.id,
+      sessionId: "",
+      connected: false,
+      connecting: false,
+      output: "",
+      recording: false,
+      recordingStartedAt: null,
+      recordingRawBytes: 0,
+      recordingPlainBytes: 0,
+      recordingCommandCount: 0,
+      savedLogPaths: [],
+    };
+    setTabs((current) => [...current, tab]);
+    setActiveTabId(tab.id);
+    setWorkspaceId(targetWorkspaceId);
+    setSelectedEntryId(entryId);
+    setTerminalOpen(true);
+    loadSshProfileDraft(profile);
+    return tab.id;
+  };
+
+  const closeSshTab = (tabId: string) => {
+    const tab = tabs.find((item) => item.id === tabId);
+    if (!tab) return;
+    const hasUnsavedRecording = tab.recordingStartedAt !== null && tab.savedLogPaths.length === 0;
+    if (hasUnsavedRecording && !window.confirm(`This tab has an unsaved SSH recording. Close ${tab.title} and discard it?`)) return;
+    if (tab.connected && !window.confirm(`Disconnect and close ${tab.title}?`)) return;
+    void run(async () => {
+      if (tab.sessionId) await invoke("ssh_disconnect", { sessionId: tab.sessionId });
+      if (hasUnsavedRecording) {
+        const pending = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
+        await pending.catch(() => undefined);
+        await invoke("discard_ssh_recording", { tabId }).catch(() => undefined);
+        recordingWriteQueuesRef.current.delete(tabId);
+      }
+      setTabs((current) => {
+        const remaining = current.filter((item) => item.id !== tabId);
+        if (tabId === activeTabId) setActiveTabId(remaining[remaining.length - 1]?.id || "");
+        return remaining;
+      });
+    });
+  };
+
+  const selectSshTab = (tab: SshTerminalTab) => {
+    setActiveTabId(tab.id);
+    setWorkspaceId(tab.workspaceId);
+    setSelectedEntryId(tab.sshEntryId);
+    window.requestAnimationFrame(() => terminalInstanceRef.current?.focus());
+    const profile = workspaces.find((item) => item.id === tab.workspaceId)?.sshEntries.find((item) => item.id === tab.sshEntryId);
+    if (profile) {
+      setSshProfileId(profile.id);
+      loadSshProfileDraft(profile);
+    }
+  };
+
+  const performSshConnect = (tabId: string, profile: SshProfile) => {
+    const attemptId = `${tabId}-${Date.now()}`;
+    connectAttemptRef.current[tabId] = attemptId;
+    setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: true }));
+    void run(async () => {
+      connectingRef.current = true;
+      pendingRequestsRef.current[attemptId] = tabId;
+      try {
+        const nativeProfile = {
+          id: profile.id,
+          name: profile.name,
+          host: profile.host,
+          port: profile.port,
+          username: profile.username,
+          privateKeyPath: profile.privateKeyPath || null,
+        };
+        setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${VT_SESSION_BOUNDARY_GUARD}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`) }));
+        const id = await invoke<string>("ssh_connect", { profile: nativeProfile, requestId: attemptId });
+        if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
+        setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, connecting: false }));
+      } catch (error) {
+        if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
+        const detail = error instanceof Error ? error.message : String(error);
+        setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${detail}\n`), connecting: false }));
+        onSetNotice(detail);
+      } finally {
+        delete pendingRequestsRef.current[attemptId];
+        connectingRef.current = false;
+      }
+    });
+  };
+
+  const cancelSshConnect = (tabId: string) => {
+    delete connectAttemptRef.current[tabId];
+    setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: false, output: appendSshTabOutput(item.output, "Connection attempt cancelled.\n") }));
+    onNotify("Connection attempt cancelled. The connection may still complete in the background and will be ignored if it does.");
+  };
+
+  const quickConnectSsh = (targetWorkspaceId: string, entryId: string) => {
+    const existingTab = tabs.find((tab) => tab.workspaceId === targetWorkspaceId && tab.sshEntryId === entryId);
+    const workspace = workspaces.find((item) => item.id === targetWorkspaceId);
+    const profile = workspace?.sshEntries.find((item) => item.id === entryId);
+    if (existingTab) {
+      selectSshTab(existingTab);
+      if (!existingTab.connected && !existingTab.connecting && profile) performSshConnect(existingTab.id, profile);
+      return;
+    }
+    if (!workspace || !profile) {
+      onOpenWorkspaceManager();
+      onSetNotice("Select an SSH entry before connecting.");
+      return;
+    }
+    const tabId = createSshTab(targetWorkspaceId, entryId);
+    if (tabId) performSshConnect(tabId, profile);
+  };
+
+  const reorderSshTabs = (draggedId: string, targetId: string) => {
+    setTabs((current) => {
+      const from = current.findIndex((item) => item.id === draggedId);
+      const to = current.findIndex((item) => item.id === targetId);
+      if (from < 0 || to < 0) return current;
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  };
+
+  const connectSsh = () => {
+    const tabId = activeTabId || createSshTab();
+    const tab = tabs.find((item) => item.id === tabId);
+    const workspace = workspaces.find((item) => item.id === (tab?.workspaceId || workspaceId));
+    const profile = workspace?.sshEntries.find((item) => item.id === (tab?.sshEntryId || selectedEntryId));
+    if (!tabId || !workspace || !profile) {
+      onOpenWorkspaceManager();
+      onSetNotice("Select or create a Session with an SSH connection before connecting.");
+      return;
+    }
+    performSshConnect(tabId, profile);
+  };
+
+  const disconnectSsh = () => {
+    const tab = activeTab;
+    if (!tab?.sessionId) return;
+    void run(async () => {
+      await invoke("ssh_disconnect", { sessionId: tab.sessionId });
+      setTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, "\nDisconnected.\n"), recording: false }));
+      connectingRef.current = false;
+    });
+  };
+
+  const startRecording = () => {
+    if (!activeTab?.connected) return;
+    const tab = activeTab;
+    const startedAt = Date.now();
+    void run(async () => {
+      const stats = await invoke<RecordingStats>("start_ssh_recording", {
+        tabId: tab.id,
+        rawSeed: tab.output,
+        plainSeed: stripAnsi(tab.output),
+      });
+      setTabs((current) => current.map((item) => item.id !== tab.id ? item : {
+        ...item,
+        recording: true,
+        recordingStartedAt: startedAt,
+        recordingRawBytes: stats.rawBytes,
+        recordingPlainBytes: stats.plainBytes,
+        recordingCommandCount: 0,
+        savedLogPaths: [],
+      }));
+      onWriteOperationLog("ssh_recording", "started", tab.sessionId || tab.id, "LOCAL recording buffer", JSON.stringify({ operationId: tab.id, recordingId: tab.id, sessionId: tab.sessionId, startedAt: new Date(startedAt).toISOString(), seededRawBytes: stats.rawBytes }), "INFO");
+      onNotify("SSH output recording started.");
+    });
+  };
+
+  const stopRecording = () => {
+    if (!activeTab) return;
+    const tab = activeTab;
+    void run(async () => {
+      const pending = recordingWriteQueuesRef.current.get(tab.id) || Promise.resolve();
+      await pending.catch(() => undefined);
+      await invoke("stop_ssh_recording", { tabId: tab.id });
+      setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, recording: false } : item));
+      onWriteOperationLog("ssh_recording", "stopped", tab.sessionId || tab.id, "LOCAL recording buffer", JSON.stringify({ operationId: tab.id, recordingId: tab.id, sessionId: tab.sessionId, startedAt: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null, endedAt: new Date().toISOString(), rawBytes: tab.recordingRawBytes, commandCount: tab.recordingCommandCount, durationMs: tab.recordingStartedAt ? Date.now() - tab.recordingStartedAt : undefined }), "INFO");
+      onNotify("Recording finalized. Save the log package before disconnecting.");
+    });
+  };
+
+  return {
+    activeTab,
+    recordingHasOutput,
+    createSshTab,
+    closeSshTab,
+    selectSshTab,
+    performSshConnect,
+    cancelSshConnect,
+    quickConnectSsh,
+    reorderSshTabs,
+    connectSsh,
+    disconnectSsh,
+    startRecording,
+    stopRecording,
+  };
+}

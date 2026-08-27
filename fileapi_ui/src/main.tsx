@@ -47,10 +47,11 @@ import { FloatingWindow } from "./ui/FloatingWindow";
 import { isMobileViewport } from "./styles/breakpoints";
 import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
 import type { SshProfile } from "./features/ssh/ssh-contracts";
-import type { RecordingStats, SshTerminalTab } from "./features/terminal/terminal-contracts";
-import { appendSshTabOutput, makeSshTabId, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./features/terminal/terminal-utils";
+import type { SshTerminalTab } from "./features/terminal/terminal-contracts";
+import { appendSshTabOutput, makeSshTabId } from "./features/terminal/terminal-utils";
 import { useSshTerminal } from "./features/terminal/useSshTerminal";
 import { useSshTerminalState } from "./features/terminal/useSshTerminalState";
+import { useSshTerminalActions } from "./features/terminal/useSshTerminalActions";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
@@ -2532,152 +2533,44 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   };
 
 
-  const activeSshTab = sshTabs.find((item) => item.id === activeSshTabId);
-  const recordingHasOutput = Boolean(activeSshTab && (activeSshTab.recordingRawBytes > 0 || activeSshTab.recordingPlainBytes > 0));
-
-  const createSshTab = (workspaceId = workspaceSessionId, entryId = selectedSshEntryId) => {
-    const workspace = managedSessions.find((item) => item.id === workspaceId);
-    const profile = workspace?.sshEntries.find((item) => item.id === entryId);
-    if (!workspace || !profile) {
-      openSessionsModal();
-      setNotice("Select an SSH entry before opening a terminal tab.");
-      return "";
-    }
-    const tab: SshTerminalTab = {
-      id: makeSshTabId(),
-      title: profile.name || `${profile.username}@${profile.host}`,
-      workspaceId,
-      sshEntryId: profile.id,
-      sessionId: "",
-      connected: false,
-      connecting: false,
-      output: "",
-      recording: false,
-      recordingStartedAt: null,
-      recordingRawBytes: 0,
-      recordingPlainBytes: 0,
-      recordingCommandCount: 0,
-      savedLogPaths: [],
-    };
-    setSshTabs((current) => [...current, tab]);
-    setActiveSshTabId(tab.id);
-    setWorkspaceSessionId(workspaceId);
-    setSelectedSshEntryId(entryId);
-    setTerminalOpen(true);
-    loadSshProfileDraft(profile);
-    return tab.id;
-  };
-
-  const closeSshTab = (tabId: string) => {
-    const tab = sshTabs.find((item) => item.id === tabId);
-    if (!tab) return;
-    // Only ask about discarding a recording if the user actually pressed
-    // "Start Recording" on this tab at some point (`recordingStartedAt` is
-    // only ever set by `startRecording`, and cleared back to null only by
-    // creating a brand new tab) and it was never saved since -- a tab that
-    // was never recorded on at all must not be interrupted by this prompt.
-    const hasUnsavedRecording = tab.recordingStartedAt !== null && tab.savedLogPaths.length === 0;
-    if (hasUnsavedRecording && !window.confirm(`This tab has an unsaved SSH recording. Close ${tab.title} and discard it?`)) return;
-    if (tab.connected && !window.confirm(`Disconnect and close ${tab.title}?`)) return;
-    void run(async () => {
-      if (tab.sessionId) await invoke("ssh_disconnect", { sessionId: tab.sessionId });
-      if (hasUnsavedRecording) {
-        const pending = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
-        await pending.catch(() => undefined);
-        await invoke("discard_ssh_recording", { tabId }).catch(() => undefined);
-        recordingWriteQueuesRef.current.delete(tabId);
-      }
-      setSshTabs((current) => {
-        const remaining = current.filter((item) => item.id !== tabId);
-        if (tabId === activeSshTabId) setActiveSshTabId(remaining[remaining.length - 1]?.id || "");
-        return remaining;
-      });
-    });
-  };
-
-  const selectSshTab = (tab: SshTerminalTab) => {
-    setActiveSshTabId(tab.id);
-    setWorkspaceSessionId(tab.workspaceId);
-    setSelectedSshEntryId(tab.sshEntryId);
-    window.requestAnimationFrame(() => terminalInstanceRef.current?.focus());
-    const profile = managedSessions.find((item) => item.id === tab.workspaceId)?.sshEntries.find((item) => item.id === tab.sshEntryId);
-    if (profile) {
-      setSshProfileId(profile.id);
-      loadSshProfileDraft(profile);
-    }
-  };
-
-  const performSshConnect = (tabId: string, profile: SshProfile) => {
-    const attemptId = `${tabId}-${Date.now()}`;
-    connectAttemptRef.current[tabId] = attemptId;
-    setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: true }));
-    void run(async () => {
-      sshConnectingRef.current = true;
-      // `attemptId` doubles as the backend `requestId`: it uniquely
-      // identifies this connection attempt, and the backend echoes it back
-      // on every `ssh-output`/`ssh-exit` event so those events can be bound
-      // to this tab even if they arrive before this invoke() call resolves.
-      pendingSshConnectRequestsRef.current[attemptId] = tabId;
-      try {
-        const nativeProfile = {
-          id: profile.id,
-          name: profile.name,
-          host: profile.host,
-          port: profile.port,
-          username: profile.username,
-          privateKeyPath: profile.privateKeyPath || null,
-        };
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${VT_SESSION_BOUNDARY_GUARD}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`) }));
-        const id = await invoke<string>("ssh_connect", { profile: nativeProfile, requestId: attemptId });
-        if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, connecting: false }));
-      } catch (error) {
-        if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
-        const detail = error instanceof Error ? error.message : String(error);
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${detail}\n`), connecting: false }));
-        setNotice(detail);
-      } finally {
-        delete pendingSshConnectRequestsRef.current[attemptId];
-        sshConnectingRef.current = false;
-      }
-    });
-  };
-
-  const cancelSshConnect = (tabId: string) => {
-    delete connectAttemptRef.current[tabId];
-    setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: false, output: appendSshTabOutput(item.output, "Connection attempt cancelled.\n") }));
-    notify("Connection attempt cancelled. The connection may still complete in the background and will be ignored if it does.");
-  };
-
-  const quickConnectSsh = (workspaceId: string, entryId: string) => {
-    const existingTab = sshTabs.find((tab) => tab.workspaceId === workspaceId && tab.sshEntryId === entryId);
-    const workspace = managedSessions.find((item) => item.id === workspaceId);
-    const profile = workspace?.sshEntries.find((item) => item.id === entryId);
-    if (existingTab) {
-      selectSshTab(existingTab);
-      if (!existingTab.connected && !existingTab.connecting && profile) performSshConnect(existingTab.id, profile);
-      return;
-    }
-    if (!workspace || !profile) {
-      openSessionsModal();
-      setNotice("Select an SSH entry before connecting.");
-      return;
-    }
-    const tabId = createSshTab(workspaceId, entryId);
-    if (tabId) performSshConnect(tabId, profile);
-  };
-
-  const reorderSshTabs = (draggedId: string, targetId: string) => {
-    setSshTabs((current) => {
-      const from = current.findIndex((item) => item.id === draggedId);
-      const to = current.findIndex((item) => item.id === targetId);
-      if (from < 0 || to < 0) return current;
-      const next = [...current];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
-    });
-  };
+  const {
+    activeTab: activeSshTab,
+    recordingHasOutput,
+    createSshTab,
+    closeSshTab,
+    selectSshTab,
+    performSshConnect,
+    cancelSshConnect,
+    quickConnectSsh,
+    reorderSshTabs,
+    connectSsh,
+    disconnectSsh,
+    startRecording,
+    stopRecording,
+  } = useSshTerminalActions({
+    tabs: sshTabs,
+    setTabs: setSshTabs,
+    activeTabId: activeSshTabId,
+    setActiveTabId: setActiveSshTabId,
+    terminalInstanceRef,
+    connectAttemptRef,
+    pendingRequestsRef: pendingSshConnectRequestsRef,
+    connectingRef: sshConnectingRef,
+    recordingWriteQueuesRef,
+    workspaces: managedSessions,
+    workspaceId: workspaceSessionId,
+    setWorkspaceId: setWorkspaceSessionId,
+    selectedEntryId: selectedSshEntryId,
+    setSelectedEntryId: setSelectedSshEntryId,
+    setSshProfileId,
+    setTerminalOpen,
+    loadSshProfileDraft,
+    onOpenWorkspaceManager: () => openSessionsModal(),
+    onNotify: notify,
+    onSetNotice: setNotice,
+    run: (action) => { void run(action); },
+    onWriteOperationLog: (...args: Parameters<typeof writeOperationLog>) => writeOperationLog(...args),
+  });
 
   const selectWorkspaceSession = (id: string) => {
     setWorkspaceSessionId(id);
@@ -3090,19 +2983,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     }
   };
 
-  const connectSsh = () => {
-    const tabId = activeSshTabId || createSshTab();
-    const tab = sshTabs.find((item) => item.id === tabId);
-    const workspace = managedSessions.find((item) => item.id === (tab?.workspaceId || workspaceSessionId));
-    const profile = workspace?.sshEntries.find((item) => item.id === (tab?.sshEntryId || selectedSshEntryId));
-    if (!tabId || !workspace || !profile) {
-      openSessionsModal();
-      setNotice("Select or create a Session with an SSH connection before connecting.");
-      return;
-    }
-    performSshConnect(tabId, profile);
-  };
-
   const installSshKey = () => {
     const tabId = activeSshTabId || createSshTab();
     const tab = sshTabs.find((item) => item.id === tabId);
@@ -3133,74 +3013,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${detail}\n`) }));
         setNotice(detail);
       }
-    });
-  };
-
-  const disconnectSsh = () => {
-    const tab = activeSshTab;
-    if (!tab?.sessionId) return;
-    void run(async () => {
-      await invoke("ssh_disconnect", { sessionId: tab.sessionId });
-      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, "\nDisconnected.\n"), recording: false }));
-      sshConnectingRef.current = false;
-    });
-  };
-
-  const startRecording = () => {
-    if (!activeSshTab?.connected) return;
-    const tab = activeSshTab;
-    const startedAt = Date.now();
-    void run(async () => {
-      // Seed the new recording with everything already on screen for this
-      // tab (`tab.output`, the scrollback replayed into xterm.js on every
-      // tab switch) so a recording started against an already-open session
-      // captures its past output too, not just what arrives from now on.
-      // `tab.output` is capped at `SSH_TAB_OUTPUT_CAP` (see
-      // `appendSshTabOutput`), so for a session that has been open long
-      // enough to exceed that cap, this seed is only the most recent
-      // ~512KB of scrollback rather than the session's entire history --
-      // an intentional, best-effort tradeoff: bounding memory/CPU growth
-      // for every open tab takes priority over an unbounded recording
-      // seed for the rare case of starting a recording very late into an
-      // extremely long-lived session. There is no equivalent history for
-      // *commands*: past keystrokes were never retained (only future ones
-      // are captured below, in `onData`), so the commands transcript can
-      // only ever start empty here.
-      const stats = await invoke<RecordingStats>("start_ssh_recording", {
-        tabId: tab.id,
-        rawSeed: tab.output,
-        plainSeed: stripAnsi(tab.output),
-      });
-      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : {
-        ...item,
-        recording: true,
-        recordingStartedAt: startedAt,
-        recordingRawBytes: stats.rawBytes,
-        recordingPlainBytes: stats.plainBytes,
-        recordingCommandCount: 0,
-        savedLogPaths: [],
-      }));
-      writeOperationLog("ssh_recording", "started", tab.sessionId || tab.id, "LOCAL recording buffer", JSON.stringify({ operationId: tab.id, recordingId: tab.id, sessionId: tab.sessionId, startedAt: new Date(startedAt).toISOString(), seededRawBytes: stats.rawBytes }), "INFO");
-      notify("SSH output recording started.");
-    });
-  };
-
-  const stopRecording = () => {
-    if (!activeSshTab) return;
-    const tab = activeSshTab;
-    void run(async () => {
-      // Wait for every append this tab has queued (see
-      // `recordingWriteQueuesRef`) to finish writing to disk before
-      // flipping `recording` off and telling the Rust side to flush -- the
-      // "Save Log" button becomes enabled the moment `recording` is false,
-      // so this ordering guarantees nothing saved afterwards can ever miss
-      // the tail end of the transcript.
-      const pending = recordingWriteQueuesRef.current.get(tab.id) || Promise.resolve();
-      await pending.catch(() => undefined);
-      await invoke("stop_ssh_recording", { tabId: tab.id });
-      setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, recording: false } : item));
-      writeOperationLog("ssh_recording", "stopped", tab.sessionId || tab.id, "LOCAL recording buffer", JSON.stringify({ operationId: tab.id, recordingId: tab.id, sessionId: tab.sessionId, startedAt: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null, endedAt: new Date().toISOString(), rawBytes: tab.recordingRawBytes, commandCount: tab.recordingCommandCount, durationMs: tab.recordingStartedAt ? Date.now() - tab.recordingStartedAt : undefined }), "INFO");
-      notify("Recording finalized. Save the log package before disconnecting.");
     });
   };
 
