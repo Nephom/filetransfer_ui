@@ -47,6 +47,7 @@ import { FloatingWindow } from "./ui/FloatingWindow";
 import { useTerminalLifecycle } from "./features/terminal/useTerminalLifecycle";
 import { useSshEventBridge } from "./features/terminal/useSshEventBridge";
 import { isMobileViewport } from "./styles/breakpoints";
+import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
@@ -7556,142 +7557,54 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           </div>
         );
       })()}
-      {terminalOpen && (
-        <section className={`terminal-dock${terminalMaximized ? " terminal-maximized" : ""}`} style={{ height: `${terminalHeight}px` }} aria-label="Terminal panel">
-
-          <div className="terminal-resize-handle" onPointerDown={beginTerminalResize} role="separator" aria-label="Resize terminal" />
-          <header className="terminal-header">
-            <div className="terminal-tabs">
-              <button className={sshQuickListOpen ? "active" : ""} aria-pressed={sshQuickListOpen} onClick={() => setSshQuickListOpen((open) => !open)}>
-                 Workspaces
-              </button>
-              {sshTabs.map((tab) => (
-                <span
-                  className={`ssh-tab ${tab.id === activeSshTabId ? "active" : ""}${tab.id === draggedSshTabId ? " dragging" : ""}${tab.id === sshTabDropTargetId ? " drop-target" : ""}`}
-                  key={tab.id}
-                  draggable
-                  onDragStart={(event) => {
-                    draggedSshTabIdRef.current = tab.id;
-                    setDraggedSshTabId(tab.id);
-                    event.dataTransfer.effectAllowed = "move";
-                    event.dataTransfer.setData("text/plain", tab.id);
-                  }}
-                  onDragOver={(event) => {
-                    if (draggedSshTabIdRef.current && draggedSshTabIdRef.current !== tab.id) {
-                      event.preventDefault();
-                      event.dataTransfer.dropEffect = "move";
-                      setSshTabDropTargetId(tab.id);
-                    }
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const draggedId = draggedSshTabIdRef.current;
-                    if (!draggedId || draggedId === tab.id) return;
-                    setSshTabs((current) => {
-                      const from = current.findIndex((item) => item.id === draggedId);
-                      const to = current.findIndex((item) => item.id === tab.id);
-                      if (from < 0 || to < 0) return current;
-                      const next = [...current];
-                      const [moved] = next.splice(from, 1);
-                      next.splice(to, 0, moved);
-                      return next;
-                    });
-                    draggedSshTabIdRef.current = null;
-                    setDraggedSshTabId(null);
-                    setSshTabDropTargetId(null);
-                  }}
-                  onDragEnd={() => {
-                    draggedSshTabIdRef.current = null;
-                    setDraggedSshTabId(null);
-                    setSshTabDropTargetId(null);
-                  }}
-                >
-                  <button type="button" onClick={() => selectSshTab(tab)} draggable={false}>
-                    <span
-                      className={`ssh-tab-status ${tab.connected ? "connected" : "disconnected"}`}
-                      aria-label={tab.connected ? "Connected" : "Disconnected"}
-                      title={tab.connected ? "Connected" : "Disconnected"}
-                    />
-                    {tab.title}
-                  </button>
-                  <button type="button" className="ssh-tab-close" aria-label={`Close ${tab.title}`} draggable={false} onClick={() => closeSshTab(tab.id)}><CloseIcon size={11} /></button>
-                </span>
-              ))}
-              <button type="button" aria-label="New SSH terminal tab" onClick={() => createSshTab()}>+</button>
-            </div>
-            <div className="terminal-actions">
-               <button onClick={() => openSessionsModal()}>Workspace Manager</button>
-               <button onClick={() => setQueueOpen(true)}>Transfer Queue ({transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length})</button>
-              <button aria-label={terminalMaximized ? "Restore terminal size" : "Maximize terminal"} aria-pressed={terminalMaximized} onClick={toggleTerminalMaximized}>{terminalMaximized ? <CollapseIcon /> : <ExpandIcon />}</button>
-              <button aria-label="Collapse terminal" onClick={() => setTerminalOpen(false)}><ChevronDownIcon /></button>
-            </div>
-          </header>
-          <div className="terminal-body">
-            {sshQuickListOpen && (
-              <aside className="ssh-quick-list" aria-label="Saved SSH sessions">
-                 <div className="ssh-quick-list-heading">Workspaces</div>
-                 {workspaceSessions.length === 0 && <p className="terminal-inline-note">No saved SSH entries yet. Use Workspace Manager to add one.</p>}
-                {workspaceSessions.map((workspace) => (
-                  <div className="ssh-quick-list-group" key={workspace.id}>
-                    <span className="ssh-quick-list-group-label">{workspace.name}</span>
-                    {workspace.sshEntries.map((entry) => {
-                      const connected = sshTabs.some((tab) => tab.workspaceId === workspace.id && tab.sshEntryId === entry.id && tab.connected);
-                      const isActive = activeSshTab?.workspaceId === workspace.id && activeSshTab?.sshEntryId === entry.id;
-                      return (
-                        <button
-                          type="button"
-                          key={entry.id}
-                          className={`ssh-quick-list-entry ${isActive ? "active" : ""}`}
-                          onClick={() => quickConnectSsh(workspace.id, entry.id)}
-                        >
-                          <span className={`ssh-tab-status ${connected ? "connected" : "disconnected"}`} aria-hidden="true" />
-                          {entry.name}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
-              </aside>
-            )}
-            <div className="terminal-content ssh-terminal-content">
-              <div className="ssh-controls">
-                <Dropdown
-                  className="palette-select-control"
-                  label="Select a Workspace"
-                  value={workspaceSessionId}
-                  options={workspaceSessions.map((workspace) => ({ value: workspace.id, label: workspace.name }))}
-                  onChange={selectWorkspaceSession}
-                />
-                {!activeSshTab?.connected ? (
-                  <button className="confirm" onClick={connectSsh} disabled={activeSshTab?.connecting}>{activeSshTab?.connecting ? "Connecting…" : "Connect"}</button>
-                ) : (
-                  <button className="danger" onClick={disconnectSsh}>Disconnect</button>
-                )}
-                {activeSshTab?.connecting && (
-                  <button className="danger" onClick={() => cancelSshConnect(activeSshTab.id)}>Cancel</button>
-                )}
-              </div>
-              {!activeWorkspaceSession && <p className="terminal-inline-note">Create or open a Session with an SSH connection before connecting.</p>}
-              <div ref={terminalHostRef} className="xterm-host" aria-label="SSH terminal" />
-              <div className="ssh-recording-actions">
-                    {!recording ? (
-                      <button disabled={!sshConnected} onClick={startRecording}>Start Recording</button>
-                    ) : (
-                      <button className="danger" onClick={stopRecording}>Stop Recording</button>
-                    )}
-                     <button disabled={recording || !recordingHasOutput} onClick={openSaveLogDialog}>Save Log</button>
-                       {savedLogPaths.length > 0 && <details className="saved-log-paths"><summary>Saved log files</summary>{savedLogPaths.map((savedPath) => <button type="button" key={savedPath} onClick={() => openLocalViewer(savedPath)}><code>{savedPath}</code></button>)}</details>}
-                     {recording && <span className="recording-indicator">Recording</span>}
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
-      {!terminalOpen && (
-        <button className="terminal-restore" onClick={() => setTerminalOpen(true)} aria-label="Restore terminal">
-          Terminal <ChevronUpIcon size={12} />
-        </button>
-      )}
+      <TerminalWorkspace
+        open={terminalOpen}
+        height={terminalHeight}
+        maximized={terminalMaximized}
+        quickListOpen={sshQuickListOpen}
+        tabs={sshTabs}
+        activeTabId={activeSshTabId}
+        activeTab={activeSshTab}
+        workspaces={workspaceSessions}
+        activeWorkspaceId={workspaceSessionId}
+        activeWorkspace={activeWorkspaceSession}
+        connected={sshConnected}
+        recording={recording}
+        recordingHasOutput={recordingHasOutput}
+        savedLogPaths={savedLogPaths}
+        activeQueueCount={transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length}
+        terminalHostRef={terminalHostRef}
+        onToggleQuickList={() => setSshQuickListOpen((open) => !open)}
+        onResizeStart={beginTerminalResize}
+        onSelectTab={selectSshTab}
+        onReorderTabs={(draggedId, targetId) => {
+          setSshTabs((current) => {
+            const from = current.findIndex((item) => item.id === draggedId);
+            const to = current.findIndex((item) => item.id === targetId);
+            if (from < 0 || to < 0) return current;
+            const next = [...current];
+            const [moved] = next.splice(from, 1);
+            next.splice(to, 0, moved);
+            return next;
+          });
+        }}
+        onCloseTab={closeSshTab}
+        onCreateTab={() => { createSshTab(); }}
+        onQuickConnect={quickConnectSsh}
+        onSelectWorkspace={selectWorkspaceSession}
+        onConnect={connectSsh}
+        onDisconnect={disconnectSsh}
+        onCancelConnect={cancelSshConnect}
+        onStartRecording={startRecording}
+        onStopRecording={stopRecording}
+        onSaveLog={openSaveLogDialog}
+        onOpenSavedLog={openLocalViewer}
+        onOpenWorkspaceManager={() => { void openSessionsModal(); }}
+        onOpenQueue={() => setQueueOpen(true)}
+        onToggleMaximized={toggleTerminalMaximized}
+        onClose={() => setTerminalOpen(false)}
+        onRestore={() => setTerminalOpen(true)}
+      />
       {archiveFormatOpen && (
         <div className="modal-cover" onMouseDown={() => setArchiveFormatOpen(false)}>
           <div className="modal archive-format-modal" onMouseDown={(event) => event.stopPropagation()}>
