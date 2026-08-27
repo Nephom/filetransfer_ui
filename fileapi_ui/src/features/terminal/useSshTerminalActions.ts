@@ -30,6 +30,14 @@ type Props = {
   onSetNotice: (message: string) => void;
   run: (action: () => Promise<void>) => void;
   onWriteOperationLog: (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string, level?: OperationLogLevel) => void;
+  describeError: (error: unknown) => string;
+  saveLogNameDraft: string;
+  setSaveLogNameDraft: (value: string) => void;
+  saveLogDestinationPath: string;
+  setSaveLogDestinationPath: (value: string) => void;
+  saveLogNameOpen: boolean;
+  setSaveLogNameOpen: (open: boolean) => void;
+  localPath: string;
 };
 
 /** Terminal tab lifecycle, SSH connect/disconnect, and recording start/stop.
@@ -41,6 +49,8 @@ export function useSshTerminalActions({
   pendingRequestsRef, connectingRef, recordingWriteQueuesRef, workspaces, workspaceId,
   setWorkspaceId, selectedEntryId, setSelectedEntryId, setSshProfileId, setTerminalOpen,
   loadSshProfileDraft, onOpenWorkspaceManager, onNotify, onSetNotice, run, onWriteOperationLog,
+  describeError, saveLogNameDraft, setSaveLogNameDraft, saveLogDestinationPath,
+  setSaveLogDestinationPath, saveLogNameOpen, setSaveLogNameOpen, localPath,
 }: Props) {
   const activeTab = tabs.find((item) => item.id === activeTabId);
   const recordingHasOutput = Boolean(activeTab && (activeTab.recordingRawBytes > 0 || activeTab.recordingPlainBytes > 0));
@@ -240,6 +250,59 @@ export function useSshTerminalActions({
     });
   };
 
+  const saveSshLogs = () => {
+    const tab = activeTab;
+    const profile = workspaces.find((item) => item.id === tab?.workspaceId)?.sshEntries.find((item) => item.id === tab?.sshEntryId);
+    const logName = saveLogNameDraft.trim();
+    if (tab?.recording) {
+      onSetNotice("Stop the SSH recording before saving the log package.");
+      return;
+    }
+    if (!tab || !profile || (!tab.recordingRawBytes && !tab.recordingPlainBytes)) {
+      onSetNotice("There is no completed SSH recording to save.");
+      return;
+    }
+    if (!logName) {
+      onSetNotice("Enter a name for the SSH log package.");
+      return;
+    }
+    void run(async () => {
+      const operationId = tab.id;
+      const started = performance.now();
+      try {
+        const paths = await invoke<{ raw: string; plain: string; commands: string; metadata: string }>(
+          "save_ssh_logs",
+          {
+            tabId: tab.id,
+            profileName: logName,
+            host: profile.host,
+            destinationPath: saveLogDestinationPath,
+            startedAtIso: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null,
+          },
+        );
+        setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, savedLogPaths: [paths.raw, paths.plain, paths.commands, paths.metadata] } : item));
+        onWriteOperationLog("ssh_recording", "saved", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, sessionId: tab.sessionId, packagePaths: [paths.raw, paths.plain, paths.commands, paths.metadata], durationMs: Math.round(performance.now() - started), rawBytes: tab.recordingRawBytes, commandCount: tab.recordingCommandCount }), "INFO");
+        setSaveLogNameOpen(false);
+        onNotify(`Saved SSH logs to ${paths.raw}`);
+      } catch (error) {
+        onWriteOperationLog("ssh_recording", "save_failed", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, durationMs: Math.round(performance.now() - started), failureType: "save", errorMessage: describeError(error) }), "ERROR");
+        throw error;
+      }
+    });
+  };
+
+  const openSaveLogDialog = () => {
+    if (!recordingHasOutput || activeTab?.recording) return;
+    const profile = workspaces.find((item) => item.id === activeTab?.workspaceId)?.sshEntries.find((item) => item.id === activeTab?.sshEntryId);
+    setSaveLogNameDraft(profile?.name || "SSH session");
+    void run(async () => {
+      const selectedPath = await invoke<string | null>("pick_local_directory", { path: localPath });
+      if (selectedPath === null) return;
+      setSaveLogDestinationPath(selectedPath);
+      setSaveLogNameOpen(true);
+    });
+  };
+
   return {
     activeTab,
     recordingHasOutput,
@@ -254,5 +317,7 @@ export function useSshTerminalActions({
     disconnectSsh,
     startRecording,
     stopRecording,
+    saveSshLogs,
+    openSaveLogDialog,
   };
 }

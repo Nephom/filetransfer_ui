@@ -15,6 +15,9 @@ export function useSshTerminalState() {
   const sshOutputRef = useRef("");
   const [recording, setRecording] = useState(false);
   const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
+  const [saveLogNameOpen, setSaveLogNameOpen] = useState(false);
+  const [saveLogNameDraft, setSaveLogNameDraft] = useState("");
+  const [saveLogDestinationPath, setSaveLogDestinationPath] = useState("");
   const terminalHostRef = useRef<HTMLDivElement>(null);
   const terminalInstanceRef = useRef<Terminal | null>(null);
   const sshSessionIdRef = useRef("");
@@ -62,6 +65,8 @@ export function useSshTerminalState() {
     previousTerminalHeightRef, terminalHeight, setTerminalHeight, terminalResizeRef, sshConnected, setSshConnected,
     stopTerminalResize, resizeTerminal, beginTerminalResize, toggleTerminalMaximized,
     sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
+    saveLogNameOpen, setSaveLogNameOpen, saveLogNameDraft, setSaveLogNameDraft,
+    saveLogDestinationPath, setSaveLogDestinationPath,
     terminalHostRef, terminalInstanceRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
     recordingWriteQueuesRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
     pendingSshConnectRequestsRef, connectAttemptRef, sshTabsRef, shellInputRef,

@@ -2547,6 +2547,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     disconnectSsh,
     startRecording,
     stopRecording,
+    saveSshLogs,
+    openSaveLogDialog,
   } = useSshTerminalActions({
     tabs: sshTabs,
     setTabs: setSshTabs,
@@ -2570,6 +2572,14 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     onSetNotice: setNotice,
     run: (action) => { void run(action); },
     onWriteOperationLog: (...args: Parameters<typeof writeOperationLog>) => writeOperationLog(...args),
+    describeError: (error: unknown) => describeError(error),
+    saveLogNameDraft,
+    setSaveLogNameDraft,
+    saveLogDestinationPath,
+    setSaveLogDestinationPath,
+    saveLogNameOpen,
+    setSaveLogNameOpen,
+    localPath,
   });
 
   const selectWorkspaceSession = (id: string) => {
@@ -3013,64 +3023,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${detail}\n`) }));
         setNotice(detail);
       }
-    });
-  };
-
-  const saveSshLogs = () => {
-    const tab = activeSshTab;
-    const profile = managedSessions.find((item) => item.id === tab?.workspaceId)?.sshEntries.find((item) => item.id === tab?.sshEntryId);
-    const logName = saveLogNameDraft.trim();
-    if (tab?.recording) {
-      setNotice("Stop the SSH recording before saving the log package.");
-      return;
-    }
-    if (!tab || !profile || (!tab.recordingRawBytes && !tab.recordingPlainBytes)) {
-      setNotice("There is no completed SSH recording to save.");
-      return;
-    }
-    if (!logName) {
-      setNotice("Enter a name for the SSH log package.");
-      return;
-    }
-    void run(async () => {
-      const operationId = tab.id;
-      const started = performance.now();
-      try {
-        // Nothing left in memory to send: the raw/plain/commands transcripts
-        // already live on disk under `<install dir>/temp` (every chunk was
-        // appended there the moment it arrived), so this only tells Rust
-        // which tab's temp files to copy to `destinationPath` and compute
-        // metadata from -- no large strings cross the IPC boundary.
-        const paths = await invoke<{ raw: string; plain: string; commands: string; metadata: string }>(
-          "save_ssh_logs",
-          {
-            tabId: tab.id,
-            profileName: logName,
-            host: profile.host,
-            destinationPath: saveLogDestinationPath,
-            startedAtIso: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null,
-          },
-        );
-        setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, savedLogPaths: [paths.raw, paths.plain, paths.commands, paths.metadata] } : item));
-        writeOperationLog("ssh_recording", "saved", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, sessionId: tab.sessionId, packagePaths: [paths.raw, paths.plain, paths.commands, paths.metadata], durationMs: Math.round(performance.now() - started), rawBytes: tab.recordingRawBytes, commandCount: tab.recordingCommandCount }), "INFO");
-        setSaveLogNameOpen(false);
-        notify(`Saved SSH logs to ${paths.raw}`);
-      } catch (error) {
-        writeOperationLog("ssh_recording", "save_failed", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, durationMs: Math.round(performance.now() - started), failureType: "save", errorMessage: describeError(error) }), "ERROR");
-        throw error;
-      }
-    });
-  };
-
-  const openSaveLogDialog = () => {
-    if (!recordingHasOutput || recording) return;
-    const profile = managedSessions.find((item) => item.id === activeSshTab?.workspaceId)?.sshEntries.find((item) => item.id === activeSshTab?.sshEntryId);
-    setSaveLogNameDraft(profile?.name || "SSH session");
-    void run(async () => {
-      const selectedPath = await invoke<string | null>("pick_local_directory", { path: localPath });
-      if (selectedPath === null) return;
-      setSaveLogDestinationPath(selectedPath);
-      setSaveLogNameOpen(true);
     });
   };
 
