@@ -142,6 +142,11 @@ type SshProfile = {
   privateKeyPath: string;
 };
 type SshEvent = { sessionId: string; data: string; requestId: string };
+// Mirrors Rust's `recording::RecordingStats` (src-tauri/src/recording.rs),
+// returned by every `start`/`append`/`append_..._command` recording IPC
+// call so the frontend can update its lightweight byte/line counters
+// without ever holding the actual recorded content itself.
+type RecordingStats = { rawBytes: number; plainBytes: number; commandCount: number };
 type SshTerminalTab = {
   id: string;
   title: string;
@@ -153,9 +158,16 @@ type SshTerminalTab = {
   output: string;
   recording: boolean;
   recordingStartedAt: number | null;
-  rawLog: string;
-  plainLog: string;
-  commandLog: string;
+  // The recording's raw/plain/commands transcripts are no longer held in
+  // memory as ever-growing strings -- every chunk is written straight to a
+  // disk-backed temp file the moment it arrives (see the `recording` Rust
+  // module and `start`/`append`/`stop`/`discard`-`SshRecording` below).
+  // These three counters are only what the UI needs to know ("is there
+  // anything recorded yet?", "how much?") without ever re-holding the
+  // actual content client-side.
+  recordingRawBytes: number;
+  recordingPlainBytes: number;
+  recordingCommandCount: number;
   savedLogPaths: string[];
 };
 type TransferQueueItem = {
@@ -310,8 +322,9 @@ const stripAnsi = (value: string) =>
 // across the boundary either -- deliberately *not* a full terminal reset
 // (`ESC c`), which would also wipe the visible scrollback the user still
 // expects to see across a reconnect. This is only ever inserted into
-// `output` (xterm's replay buffer) -- never into `rawLog`/`plainLog`, which
-// must stay a faithful transcript of only the bytes actually received.
+// `output` (xterm's replay buffer) -- never into the on-disk recording
+// transcripts, which must stay a faithful transcript of only the bytes
+// actually received.
 const VT_SESSION_BOUNDARY_GUARD = "\u001b\\\u001b[0m";
 
 type ScrollMetrics = {
@@ -1320,14 +1333,18 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [viewerContent, setViewerContent] = useState("");
   const [viewerLocalPath, setViewerLocalPath] = useState("");
   const [viewerRemotePath, setViewerRemotePath] = useState("");
-  const rawLogRef = useRef("");
-  const plainLogRef = useRef("");
-  const commandLogRef = useRef("");
   const terminalHostRef = useRef<HTMLDivElement>(null);
   const terminalInstanceRef = useRef<Terminal | null>(null);
   const sshSessionIdRef = useRef("");
   const sshConnectingRef = useRef(false);
   const sshWriteQueuesRef = useRef(new Map<string, Promise<void>>());
+  // Serializes this tab's `append_ssh_recording`/`append_ssh_recording_
+  // command` IPC calls (keyed by tab id, not session id -- a recording
+  // survives a reconnect's session id change) so out-of-order async invoke
+  // resolution can never interleave two chunks' writes to the same on-disk
+  // transcript file. Mirrors `sshWriteQueuesRef`'s existing pattern for
+  // `ssh_write`.
+  const recordingWriteQueuesRef = useRef(new Map<string, Promise<void>>());
   const recordingRef = useRef(false);
   const sshSecretPromptRef = useRef(false);
   const activeSshTabIdRef = useRef("");
@@ -1839,7 +1856,19 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       const tab = sshTabsRef.current.find((item) => item.id === tabId);
       if (!tab) return;
       if (tab.sessionId !== payload.sessionId) setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, sessionId: payload.sessionId, connected: true } : item));
-      setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, output: item.output + data, rawLog: item.recording ? item.rawLog + data : item.rawLog, plainLog: item.recording ? item.plainLog + stripAnsi(data) : item.plainLog } : item));
+      setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, output: item.output + data } : item));
+      if (tab.recording) {
+        const plainChunk = stripAnsi(data);
+        const previous = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
+        const next = previous.catch(() => undefined).then(() =>
+          invoke<RecordingStats>("append_ssh_recording", { tabId, rawChunk: data, plainChunk })
+            .then((stats) => {
+              setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, recordingRawBytes: stats.rawBytes, recordingPlainBytes: stats.plainBytes } : item));
+            })
+            .catch(() => undefined),
+        );
+        recordingWriteQueuesRef.current.set(tabId, next);
+      }
       if (tabId === activeSshTabIdRef.current) { sshOutputRef.current += data; terminalInstanceRef.current?.write(data); const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd(); sshSecretPromptRef.current = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText); }
     },
     onExit: (tabId, payload) => {
@@ -1871,8 +1900,16 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         if (data === "\r" || data === "\n") {
           if (shellInputRef.current.trim()) {
             const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
-            commandLogRef.current += command;
-            setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, commandLog: item.commandLog + command } : item));
+            const tabId = tab.id;
+            const previous = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
+            const next = previous.catch(() => undefined).then(() =>
+              invoke<RecordingStats>("append_ssh_recording_command", { tabId, line: command })
+                .then((stats) => {
+                  setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, recordingCommandCount: stats.commandCount } : item));
+                })
+                .catch(() => undefined),
+            );
+            recordingWriteQueuesRef.current.set(tabId, next);
           }
           shellInputRef.current = "";
         } else if (data === "\u007f") shellInputRef.current = shellInputRef.current.slice(0, -1);
@@ -2592,7 +2629,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   const activeSshTab = sshTabs.find((item) => item.id === activeSshTabId);
-  const recordingHasOutput = Boolean(activeSshTab?.rawLog || activeSshTab?.plainLog);
+  const recordingHasOutput = Boolean(activeSshTab && (activeSshTab.recordingRawBytes > 0 || activeSshTab.recordingPlainBytes > 0));
 
   const createSshTab = (workspaceId = workspaceSessionId, entryId = selectedSshEntryId) => {
     const workspace = managedSessions.find((item) => item.id === workspaceId);
@@ -2613,9 +2650,9 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       output: "",
       recording: false,
       recordingStartedAt: null,
-      rawLog: "",
-      plainLog: "",
-      commandLog: "",
+      recordingRawBytes: 0,
+      recordingPlainBytes: 0,
+      recordingCommandCount: 0,
       savedLogPaths: [],
     };
     setSshTabs((current) => [...current, tab]);
@@ -2630,9 +2667,22 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const closeSshTab = (tabId: string) => {
     const tab = sshTabs.find((item) => item.id === tabId);
     if (!tab) return;
+    // Only ask about discarding a recording if the user actually pressed
+    // "Start Recording" on this tab at some point (`recordingStartedAt` is
+    // only ever set by `startRecording`, and cleared back to null only by
+    // creating a brand new tab) and it was never saved since -- a tab that
+    // was never recorded on at all must not be interrupted by this prompt.
+    const hasUnsavedRecording = tab.recordingStartedAt !== null && tab.savedLogPaths.length === 0;
+    if (hasUnsavedRecording && !window.confirm(`This tab has an unsaved SSH recording. Close ${tab.title} and discard it?`)) return;
     if (tab.connected && !window.confirm(`Disconnect and close ${tab.title}?`)) return;
     void run(async () => {
       if (tab.sessionId) await invoke("ssh_disconnect", { sessionId: tab.sessionId });
+      if (hasUnsavedRecording) {
+        const pending = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
+        await pending.catch(() => undefined);
+        await invoke("discard_ssh_recording", { tabId }).catch(() => undefined);
+        recordingWriteQueuesRef.current.delete(tabId);
+      }
       setSshTabs((current) => {
         const remaining = current.filter((item) => item.id !== tabId);
         if (tabId === activeSshTabId) setActiveSshTabId(remaining[remaining.length - 1]?.id || "");
@@ -3193,20 +3243,52 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const startRecording = () => {
     if (!activeSshTab?.connected) return;
-    rawLogRef.current = "";
-    plainLogRef.current = "";
-    commandLogRef.current = "";
+    const tab = activeSshTab;
     const startedAt = Date.now();
-    setSshTabs((current) => current.map((item) => item.id !== activeSshTab.id ? item : { ...item, recording: true, recordingStartedAt: startedAt, rawLog: "", plainLog: "", commandLog: "", savedLogPaths: [] }));
-    writeOperationLog("ssh_recording", "started", activeSshTab.sessionId || activeSshTab.id, "LOCAL recording buffer", JSON.stringify({ operationId: activeSshTab.id, recordingId: activeSshTab.id, sessionId: activeSshTab.sessionId, startedAt: new Date(startedAt).toISOString() }), "INFO");
-    notify("SSH output recording started.");
+    void run(async () => {
+      // Seed the new recording with everything already on screen for this
+      // tab (`tab.output`, the scrollback replayed into xterm.js on every
+      // tab switch) so a recording started against an already-open session
+      // captures its past output too, not just what arrives from now on.
+      // There is no equivalent history for *commands*: past keystrokes were
+      // never retained (only future ones are captured below, in `onData`),
+      // so the commands transcript can only ever start empty here.
+      const stats = await invoke<RecordingStats>("start_ssh_recording", {
+        tabId: tab.id,
+        rawSeed: tab.output,
+        plainSeed: stripAnsi(tab.output),
+      });
+      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : {
+        ...item,
+        recording: true,
+        recordingStartedAt: startedAt,
+        recordingRawBytes: stats.rawBytes,
+        recordingPlainBytes: stats.plainBytes,
+        recordingCommandCount: 0,
+        savedLogPaths: [],
+      }));
+      writeOperationLog("ssh_recording", "started", tab.sessionId || tab.id, "LOCAL recording buffer", JSON.stringify({ operationId: tab.id, recordingId: tab.id, sessionId: tab.sessionId, startedAt: new Date(startedAt).toISOString(), seededRawBytes: stats.rawBytes }), "INFO");
+      notify("SSH output recording started.");
+    });
   };
 
   const stopRecording = () => {
     if (!activeSshTab) return;
-    setSshTabs((current) => current.map((item) => item.id === activeSshTab.id ? { ...item, recording: false } : item));
-    writeOperationLog("ssh_recording", "stopped", activeSshTab.sessionId || activeSshTab.id, "LOCAL recording buffer", JSON.stringify({ operationId: activeSshTab.id, recordingId: activeSshTab.id, sessionId: activeSshTab.sessionId, startedAt: activeSshTab.recordingStartedAt ? new Date(activeSshTab.recordingStartedAt).toISOString() : null, endedAt: new Date().toISOString(), rawBytes: new TextEncoder().encode(activeSshTab.rawLog).length, commandCount: activeSshTab.commandLog.split("\n").filter(Boolean).length, durationMs: activeSshTab.recordingStartedAt ? Date.now() - activeSshTab.recordingStartedAt : undefined }), "INFO");
-    notify("Recording finalized. Save the log package before disconnecting.");
+    const tab = activeSshTab;
+    void run(async () => {
+      // Wait for every append this tab has queued (see
+      // `recordingWriteQueuesRef`) to finish writing to disk before
+      // flipping `recording` off and telling the Rust side to flush -- the
+      // "Save Log" button becomes enabled the moment `recording` is false,
+      // so this ordering guarantees nothing saved afterwards can ever miss
+      // the tail end of the transcript.
+      const pending = recordingWriteQueuesRef.current.get(tab.id) || Promise.resolve();
+      await pending.catch(() => undefined);
+      await invoke("stop_ssh_recording", { tabId: tab.id });
+      setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, recording: false } : item));
+      writeOperationLog("ssh_recording", "stopped", tab.sessionId || tab.id, "LOCAL recording buffer", JSON.stringify({ operationId: tab.id, recordingId: tab.id, sessionId: tab.sessionId, startedAt: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null, endedAt: new Date().toISOString(), rawBytes: tab.recordingRawBytes, commandCount: tab.recordingCommandCount, durationMs: tab.recordingStartedAt ? Date.now() - tab.recordingStartedAt : undefined }), "INFO");
+      notify("Recording finalized. Save the log package before disconnecting.");
+    });
   };
 
   const saveSshLogs = () => {
@@ -3217,7 +3299,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       setNotice("Stop the SSH recording before saving the log package.");
       return;
     }
-    if (!tab || !profile || (!tab.rawLog && !tab.plainLog)) {
+    if (!tab || !profile || (!tab.recordingRawBytes && !tab.recordingPlainBytes)) {
       setNotice("There is no completed SSH recording to save.");
       return;
     }
@@ -3225,39 +3307,35 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       setNotice("Enter a name for the SSH log package.");
       return;
     }
-    const metadata = JSON.stringify({
-           profileName: logName,
-      host: profile.host,
-      startedAt: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null,
-      endedAt: new Date().toISOString(),
-      rawBytes: new TextEncoder().encode(tab.rawLog).length,
-      files: ["raw.log", "txt", "commands.log", "meta.json"],
-    }, null, 2);
-     void run(async () => {
-       const operationId = tab.id;
-       const started = performance.now();
-       try {
-       const paths = await invoke<{ raw: string; plain: string; commands: string; metadata: string }>(
-        "save_ssh_logs",
-         {
+    void run(async () => {
+      const operationId = tab.id;
+      const started = performance.now();
+      try {
+        // Nothing left in memory to send: the raw/plain/commands transcripts
+        // already live on disk under `<install dir>/temp` (every chunk was
+        // appended there the moment it arrived), so this only tells Rust
+        // which tab's temp files to copy to `destinationPath` and compute
+        // metadata from -- no large strings cross the IPC boundary.
+        const paths = await invoke<{ raw: string; plain: string; commands: string; metadata: string }>(
+          "save_ssh_logs",
+          {
+            tabId: tab.id,
             profileName: logName,
-           destinationPath: saveLogDestinationPath,
-           raw: tab.rawLog,
-          plain: tab.plainLog,
-          commands: tab.commandLog,
-          metadata,
-        },
-       );
-       setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, savedLogPaths: [paths.raw, paths.plain, paths.commands, paths.metadata] } : item));
-        writeOperationLog("ssh_recording", "saved", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, sessionId: tab.sessionId, packagePaths: [paths.raw, paths.plain, paths.commands, paths.metadata], durationMs: Math.round(performance.now() - started), rawBytes: new TextEncoder().encode(tab.rawLog).length, commandCount: tab.commandLog.split("\n").filter(Boolean).length }), "INFO");
-       setSaveLogNameOpen(false);
-       notify(`Saved SSH logs to ${paths.raw}`);
-       } catch (error) {
-         writeOperationLog("ssh_recording", "save_failed", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, durationMs: Math.round(performance.now() - started), failureType: "save", errorMessage: describeError(error) }), "ERROR");
-         throw error;
-       }
-      });
-    };
+            host: profile.host,
+            destinationPath: saveLogDestinationPath,
+            startedAtIso: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null,
+          },
+        );
+        setSshTabs((current) => current.map((item) => item.id === tab.id ? { ...item, savedLogPaths: [paths.raw, paths.plain, paths.commands, paths.metadata] } : item));
+        writeOperationLog("ssh_recording", "saved", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, sessionId: tab.sessionId, packagePaths: [paths.raw, paths.plain, paths.commands, paths.metadata], durationMs: Math.round(performance.now() - started), rawBytes: tab.recordingRawBytes, commandCount: tab.recordingCommandCount }), "INFO");
+        setSaveLogNameOpen(false);
+        notify(`Saved SSH logs to ${paths.raw}`);
+      } catch (error) {
+        writeOperationLog("ssh_recording", "save_failed", logName, `LOCAL: ~/${saveLogDestinationPath || ""}`, JSON.stringify({ operationId, recordingId: tab.id, durationMs: Math.round(performance.now() - started), failureType: "save", errorMessage: describeError(error) }), "ERROR");
+        throw error;
+      }
+    });
+  };
 
   const openSaveLogDialog = () => {
     if (!recordingHasOutput || recording) return;

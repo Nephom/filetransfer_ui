@@ -3,6 +3,7 @@
 mod netcheck;
 mod oplog;
 mod proxmox;
+mod recording;
 mod ssh;
 
 use reqwest::{multipart, Client};
@@ -217,15 +218,6 @@ struct LocalDirectoryChild {
 struct LocalDirectoryChildren {
     path: String,
     directories: Vec<LocalDirectoryChild>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SshLogPaths {
-    raw: String,
-    plain: String,
-    commands: String,
-    metadata: String,
 }
 
 #[derive(Serialize)]
@@ -697,7 +689,7 @@ fn content_disposition_filename(headers: &reqwest::header::HeaderMap) -> Option<
     fallback
 }
 
-fn local_home() -> Result<PathBuf, String> {
+pub(crate) fn local_home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
@@ -2265,51 +2257,68 @@ async fn ssh_download_to_drag_staging(
     }
 }
 
+/// Save the completed disk-backed recording for `tab_id` (see the
+/// `recording` module) into `destination_path`. This used to receive the
+/// entire raw/plain/commands transcript as three `String` IPC arguments and
+/// write them out in one shot; now that every chunk is already durable on
+/// disk under `<install dir>/temp` the moment it arrives (`recording::
+/// append_ssh_recording`), this only needs to copy those temp files to
+/// their final, user-chosen home and compute metadata from the files
+/// themselves -- never trusting a frontend-supplied byte count, which could
+/// otherwise race an append that hadn't resolved yet.
 #[tauri::command]
 fn save_ssh_logs(
+    tab_id: String,
     profile_name: String,
+    host: String,
     destination_path: String,
-    raw: String,
-    plain: String,
-    commands: String,
-    metadata: String,
-) -> Result<SshLogPaths, String> {
-    let safe_name: String = profile_name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let safe_name = if safe_name.is_empty() {
-        "ssh-session".to_string()
-    } else {
-        safe_name
-    };
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_secs();
+    started_at_iso: Option<String>,
+) -> Result<recording::SshLogPaths, String> {
     let directory = resolve_local_download_destination(&destination_path)?;
-    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let stem = directory.join(format!("{safe_name}-{timestamp}"));
-    let raw_path = stem.with_extension("raw.log");
-    let plain_path = stem.with_extension("txt");
-    let commands_path = stem.with_extension("commands.log");
-    let metadata_path = stem.with_extension("meta.json");
-    std::fs::write(&raw_path, raw).map_err(|error| error.to_string())?;
-    std::fs::write(&plain_path, plain).map_err(|error| error.to_string())?;
-    std::fs::write(&commands_path, commands).map_err(|error| error.to_string())?;
-    std::fs::write(&metadata_path, metadata).map_err(|error| error.to_string())?;
-    Ok(SshLogPaths {
-        raw: raw_path.display().to_string(),
-        plain: plain_path.display().to_string(),
-        commands: commands_path.display().to_string(),
-        metadata: metadata_path.display().to_string(),
-    })
+    recording::finalize_ssh_recording(tab_id, profile_name, host, &directory, started_at_iso)
+}
+
+/// Thin `#[tauri::command]` wrappers around the `recording` module's plain
+/// functions (see that module's doc comment for the overall design) --
+/// every other Tauri command in this codebase is likewise defined directly
+/// in `main.rs` even when its supporting state/logic lives in a submodule
+/// (compare `ssh_connect` here delegating to `ssh::` internals), so these
+/// follow the same convention rather than annotating functions inside
+/// `recording.rs` itself.
+#[tauri::command]
+fn start_ssh_recording(
+    tab_id: String,
+    raw_seed: String,
+    plain_seed: String,
+) -> Result<recording::RecordingStats, String> {
+    recording::start_ssh_recording(tab_id, raw_seed, plain_seed)
+}
+
+#[tauri::command]
+fn append_ssh_recording(
+    tab_id: String,
+    raw_chunk: String,
+    plain_chunk: String,
+) -> Result<recording::RecordingStats, String> {
+    recording::append_ssh_recording(tab_id, raw_chunk, plain_chunk)
+}
+
+#[tauri::command]
+fn append_ssh_recording_command(
+    tab_id: String,
+    line: String,
+) -> Result<recording::RecordingStats, String> {
+    recording::append_ssh_recording_command(tab_id, line)
+}
+
+#[tauri::command]
+fn stop_ssh_recording(tab_id: String) -> Result<(), String> {
+    recording::stop_ssh_recording(tab_id)
+}
+
+#[tauri::command]
+fn discard_ssh_recording(tab_id: String) -> Result<(), String> {
+    recording::discard_ssh_recording(tab_id)
 }
 
 fn validate_local_user_path(path: &str) -> Result<std::path::PathBuf, String> {
@@ -2671,6 +2680,15 @@ fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
+        .setup(|_app| {
+            // Any file still sitting in `<install dir>/temp` at startup can
+            // only be an orphan from a previous run's unsaved recording
+            // (crash, force-quit, or a discarded tab) -- see
+            // `recording::cleanup_stale_recording_temp_files`'s own doc
+            // comment for why this is safe to always do unconditionally.
+            recording::cleanup_stale_recording_temp_files();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             api_request,
             tcp_check_reachable,
@@ -2740,6 +2758,11 @@ fn main() {
             ssh_compress_paths,
             ssh_extract_archive,
             save_ssh_logs,
+            start_ssh_recording,
+            append_ssh_recording,
+            append_ssh_recording_command,
+            stop_ssh_recording,
+            discard_ssh_recording,
             read_local_file,
             edit_local_file,
             operation_storage_info,
