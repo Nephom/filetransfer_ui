@@ -1254,8 +1254,9 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const {
     terminalOpen, setTerminalOpen, sshTabs, setSshTabs, activeSshTabId, setActiveSshTabId,
     sshQuickListOpen, setSshQuickListOpen, terminalMaximized, setTerminalMaximized,
-    previousTerminalHeightRef, terminalHeight, setTerminalHeight, sshConnected, setSshConnected,
-    sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
+    previousTerminalHeightRef, terminalHeight, setTerminalHeight, terminalResizeRef,
+    stopTerminalResize, resizeTerminal, beginTerminalResize, toggleTerminalMaximized,
+    sshConnected, setSshConnected, sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
     terminalHostRef, terminalInstanceRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
     recordingWriteQueuesRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
     pendingSshConnectRequestsRef, connectAttemptRef, sshTabsRef, shellInputRef,
@@ -1432,7 +1433,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const noticeTimer = useRef<number | undefined>();
   const locationsLoaded = useRef(false);
   const locationRefreshInProgress = useRef(false);
-  const terminalResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const paneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const localTreeResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const columnResizeRef = useRef<{
@@ -2437,25 +2437,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       noticeTimer.current = window.setTimeout(() => setNotice(""), duration);
   };
 
-  const stopTerminalResize = () => {
-    terminalResizeRef.current = null;
-    window.removeEventListener("pointermove", resizeTerminal);
-    window.removeEventListener("pointerup", stopTerminalResize);
-  };
-  const resizeTerminal = (event: PointerEvent) => {
-    const start = terminalResizeRef.current;
-    if (!start) return;
-    setTerminalHeight(
-      Math.max(160, Math.min(window.innerHeight - 180, start.startHeight + start.startY - event.clientY)),
-    );
-  };
-  const beginTerminalResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    terminalResizeRef.current = { startY: event.clientY, startHeight: terminalHeight };
-    window.addEventListener("pointermove", resizeTerminal);
-    window.addEventListener("pointerup", stopTerminalResize);
-  };
-
   const stopPaneResize = () => {
     paneResizeRef.current = null;
     window.removeEventListener("pointermove", resizePane);
@@ -2696,17 +2677,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       next.splice(to, 0, moved);
       return next;
     });
-  };
-
-  const toggleTerminalMaximized = () => {
-    if (terminalMaximized) {
-      setTerminalHeight(previousTerminalHeightRef.current);
-      setTerminalMaximized(false);
-    } else {
-      previousTerminalHeightRef.current = terminalHeight;
-      setTerminalHeight(Math.max(160, window.innerHeight - 180));
-      setTerminalMaximized(true);
-    }
   };
 
   const selectWorkspaceSession = (id: string) => {

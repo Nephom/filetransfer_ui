@@ -10,6 +10,7 @@ export function useSshTerminalState() {
   const [terminalMaximized, setTerminalMaximized] = useState(false);
   const previousTerminalHeightRef = useRef(260);
   const [terminalHeight, setTerminalHeight] = useState(() => Number(localStorage.getItem("fileapi-terminal-height")) || 260);
+  const terminalResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   const [sshConnected, setSshConnected] = useState(false);
   const sshOutputRef = useRef("");
   const [recording, setRecording] = useState(false);
@@ -28,10 +29,38 @@ export function useSshTerminalState() {
   const sshTabsRef = useRef<SshTerminalTab[]>([]);
   const shellInputRef = useRef("");
 
+  const stopTerminalResize = () => {
+    terminalResizeRef.current = null;
+    window.removeEventListener("pointermove", resizeTerminal);
+    window.removeEventListener("pointerup", stopTerminalResize);
+  };
+  const resizeTerminal = (event: PointerEvent) => {
+    const start = terminalResizeRef.current;
+    if (!start) return;
+    setTerminalHeight(Math.max(160, Math.min(window.innerHeight - 180, start.startHeight + start.startY - event.clientY)));
+  };
+  const beginTerminalResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    terminalResizeRef.current = { startY: event.clientY, startHeight: terminalHeight };
+    window.addEventListener("pointermove", resizeTerminal);
+    window.addEventListener("pointerup", stopTerminalResize);
+  };
+  const toggleTerminalMaximized = () => {
+    if (terminalMaximized) {
+      setTerminalHeight(previousTerminalHeightRef.current);
+      setTerminalMaximized(false);
+    } else {
+      previousTerminalHeightRef.current = terminalHeight;
+      setTerminalHeight(Math.max(160, window.innerHeight - 180));
+      setTerminalMaximized(true);
+    }
+  };
+
   return {
     terminalOpen, setTerminalOpen, sshTabs, setSshTabs, activeSshTabId, setActiveSshTabId,
     sshQuickListOpen, setSshQuickListOpen, terminalMaximized, setTerminalMaximized,
-    previousTerminalHeightRef, terminalHeight, setTerminalHeight, sshConnected, setSshConnected,
+    previousTerminalHeightRef, terminalHeight, setTerminalHeight, terminalResizeRef, sshConnected, setSshConnected,
+    stopTerminalResize, resizeTerminal, beginTerminalResize, toggleTerminalMaximized,
     sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
     terminalHostRef, terminalInstanceRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
     recordingWriteQueuesRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
