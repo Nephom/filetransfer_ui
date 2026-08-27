@@ -35,9 +35,8 @@ import type { Terminal } from "@xterm/xterm";
 import "./styles/index.css";
 import { helpPages, helpSections } from "./help/help-content";
 import type { OperationLogRecord } from "./log-view";
-import type { RestApiEntry, RestApiSecret } from "./rest-api";
-import type { ProxmoxVncEntry, ProxmoxVncSecret } from "./proxmox-vnc";
-import { hostSshProfileId, proxmoxHostFromBaseUrl, vmSshProfileId } from "./proxmox-vnc";
+import type { RestApiSecret } from "./rest-api";
+import type { ProxmoxVncSecret } from "./proxmox-vnc";
 import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 import { AppShell } from "./app/AppShell";
@@ -64,6 +63,11 @@ const ViewerModal = lazy(() => import("./features/viewer/ViewerModal").then(({ V
 const HelpModal = lazy(() => import("./features/help/HelpModal").then(({ HelpModal: component }) => ({ default: component })));
 const LogView = lazy(() => import("./log-view").then(({ LogView: component }) => ({ default: component })));
 const SettingsModal = lazy(() => import("./features/settings/SettingsModal").then(({ SettingsModal: component }) => ({ default: component })));
+const SessionsModal = lazy(() => import("./features/sessions/SessionsModal").then(({ SessionsModal: component }) => ({ default: component })));
+const WorkspaceNameDialog = lazy(() => import("./features/sessions/WorkspaceNameDialog").then(({ WorkspaceNameDialog: component }) => ({ default: component })));
+const SshEntryDialog = lazy(() => import("./features/sessions/SshEntryDialog").then(({ SshEntryDialog: component }) => ({ default: component })));
+const RestEntryDialog = lazy(() => import("./features/sessions/RestEntryDialog").then(({ RestEntryDialog: component }) => ({ default: component })));
+const VncEntryDialog = lazy(() => import("./features/sessions/VncEntryDialog").then(({ VncEntryDialog: component }) => ({ default: component })));
 
 type FileItem = {
   name: string;
@@ -5995,253 +5999,104 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             </div>
           </div>
         )}
-         {sessionsOpen && (
-          <div className="modal-cover" onMouseDown={() => setSessionsOpen(false)}>
-             <div className="modal sessions-modal" style={modalStyle("sessions")} onMouseDown={(event) => event.stopPropagation()}>
-               <div className="workspace-manager-heading modal-drag-handle" onMouseDown={beginModalDrag("sessions")}>
-                <h2>Workspace Manager</h2>
-                <div className="workspace-list-heading">
-                  <strong>Workspaces</strong>
-                  <button type="button" className="confirm" onClick={startNewWorkspace}>Add</button>
-                </div>
-              </div>
-              {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
-              {lastSavedSessionId && <span className="session-saved-note">Saved successfully.</span>}
-              {!managedSessions.length && <p className="muted workspace-empty">No Workspaces saved yet. Use Add to create one.</p>}
-              <div className="workspace-card-list">
-                {managedSessions.map((managedSession) => (
-                  <article className={`workspace-card${managedSession.id === workspaceSessionId ? " selected" : ""}`} key={managedSession.id}>
-                    <div className="workspace-card-heading">
-                      <button type="button" className="workspace-name" onClick={() => openWorkspaceNameDialog(managedSession)}>{managedSession.name}</button>
-                      <button type="button" onClick={() => openWorkspaceNameDialog(managedSession)}>Edit</button>
-                    </div>
-                    <section className="workspace-entry-section">
-                      <h3>SSH Entries</h3>
-                      {!managedSession.sshEntries.length && <span className="muted">No SSH entries yet.</span>}
-                      <ol className="workspace-entry-list">
-                        {managedSession.sshEntries.map((entry) => (
-                          <li key={entry.id}>
-                            <button type="button" className="workspace-entry-button" onClick={() => { setWorkspaceSessionId(managedSession.id); openEditSshEntryDialog(entry); }}>
-                              <strong>{entry.name}</strong>
-                              <span>{entry.username}@{entry.host}:{entry.port}</span>
-                            </button>
-                            <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeSshEntryDirect(managedSession.id, entry); }}>Remove</button>
-                          </li>
-                        ))}
-                      </ol>
-                    </section>
-                    {desktopSettings.restApiModeEnabled && <section className="workspace-entry-section">
-                      <h3>REST API Entries</h3>
-                      {!managedSession.restApiEntries.length && <span className="muted">No REST API entries yet.</span>}
-                      <ol className="workspace-entry-list">
-                        {managedSession.restApiEntries.map((entry) => (
-                          <li key={entry.id}>
-                            <button type="button" className="workspace-entry-button" onClick={() => { setWorkspaceSessionId(managedSession.id); setActiveRestEntryId(entry.id); setAppMode("rest"); setSessionsOpen(false); }}>
-                              <strong>{entry.name}</strong>
-                              <span>{entry.baseUrl}{entry.defaultPath}</span>
-                            </button>
-                            <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditRestEntryDialog(managedSession.id, entry); }}>Edit</button>
-                            <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeRestEntryDirect(managedSession.id, entry); }}>Remove</button>
-                          </li>
-                        ))}
-                      </ol>
-                    </section>}
-                    {desktopSettings.proxmoxVncModeEnabled && <section className="workspace-entry-section">
-                      <h3>Proxmox VNC Entries</h3>
-                      {!managedSession.proxmoxVncEntries.length && <span className="muted">No Proxmox VNC entries yet.</span>}
-                      <ol className="workspace-entry-list">
-                        {managedSession.proxmoxVncEntries.map((entry) => (
-                          <li key={entry.id}>
-                            <button type="button" className="workspace-entry-button" onClick={() => { setWorkspaceSessionId(managedSession.id); setActiveVncEntryId(entry.id); setAppMode("vnc"); setSessionsOpen(false); }}>
-                              <strong>{entry.name}</strong>
-                              <span>{entry.baseUrl} · {entry.node || "No node"}/{entry.vmid || "No VMID"}</span>
-                            </button>
-                            <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditVncEntryDialog(managedSession.id, entry); }}>Edit</button>
-                            <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeVncEntryDirect(managedSession.id, entry); }}>Remove</button>
-                          </li>
-                        ))}
-                      </ol>
-                    </section>}
-                    <div className="workspace-entry-actions">
-                      <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>Add SSH Entry</button>
-                      {desktopSettings.restApiModeEnabled && <button type="button" className="confirm" onClick={() => openAddRestEntryDialog(managedSession.id)}>Add REST API Entry</button>}
-                      {desktopSettings.proxmoxVncModeEnabled && <button type="button" className="confirm" onClick={() => openAddVncEntryDialog(managedSession.id)}>Add Proxmox VNC Entry</button>}
-                      {desktopSettings.restApiModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("rest"); setSessionsOpen(false); }}>Open REST API</button>}
-                      {desktopSettings.proxmoxVncModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("vnc"); setSessionsOpen(false); }}>Open VNC</button>}
-                    </div>
-                  </article>
-                ))}
-              </div>
-              <div className="workspace-modal-footer">
-                {managedSessions.length > 1 ? (
-                  <button
-                    type="button"
-                    className="danger"
-                    disabled={!activeManagedWorkspace}
-                    title={activeManagedWorkspace ? undefined : "請先選擇一個 Workspace 才能移除"}
-                    onClick={() => activeManagedWorkspace && removeSession(activeManagedWorkspace.id)}
-                  >
-                    Remove Workspace
-                  </button>
-                ) : (
-                  <span className="muted workspace-remove-hint">僅有 1 個 Workspace，如需移除請先建立另一個 Workspace</span>
-                )}
-                <button type="button" className="confirm" onClick={() => setSessionsOpen(false)}>Close</button>
-              </div>
-            </div>
-          </div>
+        {sessionsOpen && (
+          <SessionsModal
+            managedSessions={managedSessions}
+            workspaceSessionId={workspaceSessionId}
+            activeManagedWorkspace={activeManagedWorkspace}
+            sessionFormError={sessionFormError}
+            lastSavedSessionId={lastSavedSessionId}
+            restApiModeEnabled={desktopSettings.restApiModeEnabled}
+            proxmoxVncModeEnabled={desktopSettings.proxmoxVncModeEnabled}
+            modalStyle={modalStyle("sessions")}
+            onDragStart={beginModalDrag("sessions")}
+            onClose={() => setSessionsOpen(false)}
+            setWorkspaceSessionId={setWorkspaceSessionId}
+            setActiveRestEntryId={setActiveRestEntryId}
+            setActiveVncEntryId={setActiveVncEntryId}
+            setAppMode={setAppMode}
+            startNewWorkspace={startNewWorkspace}
+            openWorkspaceNameDialog={openWorkspaceNameDialog}
+            removeSession={removeSession}
+            openAddSshEntryDialog={openAddSshEntryDialog}
+            openEditSshEntryDialog={openEditSshEntryDialog}
+            removeSshEntryDirect={removeSshEntryDirect}
+            openAddRestEntryDialog={openAddRestEntryDialog}
+            openEditRestEntryDialog={openEditRestEntryDialog}
+            removeRestEntryDirect={removeRestEntryDirect}
+            openAddVncEntryDialog={openAddVncEntryDialog}
+            openEditVncEntryDialog={openEditVncEntryDialog}
+            removeVncEntryDirect={removeVncEntryDirect}
+          />
         )}
         {workspaceNameDialogOpen && (
-          <div className="modal-cover modal-layer-top" onMouseDown={() => setWorkspaceNameDialogOpen(false)}>
-            <form className="modal workspace-name-modal" style={modalStyle("workspace-name")} onSubmit={(event) => { event.preventDefault(); saveWorkspaceName(event.currentTarget); }} onMouseDown={(event) => event.stopPropagation()}>
-              <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("workspace-name")}>{workspaceSessionId ? "Edit Workspace" : "Add Workspace"}</h2>
-              {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
-              <label>
-                Workspace name
-                <input name="sessionName" value={sessionNameDraft} onChange={(event) => setSessionNameDraft(event.target.value)} placeholder="Default" required autoFocus />
-              </label>
-              <div className="modal-actions">
-                <button type="button" onClick={() => setWorkspaceNameDialogOpen(false)}>Cancel</button>
-                <button type="submit" className="confirm">Save</button>
-              </div>
-            </form>
-          </div>
+          <WorkspaceNameDialog
+            isEditing={Boolean(workspaceSessionId)}
+            sessionFormError={sessionFormError}
+            sessionNameDraft={sessionNameDraft}
+            setSessionNameDraft={setSessionNameDraft}
+            modalStyle={modalStyle("workspace-name")}
+            onDragStart={beginModalDrag("workspace-name")}
+            onClose={() => setWorkspaceNameDialogOpen(false)}
+            onSave={saveWorkspaceName}
+          />
         )}
       {sshEntryDialogOpen && (
-        <div
-          className="modal-cover modal-layer-top"
-          onMouseDown={() => setSshEntryDialogOpen(false)}
-        >
-          <div
-            className="modal ssh-entry-modal"
-            style={modalStyle("ssh-entry")}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("ssh-entry")}>{sshEntryDraftId ? "Edit SSH Entry" : "Add SSH Entry"}</h2>
-            <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
-            {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
-            <label>
-              Connection name
-              <input name="sshName" value={sshProfileDraft.name} onChange={(event) => setSshProfileDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Production shell" />
-            </label>
-            <label>
-              Host
-              <input name="sshHost" value={sshProfileDraft.host} onChange={(event) => setSshProfileDraft((current) => ({ ...current, host: event.target.value }))} placeholder="server.example.com" />
-            </label>
-            <label>
-              Port
-              <input name="sshPort" inputMode="numeric" value={sshProfileDraft.port} onChange={(event) => setSshProfileDraft((current) => ({ ...current, port: event.target.value }))} />
-            </label>
-            <label>
-              Username
-              <input name="sshUsername" value={sshProfileDraft.username} onChange={(event) => setSshProfileDraft((current) => ({ ...current, username: event.target.value }))} />
-            </label>
-            <label>
-              Private key path (optional)
-              <input name="sshPrivateKeyPath" value={sshProfileDraft.privateKeyPath} onChange={(event) => setSshProfileDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="/home/test/.ssh/id_ed25519" />
-            </label>
-            <label>
-              Password (optional)
-              <input type="password" name="sshPassword" value={sshProfileDraft.password} onChange={(event) => setSshProfileDraft((current) => ({ ...current, password: event.target.value }))} placeholder={sshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" />
-            </label>
-            <small className="field-help">
-              {sshPasswordSaved ? "A password is saved for this entry in the OS credential store (or a local fallback file outside the Session data)." : "No password saved yet. Add one here, or configure a private key, before connecting."}
-              {" "}Used to authenticate and to auto-fill the terminal's password prompt; never written to Session data.
-              {sshPasswordSaved && <> <button type="button" className="link-button" onClick={forgetSshPassword}>Forget saved password</button></>}
-            </small>
-             <small className="field-help">Connect authenticates automatically with the private key or saved password. Use "Install SSH key" to push a key to the server using the saved password.</small>
-            <div className="modal-actions">
-              <button type="button" onClick={() => setSshEntryDialogOpen(false)}>Cancel</button>
-              {sshEntryDraftId && <button type="button" className="session-delete" onClick={removeSshEntry}>Remove</button>}
-              <button type="button" className="confirm" onClick={saveSshEntry}>Save</button>
-            </div>
-          </div>
-        </div>
+        <SshEntryDialog
+          isEditing={Boolean(sshEntryDraftId)}
+          workspaceName={activeManagedWorkspace?.name}
+          sessionFormError={sessionFormError}
+          sshProfileDraft={sshProfileDraft}
+          setSshProfileDraft={setSshProfileDraft}
+          sshPasswordSaved={sshPasswordSaved}
+          modalStyle={modalStyle("ssh-entry")}
+          onDragStart={beginModalDrag("ssh-entry")}
+          onClose={() => setSshEntryDialogOpen(false)}
+          onForgetPassword={forgetSshPassword}
+          onRemove={removeSshEntry}
+          onSave={saveSshEntry}
+        />
       )}
       {restEntryDialogOpen && restEntryDraft && (
-        <div className="modal-cover modal-layer-top" onMouseDown={() => setRestEntryDialogOpen(false)}>
-          <div className="modal rest-entry-modal" style={modalStyle("rest-entry")} onMouseDown={(event) => event.stopPropagation()}>
-            <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("rest-entry")}>{isEditingRestEntry(activeManagedWorkspace, restEntryDraft) ? "Edit REST API Entry" : "Add REST API Entry"}</h2>
-            <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
-            {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
-            <label>Name<input value={restEntryDraft.name} onChange={(event) => setRestEntryDraft({ ...restEntryDraft, name: event.target.value })} placeholder="Production BMC" /></label>
-            <label>Base URL<input value={restEntryDraft.baseUrl} onChange={(event) => setRestEntryDraft({ ...restEntryDraft, baseUrl: event.target.value })} placeholder="https://api.example.com" /></label>
-            <label>Default path<input value={restEntryDraft.defaultPath} onChange={(event) => setRestEntryDraft({ ...restEntryDraft, defaultPath: event.target.value })} placeholder="/v1/rest" /></label>
-            <label className="tls-option"><input type="checkbox" checked={restEntryDraft.ignoreTlsErrors} onChange={(event) => setRestEntryDraft({ ...restEntryDraft, ignoreTlsErrors: event.target.checked })} /> Ignore TLS errors</label>
-            <small className="field-help">Authentication mode, login path, and token settings are configured from the Authentication panel inside REST API mode once this entry is selected -- they're operational settings you tune while working with the entry, not part of its identity.</small>
-            <div className="modal-actions">
-              <button type="button" onClick={() => setRestEntryDialogOpen(false)}>Cancel</button>
-              {isEditingRestEntry(activeManagedWorkspace, restEntryDraft) && <button type="button" className="session-delete" onClick={removeRestEntry}>Remove</button>}
-              <button type="button" className="confirm" onClick={saveRestEntry}>Save</button>
-            </div>
-          </div>
-        </div>
+        <RestEntryDialog
+          isEditing={isEditingRestEntry(activeManagedWorkspace, restEntryDraft)}
+          workspaceName={activeManagedWorkspace?.name}
+          sessionFormError={sessionFormError}
+          restEntryDraft={restEntryDraft}
+          setRestEntryDraft={setRestEntryDraft}
+          modalStyle={modalStyle("rest-entry")}
+          onDragStart={beginModalDrag("rest-entry")}
+          onClose={() => setRestEntryDialogOpen(false)}
+          onRemove={removeRestEntry}
+          onSave={saveRestEntry}
+        />
       )}
-      {vncEntryDialogOpen && vncEntryDraft && (() => {
-        const endpoint = vncEndpointParts(vncEntryDraft.baseUrl);
-        const proxmoxUsername = vncUsernameParts(vncEntryDraft.username);
-        const updateEndpoint = (host: string, port: string) => setVncEntryDraft({ ...vncEntryDraft, baseUrl: `https://${host}:${port}` });
-        const updateUsername = (account: string, realm: string) => setVncEntryDraft({ ...vncEntryDraft, username: `${account}@${realm}` });
-        return (
-          <div className="modal-cover modal-layer-top" onMouseDown={() => setVncEntryDialogOpen(false)}>
-            <div className="modal vnc-entry-modal" style={modalStyle("vnc-entry")} onMouseDown={(event) => event.stopPropagation()}>
-              <h2 className="modal-drag-handle" onMouseDown={beginModalDrag("vnc-entry")}>{isEditingVncEntry(activeManagedWorkspace, vncEntryDraft) ? "Edit Proxmox VNC Entry" : "Add Proxmox VNC Entry"}</h2>
-              <div className="vnc-entry-modal-tabs" role="tablist" aria-label="Proxmox VNC entry section">
-                <button type="button" role="tab" aria-selected={vncEntryModalTab === "default"} className={`vnc-entry-modal-tab${vncEntryModalTab === "default" ? " active" : ""}`} onClick={() => setVncEntryModalTab("default")}>Host Entry</button>
-                <button type="button" role="tab" aria-selected={vncEntryModalTab === "vmSsh"} className={`vnc-entry-modal-tab${vncEntryModalTab === "vmSsh" ? " active" : ""}`} onClick={() => setVncEntryModalTab("vmSsh")}>VM SSH</button>
-                <button type="button" role="tab" aria-selected={vncEntryModalTab === "hostSsh"} className={`vnc-entry-modal-tab${vncEntryModalTab === "hostSsh" ? " active" : ""}`} onClick={() => setVncEntryModalTab("hostSsh")}>Host SSH (jump)</button>
-              </div>
-              <p>Workspace: {activeManagedWorkspace?.name || "—"}</p>
-              {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
-              {vncEntryModalTab === "default" && <>
-                <label>Name<input value={vncEntryDraft.name} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, name: event.target.value })} /></label>
-                <div className="vnc-form-grid">
-                  <label>Proxmox host<input value={endpoint.host} onChange={(event) => updateEndpoint(event.target.value, endpoint.port)} placeholder="proxmox.example.com" /></label>
-                  <label>Port<input type="number" min="1" max="65535" value={endpoint.port} onChange={(event) => updateEndpoint(endpoint.host, event.target.value)} placeholder="8006" /></label>
-                </div>
-                <div className="vnc-username-field">
-                  <label>Username<input value={proxmoxUsername.account} onChange={(event) => updateUsername(event.target.value, proxmoxUsername.realm)} placeholder="root" /></label>
-                  <div className="vnc-realm-options">
-                    <label><input type="radio" name={`realm-${vncEntryDraft.id}`} checked={proxmoxUsername.realm === "pam"} onChange={() => updateUsername(proxmoxUsername.account, "pam")} /> pam</label>
-                    <label><input type="radio" name={`realm-${vncEntryDraft.id}`} checked={proxmoxUsername.realm === "pve"} onChange={() => updateUsername(proxmoxUsername.account, "pve")} /> pve</label>
-                  </div>
-                </div>
-                <label>PVE version<Dropdown label="PVE version" value={vncEntryDraft.proxmoxVersion} onChange={(nextVersion) => setVncEntryDraft({ ...vncEntryDraft, proxmoxVersion: nextVersion as ProxmoxVncEntry["proxmoxVersion"] })} options={[{ value: "auto", label: "Auto detect" }, { value: "6.4", label: "6.4" }, { value: "7.x", label: "7.x" }, { value: "8.x", label: "8.x" }, { value: "9.x", label: "9.x" }]} /></label>
-                <label className="tls-option"><input type="checkbox" checked={vncEntryDraft.ignoreTlsErrors} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, ignoreTlsErrors: event.target.checked })} /> Ignore TLS certificate errors</label>
-                <small className="field-help">Password, node, and VM selection are configured from the entry's own connection controls once this entry is selected in the VNC mode.</small>
-              </>}
-              {vncEntryModalTab === "vmSsh" && <>
-                <strong>File transfer: VM SSH</strong>
-                <small className="field-help">Credentials for the VM's own SSH/SFTP server, used when this client (or the Proxmox host, as a jump) can reach the VM directly. Leave the password blank to keep a previously saved one.</small>
-                <div className="vnc-form-grid">
-                  <label>VM SSH username<input value={vncEntryDraft.vmSshUsername || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, vmSshUsername: event.target.value })} placeholder="root" /></label>
-                  <label>VM SSH port<input type="number" min="1" max="65535" value={vncEntryDraft.vmSshPort || 22} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, vmSshPort: Number(event.target.value) || 22 })} /></label>
-                </div>
-                <label>VM SSH private key path (optional)<input value={vncEntryDraft.vmSshPrivateKeyPath || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, vmSshPrivateKeyPath: event.target.value })} placeholder="/home/test/.ssh/id_ed25519" /></label>
-                <label>VM SSH password<input type="password" value={vmSshPasswordDraft} onChange={(event) => setVmSshPasswordDraft(event.target.value)} placeholder={vmSshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" /></label>
-                <label>Fallback VM IP (optional)<input value={vncEntryDraft.fileTransferIpOverride || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, fileTransferIpOverride: event.target.value })} placeholder="Only needed if the Guest Agent can't report it (e.g. LXC)" /></label>
-                <div className="modal-actions"><button type="button" onClick={() => void installVncSshKey("vm")}>Install SSH key on VM</button></div>
-              </>}
-              {vncEntryModalTab === "hostSsh" && <>
-                <strong>File transfer: Host SSH (jump)</strong>
-                <small className="field-help">Only needed when the VM isn't directly reachable from this client -- the Proxmox host itself is then used as an SSH jump to reach the VM's SFTP over a tunneled connection.</small>
-                <div className="vnc-form-grid">
-                  <label>Host SSH username<input value={vncEntryDraft.hostSshUsername || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshUsername: event.target.value })} placeholder="root" /></label>
-                  <label>Host SSH port<input type="number" min="1" max="65535" value={vncEntryDraft.hostSshPort || 22} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshPort: Number(event.target.value) || 22 })} /></label>
-                </div>
-                <label>Host SSH private key path (optional)<input value={vncEntryDraft.hostSshPrivateKeyPath || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshPrivateKeyPath: event.target.value })} placeholder="/home/test/.ssh/id_ed25519" /></label>
-                <label>Host SSH password<input type="password" value={hostSshPasswordDraft} onChange={(event) => setHostSshPasswordDraft(event.target.value)} placeholder={hostSshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" /></label>
-                <div className="modal-actions"><button type="button" onClick={() => void installVncSshKey("host")}>Install SSH key on host</button></div>
-              </>}
-              <div className="modal-actions">
-                <button type="button" onClick={() => setVncEntryDialogOpen(false)}>Cancel</button>
-                {isEditingVncEntry(activeManagedWorkspace, vncEntryDraft) && <button type="button" className="session-delete" onClick={removeVncEntry}>Remove</button>}
-                <button type="button" className="confirm" onClick={saveVncEntry}>Save</button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {vncEntryDialogOpen && vncEntryDraft && (
+        <VncEntryDialog
+          isEditing={isEditingVncEntry(activeManagedWorkspace, vncEntryDraft)}
+          workspaceName={activeManagedWorkspace?.name}
+          sessionFormError={sessionFormError}
+          vncEntryDraft={vncEntryDraft}
+          setVncEntryDraft={setVncEntryDraft}
+          vncEntryModalTab={vncEntryModalTab}
+          setVncEntryModalTab={setVncEntryModalTab}
+          vmSshPasswordDraft={vmSshPasswordDraft}
+          setVmSshPasswordDraft={setVmSshPasswordDraft}
+          vmSshPasswordSaved={vmSshPasswordSaved}
+          hostSshPasswordDraft={hostSshPasswordDraft}
+          setHostSshPasswordDraft={setHostSshPasswordDraft}
+          hostSshPasswordSaved={hostSshPasswordSaved}
+          modalStyle={modalStyle("vnc-entry")}
+          onDragStart={beginModalDrag("vnc-entry")}
+          onClose={() => setVncEntryDialogOpen(false)}
+          onInstallVmKey={() => void installVncSshKey("vm")}
+          onInstallHostKey={() => void installVncSshKey("host")}
+          onRemove={removeVncEntry}
+          onSave={saveVncEntry}
+          vncEndpointParts={vncEndpointParts}
+          vncUsernameParts={vncUsernameParts}
+        />
+      )}
       <TerminalWorkspace
         open={terminalOpen}
         height={terminalHeight}
