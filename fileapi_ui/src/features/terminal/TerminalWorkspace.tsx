@@ -1,34 +1,10 @@
 import React, { useRef, useState, type RefObject } from "react";
-import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, CloseIcon, CollapseIcon, ExpandIcon, ChevronUpIcon } from "../../ui/icons";
+import { ChevronDownIcon, CloseIcon, CollapseIcon, ExpandIcon, ChevronUpIcon } from "../../ui/icons";
 import { Dropdown } from "../../ui/Dropdown";
+import type { SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
 
-type TerminalEntry = {
-  id: string;
-  name: string;
-};
-
-type TerminalWorkspaceGroup = {
-  id: string;
-  name: string;
-  sshEntries: TerminalEntry[];
-};
-
-type TerminalTab = {
-  id: string;
-  title: string;
-  workspaceId: string;
-  sshEntryId: string;
-  sessionId: string;
-  connected: boolean;
-  connecting?: boolean;
-  output: string;
-  recording: boolean;
-  recordingStartedAt: number | null;
-  recordingCommandCount: number;
-  recordingRawBytes: number;
-  recordingPlainBytes: number;
-  savedLogPaths: string[];
-};
+type TerminalTab = SshTerminalTab;
+type TerminalWorkspaceGroup = TerminalWorkspaceSession;
 
 type Props = {
   open: boolean;

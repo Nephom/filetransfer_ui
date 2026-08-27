@@ -48,6 +48,9 @@ import { useTerminalLifecycle } from "./features/terminal/useTerminalLifecycle";
 import { useSshEventBridge } from "./features/terminal/useSshEventBridge";
 import { isMobileViewport } from "./styles/breakpoints";
 import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
+import type { SshProfile } from "./features/ssh/ssh-contracts";
+import type { RecordingStats, SshTerminalTab } from "./features/terminal/terminal-contracts";
+import { appendSshTabOutput, makeSshTabId, SSH_TAB_OUTPUT_CAP, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./features/terminal/terminal-utils";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
@@ -134,43 +137,7 @@ type ManagedSession = {
 type ColumnKey = "name" | "modified" | "size";
 type SortKey = ColumnKey;
 type SortDirection = "asc" | "desc";
-type SshProfile = {
-  id: string;
-  name: string;
-  host: string;
-  port: number;
-  username: string;
-  privateKeyPath: string;
-};
-type SshEvent = { sessionId: string; data: string; requestId: string };
-// Mirrors Rust's `recording::RecordingStats` (src-tauri/src/recording.rs),
-// returned by every `start`/`append`/`append_..._command` recording IPC
-// call so the frontend can update its lightweight byte/line counters
-// without ever holding the actual recorded content itself.
-type RecordingStats = { rawBytes: number; plainBytes: number; commandCount: number };
-type SshTerminalTab = {
-  id: string;
-  title: string;
-  workspaceId: string;
-  sshEntryId: string;
-  sessionId: string;
-  connected: boolean;
-  connecting?: boolean;
-  output: string;
-  recording: boolean;
-  recordingStartedAt: number | null;
-  // The recording's raw/plain/commands transcripts are no longer held in
-  // memory as ever-growing strings -- every chunk is written straight to a
-  // disk-backed temp file the moment it arrives (see the `recording` Rust
-  // module and `start`/`append`/`stop`/`discard`-`SshRecording` below).
-  // These three counters are only what the UI needs to know ("is there
-  // anything recorded yet?", "how much?") without ever re-holding the
-  // actual content client-side.
-  recordingRawBytes: number;
-  recordingPlainBytes: number;
-  recordingCommandCount: number;
-  savedLogPaths: string[];
-};
+
 type TransferQueueItem = {
   id: string;
   operationId?: string;
@@ -299,8 +266,7 @@ const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
   });
 };
 
-const stripAnsi = (value: string) =>
-  value.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:][\d;]*)*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
+
 
 // Prepended to an SSH tab's `output` (the buffer replayed into xterm.js on
 // every tab switch/terminal recreation, see the `terminalOpen`/
@@ -327,7 +293,7 @@ const stripAnsi = (value: string) =>
 // `output` (xterm's replay buffer) -- never into the on-disk recording
 // transcripts, which must stay a faithful transcript of only the bytes
 // actually received.
-const VT_SESSION_BOUNDARY_GUARD = "\u001b\\\u001b[0m";
+
 
 // Upper bound (in characters) on how much of an SSH tab's `output` this
 // frontend keeps in memory. `output` is the buffer replayed into a fresh
@@ -347,7 +313,7 @@ const VT_SESSION_BOUNDARY_GUARD = "\u001b\\\u001b[0m";
 // scrollback -- far more than xterm's own default 1000-line scrollback
 // buffer will show on a tab switch anyway -- while keeping the append cost
 // bounded.
-const SSH_TAB_OUTPUT_CAP = 512 * 1024;
+
 
 // Appends `chunk` to `output` and truncates the *front* of the result once
 // it exceeds `SSH_TAB_OUTPUT_CAP`, dropping whole lines only (never partial
@@ -362,16 +328,7 @@ const SSH_TAB_OUTPUT_CAP = 512 * 1024;
 // program means to display is itself a sequence boundary). This is used
 // for every `output` append below, replacing the previous unconditional
 // `item.output + data`.
-const appendSshTabOutput = (output: string, chunk: string) => {
-  const next = output + chunk;
-  if (next.length <= SSH_TAB_OUTPUT_CAP) return next;
-  const cutFrom = next.length - SSH_TAB_OUTPUT_CAP;
-  const newlineAt = next.indexOf("\n", cutFrom);
-  // No newline after the cut point (a single enormous line): fall back to
-  // a hard cut rather than keeping the whole oversized line, since the
-  // point of the cap is to bound memory/CPU cost even in that case.
-  return newlineAt === -1 ? next.slice(cutFrom) : next.slice(newlineAt + 1);
-};
+
 
 type ScrollMetrics = {
   scrollTop: number;
@@ -2687,9 +2644,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     }
   };
 
-  const makeSshTabId = () => typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   const activeSshTab = sshTabs.find((item) => item.id === activeSshTabId);
   const recordingHasOutput = Boolean(activeSshTab && (activeSshTab.recordingRawBytes > 0 || activeSshTab.recordingPlainBytes > 0));
