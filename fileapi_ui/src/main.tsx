@@ -48,7 +48,7 @@ import { isMobileViewport } from "./styles/breakpoints";
 import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
 import type { SshProfile } from "./features/ssh/ssh-contracts";
 import type { RecordingStats, SshTerminalTab } from "./features/terminal/terminal-contracts";
-import { appendSshTabOutput, makeSshTabId, SSH_TAB_OUTPUT_CAP, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./features/terminal/terminal-utils";
+import { appendSshTabOutput, makeSshTabId, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./features/terminal/terminal-utils";
 import { useSshTerminal } from "./features/terminal/useSshTerminal";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
@@ -1300,7 +1300,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   });
   const [selectedSshEntryId, setSelectedSshEntryId] = useState("");
   const [sshConnected, setSshConnected] = useState(false);
-  const [sshSessionId, setSshSessionId] = useState("");
   // No `sshOutput` React state: unlike `sshSessionId`/`recording`/etc.
   // above, no rendered UI ever reads the active tab's full output text --
   // xterm.js owns displaying it, and `sshOutputRef` (below) is all the
@@ -1331,7 +1330,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [hostSshPasswordDraft, setHostSshPasswordDraft] = useState("");
   const [hostSshPasswordSaved, setHostSshPasswordSaved] = useState(false);
   const [recording, setRecording] = useState(false);
-  const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
   const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
   const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>(readPersistedQueue);
   const queueStoreRef = useRef(new QueueStore<TransferQueueItem>((items) => pruneQueueHistory(items, Date.now())));
@@ -1378,9 +1376,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const pendingSshConnectRequestsRef = useRef<Record<string, string>>({});
   const connectAttemptRef = useRef<Record<string, string>>({});
   const sshTabsRef = useRef<SshTerminalTab[]>([]);
-  const draggedSshTabIdRef = useRef<string | null>(null);
-  const [draggedSshTabId, setDraggedSshTabId] = useState<string | null>(null);
-  const [sshTabDropTargetId, setSshTabDropTargetId] = useState<string | null>(null);
   const shellInputRef = useRef("");
   const dragPreparationRef = useRef(new Map<string, Promise<string>>());
   const queueProgressSamplesRef = useRef(new Map<string, { bytes: number; at: number }[]>());
@@ -1665,16 +1660,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   }, []);
 
   useEffect(() => {
-    sshSessionIdRef.current = sshSessionId;
-  }, [sshSessionId]);
-
-  useEffect(() => {
     activeSshTabIdRef.current = activeSshTabId;
     const tab = sshTabs.find((item) => item.id === activeSshTabId);
     setSshConnected(Boolean(tab?.connected));
-    setSshSessionId(tab?.sessionId || "");
     setRecording(Boolean(tab?.recording));
-    setRecordingStartedAt(tab?.recordingStartedAt || null);
     setSavedLogPaths(tab?.savedLogPaths || []);
     sshSessionIdRef.current = tab?.sessionId || "";
     sshOutputRef.current = tab?.output || "";
@@ -2731,6 +2720,18 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     }
     const tabId = createSshTab(workspaceId, entryId);
     if (tabId) performSshConnect(tabId, profile);
+  };
+
+  const reorderSshTabs = (draggedId: string, targetId: string) => {
+    setSshTabs((current) => {
+      const from = current.findIndex((item) => item.id === draggedId);
+      const to = current.findIndex((item) => item.id === targetId);
+      if (from < 0 || to < 0) return current;
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
   };
 
   const toggleTerminalMaximized = () => {
@@ -7484,17 +7485,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         onToggleQuickList={() => setSshQuickListOpen((open) => !open)}
         onResizeStart={beginTerminalResize}
         onSelectTab={selectSshTab}
-        onReorderTabs={(draggedId, targetId) => {
-          setSshTabs((current) => {
-            const from = current.findIndex((item) => item.id === draggedId);
-            const to = current.findIndex((item) => item.id === targetId);
-            if (from < 0 || to < 0) return current;
-            const next = [...current];
-            const [moved] = next.splice(from, 1);
-            next.splice(to, 0, moved);
-            return next;
-          });
-        }}
+        onReorderTabs={reorderSshTabs}
         onCloseTab={closeSshTab}
         onCreateTab={() => { createSshTab(); }}
         onQuickConnect={quickConnectSsh}
