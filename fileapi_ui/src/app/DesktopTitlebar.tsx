@@ -6,6 +6,7 @@ import { ChevronDownIcon } from "../ui/icons";
 type DesktopTitlebarProps = {
   appMode: "location" | "rest" | "vnc";
   vncEnabled: boolean;
+  restEnabled: boolean;
   session: { username: string; role: string };
   accountOpen: boolean;
   accountControl: React.Ref<HTMLDivElement>;
@@ -24,6 +25,7 @@ type DesktopTitlebarProps = {
 export function DesktopTitlebar({
   appMode,
   vncEnabled,
+  restEnabled,
   session,
   accountOpen,
   accountControl,
@@ -40,7 +42,7 @@ export function DesktopTitlebar({
 }: DesktopTitlebarProps) {
   const modeOptions = [
     { id: "location", label: "LOCATION" },
-    { id: "rest", label: "REST API" },
+    ...(restEnabled ? [{ id: "rest", label: "REST API" }] : []),
     ...(vncEnabled ? [{ id: "vnc", label: "VNC" }] : []),
   ];
   return (

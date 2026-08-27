@@ -224,6 +224,7 @@ type DesktopSettings = {
   theme: ThemePreset;
   accentColor: string;
   proxmoxVncModeEnabled: boolean;
+  restApiModeEnabled: boolean;
   collapseMainPaneEnabled: boolean;
   bracketedPasteControlEnabled: boolean;
   undoHistoryEnabled: boolean;
@@ -717,6 +718,7 @@ const defaultDesktopSettings: DesktopSettings = {
   theme: "bridge",
   accentColor: "#63e6ff",
   proxmoxVncModeEnabled: false,
+  restApiModeEnabled: false,
   collapseMainPaneEnabled: false,
   bracketedPasteControlEnabled: false,
   undoHistoryEnabled: true,
@@ -777,6 +779,11 @@ const normalizeDesktopSettings = (raw: unknown): DesktopSettings => {
       saved.proxmoxVncModeEnabled,
       (value) => typeof value === "boolean",
       defaultDesktopSettings.proxmoxVncModeEnabled,
+    ),
+    restApiModeEnabled: pick(
+      saved.restApiModeEnabled,
+      (value) => typeof value === "boolean",
+      defaultDesktopSettings.restApiModeEnabled,
     ),
     collapseMainPaneEnabled: pick(
       saved.collapseMainPaneEnabled,
@@ -1156,12 +1163,16 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [appMode, setAppMode] = useState<"location" | "rest" | "vnc">(() => {
     const saved = localStorage.getItem("fileapi-app-mode");
     let vncEnabled = false;
+    let restEnabled = false;
     try {
-      vncEnabled = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null")?.proxmoxVncModeEnabled === true;
+      const parsed = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
+      vncEnabled = parsed?.proxmoxVncModeEnabled === true;
+      restEnabled = parsed?.restApiModeEnabled === true;
     } catch {
       vncEnabled = false;
+      restEnabled = false;
     }
-    return saved === "rest" || (saved === "vnc" && vncEnabled) ? saved : "location";
+    return (saved === "rest" && restEnabled) || (saved === "vnc" && vncEnabled) ? saved : "location";
   });
   const [path, setPath] = useState("");
   const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
@@ -1231,7 +1242,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   }, [themeVariables]);
   useEffect(() => {
     if (!desktopSettings.proxmoxVncModeEnabled && appMode === "vnc") setAppMode("location");
-  }, [desktopSettings.proxmoxVncModeEnabled, appMode]);
+    if (!desktopSettings.restApiModeEnabled && appMode === "rest") setAppMode("location");
+  }, [desktopSettings.proxmoxVncModeEnabled, desktopSettings.restApiModeEnabled, appMode]);
   const [viewport, setViewport] = useState(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
@@ -6125,6 +6137,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       <DesktopTitlebar
         appMode={appMode}
         vncEnabled={desktopSettings.proxmoxVncModeEnabled}
+        restEnabled={desktopSettings.restApiModeEnabled}
         session={session}
         accountOpen={accountOpen}
         accountControl={accountControl}
@@ -7113,7 +7126,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           <FloatingWindow ariaLabel="Desktop Settings" className={`settings-modal settings-panel-${settingsPanel || "menu"}`} style={modalStyle("settings")} onClose={() => setSettingsOpen(false)} onDragStart={beginModalDrag("settings")} header={<div className="settings-floating-heading"><h2 className="modal-drag-handle">Desktop Settings</h2><button type="button" className="settings-floating-close" onClick={() => setSettingsOpen(false)} aria-label="Close Desktop Settings"><CloseIcon /></button></div>} footer={<div className="settings-floating-footer"><button type="button" className="confirm" onClick={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}>Save</button><button type="button" onClick={() => settingsPanel === null ? setSettingsOpen(false) : setSettingsPanel(null)}>Close</button></div>}>
                 <p className="settings-intro">Safe defaults keep confirmations and security checks enabled. These preferences can hide prompts only; they never bypass permissions, read-only rules, path boundaries, destination validation, or transfer verification.</p>
                 {settingsPanel !== null && <button type="button" className="settings-subpanel-back" onClick={() => setSettingsPanel(null)}><ChevronLeftIcon size={12} /> Settings</button>}
-                {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"}</span><small>Enable optional workspaces.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b><ChevronRightIcon size={12} /></b></button></div>}
+                {settingsPanel === null && <div className="settings-panel-menu"><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}><strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}><strong>Interface features</strong><span>{[desktopSettings.restApiModeEnabled ? "REST API enabled" : "REST API disabled", desktopSettings.proxmoxVncModeEnabled ? "Proxmox VNC enabled" : "Proxmox VNC disabled"].join(" · ")}</span><small>Enable optional workspaces.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("confirmations")}><strong>Risk confirmations</strong><span>Safety prompts</span><small>Choose destructive-action confirmations.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("sharing")}><strong>Sharing</strong><span>{desktopSettings.shareLinkMode === "secure" ? "Secure links" : "Direct links"}</span><small>Configure link defaults.</small><b><ChevronRightIcon size={12} /></b></button><button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("history")}><strong>History and operation log</strong><span>{desktopSettings.operationLogEnabled ? "Enabled" : "Disabled"}</span><small>Configure history and logs.</small><b><ChevronRightIcon size={12} /></b></button></div>}
                <section className="settings-section">
                  <h3>Color theme</h3>
                  <div className="settings-check settings-theme-row">
@@ -7160,6 +7173,10 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                </section>
                <section className="settings-section">
                 <h3>Interface features</h3>
+                 <label className="settings-check">
+                   <input type="checkbox" checked={desktopSettings.restApiModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, restApiModeEnabled: event.target.checked }))} />
+                   <span><strong>Enable REST API mode</strong><small>Show the REST API workspace and its mode switcher.</small></span>
+                 </label>
                  <label className="settings-check">
                    <input type="checkbox" checked={desktopSettings.proxmoxVncModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, proxmoxVncModeEnabled: event.target.checked }))} />
                    <span><strong>Enable Proxmox VNC mode</strong><small>Show the Proxmox VNC workspace and its mode switcher.</small></span>
@@ -7327,7 +7344,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                         ))}
                       </ol>
                     </section>
-                    <section className="workspace-entry-section">
+                    {desktopSettings.restApiModeEnabled && <section className="workspace-entry-section">
                       <h3>REST API Entries</h3>
                       {!managedSession.restApiEntries.length && <span className="muted">No REST API entries yet.</span>}
                       <ol className="workspace-entry-list">
@@ -7342,7 +7359,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                           </li>
                         ))}
                       </ol>
-                    </section>
+                    </section>}
                     {desktopSettings.proxmoxVncModeEnabled && <section className="workspace-entry-section">
                       <h3>Proxmox VNC Entries</h3>
                       {!managedSession.proxmoxVncEntries.length && <span className="muted">No Proxmox VNC entries yet.</span>}
@@ -7361,9 +7378,9 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                     </section>}
                     <div className="workspace-entry-actions">
                       <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>Add SSH Entry</button>
-                      <button type="button" className="confirm" onClick={() => openAddRestEntryDialog(managedSession.id)}>Add REST API Entry</button>
+                      {desktopSettings.restApiModeEnabled && <button type="button" className="confirm" onClick={() => openAddRestEntryDialog(managedSession.id)}>Add REST API Entry</button>}
                       {desktopSettings.proxmoxVncModeEnabled && <button type="button" className="confirm" onClick={() => openAddVncEntryDialog(managedSession.id)}>Add Proxmox VNC Entry</button>}
-                      <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("rest"); setSessionsOpen(false); }}>Open REST API</button>
+                      {desktopSettings.restApiModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("rest"); setSessionsOpen(false); }}>Open REST API</button>}
                       {desktopSettings.proxmoxVncModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); setAppMode("vnc"); setSessionsOpen(false); }}>Open VNC</button>}
                     </div>
                   </article>
