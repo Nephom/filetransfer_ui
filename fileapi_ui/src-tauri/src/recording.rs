@@ -23,7 +23,35 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+// Client-disk write amplification guard: a high-output SSH session (a
+// noisy build, `tail -f`, ...) can emit many `append_ssh_recording` IPC
+// calls per second, and this module previously issued one real
+// `write_all` + `flush` syscall pair *per call* -- i.e. one guaranteed
+// physical disk write per incoming chunk. On the kind of always-on
+// desktop/laptop SSDs this client typically runs on, that turns a single
+// long recording session into thousands of small physical writes, which
+// measurably shortens SSD/flash write-endurance over the device's
+// lifetime for no durability benefit most users need (an unattended crash
+// losing the last fraction of a second of terminal scrollback is an
+// acceptable trade for not hammering the disk on every incoming TCP
+// chunk). Chunks are now accumulated in a small in-process buffer and only
+// actually written+flushed to disk once `RECORDING_FLUSH_BYTES` has
+// accumulated or `RECORDING_FLUSH_INTERVAL` has elapsed since the last
+// flush, whichever comes first -- collapsing many small physical writes
+// into far fewer, larger ones. `stop_ssh_recording`/`discard_ssh_recording`/
+// `finalize_ssh_recording` all force an unconditional flush first, so no
+// data is ever lost on a normal stop/save/close; only an abrupt crash or
+// force-quit can lose the still-buffered tail (bounded to at most
+// `RECORDING_FLUSH_BYTES` bytes or `RECORDING_FLUSH_INTERVAL` of output),
+// which is the deliberate trade-off this buffering makes. The frontend's
+// `RecordingStats` byte/line counters are unaffected -- they still count
+// every logical byte/command the moment it arrives, buffered or not, so
+// the UI's "how much has been recorded" display stays accurate even
+// between physical flushes.
+const RECORDING_FLUSH_BYTES: usize = 64 * 1024;
+const RECORDING_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Resolve `<install dir>/temp`: a `temp` directory next to the running
 /// executable, used so portable installations keep their (transient)
@@ -66,9 +94,80 @@ struct RecordingEntry {
     raw_file: File,
     plain_file: File,
     commands_file: File,
+    // Running logical totals -- incremented the instant a chunk arrives,
+    // regardless of whether it has been physically flushed to disk yet, so
+    // `RecordingStats` (and thus the frontend's "has anything been
+    // recorded?"/byte-count UI) is always accurate.
     raw_bytes: u64,
     plain_bytes: u64,
     command_count: u64,
+    // Not-yet-flushed bytes, written to their respective files (and the
+    // buffers cleared) once `maybe_flush` decides a flush is due. Kept as
+    // `Vec<u8>` rather than `String` since the raw stream can in principle
+    // straddle a multi-byte UTF-8 boundary between two chunks; only ever
+    // written back out as raw bytes, never re-decoded as text.
+    raw_buffer: Vec<u8>,
+    plain_buffer: Vec<u8>,
+    commands_buffer: Vec<u8>,
+    last_flush: Instant,
+}
+
+/// Physically writes and flushes any buffered bytes for `entry`, then
+/// resets its flush timer -- used both by the byte/time-threshold check in
+/// `maybe_flush` (forced) and directly by callers that must guarantee
+/// durability right now (`stop_ssh_recording`, `discard_ssh_recording`'s
+/// implicit drop, `finalize_ssh_recording`).
+fn flush_entry_now(entry: &mut RecordingEntry) -> Result<(), String> {
+    if !entry.raw_buffer.is_empty() {
+        entry
+            .raw_file
+            .write_all(&entry.raw_buffer)
+            .map_err(|error| error.to_string())?;
+        entry.raw_buffer.clear();
+    }
+    if !entry.plain_buffer.is_empty() {
+        entry
+            .plain_file
+            .write_all(&entry.plain_buffer)
+            .map_err(|error| error.to_string())?;
+        entry.plain_buffer.clear();
+    }
+    if !entry.commands_buffer.is_empty() {
+        entry
+            .commands_file
+            .write_all(&entry.commands_buffer)
+            .map_err(|error| error.to_string())?;
+        entry.commands_buffer.clear();
+    }
+    entry.raw_file.flush().map_err(|error| error.to_string())?;
+    entry
+        .plain_file
+        .flush()
+        .map_err(|error| error.to_string())?;
+    entry
+        .commands_file
+        .flush()
+        .map_err(|error| error.to_string())?;
+    entry.last_flush = Instant::now();
+    Ok(())
+}
+
+/// Flushes `entry` only once `RECORDING_FLUSH_BYTES` of combined buffered
+/// data has accumulated or `RECORDING_FLUSH_INTERVAL` has elapsed since the
+/// last flush -- the throttle described at this module's top. All three
+/// transcripts are flushed together (even if only one buffer crossed the
+/// threshold) so they stay time-synchronized on disk and this stays a
+/// single cheap size/time check per call rather than three independent
+/// ones.
+fn maybe_flush(entry: &mut RecordingEntry) -> Result<(), String> {
+    let buffered = entry.raw_buffer.len() + entry.plain_buffer.len() + entry.commands_buffer.len();
+    if buffered == 0 {
+        return Ok(());
+    }
+    if buffered >= RECORDING_FLUSH_BYTES || entry.last_flush.elapsed() >= RECORDING_FLUSH_INTERVAL {
+        flush_entry_now(entry)?;
+    }
+    Ok(())
 }
 
 static RECORDINGS: OnceLock<Mutex<HashMap<String, RecordingEntry>>> = OnceLock::new();
@@ -177,6 +276,10 @@ pub(crate) fn start_ssh_recording(
         raw_bytes: raw_seed.len() as u64,
         plain_bytes: plain_seed.len() as u64,
         command_count: 0,
+        raw_buffer: Vec::new(),
+        plain_buffer: Vec::new(),
+        commands_buffer: Vec::new(),
+        last_flush: Instant::now(),
     };
     let stats = stats_of(&entry);
     recordings()
@@ -187,10 +290,10 @@ pub(crate) fn start_ssh_recording(
 }
 
 /// Append one chunk of freshly-received SSH output to the raw/plain
-/// transcripts on disk, flushing immediately so the data is actually durable
-/// on disk rather than sitting in an in-process write buffer -- consistent
-/// with the "即存即寫" (write-as-received, not accumulate-then-write) goal
-/// this module exists for.
+/// transcripts. The chunk is durably counted in `RecordingStats`
+/// immediately, but only physically written+flushed to disk once
+/// `maybe_flush`'s byte/time threshold is due -- see this module's top
+/// comment and `RECORDING_FLUSH_BYTES`/`RECORDING_FLUSH_INTERVAL`.
 pub(crate) fn append_ssh_recording(
     tab_id: String,
     raw_chunk: String,
@@ -202,25 +305,16 @@ pub(crate) fn append_ssh_recording(
     let entry = guard
         .get_mut(&tab_id)
         .ok_or_else(|| "No recording is in progress for this terminal tab".to_string())?;
-    entry
-        .raw_file
-        .write_all(raw_chunk.as_bytes())
-        .map_err(|error| error.to_string())?;
-    entry.raw_file.flush().map_err(|error| error.to_string())?;
+    entry.raw_buffer.extend_from_slice(raw_chunk.as_bytes());
     entry.raw_bytes += raw_chunk.len() as u64;
-    entry
-        .plain_file
-        .write_all(plain_chunk.as_bytes())
-        .map_err(|error| error.to_string())?;
-    entry
-        .plain_file
-        .flush()
-        .map_err(|error| error.to_string())?;
+    entry.plain_buffer.extend_from_slice(plain_chunk.as_bytes());
     entry.plain_bytes += plain_chunk.len() as u64;
+    maybe_flush(entry)?;
     Ok(stats_of(entry))
 }
 
-/// Append one detected command line to the commands transcript on disk.
+/// Append one detected command line to the commands transcript, subject to
+/// the same buffered/throttled flush as `append_ssh_recording`.
 pub(crate) fn append_ssh_recording_command(
     tab_id: String,
     line: String,
@@ -231,38 +325,26 @@ pub(crate) fn append_ssh_recording_command(
     let entry = guard
         .get_mut(&tab_id)
         .ok_or_else(|| "No recording is in progress for this terminal tab".to_string())?;
-    entry
-        .commands_file
-        .write_all(line.as_bytes())
-        .map_err(|error| error.to_string())?;
-    entry
-        .commands_file
-        .flush()
-        .map_err(|error| error.to_string())?;
+    entry.commands_buffer.extend_from_slice(line.as_bytes());
     entry.command_count += 1;
+    maybe_flush(entry)?;
     Ok(stats_of(entry))
 }
 
-/// Flush every open file for `tab_id`'s recording to disk. The registry
-/// entry (and its temp files) is deliberately kept around after this --
-/// "Stop Recording" only means "no more new data is expected", not "discard
-/// what was recorded" -- the user can still press "Save Log" afterwards, or
-/// close the tab, at which point `finalize_ssh_recording`/
-/// `discard_ssh_recording` take over.
+/// Force an unconditional flush of every buffered byte for `tab_id`'s
+/// recording to disk, bypassing the byte/time throttle -- "Stop Recording"
+/// must never leave any already-received data sitting unflushed in memory.
+/// The registry entry (and its temp files) is deliberately kept around
+/// after this -- "Stop Recording" only means "no more new data is
+/// expected", not "discard what was recorded" -- the user can still press
+/// "Save Log" afterwards, or close the tab, at which point
+/// `finalize_ssh_recording`/`discard_ssh_recording` take over.
 pub(crate) fn stop_ssh_recording(tab_id: String) -> Result<(), String> {
     let mut guard = recordings()
         .lock()
         .map_err(|_| "Recording registry lock was poisoned".to_string())?;
     if let Some(entry) = guard.get_mut(&tab_id) {
-        entry.raw_file.flush().map_err(|error| error.to_string())?;
-        entry
-            .plain_file
-            .flush()
-            .map_err(|error| error.to_string())?;
-        entry
-            .commands_file
-            .flush()
-            .map_err(|error| error.to_string())?;
+        flush_entry_now(entry)?;
     }
     Ok(())
 }
@@ -308,11 +390,16 @@ pub(crate) fn finalize_ssh_recording(
     destination_directory: &Path,
     started_at_iso: Option<String>,
 ) -> Result<SshLogPaths, String> {
-    let entry = recordings()
+    let mut entry = recordings()
         .lock()
         .map_err(|_| "Recording registry lock was poisoned".to_string())?
         .remove(&tab_id)
         .ok_or_else(|| "There is no completed SSH recording to save.".to_string())?;
+    // Defensive: the normal flow always calls `stop_ssh_recording` (which
+    // force-flushes) before this, but finalize must never copy a file that
+    // could still have unflushed buffered bytes sitting in memory,
+    // regardless of call order.
+    flush_entry_now(&mut entry)?;
 
     let safe_name: String = profile_name
         .chars()
@@ -443,12 +530,77 @@ pub(crate) fn cleanup_stale_recording_temp_files() {
 
 #[cfg(test)]
 mod tests {
-    use super::civil_from_days;
+    use super::{
+        append_ssh_recording, civil_from_days, discard_ssh_recording, start_ssh_recording,
+        stop_ssh_recording, RECORDING_FLUSH_BYTES,
+    };
+    use std::fs;
 
     #[test]
     fn civil_from_days_matches_known_epoch_dates() {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(31), (1970, 2, 1));
         assert_eq!(civil_from_days(19_723), (2024, 1, 1));
+    }
+
+    // Every raw/plain temp file path this test starts is deterministic
+    // (`<tab_id>-<timestamp>.<kind>.tmp` under `recording_temp_dir()`), so
+    // this reads it straight from the registry rather than recomputing the
+    // path -- exercised indirectly through `stats_of`'s byte counters and a
+    // direct disk-size check below.
+    fn raw_temp_path_bytes_on_disk(tab_id: &str) -> u64 {
+        let guard = super::recordings().lock().expect("recording registry lock should not be poisoned");
+        let entry = guard.get(tab_id).expect("a recording should be registered for this tab id in this test");
+        fs::metadata(&entry.raw_path).map(|metadata| metadata.len()).unwrap_or(0)
+    }
+
+    #[test]
+    fn small_chunks_stay_buffered_on_disk_below_the_flush_threshold() {
+        let tab_id = format!("test-buffered-{}", super::unique_timestamp());
+        let stats = start_ssh_recording(tab_id.clone(), String::new(), String::new())
+            .expect("starting a recording should succeed");
+        assert_eq!(stats.raw_bytes, 0);
+
+        let stats = append_ssh_recording(tab_id.clone(), "hello".to_string(), "hello".to_string())
+            .expect("appending a small chunk should succeed");
+        // The logical counter reflects the chunk immediately...
+        assert_eq!(stats.raw_bytes, 5);
+        // ...but nothing this small should have crossed the byte/time
+        // threshold yet, so the file on disk should still be empty (the
+        // chunk is sitting in the in-process buffer, not yet flushed).
+        assert_eq!(raw_temp_path_bytes_on_disk(&tab_id), 0);
+
+        discard_ssh_recording(tab_id).expect("discarding a recording should succeed");
+    }
+
+    #[test]
+    fn crossing_the_byte_threshold_flushes_to_disk() {
+        let tab_id = format!("test-threshold-{}", super::unique_timestamp());
+        start_ssh_recording(tab_id.clone(), String::new(), String::new())
+            .expect("starting a recording should succeed");
+
+        let big_chunk = "x".repeat(RECORDING_FLUSH_BYTES + 1);
+        let stats = append_ssh_recording(tab_id.clone(), big_chunk.clone(), big_chunk.clone())
+            .expect("appending a chunk past the threshold should succeed");
+        assert_eq!(stats.raw_bytes, big_chunk.len() as u64);
+        assert_eq!(raw_temp_path_bytes_on_disk(&tab_id), big_chunk.len() as u64);
+
+        discard_ssh_recording(tab_id).expect("discarding a recording should succeed");
+    }
+
+    #[test]
+    fn stop_recording_force_flushes_any_still_buffered_bytes() {
+        let tab_id = format!("test-stop-flush-{}", super::unique_timestamp());
+        start_ssh_recording(tab_id.clone(), String::new(), String::new())
+            .expect("starting a recording should succeed");
+
+        append_ssh_recording(tab_id.clone(), "small".to_string(), "small".to_string())
+            .expect("appending a small chunk should succeed");
+        assert_eq!(raw_temp_path_bytes_on_disk(&tab_id), 0);
+
+        stop_ssh_recording(tab_id.clone()).expect("stopping a recording should succeed");
+        assert_eq!(raw_temp_path_bytes_on_disk(&tab_id), 5);
+
+        discard_ssh_recording(tab_id).expect("discarding a recording should succeed");
     }
 }
