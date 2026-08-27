@@ -598,7 +598,21 @@ async fn authenticate(
         "",
         &serde_json::json!({"operationId": operation_id, "authMethod": "auto", "identitySource": "agent/default/configured/password", "attempt": 0, "identityLabel": label}).to_string(),
     );
-    let stored_password = secrets::load_password(&profile.id)?;
+    // `secrets::load_password` makes a synchronous, potentially blocking
+    // native OS-keychain call (macOS Keychain / Windows Credential Manager /
+    // Linux Secret Service via the `keyring` crate) -- on some platforms
+    // this can prompt the user for keychain-access consent and wait
+    // indefinitely for a response. Run it on a blocking-pool thread so it
+    // can never stall this async task (and, with it, the tokio worker
+    // thread it would otherwise occupy) for longer than expected. The
+    // outer `tokio::time::timeout(CONNECT_TIMEOUT, authenticate(...))` that
+    // wraps this whole function can only actually enforce a deadline at
+    // points where the wrapped future yields back to the executor, which a
+    // genuinely blocking call inside it would defeat.
+    let entry_id = profile.id.clone();
+    let stored_password = tokio::task::spawn_blocking(move || secrets::load_password(&entry_id))
+        .await
+        .map_err(|error| format!("Credential lookup task failed: {error}"))??;
 
     if try_agent_auth(handle, profile).await {
         return Ok(());
@@ -940,23 +954,59 @@ pub async fn connect(
         return Err(error);
     }
 
-    let channel = match session.channel_open_session().await {
-        Ok(channel) => channel,
-        Err(error) => {
+    // These three round-trips (channel open confirmation, pty-req, shell-req)
+    // are just as capable of hanging forever as the TCP connect/auth steps
+    // above if the server never answers -- `russh`'s `channel_open_session()`
+    // in particular waits on an internal channel with no timeout of its own
+    // (a restricted account, a `ForceCommand`/`Match` block, a subsystem-only
+    // sshd config, or a post-auth network black hole all reproduce this).
+    // Without bounding them here too, the connect `invoke()` on the frontend
+    // would never resolve *or* reject, leaving the UI stuck on "Connecting…"
+    // indefinitely even though sshd already logged an accepted authentication
+    // for the session.
+    let channel = match tokio::time::timeout(CONNECT_TIMEOUT, session.channel_open_session()).await {
+        Ok(Ok(channel)) => channel,
+        Ok(Err(error)) => {
             let message = error.to_string();
             crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "channel_open", "error": message}).to_string());
             return Err(message);
         }
+        Err(_) => {
+            let message = format!("Timed out opening the SSH channel after {} seconds.", CONNECT_TIMEOUT.as_secs());
+            crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "channel_open", "error": message}).to_string());
+            return Err(message);
+        }
     };
-    if let Err(error) = channel.request_pty(false, "xterm-256color", 120, 32, 0, 0, &[]).await {
-        let message = error.to_string();
-        crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "pty_request", "error": message}).to_string());
-        return Err(message);
+    match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        channel.request_pty(false, "xterm-256color", 120, 32, 0, 0, &[]),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let message = error.to_string();
+            crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "pty_request", "error": message}).to_string());
+            return Err(message);
+        }
+        Err(_) => {
+            let message = format!("Timed out requesting a PTY after {} seconds.", CONNECT_TIMEOUT.as_secs());
+            crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "pty_request", "error": message}).to_string());
+            return Err(message);
+        }
     }
-    if let Err(error) = channel.request_shell(true).await {
-        let message = error.to_string();
-        crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "shell_request", "error": message}).to_string());
-        return Err(message);
+    match tokio::time::timeout(CONNECT_TIMEOUT, channel.request_shell(true)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let message = error.to_string();
+            crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "shell_request", "error": message}).to_string());
+            return Err(message);
+        }
+        Err(_) => {
+            let message = format!("Timed out requesting a shell after {} seconds.", CONNECT_TIMEOUT.as_secs());
+            crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "shell_request", "error": message}).to_string());
+            return Err(message);
+        }
     }
     let (mut read_half, write_half) = channel.split();
 
@@ -1223,10 +1273,14 @@ async fn install_key_inner(profile: SshProfile) -> Result<String, String> {
     let public_key_content =
         std::fs::read_to_string(&public_key_path).map_err(|error| error.to_string())?;
 
-    let stored_password = secrets::load_password(&profile.id)?.ok_or_else(|| {
-        "Add a password for this SSH entry in the Session manager before installing a key."
-            .to_string()
-    })?;
+    let entry_id = profile.id.clone();
+    let stored_password = tokio::task::spawn_blocking(move || secrets::load_password(&entry_id))
+        .await
+        .map_err(|error| format!("Credential lookup task failed: {error}"))??
+        .ok_or_else(|| {
+            "Add a password for this SSH entry in the Session manager before installing a key."
+                .to_string()
+        })?;
 
     let mut session = connect_transport(&profile).await?;
     let result = session

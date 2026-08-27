@@ -96,6 +96,14 @@ export function useSshTerminalActions({
     if (tab.connected && !window.confirm(`Disconnect and close ${tab.title}?`)) return;
     void run(async () => {
       if (tab.sessionId) await invoke("ssh_disconnect", { sessionId: tab.sessionId });
+      // Sweep any pendingRequestsRef entries left mapped to this tab (see
+      // the comment in performSshConnect's success path for why they're
+      // deliberately not deleted immediately on connect) so closing a tab
+      // that was reconnected many times over a long session doesn't leak
+      // one stale entry per attempt indefinitely.
+      for (const [requestId, mappedTabId] of Object.entries(pendingRequestsRef.current)) {
+        if (mappedTabId === tabId) delete pendingRequestsRef.current[requestId];
+      }
       if (hasUnsavedRecording) {
         const pending = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
         await pending.catch(() => undefined);
@@ -140,15 +148,39 @@ export function useSshTerminalActions({
         };
         setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${VT_SESSION_BOUNDARY_GUARD}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`) }));
         const id = await invoke<string>("ssh_connect", { profile: nativeProfile, requestId: attemptId });
-        if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
+        if (connectAttemptRef.current[tabId] !== attemptId) {
+          // Cancelled or superseded while this connect was in flight, but
+          // the backend session came up anyway (cancel only stops the
+          // frontend from listening, it never aborts the Rust future --
+          // see cancelSshConnect). Without this, that session would stay
+          // open on the server, still emitting ssh-output/keeping a
+          // reader task alive, with nothing in the UI referencing it.
+          void invoke("ssh_disconnect", { sessionId: id }).catch(() => undefined);
+          delete pendingRequestsRef.current[attemptId];
+          return;
+        }
         setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, sessionId: id, connected: true, connecting: false }));
+        // Deliberately NOT deleting pendingRequestsRef[attemptId] here on
+        // success. The Rust side spawns its ssh-output reader task (see
+        // ssh::mod::connect) *before* it returns the session id, so the
+        // very first burst of output (a shell's login banner/prompt is
+        // usually printed immediately) can reach useSshEventBridge before
+        // -- or in the same tick as -- this invoke() promise resolving.
+        // useSshEventBridge's resolveTabId() falls back to
+        // pendingRequestsRef when tabsRef hasn't been re-synced with this
+        // tab's new sessionId yet (React state updates flush
+        // asynchronously); deleting this entry right away would reopen
+        // that race and silently drop the banner, leaving the terminal
+        // showing nothing past "Connecting to...". It's harmless to leave
+        // mapped indefinitely (request ids are unique per attempt) --
+        // closeSshTab sweeps stale entries for this tab when it's closed.
       } catch (error) {
         if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
         const detail = error instanceof Error ? error.message : String(error);
         setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${detail}\n`), connecting: false }));
         onSetNotice(detail);
-      } finally {
         delete pendingRequestsRef.current[attemptId];
+      } finally {
         connectingRef.current = false;
       }
     });
