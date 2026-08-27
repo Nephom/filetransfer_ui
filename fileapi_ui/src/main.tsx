@@ -50,6 +50,7 @@ import type { SshProfile } from "./features/ssh/ssh-contracts";
 import type { RecordingStats, SshTerminalTab } from "./features/terminal/terminal-contracts";
 import { appendSshTabOutput, makeSshTabId, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./features/terminal/terminal-utils";
 import { useSshTerminal } from "./features/terminal/useSshTerminal";
+import { useSshTerminalState } from "./features/terminal/useSshTerminalState";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
@@ -1249,15 +1250,16 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [workspaceNameDialogOpen, setWorkspaceNameDialogOpen] = useState(false);
   const [sessionFormError, setSessionFormError] = useState("");
   const [lastSavedSessionId, setLastSavedSessionId] = useState("");
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  const [sshTabs, setSshTabs] = useState<SshTerminalTab[]>([]);
-  const [activeSshTabId, setActiveSshTabId] = useState("");
-  const [sshQuickListOpen, setSshQuickListOpen] = useState(true);
-  const [terminalMaximized, setTerminalMaximized] = useState(false);
-  const previousTerminalHeightRef = useRef(260);
-  const [terminalHeight, setTerminalHeight] = useState(() =>
-    Number(localStorage.getItem("fileapi-terminal-height")) || 260,
-  );
+  const terminalState = useSshTerminalState();
+  const {
+    terminalOpen, setTerminalOpen, sshTabs, setSshTabs, activeSshTabId, setActiveSshTabId,
+    sshQuickListOpen, setSshQuickListOpen, terminalMaximized, setTerminalMaximized,
+    previousTerminalHeightRef, terminalHeight, setTerminalHeight, sshConnected, setSshConnected,
+    sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
+    terminalHostRef, terminalInstanceRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
+    recordingWriteQueuesRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
+    pendingSshConnectRequestsRef, connectAttemptRef, sshTabsRef, shellInputRef,
+  } = terminalState;
   const [localPaneWidth, setLocalPaneWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-local-pane-width")) || 380,
   );
@@ -1299,16 +1301,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     }
   });
   const [selectedSshEntryId, setSelectedSshEntryId] = useState("");
-  const [sshConnected, setSshConnected] = useState(false);
-  // No `sshOutput` React state: unlike `sshSessionId`/`recording`/etc.
-  // above, no rendered UI ever reads the active tab's full output text --
-  // xterm.js owns displaying it, and `sshOutputRef` (below) is all the
-  // rest of this component needs for the secret-prompt heuristic. A
-  // mirrored `sshOutput` state used to exist here purely as a write-only
-  // side effect (set on every tab switch, never read), needlessly copying
-  // the current tab's entire scrollback into a second location on every
-  // switch for no observable effect.
-  const sshOutputRef = useRef("");
   const [sshProfileDraft, setSshProfileDraft] = useState({
     id: "",
     name: "",
@@ -1329,8 +1321,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [vmSshPasswordSaved, setVmSshPasswordSaved] = useState(false);
   const [hostSshPasswordDraft, setHostSshPasswordDraft] = useState("");
   const [hostSshPasswordSaved, setHostSshPasswordSaved] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [savedLogPaths, setSavedLogPaths] = useState<string[]>([]);
   const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>(readPersistedQueue);
   const queueStoreRef = useRef(new QueueStore<TransferQueueItem>((items) => pruneQueueHistory(items, Date.now())));
   useEffect(() => {
@@ -1351,32 +1341,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [viewerContent, setViewerContent] = useState("");
   const [viewerLocalPath, setViewerLocalPath] = useState("");
   const [viewerRemotePath, setViewerRemotePath] = useState("");
-  const terminalHostRef = useRef<HTMLDivElement>(null);
-  const terminalInstanceRef = useRef<Terminal | null>(null);
-  const sshSessionIdRef = useRef("");
-  const sshConnectingRef = useRef(false);
-  const sshWriteQueuesRef = useRef(new Map<string, Promise<void>>());
-  // Serializes this tab's `append_ssh_recording`/`append_ssh_recording_
-  // command` IPC calls (keyed by tab id, not session id -- a recording
-  // survives a reconnect's session id change) so out-of-order async invoke
-  // resolution can never interleave two chunks' writes to the same on-disk
-  // transcript file. Mirrors `sshWriteQueuesRef`'s existing pattern for
-  // `ssh_write`.
-  const recordingWriteQueuesRef = useRef(new Map<string, Promise<void>>());
-  const recordingRef = useRef(false);
-  const sshSecretPromptRef = useRef(false);
-  const activeSshTabIdRef = useRef("");
-  // Maps a connection attempt's `requestId` (see `performSshConnect`) to the
-  // tab id that initiated it. The Rust side starts streaming `ssh-output`
-  // for a new session before the `ssh_connect` invoke() call resolves in
-  // this frontend, so `requestId` -- echoed back on every event -- is the
-  // only reliable way to bind that early output to the right tab. A tab is
-  // looked up primarily by `sessionId` (set once `ssh_connect` resolves);
-  // this map only matters for the brief window before that.
-  const pendingSshConnectRequestsRef = useRef<Record<string, string>>({});
-  const connectAttemptRef = useRef<Record<string, string>>({});
-  const sshTabsRef = useRef<SshTerminalTab[]>([]);
-  const shellInputRef = useRef("");
   const dragPreparationRef = useRef(new Map<string, Promise<string>>());
   const queueProgressSamplesRef = useRef(new Map<string, { bytes: number; at: number }[]>());
   const latestQueueProgressRef = useRef(new Map<string, QueueProgress>());
