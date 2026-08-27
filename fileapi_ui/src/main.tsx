@@ -5,16 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { resolveResource } from "@tauri-apps/api/path";
 import {
-  formatQueueProgress,
   initialQueueProgress,
-  pruneQueueHistory,
-  updateQueueProgress as calculateQueueProgress,
-  type QueueProgress,
 } from "./queue/progress";
-import { classifyQueueError, retryDelayMs, type QueueErrorCategory } from "./queue/recovery";
-import { assertQueueTransition } from "./queue/state";
-import { QueueScheduler } from "./queue/scheduler";
-import { QueueStore } from "./queue/store";
 import { selectActiveQueueItems, selectQueueHistory } from "./queue/selectors";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon, CollapseIcon, ExpandIcon, SortAscIcon, SortDescIcon, WarningIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
@@ -57,6 +49,11 @@ import { useSessionsActions } from "./features/sessions/useSessionsActions";
 import { type ManagedSession } from "./features/sessions/sessions-contracts";
 import { useShareLinksState } from "./features/share-links/useShareLinksState";
 import { useShareLinksActions } from "./features/share-links/useShareLinksActions";
+import type { FileItem } from "./file-item-contracts";
+import { downloadPath } from "./path-utils";
+import { useTransferQueueState } from "./features/queue/useTransferQueueState";
+import { useTransferQueueActions } from "./features/queue/useTransferQueueActions";
+import type { TransferQueueItem } from "./features/queue/queue-contracts";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
@@ -72,14 +69,8 @@ const RestEntryDialog = lazy(() => import("./features/sessions/RestEntryDialog")
 const VncEntryDialog = lazy(() => import("./features/sessions/VncEntryDialog").then(({ VncEntryDialog: component }) => ({ default: component })));
 const SharePasswordDialog = lazy(() => import("./features/share-links/SharePasswordDialog").then(({ SharePasswordDialog: component }) => ({ default: component })));
 const ShareLinksModal = lazy(() => import("./features/share-links/ShareLinksModal").then(({ ShareLinksModal: component }) => ({ default: component })));
+const ArchiveFormatDialog = lazy(() => import("./features/queue/ArchiveFormatDialog").then(({ ArchiveFormatDialog: component }) => ({ default: component })));
 
-type FileItem = {
-  name: string;
-  path: string;
-  isDirectory: boolean;
-  size: number;
-  modified: number;
-};
 type Location = {
   id: string;
   displayName: string;
@@ -120,46 +111,6 @@ type ColumnKey = "name" | "modified" | "size";
 type SortKey = ColumnKey;
 type SortDirection = "asc" | "desc";
 
-type TransferQueueItem = {
-  id: string;
-  operationId?: string;
-  label: string;
-  kind: "upload" | "download" | "download-set";
-  paths: string[];
-  destinationPath: string;
-  locationId: string;
-  locationName: string;
-  status: "queued" | "running" | "retrying" | "completed" | "failed" | "cancelled" | "needs_user_action";
-  detail: string;
-  progress?: QueueProgress;
-  errorCategory?: QueueErrorCategory;
-  error?: {
-    category: QueueErrorCategory;
-    message: string;
-    itemId: string;
-    path?: string;
-    attempt: number;
-    timestamp: number;
-  };
-  retryCount?: number;
-  finishedAt?: number;
-  downloadUrl?: string;
-  downloadMethod?: string;
-  downloadHeaders?: [string, string][];
-  downloadBody?: number[];
-  downloadFileName?: string;
-  archiveFormat?: "tar.gz" | "zip";
-  // HOME-relative LOCAL destination directory (matches `localPath`'s own
-  // format), captured when a REMOTE -> LOCAL download is queued so it keeps
-  // targeting that folder even if the user navigates the LOCAL pane
-  // elsewhere afterwards. Only meaningful for "download"/"download-set"
-  // items; upload items keep using `destinationPath` for the REMOTE side.
-  localDestinationFolder?: string;
-  setFiles?: { relativePath: string; remotePath: string; size: number }[];
-  setCompleted?: number;
-  sshEntryId?: string;
-  sshItems?: FileItem[];
-};
 type UndoEntry = {
   id: string;
   description: string;
@@ -516,40 +467,8 @@ const initialSession: Session = {
   ignoreTlsErrors: false,
   saveUserInformation: false,
 };
-const queueStorageKey = "nfterm-transfer-queue";
 const apiCredentialEntryId = "api-login";
 
-const readPersistedQueue = (): TransferQueueItem[] => {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(queueStorageKey) || "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is TransferQueueItem => Boolean(item && typeof item.id === "string" && typeof item.status === "string"))
-      .map((item) => {
-        const withOperationId = { ...item, operationId: item.operationId || item.id };
-        if (!["queued", "running", "retrying"].includes(item.status)) return withOperationId;
-        const requiresRequeue = item.kind === "download" && !item.sshEntryId;
-        return {
-          ...withOperationId,
-          status: "needs_user_action",
-          errorCategory: "unknown",
-          detail: requiresRequeue
-            ? "Transfer was interrupted when nFterm closed. Re-add it to authenticate again."
-            : "Transfer was interrupted when nFterm closed. Review and retry it.",
-          error: {
-            category: "unknown",
-            message: "Transfer was interrupted when nFterm closed.",
-            itemId: item.id,
-            path: item.paths?.[0],
-            attempt: item.retryCount || 0,
-            timestamp: Date.now(),
-          },
-        };
-      });
-  } catch {
-    return [];
-  }
-};
 // T-210: reads the raw persisted file-table column widths with the same
 // per-field fallback defaults as before, but WITHOUT normalizing them --
 // normalizeColumnWidths (below) is applied separately by every caller so a
@@ -648,8 +567,6 @@ const sshParentPath = (path: string) => {
 };
 const joinSshPath = (directory: string, name: string) =>
   directory === "/" ? `/${name}` : `${directory.replace(/\/+$/, "")}/${name}`;
-const downloadPath = (path: string) =>
-  path.split("/").map(encodeURIComponent).join("/");
 const fileTimestamp = (value: number | string | undefined) => {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -1089,30 +1006,25 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [remoteDirectoriesFirst, setRemoteDirectoriesFirst] = useState(false);
   const [localSortKey, setLocalSortKey] = useState<SortKey>("name");
   const [localSortDirection, setLocalSortDirection] = useState<SortDirection>("asc");
-  const [transferQueue, setTransferQueue] = useState<TransferQueueItem[]>(readPersistedQueue);
-  const queueStoreRef = useRef(new QueueStore<TransferQueueItem>((items) => pruneQueueHistory(items, Date.now())));
-  useEffect(() => {
-    queueStoreRef.current.replace(transferQueue);
-  }, [transferQueue]);
-  useEffect(() => {
-    // Persist queue visibility/history, but never persist request headers or
-    // bodies because they may contain bearer tokens, cookies, or passwords.
-    const persisted = transferQueue.map(({ downloadHeaders: _headers, downloadBody: _body, downloadUrl: _url, ...item }) => item);
-    localStorage.setItem(queueStorageKey, JSON.stringify(persisted));
-  }, [transferQueue]);
+  const {
+    transferQueue, setTransferQueue,
+    queueStoreRef,
+    queueOpen, setQueueOpen,
+    archiveFormatOpen, setArchiveFormatOpen,
+    archiveFormatDraft, setArchiveFormatDraft,
+    queueProgressSamplesRef,
+    latestQueueProgressRef,
+    queueCompletionHandlersRef,
+    cancelledQueueItemsRef,
+    queueSchedulerRef,
+  } = useTransferQueueState();
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
-  const [queueOpen, setQueueOpen] = useState(false);
-  const [archiveFormatOpen, setArchiveFormatOpen] = useState(false);
-  const [archiveFormatDraft, setArchiveFormatDraft] = useState<"tar.gz" | "zip" | "queue">("tar.gz");
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerTitle, setViewerTitle] = useState("");
   const [viewerContent, setViewerContent] = useState("");
   const [viewerLocalPath, setViewerLocalPath] = useState("");
   const [viewerRemotePath, setViewerRemotePath] = useState("");
   const dragPreparationRef = useRef(new Map<string, Promise<string>>());
-  const queueProgressSamplesRef = useRef(new Map<string, { bytes: number; at: number }[]>());
-  const latestQueueProgressRef = useRef(new Map<string, QueueProgress>());
-  const queueCompletionHandlersRef = useRef(new Map<string, (destination: string) => Promise<void>>());
   const dragExpandTimerRef = useRef<number | undefined>(undefined);
   const dragScrollIntervalRef = useRef<number | null>(null);
   const dragIconPathRef = useRef<Promise<string> | null>(null);
@@ -2322,385 +2234,12 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       ...(isFailure && structuredDetail.needsUserAction === undefined ? { needsUserAction: true } : {}),
     }).catch((error) => console.error("Operation log write failed", error));
   };
-  const logQueueEvent = (item: TransferQueueItem, event: string, fields: Record<string, unknown> = {}, level: DesktopSettings["operationLogLevel"] = "INFO") => {
-    const destination = item.kind === "upload"
-      ? `${item.locationName}:${item.destinationPath || "/"}`
-      : `LOCAL: ~/${item.localDestinationFolder || ""}`;
-    writeOperationLog(
-      item.kind === "upload" ? "upload" : "download",
-      event,
-      item.label,
-      destination,
-      JSON.stringify({
-        sourceType: item.kind === "upload" ? "LOCAL" : "REMOTE",
-        destinationType: item.kind === "upload" ? "REMOTE" : "LOCAL",
-        itemCount: item.setFiles?.length || item.paths.length || 1,
-        retryCount: item.retryCount || 0,
-        bytesCompleted: item.progress?.completedBytes || 0,
-        bytesTotal: item.progress?.totalBytes || undefined,
-        completedItems: item.setCompleted || 0,
-        totalItems: item.setFiles?.length || item.paths.length || 1,
-        ...fields,
-      }),
-      level,
-    );
-  };
   // Every file-mutating action below should log both how it finished, success
   // or failure -- an on-screen `notify`/error banner disappears after a few
   // seconds and is gone for good, so without a persisted log entry a failure
   // (e.g. "builder error") leaves no trace to diagnose after the fact.
   const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-  const updateQueueItem = (id: string, update: Partial<TransferQueueItem>) => {
-    setTransferQueue((current) => {
-      const now = Date.now();
-      const updated = current.map((item) => {
-        if (item.id !== id) return item;
-        // A late invoke/listener callback must not resurrect a cancelled item.
-        if (item.status === "cancelled" && update.status && update.status !== "cancelled") return item;
-        const terminal = update.status === "completed" || update.status === "failed" || update.status === "cancelled" || update.status === "needs_user_action";
-        if (update.status && update.status !== item.status) {
-          assertQueueTransition(item.status, update.status);
-        }
-        const nextItem = {
-          ...item,
-          ...update,
-          ...(terminal ? { finishedAt: item.finishedAt || now } : {}),
-        };
-        if (update.status === "failed" || update.status === "needs_user_action") {
-          nextItem.error = {
-            category: update.errorCategory || item.errorCategory || "unknown",
-            message: update.detail || item.detail,
-            itemId: item.id,
-            path: item.paths[0],
-            attempt: (update.retryCount || item.retryCount || 0) + 1,
-            timestamp: now,
-          };
-        }
-        return nextItem;
-      });
-      const retained = pruneQueueHistory(updated, now);
-      queueStoreRef.current.replace(retained);
-      return retained;
-    });
-  };
-
-  const updateQueueProgress = (id: string, completedBytes: number, totalBytes: number | null, completedItems?: number, totalItems?: number) => {
-    const previousSample = queueProgressSamplesRef.current.get(id) || [];
-    const now = Date.now();
-    const progress = calculateQueueProgress(
-      transferQueue.find((item) => item.id === id)?.progress,
-      completedBytes,
-      totalBytes,
-      completedItems,
-      totalItems,
-      previousSample,
-    );
-    queueProgressSamplesRef.current.set(id, [...previousSample, { bytes: completedBytes, at: now }].filter((sample) => now - sample.at <= 3000));
-    latestQueueProgressRef.current.set(id, progress);
-    updateQueueItem(id, { progress, detail: `${formatSize(completedBytes)}${totalBytes ? ` / ${formatSize(totalBytes)}` : ""}${formatQueueProgress(progress)}` });
-    return progress;
-  };
-
-  const cancelledQueueItemsRef = useRef(new Set<string>());
-  const cancelQueueItem = (id: string) => {
-    const current = transferQueue.find((item) => item.id === id);
-    if (!current || ["completed", "failed", "cancelled", "needs_user_action"].includes(current.status)) return;
-    cancelledQueueItemsRef.current.add(id);
-    queueProgressSamplesRef.current.delete(id);
-    latestQueueProgressRef.current.delete(id);
-    queueCompletionHandlersRef.current.delete(id);
-    void invoke("cancel_transfer", { transferId: id })
-      .then(() => logQueueEvent(current, "cancel_requested", { backendCancelSucceeded: true, alreadyRunning: current.status === "running" }))
-      .catch((error) => logQueueEvent(current, "cancel_requested", { backendCancelSucceeded: false, alreadyRunning: current.status === "running", failureType: "cancel_command", errorMessage: describeError(error) }, "WARN"));
-    updateQueueItem(id, { status: "cancelled", detail: "Cancelled by user." });
-    logQueueEvent(current, "cancelled", { finalCancelledState: true });
-  };
-  const removeQueueItem = (id: string) => {
-    const current = transferQueue.find((item) => item.id === id);
-    if (current && !["completed", "failed", "cancelled"].includes(current.status)) {
-      if (current.status === "needs_user_action") {
-        logQueueEvent(current, "removed", { reason: "user_removed_needs_action", finalStatus: current.status }, "INFO");
-        cancelledQueueItemsRef.current.add(id);
-        queueProgressSamplesRef.current.delete(id);
-        latestQueueProgressRef.current.delete(id);
-        queueCompletionHandlersRef.current.delete(id);
-        setTransferQueue((items) => items.filter((item) => item.id !== id));
-        return;
-      }
-      cancelQueueItem(id);
-      return;
-    }
-    cancelledQueueItemsRef.current.add(id);
-    queueProgressSamplesRef.current.delete(id);
-    latestQueueProgressRef.current.delete(id);
-    queueCompletionHandlersRef.current.delete(id);
-    setTransferQueue((current) => current.filter((item) => item.id !== id));
-  };
-  const clearQueueHistory = () => {
-    setTransferQueue((current) => current.filter((item) => !["completed", "failed", "cancelled", "needs_user_action"].includes(item.status)));
-  };
-  const clearQueueStatus = (status: TransferQueueItem["status"]) => {
-    setTransferQueue((current) => current.filter((item) => item.status !== status));
-  };
-  const clearFinishedQueue = () => {
-    setTransferQueue((current) => current.filter((item) => !["completed", "failed", "cancelled", "needs_user_action"].includes(item.status)));
-  };
-  const isQueueItemCancelled = (id: string) => cancelledQueueItemsRef.current.has(id);
-
-  const executeQueuedSshUpload = async (item: TransferQueueItem, profile: SshProfile) => {
-    writeOperationLog("upload", "started", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "SSH transfer queue upload started.", "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: `Uploading 0/${item.paths.length} items...` });
-    let completed = 0;
-    try {
-      for (const localPath of item.paths) {
-        if (isQueueItemCancelled(item.id)) return;
-        await invoke("ssh_upload_path", { profile, localPath, remoteDestinationFolder: item.destinationPath });
-        completed += 1;
-        updateQueueItem(item.id, { detail: `Uploading ${completed}/${item.paths.length} items...` });
-      }
-      updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${completed} item(s) to ${item.destinationPath || "/"}.` });
-      writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${completed} item(s) via SFTP.`);
-      await loadFiles(path);
-    } catch (error) {
-      if (isQueueItemCancelled(item.id)) return;
-      const recovery = classifyQueueError(error);
-      const detail = `${recovery.message} (${completed}/${item.paths.length} completed before failing)`;
-      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail}`, errorCategory: recovery.category });
-      writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `SSH queued upload failed: ${detail}`, "ERROR");
-    }
-  };
-
-  const executeQueuedUpload = async (item: TransferQueueItem) => {
-    writeOperationLog("upload", "started", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "Transfer queue upload started.", "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: "Inspecting local files (this does not load file contents into the UI)..." });
-    let unlistenProgress: (() => void) | undefined;
-    try {
-      const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths: item.paths });
-      unlistenProgress = await listen<{ transferId: string; bytesCompleted: number; bytesTotal: number }>(
-        "upload-progress",
-        (event) => {
-          if (event.payload.transferId !== item.id || isQueueItemCancelled(item.id)) return;
-          const { bytesCompleted, bytesTotal } = event.payload;
-          const progress = updateQueueProgress(item.id, bytesCompleted, bytesTotal || null, 0, summary.files);
-          updateQueueItem(item.id, {
-            detail: `Uploading ${formatSize(bytesCompleted)} / ${formatSize(bytesTotal)}${formatQueueProgress(progress)}`,
-          });
-        },
-      );
-      const headers: [string, string][] = session.token
-        ? [
-            ["Authorization", `Bearer ${session.token}`],
-            ["X-Location-ID", item.locationId],
-          ]
-        : [["X-Location-ID", item.locationId]];
-      updateQueueItem(item.id, {
-        detail: `Prepared ${summary.files} file${summary.files === 1 ? "" : "s"} (${formatSize(summary.totalSize)}); streaming upload...`,
-      });
-      updateQueueItem(item.id, { progress: initialQueueProgress(summary.files, summary.totalSize || null) });
-      const currentSources = await invoke<UploadSummary>("inspect_upload_paths", { paths: item.paths });
-      const sourceChanged = summary.sources.length !== currentSources.sources.length
-        || summary.sources.some((source, index) => {
-          const current = currentSources.sources[index];
-          return !current || current.path !== source.path || current.size !== source.size || current.modified !== source.modified;
-        });
-      if (sourceChanged) throw new Error("Upload source changed after it was queued. Re-add the file to upload the new content.");
-      const rawResponse = await invoke<NativeApiResponse>("api_upload_paths", {
-        transferId: item.id,
-        expectedSources: summary.sources,
-        url: `${serverUrl(session)}/api/upload/multiple`,
-        headers,
-        paths: item.paths,
-        path: item.destinationPath,
-        ignoreTlsErrors: session.ignoreTlsErrors,
-      });
-      const response = new ApiResponse(rawResponse.status, rawResponse.body);
-      if (!response.ok) throw new Error(await readError(response));
-      const { batchId } = (await response.json()) as { batchId?: string };
-      if (!batchId) {
-         if (isQueueItemCancelled(item.id)) return;
-         updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.` });
-         writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.`);
-         return;
-      }
-      for (let attempt = 0; attempt < 600; attempt += 1) {
-        if (isQueueItemCancelled(item.id)) return;
-        const progressResponse = await invoke<NativeApiResponse>("api_request", {
-          url: `${serverUrl(session)}/api/progress/batch/${encodeURIComponent(batchId)}`,
-          method: "GET",
-          headers,
-          body: null,
-          ignoreTlsErrors: session.ignoreTlsErrors,
-        });
-        if (isQueueItemCancelled(item.id)) return;
-        const progress = new ApiResponse(progressResponse.status, progressResponse.body);
-        if (!progress.ok) throw new Error(await readError(progress));
-         const batch = await progress.json() as { status: string; progress: number; successCount: number; totalFiles: number; failedCount: number; totalSize?: number; transferredSize?: number };
-         const totalBytes = batch.totalSize || summary.totalSize || null;
-         const completedBytes = batch.transferredSize || (totalBytes ? Math.round(totalBytes * batch.progress / 100) : 0);
-         const queueProgress = updateQueueProgress(item.id, completedBytes, totalBytes, batch.successCount, batch.totalFiles);
-         updateQueueItem(item.id, { detail: `${batch.successCount}/${batch.totalFiles} files (${Math.round(batch.progress)}%)${totalBytes ? ` · ${formatSize(completedBytes)} / ${formatSize(totalBytes)}` : ""}${formatQueueProgress(queueProgress)}` });
-         if (batch.status === "completed") {
-             if (isQueueItemCancelled(item.id)) return;
-             updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.` });
-            writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`);
-            await loadFiles(path);
-            return;
-        }
-        if (batch.status === "failed" || batch.status === "partial_fail") {
-          throw new Error(`${batch.failedCount} file${batch.failedCount === 1 ? "" : "s"} failed.`);
-        }
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-      }
-      throw new Error("Upload progress timed out.");
-    } catch (error) {
-      if (isQueueItemCancelled(item.id)) return;
-      const recovery = classifyQueueError(error);
-      const detail = recovery.message;
-      const retryCount = item.retryCount || 0;
-      if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
-        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
-        updateQueueItem(item.id, nextItem);
-        logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
-        logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) }, "INFO");
-        window.setTimeout(() => { logQueueEvent(nextItem, "retry_started", { attempt: retryCount + 1, maximumAttempts: 3 }); updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedUpload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
-        return;
-      }
-      if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
-      updateQueueItem(item.id, {
-        status: recovery.needsUserAction ? "needs_user_action" : "failed",
-        detail: `[${recovery.category}] ${detail}`,
-        errorCategory: recovery.category,
-      });
-      writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Upload failed: ${detail}`, "ERROR");
-    } finally {
-      unlistenProgress?.();
-    }
-  };
-
-  const executeQueuedDownload = async (item: TransferQueueItem) => {
-    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
-    logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, archiveFormat: item.archiveFormat || null }, "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? `Preparing ${item.archiveFormat} archive...` : "Downloading..." });
-    // download_to_disk streams the response and emits "download-progress"
-    // events tagged with this item's id so the queue can show byte-level
-    // progress for single-file and archive downloads (previously just a
-    // static "Downloading..." label for the whole transfer).
-    const unlistenProgress = await listen<{ transferId: string; bytesCompleted: number; bytesTotal?: number }>(
-      "download-progress",
-      (event) => {
-        if (event.payload.transferId !== item.id) return;
-        const { bytesCompleted, bytesTotal } = event.payload;
-        const knownTotalBytes = latestQueueProgressRef.current.get(item.id)?.totalBytes
-          ?? item.progress?.totalBytes
-          ?? null;
-        updateQueueProgress(item.id, bytesCompleted, bytesTotal ?? knownTotalBytes);
-      },
-    );
-    try {
-      if (item.archiveFormat) {
-        await new Promise((resolve) => window.setTimeout(resolve, 100));
-        updateQueueItem(item.id, { detail: `Streaming ${item.archiveFormat} download...` });
-      }
-      const destination = await invoke<string>("download_to_disk", {
-        transferId: item.id,
-        url: item.downloadUrl,
-        method: item.downloadMethod || "GET",
-        headers: item.downloadHeaders || [],
-        body: item.downloadBody,
-        fileName: item.downloadFileName || "download.bin",
-        destinationFolder: item.localDestinationFolder || "",
-        ignoreTlsErrors: session.ignoreTlsErrors,
-      });
-      if (isQueueItemCancelled(item.id)) return;
-      const completionHandler = queueCompletionHandlersRef.current.get(item.id);
-      if (completionHandler) {
-        await completionHandler(destination);
-        queueCompletionHandlersRef.current.delete(item.id);
-      }
-      if (isQueueItemCancelled(item.id)) return;
-      const latestProgress = latestQueueProgressRef.current.get(item.id) || item.progress;
-      updateQueueItem(item.id, {
-        status: "completed",
-        detail: `Downloaded to ${destination}.${formatQueueProgress(latestProgress)}`,
-      });
-       logQueueEvent(item, "completed", { transferId: item.id, destination, bytesCompleted: latestProgress?.completedBytes || 0, bytesTotal: latestProgress?.totalBytes || null }, "INFO");
-    } catch (error) {
-      if (isQueueItemCancelled(item.id)) return;
-      const recovery = classifyQueueError(error);
-      const detail = recovery.message;
-      const retryCount = item.retryCount || 0;
-      if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
-        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
-        updateQueueItem(item.id, nextItem);
-        logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
-        logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) });
-        window.setTimeout(() => { logQueueEvent(nextItem, "retry_started", { attempt: retryCount + 1, maximumAttempts: 3 }); updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
-        return;
-      }
-      if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
-      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail}`, errorCategory: recovery.category });
-       logQueueEvent(item, "failed", { transferId: item.id, errorMessage: detail, errorCategory: recovery.category, retryCount }, "ERROR");
-    } finally {
-      unlistenProgress();
-    }
-  };
-
-  const executeQueuedDownloadSet = async (item: TransferQueueItem) => {
-    const files = item.setFiles || [];
-    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
-    logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, itemCount: files.length }, "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${files.length} files...`, setCompleted: 0 });
-    const headers: [string, string][] = session.token
-      ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
-      : [];
-    let completed = 0;
-    let lastDestinationRoot = "";
-    try {
-      for (const file of files) {
-        if (isQueueItemCancelled(item.id)) return;
-        // `file.relativePath` already starts with the selected item's own
-        // top-level name (the flatten endpoint prefixes it with each
-        // selected item's name) -- it must not also be nested under an
-        // extra synthetic "<n> selected items" segment here, or a single
-        // selected directory would end up duplicated inside itself.
-        const destination = await invoke<string>("download_to_disk_at", {
-          transferId: item.id,
-          url: `${serverUrl(session)}/api/files/download/${downloadPath(file.remotePath)}`,
-          method: "GET",
-          headers,
-          body: undefined,
-          destinationFolder: item.localDestinationFolder || "",
-          relativePath: file.relativePath,
-          ignoreTlsErrors: session.ignoreTlsErrors,
-        });
-        completed += 1;
-        lastDestinationRoot = destination.slice(0, destination.length - (file.relativePath.length + 1));
-        updateQueueItem(item.id, { detail: `Downloading ${completed}/${files.length} files...`, setCompleted: completed });
-        const totalBytes = files.reduce((sum, current) => sum + current.size, 0);
-        const completedBytes = files.slice(0, completed).reduce((sum, current) => sum + current.size, 0);
-        updateQueueProgress(item.id, completedBytes, totalBytes, completed, files.length);
-      }
-      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || destinationLabel}.` });
-       logQueueEvent(item, "completed", { transferId: item.id, completedItems: completed, totalItems: files.length }, "INFO");
-    } catch (error) {
-      if (isQueueItemCancelled(item.id)) return;
-      const recovery = classifyQueueError(error);
-      const detail = recovery.message;
-      const retryCount = item.retryCount || 0;
-      if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
-        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
-        updateQueueItem(item.id, nextItem);
-        logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
-        logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) });
-        window.setTimeout(() => { logQueueEvent(nextItem, "retry_started", { attempt: retryCount + 1, maximumAttempts: 3 }); updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownloadSet({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
-        return;
-      }
-      if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
-      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail} (${completed}/${files.length} completed before failing)`, errorCategory: recovery.category });
-       logQueueEvent(item, "failed", { transferId: item.id, errorMessage: detail, errorCategory: recovery.category, completedItems: completed, totalItems: files.length, retryCount }, "ERROR");
-    }
-  };
 
   const refreshStorageInfo = () => {
     void run(async () => {
@@ -2753,6 +2292,47 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // toolbar button. Root differs by source: SSH browsing is always
   // absolute-path-rooted at "/", while API-backed Locations use "" as root.
   const showRemoteUp = remoteSshEntryId ? path !== "/" : Boolean(path);
+
+  const {
+    updateQueueItem,
+    updateQueueProgress,
+    isQueueItemCancelled,
+    cancelQueueItem,
+    removeQueueItem,
+    clearQueueHistory,
+    clearQueueStatus,
+    clearFinishedQueue,
+    executeQueuedSshUpload,
+    executeQueuedUpload,
+    executeQueuedDownload,
+    executeQueuedDownloadSet,
+    executeQueuedSshDownload,
+    runQueuedSshUpload,
+    runQueuedUpload,
+    runQueuedDownload,
+    runQueuedDownloadSet,
+    runQueuedSshDownload,
+    retryDesktopQueueItem,
+    renderDesktopQueueItem,
+    queueDragPreparation,
+    enqueueQueueDownload,
+    enqueueDownload,
+    enqueueSshDownload,
+    download,
+  } = useTransferQueueActions({
+    run, notify, setNotice, api, readError,
+    session,
+    serverUrl: () => serverUrl(session),
+    writeOperationLog, describeError,
+    path, localPath, loadFiles,
+    activeLocationDisplayName: activeLocation?.displayName,
+    activeManagedWorkspaceName: activeManagedWorkspace?.name,
+    findSshProfileById, remoteSshEntryId, selectedItems,
+    transferQueue, setTransferQueue, queueStoreRef,
+    setQueueOpen, setArchiveFormatOpen, setArchiveFormatDraft,
+    queueProgressSamplesRef, latestQueueProgressRef, queueCompletionHandlersRef,
+    cancelledQueueItemsRef, queueSchedulerRef,
+  });
 
   const toggle = (file: FileItem, checked: boolean) => {
     setActivePane("remote");
@@ -3388,249 +2968,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     setPaneDragHover((current) => (current === pane ? "" : current));
   };
 
-  const enqueueQueueDownload = () =>
-    void run(async () => {
-      if (!selectedItems.length) return;
-      const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-      const setLabel = selectedItems.length === 1 ? selectedItems[0].name : `${selectedItems.length} selected items`;
-      const response = await api("/api/files/flatten", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          items: selectedItems.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
-          currentPath: path,
-        }),
-      });
-      if (!response.ok) throw new Error(await readError(response));
-      const data = await response.json() as { files?: { relativePath: string; remotePath: string; size: number }[] };
-      const files = data.files || [];
-      if (!files.length) {
-        setNotice("The selection has no files to download.");
-        return;
-      }
-      const item: TransferQueueItem = {
-        id,
-        label: setLabel,
-        kind: "download-set",
-        paths: [],
-        destinationPath: localPath ? `~/${localPath}` : "~",
-        locationId: session.locationId,
-        locationName: activeLocation?.displayName || session.locationId,
-       status: "queued",
-       detail: `Waiting to start (${files.length} files)`,
-        progress: initialQueueProgress(files.length, files.reduce((sum, file) => sum + file.size, 0)),
-        setFiles: files,
-        setCompleted: 0,
-        localDestinationFolder: localPath,
-      };
-      setArchiveFormatOpen(false);
-      setTransferQueue((current) => [...current, item]);
-      setQueueOpen(true);
-      void runQueuedDownloadSet(item);
-    });
-
-  const enqueueDownload = (archiveFormat: "tar.gz" | "zip") => {
-    if (!selectedItems.length) return;
-    const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
-    const fileName = singleFile ? selectedItems[0].name : `archive.${archiveFormat}`;
-    const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-    const headers: [string, string][] = session.token
-      ? [
-          ["Authorization", `Bearer ${session.token}`],
-          ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : []),
-          ...(singleFile ? [] : [["Content-Type", "application/json"] as [string, string]]),
-        ]
-      : [];
-    const body = singleFile ? undefined : Array.from(new TextEncoder().encode(JSON.stringify({
-      items: selectedItems.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
-      currentPath: path,
-      locationId: session.locationId,
-      format: archiveFormat,
-      sessionName: activeManagedWorkspace?.name || "nFterm",
-    })));
-    const item: TransferQueueItem = {
-      id,
-      label: singleFile ? selectedItems[0].name : `${selectedItems.length} selected items`,
-      kind: "download",
-      paths: [],
-      destinationPath: localPath ? `~/${localPath}` : "~",
-      locationId: session.locationId,
-      locationName: activeLocation?.displayName || session.locationId,
-       status: "queued",
-       detail: "Waiting to start",
-       progress: initialQueueProgress(1, singleFile ? selectedItems[0].size : null),
-      downloadUrl: singleFile
-        ? `${serverUrl(session)}/api/files/download/${downloadPath(selectedItems[0].path)}`
-        : `${serverUrl(session)}/api/archive`,
-      downloadMethod: singleFile ? "GET" : "POST",
-      downloadHeaders: headers,
-      downloadBody: body,
-      downloadFileName: fileName,
-       archiveFormat: singleFile ? undefined : archiveFormat,
-      localDestinationFolder: localPath,
-    };
-    setArchiveFormatOpen(false);
-    setTransferQueue((current) => [...current, item]);
-    setQueueOpen(true);
-    void runQueuedDownload(item);
-  };
-
-  const executeQueuedSshDownload = async (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => {
-    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
-    writeOperationLog("download", "started", item.label, destinationLabel, `SSH queued download of ${items.length} item(s) started.`, "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${items.length} items...` });
-    let completed = 0;
-    let lastDestination = "";
-    try {
-      for (const file of items) {
-        if (isQueueItemCancelled(item.id)) return;
-        lastDestination = await invoke<string>("ssh_download_path", {
-          profile,
-          remotePath: file.path,
-          isDirectory: file.isDirectory,
-          localDestinationFolder: item.localDestinationFolder || "",
-        });
-        completed += 1;
-        updateQueueItem(item.id, { detail: `Downloading ${completed}/${items.length} items...` });
-      }
-      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} item(s) to ${lastDestination.split("/").slice(0, -1).join("/") || destinationLabel}.` });
-      writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded ${completed} item(s) via SFTP.`);
-    } catch (error) {
-      if (isQueueItemCancelled(item.id)) return;
-      const recovery = classifyQueueError(error);
-      const detail = recovery.message;
-      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail} (${completed}/${items.length} completed before failing)`, errorCategory: recovery.category });
-      writeOperationLog("download", "failed", item.label, destinationLabel, `SSH queued download failed: ${detail}`, "ERROR");
-    }
-  };
-
-  const queueSchedulerRef = useRef(new QueueScheduler());
-  const runOnce = (id: string, execute: () => Promise<void>) => queueSchedulerRef.current.runExclusive(id, execute);
-  const runQueuedSshUpload = (item: TransferQueueItem, profile: SshProfile) => runOnce(item.id, () => executeQueuedSshUpload(item, profile));
-  const runQueuedUpload = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedUpload(item));
-  const runQueuedDownload = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedDownload(item));
-  const runQueuedDownloadSet = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedDownloadSet(item));
-  const runQueuedSshDownload = (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => runOnce(item.id, () => executeQueuedSshDownload(item, profile, items));
-  const retryDesktopQueueItem = (item: TransferQueueItem) => {
-    if (item.kind === "download" && !item.sshEntryId && !item.downloadUrl) {
-      setNotice("This restored download no longer contains its request credentials. Re-add the download to retry it safely.");
-      return;
-    }
-    if (!(["failed", "needs_user_action"] as string[]).includes(item.status)) return;
-    cancelledQueueItemsRef.current.delete(item.id);
-    const retryItem = { ...item, status: "queued" as const, detail: "Retry queued", finishedAt: undefined };
-    updateQueueItem(item.id, retryItem);
-    writeOperationLog(item.kind === "upload" ? "upload" : "download", "retry", item.label, item.destinationPath, `Manual retry requested (attempt ${(item.retryCount || 0) + 1}).`, "INFO");
-    if (retryItem.sshEntryId) {
-      const profile = findSshProfileById(retryItem.sshEntryId);
-      if (!profile) {
-        updateQueueItem(item.id, { status: "needs_user_action", detail: "The SSH connection for this transfer is no longer available." });
-        return;
-      }
-      void (retryItem.kind === "download" ? runQueuedSshDownload(retryItem, profile, retryItem.sshItems || []) : runQueuedSshUpload(retryItem, profile));
-      return;
-    }
-    void (retryItem.kind === "download" ? runQueuedDownload(retryItem) : retryItem.kind === "download-set" ? runQueuedDownloadSet(retryItem) : runQueuedUpload(retryItem));
-  };
-  const renderDesktopQueueItem = (item: TransferQueueItem) => (
-    <div className="queue-item" key={item.id}>
-      <div className="queue-item-header">
-        <strong className="queue-item-label">{item.label}</strong>
-        <span className={`queue-status ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
-      </div>
-      <div className="queue-item-route">
-        <span>{item.locationName}</span>
-        <code>{item.destinationPath || "/"}</code>
-      </div>
-      <div className="queue-item-detail">{item.detail}</div>
-      {item.progress && (["running", "queued", "retrying"].includes(item.status)) && (
-        <div className="queue-item-progress"><small>{item.progress.completedBytes ? `${formatSize(item.progress.completedBytes)}${item.progress.totalBytes ? ` / ${formatSize(item.progress.totalBytes)}` : ""}` : "Waiting for transfer data"}{formatQueueProgress(item.progress)}</small></div>
-      )}
-      <div className="queue-item-actions">
-        {(item.status === "running" || item.status === "queued" || item.status === "retrying") && (
-          <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>
-        )}
-        {(item.status === "failed" || item.status === "needs_user_action") &&
-          (item.kind !== "download" || Boolean(item.sshEntryId) || Boolean(item.downloadUrl)) && (
-          <button type="button" onClick={() => retryDesktopQueueItem(item)}>Retry</button>
-        )}
-         {(["completed", "failed", "cancelled", "needs_user_action"].includes(item.status)) && (
-          <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>
-        )}
-      </div>
-    </div>
-  );
-  const queueDragPreparation = (
-    item: TransferQueueItem,
-    prepare: () => Promise<string>,
-  ) => {
-    const started = performance.now();
-    writeOperationLog("drag", "started", item.locationName, item.destinationPath, JSON.stringify({ operationId: item.id, itemCount: item.paths.length || 1, sourceType: item.sshEntryId ? "SSH" : "API", destinationType: "LOCAL" }), "DEBUG");
-    let resolvePreparation: (path: string) => void = () => {};
-    let rejectPreparation: (error: unknown) => void = () => {};
-    const preparation = new Promise<string>((resolve, reject) => {
-      resolvePreparation = resolve;
-      rejectPreparation = reject;
-    });
-    setTransferQueue((current) => [...current, item]);
-    void runOnce(item.id, async () => {
-      updateQueueItem(item.id, { status: "running", detail: "Preparing drag transfer..." });
-      try {
-        const destination = await prepare();
-        resolvePreparation(destination);
-        updateQueueItem(item.id, { status: "needs_user_action", detail: "Ready. Drop the file into the external application." });
-        writeOperationLog("drag", "prepared", item.locationName, destination, JSON.stringify({ operationId: item.id, itemCount: item.paths.length || 1, stagingPath: destination, durationMs: Math.round(performance.now() - started) }), "INFO");
-      } catch (error) {
-        rejectPreparation(error);
-        updateQueueItem(item.id, { status: "failed", detail: describeError(error), errorCategory: classifyQueueError(error).category });
-        writeOperationLog("drag", "failed", item.locationName, item.destinationPath, JSON.stringify({ operationId: item.id, itemCount: item.paths.length || 1, durationMs: Math.round(performance.now() - started), failureType: "preparation", errorMessage: describeError(error) }), "ERROR");
-      }
-    });
-    return preparation;
-  };
-
-  const enqueueSshDownload = () => {
-    if (!selectedItems.length) return;
-    const profile = findSshProfileById(remoteSshEntryId);
-    if (!profile) {
-      setNotice("The SSH connection for this remote view is no longer available.");
-      return;
-    }
-    const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-    const label = selectedItems.length === 1 ? selectedItems[0].name : `${selectedItems.length} selected items`;
-    const item: TransferQueueItem = {
-      id,
-      label,
-      kind: "download",
-      paths: [],
-      destinationPath: localPath ? `~/${localPath}` : "~",
-      locationId: "",
-      locationName: `SSH: ${profile.name}`,
-      status: "queued",
-      detail: "Waiting to start",
-      sshEntryId: remoteSshEntryId,
-      sshItems: selectedItems,
-      localDestinationFolder: localPath,
-    };
-    setTransferQueue((current) => [...current, item]);
-    setQueueOpen(true);
-    void runQueuedSshDownload(item, profile, selectedItems);
-  };
-
-  const download = () => {
-    if (remoteSshEntryId) {
-      enqueueSshDownload();
-      return;
-    }
-    if (!selectedItems.length) return;
-    const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
-    if (!singleFile) {
-      setArchiveFormatDraft("tar.gz");
-      setArchiveFormatOpen(true);
-      return;
-    }
-    enqueueDownload("tar.gz");
-  };
 
   const openLocalFile = (filePath: string) =>
     void run(async () => {
@@ -5985,28 +5322,12 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         onRestore={() => setTerminalOpen(true)}
       />
       {archiveFormatOpen && (
-        <div className="modal-cover" onMouseDown={() => setArchiveFormatOpen(false)}>
-          <div className="modal archive-format-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <h2>Choose download mode</h2>
-            <p className="muted">Download as a single archive, or queue every file individually (preserving the original folder structure) like the Transfer Queue already does for uploads.</p>
-            <label className="archive-format-option">
-              <input type="radio" name="archiveFormat" checked={archiveFormatDraft === "tar.gz"} onChange={() => setArchiveFormatDraft("tar.gz")} />
-              <span><strong>tar.gz archive</strong><small>Common on Linux and available with the tar command.</small></span>
-            </label>
-            <label className="archive-format-option">
-              <input type="radio" name="archiveFormat" checked={archiveFormatDraft === "zip"} onChange={() => setArchiveFormatDraft("zip")} />
-              <span><strong>zip archive</strong><small>Widely supported by desktop archive tools and other operating systems.</small></span>
-            </label>
-            <label className="archive-format-option">
-              <input type="radio" name="archiveFormat" checked={archiveFormatDraft === "queue"} onChange={() => setArchiveFormatDraft("queue")} />
-              <span><strong>Queue (one file at a time)</strong><small>No archive step; each file is downloaded individually and tracked in the Transfer Queue.</small></span>
-            </label>
-            <div className="modal-actions">
-              <button type="button" className="confirm" onClick={() => archiveFormatDraft === "queue" ? enqueueQueueDownload() : enqueueDownload(archiveFormatDraft)}>Add to Transfer Queue</button>
-              <button type="button" onClick={() => setArchiveFormatOpen(false)}>Cancel</button>
-            </div>
-          </div>
-        </div>
+        <ArchiveFormatDialog
+          archiveFormatDraft={archiveFormatDraft}
+          setArchiveFormatDraft={setArchiveFormatDraft}
+          onClose={() => setArchiveFormatOpen(false)}
+          onConfirm={() => (archiveFormatDraft === "queue" ? enqueueQueueDownload() : enqueueDownload(archiveFormatDraft))}
+        />
       )}
       {queueOpen && <QueueModal items={transferQueue} activeItems={activeTransferQueue} historyItems={transferHistory} renderItem={(item) => renderDesktopQueueItem(item as TransferQueueItem)} modalStyle={modalStyle("queue")} onDragStart={beginModalDrag("queue")} onClose={() => setQueueOpen(false)} onClearStatus={clearQueueStatus} onClearHistory={clearFinishedQueue} />}
       {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={() => setViewerOpen(false)} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
