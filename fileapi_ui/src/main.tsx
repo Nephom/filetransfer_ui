@@ -44,13 +44,12 @@ import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 import { AppShell } from "./app/AppShell";
 import { DesktopTitlebar } from "./app/DesktopTitlebar";
 import { FloatingWindow } from "./ui/FloatingWindow";
-import { useTerminalLifecycle } from "./features/terminal/useTerminalLifecycle";
-import { useSshEventBridge } from "./features/terminal/useSshEventBridge";
 import { isMobileViewport } from "./styles/breakpoints";
 import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
 import type { SshProfile } from "./features/ssh/ssh-contracts";
 import type { RecordingStats, SshTerminalTab } from "./features/terminal/terminal-contracts";
 import { appendSshTabOutput, makeSshTabId, SSH_TAB_OUTPUT_CAP, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./features/terminal/terminal-utils";
+import { useSshTerminal } from "./features/terminal/useSshTerminal";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
@@ -1868,74 +1867,28 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     setWorkspaceSessionId(migrated[0]?.id || "");
   }, [managedSessions.length, sshProfiles]);
 
-  useSshEventBridge({
-    tabsRef: sshTabsRef,
-    pendingRequestsRef: pendingSshConnectRequestsRef,
-    onOutput: (tabId, payload) => {
-      const data = payload.data;
-      const tab = sshTabsRef.current.find((item) => item.id === tabId);
-      if (!tab) return;
-      if (tab.sessionId !== payload.sessionId) setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, sessionId: payload.sessionId, connected: true } : item));
-      setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, output: appendSshTabOutput(item.output, data) } : item));
-      if (tab.recording) {
-        const plainChunk = stripAnsi(data);
-        const previous = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
-        const next = previous.catch(() => undefined).then(() =>
-          invoke<RecordingStats>("append_ssh_recording", { tabId, rawChunk: data, plainChunk })
-            .then((stats) => {
-              setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, recordingRawBytes: stats.rawBytes, recordingPlainBytes: stats.plainBytes } : item));
-            })
-            .catch(() => undefined),
-        );
-        recordingWriteQueuesRef.current.set(tabId, next);
-      }
-      if (tabId === activeSshTabIdRef.current) { sshOutputRef.current = appendSshTabOutput(sshOutputRef.current, data); terminalInstanceRef.current?.write(data); const promptText = stripAnsi(sshOutputRef.current.slice(-240)).replace(/\r/g, "").trimEnd(); sshSecretPromptRef.current = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText); }
-    },
-    onExit: (tabId, payload) => {
-      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, `${VT_SESSION_BOUNDARY_GUARD}\n${payload.data}\n`) }));
-      if (tabId === activeSshTabIdRef.current) { setSshConnected(false); sshConnectingRef.current = false; }
-    },
-  });
-
-  useTerminalLifecycle({
+  useSshTerminal({
     enabled: terminalOpen,
-    hostRef: terminalHostRef,
-    terminalRef: terminalInstanceRef,
+    activeTabId: activeSshTabId,
     replayOutput: sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n",
     replayKey: `${activeSshTabId}:${sshTabsRef.current.find((item) => item.id === activeSshTabId)?.sessionId || ""}`,
-    boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
     bracketedPasteControlEnabled: desktopSettings.bracketedPasteControlEnabled,
-    onResize: (cols, rows) => {
-      const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
-      if (tab?.sessionId) void invoke("ssh_resize", { sessionId: tab.sessionId, cols, rows });
-    },
-    onData: (data, replaying) => {
-      if (replaying) return;
-      const tab = sshTabsRef.current.find((item) => item.id === activeSshTabId);
-      if (!tab?.sessionId) return;
-      const previous = sshWriteQueuesRef.current.get(tab.sessionId) || Promise.resolve();
-      const next = previous.catch(() => undefined).then(() => invoke<void>("ssh_write", { sessionId: tab.sessionId, data }));
-      sshWriteQueuesRef.current.set(tab.sessionId, next.catch(() => undefined));
-      if (recordingRef.current && !sshSecretPromptRef.current) {
-        if (data === "\r" || data === "\n") {
-          if (shellInputRef.current.trim()) {
-            const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
-            const tabId = tab.id;
-            const previous = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
-            const next = previous.catch(() => undefined).then(() =>
-              invoke<RecordingStats>("append_ssh_recording_command", { tabId, line: command })
-                .then((stats) => {
-                  setSshTabs((current) => current.map((item) => item.id === tabId ? { ...item, recordingCommandCount: stats.commandCount } : item));
-                })
-                .catch(() => undefined),
-            );
-            recordingWriteQueuesRef.current.set(tabId, next);
-          }
-          shellInputRef.current = "";
-        } else if (data === "\u007f") shellInputRef.current = shellInputRef.current.slice(0, -1);
-        else if (!data.startsWith("\u001b")) shellInputRef.current += data;
-      }
-    },
+    setTabs: setSshTabs,
+    setConnected: setSshConnected,
+    setNotice,
+    tabsRef: sshTabsRef,
+    pendingRequestsRef: pendingSshConnectRequestsRef,
+    terminalRef: terminalInstanceRef,
+    hostRef: terminalHostRef,
+    activeTabIdRef: activeSshTabIdRef,
+    outputRef: sshOutputRef,
+    sessionIdRef: sshSessionIdRef,
+    connectingRef: sshConnectingRef,
+    writeQueuesRef: sshWriteQueuesRef,
+    recordingWriteQueuesRef,
+    recordingRef,
+    secretPromptRef: sshSecretPromptRef,
+    shellInputRef,
   });
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
