@@ -97,8 +97,29 @@
 .vnc-screen-shell.fullscreen { width: 100vw; height: 100vh; min-height: 0; margin: 0; border: 0; border-radius: 0; }
 .vnc-screen { width: 100%; height: 100%; min-height: 0; }
 .vnc-auth-grid input { min-width: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }
-.vnc-display-toolbar { position: absolute; z-index: 2; top: 8px; right: 8px; display: flex; gap: var(--space-1); padding: var(--space-1); border: 1px solid var(--color-border); border-radius: 5px; background: rgba(7, 25, 42, .9); }
-.vnc-display-toolbar button { min-height: var(--control-height-base) !important; padding: var(--space-1) var(--space-2) !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); font-size: var(--font-size-small) !important; }
+/* Issue #232: this used to be a single always-visible `.vnc-display-toolbar`
+ * pinned to `top:8px;right:8px` (top-right of the VNC canvas). Reporter
+ * feedback was that any toolbar sitting along the *top* edge of the
+ * screen -- left, right, or centered -- collides with the guest OS's own
+ * top-of-screen UI (window controls, Start menu, top menu bars in most
+ * Windows/Linux desktop environments), which is jarring especially in
+ * fullscreen. It's now a left-edge, vertically-centered drawer instead:
+ * `.vnc-display-toolbar-wrap` anchors a small always-visible arrow handle
+ * flush against the left edge; the actual button stack
+ * (`.vnc-display-toolbar`) stays slid off-screen (`translateX(-100%)`,
+ * `opacity:0`, `pointer-events:none`) until `.open` is toggled (hover the
+ * handle/drawer, or click the handle) -- see proxmox-vnc.tsx's
+ * `toolbarOpen` state. This applies identically in fullscreen, since
+ * fullscreen only changes `.vnc-screen-shell` sizing, not this drawer's
+ * own position/behavior. */
+.vnc-display-toolbar-wrap { position: absolute; z-index: 2; top: 50%; left: 0; display: flex; align-items: center; transform: translateY(-50%); }
+.vnc-display-toolbar-handle { display: flex; align-items: center; justify-content: center; width: 20px; height: 48px; padding: 0 !important; min-height: 0 !important; color: var(--color-text-muted); background: rgba(7, 25, 42, .9); border: 1px solid var(--color-border); border-left: 0; border-radius: 0 6px 6px 0; cursor: pointer; transition: color .15s ease, background-color .15s ease; }
+.vnc-display-toolbar-handle:hover { color: var(--color-text); background: rgba(7, 25, 42, .98); }
+.vnc-display-toolbar-handle svg { transition: transform .18s ease; }
+.vnc-display-toolbar-wrap.open .vnc-display-toolbar-handle svg { transform: rotate(180deg); }
+.vnc-display-toolbar { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-1); border: 1px solid var(--color-border); border-radius: 5px; background: rgba(7, 25, 42, .9); transform: translateX(-100%); opacity: 0; pointer-events: none; transition: transform .18s ease, opacity .18s ease; }
+.vnc-display-toolbar-wrap.open .vnc-display-toolbar { transform: translateX(0); opacity: 1; pointer-events: auto; }
+.vnc-display-toolbar button { min-height: var(--control-height-base) !important; padding: var(--space-1) var(--space-2) !important; color: var(--color-text); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); font-size: var(--font-size-small) !important; text-align: left; white-space: nowrap; }
 .vnc-display-toolbar button:hover:not(:disabled) { border-color: var(--color-primary); }
 .vnc-display-toolbar button:disabled { opacity: .45; }
 
@@ -146,6 +167,14 @@
 .explorer.ui-layout-mobile .vnc-entry-copy small { font-size: var(--ui-small-font-size); overflow-wrap: anywhere; white-space: normal; }
 .explorer.ui-layout-mobile .vnc-auth-grid { grid-template-columns: 1fr; }
 .explorer.ui-layout-mobile .vnc-screen-shell { min-height: var(--pane-min-size-mobile); }
+/* Issue #232 follow-up: Large profile enlarges every control's touch
+ * target (--control-height-mobile-lg / --icon-size-lg tokens), so the
+ * left-edge drawer handle and its button stack need to grow to match --
+ * otherwise the handle stays thumb-unfriendly while everything else in
+ * this profile scales up. */
+.explorer.ui-layout-mobile .vnc-display-toolbar-handle { width: 28px; height: var(--control-height-mobile-lg); }
+.explorer.ui-layout-mobile .vnc-display-toolbar-handle svg { width: var(--icon-size-lg); height: var(--icon-size-lg); }
+.explorer.ui-layout-mobile .vnc-display-toolbar button { min-height: var(--control-height-mobile-lg) !important; font-size: var(--ui-font-size) !important; }
 .explorer.ui-layout-mobile .vnc-files-toolbar button { min-height: var(--control-height-mobile-lg) !important; font-size: var(--ui-font-size) !important; }
 .explorer.ui-layout-mobile .vnc-files-breadcrumb, .explorer.ui-layout-mobile .vnc-reachability-status { font-size: var(--ui-small-font-size); }
 .explorer.ui-layout-mobile .queue-item { font-size: var(--ui-small-font-size); }

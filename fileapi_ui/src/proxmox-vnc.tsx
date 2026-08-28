@@ -302,6 +302,23 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [controlsOpen, setControlsOpen] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewOnly, setViewOnly] = useState(false);
+  // Issue #232: the Ctrl+Alt+Del/Focus/View only/Fullscreen toolbar used to
+  // sit permanently at top-right of the VNC canvas, colliding with the
+  // guest OS's own top-of-screen UI. It's now a left-edge drawer that
+  // stays closed until hovered/focused/clicked open (see
+  // .vnc-display-toolbar-wrap in proxmox-vnc.css) -- this applies the same
+  // way in fullscreen, since fullscreen only resizes .vnc-screen-shell.
+  const [toolbarOpen, setToolbarOpen] = useState(false);
+  const toolbarHideTimerRef = useRef<number | null>(null);
+  const openToolbar = () => {
+    if (toolbarHideTimerRef.current !== null) { window.clearTimeout(toolbarHideTimerRef.current); toolbarHideTimerRef.current = null; }
+    setToolbarOpen(true);
+  };
+  const scheduleToolbarClose = () => {
+    if (toolbarHideTimerRef.current !== null) window.clearTimeout(toolbarHideTimerRef.current);
+    toolbarHideTimerRef.current = window.setTimeout(() => { setToolbarOpen(false); toolbarHideTimerRef.current = null; }, 900);
+  };
+  useEffect(() => () => { if (toolbarHideTimerRef.current !== null) window.clearTimeout(toolbarHideTimerRef.current); }, []);
   const screenShellRef = useRef<HTMLDivElement>(null);
   const vncReaderRef = useRef<HTMLElement>(null);
   const [authSessions, setAuthSessions] = useState<Record<string, string>>({});
@@ -835,11 +852,28 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
           </>}
         </div>
         <div ref={screenShellRef} className={`vnc-screen-shell${isFullscreen ? " fullscreen" : ""}`}>
-          <div className="vnc-display-toolbar">
-            <button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button>
-            <button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button>
-            <button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button>
-            <button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
+          <div
+            className={`vnc-display-toolbar-wrap${toolbarOpen ? " open" : ""}`}
+            onMouseEnter={openToolbar}
+            onMouseLeave={scheduleToolbarClose}
+            onFocus={openToolbar}
+            onBlur={scheduleToolbarClose}
+          >
+            <button
+              type="button"
+              className="vnc-display-toolbar-handle"
+              aria-label={toolbarOpen ? "Hide VNC controls" : "Show VNC controls"}
+              aria-expanded={toolbarOpen}
+              onClick={() => (toolbarOpen ? scheduleToolbarClose() : openToolbar())}
+            >
+              <ChevronRightIcon />
+            </button>
+            <div className="vnc-display-toolbar">
+              <button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button>
+              <button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button>
+              <button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button>
+              <button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
+            </div>
           </div>
           <div ref={screenRef} className="vnc-screen" />
         </div>
