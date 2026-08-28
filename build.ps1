@@ -333,12 +333,29 @@ function Install-DesktopDependencies {
     # drift, etc.) instead of surfacing as a confusing "Cannot find
     # module" deep inside `tsc`/`vite build` later on. Mirrors build.sh's
     # install_desktop_node_dependencies() safety net.
-    Push-Location $DesktopRoot
+    #
+    # This is written to a temp .js file (like the Tauri config override
+    # in Build-Desktop below) instead of passed inline via `node -e`:
+    # PowerShell's native-command argument marshalling has been observed
+    # to strip the embedded double quotes out of an `-e` string entirely
+    # (`require("./package.json")` arrives at node as `require(./package.json)`,
+    # a syntax error) -- the same class of quoting problem already
+    # documented for npm.cmd/cmd.exe elsewhere in this file, just hitting
+    # node.exe directly here. The directory is passed as a plain argv
+    # entry and resolved with `paths` so it works regardless of the
+    # process's current directory.
+    $resolveCheckPath = Join-Path ([IO.Path]::GetTempPath()) ("filetransfer-desktop-deps-check-{0}.js" -f [Guid]::NewGuid())
+    Set-Content -LiteralPath $resolveCheckPath -Encoding ascii -Value @'
+const path = require("path");
+const dir = process.argv[2];
+const pkg = require(path.join(dir, "package.json"));
+for (const name of Object.keys(pkg.dependencies)) require.resolve(name, { paths: [dir] });
+'@
     try {
-        Invoke-Native "node" @("-e", 'for (const name of Object.keys(require("./package.json").dependencies)) require.resolve(name);')
+        Invoke-Native "node" @($resolveCheckPath, $DesktopRoot)
     }
     finally {
-        Pop-Location
+        Remove-Item -LiteralPath $resolveCheckPath -Force -ErrorAction SilentlyContinue
     }
 }
 
