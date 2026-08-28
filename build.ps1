@@ -326,6 +326,20 @@ function Install-DesktopDependencies {
     Write-Host "Installing desktop dependencies..."
     Invoke-Native "npm.cmd" @("ci", "--ignore-scripts", "--include=optional", "--prefix", $DesktopRoot)
     Invoke-Native "npm.cmd" @("rebuild", "--foreground-scripts", "--prefix", $DesktopRoot)
+
+    # Fail fast with a clear message here if `npm ci` did not actually
+    # leave every declared dependency resolvable (stale/corrupted npm
+    # cache, network drop mid-install, package.json/package-lock.json
+    # drift, etc.) instead of surfacing as a confusing "Cannot find
+    # module" deep inside `tsc`/`vite build` later on. Mirrors build.sh's
+    # install_desktop_node_dependencies() safety net.
+    Push-Location $DesktopRoot
+    try {
+        Invoke-Native "node" @("-e", 'for (const name of Object.keys(require("./package.json").dependencies)) require.resolve(name);')
+    }
+    finally {
+        Pop-Location
+    }
 }
 
 function Get-AppVersion {

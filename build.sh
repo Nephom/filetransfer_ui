@@ -284,6 +284,13 @@ install_server_node_dependencies() {
 install_desktop_node_dependencies() {
   npm ci --ignore-scripts --include=optional --prefix "$ROOT_DIR/fileapi_ui"
   npm rebuild --foreground-scripts --prefix "$ROOT_DIR/fileapi_ui"
+  # Fail fast with a clear message here if `npm ci` did not actually leave
+  # every declared dependency resolvable (stale/corrupted npm cache,
+  # network drop mid-install, package.json/package-lock.json drift, etc.)
+  # instead of surfacing as a confusing "Cannot find module" deep inside
+  # `tsc`/`vite build` later on. Mirrors the same require.resolve() safety
+  # net install_server_node_dependencies already uses for backend deps.
+  (cd "$ROOT_DIR/fileapi_ui" && node -e 'for (const name of Object.keys(require("./package.json").dependencies)) require.resolve(name);')
 }
 
 format_env_value() {
