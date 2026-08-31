@@ -8,6 +8,9 @@ import {
   initialQueueProgress,
 } from "./queue/progress";
 import { selectActiveQueueItems, selectQueueHistory } from "./queue/selectors";
+import { clampRefreshDelayMs, decodeJwtExpiryMs, tokenRefreshLeadMs } from "./features/auth/auth-contracts";
+import type { RemoteLocation } from "./features/remote-browser/remote-browser-contracts";
+import { useRemoteApiActions } from "./features/remote-browser/useRemoteApiActions";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon, CollapseIcon, ExpandIcon, SortAscIcon, SortDescIcon, WarningIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
 // `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
@@ -71,13 +74,13 @@ const SharePasswordDialog = lazy(() => import("./features/share-links/SharePassw
 const ShareLinksModal = lazy(() => import("./features/share-links/ShareLinksModal").then(({ ShareLinksModal: component }) => ({ default: component })));
 const ArchiveFormatDialog = lazy(() => import("./features/queue/ArchiveFormatDialog").then(({ ArchiveFormatDialog: component }) => ({ default: component })));
 
-type Location = {
-  id: string;
-  displayName: string;
-  status?: string;
-  readOnly?: boolean;
-  capabilities?: string[];
-};
+// `Location` here is the REMOTE (API Location) entry type main.tsx has
+// used since before the Phase 5 refactor (GitHub issue #229) started;
+// it's now an alias of the shared RemoteLocation type so the small piece
+// of Phase 5 pulled out early for issue #233 (useRemoteApiActions) and
+// the rest of main.tsx, which still owns the REMOTE file browser, agree
+// on exactly one definition instead of two structurally-identical ones.
+type Location = RemoteLocation;
 type Session = {
   host: string;
   port: string;
@@ -659,6 +662,13 @@ type DesktopAppProps = {
   setBusy: React.Dispatch<React.SetStateAction<boolean>>;
   notice: string;
   setNotice: React.Dispatch<React.SetStateAction<string>>;
+  // Silently re-authenticates with the API Server using the saved
+  // credentials, applies the resulting new token to `session`, and
+  // returns that new token string. Resolves null when there is nothing
+  // safe to re-authenticate with ("Save user info" is off) or the
+  // re-login attempt itself failed -- callers must fall back to signing
+  // the user out in that case (#233).
+  refreshSessionToken: () => Promise<string | null>;
 };
 
 type LoginScreenProps = {
@@ -797,24 +807,40 @@ function App() {
     }));
   }, [session.host, session.port, session.username, session.ignoreTlsErrors, session.saveUserInformation]);
 
+  // The one place that actually calls POST /auth/login and applies the
+  // result to `session`. Shared by the manual sign-in submit handler below
+  // and by `refreshSessionToken`'s silent, background re-login (issue
+  // #233) -- both must end up with byte-for-byte the same session update,
+  // so this logic must not be duplicated in two places that could drift.
+  const performLogin = async (usernameToUse: string, passwordToUse: string) => {
+    validateServer(session);
+    const responseValue = await invoke<NativeApiResponse>("api_request", {
+      url: `${serverUrl(session)}/auth/login`,
+      method: "POST",
+      headers: [["Content-Type", "application/json"]],
+      body: Array.from(new TextEncoder().encode(JSON.stringify({ username: usernameToUse, password: passwordToUse }))),
+      ignoreTlsErrors: session.ignoreTlsErrors,
+    });
+    const response = new ApiResponse(responseValue.status, responseValue.body);
+    if (!response.ok) throw new Error(await readError(response));
+    const data = await response.json();
+    const authenticatedUsername = data.user.username || usernameToUse;
+    setSession((current) => ({ ...current, token: data.token, username: authenticatedUsername, userId: data.user.id ?? null, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
+    // `setSession` above only schedules a state update -- this function's
+    // own callers (a 401 retry in `api()`, or the token-lifetime timer)
+    // need the new token's actual string value *right now*, in this same
+    // tick, to use for an immediate retry or to compute the next refresh
+    // delay, not on the next render. Returning it directly avoids relying
+    // on a stale `session.token` closure value.
+    return { username: authenticatedUsername, token: data.token as string };
+  };
+
   const login = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setNotice("");
     try {
-      validateServer(session);
-      const responseValue = await invoke<NativeApiResponse>("api_request", {
-        url: `${serverUrl(session)}/auth/login`,
-        method: "POST",
-        headers: [["Content-Type", "application/json"]],
-        body: Array.from(new TextEncoder().encode(JSON.stringify({ username: session.username, password }))),
-        ignoreTlsErrors: session.ignoreTlsErrors,
-      });
-      const response = new ApiResponse(responseValue.status, responseValue.body);
-      if (!response.ok) throw new Error(await readError(response));
-      const data = await response.json();
-      const authenticatedUsername = data.user.username || session.username;
-      setSession((current) => ({ ...current, token: data.token, username: authenticatedUsername, userId: data.user.id ?? null, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
+      const { username: authenticatedUsername } = await performLogin(session.username, password);
       if (session.saveUserInformation) {
         await Promise.all([
           invoke("rest_save_secret", { entryId: apiCredentialEntryId, kind: "username", value: authenticatedUsername }),
@@ -834,11 +860,37 @@ function App() {
     }
   };
 
+  // Silent re-login, used to keep the app connected to the API Server for
+  // as long as it stays open, instead of the token quietly expiring after
+  // the backend's fixed 24h JWT lifetime and leaving the user stuck in a
+  // half-signed-in state (issue #233). Only possible when the user opted
+  // into "Save user info", because that is the only place this app keeps a
+  // password around after the login form's own `password` state may have
+  // been cleared or gone stale across a long-running session; without a
+  // saved password there is nothing to safely re-authenticate with, and
+  // callers must fall back to sending the user back to the login screen.
+  const refreshSessionToken = async (): Promise<string | null> => {
+    if (!session.saveUserInformation) return null;
+    try {
+      const [storedUsername, storedPassword] = await Promise.all([
+        invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId, kind: "username" }),
+        invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId, kind: "password" }),
+      ]);
+      const usernameToUse = storedUsername || session.username;
+      const passwordToUse = storedPassword || password;
+      if (!usernameToUse || !passwordToUse) return null;
+      const { token } = await performLogin(usernameToUse, passwordToUse);
+      return token;
+    } catch {
+      return null;
+    }
+  };
+
   if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} uiProfile={uiProfile} onUiProfileChange={changeUiProfile} onSubmit={login} />;
-  return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} />;
+  return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} refreshSessionToken={refreshSessionToken} />;
 }
 
-function DesktopApp({ session, setSession, password, setPassword, busy, setBusy, notice, setNotice }: DesktopAppProps) {
+function DesktopApp({ session, setSession, password, setPassword, busy, setBusy, notice, setNotice, refreshSessionToken }: DesktopAppProps) {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [localFiles, setLocalFiles] = useState<FileItem[]>([]);
   const [localPath, setLocalPath] = useState("");
@@ -1093,6 +1145,20 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const dragItemsRef = useRef<FileItem[]>([]);
   const dragSourceRef = useRef<"local" | "remote" | "">("");
   const noticeTimer = useRef<number | undefined>();
+  // Dedupes concurrent 401 responses: if several in-flight requests all
+  // hit an expired token at once, only the first should trigger a real
+  // POST /auth/login -- every other caller awaits that same in-flight
+  // promise and reuses its result instead of firing its own extra login
+  // request (#233).
+  const tokenRefreshPromiseRef = useRef<Promise<string | null> | null>(null);
+  const refreshTokenOnce = () => {
+    if (!tokenRefreshPromiseRef.current) {
+      tokenRefreshPromiseRef.current = refreshSessionToken().finally(() => {
+        tokenRefreshPromiseRef.current = null;
+      });
+    }
+    return tokenRefreshPromiseRef.current;
+  };
   const locationsLoaded = useRef(false);
   const locationRefreshInProgress = useRef(false);
   const paneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -1452,10 +1518,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     if (contextMenu) contextMenuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
   }, [accountOpen, contextMenu, locationMenuOpen]);
 
-  const api = async (endpoint: string, init: RequestInit = {}) => {
+  // Fires one raw HTTP request through the Tauri `api_request` command,
+  // using whichever bearer token the caller passes in -- separated from
+  // `api()`/`apiForLocation()` below so the 401-retry wrapper can call it
+  // twice (once with the old token, once with a freshly refreshed one)
+  // without duplicating the request-building logic itself.
+  const rawApiRequest = async (endpoint: string, init: RequestInit, token: string, locationId: string) => {
     const headers = new Headers(init.headers);
-    if (session.token) headers.set("Authorization", `Bearer ${session.token}`);
-    if (session.locationId) headers.set("X-Location-ID", session.locationId);
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    if (locationId) headers.set("X-Location-ID", locationId);
     const body =
       init.body === undefined
         ? undefined
@@ -1470,68 +1541,55 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     return new ApiResponse(response.status, response.body);
   };
 
+  // Every REST call to the API Server goes through here. The backend signs
+  // its JWTs with a fixed 24h lifetime (see src/backend/auth/auth.js and
+  // src/backend/server.js) and exposes no refresh-token endpoint, so a
+  // long-running desktop session eventually gets a 401 on an otherwise
+  // completely normal request. Before this fix (#233) that 401 just became
+  // a visible error message while `session.token` stayed non-empty --
+  // leaving the whole app stuck in a half-signed-in state that neither the
+  // login screen's own guard (`!session.token`) nor the user could recover
+  // from without restarting the app. Now: on 401, silently try to
+  // re-authenticate with the saved credentials and replay the exact same
+  // request once with the new token; only surface the 401 (and let
+  // `session.token` be cleared so the app falls back to the login screen)
+  // if that refresh attempt itself fails or there is nothing saved to
+  // refresh with.
+  const api = async (endpoint: string, init: RequestInit = {}) => {
+    const response = await rawApiRequest(endpoint, init, session.token, session.locationId);
+    if (response.status !== 401) return response;
+    const refreshedToken = await refreshTokenOnce();
+    if (!refreshedToken) {
+      setSession((current) => ({ ...current, token: "" }));
+      notify("Your session expired. Please sign in again.");
+      return response;
+    }
+    return rawApiRequest(endpoint, init, refreshedToken, session.locationId);
+  };
+
   const apiForLocation = async (endpoint: string, locationId: string) => {
-    const headers: [string, string][] = [
-      ...(session.token ? [["Authorization", `Bearer ${session.token}`] as [string, string]] : []),
-      ["X-Location-ID", locationId],
-    ];
-    const response = await invoke<NativeApiResponse>("api_request", {
-      url: `${serverUrl(session)}${endpoint}`,
-      method: "GET",
-      headers,
-      body: null,
-      ignoreTlsErrors: session.ignoreTlsErrors,
-    });
-    return new ApiResponse(response.status, response.body);
-  };
-
-  const activeLocation = locations.find(
-    (location) => location.id === session.locationId,
-  );
-  const hasCapability = (capability: string) =>
-    activeLocation?.capabilities?.includes(capability) === true;
-  const locationOnline = activeLocation?.status === "online";
-
-  const loadLocations = async () => {
-    if (locationRefreshInProgress.current) return;
-    locationRefreshInProgress.current = true;
-    if (!locationsLoaded.current) setLocationsLoading(true);
-    try {
-      const response = await api("/api/locations");
-      if (!response.ok) throw new Error(await readError(response));
-      const data = (await response.json()) as { locations?: Location[] };
-      const available = (data.locations || []).filter(
-        (location) => location.id,
-      );
-      locationsLoaded.current = true;
-      setLocations(available);
-      setSession((current) => ({
-        ...current,
-        locationId: available.some(
-          (location) => location.id === current.locationId,
-        )
-          ? current.locationId
-          : available[0]?.id || "",
-      }));
-    } finally {
-      locationRefreshInProgress.current = false;
-      setLocationsLoading(false);
+    const response = await rawApiRequest(endpoint, { method: "GET" }, session.token, locationId);
+    if (response.status !== 401) return response;
+    const refreshedToken = await refreshTokenOnce();
+    if (!refreshedToken) {
+      setSession((current) => ({ ...current, token: "" }));
+      notify("Your session expired. Please sign in again.");
+      return response;
     }
+    return rawApiRequest(endpoint, { method: "GET" }, refreshedToken, locationId);
   };
 
-  const findSshProfileById = (entryId: string): SshProfile | undefined =>
-    managedSessions.flatMap((workspace) => workspace.sshEntries).find((entry) => entry.id === entryId);
-
-  const ensureApiRemote = () => {
-    if (remoteSshEntryId) {
-      throw new Error("This action is not available while browsing an SSH remote. Switch LOCATION back to an API Remote first.");
-    }
-  };
-
-  const connectedSshBrowseOptions = () =>
-    managedSessions
-      .flatMap((workspace) => workspace.sshEntries)
-      .filter((entry) => sshTabs.some((tab) => tab.sshEntryId === entry.id && tab.connected));
+  // The REMOTE/API connection slice pulled out of main.tsx ahead of the
+  // full Phase 5 extraction (GitHub issue #229) while fixing issue #233
+  // (token refresh) -- see useRemoteApiActions.ts for why.
+  const {
+    activeLocation, hasCapability, locationOnline,
+    loadLocations, findSshProfileById, ensureApiRemote, connectedSshBrowseOptions,
+  } = useRemoteApiActions({
+    api, readError, session, setSession, remoteSshEntryId,
+    managedSessions, sshTabs, locations, setLocations, setLocationsLoading,
+    locationsLoadedRef: locationsLoaded, locationRefreshInProgressRef: locationRefreshInProgress,
+  });
 
   const loadFiles = async (nextPath = path, sshEntryOverride: string | null = null) => {
     const sshEntryId = sshEntryOverride !== null ? sshEntryOverride : remoteSshEntryId;
@@ -1837,6 +1895,46 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     }
     return undefined;
   }, [session.token]);
+
+  // Keeps the app connected to the API Server for as long as it stays
+  // open, instead of waiting for a 401 to happen on some future request
+  // (issue #233). Computes the JWT's *real* expiry from its own `exp`
+  // claim (decodeJwtExpiryMs) rather than assuming the backend's current
+  // 24h default, so this keeps working correctly even if the backend's
+  // token lifetime configuration ever changes. Schedules one proactive
+  // refresh a few minutes before that real expiry; every successful
+  // refresh updates `session.token`, which re-runs this same effect and
+  // schedules the next one -- so the chain continues automatically until
+  // logout/close. If the expiry can't be determined (decodeJwtExpiryMs
+  // returned null) or the user didn't opt into "Save user info", there is
+  // nothing safe to proactively refresh with, so this effect does
+  // nothing and the 401-triggered path in `api()`/`apiForLocation()`
+  // remains the only fallback.
+  useEffect(() => {
+    if (!session.token || !session.saveUserInformation) return undefined;
+    const expiryMs = decodeJwtExpiryMs(session.token);
+    if (expiryMs === null) return undefined;
+    const delayMs = clampRefreshDelayMs(expiryMs - Date.now() - tokenRefreshLeadMs);
+    // Guards against the timer's async refresh landing *after* this effect
+    // was torn down (for example the user clicked "Sign out" while the
+    // silent refresh was already in flight) -- without this flag, that
+    // stale refresh's `setSession` call would silently sign the user back
+    // in right after they explicitly signed out.
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void refreshTokenOnce().then((refreshedToken) => {
+        if (cancelled) return;
+        if (!refreshedToken) {
+          setSession((current) => ({ ...current, token: "" }));
+          notify("Your session expired. Please sign in again.");
+        }
+      });
+    }, delayMs);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [session.token, session.saveUserInformation]);
 
   useEffect(() => {
     if (!session.token) return undefined;
@@ -3666,6 +3764,11 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const signOut = () => {
     setAccountOpen(false);
+    // Clearing `session.token` here also tears down the auto-refresh
+    // effect above (it depends on `session.token`), whose cleanup sets
+    // `cancelled = true` -- so a refresh already in flight at the moment
+    // of sign-out cannot land afterward and silently sign the user back
+    // in (#233).
     setSession((current) => ({
       ...current,
       token: "",
