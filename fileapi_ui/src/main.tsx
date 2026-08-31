@@ -46,7 +46,7 @@ import { useSshTerminalState } from "./features/terminal/useSshTerminalState";
 import { useSshTerminalActions } from "./features/terminal/useSshTerminalActions";
 import { formatSize } from "./format-utils";
 import { useDesktopSettings } from "./features/settings/useDesktopSettings";
-import { desktopSettingsKey, type DesktopSettings, type OperationStorageInfo } from "./features/settings/settings-contracts";
+import { defaultDesktopSettings, desktopSettingsKey, normalizeDesktopSettings, type DesktopSettings, type OperationStorageInfo } from "./features/settings/settings-contracts";
 import { useSessionsState } from "./features/sessions/useSessionsState";
 import { useSessionsActions } from "./features/sessions/useSessionsActions";
 import { type ManagedSession } from "./features/sessions/sessions-contracts";
@@ -679,11 +679,13 @@ type LoginScreenProps = {
   busy: boolean;
   notice: string;
   uiProfile: "auto" | "mobile";
+  glassMenusEnabled: boolean;
+  glassDialogsEnabled: boolean;
   onUiProfileChange: (profile: "auto" | "mobile") => void;
   onSubmit: (event: React.FormEvent) => void;
 };
 
-function LoginScreen({ session, setSession, password, setPassword, busy, notice, uiProfile, onUiProfileChange, onSubmit }: LoginScreenProps) {
+function LoginScreen({ session, setSession, password, setPassword, busy, notice, uiProfile, glassMenusEnabled, glassDialogsEnabled, onUiProfileChange, onSubmit }: LoginScreenProps) {
   // Auto profile sizing must flip to Mobile at the exact same threshold as
   // DesktopApp's own mobileLayout check, via the one shared resolver --
   // not a hand-copied CSS media query mirroring the same numbers (T-027).
@@ -712,7 +714,7 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
   };
 
   return (
-    <main className={`login ui-profile-${uiProfile} ui-layout-${loginMobileLayout ? "mobile" : "desktop"}`}>
+    <main className={`login ui-profile-${uiProfile} ui-layout-${loginMobileLayout ? "mobile" : "desktop"} ${glassMenusEnabled ? "" : "glass-menus-off"} ${glassDialogsEnabled ? "" : "glass-dialogs-off"}`}>
       <form onSubmit={onSubmit}>
         <h1>nFterm {appVersion && <small className="login-version">{appVersion}</small>}</h1>
         <label className="login-field-server">Server address<input placeholder="files.example.internal" value={session.host} onChange={(event) => setSession((current) => ({ ...current, host: event.target.value }))} /></label>
@@ -886,7 +888,13 @@ function App() {
     }
   };
 
-  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} uiProfile={uiProfile} onUiProfileChange={changeUiProfile} onSubmit={login} />;
+  let savedAppearance = defaultDesktopSettings;
+  try {
+    savedAppearance = normalizeDesktopSettings(JSON.parse(localStorage.getItem(desktopSettingsKey) || "null"));
+  } catch {
+    // Keep the same safe defaults used by the settings hook when storage is invalid.
+  }
+  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} uiProfile={uiProfile} glassMenusEnabled={savedAppearance.glassMenusEnabled} glassDialogsEnabled={savedAppearance.glassDialogsEnabled} onUiProfileChange={changeUiProfile} onSubmit={login} />;
   return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} refreshSessionToken={refreshSessionToken} />;
 }
 
@@ -4277,7 +4285,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   };
 
       return (
-    <AppShell style={themeVariables} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
+    <AppShell style={themeVariables} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ${desktopSettings.glassMainEnabled ? "" : "glass-main-off"} ${desktopSettings.glassMenusEnabled ? "" : "glass-menus-off"} ${desktopSettings.glassDialogsEnabled ? "" : "glass-dialogs-off"} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
       <Suspense fallback={null}>
       <DesktopTitlebar
         appMode={appMode}

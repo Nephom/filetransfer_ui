@@ -66,7 +66,7 @@ export function SettingsModal({
       {settingsPanel === null && (
         <div className="settings-panel-menu">
           <button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("theme")}>
-            <strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose palette and accent color.</small><b><ChevronRightIcon size={12} /></b>
+            <strong>Color theme</strong><span>{themePresets[desktopSettings.theme].label}</span><small>Choose colors and visual effects.</small><b><ChevronRightIcon size={12} /></b>
           </button>
           <button type="button" className="settings-panel-card" onClick={() => setSettingsPanel("features")}>
             <strong>Interface features</strong>
@@ -95,6 +95,21 @@ export function SettingsModal({
             options={(Object.entries(themePresets) as [ThemePreset, { label: string }][]).map(([value, theme]) => ({ value, label: theme.label }))}
           />
           <label className="theme-accent-control">Accent <input type="color" value={desktopSettings.accentColor} onChange={(event) => setDesktopSettings((current) => ({ ...current, accentColor: event.target.value }))} /></label>
+        </div>
+        <div className="settings-appearance-options">
+          <h4>Visual effects</h4>
+          <label className="settings-check">
+            <input type="checkbox" checked={desktopSettings.glassMainEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, glassMainEnabled: event.target.checked }))} />
+            <span><strong>Main screen glass effect</strong><small>Keeps the soft see-through look on the main screen. Turn it off for smoother performance.</small></span>
+          </label>
+          <label className="settings-check">
+            <input type="checkbox" checked={desktopSettings.glassMenusEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, glassMenusEnabled: event.target.checked }))} />
+            <span><strong>Menu glass effect</strong><small>Keeps the soft see-through look on menus and lists. Turn it off to make menus lighter.</small></span>
+          </label>
+          <label className="settings-check">
+            <input type="checkbox" checked={desktopSettings.glassDialogsEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, glassDialogsEnabled: event.target.checked }))} />
+            <span><strong>Window glass effect</strong><small>Keeps the soft see-through look on settings and other pop-up windows.</small></span>
+          </label>
         </div>
         {(() => {
           // T-216: only shown once the previewed theme/accent actually

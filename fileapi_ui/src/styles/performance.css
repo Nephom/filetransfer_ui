@@ -1,0 +1,53 @@
+/* Optional visual-cost controls. These rules keep the theme colors and layout
+   intact while replacing background blur with stable surfaces on slower devices. */
+
+:root:has(.glass-main-off) .titlebar,
+:root:has(.glass-main-off) .commandbar,
+:root:has(.glass-main-off) .navigation,
+:root:has(.glass-main-off) .statusbar,
+:root:has(.glass-main-off) .desktop-folder-tree,
+:root:has(.glass-main-off) .desktop-content,
+:root:has(.glass-main-off) .local-pane,
+:root:has(.glass-main-off) .terminal-dock,
+:root:has(.glass-main-off) .titlebar-main .mode-switcher,
+:root:has(.glass-main-off) .rest-entry-pane,
+:root:has(.glass-main-off) .rest-reader,
+:root:has(.glass-main-off) .vnc-entry-pane,
+:root:has(.glass-main-off) .vnc-reader {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--color-bg-panel-strong);
+}
+
+:root:has(.glass-menus-off) .account-menu,
+:root:has(.glass-menus-off) .location-menu,
+:root:has(.glass-menus-off) .context-menu,
+:root:has(.glass-menus-off) .context-picker-popover,
+:root:has(.glass-menus-off) .dropdown-menu,
+:root:has(.glass-menus-off) .mobile-choice-options,
+:root:has(.glass-menus-off) .palette-select-menu {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--color-bg-panel-strong);
+}
+
+:root:has(.glass-dialogs-off) .modal-cover,
+:root:has(.glass-dialogs-off) .floating-dialog-layer,
+:root:has(.glass-dialogs-off) .modal,
+:root:has(.glass-dialogs-off) .queue-modal,
+:root:has(.glass-dialogs-off) .sessions-modal,
+:root:has(.glass-dialogs-off) .settings-modal,
+:root:has(.glass-dialogs-off) .viewer-modal,
+:root:has(.glass-dialogs-off) .archive-format-modal,
+:root:has(.glass-dialogs-off) .log-name-modal,
+:root:has(.glass-dialogs-off) .ssh-entry-modal,
+:root:has(.glass-dialogs-off) .workspace-name-modal,
+:root:has(.glass-dialogs-off) .rest-action-dialog,
+:root:has(.glass-dialogs-off) .rest-session-help,
+:root:has(.glass-dialogs-off) .rest-hardware-dialog,
+:root:has(.glass-dialogs-off) .token-path-help-popup,
+:root:has(.glass-dialogs-off) .login form {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--color-bg-panel-strong);
+}

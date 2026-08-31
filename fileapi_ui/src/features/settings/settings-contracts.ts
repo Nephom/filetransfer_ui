@@ -12,6 +12,9 @@ export type DesktopSettings = {
   uiProfile: "auto" | "mobile";
   theme: ThemePreset;
   accentColor: string;
+  glassMainEnabled: boolean;
+  glassMenusEnabled: boolean;
+  glassDialogsEnabled: boolean;
   proxmoxVncModeEnabled: boolean;
   restApiModeEnabled: boolean;
   collapseMainPaneEnabled: boolean;
@@ -46,6 +49,9 @@ export const defaultDesktopSettings: DesktopSettings = {
   uiProfile: "auto",
   theme: "bridge",
   accentColor: "#63e6ff",
+  glassMainEnabled: true,
+  glassMenusEnabled: true,
+  glassDialogsEnabled: true,
   proxmoxVncModeEnabled: false,
   restApiModeEnabled: false,
   collapseMainPaneEnabled: false,
@@ -89,6 +95,9 @@ export const normalizeDesktopSettings = (raw: unknown): DesktopSettings => {
       (value) => typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value),
       defaultDesktopSettings.accentColor,
     ),
+    glassMainEnabled: pick(saved.glassMainEnabled, (value) => typeof value === "boolean", defaultDesktopSettings.glassMainEnabled),
+    glassMenusEnabled: pick(saved.glassMenusEnabled, (value) => typeof value === "boolean", defaultDesktopSettings.glassMenusEnabled),
+    glassDialogsEnabled: pick(saved.glassDialogsEnabled, (value) => typeof value === "boolean", defaultDesktopSettings.glassDialogsEnabled),
     operationLogLevel: pick(
       saved.operationLogLevel,
       (value) => typeof value === "string" && ["DEBUG", "INFO", "WARN", "ERROR"].includes(value),
