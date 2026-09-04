@@ -11,9 +11,8 @@ import { ImlMonitorController } from "./iml-monitor";
 import { monitorRedfishTask } from "./rest-task";
 import type { ImlMonitorState, JsonValue, NativeApiResponse, RestApiEntry, RestApiSecret, RestAuthMode, RestFailureType, RestMethod, RestSession, RestVendor } from "./rest-contracts";
 export type { RestApiEntry, RestApiSecret, RestAuthMode, RestMethod, RestVendor } from "./rest-contracts";
-import { buildOpenBmcSpecRows, csvCell, debugRest, downloadText, hardwareTools, jsonCell, openBmcInventoryTableRows, openBmcSpecCsv, sanitizeHeaders, sanitizeJson, sanitizeText, tableCell, type HardwareTool, type OpenBmcInventorySnapshot, type OpenBmcSpecRow } from "./rest-utils";
+import { buildOpenBmcSpecRows, csvCell, debugRest, downloadText, hardwareTools, jsonCell, openBmcInventoryTableRows, openBmcSpecCsv, sanitizeHeaders, sanitizeJson, tableCell, type HardwareTool, type OpenBmcInventorySnapshot, type OpenBmcSpecRow } from "./rest-utils";
 type RestHistoryItem = { url: string; timestamp: number };
-type RestAuditItem = { id: string; timestamp: number; method: RestMethod; url: string; status: number | null; durationMs: number; body: string; error?: string };
 type BiosAttributeMetadata = { type?: string; allowableValues?: string[]; description?: string; readOnly?: boolean; format?: string };
 type RestDialogDragSession = {
   onMove: (event: PointerEvent) => void;
@@ -425,7 +424,6 @@ export function RestApiWorkspace(props: Props) {
   const [firmwareSupportsTpm, setFirmwareSupportsTpm] = useState(false);
   const [firmwareSupportsTarget, setFirmwareSupportsTarget] = useState(false);
   const [firmwareSupportsRepository, setFirmwareSupportsRepository] = useState(false);
-  const [auditItems, setAuditItems] = useState<RestAuditItem[]>([]);
   const [actionInfo, setActionInfo] = useState<JsonValue | null>(null);
   const [actionForm, setActionForm] = useState<Record<string, JsonValue>>({});
   const [resetOpen, setResetOpen] = useState(false);
@@ -821,7 +819,6 @@ export function RestApiWorkspace(props: Props) {
     if (!requestUrl) throw new Error("Select or create a REST API entry first.");
     const requestId = crypto.randomUUID();
     const started = performance.now();
-    const auditBody = requestBody ? sanitizeText(requestBody) : "";
     const operation = /Bios|BIOS/i.test(requestUrl) ? "BIOS" : /Firmware|UpdateService|SimpleUpdate|AddFromUri/i.test(requestUrl) ? "firmware" : /LogServices|ClearLog|ActiveHealthSystem/i.test(requestUrl) ? "clear-log/reset" : /Processor|Memory|Ethernet|Storage|PCIe|Thermal|Power/i.test(requestUrl) ? "hardware inventory" : /TaskService/i.test(requestUrl) ? "polling" : "REST";
     debugRest({ event: "workflow.step.start", requestId, workflowId, correlationId: workflowId, workflow: operation, step: "request", nextStep: "response", entry: entry.name, vendor, method: requestMethod, url: requestUrl.split("?")[0], targetPath: (() => { try { return new URL(requestUrl).pathname; } catch { return requestUrl; } })(), tlsInsecure: entry.ignoreTlsErrors, headers: requestHeaders, body: requestBody || "", timestamp: new Date().toISOString() });
     let failedResponse: NativeApiResponse | undefined;
@@ -834,7 +831,6 @@ export function RestApiWorkspace(props: Props) {
       const contentType = responseValue.headers?.find(([name]) => name.toLowerCase() === "content-type")?.[1] || "";
       const textual = /json|text|xml|javascript|yaml|html/i.test(contentType);
       debugRest({ event: "workflow.step.result", requestId, workflowId, correlationId: workflowId, workflow: operation, step: "response", nextStep: responseValue.status >= 400 ? "failure" : "complete", entry: entry.name, vendor, method: requestMethod, status: responseValue.status, statusText: responseValue.statusText || "", durationMs: Math.round(performance.now() - started), headers: responseValue.headers || [], contentType, bodyBytes: responseValue.body.length, body: textual ? text : `[binary response omitted; content-type=${contentType || "unknown"}; bytes=${responseValue.body.length}]` });
-      setAuditItems((items) => [{ id: requestId, timestamp: Date.now(), method: requestMethod, url: requestUrl, status: responseValue.status, durationMs: Math.round(performance.now() - started), body: auditBody }, ...items].slice(0, 100));
     setResponse(responseValue);
     setResponseText(text);
     setUrlDraft(requestUrl);
@@ -852,7 +848,6 @@ export function RestApiWorkspace(props: Props) {
     } catch (requestError) {
       const failure = describeRestFailure(requestError, failedResponse, failedResponseText);
       debugRest({ event: "workflow.step.failure", requestId, workflowId, correlationId: workflowId, workflow: operation, step: "failure", nextStep: "complete", entry: entry.name, vendor, method: requestMethod, url: requestUrl.split("?")[0], targetPath: (() => { try { return new URL(requestUrl).pathname; } catch { return requestUrl; } })(), durationMs: Math.round(performance.now() - started), ...failure });
-      setAuditItems((items) => [{ id: requestId, timestamp: Date.now(), method: requestMethod, url: requestUrl, status: failure.status ?? null, durationMs: Math.round(performance.now() - started), body: auditBody, error: failure.error }, ...items].slice(0, 100));
       throw requestError;
     }
   };
@@ -1845,7 +1840,6 @@ export function RestApiWorkspace(props: Props) {
           {entry.ignoreTlsErrors && <div className="notice rest-warning">TLS certificate verification is disabled for this REST entry.</div>}
           {message && <div className="notice rest-success">{message}</div>}
            {error && <div className="notice rest-error">{error}{response?.status === 401 || response?.status === 403 ? <button type="button" onClick={() => void login()}>Re-login</button> : null}</div>}
-           {!!auditItems.length && <section className="rest-audit-panel"><div className="rest-audit-heading"><strong>REST operation audit</strong><span>{auditItems.length} recent requests</span></div><div className="rest-audit-list">{auditItems.map((item) => <details key={item.id}><summary><span>{new Date(item.timestamp).toLocaleTimeString()}</span><strong>{item.method}</strong><span className={item.status !== null && item.status >= 400 || item.error ? "rest-status-error" : "rest-status-ok"}>{item.status ?? "ERR"}</span><span>{item.durationMs}ms</span><code>{item.url}</code></summary><div className="rest-audit-detail"><div><strong>Target</strong><code>{item.url}</code></div><div><strong>Sanitized payload</strong><pre className="rest-code">{item.body || "(empty)"}</pre></div>{item.error && <div className="notice rest-error">{item.error}</div>}</div></details>)}</div></section>}
             {!!links.length && <section className="rest-links"><div className="rest-links-heading"><strong>Resource links</strong><span>{links.length}</span></div>{links.map((link) => <button type="button" className="rest-link-button" key={`${link.name}-${link.target}`} onClick={() => void (link.kind === "download" ? downloadResource(link.target) : openResource(link.target))}><span>{link.name}</span><small>{link.kind === "download" ? "download" : "GET"}</small><code>{link.target}</code></button>)}</section>}
           {!!actions.length && <section className="rest-actions rest-toolbox"><button type="button" className="rest-actions-toggle" onClick={() => setActionsOpen((value) => !value)} aria-expanded={actionsOpen} aria-controls="rest-actions-list"><span className="rest-actions-heading"><strong>Redfish Toolbox</strong><span>{actions.length} tools</span></span><span className="rest-actions-chevron" aria-hidden="true">{actionsOpen ? <ChevronUpIcon size={12} /> : <ChevronDownIcon size={12} />}</span></button>{actionsOpen && <div id="rest-actions-list" className="rest-toolbox-groups">{Object.entries(actionGroups).map(([group, groupActions]) => <section className="rest-toolbox-group" key={group}><h3>{group}<span>{groupActions.length}</span></h3><div className="rest-actions-list">{groupActions.map((action) => <button type="button" className="rest-action-button" key={`${action.name}-${action.target}`} onClick={() => void openAction(action)}><span>{action.title}</span><small>{action.target}</small></button>)}</div></section>)}</div>}</section>}
           {actionOpen && selectedAction && <div className="rest-action-dialog"><div className="rest-action-dialog-heading"><strong>{selectedAction.title}</strong><button type="button" onClick={() => setActionOpen(false)} aria-label="Close action"><CloseIcon size={12} /></button></div><p>This Redfish action sends a POST request and may change power, BIOS, reset, or other server state.</p>{actionInfo && <details open><summary>Advertised ActionInfo parameters</summary><pre className="rest-code">{JSON.stringify(actionInfo, null, 2)}</pre></details>}{Object.keys(actionForm).map((name) => { const value = actionForm[name]; const parameter = actionInfo && typeof actionInfo === "object" && !Array.isArray(actionInfo) && Array.isArray(actionInfo.Parameters) ? actionInfo.Parameters.find((item) => item && typeof item === "object" && !Array.isArray(item) && item.Name === name) : null; const allowable = parameter && typeof parameter === "object" && !Array.isArray(parameter) && Array.isArray(parameter.AllowableValues) ? parameter.AllowableValues : []; return <label key={name}>{name}{allowable.length ? <Dropdown label={name} value={String(value)} onChange={(next) => updateActionParameter(name, next)} options={allowable.map((option) => ({ value: String(option), label: String(option) }))} /> : <input value={String(value)} onChange={(event) => updateActionParameter(name, event.target.value)} />}</label>; })}<label>JSON body<textarea value={actionBody} onChange={(event) => setActionBody(event.target.value)} spellCheck={false} /></label><div className="modal-actions"><button type="button" onClick={() => setActionOpen(false)}>Cancel</button><button type="button" className="danger" onClick={() => void executeAction()} disabled={loading}>{loading ? "Sending..." : "Run action"}</button></div></div>}

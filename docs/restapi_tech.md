@@ -24,7 +24,7 @@ The workspace receives `workspaceName`, REST entries, the active entry id, secre
    ├─ Authentication panel
    ├─ raw request controls (method, URL, JSON body, query)
    ├─ GET history + breadcrumbs
-   ├─ notices + operation audit
+   ├─ notices
    ├─ discovered links + Redfish Toolbox
    └─ response panel (Pretty / Raw / Headers)
 
@@ -64,7 +64,7 @@ The REST entry editor in `main.tsx` owns identity and TLS fields. Authentication
 
 `requestRest()` calls the Tauri `api_request` command with native byte payloads and the entry TLS preference. Every request has a 30-second timeout. `parseBody()` decodes bytes as UTF-8; `parseJson()` is intentionally nullable so non-JSON responses remain viewable.
 
-`execute()` sends GET/POST/PATCH/DELETE requests from the raw request editor. POST, PATCH, and DELETE require a browser confirmation. JSON content type is added for bodies; DELETE has no body. `runRequest()` records a sanitized audit item, updates the response and URL/path, records GET history, and turns HTTP errors into a Redfish-aware error. It receives a `workflowId` so multi-step tools can correlate their audit/debug records.
+`execute()` sends GET/POST/PATCH/DELETE requests from the raw request editor. POST, PATCH, and DELETE require a browser confirmation. JSON content type is added for bodies; DELETE has no body. `runRequest()` updates the response and URL/path, records GET history, and turns HTTP errors into a Redfish-aware error. It receives a `workflowId` so multi-step tools can correlate their debug records.
 
 Do not use `fetch()` directly from this component or concatenate untrusted discovered links without `resolveEntryResource()`. The native command is also responsible for TLS handling and byte transport.
 
@@ -78,7 +78,7 @@ The Authentication panel is collapsible (`authOpen`). For non-login modes, **Log
 4. `logout()` DELETEs the server session `Location` when one was returned, stops IML monitoring, and clears token/cookie/session headers.
 5. A 401/403 notice offers **Re-login**.
 
-`getJsonPath()` resolves dotted paths such as `data.token`. The Token JSON Path help popup explains that HPE iLO/OpenBMC normally return `X-Auth-Token`, so the JSON path can remain empty in that case. Session tokens, cookies, and token-like response headers are masked in the response Headers view; request audit payloads use `sanitizeText()`.
+`getJsonPath()` resolves dotted paths such as `data.token`. The Token JSON Path help popup explains that HPE iLO/OpenBMC normally return `X-Auth-Token`, so the JSON path can remain empty in that case. Session tokens, cookies, and token-like response headers are masked in the response Headers view.
 
 The HPE, OpenBMC, and Generic Redfish presets share the SessionService login shape. `launchVendor()` selects the toolbar vendor and opens its tool set; vendor selection is a UI hint and does not silently change the entry's base URL.
 
@@ -92,7 +92,7 @@ The reader provides:
 - repeatable query parameter rows, persisted into `entry.query` and the URL;
 - recent GET history, maximum 20 URLs per entry, stored under `rest-api-history:<entryId>`;
 - path breadcrumbs that issue GET requests;
-- TLS warning, success/error notices, and the last 100 audit records;
+- TLS warning and success/error notices;
 - response resizing with a vertical drag handle.
 
 `collectRedfishLinks()` recursively finds `@odata.id`, `href`, URI, URL, and download-like fields. Resource links issue a GET; download links use the native `download_to_disk_at` flow after selecting a LOCAL destination. `collectRedfishActions()` discovers action targets under `Actions` or `#...` members and includes ActionInfo links when advertised.
@@ -170,7 +170,7 @@ Effects reset path/request/response when the active entry or auth mode changes; 
 | `.rest-url-row`, `.rest-body-editor`, `.rest-query-*`, `.rest-history*`, `.rest-breadcrumbs` | Raw request controls, query editor, GET history, and path navigation. |
 | `.rest-warning`, `.rest-success`, `.rest-error`, `.rest-iml-notification` | TLS, success, error, and IML toast semantics. |
 | `.rest-links*`, `.rest-actions*`, `.rest-toolbox-*`, `.rest-action-*` | Discovered links, Redfish action groups, action dialog, and destructive-action presentation. |
-| `.rest-audit-*`, `.rest-debug-*` | Recent request audit and debug workflow presentation. |
+| `.rest-debug-*` | Debug workflow presentation. |
 | `.rest-response*`, `.rest-view-tabs`, `.rest-code`, `.rest-json-*`, `.rest-headers` | Resizable response panel and Pretty/Raw/Headers views. |
 | `.rest-hardware-*`, `.hardware-summary-*`, `.rest-resource-catalog*` | Resizable inventory/resource dialogs, tables, raw JSON sections, and exports. |
 | `.rest-iml-*`, `.rest-power-*`, `.rest-bios-*`, `.rest-firmware-*`, `.rest-reset-*` | Tool-specific controls and fixed live IML terminal. |
@@ -194,4 +194,4 @@ Do not duplicate global token, dropdown, popup, or modal rules in `rest-api.css`
 
 `parseRedfishError()` extracts `error.code`, `error.message`, and `@Message.ExtendedInfo` (`MessageId`, message, severity, resolution). `describeRestFailure()` classifies failures as HTTP, timeout, TLS, network, parse, or request and retains an error cause chain. The visible message remains user-readable while `debugRest()` records workflow, request id, correlation id, target path, status, duration, sanitized body, and response metadata.
 
-Audit entries intentionally retain only sanitized request bodies and redact credential-bearing response headers. A new REST workflow should call `runRequest()` rather than bypassing the audit/error path; if it has multiple requests, reuse one `workflowId` and expose progress/partial failure in its dialog state.
+A new REST workflow should call `runRequest()` rather than bypassing the request/error path; if it has multiple requests, reuse one `workflowId` and expose progress/partial failure in its dialog state.

@@ -224,16 +224,6 @@
 .rest-debug-list summary { display: flex; flex-wrap: wrap; gap: var(--space-3); cursor: pointer; padding: var(--space-2) var(--space-2); color: var(--color-primary); font-size: var(--font-size-small); }
 .rest-debug-list summary strong { color: var(--color-text); }
 .rest-debug-list .rest-code { max-height: clamp(240px, 32vh, 320px); margin: 0; border-top: 1px solid rgba(155, 232, 255, .16); }
-.rest-audit-panel { display: grid; gap: var(--space-2); margin: 0 var(--space-5) var(--space-3); border: 1px solid rgba(155, 232, 255, .22); border-radius: 8px; background: rgba(3, 15, 27, .38); }
-.rest-audit-heading { display: flex; justify-content: space-between; gap: var(--space-2); padding: var(--space-2) var(--space-3); color: var(--color-primary); font-size: var(--font-size-small); }
-.rest-audit-heading span { color: var(--color-text-muted); }
-.rest-audit-list { display: grid; gap: var(--space-1); padding: 0 var(--space-2) var(--space-2); max-height: clamp(180px, 24vh, 240px); overflow: auto; }
-.rest-audit-list details { border: 1px solid rgba(155, 232, 255, .14); border-radius: 5px; }
-.rest-audit-list summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-2); cursor: pointer; color: var(--color-primary); font-size: var(--font-size-small); }
-.rest-audit-list summary code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rest-audit-detail { display: grid; gap: var(--space-2); padding: var(--space-2) var(--space-2); border-top: 1px solid rgba(155, 232, 255, .14); font-size: var(--font-size-small); }
-.rest-audit-detail > div { display: grid; gap: var(--space-1); }
-.rest-audit-detail .rest-code { max-height: clamp(90px, 12vh, 120px); margin: 0; }
 .rest-hardware-dialog { width: min(920px, 100%); max-width: 100%; max-height: 100%; min-width: 0; min-height: 0; overflow: hidden; resize: both; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); box-sizing: border-box; padding: var(--space-4); border: 1px solid rgba(155, 232, 255, .5); border-radius: 14px; color: var(--color-text); background: linear-gradient(145deg, rgba(18, 53, 79, .88), rgba(5, 19, 34, .86)); box-shadow: inset 0 1px rgba(255, 255, 255, .16), 0 24px 60px rgba(0, 0, 0, .55); backdrop-filter: blur(24px) saturate(150%); transform: translate(var(--rest-dialog-x, 0px), var(--rest-dialog-y, 0px)); }
 .rest-hardware-dialog > .rest-hardware-table-wrap { min-height: 0; max-height: min(68vh, 680px); }
 .rest-hardware-dialog > .rest-hardware-table-wrap { overflow: auto; }

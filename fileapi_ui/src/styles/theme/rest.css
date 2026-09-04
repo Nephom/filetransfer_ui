@@ -9,8 +9,7 @@
 :where(.explorer) .rest-auth-panel,
 :where(.explorer) .rest-history,
 :where(.explorer) .rest-links,
-:where(.explorer) .rest-response,
-:where(.explorer) .rest-audit-panel { border-color: var(--color-border); background: var(--color-bg-panel); }
+:where(.explorer) .rest-response { border-color: var(--color-border); background: var(--color-bg-panel); }
 :where(.explorer) .mode-switch-button,
 :where(.explorer) .workspace-select,
 :where(.explorer) .rest-entry,
@@ -43,8 +42,7 @@
 :where(.explorer) .rest-reader-empty,
 :where(.explorer) .rest-session-status,
 :where(.explorer) .rest-history-item small,
-:where(.explorer) .rest-breadcrumbs,
-:where(.explorer) .rest-audit-heading span { color: var(--color-text-muted); }
+:where(.explorer) .rest-breadcrumbs { color: var(--color-text-muted); }
 :where(.explorer) .rest-action-dialog,
 :where(.explorer) .rest-hardware-dialog,
 :where(.explorer) .rest-bios-editor-card,
@@ -94,7 +92,6 @@
 :where(.explorer) .rest-auth-panel,
 :where(.explorer) .rest-history,
 :where(.explorer) .rest-links,
-:where(.explorer) .rest-audit-panel,
 :where(.explorer) .rest-toolbox-group {
   border-color: var(--color-border);
   background: color-mix(in srgb, var(--color-bg-panel) 88%, var(--color-bg));
