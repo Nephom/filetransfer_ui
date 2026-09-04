@@ -39,8 +39,13 @@ The server certificate must be trusted by the operating system. The client does 
 
 - One selected regular file uses `GET /api/files/download/*`.
 - A folder or multiple selected items use `POST /api/archive` and download a ZIP.
+- Location mode Refresh invalidates the current API Remote directory cache through `POST /api/files/refresh-cache` before loading the directory again; SSH Remote refresh directly lists the current SSH directory.
 - The client surfaces the backend's JSON error message rather than only an HTTP status.
 - Configuration and token storage use the desktop WebView's local application storage.
 - Downloads are written to the user's `Downloads` directory.
+
+### Issue Record
+
+- Location mode's toolbar Refresh previously only re-read the API Remote listing, so cached directory contents could remain unchanged. The refresh flow now invalidates the selected API Remote directory cache and reloads both the Location health list and file listing.
 
 See the parent [API contract](../docs/api/API_REFERENCE.md).

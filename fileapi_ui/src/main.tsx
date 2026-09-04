@@ -1644,6 +1644,23 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     }
   };
 
+  const refreshRemoteFiles = async () => {
+    const refreshPath = path;
+    if (remoteSshEntryId) {
+      await Promise.all([loadLocations(), loadFiles(refreshPath)]);
+      return;
+    }
+
+    const cacheResponse = await api("/api/files/refresh-cache", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ directoryPath: refreshPath }),
+    });
+    if (!cacheResponse.ok) throw new Error(await readError(cacheResponse));
+
+    await Promise.all([loadLocations(), loadFiles(refreshPath)]);
+  };
+
   // Where "up" from `path` should go for the LOCAL pane. Non-elevated
   // sessions never leave the HOME jail (existing `parentPath` behaviour).
   // Elevated sessions can walk all the way up to the real filesystem root
@@ -4583,10 +4600,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           </button>
         </span>
         <button
-          onClick={() => {
-            void loadLocations();
-            void run(() => loadFiles(path));
-          }}
+          onClick={() => void run(refreshRemoteFiles)}
           disabled={busy}
         >
           Refresh
