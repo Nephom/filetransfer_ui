@@ -22,7 +22,7 @@ rustls = { version = "0.23", features = ["ring"] }
 futures-util = "0.3"
 urlencoding = "2"
 http = "1"
-russh = "0.62"
+russh = { version = "0.62", features = ["des"] }
 russh-sftp = "2.4"
 keyring = "4"
 dirs = "6"

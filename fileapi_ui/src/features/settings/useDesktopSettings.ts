@@ -88,6 +88,12 @@ export function useDesktopSettings({ setNotice }: UseDesktopSettingsParams) {
       enabled: desktopSettings.operationLogEnabled,
       level: desktopSettings.operationLogLevel,
     }).catch(() => {});
+    // Mirror the "allow legacy SSH algorithms" toggle the same way, so a
+    // change takes effect on the very next connect attempt (terminal, SFTP
+    // browser, or key install) instead of only after restarting the app.
+    void invoke("ssh_set_allow_legacy_algorithms", {
+      enabled: desktopSettings.allowLegacySshAlgorithms,
+    }).catch(() => {});
   }, [desktopSettings]);
 
   useEffect(() => {

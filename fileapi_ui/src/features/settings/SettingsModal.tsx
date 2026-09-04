@@ -160,6 +160,10 @@ export function SettingsModal({
           <input type="checkbox" checked={desktopSettings.bracketedPasteControlEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, bracketedPasteControlEnabled: event.target.checked }))} />
           <span><strong>Sanitize bracketed-paste markers</strong><small>Remove pasted bracketed-paste control markers from clipboard text before sending it to the remote terminal.</small></span>
         </label>
+        <label className="settings-check">
+          <input type="checkbox" checked={desktopSettings.allowLegacySshAlgorithms} onChange={(event) => setDesktopSettings((current) => ({ ...current, allowLegacySshAlgorithms: event.target.checked }))} />
+          <span><strong>Allow legacy SSH algorithms for older servers</strong><small>Lets the SSH terminal, SFTP browser, and key install fall back to older key exchange, cipher, and MAC algorithms (e.g. diffie-hellman-group14-sha1, aes-cbc, hmac-sha1) when a server is too old to speak anything stronger. Only enable this if you need to reach such a server -- it weakens the connection's cryptography.</small></span>
+        </label>
       </section>
       <section className="settings-section">
         <h3>Risk confirmations</h3>

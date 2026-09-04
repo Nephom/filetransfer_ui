@@ -17,10 +17,11 @@ use russh::client::{self, AuthResult};
 #[cfg(unix)]
 use russh::keys::agent::client::{AgentClient, AgentStream};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg};
-use russh::ChannelMsg;
+use russh::{cipher, kex, mac, ChannelMsg, Preferred};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use tauri::Emitter;
 use tokio::sync::Mutex as AsyncMutex;
@@ -328,8 +329,57 @@ fn validate_profile(profile: &SshProfile) -> Result<(), String> {
     Ok(())
 }
 
+// Mirrors the frontend's "Allow legacy SSH algorithms for older servers"
+// Settings toggle (default off) into this process -- see
+// `set_allow_legacy_algorithms` below, called once on startup and again
+// whenever the user flips the setting.
+static ALLOW_LEGACY_SSH_ALGORITHMS: AtomicBool = AtomicBool::new(false);
+
+pub fn set_allow_legacy_algorithms(enabled: bool) {
+    ALLOW_LEGACY_SSH_ALGORITHMS.store(enabled, Ordering::Relaxed);
+}
+
+/// `russh`'s own default `Preferred` algorithm list already excludes every
+/// weak/legacy KEX, cipher, and MAC (that is deliberate upstream hardening,
+/// not an oversight) -- but all three families are still fully implemented
+/// in the crate, just opted out of by default. Very old SSH servers
+/// (aging embedded Linux, network/BMC appliances, etc.) frequently only
+/// speak these -- diffie-hellman-group14-sha1 / -group1-sha1 /
+/// -group-exchange-sha1 for key exchange, aes*-cbc / 3des-cbc for the
+/// cipher, hmac-sha1 for the MAC -- and otherwise fail the handshake
+/// entirely with no fallback.
+///
+/// When the user has opted in, this appends those legacy algorithms *after*
+/// russh's own safe defaults in each list, at the lowest priority. Per
+/// RFC 4253 5.1, the client's preference order decides which mutually
+/// supported algorithm wins, so a modern server offering (e.g.)
+/// curve25519-sha256 still negotiates that exactly as before -- the legacy
+/// entries only ever get selected when a server offers nothing from the
+/// safe list at all.
 fn default_config() -> Arc<client::Config> {
-    Arc::new(client::Config::default())
+    let mut preferred = Preferred::default();
+    if ALLOW_LEGACY_SSH_ALGORITHMS.load(Ordering::Relaxed) {
+        let mut kex_algos = preferred.kex.to_vec();
+        kex_algos.extend([kex::DH_GEX_SHA1, kex::DH_G14_SHA1, kex::DH_G1_SHA1]);
+        preferred.kex = kex_algos.into();
+
+        let mut ciphers = preferred.cipher.to_vec();
+        ciphers.extend([
+            cipher::AES_256_CBC,
+            cipher::AES_192_CBC,
+            cipher::AES_128_CBC,
+            cipher::TRIPLE_DES_CBC,
+        ]);
+        preferred.cipher = ciphers.into();
+
+        let mut macs = preferred.mac.to_vec();
+        macs.push(mac::HMAC_SHA1);
+        preferred.mac = macs.into();
+    }
+    Arc::new(client::Config {
+        preferred,
+        ..Default::default()
+    })
 }
 
 /// A short, non-secret label identifying this connection attempt in log

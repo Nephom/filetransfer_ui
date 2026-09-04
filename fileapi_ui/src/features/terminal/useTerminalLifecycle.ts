@@ -29,6 +29,31 @@ export const loadWebglAddon = (terminal: Terminal, WebglAddonCtor: typeof WebglA
 export const normalizeTerminalPaste = (text: string, sanitizeBracketedMarkers: boolean) =>
   sanitizeBracketedMarkers ? text.replace(/\x1b\[200~/g, "").replace(/\x1b\[201~/g, "") : text;
 
+// Decodes an OSC 52 clipboard-set request's `Pc;Pd` payload (see xterm's
+// ctlseqs docs). Full-screen interactive programs (an SSH-side TUI running
+// its own mouse handling, e.g. one that has grabbed the mouse for its own
+// selection UI) use this to ask the *terminal* to write their selection to
+// the real system clipboard, since xterm.js disables its own native
+// selection/copy path while such a program owns the mouse. Only the "set"
+// direction is decoded here -- `Pd === "?"` is a clipboard *read* request,
+// which is intentionally left unhandled (returns `undefined`, same as any
+// other unrecognized payload) so a remote shell/program can never use OSC
+// 52 to silently exfiltrate the local clipboard's contents back through
+// the terminal.
+export const decodeOscClipboardSet = (data: string): string | undefined => {
+  const separatorIndex = data.indexOf(";");
+  if (separatorIndex === -1) return undefined;
+  const payload = data.slice(separatorIndex + 1);
+  if (!payload || payload === "?") return undefined;
+  try {
+    const binary = atob(payload);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder("utf-8").decode(bytes);
+  } catch {
+    return undefined;
+  }
+};
+
 // Tauri's WebView does not grant navigator.clipboard permission for the
 // tauri.localhost origin. execCommand uses the document clipboard event path,
 // which is also the fallback used by noVNC in the desktop client.
@@ -70,6 +95,10 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
   dataRef.current = onData;
   resizeRef.current = onResize;
   replayOutputRef.current = replayOutput;
+  // Survives tab switches (each tab swap tears down and recreates the
+  // xterm instance below, but "what did I last copy" should behave like
+  // any other clipboard -- still pasteable after switching tabs).
+  const lastCopiedTextRef = useRef("");
   useEffect(() => {
     if (!enabled || !hostRef.current) return undefined;
     let disposed = false;
@@ -112,6 +141,19 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
         // keeps the browser clipboard path identical to typed input.
         terminal.paste(normalizeTerminalPaste(text, bracketedPasteControlEnabled));
       };
+      // Lets a remote full-screen program (one that has grabbed the mouse
+      // for its own selection UI, disabling xterm's native selection --
+      // see the doc comment on decodeOscClipboardSet) hand its selection to
+      // the *real* system clipboard via OSC 52, and tracks it the same way
+      // a local left-click selection is tracked below so right-click-paste
+      // (also below) works uniformly regardless of which side made the copy.
+      const oscClipboard = terminal.parser.registerOscHandler(52, (data) => {
+        const text = decodeOscClipboardSet(data);
+        if (text === undefined) return true;
+        lastCopiedTextRef.current = text;
+        void copyTerminalText(text).catch(() => undefined);
+        return true;
+      });
       const onPaste = (event: ClipboardEvent) => {
         const text = event.clipboardData?.getData("text/plain");
         if (text === undefined) return;
@@ -129,19 +171,35 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
         if (event.button !== 0) return;
         const selection = terminal.getSelection();
         if (selection && selection !== selectionAtMouseDown) {
+          lastCopiedTextRef.current = selection;
           void copyTerminalText(selection).catch(() => undefined);
         }
         selectionAtMouseDown = "";
+      };
+      // Right-click pastes whatever was last copied (by a local left-click
+      // selection above or a remote OSC 52 request above) instead of
+      // showing the WebView's native context menu -- the classic
+      // terminal-emulator convention (PuTTY, most Linux terminals). This
+      // listener, not the SSH-side program, always decides what gets
+      // pasted and when, so the Windows client keeps the final say even
+      // over a remote program that has grabbed the mouse for itself.
+      const onContextMenu = (event: MouseEvent) => {
+        event.preventDefault();
+        const text = lastCopiedTextRef.current;
+        if (text) pasteText(text);
       };
       const host = hostRef.current;
       host?.addEventListener("paste", onPaste, true);
       host?.addEventListener("mousedown", onMouseDown, true);
       host?.addEventListener("mouseup", onMouseUp, true);
+      host?.addEventListener("contextmenu", onContextMenu, true);
       cleanup = () => {
         input.dispose();
+        oscClipboard.dispose();
         host?.removeEventListener("paste", onPaste, true);
         host?.removeEventListener("mousedown", onMouseDown, true);
         host?.removeEventListener("mouseup", onMouseUp, true);
+        host?.removeEventListener("contextmenu", onContextMenu, true);
         observer.disconnect();
         // `terminal.dispose()` already disposes every addon it still has
         // loaded, but the WebGL addon may have already disposed *itself*

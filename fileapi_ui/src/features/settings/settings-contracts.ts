@@ -19,6 +19,7 @@ export type DesktopSettings = {
   restApiModeEnabled: boolean;
   collapseMainPaneEnabled: boolean;
   bracketedPasteControlEnabled: boolean;
+  allowLegacySshAlgorithms: boolean;
   undoHistoryEnabled: boolean;
   operationLogEnabled: boolean;
   operationLogLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
@@ -56,6 +57,7 @@ export const defaultDesktopSettings: DesktopSettings = {
   restApiModeEnabled: false,
   collapseMainPaneEnabled: false,
   bracketedPasteControlEnabled: false,
+  allowLegacySshAlgorithms: false,
   undoHistoryEnabled: true,
   operationLogEnabled: true,
   operationLogLevel: "DEBUG",
@@ -132,6 +134,11 @@ export const normalizeDesktopSettings = (raw: unknown): DesktopSettings => {
       saved.bracketedPasteControlEnabled,
       (value) => typeof value === "boolean",
       defaultDesktopSettings.bracketedPasteControlEnabled,
+    ),
+    allowLegacySshAlgorithms: pick(
+      saved.allowLegacySshAlgorithms,
+      (value) => typeof value === "boolean",
+      defaultDesktopSettings.allowLegacySshAlgorithms,
     ),
     confirmations: { ...defaultDesktopSettings.confirmations, ...(saved.confirmations || {}) },
   };

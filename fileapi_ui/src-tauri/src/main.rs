@@ -1905,6 +1905,15 @@ async fn ssh_connect(
     ssh::connect(app, profile, request_id).await
 }
 
+/// Mirrors the frontend's "Allow legacy SSH algorithms for older servers"
+/// Settings toggle into this process, called once on startup and again
+/// whenever the user changes it, so every connect path (interactive
+/// terminal, SFTP browser, key install) picks it up immediately.
+#[tauri::command]
+fn ssh_set_allow_legacy_algorithms(enabled: bool) {
+    ssh::set_allow_legacy_algorithms(enabled);
+}
+
 #[tauri::command]
 fn ssh_key_available(profile: ssh::SshProfile) -> Result<bool, String> {
     ssh::key_available(&profile)
@@ -2730,6 +2739,7 @@ fn main() {
             download_to_drag_staging_at,
             cleanup_drag_staging,
             ssh_connect,
+            ssh_set_allow_legacy_algorithms,
             ssh_key_available,
             ssh_install_key,
             ssh_write,
