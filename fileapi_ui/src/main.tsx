@@ -911,19 +911,12 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const localRequestGenerationRef = useRef(0);
   const localFilesFingerprintRef = useRef("");
   // The LOCAL folder-tree "forest": the first entry is always the HOME
-  // shortcut (path ""), matching the pane's own default view. When the app
-  // is running elevated (`isLocalElevated`), one extra top-level entry is
-  // appended per real filesystem root reported by `list_local_roots`
-  // (drive letters on Windows, "/" everywhere else) so a privileged user
-  // can actually reach the real root instead of being stuck inside HOME.
-  // Non-elevated users only ever see the HOME entry -- the jail enforced by
-  // the Rust side (`resolve_local_transfer_path`) is the real boundary;
-  // this is just keeping the tree's shape consistent with it.
+  // shortcut (path ""). Windows may append drive roots that the current
+  // user can enumerate; the Rust side remains the real ACL and path boundary.
   const [localTrees, setLocalTrees] = useState<FolderNode[]>([
-    { path: "", name: "~", expanded: true, loaded: false, children: [] },
+    { path: "", name: "HOMEDIR/", expanded: true, loaded: false, children: [] },
   ]);
   const [isLocalElevated, setIsLocalElevated] = useState(false);
-  const [localRoots, setLocalRoots] = useState<string[]>([]);
   const [localHomeAbsolute, setLocalHomeAbsolute] = useState("");
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
@@ -1662,11 +1655,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   };
 
   // Where "up" from `path` should go for the LOCAL pane. Non-elevated
-  // sessions never leave the HOME jail (existing `parentPath` behaviour).
-  // Elevated sessions can walk all the way up to the real filesystem root
-  // (or drive root on Windows) -- including up out of HOME itself, via
-  // `localHomeAbsolute` (HOME's own real absolute path, fetched once at
-  // startup) once `path` is the empty HOME shortcut.
+  // sessions can enter other Windows drive roots, but HOME remains the only
+  // parent of the relative HOME paths. Elevated sessions can also leave HOME.
   const localParentPath = (path: string): string => {
     const absolute = path === "" ? localHomeAbsolute : path;
     if (!isLocalElevated || !absolute || !isAbsoluteLocalPath(absolute)) return parentPath(path);
@@ -1983,13 +1973,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       try {
         const elevated = await invoke<boolean>("is_local_elevated");
         setIsLocalElevated(elevated);
-        if (!elevated) return;
-        const [roots, homePath] = await Promise.all([
-          invoke<string[]>("list_local_roots"),
-          invoke<string>("local_home_path"),
-        ]);
-        setLocalRoots(roots);
-        setLocalHomeAbsolute(homePath);
+        const roots = await invoke<string[]>("list_local_roots");
+        if (elevated) setLocalHomeAbsolute(await invoke<string>("local_home_path"));
         setLocalTrees((trees) => [
           ...trees,
           ...roots
@@ -3968,7 +3953,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const renderLocalBreadcrumbs = () => {
     const segments = localBreadcrumbSegments(localPath);
     const absolute = isAbsoluteLocalPath(localPath);
-    const rootLabel = absolute ? (segments[0]?.label || "/") : "~";
+    const rootLabel = absolute ? (segments[0]?.label || "/") : "HOMEDIR/";
     const visibleSegments = absolute ? segments.slice(1) : segments;
     return (
       <div className="pane-breadcrumbs crumbs" aria-label="LOCAL path">

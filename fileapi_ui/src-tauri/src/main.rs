@@ -315,14 +315,10 @@ fn collect_upload_paths(paths: &[String]) -> Result<(Vec<(PathBuf, String)>, Vec
         {
             return Err(format!("Upload path must not contain '..': {path}"));
         }
-        let source = if input.is_absolute() {
-            input.to_path_buf()
-        } else {
-            // LOCAL pane entries are HOME-relative; file-picker entries are
-            // absolute. Resolve only the former against the same HOME jail
-            // used by local_list_directory.
-            local_home()?.join(input)
-        };
+        // LOCAL pane entries are HOME-relative; native picker entries are
+        // absolute. Resolve both through the same filesystem boundary so a
+        // picker cannot bypass the LOCAL policy.
+        let source = resolve_local_transfer_path(path)?;
         let name = source
             .file_name()
             .and_then(|name| name.to_str())
@@ -739,10 +735,19 @@ fn content_disposition_filename(headers: &reqwest::header::HeaderMap) -> Option<
 }
 
 pub(crate) fn local_home() -> Result<PathBuf, String> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .ok_or_else(|| "Unable to locate the local home directory".to_string())
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .ok_or_else(|| "Unable to locate the Windows user profile".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| "Unable to locate the local home directory".to_string())
+    }
 }
 
 /// Resolve the directory used for SSH keys and known hosts.
@@ -880,12 +885,9 @@ fn local_home_path() -> Result<String, String> {
 
 /// Whether the desktop app is currently running with elevated privileges
 /// (root on Unix, an elevated Administrator token on Windows). This is the
-/// gate for lifting the "stay inside the user's home directory" jail that
-/// `resolve_local_transfer_path`/`resolve_local_new_path`/
-/// `local_list_directory` otherwise enforce -- a non-elevated process must
-/// never be trusted to browse or move files outside of HOME, so every path
-/// resolver below re-checks this itself rather than trusting a flag the
-/// frontend could pass in.
+/// gate for lifting the HOME-drive restriction on Windows and the HOME jail
+/// on Unix. Every path resolver below re-checks the real process privilege
+/// rather than trusting a flag the frontend could pass in.
 #[cfg(unix)]
 fn is_elevated() -> bool {
     extern "C" {
@@ -904,16 +906,32 @@ fn is_local_elevated() -> bool {
     is_elevated()
 }
 
-/// The real filesystem roots a privileged user can browse from: the drive
-/// letters on Windows, or just "/" everywhere else. Only meaningful (and
-/// only returned) when `is_elevated()` is true -- a non-elevated caller gets
-/// an empty list, since it can never navigate above HOME anyway.
+/// Filesystem roots available to the LOCAL tree. Windows excludes the HOME
+/// drive for regular users because C: outside HOME remains restricted, while
+/// other drive roots are offered only when their root can be enumerated.
 #[cfg(windows)]
 fn local_roots() -> Vec<String> {
+    let home_drive = local_home()
+        .ok()
+        .and_then(|home| canonicalize(home).ok())
+        .and_then(|home| {
+            home.components().find_map(|component| match component {
+                std::path::Component::Prefix(prefix) => match prefix.kind() {
+                    std::path::Prefix::Disk(letter)
+                    | std::path::Prefix::VerbatimDisk(letter) => Some(letter.to_ascii_uppercase()),
+                    _ => None,
+                },
+                _ => None,
+            })
+        });
+    let elevated = is_elevated();
     (b'A'..=b'Z')
         .filter_map(|letter| {
             let drive = format!("{}:\\", letter as char);
-            if Path::new(&drive).is_dir() {
+            if !elevated && (home_drive.is_none() || home_drive == Some(letter)) {
+                return None;
+            }
+            if Path::new(&drive).is_dir() && std::fs::read_dir(&drive).is_ok() {
                 Some(drive.replace('\\', "/"))
             } else {
                 None
@@ -929,23 +947,49 @@ fn local_roots() -> Vec<String> {
 
 #[tauri::command]
 fn list_local_roots() -> Vec<String> {
-    if is_elevated() {
+    #[cfg(windows)]
+    {
         local_roots()
-    } else {
-        Vec::new()
+    }
+    #[cfg(not(windows))]
+    {
+        if is_elevated() {
+            local_roots()
+        } else {
+            Vec::new()
+        }
     }
 }
 
-/// Whether an absolute local path is allowed through the "stay inside HOME"
-/// jail: either it actually resolves inside `home`, or the process is
-/// running elevated (which lifts the jail entirely). Pulled out as a pure,
-/// dependency-injected function (rather than calling `is_elevated()`
-/// directly at each call site) so the home-containment branch -- the one
-/// that matters for native-picker-selected paths like a file on the user's
-/// own Desktop -- can be unit-tested deterministically, independent of
-/// whatever real OS privilege level happens to run the test suite.
+/// Whether an absolute local path is allowed through the local filesystem
+/// boundary. Unix remains HOME-only unless elevated. On Windows, a regular
+/// user may use HOME and drive-letter paths on volumes other than the HOME
+/// volume; the operating system still enforces the user's ACL on every I/O.
 fn is_within_home_or_elevated(resolved: &Path, home: &Path, elevated: bool) -> bool {
-    resolved.starts_with(home) || elevated
+    if resolved.starts_with(home) || elevated {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        let drive_letter = |path: &Path| {
+            path.components().find_map(|component| match component {
+                std::path::Component::Prefix(prefix) => match prefix.kind() {
+                    std::path::Prefix::Disk(letter) | std::path::Prefix::VerbatimDisk(letter) => {
+                        Some(letter.to_ascii_uppercase())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+        };
+        return drive_letter(resolved).is_some() && drive_letter(resolved) != drive_letter(home);
+    }
+
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
@@ -1001,19 +1045,19 @@ fn resolve_local_download_destination(path: &str) -> Result<PathBuf, String> {
         return Err("Local transfer path must not contain '..'".to_string());
     }
     if input.is_absolute() {
-        // See resolve_local_transfer_path: an absolute path from a native
-        // picker isn't necessarily outside the jail, so it must be checked
-        // against `home` rather than automatically requiring elevation.
+        // Check the lexical destination before creating it. This prevents a
+        // denied C: path from being created before the policy rejects it.
+        let home = canonicalize(local_home()?)?;
+        #[cfg(windows)]
+        if !is_within_home_or_elevated(input, &home, is_elevated()) {
+            return Err("Download destination is outside the permitted local filesystem".to_string());
+        }
         std::fs::create_dir_all(input).map_err(|error| error.to_string())?;
         let resolved = canonicalize(input)?;
-        let home = canonicalize(local_home()?)?;
         if is_within_home_or_elevated(&resolved, &home, is_elevated()) {
             return Ok(resolved);
         }
-        return Err(
-            "Local transfer path must remain inside the current user's home directory"
-                .to_string(),
-        );
+        return Err("Download destination is outside the permitted local filesystem".to_string());
     }
     let home = canonicalize(local_home()?)?;
     let candidate = home.join(input);
@@ -1046,9 +1090,9 @@ fn resolve_local_download_file(
     }
     let destination_root = if Path::new(destination_folder).is_absolute() {
         let root = canonicalize(destination_folder)?;
-        if !is_elevated() && !root.starts_with(canonicalize(local_home()?)?) {
+        if !is_within_home_or_elevated(&root, &canonicalize(local_home()?)?, is_elevated()) {
             return Err(
-                "Download destination must remain inside the current user's home directory"
+                "Download destination is outside the permitted local filesystem"
                     .to_string(),
             );
         }
@@ -1062,8 +1106,8 @@ fn resolve_local_download_file(
         .ok_or_else(|| "Invalid destination path for queued download".to_string())?;
     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     let canonical_parent = canonicalize(parent)?;
-    if !is_elevated() && !canonical_parent.starts_with(&destination_root) {
-        return Err("Download destination leaves the current user's home directory".to_string());
+    if !canonical_parent.starts_with(&destination_root) {
+        return Err("Download destination leaves its selected folder".to_string());
     }
     let file_name = requested
         .file_name()
@@ -1320,26 +1364,24 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
     {
         return Err("Local path must not contain '..'".to_string());
     }
-    // `root` is `Some(home)` while browsing the HOME-relative jail (the
-    // normal, non-elevated case): every returned path is relative to it, as
-    // the rest of the frontend expects. When running elevated and given an
-    // absolute path, `root` is `None` and paths are absolute end-to-end
-    // instead -- see `is_elevated()` for why this is never trusted from an
-    // unprivileged process.
+    // `root` is `Some(home)` while browsing HOME-relative paths. An absolute
+    // Windows drive path (including one used by a regular user on another
+    // volume) returns absolute paths end-to-end.
     let (root, directory): (Option<PathBuf>, PathBuf) = if input.is_absolute() {
-        if !is_elevated() {
-            return Err("Local path must stay inside the user home directory".to_string());
-        }
         let directory = canonicalize(input)?;
         if !directory.is_dir() {
             return Err("Local path is not a directory".to_string());
+        }
+        let home = canonicalize(local_home()?)?;
+        if !is_within_home_or_elevated(&directory, &home, is_elevated()) {
+            return Err("Local path is outside the permitted local filesystem".to_string());
         }
         (None, directory)
     } else {
         let home = canonicalize(local_home()?)?;
         let directory = canonicalize(home.join(input))?;
         if !directory.starts_with(&home) || !directory.is_dir() {
-            return Err("Local path is outside the user home directory".to_string());
+            return Err("Local path is outside the permitted local filesystem".to_string());
         }
         (Some(home), directory)
     };
@@ -1402,19 +1444,20 @@ fn local_list_directories(path: String) -> Result<LocalDirectoryChildren, String
         return Err("Local path must not contain '..'".to_string());
     }
     let (root, directory): (Option<PathBuf>, PathBuf) = if input.is_absolute() {
-        if !is_elevated() {
-            return Err("Local path must stay inside the user home directory".to_string());
-        }
         let directory = canonicalize(input)?;
         if !directory.is_dir() {
             return Err("Local path is not a directory".to_string());
+        }
+        let home = canonicalize(local_home()?)?;
+        if !is_within_home_or_elevated(&directory, &home, is_elevated()) {
+            return Err("Local path is outside the permitted local filesystem".to_string());
         }
         (None, directory)
     } else {
         let home = canonicalize(local_home()?)?;
         let directory = canonicalize(home.join(input))?;
         if !directory.starts_with(&home) || !directory.is_dir() {
-            return Err("Local path is outside the user home directory".to_string());
+            return Err("Local path is outside the permitted local filesystem".to_string());
         }
         (Some(home), directory)
     };
@@ -2873,11 +2916,20 @@ mod tests {
         let home = std::env::temp_dir().join(format!("nfterm-home-{suffix}"));
         fs::create_dir_all(&home).expect("temporary home directory should be created");
         let previous_home = std::env::var_os("HOME");
+        #[cfg(windows)]
+        let previous_user_profile = std::env::var_os("USERPROFILE");
         std::env::set_var("HOME", &home);
+        #[cfg(windows)]
+        std::env::set_var("USERPROFILE", &home);
         let result = run(&home);
         match previous_home {
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
+        }
+        #[cfg(windows)]
+        match previous_user_profile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
         }
         let _ = fs::remove_dir_all(&home);
         result
@@ -2892,6 +2944,32 @@ mod tests {
         assert!(is_within_home_or_elevated(inside, home, true));
         assert!(!is_within_home_or_elevated(outside, home, false));
         assert!(is_within_home_or_elevated(outside, home, true));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn regular_windows_users_can_use_other_drive_letters_but_not_c_root() {
+        let home = std::path::Path::new(r"C:\Users\alice");
+        assert!(is_within_home_or_elevated(
+            std::path::Path::new(r"C:\Users\alice\Desktop"),
+            home,
+            false,
+        ));
+        assert!(!is_within_home_or_elevated(
+            std::path::Path::new(r"C:\Windows"),
+            home,
+            false,
+        ));
+        assert!(is_within_home_or_elevated(
+            std::path::Path::new(r"D:\Projects"),
+            home,
+            false,
+        ));
+        assert!(!is_within_home_or_elevated(
+            std::path::Path::new(r"\\server\share"),
+            home,
+            false,
+        ));
     }
 
     #[test]

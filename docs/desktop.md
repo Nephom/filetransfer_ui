@@ -32,9 +32,19 @@ rejected. Private key files remain on the local machine.
 
 ## Local Filesystem Boundary
 
-The normal local root is the current user's HOME. Every command that reads,
-writes, renames, deletes, extracts, or stages a local path validates the path
-in Rust; frontend path strings are not trusted as authorization.
+The normal local root is the current user's HOME. On Windows, the LOCAL tree
+also discovers drive-letter volumes other than the HOME drive when the current
+user can enumerate their root directory. A regular user can therefore browse
+and use an accessible `D:/` or `E:/` without being granted the rest of `C:/`.
+The Windows ACL remains authoritative: an `Access Denied` result is reported as
+an error and is never represented as an empty directory. Elevated Windows
+sessions may also browse `C:/` and the HOME drive root.
+
+Every command that reads, writes, renames, deletes, extracts, or stages a local
+path validates the path in Rust; frontend path strings are not trusted as
+authorization. Relative paths remain HOME-relative, while Windows drive-letter
+paths are allowed only for non-HOME drives and are still subject to normal OS
+ACL checks.
 
 For writes below a destination directory, nFterm creates missing parents and
 then canonicalizes the parent before opening the file. The canonical parent
@@ -46,7 +56,10 @@ Network, cancellation, and write failures remove the partial output. Archive
 creation streams file contents rather than loading an entire file into memory.
 
 An elevated process may browse real filesystem roots. Elevation is detected by
-the Rust process and is never accepted from a frontend boolean.
+the Rust process and is never accepted from a frontend boolean. On Windows,
+root discovery filters out drive roots that cannot be enumerated for the
+current process; a later ACL failure while browsing or mutating a child is
+returned explicitly.
 
 ## Transfer Queue
 

@@ -49,7 +49,7 @@ Changing Location via `selectLocation()` clears the SSH browse source, resets pa
 
 ## File data and navigation
 
-The shared `FileItem` shape is `{ name, path, isDirectory, size, modified }`. Remote API paths are Location-relative; SSH paths use SSH absolute-style paths. LOCAL paths are normally HOME-relative (`""`, `Documents/a.txt`). When the process is elevated, Unix absolute paths and Windows drive roots are added and the LOCAL pane may leave HOME. The Rust commands remain the security boundary.
+The shared `FileItem` shape is `{ name, path, isDirectory, size, modified }`. Remote API paths are Location-relative; SSH paths use SSH absolute-style paths. LOCAL paths are normally HOME-relative (`""`, `Documents/a.txt`). On Windows, roots for non-HOME drive-letter volumes are also added when the current user can enumerate them; the HOME drive remains HOME-only for a regular user. Elevated sessions additionally receive the HOME drive root and Unix/Windows filesystem roots. The Rust commands remain the security boundary and Windows ACL errors are surfaced instead of converted to empty listings.
 
 Important helpers:
 
@@ -57,14 +57,14 @@ Important helpers:
 |---|---|
 | `parentPath` | Moves up one API/normal local relative path. |
 | `isAbsoluteLocalPath`, `localBreadcrumbSegments` | Recognize and render elevated Unix/Windows paths. |
-| `localParentPath`, `showLocalUp` | Prevent non-elevated users leaving HOME; allow elevated users to reach filesystem/drive root. |
+| `localParentPath`, `showLocalUp` | Keep HOME-relative navigation inside HOME while allowing Windows non-HOME drive roots and elevated filesystem/drive roots. |
 | `sshParentPath`, `joinSshPath` | Normalize SSH navigation. |
 | `formatSize`, `fileTimestamp`, `compareFileItems`, `sortFileItems` | Display, timestamp normalization, sorting, and directory-first ordering. |
 | `normalizeColumnWidths`, `readPersistedColumnWidths` | Validate persisted Name/Modified/Size percentages before rendering `<col>` elements. |
 
 `loadFiles()` browses either `ssh_list_directory` or `GET /api/files?path=...&sort=...&order=...&directoriesFirst=...`. It resets selection and records start/completion/failure operation logs. `loadTreeChildren()` performs the equivalent directory-only query for the REMOTE folder tree. `loadLocalFiles()` uses `local_list_directory`; `refreshLocalFiles()` reloads the current directory; `loadLocalTreeChildren()` uses `local_list_directories` with a cache and request-generation guard so stale asynchronous responses cannot overwrite a newer navigation.
 
-The LOCAL tree starts with the `~` node. On elevated sessions `is_local_elevated`, `list_local_roots`, and `local_home_path` add real filesystem roots. Local tree expansion is lazy; remote and local folder nodes expand after a 650 ms drag hover, and drop targets auto-scroll when the pointer approaches a scroll boundary.
+The LOCAL tree starts with the `HOMEDIR/` node. On Windows, `list_local_roots` adds non-HOME drive roots that the current process can enumerate for regular users; elevated sessions also receive the HOME drive root. `local_home_path` is used when elevated navigation must leave HOME. Local tree expansion is lazy; remote and local folder nodes expand after a 650 ms drag hover, and drop targets auto-scroll when the pointer approaches a scroll boundary.
 
 ## Transfer and file actions
 
