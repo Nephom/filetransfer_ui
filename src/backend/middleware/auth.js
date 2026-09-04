@@ -23,15 +23,14 @@ class AuthMiddleware {
    */
   async authenticate(req, res, next) {
     try {
-      // Extract token from Authorization header
+      // Prefer the HttpOnly browser session; retain Bearer support for API clients.
       const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      const token = getSessionToken(req) || (authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null);
+      if (!token) {
         return res.status(401).json({
           error: 'Authorization header missing or invalid'
         });
       }
-
-      const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
       // Verify token
       const decoded = this.authManager.verifyToken(token);
@@ -93,6 +92,7 @@ class AuthMiddleware {
 const jwt = require('jsonwebtoken');
 const configManager = require('../config');
 const userManager = require('../auth/user-manager');
+const { getSessionToken } = require('../auth/session-cookie');
 
 // This will be set by the server when it initializes
 let jwtSecret = null;
@@ -103,15 +103,15 @@ const setJwtSecret = (secret) => {
 
 const authenticate = async (req, res, next) => {
   try {
-    // Extract token from Authorization header
+    // Prefer the HttpOnly browser session; retain Bearer support for API clients.
+    const sessionToken = getSessionToken(req);
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const token = sessionToken || (authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null);
+    if (!token) {
       return res.status(401).json({
         error: 'Authorization header missing or invalid'
       });
     }
-
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
     // Verify token using JWT directly
     const decoded = jwt.verify(token, jwtSecret);
@@ -159,12 +159,12 @@ async function resolveCurrentAccount(decoded) {
 function requireRole(allowedRoles) {
   return async (req, res, next) => {
     try {
+      const sessionToken = getSessionToken(req);
       const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      const token = sessionToken || (authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null);
+      if (!token) {
         return res.status(401).json({ error: 'Authorization header missing or invalid' });
       }
-
-      const token = authHeader.substring(7);
       let decoded;
       try {
         decoded = jwt.verify(token, jwtSecret);

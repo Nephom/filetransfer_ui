@@ -34,6 +34,7 @@ const pidManager = require('./utils/pid-manager');
 const { modifiedTimestamp, normalizeSort, sortFiles } = require('./utils/file-sorting');
 const { archiveFilename, contentDisposition } = require('./utils/archive-filename');
 const { getVersion } = require('../../scripts/version');
+const { clearSessionCookie, getSessionToken, setSessionCookie } = require('./auth/session-cookie');
 
 
 
@@ -402,10 +403,10 @@ app.post('/auth/login', (req, res, next) => {
         configManager.get('security.jwtSecret'),
         { expiresIn: '24h' }
       );
+      setSessionCookie(req, res, token);
 
       res.json({
         success: true,
-        token,
         user: {
           id: user.id,
           username: user.username,
@@ -426,9 +427,14 @@ app.post('/auth/login', (req, res, next) => {
   }
 });
 
+app.post('/auth/logout', (req, res) => {
+  clearSessionCookie(req, res);
+  res.json({ success: true });
+});
+
 app.post('/auth/browser-handoff', authenticate, requireStaffRole, (req, res) => {
   const authorization = req.get('Authorization');
-  const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
+  const token = getSessionToken(req) || (authorization?.startsWith('Bearer ') ? authorization.slice(7) : null);
   if (!token) return res.status(401).json({ error: 'Authorization token missing' });
 
   const code = crypto.randomBytes(32).toString('base64url');
@@ -442,8 +448,10 @@ app.get('/auth/browser-handoff/:code', (req, res) => {
   browserHandoffs.delete(req.params.code);
   if (!handoff || handoff.expiresAt < Date.now()) return res.status(410).send('This browser sign-in link has expired.');
 
+  const destination = req.query.destination === '/super' ? '/super' : '/admin';
   res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'Content-Type': 'text/html; charset=utf-8' });
-  res.send(`<!doctype html><meta name="referrer" content="no-referrer"><script>localStorage.setItem('token', ${JSON.stringify(handoff.token)});location.replace('/admin');</script>`);
+  setSessionCookie(req, res, handoff.token);
+  res.send(`<!doctype html><meta name="referrer" content="no-referrer"><script>location.replace(${JSON.stringify(destination)});</script>`);
 });
 
 // Change password endpoint
@@ -514,12 +522,13 @@ app.post('/auth/verify', (req, res, next) => {
 }, async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
+    const sessionToken = getSessionToken(req);
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!sessionToken && (!authHeader || !authHeader.startsWith('Bearer '))) {
       return res.status(401).json({ error: 'No valid authorization header' });
     }
 
-    const token = authHeader.substring(7);
+    const token = sessionToken || authHeader.substring(7);
     const jwt = require('jsonwebtoken');
     const jwtSecret = configManager.get('security.jwtSecret');
     if (!jwtSecret) throw new Error('JWT secret is not configured');

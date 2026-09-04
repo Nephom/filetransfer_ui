@@ -354,15 +354,15 @@ class UploadAPI {
       // Manual authentication check for multipart requests
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
+      const { getSessionToken } = require('../auth/session-cookie');
       const jwtSecret = configManager.get('security.jwtSecret');
       if (!jwtSecret) throw new Error('JWT secret is not configured');
       
       // Try to get token from header first
       let token = null;
+      token = getSessionToken(req);
       const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        token = authHeader.substring(7);
-      }
+      if (!token && authHeader?.startsWith('Bearer ')) token = authHeader.substring(7);
       
       // If not in header, try to get from body (for multipart)
       if (!token && req.body && req.body.token) {
@@ -469,6 +469,7 @@ class UploadAPI {
       // Manual authentication check for multipart requests
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
+      const { getSessionToken } = require('../auth/session-cookie');
       const jwtSecret = configManager.get('security.jwtSecret');
       if (!jwtSecret) throw new Error('JWT secret is not configured');
 
@@ -476,10 +477,9 @@ class UploadAPI {
 
       // Try to get token from header first
       let token = null;
+      token = getSessionToken(req);
       const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        token = authHeader.substring(7);
-      }
+      if (!token && authHeader?.startsWith('Bearer ')) token = authHeader.substring(7);
 
       // If not in header, try to get from body (for multipart)
       if (!token && req.body && req.body.token) {
@@ -770,15 +770,15 @@ class UploadAPI {
       // Manual authentication check for multipart requests
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
+      const { getSessionToken } = require('../auth/session-cookie');
       const jwtSecret = configManager.get('security.jwtSecret');
       if (!jwtSecret) throw new Error('JWT secret is not configured');
       
       // Try to get token from header first
       let token = null;
+      token = getSessionToken(req);
       const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        token = authHeader.substring(7);
-      }
+      if (!token && authHeader?.startsWith('Bearer ')) token = authHeader.substring(7);
       
       // If not in header, try to get from body (for multipart)
       if (!token && req.body && req.body.token) {
@@ -894,13 +894,15 @@ class UploadAPI {
       // 1. Manual JWT authentication (since we're not using multer middleware)
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
+      const { getSessionToken } = require('../auth/session-cookie');
       const jwtSecret = configManager.get('security.jwtSecret');
       if (!jwtSecret) throw new Error('JWT secret is not configured');
 
       systemLogger.logSystem('INFO', `[UPLOAD] Step 1: Checking authentication`);
 
       const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      const token = getSessionToken(req) || (authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null);
+      if (!token) {
         systemLogger.logSystem('ERROR', `[UPLOAD] Authentication failed: missing or invalid auth header`);
         return res.status(401).json({
           success: false,
@@ -911,7 +913,6 @@ class UploadAPI {
         });
       }
 
-      const token = authHeader.substring(7);
       try {
         const decoded = jwt.verify(token, jwtSecret);
         req.user = decoded;

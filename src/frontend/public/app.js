@@ -5,27 +5,23 @@ console.log('Loading File Transfer App...');
 // Main App Component Definition
 const App = () => {
     const [user, setUser] = React.useState(null);
-    // Keep the bearer token in memory so an XSS cannot recover it from persistent storage.
-    const [token, setToken] = React.useState(null);
+    const [authChecked, setAuthChecked] = React.useState(false);
 
-    const handleLogin = (userData, userToken) => {
+    const handleLogin = (userData) => {
         setUser(userData);
-        setToken(userToken);
     };
 
-    const handleLogout = () => {
-        setUser(null);
-        setToken(null);
+    const handleLogout = async () => {
+        try {
+            await fetch('/auth/logout', { method: 'POST' });
+        } finally {
+            setUser(null);
+        }
     };
 
-    // Check token validity on mount
+    // The browser sends the HttpOnly session cookie automatically.
     React.useEffect(() => {
-        if (token && !user) {
-            // Verify token with server
-            fetch('/auth/verify', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` }
-            })
+        fetch('/auth/verify', { method: 'POST' })
             .then(response => {
                 if (!response.ok) {
                     throw new Error('Token invalid');
@@ -35,18 +31,16 @@ const App = () => {
             .then(data => {
                 setUser(data.user);
             })
-            .catch(() => {
-                // Token is invalid, remove it
-                setToken(null);
-            });
-        }
-    }, [token, user]);
+            .catch(() => setUser(null))
+            .finally(() => setAuthChecked(true));
+    }, []);
 
-    if (!token || !user) {
+    if (!authChecked) return null;
+    if (!user) {
         return React.createElement(LoginForm, { onLogin: handleLogin });
     }
 
-    return React.createElement(FileBrowser, { token: token, user: user, onLogout: handleLogout });
+    return React.createElement(FileBrowser, { token: null, user: user, onLogout: handleLogout });
 };
 
 // Make App component available globally

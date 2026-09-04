@@ -634,7 +634,9 @@
     </div>
 
     <script>
-        // Get token from localStorage
+        // Legacy request code still calls this object localStorage; JWTs are never stored here.
+        const localStorage = { getItem: (key) => key === 'token' ? 'cookie' : null, removeItem: () => {} };
+
         function getToken() {
             return localStorage.getItem('token');
         }
@@ -665,7 +667,7 @@
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
                 if (!response.ok) {
-                    localStorage.removeItem('token');
+                    sessionStorage.removeItem('token');
                     alert('Your session has expired. Please log in again.');
                     window.location.href = '/';
                     return false;

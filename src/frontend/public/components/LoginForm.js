@@ -35,7 +35,7 @@ const LoginForm = ({ onLogin }) => {
             const data = await response.json();
             
             if (response.ok) {
-                onLogin(data.user, data.token);
+                onLogin(data.user);
             } else {
                 setError(data.error || 'Login failed');
             }

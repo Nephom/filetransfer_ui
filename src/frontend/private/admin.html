@@ -1950,7 +1950,10 @@
             window.open('/server.log', '_blank');
         }
 
-        // Get token from localStorage
+        // Legacy request code still calls this object localStorage; JWTs are never stored here.
+        const localStorage = { getItem: (key) => key === 'token' ? 'cookie' : null, removeItem: () => {} };
+
+        // Authentication is supplied by the HttpOnly session cookie.
         function getToken() {
             return localStorage.getItem('token');
         }
