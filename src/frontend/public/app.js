@@ -5,16 +5,15 @@ console.log('Loading File Transfer App...');
 // Main App Component Definition
 const App = () => {
     const [user, setUser] = React.useState(null);
-    const [token, setToken] = React.useState(localStorage.getItem('token'));
+    // Keep the bearer token in memory so an XSS cannot recover it from persistent storage.
+    const [token, setToken] = React.useState(null);
 
     const handleLogin = (userData, userToken) => {
         setUser(userData);
         setToken(userToken);
-        localStorage.setItem('token', userToken);
     };
 
     const handleLogout = () => {
-        localStorage.removeItem('token');
         setUser(null);
         setToken(null);
     };
@@ -38,7 +37,6 @@ const App = () => {
             })
             .catch(() => {
                 // Token is invalid, remove it
-                localStorage.removeItem('token');
                 setToken(null);
             });
         }
@@ -140,11 +138,10 @@ const initializeApp = () => {
         console.error('❌ Error initializing app:', error);
         const loadingTextElement = document.getElementById('loading-text');
         if (loadingTextElement) {
-            loadingTextElement.innerHTML = `
-                <p style="color: #ef4444; margin: 0; font-size: 18px;">
-                    Error loading application: ${error.message}
-                </p>
-            `;
+            loadingTextElement.textContent = `Error loading application: ${error.message}`;
+            loadingTextElement.style.color = '#ef4444';
+            loadingTextElement.style.margin = '0';
+            loadingTextElement.style.fontSize = '18px';
         }
     }
 };

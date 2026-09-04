@@ -9,6 +9,16 @@ const fs = require('fs').promises;
 const path = require('path');
 const { systemLogger } = require('../utils/logger');
 
+const UPDATABLE_COLUMNS = new Set([
+  'name',
+  'path',
+  'relative_path',
+  'is_directory',
+  'size',
+  'modified_time',
+  'parent_path'
+]);
+
 class FileSystemCache {
   constructor(dbPath = './filesystem_cache.db') {
     this.dbPath = dbPath;
@@ -255,7 +265,13 @@ class FileSystemCache {
    */
   async updateFile(filePath, updates) {
     return new Promise((resolve, reject) => {
-      const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');
+      const updateKeys = Object.keys(updates);
+      if (updateKeys.length === 0 || updateKeys.some((key) => !UPDATABLE_COLUMNS.has(key))) {
+        reject(new Error('Invalid file cache update columns'));
+        return;
+      }
+
+      const setClause = updateKeys.map(key => `${key} = ?`).join(', ');
       const values = Object.values(updates);
       values.push(filePath);
       

@@ -52,8 +52,10 @@ const pruneHistory = (items, now = Date.now(), policies = {
   }
   for (const [status, values] of grouped) {
     const policy = policies[status];
-    active.push(...values.sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))
-      .filter((item, index) => index < policy.max && (!item.finishedAt || now - item.finishedAt < policy.ttlMs)));
+    const retained = values
+      .filter((item) => !item.finishedAt || now - item.finishedAt <= policy.ttlMs)
+      .sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0));
+    active.push(...retained.slice(0, policy.max));
   }
   return active;
 };

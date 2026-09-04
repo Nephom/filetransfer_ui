@@ -95,7 +95,7 @@ const configManager = require('../config');
 const userManager = require('../auth/user-manager');
 
 // This will be set by the server when it initializes
-let jwtSecret = 'file-transfer-secret-key';
+let jwtSecret = null;
 
 const setJwtSecret = (secret) => {
   jwtSecret = secret;

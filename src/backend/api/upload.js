@@ -354,7 +354,8 @@ class UploadAPI {
       // Manual authentication check for multipart requests
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
-      const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+      const jwtSecret = configManager.get('security.jwtSecret');
+      if (!jwtSecret) throw new Error('JWT secret is not configured');
       
       // Try to get token from header first
       let token = null;
@@ -468,7 +469,8 @@ class UploadAPI {
       // Manual authentication check for multipart requests
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
-      const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+      const jwtSecret = configManager.get('security.jwtSecret');
+      if (!jwtSecret) throw new Error('JWT secret is not configured');
 
       systemLogger.logSystem('INFO', `[BATCH] Step 1: Checking authentication`);
 
@@ -768,7 +770,8 @@ class UploadAPI {
       // Manual authentication check for multipart requests
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
-      const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+      const jwtSecret = configManager.get('security.jwtSecret');
+      if (!jwtSecret) throw new Error('JWT secret is not configured');
       
       // Try to get token from header first
       let token = null;
@@ -891,7 +894,8 @@ class UploadAPI {
       // 1. Manual JWT authentication (since we're not using multer middleware)
       const jwt = require('jsonwebtoken');
       const configManager = require('../config');
-      const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+      const jwtSecret = configManager.get('security.jwtSecret');
+      if (!jwtSecret) throw new Error('JWT secret is not configured');
 
       systemLogger.logSystem('INFO', `[UPLOAD] Step 1: Checking authentication`);
 

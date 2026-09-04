@@ -399,7 +399,7 @@ app.post('/auth/login', (req, res, next) => {
           username: user.username,
           role: user.role
         },
-        configManager.get('security.jwtSecret') || 'file-transfer-secret-key',
+        configManager.get('security.jwtSecret'),
         { expiresIn: '24h' }
       );
 
@@ -521,7 +521,8 @@ app.post('/auth/verify', (req, res, next) => {
 
     const token = authHeader.substring(7);
     const jwt = require('jsonwebtoken');
-    const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+    const jwtSecret = configManager.get('security.jwtSecret');
+    if (!jwtSecret) throw new Error('JWT secret is not configured');
 
     try {
       const decoded = jwt.verify(token, jwtSecret);
@@ -2624,7 +2625,8 @@ async function startServer() {
     app.use(securityMiddleware.validateInput);
 
     // Initialize components after config is loaded
-    const jwtSecret = configManager.get('security.jwtSecret') || 'file-transfer-secret-key';
+    const jwtSecret = configManager.get('security.jwtSecret');
+    if (!jwtSecret) throw new Error('JWT secret is not configured');
 
     authManager = new AuthManager({
       jwtSecret: jwtSecret

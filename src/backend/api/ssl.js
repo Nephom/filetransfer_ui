@@ -5,6 +5,7 @@ const certificateManager = require('../ssl/certificate-manager');
 const sanManager = require('../ssl/san-manager');
 const { systemLogger } = require('../utils/logger');
 const rateLimit = require('express-rate-limit');
+const path = require('path');
 
 // Rate limiter for certificate operations (5 requests per 15 minutes)
 const certLimiter = rateLimit({
@@ -289,12 +290,22 @@ router.get('/admin/ssl/download/ca', requireAdmin, async (req, res) => {
       return res.status(404).json({ error: 'CA證書不存在' });
     }
 
-    const fs = require('fs');
+    const caCertPath = certificateManager.caCertPath;
+    if (!path.isAbsolute(caCertPath)) {
+      systemLogger.logError('CA certificate path is not absolute', req);
+      return res.status(500).json({ error: 'CA證書路徑設定無效' });
+    }
+
     res.setHeader('Content-Type', 'application/x-x509-ca-cert');
     res.setHeader('Content-Disposition', 'attachment; filename="filetransfer-ca.crt"');
-    res.sendFile(certificateManager.caCertPath);
-
-    systemLogger.log('INFO', 'CA certificate downloaded', req);
+    res.sendFile(caCertPath, (error) => {
+      if (error) {
+        systemLogger.logError(`CA certificate send error: ${error.message}`, req);
+        if (!res.headersSent) res.status(500).json({ error: '下載CA證書失敗' });
+        return;
+      }
+      systemLogger.log('INFO', 'CA certificate downloaded', req);
+    });
   } catch (error) {
     systemLogger.logError(`CA download error: ${error.message}`, req);
     res.status(500).json({ error: '下載CA證書失敗' });
