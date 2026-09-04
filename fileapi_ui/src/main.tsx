@@ -4252,6 +4252,56 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const mobileLayout = desktopSettings.uiProfile === "mobile"
     || (desktopSettings.uiProfile === "auto" && isMobileViewport(viewport));
+  const commandbarRef = useRef<HTMLElement>(null);
+  const [commandBarOverflow, setCommandBarOverflow] = useState(mobileLayout);
+  const commandBarOverflowRef = useRef(mobileLayout);
+  const commandBarRequiredWidthRef = useRef<number | null>(null);
+  useEffect(() => {
+    const commandbar = commandbarRef.current;
+    if (!commandbar) return undefined;
+    const measure = () => {
+      if (mobileLayout) {
+        commandBarOverflowRef.current = true;
+        setCommandBarOverflow(true);
+        return;
+      }
+      const actionButtons = Array.from(commandbar.querySelectorAll<HTMLButtonElement>(":scope > button"));
+      if (commandBarOverflowRef.current && commandBarRequiredWidthRef.current !== null) {
+        // This width was measured while every action was rendered, so it is
+        // the minimum width needed to restore the full toolbar safely.
+        if (commandbar.clientWidth < commandBarRequiredWidthRef.current) return;
+        commandBarOverflowRef.current = false;
+        commandBarRequiredWidthRef.current = null;
+        setCommandBarOverflow(false);
+        return;
+      }
+      const nonActionWidth = Array.from(commandbar.children)
+        .filter((child) => !(child instanceof HTMLButtonElement) && !child.classList.contains("divider"))
+        .reduce((width, child) => width + child.getBoundingClientRect().width, 0);
+      const dividerWidth = Array.from(commandbar.children)
+        .filter((child) => child.classList.contains("divider"))
+        .reduce((width, child) => width + child.getBoundingClientRect().width, 0);
+      const gap = Number.parseFloat(getComputedStyle(commandbar).gap) || 0;
+      const requiredWidth = nonActionWidth
+        + actionButtons.reduce((width, button) => width + button.scrollWidth, 0)
+        + dividerWidth
+        + (commandbar.children.length - 1) * gap;
+      const overflow = requiredWidth > commandbar.clientWidth + 1
+        || commandbar.scrollWidth > commandbar.clientWidth + 1
+        || actionButtons.some((button) => button.scrollWidth > button.clientWidth + 1);
+      commandBarOverflowRef.current = overflow;
+      commandBarRequiredWidthRef.current = overflow ? requiredWidth : null;
+      setCommandBarOverflow(overflow);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(commandbar);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [mobileLayout, appMode, splitMode]);
   const contextLabel = appMode === "location" ? "LocationID" : appMode === "rest" ? "REST Entry" : "VNC Entry";
   const contextValue = appMode === "location"
     ? remoteSshEntryId ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}` : activeLocation?.id || session.locationId || "No Location"
@@ -4314,7 +4364,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         onOpenHelp={() => { setAccountOpen(false); setHelpOpen(true); }}
         onSignOut={signOut}
       />
-      <nav className="commandbar" aria-label={appMode === "rest" ? "REST API actions" : "File actions"}>
+      <nav ref={commandbarRef} className="commandbar" aria-label={appMode === "rest" ? "REST API actions" : "File actions"}>
         {splitMode && (
           <span className="active-pane-indicator" title="New folder/Rename/Delete/View/Select all act on this pane">
             Acting on: <strong>{activePane === "local" ? "LOCAL" : "REMOTE"}</strong>
@@ -4343,43 +4393,70 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         >
           Upload
         </button>
-        <button
-          onClick={createFolder}
-          disabled={
-            splitMode && activePane === "local"
-              ? busy
-              : busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir"))
-          }
-        >
-          New folder
-        </button>
-        <span className="divider" />
-        <button
-          disabled={
-            busy ||
-            (splitMode && remoteSshEntryId
-              ? activePane !== "remote" || !selectedItems.length
-              : !selectedItems.length || !(remoteSshEntryId ? true : locationOnline && hasCapability("read")))
-          }
-          onClick={() => {
-            // Mirror the Upload button above: while a split SSH view has
-            // REMOTE active, Download brings the REMOTE selection straight
-            // into the current LOCAL folder (mirrors dragging REMOTE ->
-            // LOCAL) instead of queuing it to the Downloads folder.
-            if (splitMode && remoteSshEntryId && activePane === "remote" && selectedItems.length) {
-              downloadRemoteItemsToLocal(selectedItems);
-            } else {
-              download();
+        {!commandBarOverflow && <>
+          <button
+            onClick={createFolder}
+            disabled={
+              splitMode && activePane === "local"
+                ? busy
+                : busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir"))
             }
-          }}
-          title={splitMode && remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined}
-        >
-          Download
-        </button>
-        {mobileLayout ? (
+          >
+            New folder
+          </button>
+          <span className="divider" />
+          <button
+            disabled={
+              busy ||
+              (splitMode && remoteSshEntryId
+                ? activePane !== "remote" || !selectedItems.length
+                : !selectedItems.length || !(remoteSshEntryId ? true : locationOnline && hasCapability("read")))
+            }
+            onClick={() => {
+              // Mirror the Upload button above: while a split SSH view has
+              // REMOTE active, Download brings the REMOTE selection straight
+              // into the current LOCAL folder (mirrors dragging REMOTE ->
+              // LOCAL) instead of queuing it to the Downloads folder.
+              if (splitMode && remoteSshEntryId && activePane === "remote" && selectedItems.length) {
+                downloadRemoteItemsToLocal(selectedItems);
+              } else {
+                download();
+              }
+            }}
+            title={splitMode && remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined}
+          >
+            Download
+          </button>
+        </>}
+        {commandBarOverflow ? (
           <CommandBarOverflowMenu
             label="More actions"
             actions={[
+              {
+                key: "new-folder",
+                label: "New folder",
+                disabled: splitMode && activePane === "local"
+                  ? busy
+                  : busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir")),
+                onClick: createFolder,
+              },
+              {
+                key: "download",
+                label: "Download",
+                disabled:
+                  busy ||
+                  (splitMode && remoteSshEntryId
+                    ? activePane !== "remote" || !selectedItems.length
+                    : !selectedItems.length || !(remoteSshEntryId ? true : locationOnline && hasCapability("read"))),
+                title: splitMode && remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined,
+                onClick: () => {
+                  if (splitMode && remoteSshEntryId && activePane === "remote" && selectedItems.length) {
+                    downloadRemoteItemsToLocal(selectedItems);
+                  } else {
+                    download();
+                  }
+                },
+              },
               {
                 key: "view",
                 label: "View",
@@ -4461,6 +4538,12 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                           ? []
                           : sortedFiles.map((file) => file.path),
                       ),
+              },
+              {
+                key: "refresh",
+                label: "Refresh",
+                disabled: busy,
+                onClick: () => void run(refreshRemoteFiles),
               },
             ]}
           />
@@ -4584,12 +4667,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             Split
           </button>
         </span>
-        <button
-          onClick={() => void run(refreshRemoteFiles)}
-          disabled={busy}
-        >
-          Refresh
-        </button>
+        {!commandBarOverflow && <button onClick={() => void run(refreshRemoteFiles)} disabled={busy}>Refresh</button>}
          <ContextPicker label={contextLabel} value={contextValue} groups={contextGroups} onSelect={selectContext} disabled={busy} />
       </nav>
        <div className={appMode === "location" ? `desktop-workspace${splitMode ? " split-workspace" : ""}${locationPaneCollapsed ? ` pane-collapse-${locationPaneCollapsed}` : ""}` : "mode-workspace"}>

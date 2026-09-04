@@ -47,6 +47,8 @@ Changing Location via `selectLocation()` clears the SSH browse source, resets pa
 
 `splitMode` is persisted as `file-layout-mode`. In split mode the workspace has LOCAL and REMOTE panes and `activePane` determines where New folder, Rename, Delete, View, and Select all apply. `collapseMainPaneEnabled` replaces the main pane resize bars with explicit collapse/restore controls. The setting is intentionally global to Location, REST, and VNC, while LOCAL's internal tree resize remains available.
 
+The Location command bar measures its rendered action buttons with `ResizeObserver`. When the available width would truncate an action label, it keeps Upload visible and moves the remaining file actions, including Refresh, into the accessible `More actions` menu instead of rendering an ellipsis label.
+
 ## File data and navigation
 
 The shared `FileItem` shape is `{ name, path, isDirectory, size, modified }`. Remote API paths are Location-relative; SSH paths use SSH absolute-style paths. LOCAL paths are normally HOME-relative (`""`, `Documents/a.txt`). On Windows, roots for non-HOME drive-letter volumes are also added when the current user can enumerate them; the HOME drive remains HOME-only for a regular user. Elevated sessions additionally receive the HOME drive root and Unix/Windows filesystem roots. The Rust commands remain the security boundary and Windows ACL errors are surfaced instead of converted to empty listings.
