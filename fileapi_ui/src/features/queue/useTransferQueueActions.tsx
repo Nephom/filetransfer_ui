@@ -246,7 +246,7 @@ export function useTransferQueueActions({
           });
         },
       );
-      const headers: [string, string][] = session.token
+      const headers: [string, string][] = session.token && session.token !== "cookie"
         ? [
             ["Authorization", `Bearer ${session.token}`],
             ["X-Location-ID", item.locationId],
@@ -421,7 +421,7 @@ export function useTransferQueueActions({
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
     logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, itemCount: files.length }, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${files.length} files...`, setCompleted: 0 });
-    const headers: [string, string][] = session.token
+    const headers: [string, string][] = session.token && session.token !== "cookie"
       ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
       : [];
     let completed = 0;
@@ -605,7 +605,7 @@ export function useTransferQueueActions({
     const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
     const fileName = singleFile ? selectedItems[0].name : `archive.${archiveFormat}`;
     const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-    const headers: [string, string][] = session.token
+    const headers: [string, string][] = session.token && session.token !== "cookie"
       ? [
           ["Authorization", `Bearer ${session.token}`],
           ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : []),

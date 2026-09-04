@@ -827,14 +827,18 @@ function App() {
     if (!response.ok) throw new Error(await readError(response));
     const data = await response.json();
     const authenticatedUsername = data.user.username || usernameToUse;
-    setSession((current) => ({ ...current, token: data.token, username: authenticatedUsername, userId: data.user.id ?? null, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
+     // Native Tauri requests keep the HttpOnly cookie in the Rust reqwest
+     // client. Use an in-memory marker for the existing authenticated-state
+     // checks; never treat it as a bearer token or persist it as a secret.
+     const sessionMarker = typeof data.token === "string" && data.token ? data.token : "cookie";
+    setSession((current) => ({ ...current, token: sessionMarker, username: authenticatedUsername, userId: data.user.id ?? null, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
     // `setSession` above only schedules a state update -- this function's
     // own callers (a 401 retry in `api()`, or the token-lifetime timer)
     // need the new token's actual string value *right now*, in this same
     // tick, to use for an immediate retry or to compute the next refresh
     // delay, not on the next render. Returning it directly avoids relying
     // on a stale `session.token` closure value.
-    return { username: authenticatedUsername, token: data.token as string };
+    return { username: authenticatedUsername, token: sessionMarker };
   };
 
   const login = async (event: React.FormEvent) => {
@@ -1533,7 +1537,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // without duplicating the request-building logic itself.
   const rawApiRequest = async (endpoint: string, init: RequestInit, token: string, locationId: string) => {
     const headers = new Headers(init.headers);
-    if (token) headers.set("Authorization", `Bearer ${token}`);
+    if (token && token !== "cookie") headers.set("Authorization", `Bearer ${token}`);
     if (locationId) headers.set("X-Location-ID", locationId);
     const body =
       init.body === undefined
@@ -2943,7 +2947,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       return;
     }
     const singleFile = items.length === 1 && !items[0].isDirectory;
-    const headers: [string, string][] = session.token
+     const headers: [string, string][] = session.token && session.token !== "cookie"
       ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
       : [];
     if (singleFile) {
@@ -3122,7 +3126,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           detail: "Waiting to download editor copy",
           downloadUrl: `${serverUrl(session)}/api/files/download/${downloadPath(viewerRemotePath)}`,
           downloadMethod: "GET",
-          downloadHeaders: session.token
+         downloadHeaders: session.token && session.token !== "cookie"
             ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
             : [],
           downloadFileName: viewerTitle,
@@ -3264,7 +3268,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
       const singleFile = items.length === 1 && !items[0].isDirectory;
       if (singleFile) {
-        const headers: [string, string][] = session.token
+        const headers: [string, string][] = session.token && session.token !== "cookie"
           ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
           : [];
         const queueItem: TransferQueueItem = {

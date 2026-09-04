@@ -6,7 +6,7 @@ mod proxmox;
 mod recording;
 mod ssh;
 
-use reqwest::{multipart, Client};
+use reqwest::{cookie::Jar, multipart, Client};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -15,13 +15,16 @@ use std::io::{Read, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 use tokio::io::{AsyncRead, ReadBuf};
 
 static CANCELLED_TRANSFER_IDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static API_CLIENTS: OnceLock<Mutex<HashMap<bool, Client>>> = OnceLock::new();
+static DOWNLOAD_CLIENTS: OnceLock<Mutex<HashMap<bool, Client>>> = OnceLock::new();
+static SESSION_COOKIE_JARS: OnceLock<Mutex<HashMap<bool, Arc<Jar>>>> = OnceLock::new();
 
 fn cancelled_transfer_ids() -> &'static Mutex<HashSet<String>> {
     CANCELLED_TRANSFER_IDS.get_or_init(|| Mutex::new(HashSet::new()))
@@ -348,23 +351,69 @@ fn describe_error<E: std::error::Error>(error: E) -> String {
 }
 
 fn api_client(ignore_tls_errors: bool) -> Result<Client, String> {
-    Client::builder()
+    let clients = API_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = clients.lock() {
+        if let Some(client) = cache.get(&ignore_tls_errors) {
+            return Ok(client.clone());
+        }
+    }
+    let jar = session_cookie_jar(ignore_tls_errors)?;
+    let client = Client::builder()
         .timeout(Duration::from_secs(30))
+        // Keep the server's HttpOnly session cookie in the native client and
+        // attach it to later requests. This is the desktop equivalent of the
+        // browser automatically sending an HttpOnly cookie.
+        .cookie_provider(jar)
         // This is intentionally opt-in for private, self-signed servers.
         .danger_accept_invalid_certs(ignore_tls_errors)
         .danger_accept_invalid_hostnames(ignore_tls_errors)
         .build()
         .map_err(describe_error)
+        ?;
+    clients
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(ignore_tls_errors, client.clone());
+    Ok(client)
 }
 
 fn download_client(ignore_tls_errors: bool) -> Result<Client, String> {
-    Client::builder()
+    let clients = DOWNLOAD_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = clients.lock() {
+        if let Some(client) = cache.get(&ignore_tls_errors) {
+            return Ok(client.clone());
+        }
+    }
+    let jar = session_cookie_jar(ignore_tls_errors)?;
+    let client = Client::builder()
         .timeout(Duration::from_secs(300))
         .no_gzip()
+        .cookie_provider(jar)
         .danger_accept_invalid_certs(ignore_tls_errors)
         .danger_accept_invalid_hostnames(ignore_tls_errors)
         .build()
         .map_err(describe_error)
+        ?;
+    clients
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(ignore_tls_errors, client.clone());
+    Ok(client)
+}
+
+fn session_cookie_jar(ignore_tls_errors: bool) -> Result<Arc<Jar>, String> {
+    let jars = SESSION_COOKIE_JARS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = jars.lock() {
+        if let Some(jar) = cache.get(&ignore_tls_errors) {
+            return Ok(jar.clone());
+        }
+    }
+    let jar = Arc::new(Jar::default());
+    jars
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(ignore_tls_errors, jar.clone());
+    Ok(jar)
 }
 
 fn apply_headers(
