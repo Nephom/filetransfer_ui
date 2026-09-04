@@ -4,7 +4,7 @@
 
 This repository contains two product surfaces: the browser-based WebUI and the nFterm Desktop App. They share the API server and permission model, but their execution environments and local-file capabilities are different.
 
-## WebUI 3.3.3 GA
+## WebUI 3.4.0-preview7
 
 The WebUI is the browser file-management product. It provides:
 
@@ -49,7 +49,7 @@ Deployment values belong in protected, ignored `.env` or `src/config.ini` files.
 
 The default HTTP port is `9400`; the default HTTPS port is `9443`. Production deployments should use an operating-system-trusted HTTPS certificate.
 
-## nFterm Desktop 3.4.0-preview4
+## nFterm Desktop 3.4.0-preview7
 
 nFterm is a Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11. It connects to the API server over HTTPS and provides:
 

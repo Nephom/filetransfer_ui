@@ -4,7 +4,7 @@
 
 本專案包含兩個產品面：上方是提供瀏覽器使用的 WebUI，下方是獨立的 nFterm Desktop App。兩者共用 API server 與權限模型，但執行環境、檔案能力與使用方式不同。
 
-## WebUI 3.3.3 GA
+## WebUI 3.4.0-preview7
 
 WebUI 是瀏覽器版檔案管理介面，提供：
 
@@ -49,7 +49,7 @@ WebUI 是瀏覽器版檔案管理介面，提供：
 
 預設 HTTP port 為 `9400`，HTTPS port 為 `9443`。正式環境應使用受作業系統信任的 HTTPS 憑證。
 
-## nFterm Desktop 3.4.0-preview4
+## nFterm Desktop 3.4.0-preview7
 
 nFterm 是 Tauri v2 desktop client，支援 Ubuntu 22.04+ 與 Windows 10/11。它使用 HTTPS 連線至 API server，並提供：
 
