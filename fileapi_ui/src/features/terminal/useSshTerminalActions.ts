@@ -12,7 +12,7 @@ type Props = {
   setTabs: React.Dispatch<React.SetStateAction<SshTerminalTab[]>>;
   activeTabId: string;
   setActiveTabId: (id: string) => void;
-  terminalInstanceRef: MutableRefObject<Terminal | null>;
+  terminalInstancesRef: MutableRefObject<Map<string, Terminal>>;
   connectAttemptRef: MutableRefObject<Record<string, string>>;
   pendingRequestsRef: MutableRefObject<Record<string, string>>;
   connectingRef: MutableRefObject<boolean>;
@@ -45,7 +45,7 @@ type Props = {
  * into DesktopApp state directly, keeping the Terminal feature's app-level
  * coupling limited to this explicit prop surface. */
 export function useSshTerminalActions({
-  tabs, setTabs, activeTabId, setActiveTabId, terminalInstanceRef, connectAttemptRef,
+  tabs, setTabs, activeTabId, setActiveTabId, terminalInstancesRef, connectAttemptRef,
   pendingRequestsRef, connectingRef, recordingWriteQueuesRef, workspaces, workspaceId,
   setWorkspaceId, selectedEntryId, setSelectedEntryId, setSshProfileId, setTerminalOpen,
   loadSshProfileDraft, onOpenWorkspaceManager, onNotify, onSetNotice, run, onWriteOperationLog,
@@ -122,7 +122,11 @@ export function useSshTerminalActions({
     setActiveTabId(tab.id);
     setWorkspaceId(tab.workspaceId);
     setSelectedEntryId(tab.sshEntryId);
-    window.requestAnimationFrame(() => terminalInstanceRef.current?.focus());
+    // useTerminalLifecycle's activation effect already focuses the newly
+    // active tab's Terminal on the next tick; this is a harmless,
+    // best-effort extra nudge for the same instance, now looked up by tab
+    // id from the per-tab instance map (issue #239).
+    window.requestAnimationFrame(() => terminalInstancesRef.current.get(tab.id)?.focus());
     const profile = workspaces.find((item) => item.id === tab.workspaceId)?.sshEntries.find((item) => item.id === tab.sshEntryId);
     if (profile) {
       setSshProfileId(profile.id);

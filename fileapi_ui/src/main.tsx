@@ -144,38 +144,42 @@ type ModalDragSession = {
 
 
 
-// Prepended to an SSH tab's `output` (the buffer replayed into xterm.js on
-// every tab switch/terminal recreation, see the `terminalOpen`/
-// `activeSshTabId` effect below) whenever a *new* connection generation is
-// about to start writing into it -- i.e. on reconnect, and when a session
-// ends. Session output is normally appended across reconnects so the
-// terminal keeps showing prior scrollback, but if the previous connection
-// was cut off mid-escape-sequence (a truncated OSC/DCS/APC/PM/SOS string --
-// e.g. a shell's own OSC 10/11 "what are your colors?" query/response that
-// never got its terminator before the socket closed), xterm.js's VT parser
-// is left in an unterminated "collecting a control string" state. Replayed
-// from a *fresh* Terminal instance, that dangling state swallows every
-// following byte -- including the entire next session's output -- as
-// literal control-string payload until it happens to hit a stray BEL/ST, at
-// which point the swallowed bytes (which look exactly like the reported
-// "^[" / "[110;rgb:...]" symptom) get surfaced instead of rendered as text.
-// `ESC \` (ST) unconditionally closes any such open string first (OSC also
-// accepts BEL, but ST closes all five string-based sequence types and is a
-// harmless no-op if nothing was actually open), and a plain SGR reset
-// (`ESC [0m`) then clears any bold/color/underline state so it can't bleed
-// across the boundary either -- deliberately *not* a full terminal reset
-// (`ESC c`), which would also wipe the visible scrollback the user still
-// expects to see across a reconnect. This is only ever inserted into
-// `output` (xterm's replay buffer) -- never into the on-disk recording
-// transcripts, which must stay a faithful transcript of only the bytes
-// actually received.
+// Prepended to an SSH tab's `output` whenever a *new* connection generation
+// is about to start writing into it -- i.e. on reconnect, and when a
+// session ends. Session output is normally appended across reconnects so
+// the terminal keeps showing prior scrollback, but if the previous
+// connection was cut off mid-escape-sequence (a truncated OSC/DCS/APC/PM/SOS
+// string -- e.g. a shell's own OSC 10/11 "what are your colors?"
+// query/response that never got its terminator before the socket closed),
+// xterm.js's VT parser is left in an unterminated "collecting a control
+// string" state, which would swallow every following byte -- including the
+// entire next session's output -- as literal control-string payload until
+// it happens to hit a stray BEL/ST (the swallowed bytes look exactly like
+// the reported "^[" / "[110;rgb:...]" symptom). `ESC \` (ST) unconditionally
+// closes any such open string first (OSC also accepts BEL, but ST closes
+// all five string-based sequence types and is a harmless no-op if nothing
+// was actually open), and a plain SGR reset (`ESC [0m`) then clears any
+// bold/color/underline state so it can't bleed across the boundary either
+// -- deliberately *not* a full terminal reset (`ESC c`), which would also
+// wipe the visible scrollback the user still expects to see across a
+// reconnect. This is written into two places: `output` (the plain-text
+// mirror consumed by `startRecording`'s `rawSeed`/`plainSeed`, and used to
+// seed a freshly (re)created tab's Terminal -- see
+// `useTerminalLifecycle`'s `getInitialOutput`), and directly into that
+// tab's own *live*, permanently-mounted Terminal instance (see
+// `useSshTerminal`'s `onExit`) so a still-open tab's VT parser is reset the
+// same way even though it is never destroyed/recreated on disconnect.
 
 
 // Upper bound (in characters) on how much of an SSH tab's `output` this
-// frontend keeps in memory. `output` is the buffer replayed into a fresh
-// xterm.js `Terminal` instance on every tab switch/terminal recreation
-// (see `useTerminalLifecycle`'s `replayOutput` below) and used to seed a
-// new recording's transcript (see `startRecording`'s `rawSeed`/
+// frontend keeps in memory. Since issue #239's fix, every open tab keeps
+// its own live xterm.js `Terminal` mounted for the tab's whole lifetime
+// (see `useTerminalLifecycle`) and is written to in real time as bytes
+// arrive -- `output` is no longer replayed on every tab switch. It is
+// still kept, capped, for: seeding a *freshly (re)created* tab's Terminal
+// exactly once (the dock was collapsed and reopened, or output arrived
+// before the tab's Terminal existed yet -- see `getInitialOutput`), and
+// seeding a new recording's transcript (see `startRecording`'s `rawSeed`/
 // `plainSeed`). Every incoming SSH output chunk previously did an
 // unconditional `item.output + data` with no cap at all, so a long-running
 // session (a `tail -f`, a noisy build, an interactive session left open
@@ -187,7 +191,7 @@ type ModalDragSession = {
 // responsive and gets progressively slower over time until it looks like
 // it has nearly hung. 512KB comfortably covers many thousands of lines of
 // scrollback -- far more than xterm's own default 1000-line scrollback
-// buffer will show on a tab switch anyway -- while keeping the append cost
+// buffer will show on a (re)mount anyway -- while keeping the append cost
 // bounded.
 
 
@@ -1037,10 +1041,19 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     previousTerminalHeightRef, terminalHeight, setTerminalHeight, terminalResizeRef,
     stopTerminalResize, resizeTerminal, beginTerminalResize, toggleTerminalMaximized,
     sshConnected, setSshConnected, sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
-    terminalHostRef, terminalInstanceRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
+    terminalHostRefsRef, terminalInstancesRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
     recordingWriteQueuesRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
     pendingSshConnectRequestsRef, connectAttemptRef, sshTabsRef, shellInputRef,
   } = terminalState;
+  // Issue #239: registers/unregisters each SSH tab's host div into the
+  // shared per-tab Map as TerminalWorkspace mounts/unmounts them (React
+  // calls a callback ref with `null` right before the node it was
+  // attached to unmounts, e.g. when a tab is closed) -- see
+  // useTerminalLifecycle for how these are consumed.
+  const registerSshTerminalHostRef = (tabId: string, el: HTMLDivElement | null) => {
+    if (el) terminalHostRefsRef.current.set(tabId, el);
+    else terminalHostRefsRef.current.delete(tabId);
+  };
   const [localPaneWidth, setLocalPaneWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-local-pane-width")) || 380,
   );
@@ -1462,16 +1475,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   useSshTerminal({
     enabled: terminalOpen,
     activeTabId: activeSshTabId,
-    replayOutput: sshTabsRef.current.find((item) => item.id === activeSshTabId)?.output || "Select a saved SSH session or open the Session manager to add one.\r\n",
-    replayKey: `${activeSshTabId}:${sshTabsRef.current.find((item) => item.id === activeSshTabId)?.sessionId || ""}`,
+    tabIds: sshTabs.map((tab) => tab.id),
     bracketedPasteControlEnabled: desktopSettings.bracketedPasteControlEnabled,
     setTabs: setSshTabs,
     setConnected: setSshConnected,
     setNotice,
     tabsRef: sshTabsRef,
     pendingRequestsRef: pendingSshConnectRequestsRef,
-    terminalRef: terminalInstanceRef,
-    hostRef: terminalHostRef,
+    terminalsRef: terminalInstancesRef,
+    hostRefsRef: terminalHostRefsRef,
     activeTabIdRef: activeSshTabIdRef,
     outputRef: sshOutputRef,
     sessionIdRef: sshSessionIdRef,
@@ -2225,7 +2237,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     setTabs: setSshTabs,
     activeTabId: activeSshTabId,
     setActiveTabId: setActiveSshTabId,
-    terminalInstanceRef,
+    terminalInstancesRef,
     connectAttemptRef,
     pendingRequestsRef: pendingSshConnectRequestsRef,
 
@@ -5491,7 +5503,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         recordingHasOutput={recordingHasOutput}
         savedLogPaths={savedLogPaths}
         activeQueueCount={transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length}
-        terminalHostRef={terminalHostRef}
+        registerHostRef={registerSshTerminalHostRef}
         onToggleQuickList={() => setSshQuickListOpen((open) => !open)}
         onResizeStart={beginTerminalResize}
         onSelectTab={selectSshTab}

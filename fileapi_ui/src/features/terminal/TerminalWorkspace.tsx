@@ -1,4 +1,4 @@
-import React, { useRef, useState, type RefObject } from "react";
+import React, { useRef, useState } from "react";
 import { ChevronDownIcon, CloseIcon, CollapseIcon, ExpandIcon, ChevronUpIcon } from "../../ui/icons";
 import { Dropdown } from "../../ui/Dropdown";
 import type { SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
@@ -22,7 +22,7 @@ type Props = {
   recordingHasOutput: boolean;
   savedLogPaths: string[];
   activeQueueCount: number;
-  terminalHostRef: RefObject<HTMLDivElement>;
+  registerHostRef: (tabId: string, el: HTMLDivElement | null) => void;
   onToggleQuickList: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
   onSelectTab: (tab: TerminalTab) => void;
@@ -61,7 +61,7 @@ export function TerminalWorkspace({
   recordingHasOutput,
   savedLogPaths,
   activeQueueCount,
-  terminalHostRef,
+  registerHostRef,
   onToggleQuickList,
   onResizeStart,
   onSelectTab,
@@ -172,7 +172,24 @@ export function TerminalWorkspace({
           {activeTab?.connecting && <button className="danger" onClick={() => onCancelConnect(activeTab.id)}>Cancel</button>}
         </div>
         {!activeWorkspace && <p className="terminal-inline-note">Create or open a Session with an SSH connection before connecting.</p>}
-        <div ref={terminalHostRef} className="xterm-host" aria-label="SSH terminal" />
+        <div className="xterm-host-stack">
+          {tabs.length === 0
+            ? <div className="xterm-host-empty"><p className="terminal-inline-note">Select a saved SSH session or open the Session manager to add one.</p></div>
+            // Issue #239: every tab keeps its own permanently-mounted host
+            // div/Terminal instance (see useTerminalLifecycle) -- switching
+            // tabs only toggles which one has the `active` class (see
+            // .xterm-host in terminal.css), it never unmounts/recreates
+            // any of them.
+            : tabs.map((tab) => (
+              <div
+                key={tab.id}
+                ref={(el) => registerHostRef(tab.id, el)}
+                className={`xterm-host${tab.id === activeTabId ? " active" : ""}`}
+                aria-label="SSH terminal"
+                aria-hidden={tab.id === activeTabId ? undefined : true}
+              />
+            ))}
+        </div>
         <div className="ssh-recording-actions">
           {!recording ? <button disabled={!connected} onClick={onStartRecording}>Start Recording</button> : <button className="danger" onClick={onStopRecording}>Stop Recording</button>}
           <button disabled={recording || !recordingHasOutput} onClick={onSaveLog}>Save Log</button>

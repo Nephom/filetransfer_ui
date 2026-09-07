@@ -30,8 +30,21 @@
 .ssh-tab .ssh-tab-close { min-width: var(--space-5); padding: var(--space-1) var(--space-2); border: 0; color: var(--color-text-muted); }
 .ssh-tab .ssh-tab-close:hover { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel)); }
 .terminal-content { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-3) var(--space-3); }
-.xterm-host { flex: 1; min-height: 0; overflow: hidden; padding: var(--space-2); background: var(--color-bg); border: 1px solid var(--color-border); }
+/* Issue #239: each SSH tab has its own permanently-mounted .xterm-host
+ * (see TerminalWorkspace.tsx/useTerminalLifecycle) stacked on top of one
+ * another inside this relatively-positioned frame -- switching tabs only
+ * toggles which one carries `.active`. `visibility: hidden` (not
+ * `display: none`) is deliberate: a `display: none` host's
+ * offsetWidth/offsetHeight collapse to 0 while hidden, which would make
+ * xterm's FitAddon compute a bogus size for a backgrounded tab the moment
+ * it becomes active again; `visibility: hidden` keeps its layout box (and
+ * therefore its measured size) identical to the visible one the whole
+ * time it's hidden. */
+.xterm-host-stack { position: relative; flex: 1; min-height: 0; overflow: hidden; padding: var(--space-2); background: var(--color-bg); border: 1px solid var(--color-border); }
+.xterm-host { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+.xterm-host.active { visibility: visible; pointer-events: auto; }
 .xterm-host .xterm { height: 100%; }
+.xterm-host-empty { display: flex; align-items: center; justify-content: center; height: 100%; }
 .terminal-content { position: relative; }
 .terminal-body { display: flex; flex: 1; min-height: 0; }
 .ssh-quick-list { flex: 0 0 clamp(160px, 16vw, 200px); min-height: 0; overflow-y: auto; padding: var(--space-2) var(--space-2); border-right: 1px solid var(--color-border); background: var(--color-bg-panel); }

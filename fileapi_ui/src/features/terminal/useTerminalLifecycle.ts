@@ -1,5 +1,6 @@
-import { useEffect, useRef, type MutableRefObject, type RefObject } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
+import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 
@@ -88,152 +89,333 @@ export const copyTerminalText = async (text: string) => {
 // paste (below) goes through it instead of any local "last copied" state.
 export const readSystemClipboardText = () => readText();
 
-export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutput, replayKey, boundaryGuard, bracketedPasteControlEnabled, onData, onResize, onNotice }: {
+type XtermModules = { Terminal: typeof Terminal; FitAddon: typeof FitAddon; WebglAddonCtor: typeof WebglAddon };
+
+// Loaded once and cached for the lifetime of the app -- every tab's
+// Terminal is constructed from the same already-resolved module set
+// instead of re-running `import()` per tab. A failed import (a transient
+// asset-loading hiccup) clears the cache instead of permanently poisoning
+// it, so the *next* tab creation attempt retries the import from scratch
+// rather than every future tab silently failing forever.
+let xtermModulesPromise: Promise<XtermModules> | null = null;
+const loadXtermModules = (): Promise<XtermModules> => {
+  if (!xtermModulesPromise) {
+    xtermModulesPromise = Promise.all([
+      import("@xterm/xterm"),
+      import("@xterm/addon-fit"),
+      import("@xterm/addon-webgl"),
+      import("@xterm/xterm/css/xterm.css"),
+    ]).then(([{ Terminal: TerminalCtor }, { FitAddon: FitAddonCtor }, { WebglAddon: WebglAddonCtor }]) => ({
+      Terminal: TerminalCtor,
+      FitAddon: FitAddonCtor,
+      WebglAddonCtor,
+    }));
+    xtermModulesPromise.catch(() => {
+      xtermModulesPromise = null;
+    });
+  }
+  return xtermModulesPromise;
+};
+
+type TerminalInstance = {
+  terminal: Terminal;
+  fit: FitAddon;
+  webgl?: WebglAddon;
+  dispose: () => void;
+};
+
+// Issue #239: switching SSH tabs used to destroy the single shared
+// xterm.js `Terminal` and rebuild it from scratch, replaying up to 512KB of
+// raw ANSI/VT bytes into the fresh instance -- and, racing that
+// asynchronous replay, immediately re-`fit()` and unconditionally push a
+// remote `ssh_resize`. A full-screen program (opencode, vim, tmux, ...)
+// that relies on absolute cursor addressing got its buffer reflowed
+// mid-replay and was forced to redraw via SIGWINCH on every single tab
+// switch, which is exactly what produced the reported "整個破圖" corruption.
+//
+// This hook now keeps one Terminal instance *per tab*, created once when
+// the tab first appears and disposed only when the tab is closed (or the
+// whole dock collapses). Switching tabs is just a CSS visibility toggle
+// (see terminal.css's `.xterm-host`/`.xterm-host.active`) plus a same-size
+// check before ever touching the remote PTY -- there is no more
+// destroy/rebuild/replay cycle on the common tab-switch path.
+export function useTerminalLifecycle({
+  enabled,
+  tabIds,
+  activeTabId,
+  hostRefsRef,
+  terminalsRef,
+  boundaryGuard,
+  bracketedPasteControlEnabled,
+  getInitialOutput,
+  onData,
+  onResize,
+  onNotice,
+}: {
   enabled: boolean;
-  hostRef: RefObject<HTMLDivElement>;
-  terminalRef: MutableRefObject<Terminal | null>;
-  replayOutput: string;
-  replayKey: string;
+  tabIds: string[];
+  activeTabId: string;
+  hostRefsRef: MutableRefObject<Map<string, HTMLDivElement>>;
+  terminalsRef: MutableRefObject<Map<string, Terminal>>;
   boundaryGuard: string;
   bracketedPasteControlEnabled: boolean;
-  onData: (data: string, replaying: boolean) => void;
-  onResize: (cols: number, rows: number) => void;
+  // Called exactly once, at instance-creation time, to seed a (re)created
+  // tab's Terminal with whatever it already accumulated -- e.g. the whole
+  // dock was collapsed and reopened, or a tab produced output before the
+  // panel was ever opened. Returns "" for a genuinely brand-new tab, in
+  // which case no replay happens at all.
+  getInitialOutput: (tabId: string) => string;
+  onData: (tabId: string, data: string) => void;
+  onResize: (tabId: string, cols: number, rows: number) => void;
   onNotice: (message: string) => void;
 }) {
   const dataRef = useRef(onData);
   const resizeRef = useRef(onResize);
-  const replayOutputRef = useRef(replayOutput);
   const noticeRef = useRef(onNotice);
+  const seedRef = useRef(getInitialOutput);
+  const bracketedPasteRef = useRef(bracketedPasteControlEnabled);
+  const activeTabIdRef = useRef(activeTabId);
   dataRef.current = onData;
   resizeRef.current = onResize;
-  replayOutputRef.current = replayOutput;
   noticeRef.current = onNotice;
+  seedRef.current = getInitialOutput;
+  bracketedPasteRef.current = bracketedPasteControlEnabled;
+  activeTabIdRef.current = activeTabId;
+
+  // Map<tabId, TerminalInstance> -- the persistent, per-tab replacement
+  // for the old single `terminalRef`. Kept in a plain ref (not React
+  // state) since Terminal/addon objects are imperative resources React
+  // does not own.
+  const instancesRef = useRef<Map<string, TerminalInstance>>(new Map());
+  const tabIdsRef = useRef<string[]>(tabIds);
+  tabIdsRef.current = tabIds;
+  const tabIdsKey = tabIds.join(",");
+
+  // Creates one Terminal per newly-seen tab id, and disposes any instance
+  // whose tab has been closed. Deliberately does NOT depend on
+  // `activeTabId` -- switching tabs must never re-run this effect, since
+  // doing so is exactly the destroy-and-rebuild behavior this hook
+  // replaces (issue #239).
   useEffect(() => {
-    if (!enabled || !hostRef.current) return undefined;
+    if (!enabled) return undefined;
     let disposed = false;
-    let cleanup: (() => void) | undefined;
-    // The WebGL addon is loaded alongside xterm/fit rather than imported
-    // statically so a virtual machine (or sandboxed WebView) with no
-    // WebGL2 support at all still gets a working terminal via xterm's
-    // default DOM renderer -- `loadWebglAddon` below never throws, it only
-    // logs and leaves the DOM renderer in place if anything about WebGL
-    // setup fails.
-    void Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit"), import("@xterm/addon-webgl"), import("@xterm/xterm/css/xterm.css")]).then(([{ Terminal }, { FitAddon }, { WebglAddon: WebglAddonCtor }]) => {
-      if (disposed || !hostRef.current) return;
-      const terminal = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: "monospace", fontSize: 13, theme: { background: "#020a12", foreground: "#d9eafa", cursor: "#47cdf1" } });
-      const fit = new FitAddon();
-      terminal.loadAddon(fit);
-      terminal.open(hostRef.current);
-      // High-throughput SSH output (builds, `tail -f`, etc.) is markedly
-      // cheaper to render through xterm's WebGL2 renderer than its default
-      // per-glyph DOM renderer, which matters most on resource-constrained
-      // virtual machines -- exactly where DOM-renderer cost compounding
-      // with a busy terminal has been reported to make the whole app feel
-      // like it is hanging. `loadWebglAddon` is entirely best-effort: any
-      // failure (no WebGL2, a `webglcontextlost` event later on, etc.)
-      // falls back to leaving xterm's own default DOM renderer in place,
-      // which is exactly the pre-existing behavior this addon is layered
-      // on top of.
-      const webgl = loadWebglAddon(terminal, WebglAddonCtor);
-      fit.fit();
-      terminal.focus();
-      terminalRef.current = terminal;
-      let replaying = true;
-      terminal.write(`${replayOutputRef.current}${boundaryGuard}`, () => { replaying = false; });
-      const resize = () => { fit.fit(); resizeRef.current(terminal.cols, terminal.rows); };
-      const observer = new ResizeObserver(resize);
-      observer.observe(hostRef.current);
-      resize();
-      const input = terminal.onData((data) => dataRef.current(data, replaying));
-      const pasteText = (text: string) => {
-        // xterm.paste() handles bracketed-paste mode and emits onData, which
-        // keeps the browser clipboard path identical to typed input.
-        terminal.paste(normalizeTerminalPaste(text, bracketedPasteControlEnabled));
-      };
-      // Lets a remote full-screen program (one that has grabbed the mouse
-      // for its own selection UI, disabling xterm's native selection --
-      // see the doc comment on decodeOscClipboardSet) hand its selection to
-      // the *real* system clipboard via OSC 52. Right-click paste (below)
-      // reads that same real OS clipboard back, so this needs no local
-      // bookkeeping of its own beyond writing the text out.
-      const oscClipboard = terminal.parser.registerOscHandler(52, (data) => {
-        const text = decodeOscClipboardSet(data);
-        if (text === undefined) return true;
-        void copyTerminalText(text).catch(() => undefined);
-        return true;
-      });
-      const onPaste = (event: ClipboardEvent) => {
-        const text = event.clipboardData?.getData("text/plain");
-        if (text === undefined) return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        pasteText(text);
-      };
-      let selectionAtMouseDown = "";
-      const onMouseDown = (event: MouseEvent) => {
-        if (event.button !== 0) return;
-        selectionAtMouseDown = terminal.getSelection();
-        terminal.focus();
-      };
-      const onMouseUp = (event: MouseEvent) => {
-        if (event.button !== 0) return;
-        const selection = terminal.getSelection();
-        if (selection && selection !== selectionAtMouseDown) {
-          void copyTerminalText(selection).catch(() => undefined);
+    const createFor = (tabId: string) => {
+      const host = hostRefsRef.current.get(tabId);
+      // Host div not mounted yet -- TerminalWorkspace renders one per id
+      // in `tabIds`, so this should be rare/transient; a later re-run of
+      // this effect (next tabIds change) will pick it up.
+      if (!host || instancesRef.current.has(tabId)) return;
+      void loadXtermModules().then(({ Terminal: TerminalCtor, FitAddon: FitAddonCtor, WebglAddonCtor }) => {
+        if (disposed || instancesRef.current.has(tabId)) return;
+        const currentHost = hostRefsRef.current.get(tabId);
+        if (!currentHost) return;
+        const terminal = new TerminalCtor({ cursorBlink: true, convertEol: true, fontFamily: "monospace", fontSize: 13, theme: { background: "#020a12", foreground: "#d9eafa", cursor: "#47cdf1" } });
+        const fit = new FitAddonCtor();
+        terminal.loadAddon(fit);
+        terminal.open(currentHost);
+        fit.fit();
+        terminalsRef.current.set(tabId, terminal);
+        const input = terminal.onData((data) => dataRef.current(tabId, data));
+        const pasteText = (text: string) => {
+          // xterm.paste() handles bracketed-paste mode and emits onData, which
+          // keeps the browser clipboard path identical to typed input.
+          terminal.paste(normalizeTerminalPaste(text, bracketedPasteRef.current));
+        };
+        // Lets a remote full-screen program (one that has grabbed the mouse
+        // for its own selection UI, disabling xterm's native selection --
+        // see the doc comment on decodeOscClipboardSet) hand its selection to
+        // the *real* system clipboard via OSC 52. Right-click paste (below)
+        // reads that same real OS clipboard back, so this needs no local
+        // bookkeeping of its own beyond writing the text out.
+        const oscClipboard = terminal.parser.registerOscHandler(52, (data) => {
+          const text = decodeOscClipboardSet(data);
+          if (text === undefined) return true;
+          void copyTerminalText(text).catch(() => undefined);
+          return true;
+        });
+        const onPaste = (event: ClipboardEvent) => {
+          const text = event.clipboardData?.getData("text/plain");
+          if (text === undefined) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          pasteText(text);
+        };
+        let selectionAtMouseDown = "";
+        const onMouseDown = (event: MouseEvent) => {
+          if (event.button !== 0) return;
+          selectionAtMouseDown = terminal.getSelection();
+          terminal.focus();
+        };
+        const onMouseUp = (event: MouseEvent) => {
+          if (event.button !== 0) return;
+          const selection = terminal.getSelection();
+          if (selection && selection !== selectionAtMouseDown) {
+            void copyTerminalText(selection).catch(() => undefined);
+          }
+          selectionAtMouseDown = "";
+        };
+        // Right-click reads the real Windows/OS clipboard through the
+        // privileged clipboard-manager plugin and pastes it, instead of
+        // showing the WebView's native context menu -- the classic
+        // terminal-emulator convention (PuTTY, most Linux terminals). Going
+        // through the real OS clipboard (rather than replaying only a local
+        // "last copied in this terminal" value) is what makes content
+        // copied outside the terminal -- Notepad, a browser, another app --
+        // pasteable here too (issue #234). A denied/failed read is reported
+        // to the user via onNotice so a right-click doesn't silently appear
+        // to do nothing; an empty clipboard (nothing to paste) is not an
+        // error and is left as a no-op, same as pasting nothing normally
+        // would be.
+        const onContextMenu = (event: MouseEvent) => {
+          event.preventDefault();
+          readSystemClipboardText()
+            .then((text) => {
+              if (text) pasteText(text);
+            })
+            .catch(() => {
+              noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
+            });
+        };
+        currentHost.addEventListener("paste", onPaste, true);
+        currentHost.addEventListener("mousedown", onMouseDown, true);
+        currentHost.addEventListener("mouseup", onMouseUp, true);
+        currentHost.addEventListener("contextmenu", onContextMenu, true);
+        const dispose = () => {
+          input.dispose();
+          oscClipboard.dispose();
+          currentHost.removeEventListener("paste", onPaste, true);
+          currentHost.removeEventListener("mousedown", onMouseDown, true);
+          currentHost.removeEventListener("mouseup", onMouseUp, true);
+          currentHost.removeEventListener("contextmenu", onContextMenu, true);
+          const instance = instancesRef.current.get(tabId);
+          // `terminal.dispose()` already disposes every addon it still has
+          // loaded, but the WebGL addon may have already disposed *itself*
+          // via its own `onContextLoss` handler above -- disposing an addon
+          // a second time throws in xterm.js, which would otherwise abort
+          // this entire cleanup.
+          try {
+            instance?.webgl?.dispose();
+          } catch {
+            // Already disposed (context loss) or otherwise inert -- no-op.
+          }
+          terminal.dispose();
+          terminalsRef.current.delete(tabId);
+        };
+        const instance: TerminalInstance = { terminal, fit, dispose };
+        instancesRef.current.set(tabId, instance);
+        // Only the tab this instance was created for and that is *still*
+        // the active one (by the time the async xterm import resolved)
+        // gets focused/measured/reported/WebGL-accelerated -- background
+        // tabs stay on the cheap DOM renderer with no resize activity
+        // until they actually become active (see the activation effect
+        // below), which is what keeps this creation path from repeating
+        // the double-fit()/unconditional-resize race that caused #239.
+        const activateIfCurrent = () => {
+          if (disposed || tabId !== activeTabIdRef.current) return;
+          fit.fit();
+          terminal.focus();
+          resizeRef.current(tabId, terminal.cols, terminal.rows);
+          if (!instance.webgl) {
+            void loadXtermModules().then(({ WebglAddonCtor: Ctor }) => {
+              if (disposed || instance.webgl || tabId !== activeTabIdRef.current) return;
+              instance.webgl = loadWebglAddon(terminal, Ctor);
+            });
+          }
+        };
+        const seed = seedRef.current(tabId);
+        if (seed) {
+          // A tab that already has history (the dock was collapsed and
+          // reopened, or output arrived before the panel was ever opened)
+          // gets that history replayed once, here, at creation time only --
+          // never again on a plain tab switch. Re-fitting/reporting size is
+          // deferred until *after* this write's callback fires, so it can
+          // never race the still-in-flight VT parse of the replayed bytes
+          // the way the old per-switch replay did.
+          terminal.write(`${seed}${boundaryGuard}`, activateIfCurrent);
+        } else {
+          activateIfCurrent();
         }
-        selectionAtMouseDown = "";
-      };
-      // Right-click reads the real Windows/OS clipboard through the
-      // privileged clipboard-manager plugin and pastes it, instead of
-      // showing the WebView's native context menu -- the classic
-      // terminal-emulator convention (PuTTY, most Linux terminals). Going
-      // through the real OS clipboard (rather than replaying only a local
-      // "last copied in this terminal" value) is what makes content
-      // copied outside the terminal -- Notepad, a browser, another app --
-      // pasteable here too (issue #234). A denied/failed read is reported
-      // to the user via onNotice so a right-click doesn't silently appear
-      // to do nothing; an empty clipboard (nothing to paste) is not an
-      // error and is left as a no-op, same as pasting nothing normally
-      // would be.
-      const onContextMenu = (event: MouseEvent) => {
-        event.preventDefault();
-        readSystemClipboardText()
-          .then((text) => {
-            if (text) pasteText(text);
-          })
-          .catch(() => {
-            noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
-          });
-      };
-      const host = hostRef.current;
-      host?.addEventListener("paste", onPaste, true);
-      host?.addEventListener("mousedown", onMouseDown, true);
-      host?.addEventListener("mouseup", onMouseUp, true);
-      host?.addEventListener("contextmenu", onContextMenu, true);
-      cleanup = () => {
-        input.dispose();
-        oscClipboard.dispose();
-        host?.removeEventListener("paste", onPaste, true);
-        host?.removeEventListener("mousedown", onMouseDown, true);
-        host?.removeEventListener("mouseup", onMouseUp, true);
-        host?.removeEventListener("contextmenu", onContextMenu, true);
-        observer.disconnect();
-        // `terminal.dispose()` already disposes every addon it still has
-        // loaded, but the WebGL addon may have already disposed *itself*
-        // via its own `onContextLoss` handler above (a lost GPU context is
-        // exactly the situation this guard is for) -- disposing an addon a
-        // second time throws in xterm.js, which would otherwise abort this
-        // entire cleanup (including `terminalRef.current = null` below) and
-        // leak the terminal instance.
+      });
+    };
+    for (const tabId of tabIdsRef.current) createFor(tabId);
+    const wantedIds = new Set(tabIdsRef.current);
+    for (const [tabId, instance] of instancesRef.current) {
+      if (!wantedIds.has(tabId)) {
+        instance.dispose();
+        instancesRef.current.delete(tabId);
+      }
+    }
+    return () => { disposed = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, tabIdsKey, hostRefsRef, terminalsRef, boundaryGuard]);
+
+  // Tears down every live instance immediately when the whole dock is
+  // disabled (collapsed/closed) -- matches the pre-existing behavior of
+  // destroying the terminal when `terminalOpen` goes false. Reopening the
+  // dock recreates instances via the effect above, seeded once from
+  // `getInitialOutput` where applicable.
+  useEffect(() => {
+    if (enabled) return undefined;
+    for (const [tabId, instance] of instancesRef.current) {
+      instance.dispose();
+      instancesRef.current.delete(tabId);
+    }
+    return undefined;
+  }, [enabled]);
+
+  // Activates exactly one tab's terminal at a time when switching between
+  // *already-existing* instances: focuses it, re-measures its size now
+  // that it is visible again (a `visibility: hidden` host's layout box is
+  // unaffected while hidden -- see terminal.css -- but the panel may have
+  // been resized while this tab was backgrounded), reports a resize only
+  // when the recomputed cols/rows actually differ, and attaches the WebGL
+  // renderer only to the active tab so backgrounded tabs never hold a GPU
+  // context (avoids exhausting the browser's concurrent WebGL context
+  // limit when many tabs are open).
+  useEffect(() => {
+    if (!enabled || !activeTabId) return undefined;
+    const instance = instancesRef.current.get(activeTabId);
+    if (!instance) return undefined;
+    let disposed = false;
+    instance.fit.fit();
+    instance.terminal.focus();
+    resizeRef.current(activeTabId, instance.terminal.cols, instance.terminal.rows);
+    if (!instance.webgl) {
+      void loadXtermModules().then(({ WebglAddonCtor }) => {
+        if (disposed || instance.webgl) return;
+        instance.webgl = loadWebglAddon(instance.terminal, WebglAddonCtor);
+      });
+    }
+    return () => {
+      disposed = true;
+      if (instance.webgl) {
         try {
-          webgl?.dispose();
+          instance.webgl.dispose();
         } catch {
           // Already disposed (context loss) or otherwise inert -- no-op.
         }
-        terminal.dispose();
-        terminalRef.current = null;
-      };
-    });
-    return () => { disposed = true; cleanup?.(); };
-  }, [boundaryGuard, bracketedPasteControlEnabled, enabled, hostRef, replayKey, terminalRef]);
+        instance.webgl = undefined;
+      }
+    };
+  }, [enabled, activeTabId]);
+
+  // Re-fits only the active tab whenever the terminal panel itself is
+  // resized (dragging the resize handle, maximizing, window resize, ...).
+  // Background tabs are left alone; each re-fits itself the moment it
+  // becomes active (the effect above), which is always correct because a
+  // `visibility: hidden` host keeps the panel's current layout size for
+  // the whole time it is hidden.
+  useEffect(() => {
+    if (!enabled || !activeTabId) return undefined;
+    const instance = instancesRef.current.get(activeTabId);
+    const host = hostRefsRef.current.get(activeTabId);
+    if (!instance || !host) return undefined;
+    const resize = () => {
+      instance.fit.fit();
+      resizeRef.current(activeTabId, instance.terminal.cols, instance.terminal.rows);
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [enabled, activeTabId, hostRefsRef]);
 }

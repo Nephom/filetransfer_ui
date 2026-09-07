@@ -9,8 +9,8 @@ import { appendSshTabOutput, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./term
 type NativeRefs = {
   tabsRef: MutableRefObject<SshTerminalTab[]>;
   pendingRequestsRef: MutableRefObject<Record<string, string>>;
-  terminalRef: MutableRefObject<Terminal | null>;
-  hostRef: RefObject<HTMLDivElement>;
+  terminalsRef: MutableRefObject<Map<string, Terminal>>;
+  hostRefsRef: MutableRefObject<Map<string, HTMLDivElement>>;
   activeTabIdRef: MutableRefObject<string>;
   outputRef: MutableRefObject<string>;
   sessionIdRef: MutableRefObject<string>;
@@ -25,8 +25,7 @@ type NativeRefs = {
 type Props = NativeRefs & {
   enabled: boolean;
   activeTabId: string;
-  replayOutput: string;
-  replayKey: string;
+  tabIds: string[];
   bracketedPasteControlEnabled: boolean;
   setTabs: React.Dispatch<React.SetStateAction<SshTerminalTab[]>>;
   setConnected: (connected: boolean) => void;
@@ -37,11 +36,21 @@ type Props = NativeRefs & {
  * Connection commands and tab CRUD remain in DesktopApp for this first
  * extraction because they also coordinate Workspace Manager state. */
 export function useSshTerminal({
-  enabled, activeTabId, replayOutput, replayKey, bracketedPasteControlEnabled,
-  setTabs, setConnected, setNotice, tabsRef, pendingRequestsRef, terminalRef,
-  hostRef, activeTabIdRef, outputRef, sessionIdRef, connectingRef, writeQueuesRef,
+  enabled, activeTabId, tabIds, bracketedPasteControlEnabled,
+  setTabs, setConnected, setNotice, tabsRef, pendingRequestsRef, terminalsRef,
+  hostRefsRef, activeTabIdRef, outputRef, sessionIdRef, connectingRef, writeQueuesRef,
   recordingWriteQueuesRef, recordingRef, secretPromptRef, shellInputRef,
 }: Props) {
+  // Issue #239 fix: every tab's Terminal is now live-mounted for the whole
+  // life of the tab (see useTerminalLifecycle), so unlike before, a
+  // background tab's output is written straight into its own real Terminal
+  // instance as it arrives -- never buffered for a later from-scratch
+  // replay. Remembers the last cols/rows actually reported to the remote
+  // PTY per tab so a plain tab switch (panel size unchanged) never fires a
+  // redundant `ssh_resize`, which is what forced full-screen programs
+  // (opencode, vim, tmux, ...) to redraw via SIGWINCH on every switch.
+  const lastReportedSizeRef = useRef(new Map<string, { cols: number; rows: number }>());
+
   useSshEventBridge({
     tabsRef,
     pendingRequestsRef,
@@ -59,15 +68,27 @@ export function useSshTerminal({
         }).catch(() => undefined));
         recordingWriteQueuesRef.current.set(tabId, next);
       }
+      // Live write goes to *this* tab's own Terminal instance regardless of
+      // whether it is currently the active/visible one -- every open tab's
+      // terminal now stays correct in real time instead of only the active
+      // tab's shared instance (see useTerminalLifecycle).
+      terminalsRef.current.get(tabId)?.write(data);
       if (tabId === activeTabIdRef.current) {
         outputRef.current = appendSshTabOutput(outputRef.current, data);
-        terminalRef.current?.write(data);
         const promptText = stripAnsi(outputRef.current.slice(-240)).replace(/\r/g, "").trimEnd();
         secretPromptRef.current = /(password|passphrase|verification code|token)[^\n:]*[:?]\s*$/i.test(promptText);
       }
     },
     onExit: (tabId, payload) => {
       setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, `${VT_SESSION_BOUNDARY_GUARD}\n${payload.data}\n`) }));
+      // Reset the *live* terminal's parser state too, not just the
+      // replayed-from-string one -- a connection cut mid escape/control
+      // sequence would otherwise leave this still-mounted instance's VT
+      // parser stuck "collecting" and swallow the next connection's output
+      // as literal control-string payload (see VT_SESSION_BOUNDARY_GUARD's
+      // doc comment in main.tsx).
+      terminalsRef.current.get(tabId)?.write(`${VT_SESSION_BOUNDARY_GUARD}\n${payload.data}\n`);
+      lastReportedSizeRef.current.delete(tabId);
       if (tabId === activeTabIdRef.current) {
         setConnected(false);
         connectingRef.current = false;
@@ -77,34 +98,37 @@ export function useSshTerminal({
 
   useTerminalLifecycle({
     enabled,
-    hostRef,
-    terminalRef,
-    replayOutput,
-    replayKey,
+    tabIds,
+    activeTabId,
+    hostRefsRef,
+    terminalsRef,
     boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
     bracketedPasteControlEnabled,
     onNotice: setNotice,
-    onResize: (cols, rows) => {
-      const tab = tabsRef.current.find((item) => item.id === activeTabId);
-      if (tab?.sessionId) void invoke("ssh_resize", { sessionId: tab.sessionId, cols, rows });
+    getInitialOutput: (tabId) => tabsRef.current.find((item) => item.id === tabId)?.output || "",
+    onResize: (tabId, cols, rows) => {
+      const tab = tabsRef.current.find((item) => item.id === tabId);
+      if (!tab?.sessionId) return;
+      const last = lastReportedSizeRef.current.get(tabId);
+      if (last && last.cols === cols && last.rows === rows) return;
+      lastReportedSizeRef.current.set(tabId, { cols, rows });
+      void invoke("ssh_resize", { sessionId: tab.sessionId, cols, rows });
     },
-    onData: (data, replaying) => {
-      if (replaying) return;
-      const tab = tabsRef.current.find((item) => item.id === activeTabId);
+    onData: (tabId, data) => {
+      const tab = tabsRef.current.find((item) => item.id === tabId);
       if (!tab?.sessionId) return;
       const previous = writeQueuesRef.current.get(tab.sessionId) || Promise.resolve();
       const next = previous.catch(() => undefined).then(() => invoke<void>("ssh_write", { sessionId: tab.sessionId, data }));
       writeQueuesRef.current.set(tab.sessionId, next.catch(() => undefined));
-      if (recordingRef.current && !secretPromptRef.current) {
+      if (recordingRef.current && !secretPromptRef.current && tabId === activeTabIdRef.current) {
         if (data === "\r" || data === "\n") {
           if (shellInputRef.current.trim()) {
             const command = `[${new Date().toISOString()}] ${shellInputRef.current}\n`;
-            const tabId = tab.id;
-            const previous = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
-            const next = previous.catch(() => undefined).then(() => invoke<RecordingStats>("append_ssh_recording_command", { tabId, line: command }).then((stats) => {
+            const previousLog = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
+            const nextLog = previousLog.catch(() => undefined).then(() => invoke<RecordingStats>("append_ssh_recording_command", { tabId, line: command }).then((stats) => {
               setTabs((current) => current.map((item) => item.id === tabId ? { ...item, recordingCommandCount: stats.commandCount } : item));
             }).catch(() => undefined));
-            recordingWriteQueuesRef.current.set(tabId, next);
+            recordingWriteQueuesRef.current.set(tabId, nextLog);
           }
           shellInputRef.current = "";
         } else if (data === "\u007f") shellInputRef.current = shellInputRef.current.slice(0, -1);
