@@ -83,6 +83,7 @@ export function useSshTerminal({
     replayKey,
     boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
     bracketedPasteControlEnabled,
+    onNotice: setNotice,
     onResize: (cols, rows) => {
       const tab = tabsRef.current.find((item) => item.id === activeTabId);
       if (tab?.sessionId) void invoke("ssh_resize", { sessionId: tab.sessionId, cols, rows });

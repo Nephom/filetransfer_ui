@@ -1,6 +1,7 @@
 import { useEffect, useRef, type MutableRefObject, type RefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { WebglAddon } from "@xterm/addon-webgl";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 
 // Best-effort: attaches the WebGL2 renderer to `terminal` if the runtime
 // supports it, otherwise leaves xterm's default DOM renderer untouched.
@@ -78,7 +79,16 @@ export const copyTerminalText = async (text: string) => {
   return copied;
 };
 
-export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutput, replayKey, boundaryGuard, bracketedPasteControlEnabled, onData, onResize }: {
+// `navigator.clipboard.readText()` is denied by the same Tauri WebView
+// permission gap noted above, and unlike copy there is no `execCommand`
+// fallback for reading (browsers/WebViews disable `execCommand("paste")`
+// for security). The privileged `clipboard-manager` plugin
+// (`src-tauri/capabilities/default.json` grants `allow-read-text`) is the
+// only way to read the real OS clipboard from script here, so right-click
+// paste (below) goes through it instead of any local "last copied" state.
+export const readSystemClipboardText = () => readText();
+
+export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutput, replayKey, boundaryGuard, bracketedPasteControlEnabled, onData, onResize, onNotice }: {
   enabled: boolean;
   hostRef: RefObject<HTMLDivElement>;
   terminalRef: MutableRefObject<Terminal | null>;
@@ -88,17 +98,16 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
   bracketedPasteControlEnabled: boolean;
   onData: (data: string, replaying: boolean) => void;
   onResize: (cols: number, rows: number) => void;
+  onNotice: (message: string) => void;
 }) {
   const dataRef = useRef(onData);
   const resizeRef = useRef(onResize);
   const replayOutputRef = useRef(replayOutput);
+  const noticeRef = useRef(onNotice);
   dataRef.current = onData;
   resizeRef.current = onResize;
   replayOutputRef.current = replayOutput;
-  // Survives tab switches (each tab swap tears down and recreates the
-  // xterm instance below, but "what did I last copy" should behave like
-  // any other clipboard -- still pasteable after switching tabs).
-  const lastCopiedTextRef = useRef("");
+  noticeRef.current = onNotice;
   useEffect(() => {
     if (!enabled || !hostRef.current) return undefined;
     let disposed = false;
@@ -144,13 +153,12 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
       // Lets a remote full-screen program (one that has grabbed the mouse
       // for its own selection UI, disabling xterm's native selection --
       // see the doc comment on decodeOscClipboardSet) hand its selection to
-      // the *real* system clipboard via OSC 52, and tracks it the same way
-      // a local left-click selection is tracked below so right-click-paste
-      // (also below) works uniformly regardless of which side made the copy.
+      // the *real* system clipboard via OSC 52. Right-click paste (below)
+      // reads that same real OS clipboard back, so this needs no local
+      // bookkeeping of its own beyond writing the text out.
       const oscClipboard = terminal.parser.registerOscHandler(52, (data) => {
         const text = decodeOscClipboardSet(data);
         if (text === undefined) return true;
-        lastCopiedTextRef.current = text;
         void copyTerminalText(text).catch(() => undefined);
         return true;
       });
@@ -171,22 +179,31 @@ export function useTerminalLifecycle({ enabled, hostRef, terminalRef, replayOutp
         if (event.button !== 0) return;
         const selection = terminal.getSelection();
         if (selection && selection !== selectionAtMouseDown) {
-          lastCopiedTextRef.current = selection;
           void copyTerminalText(selection).catch(() => undefined);
         }
         selectionAtMouseDown = "";
       };
-      // Right-click pastes whatever was last copied (by a local left-click
-      // selection above or a remote OSC 52 request above) instead of
+      // Right-click reads the real Windows/OS clipboard through the
+      // privileged clipboard-manager plugin and pastes it, instead of
       // showing the WebView's native context menu -- the classic
-      // terminal-emulator convention (PuTTY, most Linux terminals). This
-      // listener, not the SSH-side program, always decides what gets
-      // pasted and when, so the Windows client keeps the final say even
-      // over a remote program that has grabbed the mouse for itself.
+      // terminal-emulator convention (PuTTY, most Linux terminals). Going
+      // through the real OS clipboard (rather than replaying only a local
+      // "last copied in this terminal" value) is what makes content
+      // copied outside the terminal -- Notepad, a browser, another app --
+      // pasteable here too (issue #234). A denied/failed read is reported
+      // to the user via onNotice so a right-click doesn't silently appear
+      // to do nothing; an empty clipboard (nothing to paste) is not an
+      // error and is left as a no-op, same as pasting nothing normally
+      // would be.
       const onContextMenu = (event: MouseEvent) => {
         event.preventDefault();
-        const text = lastCopiedTextRef.current;
-        if (text) pasteText(text);
+        readSystemClipboardText()
+          .then((text) => {
+            if (text) pasteText(text);
+          })
+          .catch(() => {
+            noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
+          });
       };
       const host = hostRef.current;
       host?.addEventListener("paste", onPaste, true);

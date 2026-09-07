@@ -2792,6 +2792,7 @@ fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|_app| {
             // Any file still sitting in `<install dir>/temp` at startup can
             // only be an orphan from a previous run's unsaved recording
