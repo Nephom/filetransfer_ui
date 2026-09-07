@@ -64,6 +64,7 @@ type Connection = { id: string; websocketUrl: string; password: string };
 //      src-tauri/src/proxmox.rs.
 export type VmFileEntry = { name: string; path: string; isDirectory: boolean; size: number; modified: number };
 export type VncTransferMode = "unknown" | "detecting" | "direct-sftp" | "jump-sftp" | "guest-agent" | "unavailable";
+type QemuAgentStatus = "unknown" | "checking" | "up" | "down" | "not-applicable";
 type VncQueueStatus = "queued" | "running" | "retrying" | "completed" | "failed";
 type VncQueueItem = {
   id: string;
@@ -332,6 +333,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   // --- File transfer state --------------------------------------------
   const [transferMode, setTransferMode] = useState<VncTransferMode>("unknown");
+  const [qemuAgentStatus, setQemuAgentStatus] = useState<QemuAgentStatus>("unknown");
   const [transferError, setTransferError] = useState("");
   const [guestIp, setGuestIp] = useState("");
   const [remotePath, setRemotePath] = useState("/");
@@ -378,6 +380,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const resetTransferState = () => {
     setTransferMode("unknown");
+    setQemuAgentStatus("unknown");
     setTransferError("");
     setGuestIp("");
     setRemotePath("/");
@@ -492,6 +495,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     setVmSshPassword("");
     setVmSshPasswordSaved(false);
     setVmSshDraft(vmSshProfile);
+    setQemuAgentStatus(entry?.guestType === "qemu" ? "unknown" : "not-applicable");
     if (entry?.id && entry.vmid !== null) {
       void invoke<boolean>("ssh_has_password", { entryId: vmSshProfileId(entry.id, entry.node, entry.vmid) })
         .then(setVmSshPasswordSaved)
@@ -536,19 +540,42 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     const sessionId = authSessions[entry.id];
     const proxmoxHost = proxmoxHostFromBaseUrl(entry.baseUrl);
 
+    const isQemu = entry.guestType === "qemu";
     let agentAlive = false;
     let candidates: string[] = [];
-    if (entry.guestType === "qemu" && sessionId) {
+    if (isQemu && sessionId) {
+      setQemuAgentStatus("checking");
       try {
         await invoke("proxmox_agent_ping", { entry: nativeEntry, sessionId });
         agentAlive = true;
-        candidates = await invoke<string[]>("proxmox_agent_network_interfaces", { entry: nativeEntry, sessionId });
+        setQemuAgentStatus("up");
       } catch {
-        agentAlive = false;
+        setQemuAgentStatus("down");
       }
+      if (agentAlive) {
+        try {
+          candidates = await invoke<string[]>("proxmox_agent_network_interfaces", { entry: nativeEntry, sessionId });
+        } catch {
+          // Network discovery is optional for the Guest Agent route. A guest
+          // agent that answers ping is still usable without an SSH candidate.
+          candidates = [];
+        }
+      }
+    } else if (isQemu) {
+      setQemuAgentStatus("down");
+    } else {
+      setQemuAgentStatus("not-applicable");
     }
     const transferProfile = profileOverride || vmSshDraft;
+    const hasSshProfile = vmSshConfigured || Boolean(profileOverride);
     if (transferProfile.fallbackIp.trim()) candidates = [transferProfile.fallbackIp.trim(), ...candidates];
+
+    // #235: without a VM SFTP profile, do not probe direct SFTP or the host
+    // jump automatically. Guest Agent does not need either SSH credential.
+    if (!hasSshProfile && !forceJump && agentAlive) {
+      setTransferMode("guest-agent");
+      return;
+    }
 
     for (const ip of forceJump ? [] : candidates) {
       const reachable = await invoke<boolean>("ssh_check_transport_reachable", { profile: buildSshProfileFor("direct-sftp", ip, transferProfile), timeoutMs: DIRECT_REACHABILITY_TIMEOUT_MS }).catch(() => false);
@@ -802,7 +829,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       const rfb = new RFB(screenRef.current, connection.websocketUrl);
       pendingConnectionIdRef.current = null;
       rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = viewOnly;
-      rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) { setStatus("Connected"); setControlsOpen(false); if (vmSshConfigured) void detectTransferMode(); } });
+      rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) { setStatus("Connected"); setControlsOpen(false); void detectTransferMode(); } });
       rfb.addEventListener("disconnect", () => { if (sessionGeneration === sessionGenerationRef.current) setStatus("Disconnected"); });
       rfb.addEventListener("securityfailure", (event: Event) => { if (sessionGeneration === sessionGenerationRef.current) setError(String((event as CustomEvent).detail || "VNC security failure")); });
       rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password: connection.password }));
@@ -842,6 +869,20 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const hasFileRoute = transferMode !== "unknown";
   const fileBrowserVisible = hasFileRoute && !preferEntriesList;
   const filesReady = transferMode === "direct-sftp" || transferMode === "jump-sftp" || transferMode === "guest-agent";
+  const qemuAgentStatusLabel = qemuAgentStatus === "up"
+    ? "UP"
+    : qemuAgentStatus === "checking"
+      ? "Checking"
+      : qemuAgentStatus === "not-applicable"
+        ? "N/A"
+        : qemuAgentStatus === "down" ? "DOWN" : "Unknown";
+  const qemuAgentStatusTitle = qemuAgentStatus === "up"
+    ? "QEMU Guest Agent is UP. Windows file transfer is available."
+    : qemuAgentStatus === "checking"
+      ? "Checking QEMU Guest Agent status..."
+      : qemuAgentStatus === "not-applicable"
+        ? "QEMU Guest Agent is only available for QEMU guests."
+        : "QEMU Guest Agent is DOWN or not installed. Only green means Windows file transfer is available.";
 
   return <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}`}>
     <div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}>
@@ -901,7 +942,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
               <label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label>
             </div>
             {selectedVm && <div className="vnc-vm-ssh-settings">
-              <div className="vnc-vm-ssh-heading"><strong>VM SFTP</strong><small>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</small></div>
+              <div className="vnc-vm-ssh-heading"><strong>VM SFTP</strong><div className="vnc-vm-ssh-statuses"><small>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</small><span className={`vnc-agent-status ${qemuAgentStatus}`} title={qemuAgentStatusTitle} aria-label={`QEMU Guest Agent: ${qemuAgentStatusLabel}`}><span className="vnc-agent-status-dot" aria-hidden="true" />QEMU Agent: {qemuAgentStatusLabel}</span></div></div>
               <div className="vnc-auth-grid vnc-auth-grid-compact">
                 <label>Username<input value={vmSshDraft.username} onChange={(event) => updateVmSshProfile({ username: event.target.value })} placeholder="root" /></label>
                 <label>Port<input type="number" min="1" max="65535" value={vmSshDraft.port} onChange={(event) => updateVmSshProfile({ port: Number(event.target.value) || 22 })} /></label>
@@ -913,7 +954,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
                 <button type="button" className="vnc-compact-action confirm" onClick={() => void saveVmSshProfile()} disabled={vmSshSaving || !vmSshDraft.username.trim()}>{vmSshSaving ? "Saving..." : "Save VM SFTP"}</button>
                 {!vmSshConfigured && <button type="button" className="vnc-compact-action" onClick={() => void detectTransferMode(true)} disabled={transferMode === "detecting" || !entry?.hostSshUsername?.trim()}>{transferMode === "detecting" ? "Trying..." : "Try Host Jump"}</button>}
               </div>
-              {!vmSshConfigured && <small className="field-help">Save this VM's credentials to try direct SFTP automatically. Until then, files remain in the Entries area; Try Host Jump makes one explicit jump attempt.</small>}
+              {!vmSshConfigured && <small className="field-help">QEMU Agent can provide Windows files without VM credentials. Save this VM's credentials to try direct SFTP automatically; Try Host Jump remains an explicit jump attempt.</small>}
             </div>}
             <div className="vnc-actions">
               <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button>

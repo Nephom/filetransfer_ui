@@ -149,6 +149,7 @@ component itself holds no state.
 | `authSessions` | Map of `entryId -> Proxmox session id`, so multiple entries can stay logged in independently. |
 | `entryPaneWidth` / `entryPaneCollapsed` | Left sidebar's resizable width (persisted to `localStorage`) and collapsed state. |
 | `transferMode` / `transferError` / `guestIp` | File-transfer route detection result (`VncTransferMode`) and the reachable IP it settled on. |
+| `qemuAgentStatus` | Independent QEMU Guest Agent health state (`unknown`, `checking`, `up`, `down`, or `not-applicable`) shown beside the selected VM's SFTP profile. A successful ping enables the Guest Agent route even when network-interface discovery or VM SFTP credentials are unavailable. |
 | `remotePath` / `remoteFiles` / `remoteFilesLoading` / `remoteFilesError` / `selectedRemotePaths` | Current remote directory listing and the user's multi-selection for download. |
 | `vncQueue` / `progressSamplesRef` | Upload/download transfer queue and the rolling byte/time samples used to compute rate + ETA. |
 
@@ -163,7 +164,7 @@ component itself holds no state.
 | `updatePassword` | Updates the Proxmox login password draft + persists it to the workspace's secret store. |
 | `loginEntry` / `logoutEntry` | Proxmox web-session login/logout (`proxmox_login`/`proxmox_logout`). |
 | `loadVms` | Fetches the VM list for the authenticated session. |
-| `detectTransferMode` | Probes direct-sftp → jump-sftp → guest-agent (see [VNC file transfer](./desktop.md#vnc-file-transfer) in `desktop.md`) and sets `transferMode`/`guestIp`/`transferError`. |
+| `detectTransferMode` | Checks QEMU Guest Agent health independently, then preserves #235's profile-gated direct-sftp → jump-sftp probing; without a VM SFTP profile it skips automatic SSH probes and uses Guest Agent when its ping is up. It sets `transferMode`/`guestIp`/`transferError`. |
 | `buildSshProfile` | Builds the `SshTransferProfile` (host/port/username/key, plus jump-host fields for `jump-sftp`) passed to `ssh_list_directory`/`ssh_upload_path`/`ssh_download_path`. |
 | `loadRemoteFiles(path)` | Lists a remote directory via the Guest Agent or SSH, depending on `transferMode`. |
 | `selectRemotePath(path)` | Navigates the file browser into a directory (used by both the file table's folder buttons and its ".. (up)" row). |

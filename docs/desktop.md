@@ -158,11 +158,21 @@ entry-scoped synthetic profile ids `vncvm:<entryId>:<node>:<vmid>` /
 `ssh_save_password`/`ssh_forget_password`/`ssh_has_password` commands a
 regular Terminal SSH entry uses.
 
-When a VM has a saved VM SFTP profile, a route is detected after VNC connects.
-For a VM without a saved profile, the left sidebar remains on the Proxmox
-Entry list. Connection Controls provides a compact **Try Host Jump** action;
-only that explicit action attempts the host-jump route for the selected VM.
-If the attempt fails, the Entry list remains visible with the diagnostic error.
+After VNC connects, QEMU guests always get an independent Guest Agent health
+check. A green **QEMU Agent** indicator means the agent is responding and the
+Windows Guest Agent file-transfer route is available, even when no VM SFTP
+profile is saved. A red indicator means the agent is down, not installed, or
+unreachable; only green means the Guest Agent Windows file-transfer route is
+available. Network-interface discovery is optional for this check, so a
+successful agent ping remains usable even when the guest cannot report an IP.
+
+When a VM has a saved VM SFTP profile, the client additionally detects direct
+SFTP and then host-jump SFTP after VNC connects. For a VM without a saved
+profile, direct SFTP and host-jump probing are not started automatically, so
+the #235 timeout-avoidance behavior is preserved. Connection Controls provides
+a compact **Try Host Jump** action; only that explicit action attempts the
+host-jump route for the selected VM. If the attempt fails, the Entry list
+remains visible with the diagnostic error.
 Once a route is found, the VNC workspace's left sidebar swaps its Proxmox
 entries list for a multi-select remote file browser (Upload / Download /
 Refresh toolbar, breadcrumb, and a file table identical to LOCATION mode's
