@@ -16,6 +16,20 @@
   white-space: nowrap;
 }
 
+/* Auto desktop must expose the full action width to the overflow observer.
+   Otherwise flex-shrink and ellipsis hide the width that the observer needs
+   to decide when actions should move into More actions. */
+.explorer.ui-layout-desktop .commandbar > button {
+  flex: 0 0 auto;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.explorer.ui-layout-desktop .commandbar > button.primary {
+  max-width: 12ch;
+}
+
 .commandbar > button.primary {
   flex: 0 0 auto;
   max-width: 12ch;

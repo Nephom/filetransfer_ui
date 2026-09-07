@@ -47,7 +47,7 @@ Changing Location via `selectLocation()` clears the SSH browse source, resets pa
 
 `splitMode` is persisted as `file-layout-mode`. In split mode the workspace has LOCAL and REMOTE panes and `activePane` determines where New folder, Rename, Delete, View, and Select all apply. `collapseMainPaneEnabled` replaces the main pane resize bars with explicit collapse/restore controls. The setting is intentionally global to Location, REST, and VNC, while LOCAL's internal tree resize remains available.
 
-The Location command bar measures its rendered action buttons with `ResizeObserver`. When the available width would truncate an action label, it keeps Upload visible and moves the remaining file actions, including Refresh, into the accessible `More actions` menu instead of rendering an ellipsis label.
+The Location command bar measures its rendered action buttons with `ResizeObserver`. In the Auto profile's desktop layout, action buttons retain their intrinsic label width during measurement so flex-shrink cannot hide an overflow condition. When the available width would truncate an action label, it keeps Upload visible and moves the remaining file actions, including Refresh, into the accessible `More actions` menu instead of rendering an ellipsis label. The Large profile continues to use the same overflow menu directly through its profile layout.
 
 ## File data and navigation
 
