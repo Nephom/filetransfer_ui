@@ -63,6 +63,14 @@
 .vnc-auth-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .vnc-actions { display: flex; gap: var(--space-2); margin-top: 9px; }
 .vnc-actions button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-3) !important; font-size: var(--font-size-small) !important; }
+.vnc-vm-ssh-settings { display: grid; gap: var(--space-2); margin-top: var(--space-2); padding: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }
+.vnc-vm-ssh-heading, .vnc-vm-ssh-actions { display: flex; align-items: end; justify-content: space-between; gap: var(--space-2); }
+.vnc-vm-ssh-heading small { color: var(--color-text-muted); font-size: var(--font-size-small); }
+.vnc-auth-grid-compact { gap: var(--space-1); }
+.vnc-auth-grid-compact label, .vnc-vm-ssh-actions label { font-size: var(--font-size-small); }
+.vnc-vm-ssh-actions label { display: grid; flex: 1 1 auto; gap: var(--space-1); color: var(--color-text-muted); }
+.vnc-compact-action { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-2) !important; font-size: var(--font-size-small) !important; white-space: nowrap; }
+.vnc-vm-ssh-settings .field-help { color: var(--color-text-muted); font-size: var(--font-size-small); }
 .vnc-warning { margin-top: 9px; color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 14%, var(--color-bg-panel)); border-color: var(--color-warning); }
 .vnc-vm-list { display: grid; gap: var(--space-1); max-height: clamp(120px, 16vh, 150px); margin: 0 var(--space-5) var(--space-3); overflow: auto; }
 .vnc-vm-list button { display: flex; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-2); border: 1px solid var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); text-align: left; }

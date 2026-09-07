@@ -118,8 +118,7 @@ Once a VNC session connects, the client probes for a route to move files
 into/out of the guest, in this priority order:
 
 1. **direct-sftp** -- the VM's own IP (from the QEMU Guest Agent's network
-   interfaces, or the entry's manual `fileTransferIpOverride` fallback for
-   LXC/agent-less guests) is directly reachable on its SSH port from this
+   interfaces, or the selected VM profile's fallback IP for LXC/agent-less guests) is directly reachable on its SSH port from this
    desktop client. Full SFTP via the same pure-Rust `russh`/`russh-sftp`
    stack LOCATION mode's SSH Remote uses.
 2. **jump-sftp** -- the VM isn't directly reachable, but the Proxmox host is;
@@ -149,15 +148,21 @@ stock Windows VM) is correctly detected as unreachable via jump-sftp too,
 instead of the always-up Proxmox host's own SSH port being mistaken for the
 VM being reachable. This is pure-Rust `russh`, never a system
 `ssh`/`ping`/`telnet` binary, so behavior is identical across Windows,
-macOS, and Linux clients. VM SSH and Host SSH (jump) credentials are
-identity fields on the `ProxmoxVncEntry` (see the "VM SSH" / "Host SSH (jump)"
-pages of the Add/Edit Proxmox VNC Entry dialog); their passwords are never
-stored in Session data -- they live in the OS keyring under the synthetic
-profile ids `vncvm:<entryId>` / `vncjump:<entryId>` (`vmSshProfileId` /
+macOS, and Linux clients. Host SSH (jump) identity fields remain on the
+`ProxmoxVncEntry`; VM SSH identity fields are stored in the selected VM's
+profile from Connection Controls. Their passwords are never
+stored in Session data -- they live in the OS keyring under the VM-scoped and
+entry-scoped synthetic profile ids `vncvm:<entryId>:<node>:<vmid>` /
+`vncjump:<entryId>` (`vmSshProfileId` /
 `hostSshProfileId` in `proxmox-vnc.tsx`), reusing the exact same
 `ssh_save_password`/`ssh_forget_password`/`ssh_has_password` commands a
 regular Terminal SSH entry uses.
 
+When a VM has a saved VM SFTP profile, a route is detected after VNC connects.
+For a VM without a saved profile, the left sidebar remains on the Proxmox
+Entry list. Connection Controls provides a compact **Try Host Jump** action;
+only that explicit action attempts the host-jump route for the selected VM.
+If the attempt fails, the Entry list remains visible with the diagnostic error.
 Once a route is found, the VNC workspace's left sidebar swaps its Proxmox
 entries list for a multi-select remote file browser (Upload / Download /
 Refresh toolbar, breadcrumb, and a file table identical to LOCATION mode's

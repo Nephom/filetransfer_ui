@@ -1022,8 +1022,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     sshProfileDraft, setSshProfileDraft,
     sshPasswordSaved, setSshPasswordSaved,
     sshEntryDraftId, setSshEntryDraftId,
-    vmSshPasswordDraft, setVmSshPasswordDraft,
-    vmSshPasswordSaved, setVmSshPasswordSaved,
     hostSshPasswordDraft, setHostSshPasswordDraft,
     hostSshPasswordSaved, setHostSshPasswordSaved,
     sessionNameDraft, setSessionNameDraft,
@@ -2212,7 +2210,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     activeRestEntryId, setActiveRestEntryId,
     vncEntryDraft, setVncEntryDraft, setVncEntryDialogOpen, setVncEntryModalTab,
     activeVncEntryId, setActiveVncEntryId,
-    vmSshPasswordDraft, setVmSshPasswordDraft, vmSshPasswordSaved, setVmSshPasswordSaved,
     hostSshPasswordDraft, setHostSshPasswordDraft, hostSshPasswordSaved, setHostSshPasswordSaved,
   });
 
@@ -5470,17 +5467,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           setVncEntryDraft={setVncEntryDraft}
           vncEntryModalTab={vncEntryModalTab}
           setVncEntryModalTab={setVncEntryModalTab}
-          vmSshPasswordDraft={vmSshPasswordDraft}
-          setVmSshPasswordDraft={setVmSshPasswordDraft}
-          vmSshPasswordSaved={vmSshPasswordSaved}
           hostSshPasswordDraft={hostSshPasswordDraft}
           setHostSshPasswordDraft={setHostSshPasswordDraft}
           hostSshPasswordSaved={hostSshPasswordSaved}
           modalStyle={modalStyle("vnc-entry")}
           onDragStart={beginModalDrag("vnc-entry")}
           onClose={() => setVncEntryDialogOpen(false)}
-          onInstallVmKey={() => void installVncSshKey("vm")}
-          onInstallHostKey={() => void installVncSshKey("host")}
+          onInstallHostKey={() => void installVncSshKey()}
           onRemove={removeVncEntry}
           onSave={saveVncEntry}
           vncEndpointParts={vncEndpointParts}

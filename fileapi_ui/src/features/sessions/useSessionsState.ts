@@ -77,13 +77,8 @@ export function useSessionsState() {
   const [sshProfileDraft, setSshProfileDraft] = useState<SshProfileDraft>(emptySshProfileDraft());
   const [sshPasswordSaved, setSshPasswordSaved] = useState(false);
   const [sshEntryDraftId, setSshEntryDraftId] = useState("");
-  // Proxmox VNC entry file-transfer credentials (VM SSH / Host SSH jump).
-  // Mirrors sshProfileDraft/sshPasswordSaved above: passwords are held only
-  // transiently here for the dialog form, then written to the OS keyring
-  // via ssh_save_password (keyed by vmSshProfileId/hostSshProfileId) on
-  // Save, never stored in the ProxmoxVncEntry object itself.
-  const [vmSshPasswordDraft, setVmSshPasswordDraft] = useState("");
-  const [vmSshPasswordSaved, setVmSshPasswordSaved] = useState(false);
+  // Host SSH credentials remain entry-scoped. VM SSH credentials are edited
+  // in Connection Controls after a VM is selected.
   const [hostSshPasswordDraft, setHostSshPasswordDraft] = useState("");
   const [hostSshPasswordSaved, setHostSshPasswordSaved] = useState(false);
   const [sessionNameDraft, setSessionNameDraft] = useState("");
@@ -101,10 +96,9 @@ export function useSessionsState() {
   const [vncEntryDraft, setVncEntryDraft] = useState<ProxmoxVncEntry | null>(null);
   // Which section of the Add/Edit Proxmox VNC Entry modal is showing --
   // "default" is the original Proxmox connection identity fields (host,
-  // port, username, PVE version); "vmSsh"/"hostSsh" are the two file-
-  // transfer credential sections. Splitting these into buttoned pages (see
-  // T-221) keeps the modal from growing into one very long scrolling form.
-  const [vncEntryModalTab, setVncEntryModalTab] = useState<"default" | "vmSsh" | "hostSsh">("default");
+  // port, username, PVE version); "hostSsh" is the entry-scoped jump-host
+  // credential section. VM credentials are edited in Connection Controls.
+  const [vncEntryModalTab, setVncEntryModalTab] = useState<"default" | "hostSsh">("default");
 
   useEffect(() => {
     localStorage.setItem(sessionRegistryKey, JSON.stringify(managedSessions));
@@ -183,8 +177,6 @@ export function useSessionsState() {
     sshProfileDraft, setSshProfileDraft,
     sshPasswordSaved, setSshPasswordSaved,
     sshEntryDraftId, setSshEntryDraftId,
-    vmSshPasswordDraft, setVmSshPasswordDraft,
-    vmSshPasswordSaved, setVmSshPasswordSaved,
     hostSshPasswordDraft, setHostSshPasswordDraft,
     hostSshPasswordSaved, setHostSshPasswordSaved,
     sessionNameDraft, setSessionNameDraft,

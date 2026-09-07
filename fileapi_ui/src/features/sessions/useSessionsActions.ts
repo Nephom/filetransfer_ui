@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import type { RestApiEntry } from "../../rest-api";
 import type { ProxmoxVncEntry } from "../../proxmox-vnc";
-import { hostSshProfileId, proxmoxHostFromBaseUrl, vmSshProfileId } from "../../proxmox-vnc";
+import { hostSshProfileId, proxmoxHostFromBaseUrl } from "../../proxmox-vnc";
 import { makeSshTabId } from "../terminal/terminal-utils";
 import type { ManagedSession } from "./sessions-contracts";
 import type { SshProfileDraft } from "./useSessionsState";
@@ -45,13 +45,9 @@ export type UseSessionsActionsParams = {
   vncEntryDraft: ProxmoxVncEntry | null;
   setVncEntryDraft: React.Dispatch<React.SetStateAction<ProxmoxVncEntry | null>>;
   setVncEntryDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  setVncEntryModalTab: React.Dispatch<React.SetStateAction<"default" | "vmSsh" | "hostSsh">>;
+  setVncEntryModalTab: React.Dispatch<React.SetStateAction<"default" | "hostSsh">>;
   activeVncEntryId: string;
   setActiveVncEntryId: React.Dispatch<React.SetStateAction<string>>;
-  vmSshPasswordDraft: string;
-  setVmSshPasswordDraft: React.Dispatch<React.SetStateAction<string>>;
-  vmSshPasswordSaved: boolean;
-  setVmSshPasswordSaved: React.Dispatch<React.SetStateAction<boolean>>;
   hostSshPasswordDraft: string;
   setHostSshPasswordDraft: React.Dispatch<React.SetStateAction<string>>;
   hostSshPasswordSaved: boolean;
@@ -85,7 +81,6 @@ export function useSessionsActions({
   activeRestEntryId, setActiveRestEntryId,
   vncEntryDraft, setVncEntryDraft, setVncEntryDialogOpen, setVncEntryModalTab,
   activeVncEntryId, setActiveVncEntryId,
-  vmSshPasswordDraft, setVmSshPasswordDraft, vmSshPasswordSaved, setVmSshPasswordSaved,
   hostSshPasswordDraft, setHostSshPasswordDraft, hostSshPasswordSaved, setHostSshPasswordSaved,
 }: UseSessionsActionsParams) {
   // Creates or renames a Workspace. SSH entries are added or edited
@@ -408,20 +403,14 @@ export function useSessionsActions({
     guestType: "qemu",
     proxmoxVersion: "auto",
     ignoreTlsErrors: false,
-    vmSshUsername: "root",
-    vmSshPort: 22,
-    vmSshPrivateKeyPath: "",
     hostSshUsername: "root",
     hostSshPort: 22,
     hostSshPrivateKeyPath: "",
-    fileTransferIpOverride: "",
   });
 
   const openAddVncEntryDialog = (workspaceId: string) => {
     setWorkspaceSessionId(workspaceId);
     setVncEntryDraft(emptyVncEntry());
-    setVmSshPasswordDraft("");
-    setVmSshPasswordSaved(false);
     setHostSshPasswordDraft("");
     setHostSshPasswordSaved(false);
     setSessionFormError("");
@@ -432,11 +421,8 @@ export function useSessionsActions({
   const openEditVncEntryDialog = (workspaceId: string, entry: ProxmoxVncEntry) => {
     setWorkspaceSessionId(workspaceId);
     setVncEntryDraft(entry);
-    setVmSshPasswordDraft("");
     setHostSshPasswordDraft("");
-    setVmSshPasswordSaved(false);
     setHostSshPasswordSaved(false);
-    void invoke<boolean>("ssh_has_password", { entryId: vmSshProfileId(entry.id) }).then(setVmSshPasswordSaved).catch(() => setVmSshPasswordSaved(false));
     void invoke<boolean>("ssh_has_password", { entryId: hostSshProfileId(entry.id) }).then(setHostSshPasswordSaved).catch(() => setHostSshPasswordSaved(false));
     setSessionFormError("");
     setVncEntryModalTab("default");
@@ -477,17 +463,11 @@ export function useSessionsActions({
         : [...item.proxmoxVncEntries, draft],
     }));
     setActiveVncEntryId(draft.id);
-    if (vmSshPasswordDraft) {
-      void invoke("ssh_save_password", { entryId: vmSshProfileId(draft.id), password: vmSshPasswordDraft })
-        .then(() => setVmSshPasswordSaved(true))
-        .catch((saveError) => setNotice(saveError instanceof Error ? saveError.message : String(saveError)));
-    }
     if (hostSshPasswordDraft) {
       void invoke("ssh_save_password", { entryId: hostSshProfileId(draft.id), password: hostSshPasswordDraft })
         .then(() => setHostSshPasswordSaved(true))
         .catch((saveError) => setNotice(saveError instanceof Error ? saveError.message : String(saveError)));
     }
-    setVmSshPasswordDraft("");
     setHostSshPasswordDraft("");
     setVncEntryDraft(null);
     setSessionFormError("");
@@ -502,7 +482,6 @@ export function useSessionsActions({
     if (!window.confirm(`Remove Proxmox VNC entry "${draft.name}"?`)) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, proxmoxVncEntries: item.proxmoxVncEntries.filter((candidate) => candidate.id !== draft.id) }));
     void invoke("proxmox_forget_secret", { entryId: draft.id, kind: "password" }).catch(() => {});
-    void invoke("ssh_forget_password", { entryId: vmSshProfileId(draft.id) }).catch(() => {});
     void invoke("ssh_forget_password", { entryId: hostSshProfileId(draft.id) }).catch(() => {});
     setVncEntryDraft(null);
     setVncEntryDialogOpen(false);
@@ -517,7 +496,6 @@ export function useSessionsActions({
     if (!window.confirm(`Remove Proxmox VNC entry "${entry.name}"?`)) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspaceId ? item : { ...item, proxmoxVncEntries: item.proxmoxVncEntries.filter((candidate) => candidate.id !== entry.id) }));
     void invoke("proxmox_forget_secret", { entryId: entry.id, kind: "password" }).catch(() => {});
-    void invoke("ssh_forget_password", { entryId: vmSshProfileId(entry.id) }).catch(() => {});
     void invoke("ssh_forget_password", { entryId: hostSshProfileId(entry.id) }).catch(() => {});
     if (vncEntryDraft?.id === entry.id) {
       setVncEntryDraft(null);
@@ -536,32 +514,29 @@ export function useSessionsActions({
   // changes. Requires that profile's password to already be saved (typed
   // into the field just above and Saved at least once), since key
   // installation authenticates with the stored password.
-  const installVncSshKey = async (kind: "vm" | "host") => {
+  const installVncSshKey = async () => {
     const draft = vncEntryDraft;
     if (!draft) return;
-    const isVm = kind === "vm";
-    const host = isVm ? draft.fileTransferIpOverride?.trim() : proxmoxHostFromBaseUrl(draft.baseUrl);
+    const host = proxmoxHostFromBaseUrl(draft.baseUrl);
     if (!host) {
-      setSessionFormError(isVm
-        ? "Enter the VM's IP in \"Fallback VM IP\" above first, then Save, before installing a key onto it."
-        : "The Proxmox host field above must have a valid host before installing a key onto it.");
+      setSessionFormError("The Proxmox host field above must have a valid host before installing a key onto it.");
       return;
     }
-    const profileId = isVm ? vmSshProfileId(draft.id) : hostSshProfileId(draft.id);
-    const username = (isVm ? draft.vmSshUsername : draft.hostSshUsername)?.trim() || "root";
-    const port = (isVm ? draft.vmSshPort : draft.hostSshPort) || 22;
-    const passwordDraft = isVm ? vmSshPasswordDraft : hostSshPasswordDraft;
-    const alreadySaved = isVm ? vmSshPasswordSaved : hostSshPasswordSaved;
+    const profileId = hostSshProfileId(draft.id);
+    const username = draft.hostSshUsername?.trim() || "root";
+    const port = draft.hostSshPort || 22;
+    const passwordDraft = hostSshPasswordDraft;
+    const alreadySaved = hostSshPasswordSaved;
     try {
       if (passwordDraft) {
         await invoke("ssh_save_password", { entryId: profileId, password: passwordDraft });
-        if (isVm) setVmSshPasswordSaved(true); else setHostSshPasswordSaved(true);
+        setHostSshPasswordSaved(true);
       } else if (!alreadySaved) {
-        setSessionFormError(`Enter and Save a ${isVm ? "VM SSH" : "Host SSH"} password above before installing a key with it.`);
+        setSessionFormError("Enter and Save a Host SSH password above before installing a key with it.");
         return;
       }
       const message = await invoke<string>("ssh_install_key", {
-        profile: { id: profileId, name: `${draft.name} (${isVm ? "VM" : "host"} SSH)`, host, port, username, privateKeyPath: (isVm ? draft.vmSshPrivateKeyPath : draft.hostSshPrivateKeyPath) || null },
+        profile: { id: profileId, name: `${draft.name} (host SSH)`, host, port, username, privateKeyPath: draft.hostSshPrivateKeyPath || null },
       });
       notify(message);
     } catch (installError) {

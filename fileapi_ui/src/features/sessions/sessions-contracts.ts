@@ -33,7 +33,14 @@ export const normalizeManagedSessions = (value: unknown): ManagedSession[] => {
         return { ...entry, vendor };
       })
       : [];
-    const proxmoxVncEntries = Array.isArray(item.proxmoxVncEntries) ? item.proxmoxVncEntries : [];
+    const proxmoxVncEntries = Array.isArray(item.proxmoxVncEntries)
+      ? item.proxmoxVncEntries.map((rawEntry) => {
+        const entry = rawEntry as ProxmoxVncEntry & Record<string, unknown>;
+        // Drop the pre-profile VM SSH fields while normalizing persisted data.
+        const { vmSshUsername: _username, vmSshPort: _port, vmSshPrivateKeyPath: _keyPath, fileTransferIpOverride: _fallbackIp, ...cleanEntry } = entry;
+        return cleanEntry as ProxmoxVncEntry;
+      })
+      : [];
     return {
       id: item.id || crypto.randomUUID(),
       name: item.name || "Default",

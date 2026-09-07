@@ -119,7 +119,7 @@ removed in favor of the existing Collapse/Expand button alone:
 
 | Name | Purpose |
 |---|---|
-| `vmSshProfileId(entryId)` / `hostSshProfileId(entryId)` | Synthetic SSH profile ids (`vncvm:<id>` / `vncjump:<id>`) used as OS-keyring keys for the VM's own SSH password and the Proxmox host's jump-SSH password, via the same `ssh_save_password`/`ssh_forget_password`/`ssh_has_password` commands a regular Terminal SSH entry uses. |
+| `vmSshProfileId(entryId, node, vmid)` / `hostSshProfileId(entryId)` | Synthetic SSH profile ids (`vncvm:<entryId>:<node>:<vmid>` / `vncjump:<entryId>`) used as OS-keyring keys for the selected VM's SSH password and the Proxmox host's jump-SSH password, via the same `ssh_save_password`/`ssh_forget_password`/`ssh_has_password` commands a regular Terminal SSH entry uses. |
 | `proxmoxHostFromBaseUrl(baseUrl)` | Extracts the hostname from a Proxmox entry's `https://host:port` base URL (used as the jump-SSH host). |
 | `formatFileSize(bytes)` | Human-readable file size (`B`/`KB`/`MB`/…). |
 | `formatModifiedDate(millis)` | Locale date/time string for a file's modified timestamp. |
@@ -190,19 +190,27 @@ component itself holds no state.
 
 ## Add/Edit Proxmox VNC Entry modal (`main.tsx` + `styles/layout/workspace-dialogs.css`)
 
-As of T-221 the modal (`.vnc-entry-modal`) pages between three sections
-instead of showing every field in one long column, via
-`vncEntryModalTab: "default" | "vmSsh" | "hostSsh"` state in `main.tsx`,
+The modal (`.vnc-entry-modal`) pages between the Proxmox host identity and
+the entry-scoped Host SSH (jump) settings. VM SSH settings are intentionally
+handled in Connection Controls because they belong to the selected guest.
+The tab state in `main.tsx` is `vncEntryModalTab: "default" | "hostSsh"`,
 reset to `"default"` whenever the dialog opens (`openAddVncEntryDialog`/
 `openEditVncEntryDialog`):
 
 | Tab button | Section shown |
 |---|---|
 | **Host Entry** (default) | Name, Proxmox host/port, username + realm, PVE version, Ignore-TLS checkbox. |
-| **VM SSH** | VM SSH username/port/private-key/password, fallback VM IP, "Install SSH key on VM". |
 | **Host SSH (jump)** | Host SSH username/port/private-key/password, "Install SSH key on host". |
 
 `.vnc-entry-modal-tabs`/`.vnc-entry-modal-tab(.active)` in
 `workspace-dialogs.css` style the three pill buttons (same visual language
 as other pill-tab controls in the app). Cancel/Remove/Save stay outside the
 tabbed area so they're reachable regardless of which section is open.
+
+Each selected VM has its own VM SFTP profile in Connection Controls, keyed by
+the Proxmox entry, node, and VMID. The profile contains the VM username, SSH
+port, private key path, and fallback IP. Its password is stored in the OS
+credential store under the same VM-specific key. A new VM does not trigger a
+file-transfer probe automatically; the user can save its profile or explicitly
+choose **Try Host Jump**. If that button is not used, the left pane remains on
+the Proxmox Entry list.

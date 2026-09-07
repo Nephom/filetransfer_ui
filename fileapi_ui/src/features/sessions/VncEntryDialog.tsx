@@ -8,18 +8,14 @@ type VncEntryDialogProps = {
   sessionFormError: string;
   vncEntryDraft: ProxmoxVncEntry;
   setVncEntryDraft: (draft: ProxmoxVncEntry) => void;
-  vncEntryModalTab: "default" | "vmSsh" | "hostSsh";
-  setVncEntryModalTab: (tab: "default" | "vmSsh" | "hostSsh") => void;
-  vmSshPasswordDraft: string;
-  setVmSshPasswordDraft: (value: string) => void;
-  vmSshPasswordSaved: boolean;
+  vncEntryModalTab: "default" | "hostSsh";
+  setVncEntryModalTab: (tab: "default" | "hostSsh") => void;
   hostSshPasswordDraft: string;
   setHostSshPasswordDraft: (value: string) => void;
   hostSshPasswordSaved: boolean;
   modalStyle: React.CSSProperties;
   onDragStart: (event: React.MouseEvent<HTMLElement>) => void;
   onClose: () => void;
-  onInstallVmKey: () => void;
   onInstallHostKey: () => void;
   onRemove: () => void;
   onSave: () => void;
@@ -35,16 +31,12 @@ export function VncEntryDialog({
   setVncEntryDraft,
   vncEntryModalTab,
   setVncEntryModalTab,
-  vmSshPasswordDraft,
-  setVmSshPasswordDraft,
-  vmSshPasswordSaved,
   hostSshPasswordDraft,
   setHostSshPasswordDraft,
   hostSshPasswordSaved,
   modalStyle,
   onDragStart,
   onClose,
-  onInstallVmKey,
   onInstallHostKey,
   onRemove,
   onSave,
@@ -61,7 +53,6 @@ export function VncEntryDialog({
         <h2 className="modal-drag-handle" onMouseDown={onDragStart}>{isEditing ? "Edit Proxmox VNC Entry" : "Add Proxmox VNC Entry"}</h2>
         <div className="vnc-entry-modal-tabs" role="tablist" aria-label="Proxmox VNC entry section">
           <button type="button" role="tab" aria-selected={vncEntryModalTab === "default"} className={`vnc-entry-modal-tab${vncEntryModalTab === "default" ? " active" : ""}`} onClick={() => setVncEntryModalTab("default")}>Host Entry</button>
-          <button type="button" role="tab" aria-selected={vncEntryModalTab === "vmSsh"} className={`vnc-entry-modal-tab${vncEntryModalTab === "vmSsh" ? " active" : ""}`} onClick={() => setVncEntryModalTab("vmSsh")}>VM SSH</button>
           <button type="button" role="tab" aria-selected={vncEntryModalTab === "hostSsh"} className={`vnc-entry-modal-tab${vncEntryModalTab === "hostSsh" ? " active" : ""}`} onClick={() => setVncEntryModalTab("hostSsh")}>Host SSH (jump)</button>
         </div>
         <p>Workspace: {workspaceName || "—"}</p>
@@ -82,18 +73,6 @@ export function VncEntryDialog({
           <label>PVE version<Dropdown label="PVE version" value={vncEntryDraft.proxmoxVersion} onChange={(nextVersion) => setVncEntryDraft({ ...vncEntryDraft, proxmoxVersion: nextVersion as ProxmoxVncEntry["proxmoxVersion"] })} options={[{ value: "auto", label: "Auto detect" }, { value: "6.4", label: "6.4" }, { value: "7.x", label: "7.x" }, { value: "8.x", label: "8.x" }, { value: "9.x", label: "9.x" }]} /></label>
           <label className="tls-option"><input type="checkbox" checked={vncEntryDraft.ignoreTlsErrors} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, ignoreTlsErrors: event.target.checked })} /> Ignore TLS certificate errors</label>
           <small className="field-help">Password, node, and VM selection are configured from the entry's own connection controls once this entry is selected in the VNC mode.</small>
-        </>}
-        {vncEntryModalTab === "vmSsh" && <>
-          <strong>File transfer: VM SSH</strong>
-          <small className="field-help">Credentials for the VM's own SSH/SFTP server, used when this client (or the Proxmox host, as a jump) can reach the VM directly. Leave the password blank to keep a previously saved one.</small>
-          <div className="vnc-form-grid">
-            <label>VM SSH username<input value={vncEntryDraft.vmSshUsername || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, vmSshUsername: event.target.value })} placeholder="root" /></label>
-            <label>VM SSH port<input type="number" min="1" max="65535" value={vncEntryDraft.vmSshPort || 22} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, vmSshPort: Number(event.target.value) || 22 })} /></label>
-          </div>
-          <label>VM SSH private key path (optional)<input value={vncEntryDraft.vmSshPrivateKeyPath || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, vmSshPrivateKeyPath: event.target.value })} placeholder="/home/test/.ssh/id_ed25519" /></label>
-          <label>VM SSH password<input type="password" value={vmSshPasswordDraft} onChange={(event) => setVmSshPasswordDraft(event.target.value)} placeholder={vmSshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" /></label>
-          <label>Fallback VM IP (optional)<input value={vncEntryDraft.fileTransferIpOverride || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, fileTransferIpOverride: event.target.value })} placeholder="Only needed if the Guest Agent can't report it (e.g. LXC)" /></label>
-          <div className="modal-actions"><button type="button" onClick={onInstallVmKey}>Install SSH key on VM</button></div>
         </>}
         {vncEntryModalTab === "hostSsh" && <>
           <strong>File transfer: Host SSH (jump)</strong>

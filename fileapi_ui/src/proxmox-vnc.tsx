@@ -27,16 +27,19 @@ export type ProxmoxVncEntry = {
   // hostSshProfileId(entry.id) below, reusing the same storage mechanism a
   // regular Terminal SSH entry uses so the Rust authenticate() routine needs
   // no changes to find them.
-  vmSshUsername?: string;
-  vmSshPort?: number;
-  vmSshPrivateKeyPath?: string;
   hostSshUsername?: string;
   hostSshPort?: number;
   hostSshPrivateKeyPath?: string;
   // Manual fallback VM IP, used when the QEMU Guest Agent can't be reached
   // (LXC guests, or a qemu guest with the agent not installed/running) but
   // the VM is still known to have a reachable (direct- or jump-host) IP.
-  fileTransferIpOverride?: string;
+  vmSshProfiles?: Record<string, VmSshProfile>;
+};
+export type VmSshProfile = {
+  username: string;
+  port: number;
+  privateKeyPath: string;
+  fallbackIp: string;
 };
 export type ProxmoxVncSecret = { password?: string };
 type VmSummary = { vmid: number; name?: string; node: string; status?: string; guestType: string };
@@ -91,7 +94,8 @@ type SshTransferProfile = {
 /// (used for the Proxmox *web* login password) and from any independent
 /// Terminal SSH entry the user might separately manage, so none of the three
 /// ever collide.
-export const vmSshProfileId = (entryId: string) => `vncvm:${entryId}`;
+export const vmSshProfileKey = (node: string, vmid: number | null): string => `${node.trim()}:${vmid ?? ""}`;
+export const vmSshProfileId = (entryId: string, node = "", vmid: number | null = null) => `vncvm:${entryId}:${vmSshProfileKey(node, vmid)}`;
 export const hostSshProfileId = (entryId: string) => `vncjump:${entryId}`;
 
 // Reachability timeouts for `ssh_check_transport_reachable`, which performs
@@ -345,6 +349,10 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   // entries list can flip this back to false to return to file browsing
   // without redetecting or touching the still-live VNC session.
   const [preferEntriesList, setPreferEntriesList] = useState(false);
+  const [vmSshPassword, setVmSshPassword] = useState("");
+  const [vmSshPasswordSaved, setVmSshPasswordSaved] = useState(false);
+  const [vmSshSaving, setVmSshSaving] = useState(false);
+  const [vmSshDraft, setVmSshDraft] = useState<VmSshProfile>({ username: "root", port: 22, privateKeyPath: "", fallbackIp: "" });
 
   const stopEntryPaneResize = () => {
     entryPaneResizeRef.current = null;
@@ -475,7 +483,51 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   // the VM behind it runs SSH at all, which previously made jump-sftp show
   // as available for guests (e.g. Windows without an SSH server) it could
   // never actually work for.
-  const detectTransferMode = async () => {
+  const selectedVmKey = vmSshProfileKey(entry?.node || "", entry?.vmid ?? null);
+  const storedVmProfile = entry?.vmSshProfiles?.[selectedVmKey];
+  const vmSshProfile = storedVmProfile || { username: "root", port: 22, privateKeyPath: "", fallbackIp: "" };
+  const vmSshConfigured = Boolean(storedVmProfile);
+
+  useEffect(() => {
+    setVmSshPassword("");
+    setVmSshPasswordSaved(false);
+    setVmSshDraft(vmSshProfile);
+    if (entry?.id && entry.vmid !== null) {
+      void invoke<boolean>("ssh_has_password", { entryId: vmSshProfileId(entry.id, entry.node, entry.vmid) })
+        .then(setVmSshPasswordSaved)
+        .catch(() => setVmSshPasswordSaved(false));
+    }
+  }, [entry?.id, entry?.node, entry?.vmid]);
+
+  const updateVmSshProfile = (updates: Partial<VmSshProfile>) => {
+    setVmSshDraft((current) => ({ ...current, ...updates }));
+  };
+
+  const saveVmSshProfile = async () => {
+    if (!entry || entry.vmid === null || !vmSshDraft.username.trim()) return;
+    setVmSshSaving(true);
+    try {
+      const next = { username: vmSshDraft.username.trim(), port: vmSshDraft.port || 22, privateKeyPath: vmSshDraft.privateKeyPath.trim(), fallbackIp: vmSshDraft.fallbackIp.trim() };
+      if (vmSshPassword) {
+        await invoke("ssh_save_password", { entryId: vmSshProfileId(entry.id, entry.node, entry.vmid), password: vmSshPassword });
+        setVmSshPassword("");
+        setVmSshPasswordSaved(true);
+      }
+      const current = entry.vmSshProfiles || {};
+      onChangeEntries(entries.map((item) => item.id === entry.id ? { ...item, vmSshProfiles: { ...current, [selectedVmKey]: next } } : item));
+      setVmSshDraft(next);
+      setTransferMode("unknown");
+      setTransferError("");
+      setPreferEntriesList(false);
+      await detectTransferMode(false, next);
+    } catch (value) {
+      setTransferError(value instanceof Error ? value.message : String(value));
+    } finally {
+      setVmSshSaving(false);
+    }
+  };
+
+  const detectTransferMode = async (forceJump = false, profileOverride?: VmSshProfile) => {
     if (!entry || !nativeEntry) return;
     setTransferMode("detecting");
     setTransferError("");
@@ -495,10 +547,11 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         agentAlive = false;
       }
     }
-    if (entry.fileTransferIpOverride?.trim()) candidates = [entry.fileTransferIpOverride.trim(), ...candidates];
+    const transferProfile = profileOverride || vmSshDraft;
+    if (transferProfile.fallbackIp.trim()) candidates = [transferProfile.fallbackIp.trim(), ...candidates];
 
-    for (const ip of candidates) {
-      const reachable = await invoke<boolean>("ssh_check_transport_reachable", { profile: buildSshProfileFor("direct-sftp", ip), timeoutMs: DIRECT_REACHABILITY_TIMEOUT_MS }).catch(() => false);
+    for (const ip of forceJump ? [] : candidates) {
+      const reachable = await invoke<boolean>("ssh_check_transport_reachable", { profile: buildSshProfileFor("direct-sftp", ip, transferProfile), timeoutMs: DIRECT_REACHABILITY_TIMEOUT_MS }).catch(() => false);
       if (reachable) {
         setGuestIp(ip);
         setTransferMode("direct-sftp");
@@ -508,7 +561,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
     const jumpCandidate = candidates[0];
     if (jumpCandidate && proxmoxHost && entry.hostSshUsername?.trim()) {
-      const jumpReachable = await invoke<boolean>("ssh_check_transport_reachable", { profile: buildSshProfileFor("jump-sftp", jumpCandidate), timeoutMs: JUMP_REACHABILITY_TIMEOUT_MS }).catch(() => false);
+      const jumpReachable = await invoke<boolean>("ssh_check_transport_reachable", { profile: buildSshProfileFor("jump-sftp", jumpCandidate, transferProfile), timeoutMs: JUMP_REACHABILITY_TIMEOUT_MS }).catch(() => false);
       if (jumpReachable) {
         setGuestIp(jumpCandidate);
         setTransferMode("jump-sftp");
@@ -516,16 +569,17 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       }
     }
 
-    if (agentAlive) {
+    if (!forceJump && agentAlive) {
       setTransferMode("guest-agent");
       return;
     }
 
     setTransferMode("unavailable");
+    if (forceJump) setPreferEntriesList(true);
     setTransferError(
       entry.guestType === "qemu"
-        ? "The QEMU Guest Agent isn't responding and no reachable IP was found for direct or jump-host SFTP. Check the VM's network/Guest Agent status, or set VM SSH / Host SSH credentials and a fallback IP in this entry."
-        : "This LXC guest has no Guest Agent API. Provide a reachable VM IP (Host SSH / override) with SSH credentials in this entry to enable file transfer.",
+        ? "The QEMU Guest Agent isn't responding and no reachable IP was found for direct or jump-host SFTP. Check the VM's network/Guest Agent status, or set the VM SFTP profile and Host SSH credentials."
+        : "This LXC guest has no Guest Agent API. Provide a reachable VM IP in the selected VM's SFTP profile and configure Host SSH credentials to enable file transfer.",
     );
   };
 
@@ -545,14 +599,14 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const buildSshProfile = (): SshTransferProfile => buildSshProfileFor(transferMode, guestIp);
 
-  const buildSshProfileFor = (mode: VncTransferMode, ip: string): SshTransferProfile => {
+  const buildSshProfileFor = (mode: VncTransferMode, ip: string, profile = vmSshDraft): SshTransferProfile => {
     const base: SshTransferProfile = {
-      id: vmSshProfileId(entry?.id || "unknown"),
+      id: vmSshProfileId(entry?.id || "unknown", entry?.node || "", entry?.vmid ?? null),
       name: `${entry?.name || "VM"} (VM)`,
       host: ip,
-      port: entry?.vmSshPort || 22,
-      username: entry?.vmSshUsername || "root",
-      privateKeyPath: entry?.vmSshPrivateKeyPath || "",
+      port: profile.port || 22,
+      username: profile.username || "root",
+      privateKeyPath: profile.privateKeyPath || "",
     };
     if (mode !== "jump-sftp" || !entry) return base;
     return {
@@ -748,7 +802,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       const rfb = new RFB(screenRef.current, connection.websocketUrl);
       pendingConnectionIdRef.current = null;
       rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = viewOnly;
-      rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) { setStatus("Connected"); setControlsOpen(false); void detectTransferMode(); } });
+      rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) { setStatus("Connected"); setControlsOpen(false); if (vmSshConfigured) void detectTransferMode(); } });
       rfb.addEventListener("disconnect", () => { if (sessionGeneration === sessionGenerationRef.current) setStatus("Disconnected"); });
       rfb.addEventListener("securityfailure", (event: Event) => { if (sessionGeneration === sessionGenerationRef.current) setError(String((event as CustomEvent).detail || "VNC security failure")); });
       rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password: connection.password }));
@@ -774,7 +828,10 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const chooseNode = (node: string) => updateEntry({ node, vmid: null });
   const chooseVm = (vmid: string) => {
     const vm = nodeVms.find((item) => String(item.vmid) === vmid);
-    if (vm) updateEntry({ node: vm.node, vmid: vm.vmid, guestType: vm.guestType as "qemu" | "lxc" });
+    if (vm) {
+      stopConnection();
+      updateEntry({ node: vm.node, vmid: vm.vmid, guestType: vm.guestType as "qemu" | "lxc" });
+    }
   };
   const toggleViewOnly = () => {
     const next = !viewOnly;
@@ -843,6 +900,21 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
               <label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label>
               <label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label>
             </div>
+            {selectedVm && <div className="vnc-vm-ssh-settings">
+              <div className="vnc-vm-ssh-heading"><strong>VM SFTP</strong><small>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</small></div>
+              <div className="vnc-auth-grid vnc-auth-grid-compact">
+                <label>Username<input value={vmSshDraft.username} onChange={(event) => updateVmSshProfile({ username: event.target.value })} placeholder="root" /></label>
+                <label>Port<input type="number" min="1" max="65535" value={vmSshDraft.port} onChange={(event) => updateVmSshProfile({ port: Number(event.target.value) || 22 })} /></label>
+                <label>Private key<input value={vmSshDraft.privateKeyPath} onChange={(event) => updateVmSshProfile({ privateKeyPath: event.target.value })} placeholder="Optional" /></label>
+                <label>Fallback IP<input value={vmSshDraft.fallbackIp} onChange={(event) => updateVmSshProfile({ fallbackIp: event.target.value })} placeholder="Optional" /></label>
+              </div>
+              <div className="vnc-vm-ssh-actions">
+                <label>Password<input type="password" value={vmSshPassword} onChange={(event) => setVmSshPassword(event.target.value)} placeholder={vmSshPasswordSaved ? "Saved" : "Not saved"} autoComplete="new-password" /></label>
+                <button type="button" className="vnc-compact-action confirm" onClick={() => void saveVmSshProfile()} disabled={vmSshSaving || !vmSshDraft.username.trim()}>{vmSshSaving ? "Saving..." : "Save VM SFTP"}</button>
+                {!vmSshConfigured && <button type="button" className="vnc-compact-action" onClick={() => void detectTransferMode(true)} disabled={transferMode === "detecting" || !entry?.hostSshUsername?.trim()}>{transferMode === "detecting" ? "Trying..." : "Try Host Jump"}</button>}
+              </div>
+              {!vmSshConfigured && <small className="field-help">Save this VM's credentials to try direct SFTP automatically. Until then, files remain in the Entries area; Try Host Jump makes one explicit jump attempt.</small>}
+            </div>}
             <div className="vnc-actions">
               <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button>
               <button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button>
