@@ -145,6 +145,7 @@ component itself holds no state.
 | `password` / `loading` / `error` / `status` | Proxmox web-session login form + VNC connection status text. |
 | `vms` | VM list for the authenticated session (`proxmox_list_vms_session`). |
 | `controlsOpen` | Connection Controls expanded/collapsed (drives `.vnc-auth-panel`/`.vnc-display-split` classes -- see sizing above). |
+| `vmSshSettingsOpen` | Opens the selected VMID's VM SFTP settings in a floating window; it resets closed whenever the VM profile changes. |
 | `isFullscreen` / `viewOnly` | VNC screen fullscreen + input-blocked state. |
 | `authSessions` | Map of `entryId -> Proxmox session id`, so multiple entries can stay logged in independently. |
 | `entryPaneWidth` / `entryPaneCollapsed` | Left sidebar's resizable width (persisted to `localStorage`) and collapsed state. |
@@ -208,10 +209,13 @@ reset to `"default"` whenever the dialog opens (`openAddVncEntryDialog`/
 as other pill-tab controls in the app). Cancel/Remove/Save stay outside the
 tabbed area so they're reachable regardless of which section is open.
 
-Each selected VM has its own VM SFTP profile in Connection Controls, keyed by
-the Proxmox entry, node, and VMID. The profile contains the VM username, SSH
-port, private key path, and fallback IP. Its password is stored in the OS
-credential store under the same VM-specific key. A new VM does not trigger a
-file-transfer probe automatically; the user can save its profile or explicitly
-choose **Try Host Jump**. If that button is not used, the left pane remains on
-the Proxmox Entry list.
+Each selected VM has its own VM SFTP profile, keyed by the Proxmox entry, node,
+and VMID. Connection Controls shows this profile as a compact VM SFTP card with
+the VM name/ID and reachability status; the editable fields open in a VMID-
+specific floating window so they do not expand the main controls panel. The
+profile contains the VM username, SSH port, private key path, and fallback IP.
+Its password is stored in the OS credential store under the same VM-specific
+key. A new VM does not trigger a file-transfer probe automatically; the user
+can save its profile or explicitly choose **Try Host Jump** from the floating
+window. If that button is not used, the left pane remains on the Proxmox Entry
+list.

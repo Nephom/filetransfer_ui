@@ -7,6 +7,7 @@ import { MobileChoiceMenu } from "./ui/MobileChoiceMenu";
 import { EntryActionsMenu } from "./ui/EntryActionsMenu";
 import { ChevronLeftIcon, ChevronRightIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
+import { FloatingWindow } from "./ui/FloatingWindow";
 import { formatQueueEta, formatQueueRate, QueueProgress, updateQueueProgress } from "./queue/progress";
 import { classifyQueueError, retryDelayMs } from "./queue/recovery";
 
@@ -355,6 +356,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [vmSshPasswordSaved, setVmSshPasswordSaved] = useState(false);
   const [vmSshSaving, setVmSshSaving] = useState(false);
   const [vmSshDraft, setVmSshDraft] = useState<VmSshProfile>({ username: "root", port: 22, privateKeyPath: "", fallbackIp: "" });
+  const [vmSshSettingsOpen, setVmSshSettingsOpen] = useState(false);
 
   const stopEntryPaneResize = () => {
     entryPaneResizeRef.current = null;
@@ -494,6 +496,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   useEffect(() => {
     setVmSshPassword("");
     setVmSshPasswordSaved(false);
+    setVmSshSettingsOpen(false);
     setVmSshDraft(vmSshProfile);
     setQemuAgentStatus(entry?.guestType === "qemu" ? "unknown" : "not-applicable");
     if (entry?.id && entry.vmid !== null) {
@@ -941,20 +944,9 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
               <label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label>
               <label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label>
             </div>
-            {selectedVm && <div className="vnc-vm-ssh-settings">
-              <div className="vnc-vm-ssh-heading"><strong>VM SFTP</strong><div className="vnc-vm-ssh-statuses"><small>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</small><span className={`vnc-agent-status ${qemuAgentStatus}`} title={qemuAgentStatusTitle} aria-label={`QEMU Guest Agent: ${qemuAgentStatusLabel}`}><span className="vnc-agent-status-dot" aria-hidden="true" />QEMU Agent: {qemuAgentStatusLabel}</span></div></div>
-              <div className="vnc-auth-grid vnc-auth-grid-compact">
-                <label>Username<input value={vmSshDraft.username} onChange={(event) => updateVmSshProfile({ username: event.target.value })} placeholder="root" /></label>
-                <label>Port<input type="number" min="1" max="65535" value={vmSshDraft.port} onChange={(event) => updateVmSshProfile({ port: Number(event.target.value) || 22 })} /></label>
-                <label>Private key<input value={vmSshDraft.privateKeyPath} onChange={(event) => updateVmSshProfile({ privateKeyPath: event.target.value })} placeholder="Optional" /></label>
-                <label>Fallback IP<input value={vmSshDraft.fallbackIp} onChange={(event) => updateVmSshProfile({ fallbackIp: event.target.value })} placeholder="Optional" /></label>
-              </div>
-              <div className="vnc-vm-ssh-actions">
-                <label>Password<input type="password" value={vmSshPassword} onChange={(event) => setVmSshPassword(event.target.value)} placeholder={vmSshPasswordSaved ? "Saved" : "Not saved"} autoComplete="new-password" /></label>
-                <button type="button" className="vnc-compact-action confirm" onClick={() => void saveVmSshProfile()} disabled={vmSshSaving || !vmSshDraft.username.trim()}>{vmSshSaving ? "Saving..." : "Save VM SFTP"}</button>
-                {!vmSshConfigured && <button type="button" className="vnc-compact-action" onClick={() => void detectTransferMode(true)} disabled={transferMode === "detecting" || !entry?.hostSshUsername?.trim()}>{transferMode === "detecting" ? "Trying..." : "Try Host Jump"}</button>}
-              </div>
-              {!vmSshConfigured && <small className="field-help">QEMU Agent can provide Windows files without VM credentials. Save this VM's credentials to try direct SFTP automatically; Try Host Jump remains an explicit jump attempt.</small>}
+            {selectedVm && <div className="vnc-vm-ssh-card">
+              <div className="vnc-vm-ssh-card-copy"><strong>VM SFTP</strong><small>{selectedVm.name || `VM ${selectedVm.vmid}`} · VMID {selectedVm.vmid}</small><span>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</span></div>
+              <div className="vnc-vm-ssh-card-side"><span className={`vnc-agent-status ${qemuAgentStatus}`} title={qemuAgentStatusTitle} aria-label={`QEMU Guest Agent: ${qemuAgentStatusLabel}`}><span className="vnc-agent-status-dot" aria-hidden="true" />QEMU Agent: {qemuAgentStatusLabel}</span><button type="button" className="vnc-compact-action" onClick={() => setVmSshSettingsOpen(true)}>Configure</button></div>
             </div>}
             <div className="vnc-actions">
               <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button>
@@ -991,6 +983,27 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
           <div ref={screenRef} className="vnc-screen" />
         </div>
       </div>
+      {vmSshSettingsOpen && selectedVm && <FloatingWindow
+        ariaLabel={`VM SFTP settings for VMID ${selectedVm.vmid}`}
+        className="vnc-vm-ssh-window"
+        header={<div className="vnc-vm-ssh-window-heading"><div><strong>VM SFTP settings</strong><small>{selectedVm.name || `VM ${selectedVm.vmid}`} · VMID {selectedVm.vmid}</small></div><button type="button" onClick={() => setVmSshSettingsOpen(false)} aria-label="Close VM SFTP settings">×</button></div>}
+        onClose={() => setVmSshSettingsOpen(false)}
+        footer={<div className="modal-actions"><button type="button" onClick={() => setVmSshSettingsOpen(false)}>Close</button><button type="button" className="confirm" onClick={() => void saveVmSshProfile()} disabled={vmSshSaving || !vmSshDraft.username.trim()}>{vmSshSaving ? "Saving..." : "Save VM SFTP"}</button></div>}
+      >
+        <div className="vnc-vm-ssh-window-body">
+          <div className="vnc-vm-ssh-window-status"><span>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</span><span className={`vnc-agent-status ${qemuAgentStatus}`}><span className="vnc-agent-status-dot" aria-hidden="true" />QEMU Agent: {qemuAgentStatusLabel}</span></div>
+          <div className="vnc-auth-grid vnc-auth-grid-compact">
+            <label>Username<input value={vmSshDraft.username} onChange={(event) => updateVmSshProfile({ username: event.target.value })} placeholder="root" /></label>
+            <label>Port<input type="number" min="1" max="65535" value={vmSshDraft.port} onChange={(event) => updateVmSshProfile({ port: Number(event.target.value) || 22 })} /></label>
+            <label>Private key<input value={vmSshDraft.privateKeyPath} onChange={(event) => updateVmSshProfile({ privateKeyPath: event.target.value })} placeholder="Optional" /></label>
+            <label>Fallback IP<input value={vmSshDraft.fallbackIp} onChange={(event) => updateVmSshProfile({ fallbackIp: event.target.value })} placeholder="Optional" /></label>
+          </div>
+          <label className="vnc-vm-ssh-password">Password<input type="password" value={vmSshPassword} onChange={(event) => setVmSshPassword(event.target.value)} placeholder={vmSshPasswordSaved ? "Saved" : "Not saved"} autoComplete="new-password" /></label>
+          {!vmSshConfigured && <small className="field-help">QEMU Agent can provide Windows files without VM credentials. Save this VM's credentials to try direct SFTP automatically; Try Host Jump remains an explicit jump attempt.</small>}
+          <div className="vnc-vm-ssh-window-actions">{!vmSshConfigured && <button type="button" className="vnc-compact-action" onClick={() => void detectTransferMode(true)} disabled={transferMode === "detecting" || !entry?.hostSshUsername?.trim()}>{transferMode === "detecting" ? "Trying..." : "Try Host Jump"}</button>}</div>
+          {transferError && <div className="notice rest-error">{transferError}</div>}
+        </div>
+      </FloatingWindow>}
     </section>
   </div>;
 }
