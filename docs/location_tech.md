@@ -51,7 +51,7 @@ The Location command bar measures its rendered action buttons with `ResizeObserv
 
 ## File data and navigation
 
-The shared `FileItem` shape is `{ name, path, isDirectory, size, modified }`. Remote API paths are Location-relative; SSH paths use SSH absolute-style paths. LOCAL paths are normally HOME-relative (`""`, `Documents/a.txt`). On Windows, roots for non-HOME drive-letter volumes are also added when the current user can enumerate them; the HOME drive remains HOME-only for a regular user. Elevated sessions additionally receive the HOME drive root and Unix/Windows filesystem roots. The Rust commands remain the security boundary and Windows ACL errors are surfaced instead of converted to empty listings.
+The shared `FileItem` shape is `{ name, path, isDirectory, size, modified }`. Remote API paths are Location-relative; SSH paths use SSH absolute-style paths. LOCAL paths are normally HOME-relative (`""`, `Documents/a.txt`). LOCAL is an application-level read-only source: the operating system decides whether a directory can be listed or a file can be opened. On Windows, the HOME drive remains HOME-only for a regular user; other drive roots are offered when they can be enumerated. Unix/macOS roots are exposed for read-only traversal, with OS ACL failures returned at the operation that encounters them. The Rust commands remain the security boundary.
 
 Important helpers:
 
@@ -66,7 +66,7 @@ Important helpers:
 
 `loadFiles()` browses either `ssh_list_directory` or `GET /api/files?path=...&sort=...&order=...&directoriesFirst=...`. It resets selection and records start/completion/failure operation logs. `loadTreeChildren()` performs the equivalent directory-only query for the REMOTE folder tree. `loadLocalFiles()` uses `local_list_directory`; `refreshLocalFiles()` reloads the current directory; `loadLocalTreeChildren()` uses `local_list_directories` with a cache and request-generation guard so stale asynchronous responses cannot overwrite a newer navigation.
 
-The LOCAL tree starts with the `HOMEDIR/` node. On Windows, `list_local_roots` adds non-HOME drive roots that the current process can enumerate for regular users; elevated sessions also receive the HOME drive root. `local_home_path` is used when elevated navigation must leave HOME. Local tree expansion is lazy; remote and local folder nodes expand after a 650 ms drag hover, and drop targets auto-scroll when the pointer approaches a scroll boundary.
+The LOCAL tree starts with the `HOMEDIR/` node. On Windows, `list_local_roots` adds non-HOME drive roots that the current process can enumerate for regular users; the HOME drive remains represented only by `HOMEDIR/` unless the process is elevated. Unix/macOS also expose `/` as a read-only root. `local_home_path` remains available for HOME-relative breadcrumb handling. Local tree expansion is lazy; remote and local folder nodes expand after a 650 ms drag hover, and drop targets auto-scroll when the pointer approaches a scroll boundary.
 
 ## Transfer and file actions
 
@@ -84,12 +84,14 @@ All long-running transfers are represented by the shared queue (`TransferQueueIt
 
 API uploads use `inspect_upload_paths` followed by native `api_upload_paths` to `POST /api/upload/multiple`, with `X-Location-ID`, source fingerprint verification, progress events, and retry classification. API downloads use `download_to_disk`/`download_to_disk_at`; SSH uses `ssh_upload_path`, `ssh_download_path`, and related staging commands. Single files and folders have different queue kinds (`download` versus `download-set`), and guest/remote archive behaviour is kept out of the UI thread.
 
+LOCAL never performs write operations. New folder, rename, delete, LOCAL-to-LOCAL move, compression, extraction, and LOCAL undo mutations are disabled. A readable LOCAL file or directory may still be uploaded to REMOTE, subject to the REMOTE `upload` capability. REMOTE-to-LOCAL downloads use a separate writable destination check.
+
 Drag/drop supports:
 
 - LOCAL → API Remote or SSH Remote upload;
 - Remote → LOCAL download;
 - Remote → Remote move;
-- LOCAL → LOCAL move;
+- LOCAL → LOCAL move is intentionally not supported because LOCAL is read-only;
 - folder-tree drops, file-list drops, auto-expand, and auto-scroll.
 
 Windows external drag-out is deliberately disabled; the stable Download/Queue route is used instead. `ensureApiRemote()` prevents API-only actions from being applied to an SSH browse target.

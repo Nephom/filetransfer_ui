@@ -537,13 +537,11 @@ const readError = async (response: {
 
 const parentPath = (path: string) =>
   path.split("/").filter(Boolean).slice(0, -1).join("/");
-// A LOCAL path is "absolute" once a privileged (root/Administrator) session
-// has broken out of the HOME jail: a real filesystem path (Unix "/...", or
-// a Windows drive like "C:/..."), as opposed to the normal HOME-relative
-// path strings ("", "Documents/foo") the Rust side otherwise always uses.
+// A LOCAL path is absolute when browsing a real filesystem root. HOME-relative
+// paths remain the normal representation for the user's HOME tree.
 const isAbsoluteLocalPath = (path: string) => path.startsWith("/") || /^[A-Za-z]:/.test(path);
 // Breadcrumb segments for the LOCAL path bar. Handles both HOME-relative
-// paths (the normal case) and real absolute paths (elevated-only), the
+// paths and real absolute paths, the
 // latter needing its own logic since naively splitting on "/" loses the
 // leading "/" (Unix) or the drive letter (Windows).
 const localBreadcrumbSegments = (path: string): { label: string; target: string }[] => {
@@ -1113,6 +1111,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // clicking around in LOCAL, with no indication of where an action would
   // actually apply.
   const [activePane, setActivePane] = useState<"local" | "remote">("remote");
+  const localReadOnly = true;
   // `null` means "no active drop target". This must be distinct from `""`,
   // which is a legitimate real path (HOME for LOCAL, and the API-remote
   // storage root) -- using `""` as the sentinel made the HOME/root tree row
@@ -1669,7 +1668,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // parent of the relative HOME paths. Elevated sessions can also leave HOME.
   const localParentPath = (path: string): string => {
     const absolute = path === "" ? localHomeAbsolute : path;
-    if (!isLocalElevated || !absolute || !isAbsoluteLocalPath(absolute)) return parentPath(path);
+    if (!absolute || !isAbsoluteLocalPath(absolute)) return parentPath(path);
     if (absolute === "/") return "/";
     const segments = absolute.split("/").filter(Boolean);
     if (/^[A-Za-z]:$/.test(segments[0] || "")) {
@@ -1678,7 +1677,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     return segments.length > 1 ? `/${segments.slice(0, -1).join("/")}` : "/";
   };
   const showLocalUp = (): boolean => {
-    if (!isLocalElevated) return Boolean(localPath);
+    if (!isAbsoluteLocalPath(localPath)) return Boolean(localPath || localHomeAbsolute);
     if (!localPath) return Boolean(localHomeAbsolute);
     if (localPath === "/") return false;
     const segments = localPath.split("/").filter(Boolean);
@@ -2844,35 +2843,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // same-named item by auto-appending "_(n)".
   const moveLocalItems = (items: FileItem[], destination: string) =>
     run(async () => {
-      if (!isValidMoveTarget(items, destination))
-        throw new Error(
-          "Choose a folder other than the current folder or a folder inside a selected folder.",
-        );
-      const sourceLabel = `${items.length} item${items.length === 1 ? "" : "s"} in LOCAL`;
-      const destinationLabel = `LOCAL: ~/${destination || ""}`;
-      try {
-        let lastFinalName = "";
-        for (const item of items) {
-          const newPath = destination ? `${destination}/${item.name}` : item.name;
-          const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
-          lastFinalName = finalPath.split("/").pop() || item.name;
-          recordUndoableMove({ source: "local", oldPath: item.path, newPath: finalPath });
-        }
-        setDragItems([]);
-        setDropTarget(null);
-        setLocalSelected([]);
-        writeOperationLog("move", "completed", sourceLabel, destinationLabel, `Moved ${items.length} item(s) in LOCAL.`);
-        notify(
-          items.length === 1
-            ? `Moved ${lastFinalName} in LOCAL.`
-            : `Moved ${items.length} items in LOCAL.`,
-        );
-        await loadLocalFiles(localPath);
-        if (destination !== localPath) void loadLocalTreeChildren(destination, true);
-      } catch (error) {
-        writeOperationLog("move", "failed", sourceLabel, destinationLabel, `Failed to move in LOCAL: ${describeError(error)}`, "ERROR");
-        throw error;
-      }
+      notify("LOCAL is read-only. Upload selected items to REMOTE instead.");
     });
 
   const beginDrag = (event: React.DragEvent, file: FileItem) => {
@@ -3449,22 +3420,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const createFolder = () =>
     run(async () => {
+      if (splitMode && activePane === "local") {
+        notify("LOCAL is read-only.");
+        return;
+      }
       const folderName = window.prompt("Folder name");
       if (!folderName?.trim()) return;
       const name = folderName.trim();
-      if (splitMode && activePane === "local") {
-        const fullPath = localPath ? `${localPath}/${name}` : name;
-        try {
-          await invoke("local_create_directory", { path: fullPath });
-          await loadLocalFiles(localPath);
-          writeOperationLog("create_folder", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${fullPath}`, `Created folder ${name} in LOCAL.`);
-          notify(`Created ${name} in LOCAL.`);
-        } catch (error) {
-          writeOperationLog("create_folder", "failed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${fullPath}`, `Failed to create folder ${name} in LOCAL: ${describeError(error)}`, "ERROR");
-          throw error;
-        }
-        return;
-      }
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
@@ -3504,23 +3466,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const rename = () =>
     run(async () => {
       if (splitMode && activePane === "local") {
-        if (localSelectedItems.length !== 1) return;
-        const item = localSelectedItems[0];
-        const newName = window.prompt("New name", item.name);
-        if (!newName?.trim() || newName === item.name) return;
-        const trimmedName = newName.trim();
-        const parent = item.path.split("/").slice(0, -1).join("/");
-        const newPath = parent ? `${parent}/${trimmedName}` : trimmedName;
-        try {
-          const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
-          recordUndoableRename({ source: "local", oldPath: item.path, newPath: finalPath });
-          await loadLocalFiles(localPath);
-          writeOperationLog("rename", "completed", `LOCAL: ~/${item.path}`, `LOCAL: ~/${finalPath}`, `Renamed ${item.name} to ${finalPath.split("/").pop()} in LOCAL.`);
-          notify(`Renamed ${item.name} to ${finalPath.split("/").pop()} in LOCAL.`);
-        } catch (error) {
-          writeOperationLog("rename", "failed", `LOCAL: ~/${item.path}`, `LOCAL: ~/${newPath}`, `Failed to rename ${item.name} in LOCAL: ${describeError(error)}`, "ERROR");
-          throw error;
-        }
+        notify("LOCAL is read-only.");
         return;
       }
       if (selectedItems.length !== 1) return;
@@ -3570,26 +3516,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const remove = () =>
     run(async () => {
       if (splitMode && activePane === "local") {
-        if (
-          !localSelectedItems.length ||
-          (desktopSettings.confirmations.delete && !window.confirm(
-            `Delete ${localSelectedItems.length} selected LOCAL item${localSelectedItems.length === 1 ? "" : "s"}? This cannot be undone.`,
-          ))
-        )
-          return;
-        const sourceLabel = `${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"}`;
-        const destinationLabel = `LOCAL: ~/${localPath || ""}`;
-        try {
-          for (const item of localSelectedItems) {
-            await invoke("local_delete_path", { path: item.path, isDirectory: item.isDirectory });
-          }
-          await loadLocalFiles(localPath);
-          writeOperationLog("delete", "completed", sourceLabel, destinationLabel, "Deleted in LOCAL. This cannot be undone.");
-          notify("Deleted selected LOCAL items. This cannot be undone.");
-        } catch (error) {
-          writeOperationLog("delete", "failed", sourceLabel, destinationLabel, `Failed to delete in LOCAL: ${describeError(error)}`, "ERROR");
-          throw error;
-        }
+        notify("LOCAL is read-only.");
         return;
       }
       if (
@@ -3671,43 +3598,12 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // and local timestamp; Rust adds the collision suffix without prompting.
   const compressLocalItems = () =>
     run(async () => {
-      if (!localSelectedItems.length) return;
-      const archiveName = sessionArchiveName(activeManagedWorkspace?.name || "nFterm");
-      const sourceLabel = `${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"} in LOCAL`;
-      const destinationLabel = `LOCAL: ~/${localPath || ""}`;
-      try {
-        const finalName = await invoke<string>("local_compress_paths", {
-          paths: localSelectedItems.map((item) => item.path),
-          destinationFolder: localPath,
-          archiveName,
-        });
-        await loadLocalFiles(localPath);
-        writeOperationLog("compress", "completed", sourceLabel, destinationLabel, `Created ${finalName} in LOCAL.`);
-        notify(`Created ${finalName} in LOCAL.`);
-      } catch (error) {
-        writeOperationLog("compress", "failed", sourceLabel, destinationLabel, `Failed to create archive in LOCAL: ${describeError(error)}`, "ERROR");
-        throw error;
-      }
+      notify("LOCAL is read-only.");
     });
 
   const extractLocalArchive = () =>
     run(async () => {
-      if (localSelectedItems.length !== 1) return;
-      const item = localSelectedItems[0];
-      const sourceLabel = `LOCAL: ~/${item.path}`;
-      const destinationLabel = `LOCAL: ~/${localPath || ""}`;
-      try {
-        const finalName = await invoke<string>("local_extract_archive", {
-          path: item.path,
-          destinationFolder: localPath,
-        });
-        await loadLocalFiles(localPath);
-        writeOperationLog("extract", "completed", sourceLabel, destinationLabel, `Extracted ${item.name} to ${finalName} in LOCAL.`);
-        notify(`Extracted to ${finalName} in LOCAL.`);
-      } catch (error) {
-        writeOperationLog("extract", "failed", sourceLabel, destinationLabel, `Failed to extract ${item.name} in LOCAL: ${describeError(error)}`, "ERROR");
-        throw error;
-      }
+      notify("LOCAL is read-only.");
     });
 
   const compressRemoteItems = () =>
@@ -3895,13 +3791,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             setDropTarget(node.path);
             scheduleLocalTreeExpand(node);
             handleDragAutoScroll(event, localFolderTreeRef.current);
-          } else if (dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, node.path)) {
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-            setDropTarget(node.path);
-            scheduleLocalTreeExpand(node);
-            handleDragAutoScroll(event, localFolderTreeRef.current);
-          }
+           }
         }}
         onDragLeave={(event) => {
           // Same fix as the REMOTE tree above: don't clear `dropTarget`
@@ -3919,13 +3809,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             setDropTarget(null);
             const items = dragItemsRef.current;
             downloadRemoteItemsToLocal(items, node.path);
-          } else if (dragSourceRef.current === "local") {
-            event.preventDefault();
-            event.stopPropagation();
-            stopDragAutoScroll();
-            setDropTarget(null);
-            const items = dragItemsRef.current;
-            void moveLocalItems(items, node.path);
           }
         }}
       >
@@ -4115,13 +3998,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
               <article
                 className={`file-tile file-tile-dotdot ${dropTarget === localParentPath(localPath) ? "drop-target" : ""}`}
                 onDragOver={(event) => {
-                  if (dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, localParentPath(localPath))) {
+                 if (!localReadOnly && dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, localParentPath(localPath))) {
                     event.preventDefault();
                     setDropTarget(localParentPath(localPath));
                   }
                 }}
                 onDrop={(event) => {
-                  if (dragSourceRef.current === "local") {
+                 if (!localReadOnly && dragSourceRef.current === "local") {
                     event.preventDefault();
                     event.stopPropagation();
                     const items = dragItemsRef.current;
@@ -4146,13 +4029,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                 onDragStart={(event) => beginLocalDrag(event, file)}
                 onDragEnd={finishDragAfterDrop}
                 onDragOver={(event) => {
-                  if (file.isDirectory && dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, file.path)) {
+                   if (!localReadOnly && file.isDirectory && dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, file.path)) {
                     event.preventDefault();
                     setDropTarget(file.path);
                   }
                 }}
                 onDrop={(event) => {
-                  if (file.isDirectory && dragSourceRef.current === "local") {
+                   if (!localReadOnly && file.isDirectory && dragSourceRef.current === "local") {
                     event.preventDefault();
                     event.stopPropagation();
                     const items = dragItemsRef.current;
@@ -4190,13 +4073,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             <button
               className={`local-file local-file-dotdot ${dropTarget === localParentPath(localPath) ? "drop-target" : ""}`}
               onDragOver={(event) => {
-                if (dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, localParentPath(localPath))) {
+                if (!localReadOnly && dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, localParentPath(localPath))) {
                   event.preventDefault();
                   setDropTarget(localParentPath(localPath));
                 }
               }}
               onDrop={(event) => {
-                if (dragSourceRef.current === "local") {
+                if (!localReadOnly && dragSourceRef.current === "local") {
                   event.preventDefault();
                   event.stopPropagation();
                   const items = dragItemsRef.current;
@@ -4220,13 +4103,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
               onDragStart={(event) => beginLocalDrag(event, file)}
               onDragEnd={finishDragAfterDrop}
               onDragOver={(event) => {
-                if (file.isDirectory && dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, file.path)) {
+                   if (!localReadOnly && file.isDirectory && dragSourceRef.current === "local" && isValidMoveTarget(dragItemsRef.current, file.path)) {
                   event.preventDefault();
                   setDropTarget(file.path);
                 }
               }}
               onDrop={(event) => {
-                if (file.isDirectory && dragSourceRef.current === "local") {
+                   if (!localReadOnly && file.isDirectory && dragSourceRef.current === "local") {
                   event.preventDefault();
                   event.stopPropagation();
                   const items = dragItemsRef.current;
@@ -4407,7 +4290,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             onClick={createFolder}
             disabled={
               splitMode && activePane === "local"
-                ? busy
+                ? localReadOnly || busy
                 : busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir"))
             }
           >
@@ -4445,7 +4328,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                 key: "new-folder",
                 label: "New folder",
                 disabled: splitMode && activePane === "local"
-                  ? busy
+                  ? localReadOnly || busy
                   : busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir")),
                 onClick: createFolder,
               },
@@ -4496,7 +4379,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                 key: "rename",
                 label: "Rename",
                 disabled: splitMode && activePane === "local"
-                  ? busy || localSelectedItems.length !== 1
+                  ? localReadOnly || busy || localSelectedItems.length !== 1
                   : busy ||
                     selectedItems.length !== 1 ||
                     !(remoteSshEntryId ? true : locationOnline && hasCapability("rename")),
@@ -4519,7 +4402,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
                 key: "delete",
                 label: "Delete",
                 disabled: splitMode && activePane === "local"
-                  ? busy || !localSelectedItems.length
+                  ? localReadOnly || busy || !localSelectedItems.length
                   : busy ||
                     !selectedItems.length ||
                     !(remoteSshEntryId ? true : locationOnline && hasCapability("delete")),
@@ -4593,7 +4476,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             <button
               disabled={
                 splitMode && activePane === "local"
-                  ? busy || localSelectedItems.length !== 1
+                  ? localReadOnly || busy || localSelectedItems.length !== 1
                   : busy ||
                     selectedItems.length !== 1 ||
                     !(remoteSshEntryId ? true : locationOnline && hasCapability("rename"))
@@ -4619,7 +4502,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             <button
               disabled={
                 splitMode && activePane === "local"
-                  ? busy || !localSelectedItems.length
+                  ? localReadOnly || busy || !localSelectedItems.length
                   : busy ||
                     !selectedItems.length ||
                     !(remoteSshEntryId ? true : locationOnline && hasCapability("delete"))

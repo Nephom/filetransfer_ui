@@ -316,9 +316,8 @@ fn collect_upload_paths(paths: &[String]) -> Result<(Vec<(PathBuf, String)>, Vec
             return Err(format!("Upload path must not contain '..': {path}"));
         }
         // LOCAL pane entries are HOME-relative; native picker entries are
-        // absolute. Resolve both through the same filesystem boundary so a
-        // picker cannot bypass the LOCAL policy.
-        let source = resolve_local_transfer_path(path)?;
+        // absolute. Read-only sources use the OS ACL as the authority.
+        let source = resolve_local_read_entry(path)?;
         let name = source
             .file_name()
             .and_then(|name| name.to_str())
@@ -364,8 +363,7 @@ fn api_client(ignore_tls_errors: bool) -> Result<Client, String> {
         .danger_accept_invalid_certs(ignore_tls_errors)
         .danger_accept_invalid_hostnames(ignore_tls_errors)
         .build()
-        .map_err(describe_error)
-        ?;
+        .map_err(describe_error)?;
     clients
         .lock()
         .map_err(|error| error.to_string())?
@@ -388,8 +386,7 @@ fn download_client(ignore_tls_errors: bool) -> Result<Client, String> {
         .danger_accept_invalid_certs(ignore_tls_errors)
         .danger_accept_invalid_hostnames(ignore_tls_errors)
         .build()
-        .map_err(describe_error)
-        ?;
+        .map_err(describe_error)?;
     clients
         .lock()
         .map_err(|error| error.to_string())?
@@ -405,8 +402,7 @@ fn session_cookie_jar(ignore_tls_errors: bool) -> Result<Arc<Jar>, String> {
         }
     }
     let jar = Arc::new(Jar::default());
-    jars
-        .lock()
+    jars.lock()
         .map_err(|error| error.to_string())?
         .insert(ignore_tls_errors, jar.clone());
     Ok(jar)
@@ -423,7 +419,11 @@ fn apply_headers(
 
 async fn response_from(response: reqwest::Response) -> Result<ApiResponse, String> {
     let status = response.status().as_u16();
-    let status_text = response.status().canonical_reason().unwrap_or("").to_string();
+    let status_text = response
+        .status()
+        .canonical_reason()
+        .unwrap_or("")
+        .to_string();
     let headers = response
         .headers()
         .iter()
@@ -481,14 +481,7 @@ async fn pick_local_directory(path: String) -> Result<Option<String>, String> {
     // before rfd ever gets a chance to show a dialog (or a dialog that
     // returns something unexpected) is visible in operations.log instead
     // of only surfacing as an opaque error banner in the UI.
-    oplog::log(
-        "DEBUG",
-        "local_pick_directory",
-        "started",
-        &path,
-        "",
-        "{}",
-    );
+    oplog::log("DEBUG", "local_pick_directory", "started", &path, "", "{}");
     let initial_directory = match resolve_local_download_destination(&path) {
         Ok(directory) => directory,
         Err(error) => {
@@ -567,14 +560,28 @@ async fn save_text_file(name: String, content: String) -> Result<Option<String>,
 fn sanitize_iml_file_component(value: &str) -> String {
     let sanitized: String = value
         .chars()
-        .map(|character| if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') { character } else { '_' })
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
         .collect();
     let trimmed = sanitized.trim_matches(['.', ' ']);
-    if trimmed.is_empty() { "unknown".to_string() } else { trimmed.chars().take(120).collect() }
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.chars().take(120).collect()
+    }
 }
 
 #[tauri::command]
-fn create_iml_csv_session(serial_number: String, timestamp: String, header: String) -> Result<String, String> {
+fn create_iml_csv_session(
+    serial_number: String,
+    timestamp: String,
+    header: String,
+) -> Result<String, String> {
     let desktop = local_home()?.join("Desktop");
     std::fs::create_dir_all(&desktop).map_err(|error| error.to_string())?;
     let serial = sanitize_iml_file_component(&serial_number);
@@ -594,10 +601,26 @@ fn create_iml_csv_session(serial_number: String, timestamp: String, header: Stri
 fn append_iml_csv_session(path: String, content: String) -> Result<(), String> {
     let target = PathBuf::from(path);
     let desktop = local_home()?.join("Desktop");
-    let target = canonicalize(target.parent().ok_or_else(|| "IML CSV path has no parent directory".to_string())?)?.join(target.file_name().ok_or_else(|| "IML CSV path has no file name".to_string())?);
-    if !target.starts_with(canonicalize(desktop)?) { return Err("IML CSV path must remain on the user's Desktop".to_string()); }
-    let mut file = std::fs::OpenOptions::new().create(false).append(true).open(&target).map_err(|error| error.to_string())?;
-    file.write_all(content.as_bytes()).map_err(|error| error.to_string())?;
+    let target = canonicalize(
+        target
+            .parent()
+            .ok_or_else(|| "IML CSV path has no parent directory".to_string())?,
+    )?
+    .join(
+        target
+            .file_name()
+            .ok_or_else(|| "IML CSV path has no file name".to_string())?,
+    );
+    if !target.starts_with(canonicalize(desktop)?) {
+        return Err("IML CSV path must remain on the user's Desktop".to_string());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(false)
+        .append(true)
+        .open(&target)
+        .map_err(|error| error.to_string())?;
+    file.write_all(content.as_bytes())
+        .map_err(|error| error.to_string())?;
     file.flush().map_err(|error| error.to_string())
 }
 
@@ -917,8 +940,9 @@ fn local_roots() -> Vec<String> {
         .and_then(|home| {
             home.components().find_map(|component| match component {
                 std::path::Component::Prefix(prefix) => match prefix.kind() {
-                    std::path::Prefix::Disk(letter)
-                    | std::path::Prefix::VerbatimDisk(letter) => Some(letter.to_ascii_uppercase()),
+                    std::path::Prefix::Disk(letter) | std::path::Prefix::VerbatimDisk(letter) => {
+                        Some(letter.to_ascii_uppercase())
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -953,11 +977,7 @@ fn list_local_roots() -> Vec<String> {
     }
     #[cfg(not(windows))]
     {
-        if is_elevated() {
-            local_roots()
-        } else {
-            Vec::new()
-        }
+        local_roots()
     }
 }
 
@@ -992,6 +1012,96 @@ fn is_within_home_or_elevated(resolved: &Path, home: &Path, elevated: bool) -> b
     }
 }
 
+fn is_local_read_scope(resolved: &Path, home: &Path, elevated: bool) -> bool {
+    if resolved.starts_with(home) || elevated {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        let drive_letter = |path: &Path| {
+            path.components().find_map(|component| match component {
+                std::path::Component::Prefix(prefix) => match prefix.kind() {
+                    std::path::Prefix::Disk(letter) | std::path::Prefix::VerbatimDisk(letter) => {
+                        Some(letter.to_ascii_uppercase())
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+        };
+        return drive_letter(resolved).is_some() && drive_letter(resolved) != drive_letter(home);
+    }
+
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+/// Resolve a LOCAL path for read-only browsing and transfer sources. Relative
+/// paths start in HOME. Absolute paths are allowed when the platform policy
+/// permits them, and the final filesystem operation remains the OS ACL check.
+/// Windows intentionally keeps the HOME drive confined to HOME for regular
+/// users; other drive volumes can be browsed when their ACL allows it.
+fn resolve_local_read_path(path: &str) -> Result<(Option<PathBuf>, PathBuf), String> {
+    let input = Path::new(path);
+    if input
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Local read path must not contain '..'".to_string());
+    }
+
+    let home = canonicalize(local_home()?)?;
+    let directory = if input.is_absolute() {
+        canonicalize(input)?
+    } else {
+        canonicalize(home.join(input))?
+    };
+    if !directory.is_dir() {
+        return Err("Local path is not a directory".to_string());
+    }
+
+    if !is_local_read_scope(&directory, &home, is_elevated()) {
+        return Err("Local path is outside the permitted local filesystem".to_string());
+    }
+
+    let relative_root = directory.starts_with(&home).then_some(home);
+    Ok((relative_root, directory))
+}
+
+fn resolve_local_read_entry(path: &str) -> Result<PathBuf, String> {
+    let input = Path::new(path);
+    if input
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Local read path must not contain '..'".to_string());
+    }
+    let home = canonicalize(local_home()?)?;
+    let resolved = canonicalize(if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        home.join(input)
+    })?;
+    if !is_local_read_scope(&resolved, &home, is_elevated()) {
+        return Err("Local path is outside the permitted local filesystem".to_string());
+    }
+    Ok(resolved)
+}
+
+fn local_display_path(root: Option<&Path>, directory: &Path) -> Result<String, String> {
+    match root {
+        Some(root) => Ok(directory
+            .strip_prefix(root)
+            .map_err(|error| error.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/")),
+        None => Ok(directory.to_string_lossy().replace('\\', "/")),
+    }
+}
+
 fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
     let input = Path::new(path);
     if input
@@ -1013,8 +1123,7 @@ fn resolve_local_transfer_path(path: &str) -> Result<PathBuf, String> {
             return Ok(resolved);
         }
         return Err(
-            "Local transfer path must remain inside the current user's home directory"
-                .to_string(),
+            "Local transfer path must remain inside the current user's home directory".to_string(),
         );
     }
     let home = canonicalize(local_home()?)?;
@@ -1050,7 +1159,9 @@ fn resolve_local_download_destination(path: &str) -> Result<PathBuf, String> {
         let home = canonicalize(local_home()?)?;
         #[cfg(windows)]
         if !is_within_home_or_elevated(input, &home, is_elevated()) {
-            return Err("Download destination is outside the permitted local filesystem".to_string());
+            return Err(
+                "Download destination is outside the permitted local filesystem".to_string(),
+            );
         }
         std::fs::create_dir_all(input).map_err(|error| error.to_string())?;
         let resolved = canonicalize(input)?;
@@ -1092,8 +1203,7 @@ fn resolve_local_download_file(
         let root = canonicalize(destination_folder)?;
         if !is_within_home_or_elevated(&root, &canonicalize(local_home()?)?, is_elevated()) {
             return Err(
-                "Download destination is outside the permitted local filesystem"
-                    .to_string(),
+                "Download destination is outside the permitted local filesystem".to_string(),
             );
         }
         root
@@ -1145,8 +1255,7 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
             return Ok(parent.join(name));
         }
         return Err(
-            "Local transfer path must remain inside the current user's home directory"
-                .to_string(),
+            "Local transfer path must remain inside the current user's home directory".to_string(),
         );
     }
     let home = canonicalize(local_home()?)?;
@@ -1169,13 +1278,19 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
+#[allow(unreachable_code, unused_variables)]
 fn local_create_directory(path: String) -> Result<(), String> {
+    return Err("LOCAL is read-only".to_string());
+    #[allow(unreachable_code)]
     let resolved = resolve_local_new_path(&path)?;
     std::fs::create_dir_all(&resolved).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
+#[allow(unreachable_code, unused_variables)]
 fn local_rename_path(old_path: String, new_path: String) -> Result<String, String> {
+    return Err("LOCAL is read-only".to_string());
+    #[allow(unreachable_code)]
     let old_resolved = resolve_local_transfer_path(&old_path)?;
     let mut new_resolved = resolve_local_new_path(&new_path)?;
     if new_resolved != old_resolved && new_resolved.exists() {
@@ -1206,7 +1321,10 @@ fn local_rename_path(old_path: String, new_path: String) -> Result<String, Strin
 }
 
 #[tauri::command]
+#[allow(unreachable_code, unused_variables)]
 fn local_delete_path(path: String, is_directory: bool) -> Result<(), String> {
+    return Err("LOCAL is read-only".to_string());
+    #[allow(unreachable_code)]
     let resolved = resolve_local_transfer_path(&path)?;
     if is_directory {
         std::fs::remove_dir_all(&resolved).map_err(|error| error.to_string())
@@ -1260,11 +1378,14 @@ fn add_path_to_zip<W: std::io::Write + std::io::Seek>(
 /// into a new `<archive_name>.zip` in `destination_folder`. Collision
 /// avoidance auto-appends "_(n)" to the archive name -- it never prompts.
 #[tauri::command]
+#[allow(unreachable_code, unused_variables)]
 fn local_compress_paths(
     paths: Vec<String>,
     destination_folder: String,
     archive_name: String,
 ) -> Result<String, String> {
+    return Err("LOCAL is read-only".to_string());
+    #[allow(unreachable_code)]
     let destination_dir = resolve_local_transfer_path(&destination_folder)?;
     if !destination_dir.is_dir() {
         return Err("Destination is not a folder".to_string());
@@ -1315,7 +1436,10 @@ fn local_compress_paths(
 /// `destination_folder` (named after the archive) -- never overwriting an
 /// existing folder of that name, and never prompting the user about it.
 #[tauri::command]
+#[allow(unreachable_code, unused_variables)]
 fn local_extract_archive(path: String, destination_folder: String) -> Result<String, String> {
+    return Err("LOCAL is read-only".to_string());
+    #[allow(unreachable_code)]
     let archive_path = resolve_local_transfer_path(&path)?;
     let destination_dir = resolve_local_transfer_path(&destination_folder)?;
     let file = std::fs::File::open(&archive_path).map_err(|error| error.to_string())?;
@@ -1357,34 +1481,7 @@ fn local_extract_archive(path: String, destination_folder: String) -> Result<Str
 
 #[tauri::command]
 fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
-    let input = Path::new(&path);
-    if input
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err("Local path must not contain '..'".to_string());
-    }
-    // `root` is `Some(home)` while browsing HOME-relative paths. An absolute
-    // Windows drive path (including one used by a regular user on another
-    // volume) returns absolute paths end-to-end.
-    let (root, directory): (Option<PathBuf>, PathBuf) = if input.is_absolute() {
-        let directory = canonicalize(input)?;
-        if !directory.is_dir() {
-            return Err("Local path is not a directory".to_string());
-        }
-        let home = canonicalize(local_home()?)?;
-        if !is_within_home_or_elevated(&directory, &home, is_elevated()) {
-            return Err("Local path is outside the permitted local filesystem".to_string());
-        }
-        (None, directory)
-    } else {
-        let home = canonicalize(local_home()?)?;
-        let directory = canonicalize(home.join(input))?;
-        if !directory.starts_with(&home) || !directory.is_dir() {
-            return Err("Local path is outside the permitted local filesystem".to_string());
-        }
-        (Some(home), directory)
-    };
+    let (root, directory) = resolve_local_read_path(&path)?;
 
     let mut files = std::fs::read_dir(&directory)
         .map_err(|error| error.to_string())?
@@ -1396,14 +1493,7 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
             }
             let name = entry.file_name().to_str()?.to_string();
             let child = directory.join(&name);
-            let child_path = match &root {
-                Some(root) => child
-                    .strip_prefix(root)
-                    .ok()?
-                    .to_string_lossy()
-                    .replace('\\', "/"),
-                None => child.to_string_lossy().replace('\\', "/"),
-            };
+            let child_path = local_display_path(root.as_deref(), &child).ok()?;
             let modified = metadata
                 .modified()
                 .ok()
@@ -1422,45 +1512,14 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
     files.sort_by_key(|left| left.name.to_lowercase());
 
     Ok(LocalDirectory {
-        path: match &root {
-            Some(root) => directory
-                .strip_prefix(root)
-                .map_err(|error| error.to_string())?
-                .to_string_lossy()
-                .replace('\\', "/"),
-            None => directory.to_string_lossy().replace('\\', "/"),
-        },
+        path: local_display_path(root.as_deref(), &directory)?,
         files,
     })
 }
 
 #[tauri::command]
 fn local_list_directories(path: String) -> Result<LocalDirectoryChildren, String> {
-    let input = Path::new(&path);
-    if input
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err("Local path must not contain '..'".to_string());
-    }
-    let (root, directory): (Option<PathBuf>, PathBuf) = if input.is_absolute() {
-        let directory = canonicalize(input)?;
-        if !directory.is_dir() {
-            return Err("Local path is not a directory".to_string());
-        }
-        let home = canonicalize(local_home()?)?;
-        if !is_within_home_or_elevated(&directory, &home, is_elevated()) {
-            return Err("Local path is outside the permitted local filesystem".to_string());
-        }
-        (None, directory)
-    } else {
-        let home = canonicalize(local_home()?)?;
-        let directory = canonicalize(home.join(input))?;
-        if !directory.starts_with(&home) || !directory.is_dir() {
-            return Err("Local path is outside the permitted local filesystem".to_string());
-        }
-        (Some(home), directory)
-    };
+    let (root, directory) = resolve_local_read_path(&path)?;
 
     let mut directories = std::fs::read_dir(&directory)
         .map_err(|error| error.to_string())?
@@ -1471,28 +1530,17 @@ fn local_list_directories(path: String) -> Result<LocalDirectoryChildren, String
             }
             let name = entry.file_name().to_str()?.to_string();
             let child = directory.join(&name);
-            let child_path = match &root {
-                Some(root) => child
-                    .strip_prefix(root)
-                    .ok()?
-                    .to_string_lossy()
-                    .replace('\\', "/"),
-                None => child.to_string_lossy().replace('\\', "/"),
-            };
-            Some(LocalDirectoryChild { name, path: child_path })
+            let child_path = local_display_path(root.as_deref(), &child).ok()?;
+            Some(LocalDirectoryChild {
+                name,
+                path: child_path,
+            })
         })
         .collect::<Vec<_>>();
     directories.sort_by_key(|left| left.name.to_lowercase());
 
     Ok(LocalDirectoryChildren {
-        path: match &root {
-            Some(root) => directory
-                .strip_prefix(root)
-                .map_err(|error| error.to_string())?
-                .to_string_lossy()
-                .replace('\\', "/"),
-            None => directory.to_string_lossy().replace('\\', "/"),
-        },
+        path: local_display_path(root.as_deref(), &directory)?,
         directories,
     })
 }
@@ -1638,8 +1686,11 @@ async fn download_to_disk(
     let method = method
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
-    let request = apply_headers(download_client(ignore_tls_errors)?.request(method, url), headers)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity");
+    let request = apply_headers(
+        download_client(ignore_tls_errors)?.request(method, url),
+        headers,
+    )
+    .header(reqwest::header::ACCEPT_ENCODING, "identity");
     let request = if let Some(body) = body {
         request.body(body)
     } else {
@@ -1756,8 +1807,11 @@ async fn download_to_disk_at(
     let method = method
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
-    let request = apply_headers(download_client(ignore_tls_errors)?.request(method, url), headers)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity");
+    let request = apply_headers(
+        download_client(ignore_tls_errors)?.request(method, url),
+        headers,
+    )
+    .header(reqwest::header::ACCEPT_ENCODING, "identity");
     let request = if let Some(body) = body {
         request.body(body)
     } else {
@@ -2423,7 +2477,7 @@ fn discard_ssh_recording(tab_id: String) -> Result<(), String> {
 }
 
 fn validate_local_user_path(path: &str) -> Result<std::path::PathBuf, String> {
-    resolve_local_transfer_path(path)
+    resolve_local_read_entry(path)
 }
 
 fn decode_text_file(bytes: &[u8]) -> Result<String, String> {
@@ -2628,7 +2682,11 @@ fn clear_operation_logs() -> Result<(), String> {
             Err(error) => return Err(error.to_string()),
         }
     }
-    for suffix in ["operations.pretty.log", "operations.pretty.log.1", "operations.pretty.log.2"] {
+    for suffix in [
+        "operations.pretty.log",
+        "operations.pretty.log.1",
+        "operations.pretty.log.2",
+    ] {
         let _ = std::fs::remove_file(operation_storage_directory()?.join(suffix));
     }
     Ok(())
@@ -2645,7 +2703,11 @@ fn initialize_operation_log() -> Result<(), String> {
     if staging_directory.exists() {
         std::fs::remove_dir_all(&staging_directory).map_err(|error| error.to_string())?;
     }
-    for suffix in ["operations.pretty.log", "operations.pretty.log.1", "operations.pretty.log.2"] {
+    for suffix in [
+        "operations.pretty.log",
+        "operations.pretty.log.1",
+        "operations.pretty.log.2",
+    ] {
         let _ = std::fs::remove_file(operation_storage_directory()?.join(suffix));
     }
     let (_, log_path) = operation_paths()?;
@@ -2698,9 +2760,18 @@ fn append_structured_operation_log(record: serde_json::Value) -> Result<(), Stri
     let object = record
         .as_object()
         .ok_or_else(|| "Operation log record must be a JSON object".to_string())?;
-    if !object.get("level").and_then(serde_json::Value::as_str).is_some()
-        || !object.get("operation").and_then(serde_json::Value::as_str).is_some()
-        || !object.get("status").and_then(serde_json::Value::as_str).is_some()
+    if !object
+        .get("level")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+        || !object
+            .get("operation")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+        || !object
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
     {
         return Err("Operation log record requires level, operation, and status".to_string());
     }
@@ -2777,10 +2848,14 @@ mod phase1_filename_tests {
         let directory = std::env::temp_dir().join(format!("nfterm-download-{suffix}"));
         std::fs::create_dir_all(&directory).expect("temporary directory should be created");
         let requested = directory.join("ubuntu.iso");
-        let (destination, temporary, file) = create_unique_download_file(&requested)
-            .expect("download part file should be created");
+        let (destination, temporary, file) =
+            create_unique_download_file(&requested).expect("download part file should be created");
         assert_eq!(destination, requested);
-        assert!(temporary.file_name().unwrap().to_string_lossy().ends_with(".part"));
+        assert!(temporary
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".part"));
         assert!(!destination.exists());
         assert!(temporary.exists());
         drop(file);
@@ -2909,7 +2984,9 @@ mod tests {
     static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_temp_home<T>(run: impl FnOnce(&std::path::Path) -> T) -> T {
-        let _lock = HOME_ENV_LOCK.lock().expect("home env lock should not be poisoned");
+        let _lock = HOME_ENV_LOCK
+            .lock()
+            .expect("home env lock should not be poisoned");
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock should be valid")
@@ -2986,7 +3063,10 @@ mod tests {
             // must resolve successfully without requiring elevation.
             let resolved = resolve_local_transfer_path(&file.display().to_string())
                 .expect("a file inside home should resolve without elevation");
-            assert!(resolved.ends_with("Desktop/report.txt") || resolved.ends_with("Desktop\\report.txt"));
+            assert!(
+                resolved.ends_with("Desktop/report.txt")
+                    || resolved.ends_with("Desktop\\report.txt")
+            );
         });
     }
 
@@ -2994,9 +3074,8 @@ mod tests {
     fn resolve_local_download_destination_accepts_an_absolute_path_inside_home() {
         with_temp_home(|home| {
             let downloads = home.join("Downloads");
-            let resolved =
-                resolve_local_download_destination(&downloads.display().to_string())
-                    .expect("a not-yet-existing folder inside home should resolve without elevation");
+            let resolved = resolve_local_download_destination(&downloads.display().to_string())
+                .expect("a not-yet-existing folder inside home should resolve without elevation");
             assert!(resolved.ends_with("Downloads"));
             assert!(resolved.is_dir());
         });
