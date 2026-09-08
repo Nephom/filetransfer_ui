@@ -21,10 +21,11 @@
   --space-5: 19.2px;
   --space-6: 25.6px;
 
-  /* Fluid values are the base for Auto profile sizing. */
-  --font-size-base: clamp(9.6px, calc(8px + 0.28vmin), 12.8px);
-  --font-size-small: clamp(8px, calc(6.4px + 0.24vmin), 11.2px);
-  --font-size-heading: clamp(16px, calc(12.8px + 0.48vmin), 22.4px);
+  /* Semantic text aliases resolve to the shared window-scaled UI contract.
+     The fallback keeps this token layer usable before desktop-ui.css loads. */
+  --font-size-base: var(--ui-font-size, clamp(9.6px, calc(8px + 0.28vmin), 12.8px));
+  --font-size-small: var(--ui-small-font-size, clamp(8px, calc(6.4px + 0.24vmin), 11.2px));
+  --font-size-heading: var(--ui-heading-font, clamp(16px, calc(12.8px + 0.48vmin), 22.4px));
   --font-size-mobile-base: 12.8px;
   --font-size-mobile-small: 11.2px;
   --control-height-base: clamp(24px, calc(19.2px + 0.56vmin), 32px);

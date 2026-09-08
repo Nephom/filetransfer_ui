@@ -145,11 +145,13 @@ visually interchangeable.
 
 `styles/desktop-ui.css` defines the Auto profile's fluid `--ui-*` values on
 `:root`; `styles/mobile-ui.css` replaces them with fixed Large-profile values.
-These aliases let all features use one sizing vocabulary:
+The semantic `--font-size-base`, `--font-size-small`, and
+`--font-size-heading` tokens resolve to these aliases, so older feature
+selectors and newer selectors share one sizing vocabulary:
 
 | Variable | Purpose |
 |---|---|
-| `--ui-font-size`, `--ui-small-font-size`, `--ui-heading-font` | Large-profile body, small, and heading text. |
+| `--ui-font-size`, `--ui-small-font-size`, `--ui-heading-font` | Auto-profile fluid body, small, and heading text; replaced by fixed Large-profile values when that profile is active. |
 | `--ui-control-height`, `--ui-control-gap` | Large-profile control height and gap. |
 | `--ui-button-height`, `--ui-button-padding-x`, `--ui-button-padding-y` | Large-profile button geometry. |
 | `--ui-panel-padding`, `--ui-section-gap` | Large-profile panel/section spacing. |

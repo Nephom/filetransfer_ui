@@ -76,7 +76,7 @@
   border-radius: 12px;
   color: var(--color-text);
   background: color-mix(in srgb, var(--color-bg) 72%, transparent);
-  font-size: 16px;
+  font-size: var(--font-size-base);
 }
 
 .login form > label:not(.tls-option) input:focus {
@@ -130,7 +130,7 @@
 @media (max-height: 760px) and (min-width: 641px) {
   .login { padding-block: 16px; }
   .login form { gap: 8px; padding-block: 18px; }
-  .login h1 { font-size: 24px; }
+  .login h1 { font-size: var(--font-size-heading); }
 }
 
 /* Keep the four-field login form inside a short desktop viewport when width
