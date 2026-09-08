@@ -3,6 +3,7 @@ import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
+import { normalizeRightClickPaste } from "./terminal-utils";
 
 // Best-effort: attaches the WebGL2 renderer to `terminal` if the runtime
 // supports it, otherwise leaves xterm's default DOM renderer untouched.
@@ -216,10 +217,12 @@ export function useTerminalLifecycle({
         fit.fit();
         terminalsRef.current.set(tabId, terminal);
         const input = terminal.onData((data) => dataRef.current(tabId, data));
-        const pasteText = (text: string) => {
+        const pasteText = (text: string, fromRightClick = false) => {
+          if (disposed) return;
           // xterm.paste() handles bracketed-paste mode and emits onData, which
           // keeps the browser clipboard path identical to typed input.
-          terminal.paste(normalizeTerminalPaste(text, bracketedPasteRef.current));
+          const paste = fromRightClick ? normalizeRightClickPaste(text) : text;
+          terminal.paste(normalizeTerminalPaste(paste, bracketedPasteRef.current));
         };
         // Lets a remote full-screen program (one that has grabbed the mouse
         // for its own selection UI, disabling xterm's native selection --
@@ -268,9 +271,10 @@ export function useTerminalLifecycle({
         // would be.
         const onContextMenu = (event: MouseEvent) => {
           event.preventDefault();
+          event.stopImmediatePropagation();
           readSystemClipboardText()
             .then((text) => {
-              if (text) pasteText(text);
+              if (text) pasteText(text, true);
             })
             .catch(() => {
               noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
