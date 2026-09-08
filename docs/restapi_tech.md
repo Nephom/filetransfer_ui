@@ -99,7 +99,7 @@ The reader provides:
 
 The response view has three modes:
 
-- **Pretty**: JSON objects become clickable rows; object links open a resource, otherwise the row is navigable by property path.
+- **Pretty**: JSON values are rendered as a recursive tree. Objects and arrays show their child keys/items through per-node expand/collapse controls, so nested structures such as `Oem.hpe` remain visible instead of being stringified into one row. Primitive values are displayed with their JSON type/value. Objects containing `@odata.id` or `href` expose an **Open resource** control; expanding an ordinary nested object never issues a request.
 - **Raw**: the decoded response text exactly as received by the native response wrapper.
 - **Headers**: response headers with authorization/cookie/token values masked.
 
