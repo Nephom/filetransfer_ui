@@ -2177,6 +2177,16 @@ async fn proxmox_vnc_cancel(connection_id: String) -> Result<(), String> {
     proxmox::cancel(connection_id).await
 }
 
+#[tauri::command]
+async fn direct_vnc_start(host: String, port: u16) -> Result<proxmox::VncConnection, String> {
+    proxmox::start_direct(host, port).await
+}
+
+#[tauri::command]
+async fn direct_vnc_cancel(connection_id: String) -> Result<(), String> {
+    proxmox::cancel_direct(connection_id).await
+}
+
 /// QEMU Guest Agent file-transfer fallback commands (see `proxmox.rs`). Used
 /// only when neither a direct nor a jump-host SFTP route to the VM is
 /// reachable from this client.
@@ -2929,6 +2939,8 @@ fn main() {
             proxmox_vnc_start_session,
             proxmox_vnc_start,
             proxmox_vnc_cancel,
+            direct_vnc_start,
+            direct_vnc_cancel,
             proxmox_agent_ping,
             proxmox_agent_network_interfaces,
             proxmox_agent_list_directory,

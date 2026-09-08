@@ -93,6 +93,22 @@ reported as an actionable transfer error when unavailable.
 
 ## Proxmox VNC
 
+The VNC workspace also provides a **Direct VNC** card in the top command bar.
+It switches the same noVNC display to a direct TCP VNC endpoint, which is useful
+for macOS Screen Sharing. The left Proxmox entry pane is hidden while Direct VNC
+is active, and the right display expands to use the available workspace width.
+Direct VNC uses the standard VNC viewer password configured in macOS Screen
+Sharing; it does not use a macOS login password and does not provide file
+transfer. The password is stored in the OS credential store, while the host and
+port are kept as local display settings.
+
+Switching between Proxmox VNC and Direct VNC asks for confirmation when an RFB
+connection is active. After switching, neither side reconnects automatically.
+Successful Direct VNC sessions have no client-side idle timeout, but a network
+or remote-host disconnect still requires an explicit user reconnect. Direct VNC
+is intended for a trusted LAN, VPN, Tailscale, or SSH tunnel because ordinary
+VNC TCP traffic is not necessarily encrypted.
+
 Proxmox credentials are submitted to the Proxmox ticket endpoint and retained
 in the OS credential store when the user chooses to save them. The desktop
 client keeps the resulting authenticated session in process memory.

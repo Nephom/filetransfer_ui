@@ -11,10 +11,12 @@ use std::io::{Read, Write};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tauri::Emitter;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_hdr_async, Connector, WebSocketStream};
 
 #[derive(Deserialize, Clone)]
@@ -105,6 +107,13 @@ struct PendingConnection {
 }
 
 #[derive(Clone)]
+struct PendingDirectConnection {
+    host: String,
+    port: u16,
+    relay_token: String,
+}
+
+#[derive(Clone)]
 struct AuthSession {
     client: Client,
     ticket: String,
@@ -157,10 +166,15 @@ impl ServerCertVerifier for AcceptAnyCertificate {
 }
 
 static PENDING: OnceLock<Arc<Mutex<HashMap<String, PendingConnection>>>> = OnceLock::new();
+static DIRECT_PENDING: OnceLock<Arc<Mutex<HashMap<String, PendingDirectConnection>>>> = OnceLock::new();
 static AUTH_SESSIONS: OnceLock<Arc<Mutex<HashMap<String, AuthSession>>>> = OnceLock::new();
 
 fn pending() -> &'static Arc<Mutex<HashMap<String, PendingConnection>>> {
     PENDING.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+fn direct_pending() -> &'static Arc<Mutex<HashMap<String, PendingDirectConnection>>> {
+    DIRECT_PENDING.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
 fn auth_sessions() -> &'static Arc<Mutex<HashMap<String, AuthSession>>> {
@@ -755,6 +769,74 @@ async fn start_session_inner(entry: VncEntry, session_id: String) -> Result<VncC
         ),
         password,
     })
+}
+
+pub async fn start_direct(host: String, port: u16) -> Result<VncConnection, String> {
+    let host = host.trim().to_string();
+    if host.is_empty() { return Err("Direct VNC host is required".to_string()); }
+    if port == 0 { return Err("Direct VNC port is invalid".to_string()); }
+    let listener = TcpListener::bind("localhost:0").await.map_err(|error| error.to_string())?;
+    let address = listener.local_addr().map_err(|error| error.to_string())?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let relay_token = uuid::Uuid::new_v4().to_string();
+    direct_pending().lock().await.insert(id.clone(), PendingDirectConnection { host, port, relay_token: relay_token.clone() });
+    let connection_id = id.clone();
+    let task_connection_id = connection_id.clone();
+    tokio::spawn(async move {
+        if let Ok(Ok((stream, _))) = tokio::time::timeout(Duration::from_secs(30), listener.accept()).await {
+            if let Some(connection) = direct_pending().lock().await.remove(&task_connection_id) {
+                let _ = direct_relay(stream, task_connection_id, connection).await;
+            } else {
+                let _ = direct_pending().lock().await.remove(&task_connection_id);
+            }
+        } else {
+            let _ = direct_pending().lock().await.remove(&task_connection_id);
+        }
+    });
+    Ok(VncConnection { id, websocket_url: format!("ws://localhost:{}/vnc-direct/{}?token={relay_token}", address.port(), connection_id), password: String::new() })
+}
+
+pub async fn cancel_direct(connection_id: String) -> Result<(), String> {
+    direct_pending().lock().await.remove(&connection_id);
+    Ok(())
+}
+
+async fn direct_relay(stream: tokio::net::TcpStream, connection_id: String, connection: PendingDirectConnection) -> Result<(), String> {
+    let expected_path = format!("/vnc-direct/{connection_id}");
+    let expected_token = connection.relay_token.clone();
+    let browser: WebSocketStream<tokio::net::TcpStream> = accept_hdr_async(stream, move |request: &Request, response: Response| {
+        if valid_relay_request(request.uri(), &expected_path, &expected_token) { return Ok(response); }
+        let error: ErrorResponse = http::Response::builder().status(http::StatusCode::NOT_FOUND).body(Some("Not found".to_string())).expect("static WebSocket rejection response should build");
+        Err(error)
+    }).await.map_err(|error| error.to_string())?;
+    let remote = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(format!("{}:{}", connection.host, connection.port)))
+        .await.map_err(|_| "Direct VNC connection timed out".to_string())?
+        .map_err(|error| format!("Unable to connect to Direct VNC endpoint: {error}"))?;
+    let (mut browser_write, mut browser_read) = browser.split();
+    let (mut remote_read, mut remote_write) = remote.into_split();
+    let browser_to_remote = async {
+        while let Some(message) = browser_read.next().await {
+            match message.map_err(|error| error.to_string())? {
+                Message::Binary(bytes) => remote_write.write_all(&bytes).await.map_err(|error| error.to_string())?,
+                Message::Close(_) => break,
+                Message::Ping(_) | Message::Pong(_) => {}
+                Message::Text(_) => return Err("Direct VNC received unexpected text data".to_string()),
+                _ => {}
+            }
+        }
+        Ok::<(), String>(())
+    };
+    let remote_to_browser = async {
+        let mut buffer = [0_u8; 16 * 1024];
+        loop {
+            let count = remote_read.read(&mut buffer).await.map_err(|error| error.to_string())?;
+            if count == 0 { break; }
+            browser_write.send(Message::Binary(buffer[..count].to_vec().into())).await.map_err(|error| error.to_string())?;
+        }
+        Ok::<(), String>(())
+    };
+    tokio::select! { result = browser_to_remote => result, result = remote_to_browser => result }
+        .map_err(|error| format!("Direct VNC relay failed: {error}"))
 }
 
 #[allow(clippy::result_large_err)]

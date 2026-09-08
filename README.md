@@ -58,6 +58,7 @@ nFterm 是 Tauri v2 desktop client，支援 Ubuntu 22.04+ 與 Windows 10/11。�
 - Transfer Queue、進度、取消、bounded retry、失敗分類與中斷狀態恢復。
 - REST API workspace，支援一般 REST、HPE iLO、OpenBMC、Redfish Session Auth 與 Redfish Actions。
 - Proxmox VNC workspace，支援登入、VM discovery、VNC 連線、entry 隔離，以及透過對應模式與 VM 傳輸檔案。nFterm 執行機與 Proxmox Host 必須位於同一網段。
+- VNC workspace 上方提供 Direct VNC 圖卡，可透過標準 VNC password 連線到 macOS Screen Sharing 桌面；Direct VNC 僅提供畫面與輸入，不提供檔案傳輸。
 - VM 檔案傳輸模式：
 
   | VM 類型 | 與 nFterm 執行機同一網段（可互 ping） | 與 nFterm 執行機不同網段（不可互 ping） |

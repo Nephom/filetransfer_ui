@@ -63,6 +63,23 @@ breakpoints under this class name.
 
 ## Proxmox VNC workspace (`proxmox-vnc.tsx` + `proxmox-vnc.css`)
 
+### Direct VNC toggle
+
+The VNC workspace portals one **Direct VNC** card into the shared top
+commandbar. This is a workspace presentation toggle, not a third application
+mode and not a second entry list. When active, the Proxmox entry pane and its
+resize controls are hidden, the VNC reader fills the available width, and the
+Connection Controls panel is replaced with Direct VNC host, port, and standard
+VNC password fields. The noVNC screen element remains mounted so changing the
+connection source does not invalidate the RFB DOM target.
+
+The toggle confirms before disconnecting an active Proxmox or Direct VNC RFB
+session. It never reconnects the previous source after switching. Direct VNC
+uses a local one-time WebSocket relay whose upstream is the configured TCP VNC
+endpoint; the relay validates its path and token before opening the remote
+socket. Direct VNC intentionally skips Proxmox VM discovery, QEMU Guest Agent
+checks, and VNC file-transfer detection.
+
 ### Layout overview (as of T-220/T-221)
 
 ```

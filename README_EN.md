@@ -58,6 +58,7 @@ nFterm is a Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11. It conn
 - A Transfer Queue with progress, cancellation, bounded retry, failure classification, and interrupted-state recovery.
 - REST API workspaces for generic REST, HPE iLO, OpenBMC, Redfish Session Auth, and Redfish Actions.
 - Proxmox VNC workspaces with login, VM discovery, VNC connection, entry isolation, and file transfers to VMs through the applicable transfer mode. The nFterm execution environment and the Proxmox Host must be on the same network segment.
+- A Direct VNC card in the VNC workspace for standard VNC-password connections to macOS Screen Sharing desktops. Direct VNC provides display and input only, not file transfer.
 - VM file-transfer modes:
 
   | VM type | Same network segment as the nFterm host (reachable by ping) | Different network segment from the nFterm host (not reachable by ping) |

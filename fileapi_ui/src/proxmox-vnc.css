@@ -1,6 +1,15 @@
 .vnc-mode .commandbar { display: flex; align-items: center; }
-.vnc-mode .commandbar > :not([data-context-picker="true"]) { display: none; }
+.vnc-mode .commandbar > :not([data-context-picker="true"]):not([data-direct-vnc-action="true"]) { display: none; }
 .vnc-mode .commandbar > [data-context-picker="true"] { margin-left: 0; }
+.direct-vnc-card { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--ui-button-height); padding: var(--space-1) var(--space-3); border: 1px solid color-mix(in srgb, var(--color-warning) 45%, var(--color-border)); border-radius: var(--radius-sm); color: var(--color-text); background: linear-gradient(135deg, color-mix(in srgb, var(--color-warning) 18%, var(--color-bg-panel-strong)), var(--color-bg-panel)); cursor: pointer; text-align: left; }
+.direct-vnc-card:hover, .direct-vnc-card.active { border-color: var(--color-warning); box-shadow: var(--shadow-inset), 0 0 14px color-mix(in srgb, var(--color-warning) 22%, transparent); }
+.direct-vnc-card > span:last-child { display: grid; gap: 1px; }
+.direct-vnc-card strong { font-size: var(--font-size-small); }
+.direct-vnc-card small { color: var(--color-text-muted); font-size: .72em; }
+.direct-vnc-card-icon { width: var(--icon-size); height: var(--icon-size); border: 2px solid var(--color-warning); border-radius: 50%; box-shadow: inset 0 0 0 3px var(--color-bg-panel-strong); }
+.vnc-workspace.direct-vnc-open .vnc-entry-pane-shell, .vnc-workspace.direct-vnc-open .vnc-main-pane-collapse-controls, .vnc-workspace.direct-vnc-open .pane-resize-handle { display: none; }
+.vnc-workspace.direct-vnc-open .vnc-reader { flex: 1 1 100%; width: 100%; }
+.direct-vnc-auth-grid { grid-template-columns: minmax(0, 2fr) minmax(100px, 1fr); }
 .vnc-workspace { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; gap: var(--space-3); padding: var(--space-3) var(--space-3) var(--space-3); }
 .vnc-entry-pane { display: flex; flex: 0 0 270px; flex-direction: column; min-width: 0; min-height: 0; padding: var(--space-3) var(--space-2); overflow: hidden; border-right: 1px solid var(--color-border); background: var(--color-bg-panel); }
 .vnc-entry-pane-shell { display: flex; flex: 0 0 380px; min-width: clamp(180px, 20vw, 220px); min-height: 0; overflow: hidden; }
@@ -94,6 +103,7 @@
 .vnc-vm-list button:hover { border-color: var(--color-warning); }
 .vnc-vm-list span { color: var(--color-text-muted); font-size: var(--font-size-small); }
 @media (max-width: 720px) { .mode-buttons { min-width: 0; }.mode-switcher { gap: 4px; }.vnc-workspace { flex-direction: column; overflow: auto; }.vnc-entry-pane { flex: 0 0 auto; max-height: 210px; border-right: 0; border-bottom: 1px solid var(--color-border); }.vnc-auth-grid { grid-template-columns: 1fr; }.vnc-screen { min-height: 280px; height: 58vh; } }
+@media (max-width: 720px) { .direct-vnc-card { padding-inline: var(--space-2); }.direct-vnc-card small { display: none; } }
 .vnc-entry-pane, .vnc-reader { border: 1px solid var(--color-border); border-radius: var(--radius-md); background: linear-gradient(135deg, rgba(112, 226, 246, .12), transparent 30%), linear-gradient(315deg, rgba(49, 139, 255, .12), transparent 46%), rgba(8, 27, 46, .28); box-shadow: var(--shadow-panel), var(--shadow-inset); backdrop-filter: blur(18px) saturate(125%); }
 /* T-220: Connection Controls <-> VNC screen used to be split by a
  * draggable `.vnc-screen-resize` handle (`resizeControls()` in

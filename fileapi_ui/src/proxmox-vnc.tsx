@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import "./proxmox-vnc.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -308,6 +309,13 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [controlsOpen, setControlsOpen] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewOnly, setViewOnly] = useState(false);
+  const [directVncOpen, setDirectVncOpen] = useState(false);
+  const [directHost, setDirectHost] = useState(() => localStorage.getItem("fileapi-direct-vnc-host") || "");
+  const [directPort, setDirectPort] = useState(() => Number(localStorage.getItem("fileapi-direct-vnc-port")) || 5900);
+  const [directPassword, setDirectPassword] = useState("");
+  const directVncOpenRef = useRef(false);
+  directVncOpenRef.current = directVncOpen;
+  const [commandbarHost, setCommandbarHost] = useState<HTMLElement | null>(null);
   // Issue #232: the Ctrl+Alt+Del/Focus/View only/Fullscreen toolbar used to
   // sit permanently at top-right of the VNC canvas, colliding with the
   // guest OS's own top-of-screen UI. It's now a left-edge drawer that
@@ -358,6 +366,18 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [vmSshDraft, setVmSshDraft] = useState<VmSshProfile>({ username: "root", port: 22, privateKeyPath: "", fallbackIp: "" });
   const [vmSshSettingsOpen, setVmSshSettingsOpen] = useState(false);
 
+  useEffect(() => {
+    void invoke<string | null>("proxmox_load_secret", { entryId: "direct-vnc", kind: "password" })
+      .then((value) => { if (value !== null) setDirectPassword(value); })
+      .catch(() => undefined);
+  }, []);
+  useEffect(() => { localStorage.setItem("fileapi-direct-vnc-host", directHost); }, [directHost]);
+  useEffect(() => { localStorage.setItem("fileapi-direct-vnc-port", String(directPort)); }, [directPort]);
+  useEffect(() => {
+    setCommandbarHost(document.querySelector<HTMLElement>(".commandbar"));
+    return () => setCommandbarHost(null);
+  }, []);
+
   const stopEntryPaneResize = () => {
     entryPaneResizeRef.current = null;
     window.removeEventListener("pointermove", resizeEntryPane);
@@ -400,10 +420,20 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     rfbRef.current = null;
     const pendingConnectionId = pendingConnectionIdRef.current;
     pendingConnectionIdRef.current = null;
-    if (pendingConnectionId) void invoke("proxmox_vnc_cancel", { connectionId: pendingConnectionId });
+    if (pendingConnectionId) void invoke(directVncOpen ? "direct_vnc_cancel" : "proxmox_vnc_cancel", { connectionId: pendingConnectionId });
     setViewOnly(false);
     resetTransferState();
     if (updateStatus) setStatus("Disconnected");
+  };
+
+  const toggleDirectVnc = () => {
+    if (rfbRef.current && !window.confirm(directVncOpen
+      ? "Disconnect Direct VNC and return to Proxmox VNC?"
+      : "Disconnect the current Proxmox VNC session and switch to Direct VNC?")) return;
+    stopConnection(false);
+    setDirectVncOpen((value) => !value);
+    setStatus("Not connected");
+    setError("");
   };
 
   useEffect(() => {
@@ -421,7 +451,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     rfbRef.current?.disconnect();
     rfbRef.current = null;
     if (pendingConnectionIdRef.current) {
-      void invoke("proxmox_vnc_cancel", { connectionId: pendingConnectionIdRef.current });
+      void invoke(directVncOpenRef.current ? "direct_vnc_cancel" : "proxmox_vnc_cancel", { connectionId: pendingConnectionIdRef.current });
       pendingConnectionIdRef.current = null;
     }
   }, []);
@@ -439,6 +469,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   };
 
   const updatePassword = (value: string) => { setPassword(value); if (entry) onChangeSecret(entry.id, { password: value }); };
+  const isDirectVnc = directVncOpen;
   const nativeEntry = entry ? { ...entry, guestType: entry.guestType, ignoreTlsErrors: entry.ignoreTlsErrors } : null;
   const authenticated = Boolean(entry && authSessions[entry.id]);
   const loginEntry = async () => {
@@ -812,19 +843,23 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   };
 
   const connect = async () => {
-    if (!nativeEntry || !authenticated) { setError("Log in to this Proxmox entry first."); return; }
+    if (isDirectVnc) {
+      if (!directHost.trim() || !directPort || !directPassword) { setError("Direct VNC host, port, and password are required."); return; }
+    } else if (!nativeEntry || !authenticated) { setError("Log in to this Proxmox entry first."); return; }
     stopConnection(false);
     const sessionGeneration = sessionGenerationRef.current;
-    const sessionEntryId = nativeEntry.id;
+    const sessionEntryId = entry?.id;
     setLoading(true); setError(""); setStatus("Connecting...");
     try {
       // noVNC is a public runtime asset, so keep its URL out of Vite's module graph.
       const noVncUrl = new URL("noVNC/core/rfb.js", window.location.href).href;
       const { default: RFB } = await import(/* @vite-ignore */ noVncUrl);
-      const connection = await invoke<Connection>("proxmox_vnc_start_session", { entry: nativeEntry, sessionId: authSessions[nativeEntry.id] });
+      const connection = isDirectVnc
+        ? await invoke<Connection>("direct_vnc_start", { host: directHost.trim(), port: directPort })
+        : await invoke<Connection>("proxmox_vnc_start_session", { entry: nativeEntry, sessionId: authSessions[nativeEntry!.id] });
       pendingConnectionIdRef.current = connection.id;
-      if (sessionGeneration !== sessionGenerationRef.current || sessionEntryId !== entry?.id) {
-        await invoke("proxmox_vnc_cancel", { connectionId: connection.id });
+      if (sessionGeneration !== sessionGenerationRef.current || (!isDirectVnc && sessionEntryId !== entry?.id)) {
+        await invoke(isDirectVnc ? "direct_vnc_cancel" : "proxmox_vnc_cancel", { connectionId: connection.id });
         pendingConnectionIdRef.current = null;
         return;
       }
@@ -832,10 +867,10 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       const rfb = new RFB(screenRef.current, connection.websocketUrl);
       pendingConnectionIdRef.current = null;
       rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = viewOnly;
-      rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) { setStatus("Connected"); setControlsOpen(false); void detectTransferMode(); } });
+      rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) { setStatus("Connected"); setControlsOpen(false); if (!isDirectVnc) void detectTransferMode(); } });
       rfb.addEventListener("disconnect", () => { if (sessionGeneration === sessionGenerationRef.current) setStatus("Disconnected"); });
       rfb.addEventListener("securityfailure", (event: Event) => { if (sessionGeneration === sessionGenerationRef.current) setError(String((event as CustomEvent).detail || "VNC security failure")); });
-      rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password: connection.password }));
+      rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password: isDirectVnc ? directPassword : connection.password }));
       rfbRef.current = rfb;
     } catch (value) {
       if (sessionGeneration === sessionGenerationRef.current) {
@@ -887,7 +922,9 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         ? "QEMU Guest Agent is only available for QEMU guests."
         : "QEMU Guest Agent is DOWN or not installed. Only green means Windows file transfer is available.";
 
-  return <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}`}>
+  return <>
+    {commandbarHost && createPortal(<button type="button" data-direct-vnc-action="true" className={`direct-vnc-card${directVncOpen ? " active" : ""}`} aria-pressed={directVncOpen} onClick={toggleDirectVnc}><span className="direct-vnc-card-icon" aria-hidden="true" /><span><strong>Direct VNC</strong><small>macOS desktop</small></span></button>, commandbarHost)}
+    <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}${directVncOpen ? " direct-vnc-open" : ""}`}>
     <div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}>
       <VncEntries
         entries={entries}
@@ -932,27 +969,32 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane"><ChevronRightIcon /></button></div>
       : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
     <section ref={vncReaderRef} className="vnc-reader" aria-label="Proxmox VNC workspace">
-      <div className="vnc-reader-heading"><div><span className="eyebrow">VNC mode · {workspaceName}</span><h1>{entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
+      <div className="vnc-reader-heading"><div><span className="eyebrow">{isDirectVnc ? "Direct VNC · macOS Screen Sharing" : `VNC mode · ${workspaceName}`}</span><h1>{isDirectVnc ? "Direct VNC" : entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
       <div className={`vnc-display-split${controlsOpen ? "" : " controls-collapsed"}`}>
         <div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}>
           <div className="vnc-auth-heading">
-            <strong>Connection controls</strong>
+            <strong>{isDirectVnc ? "Direct VNC connection" : "Connection controls"}</strong>
             <button type="button" onClick={() => setControlsOpen((value) => !value)}>{controlsOpen ? "Collapse" : "Expand"}</button>
           </div>
           {controlsOpen && <>
-            <div className="vnc-auth-grid">
+            {isDirectVnc ? <div className="vnc-auth-grid direct-vnc-auth-grid">
+              <label>Host<input value={directHost} onChange={(event) => setDirectHost(event.target.value)} placeholder="mac-mini.local" /></label>
+              <label>Port<input type="number" min="1" max="65535" value={directPort} onChange={(event) => setDirectPort(Number(event.target.value) || 5900)} /></label>
+            </div> : <div className="vnc-auth-grid">
               <label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label>
               <label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label>
-            </div>
-            {selectedVm && <div className="vnc-vm-ssh-card">
+            </div>}
+            {isDirectVnc && <p className="field-help">Use the VNC viewer password configured in macOS Screen Sharing. Direct VNC does not provide file transfer.</p>}
+            {isDirectVnc && <label>VNC password<input type="password" value={directPassword} onChange={(event) => { const value = event.target.value; setDirectPassword(value); if (value) void invoke("proxmox_save_secret", { entryId: "direct-vnc", kind: "password", value }); else void invoke("proxmox_forget_secret", { entryId: "direct-vnc", kind: "password" }); }} placeholder="Saved in the OS keyring" autoComplete="current-password" /></label>}
+            {!isDirectVnc && selectedVm && <div className="vnc-vm-ssh-card">
               <div className="vnc-vm-ssh-card-copy"><strong>VM SFTP</strong><small>{selectedVm.name || `VM ${selectedVm.vmid}`} · VMID {selectedVm.vmid}</small><span>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</span></div>
               <div className="vnc-vm-ssh-card-side"><span className={`vnc-agent-status ${qemuAgentStatus}`} title={qemuAgentStatusTitle} aria-label={`QEMU Guest Agent: ${qemuAgentStatusLabel}`}><span className="vnc-agent-status-dot" aria-hidden="true" />QEMU Agent: {qemuAgentStatusLabel}</span><button type="button" className="vnc-compact-action" onClick={() => setVmSshSettingsOpen(true)}>Configure</button></div>
             </div>}
             <div className="vnc-actions">
-              <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || !entry || !authenticated || !selectedVm}>{loading ? "Connecting..." : "Connect"}</button>
+              <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || (isDirectVnc ? !directHost.trim() || !directPassword || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535 : !entry || !authenticated || !selectedVm)}>{loading ? "Connecting..." : "Connect"}</button>
               <button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button>
             </div>
-            {entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}
+            {!isDirectVnc && entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}
             {error && <div className="notice rest-error">{error}</div>}
           </>}
         </div>
@@ -974,7 +1016,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
               <ChevronRightIcon />
             </button>
             <div className="vnc-display-toolbar">
-              <button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button>
+              {!isDirectVnc && <button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button>}
               <button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button>
               <button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button>
               <button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
@@ -1005,5 +1047,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         </div>
       </FloatingWindow>}
     </section>
-  </div>;
+    </div>
+  </>;
 }
