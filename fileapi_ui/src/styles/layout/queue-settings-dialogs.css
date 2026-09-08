@@ -24,7 +24,7 @@
 .settings-check input { flex: 0 0 auto; margin-top: var(--space-1); }
 .settings-check span { display: grid; gap: var(--space-1); }
 .settings-check small { color: var(--color-text-muted); line-height: 1.35; }
-.storage-info { display: grid; gap: var(--space-1); padding: var(--space-2); color: var(--color-text-muted); background: var(--color-bg); border: 1px solid var(--color-border); font: 11px/1.4 monospace; overflow-wrap: anywhere; }
+.storage-info { display: grid; gap: var(--space-1); padding: var(--space-2); color: var(--color-text-muted); background: var(--color-bg); border: 1px solid var(--color-border); font: var(--ui-small-font-size, var(--font-size-small))/1.4 var(--font-family-mono); overflow-wrap: anywhere; }
 .settings-actions { justify-content: flex-start; }
 .queue-status { flex: 0 0 auto; color: var(--color-success); font-size: var(--font-size-small); font-weight: 700; letter-spacing: .04em; text-align: right; text-transform: uppercase; white-space: nowrap; }
 .queue-status.failed { color: var(--color-danger); }
@@ -39,7 +39,7 @@
 .saved-log-paths code { color: var(--color-text-muted); overflow-wrap: anywhere; }
 .saved-log-paths button { background: transparent; border: 0; color: inherit; cursor: pointer; text-align: left; padding: 0; }
 .viewer-modal { width: min(900px, calc(100vw - 32px)); }
-.file-viewer { width: 100%; min-height: min(65vh, 560px); resize: vertical; background: var(--color-bg); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 6px; padding: var(--space-3); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.file-viewer { width: 100%; min-height: min(65vh, 560px); resize: vertical; background: var(--color-bg); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 6px; padding: var(--space-3); font: var(--ui-small-font-size, var(--font-size-small))/1.5 var(--font-family-mono); }
 .archive-format-modal { width: min(560px, calc(100vw - 32px)); }
 .archive-format-option { display: flex; align-items: flex-start; gap: var(--space-2); margin: var(--space-3) 0; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-bg); }
 .archive-format-option input { width: var(--space-4); min-width: var(--space-4); margin: var(--space-1) 0 0; }

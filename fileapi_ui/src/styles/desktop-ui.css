@@ -32,6 +32,7 @@
   --ui-section-gap: clamp(4.8px, calc(1.6px + 0.64vmin), 16px);
   --ui-panel-padding: clamp(6.4px, calc(2.4px + 0.72vmin), 17.6px);
   --ui-terminal-min-height: clamp(128px, calc(80px + 4.8vmin), 208px);
+  --ui-heading-font: clamp(16px, calc(8px + 1.1vmin), 22.4px);
 }
 
 :root:has(.explorer.ui-layout-mobile) {
@@ -45,6 +46,7 @@
   --ui-section-gap: var(--space-3);
   --ui-panel-padding: var(--space-3);
   --ui-terminal-min-height: var(--terminal-min-height-mobile);
+  --ui-heading-font: var(--font-size-mobile-heading);
 }
 
 .explorer {

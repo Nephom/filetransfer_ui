@@ -163,6 +163,11 @@ These aliases let all features use one sizing vocabulary:
 is not defined or consumed by the current stylesheet; it is not a supported
 custom-property token.
 
+Auto-profile Workspace, Entry, modal, log, and terminal text should consume
+the `--ui-font-size`, `--ui-small-font-size`, or `--ui-heading-font` aliases.
+Those aliases scale with the actual window dimensions. Large-profile rules in
+`mobile-ui.css` continue to apply the fixed Large-profile text floor.
+
 `--controls-row` and `--screen-row` are optional fallback variables consumed
 by `styles/vnc-interactions.css` to divide the VNC display between controls and
 the screen. They are not normally set by Location or REST mode.

@@ -46,7 +46,7 @@
   .help-modal { width: calc(100vw - 20px); height: calc(100vh - 20px); }
   .help-layout { grid-template-columns: clamp(160px, 20vw, 205px) minmax(0, 1fr); }
   .help-content { padding: 22px 18px; }
-  .help-content h3 { font-size: 20px; }
+  .help-content h3 { font-size: var(--ui-heading-font, var(--font-size-heading)); }
   .help-footer { align-items: flex-start; flex-direction: column; }
 }
 @media (max-width: 540px) {

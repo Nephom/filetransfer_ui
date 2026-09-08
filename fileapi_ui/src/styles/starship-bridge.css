@@ -264,7 +264,7 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .statusbar { padding: var(--space-2) var(--space-4); color: var(--bridge-muted); font-family: "Fira Code", monospace; font-size: var(--font-size-small); }
 .terminal-dock { margin: 0 var(--space-3) var(--space-3); border: 1px solid var(--bridge-line); border-radius: var(--bridge-radius); background: rgba(3, 17, 30, .9); box-shadow: var(--bridge-glass-shadow), var(--bridge-inset); backdrop-filter: blur(22px) saturate(135%); }
 .terminal-header { min-height: var(--control-height-mobile-lg); border-color: var(--bridge-line); }
-.terminal-header::before { margin-right: var(--space-2); content: "COMMAND DECK"; font: 10px "Share Tech Mono", monospace; }
+.terminal-header::before { margin-right: var(--space-2); content: "COMMAND DECK"; font: var(--ui-small-font-size, var(--font-size-small)) "Share Tech Mono", var(--font-family-mono); }
 .terminal-tabs button.active,
 .terminal-tabs button:hover,
 .terminal-actions button:hover { border-color: var(--bridge-line); color: var(--bridge-text); background: rgba(99, 230, 255, .14); }

@@ -85,7 +85,7 @@
   color: var(--color-text);
   background: var(--color-bg-panel);
   cursor: pointer;
-  font-size: var(--font-size-small);
+  font-size: var(--ui-small-font-size, var(--font-size-small));
 }
 .modal-actions button:hover:not(:disabled),
 .session-list-heading button:hover:not(:disabled),

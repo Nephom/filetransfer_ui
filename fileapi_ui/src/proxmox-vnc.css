@@ -15,7 +15,7 @@
 .vnc-entry-pane-shell { display: flex; flex: 0 0 380px; min-width: clamp(180px, 20vw, 220px); min-height: 0; overflow: hidden; }
 .vnc-entry-pane-shell > .vnc-entry-pane { flex: 1 1 auto; }
 .vnc-entry-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 0 var(--space-1) var(--space-3); border-bottom: 1px solid var(--color-border); }
-.vnc-entry-add { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-warning); border-radius: 4px; color: var(--color-warning); background: transparent; font-size: var(--font-size-small); cursor: pointer; }
+.vnc-entry-add { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-warning); border-radius: 4px; color: var(--color-warning); background: transparent; font-size: var(--ui-small-font-size, var(--font-size-small)); cursor: pointer; }
 .vnc-entry-add:hover { color: var(--color-bg); background: var(--color-warning); }
 /* T-219: this used to be `flex: 1 1 auto`, which stretched the list to
  * fill every bit of the pane's leftover vertical space even when there
@@ -52,7 +52,7 @@
  * left (enough entries that .vnc-entry-list's own overflow:auto scrolling
  * kicks in), the auto margin resolves to 0 and this panel simply follows
  * the list like before. */
-.vnc-entry-auth { display: grid; gap: var(--space-2); margin-top: auto; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }.vnc-entry-auth strong { color: var(--color-text); font-size: var(--font-size-small); }.vnc-entry-auth label { display: grid; gap: var(--space-1); color: var(--color-text-muted); font-size: var(--font-size-small); }.vnc-entry-auth input { min-width: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }.vnc-entry-auth button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-3) !important; font-size: var(--font-size-small) !important; }
+.vnc-entry-auth { display: grid; gap: var(--space-2); margin-top: auto; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }.vnc-entry-auth strong { color: var(--color-text); font-size: var(--ui-small-font-size, var(--font-size-small)); }.vnc-entry-auth label { display: grid; gap: var(--space-1); color: var(--color-text-muted); font-size: var(--ui-small-font-size, var(--font-size-small)); }.vnc-entry-auth input { min-width: 0; color: var(--color-text); background: var(--color-bg); border-color: var(--color-border); }.vnc-entry-auth button { min-height: var(--control-height-mobile) !important; padding: var(--space-1) var(--space-3) !important; font-size: var(--ui-small-font-size, var(--font-size-small)) !important; }
 .vnc-entry { display: flex; align-items: flex-start; gap: var(--space-2); flex: 1 1 auto; min-width: 0; padding: var(--space-2) var(--space-2) !important; border: 1px solid transparent; border-radius: 5px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
 .vnc-entry:hover { background: var(--color-bg-panel); border-color: var(--color-border); }
 .vnc-entry.active { border-color: var(--color-warning); background: linear-gradient(90deg, color-mix(in srgb, var(--color-warning) 18%, transparent), color-mix(in srgb, var(--color-secondary) 62%, var(--color-bg-panel))); box-shadow: inset 3px 0 var(--color-warning); }
@@ -60,7 +60,7 @@
 .vnc-entry.active .vnc-entry-dot { background: var(--color-warning); box-shadow: 0 0 8px color-mix(in srgb, var(--color-warning) 60%, transparent); }
 .vnc-entry-copy { display: grid; flex: 1 1 auto; gap: var(--space-1); min-width: 0; }
 .vnc-entry-copy strong, .vnc-entry-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.vnc-entry-copy strong { color: var(--color-text); font-size: var(--font-size-base); }.vnc-entry-copy small { color: var(--color-text-muted); font-size: var(--font-size-small); }
+.vnc-entry-copy strong { color: var(--color-text); font-size: var(--ui-font-size, var(--font-size-base)); }.vnc-entry-copy small { color: var(--color-text-muted); font-size: var(--ui-small-font-size, var(--font-size-small)); }
 .vnc-empty { padding: var(--space-5) var(--space-3); color: var(--color-text-muted); font-size: var(--font-size-small); }
 .vnc-auth-grid label { display: grid; gap: var(--space-1); margin: 0; color: var(--color-text-muted); font-size: var(--font-size-small); }.vnc-auth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
 .vnc-reader { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; overflow: auto; background: rgba(8, 22, 38, .56); }

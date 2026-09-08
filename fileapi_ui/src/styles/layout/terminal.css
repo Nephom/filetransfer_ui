@@ -71,7 +71,7 @@
 .ssh-controls .dropdown { width: 92px; margin-top: var(--space-1); }
 .ssh-profile-form input { width: 100%; margin-top: var(--space-1); }
 .ssh-controls .dropdown-trigger, .ssh-profile-form input { padding: var(--space-2); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; }
-.ssh-output { flex: 1; min-height: clamp(60px, 8vh, 80px); overflow: auto; margin: 0; padding: var(--space-3); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); white-space: pre-wrap; font: 13px/1.45 monospace; }
+.ssh-output { flex: 1; min-height: clamp(60px, 8vh, 80px); overflow: auto; margin: 0; padding: var(--space-3); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); white-space: pre-wrap; font: var(--ui-font-size, var(--font-size-base))/1.45 var(--font-family-mono); }
 .ssh-profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); overflow: auto; }
 .ssh-profile-form label { margin: 0; }
 .ssh-profile-form label:last-of-type { grid-column: 1 / -1; }
