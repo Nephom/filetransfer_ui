@@ -223,14 +223,17 @@ export function useTerminalLifecycle({
           if (paste.includes("\n") && !terminal.modes.bracketedPasteMode && !window.confirm(
             "This terminal has not enabled bracketed paste. Pasting multiple lines may execute multiple commands. Continue?"
           )) return;
+          // A tab switch can leave focus on the tab header while the newly
+          // active host is still becoming visible. Focus this exact instance
+          // before dispatching so xterm sends the paste through this tab's
+          // onData handler, never through whichever tab was active before it.
+          terminal.focus();
           // xterm.paste() handles bracketed-paste mode and emits onData, which
           // keeps the browser clipboard path identical to typed input.
           terminal.paste(normalizeTerminalPaste(paste, bracketedPasteRef.current));
         };
-        terminal.attachCustomKeyEventHandler((event) => {
-          if (!isTerminalPasteShortcut(event)) return true;
-          event.preventDefault();
-          event.stopPropagation();
+        const readClipboardAndPaste = () => {
+          if (disposed) return;
           readSystemClipboardText()
             .then((text) => {
               if (text) pasteText(text);
@@ -238,6 +241,12 @@ export function useTerminalLifecycle({
             .catch(() => {
               noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
             });
+        };
+        terminal.attachCustomKeyEventHandler((event) => {
+          if (!isTerminalPasteShortcut(event)) return true;
+          event.preventDefault();
+          event.stopPropagation();
+          readClipboardAndPaste();
           return false;
         });
         // Lets a remote full-screen program (one that has grabbed the mouse
@@ -288,13 +297,7 @@ export function useTerminalLifecycle({
         const onContextMenu = (event: MouseEvent) => {
           event.preventDefault();
           event.stopImmediatePropagation();
-          readSystemClipboardText()
-            .then((text) => {
-              if (text) pasteText(text);
-            })
-            .catch(() => {
-              noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
-            });
+          readClipboardAndPaste();
         };
         currentHost.addEventListener("paste", onPaste, true);
         currentHost.addEventListener("mousedown", onMouseDown, true);

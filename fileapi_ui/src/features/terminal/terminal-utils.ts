@@ -7,9 +7,9 @@ export const stripAnsi = (value: string) =>
 export const normalizeTerminalPasteText = (value: string) =>
   value.replace(/\r\n?/g, "\n");
 
-export const isTerminalPasteShortcut = (event: Pick<KeyboardEvent, "type" | "key" | "ctrlKey" | "metaKey" | "shiftKey">) =>
+export const isTerminalPasteShortcut = (event: Pick<KeyboardEvent, "type" | "key" | "code" | "ctrlKey" | "metaKey" | "shiftKey">) =>
   event.type === "keydown" && (
-    ((event.key === "v" || event.key === "V") && (event.ctrlKey || event.metaKey)) ||
+    ((event.key === "v" || event.key === "V" || event.code === "KeyV") && (event.ctrlKey || event.metaKey)) ||
     (event.key === "Insert" && event.shiftKey)
   );
 
