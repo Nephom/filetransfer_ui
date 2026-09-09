@@ -636,14 +636,20 @@ cmd_build() {
 }
 
 cmd_test() {
-  if ! find "$ROOT_DIR" \
-    -path "$ROOT_DIR/node_modules" -prune -o \
-    -path "$ROOT_DIR/fileapi_ui/node_modules" -prune -o \
-    -type f -name '*.test.js' -print -quit | grep -q .; then
-    echo "No backend test files were found under $ROOT_DIR; refusing to report a false pass." >&2
+  local -a test_files=()
+  while IFS= read -r test_file; do
+    test_files+=("$test_file")
+  done < <(find "$ROOT_DIR/src" -type f -name '*.test.js' -print | sort)
+
+  if [[ "${#test_files[@]}" -eq 0 ]]; then
+    echo "No backend test files were found under $ROOT_DIR/src; refusing to report a false pass." >&2
     return 1
   fi
-  npm test --prefix "$ROOT_DIR"
+
+  # The server upgrade preflight installs only root dependencies. Keep the
+  # desktop checks under fileapi_ui/checks out of this gate because they load
+  # the desktop TypeScript toolchain from fileapi_ui/devDependencies.
+  node --test --test-concurrency=1 "${test_files[@]}"
 }
 
 has_blocking_worktree_changes() {

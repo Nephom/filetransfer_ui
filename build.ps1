@@ -359,6 +359,20 @@ for (const name of Object.keys(pkg.dependencies)) require.resolve(name, { paths:
     }
 }
 
+function Test-DesktopChecks {
+    $checksRoot = Join-Path $DesktopRoot "checks"
+    $testFiles = @(Get-ChildItem -LiteralPath $checksRoot -Filter "*.test.js" -File |
+        Select-Object -ExpandProperty FullName)
+    if ($testFiles.Count -eq 0) {
+        throw "No desktop test files were found under '$checksRoot'."
+    }
+
+    # Desktop checks load the TypeScript toolchain and native UI dependencies
+    # installed by Install-DesktopDependencies. Keep them separate from the
+    # server test gate used by build.sh.
+    Invoke-Native "node" (@("--test", "--test-concurrency=1") + $testFiles)
+}
+
 function Get-AppVersion {
     return (Get-Content -LiteralPath (Join-Path $Root "VERSION") -Raw).Trim()
 }
@@ -600,6 +614,7 @@ function Upgrade-Checkout {
         Invoke-Native "node" $upgradeArgs
     }
     Install-DesktopDependencies
+    Test-DesktopChecks
     Write-Host "Upgrade complete. The server install/setup lifecycle remains available through build.sh."
 }
 
