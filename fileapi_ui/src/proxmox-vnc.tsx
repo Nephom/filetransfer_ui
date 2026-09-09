@@ -867,7 +867,9 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         return;
       }
       if (!screenRef.current) throw new Error("VNC screen is unavailable");
-      const rfb = new RFB(screenRef.current, connection.websocketUrl);
+      const rfb = new RFB(screenRef.current, connection.websocketUrl, {
+        forceCursorFallback: isDirectVnc,
+      });
       pendingConnectionIdRef.current = null;
       rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = viewOnly;
       connectionTimeoutRef.current = window.setTimeout(() => {

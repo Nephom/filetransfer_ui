@@ -234,7 +234,7 @@ export default class RFB extends EventTargetMixin {
         this._screen.appendChild(this._canvas);
 
         // Cursor
-        this._cursor = new Cursor();
+        this._cursor = new Cursor(!!options.forceCursorFallback);
 
         // XXX: TightVNC 2.8.11 sends no cursor at all until Windows changes
         // it. Result: no cursor at all until a window border or an edit field
