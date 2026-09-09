@@ -893,6 +893,26 @@ mod verbatim_prefix_tests {
         let input = PathBuf::from("/home/user/project");
         assert_eq!(strip_verbatim_prefix(input.clone()), input);
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn allows_unc_paths_for_read_only_local_sources() {
+        assert!(super::is_local_read_scope(
+            std::path::Path::new(r"\\server\share\folder"),
+            std::path::Path::new(r"C:\Users\Administrator"),
+            false,
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn keeps_unc_paths_out_of_write_capable_local_scope() {
+        assert!(!super::is_within_home_or_elevated(
+            std::path::Path::new(r"\\server\share\folder"),
+            std::path::Path::new(r"C:\Users\Administrator"),
+            false,
+        ));
+    }
 }
 
 /// HOME's own real, absolute filesystem path. The frontend's LOCAL pane
@@ -981,10 +1001,10 @@ fn list_local_roots() -> Vec<String> {
     }
 }
 
-/// Whether an absolute local path is allowed through the local filesystem
-/// boundary. Unix remains HOME-only unless elevated. On Windows, a regular
-/// user may use HOME and drive-letter paths on volumes other than the HOME
-/// volume; the operating system still enforces the user's ACL on every I/O.
+/// Whether a local path is allowed through a write-capable filesystem
+/// boundary. Read-only sources use `is_local_read_scope` below instead: the
+/// operating system's ACL is the authority for files the user is allowed to
+/// inspect and upload, including mapped network drives.
 fn is_within_home_or_elevated(resolved: &Path, home: &Path, elevated: bool) -> bool {
     if resolved.starts_with(home) || elevated {
         return true;
@@ -1019,18 +1039,12 @@ fn is_local_read_scope(resolved: &Path, home: &Path, elevated: bool) -> bool {
 
     #[cfg(windows)]
     {
-        let drive_letter = |path: &Path| {
-            path.components().find_map(|component| match component {
-                std::path::Component::Prefix(prefix) => match prefix.kind() {
-                    std::path::Prefix::Disk(letter) | std::path::Prefix::VerbatimDisk(letter) => {
-                        Some(letter.to_ascii_uppercase())
-                    }
-                    _ => None,
-                },
-                _ => None,
-            })
-        };
-        return drive_letter(resolved).is_some() && drive_letter(resolved) != drive_letter(home);
+        // `canonicalize` turns many mapped drive paths such as `Z:\Share`
+        // into UNC paths such as `\\server\share`. Both forms are absolute
+        // paths, and the user's Windows ACL is the correct authority for a
+        // read-only LOCAL source. Do not reuse the write-path restriction
+        // here: it only understands local drive letters by design.
+        return resolved.is_absolute();
     }
 
     #[cfg(not(windows))]
@@ -1042,8 +1056,7 @@ fn is_local_read_scope(resolved: &Path, home: &Path, elevated: bool) -> bool {
 /// Resolve a LOCAL path for read-only browsing and transfer sources. Relative
 /// paths start in HOME. Absolute paths are allowed when the platform policy
 /// permits them, and the final filesystem operation remains the OS ACL check.
-/// Windows intentionally keeps the HOME drive confined to HOME for regular
-/// users; other drive volumes can be browsed when their ACL allows it.
+/// On Windows this includes mapped drives after they canonicalize to UNC paths.
 fn resolve_local_read_path(path: &str) -> Result<(Option<PathBuf>, PathBuf), String> {
     let input = Path::new(path);
     if input
