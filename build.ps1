@@ -519,10 +519,7 @@ function Build-Desktop {
     # JSON file, which never has to survive that extra quoting layer, so
     # write the override to a temp file instead of trying to out-escape it.
     $tauriConfigOverride = [ordered]@{
-        # Tauri packaging requires the release version itself to be semver.
-        # Keep the commit-qualified version for the WebUI metadata above, but
-        # do not pass it to Tauri as the package version.
-        version = $versionInfo.baseVersion
+        version = $versionInfo.version
         bundle = [ordered]@{
             windows = [ordered]@{
                 webviewInstallMode = [ordered]@{
@@ -558,7 +555,7 @@ function Build-Desktop {
         Write-Warning "Expected EXE not found at $exePath"
     }
 
-    $installer = Get-ChildItem -LiteralPath $nsisDir -Filter "*_$($versionInfo.baseVersion)_*-setup.exe" -ErrorAction SilentlyContinue |
+    $installer = Get-ChildItem -LiteralPath $nsisDir -Filter "*_$($versionInfo.version)_*-setup.exe" -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if ($installer) {
@@ -569,7 +566,7 @@ function Build-Desktop {
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
         if ($anyInstaller) {
-            Write-Warning "NSIS installer under $nsisDir does not match the built version ($($versionInfo.baseVersion)); found '$($anyInstaller.Name)' instead. Not reporting it as the build result."
+            Write-Warning "NSIS installer under $nsisDir does not match the built version ($($versionInfo.version)); found '$($anyInstaller.Name)' instead. Not reporting it as the build result."
         }
         else {
             Write-Warning "NSIS installer not found under $nsisDir"
