@@ -14,6 +14,7 @@ export default class Cursor {
         this._useFallback = forceFallback || useFallback;
 
         this._canvas = document.createElement('canvas');
+        this._fullscreenChangeHandler = this._syncFullscreenParent.bind(this);
 
         if (this._useFallback) {
             this._canvas.style.position = 'fixed';
@@ -46,7 +47,9 @@ export default class Cursor {
         this._target = target;
 
         if (this._useFallback) {
-            document.body.appendChild(this._canvas);
+            this._syncFullscreenParent();
+            document.removeEventListener('fullscreenchange', this._fullscreenChangeHandler);
+            document.addEventListener('fullscreenchange', this._fullscreenChangeHandler);
 
             const options = { capture: true, passive: true };
             this._target.addEventListener('mouseover', this._eventHandlers.mouseover, options);
@@ -65,13 +68,14 @@ export default class Cursor {
 
         if (this._useFallback) {
             const options = { capture: true, passive: true };
+            document.removeEventListener('fullscreenchange', this._fullscreenChangeHandler);
             this._target.removeEventListener('mouseover', this._eventHandlers.mouseover, options);
             this._target.removeEventListener('mouseleave', this._eventHandlers.mouseleave, options);
             this._target.removeEventListener('mousemove', this._eventHandlers.mousemove, options);
             this._target.removeEventListener('mouseup', this._eventHandlers.mouseup, options);
 
-            if (document.contains(this._canvas)) {
-                document.body.removeChild(this._canvas);
+            if (this._canvas.parentNode) {
+                this._canvas.parentNode.removeChild(this._canvas);
             }
         }
 
@@ -241,6 +245,18 @@ export default class Cursor {
     _updatePosition() {
         this._canvas.style.left = this._position.x + "px";
         this._canvas.style.top = this._position.y + "px";
+    }
+
+    // Fullscreen elements are rendered in a separate top layer, so a cursor
+    // canvas left under document.body is hidden while the VNC screen is full.
+    _syncFullscreenParent() {
+        if (!this._useFallback) {
+            return;
+        }
+        const parent = document.fullscreenElement || document.body;
+        if (this._canvas.parentNode !== parent) {
+            parent.appendChild(this._canvas);
+        }
     }
 
     _captureIsActive() {

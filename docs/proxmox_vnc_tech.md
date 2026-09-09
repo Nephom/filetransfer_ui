@@ -80,6 +80,18 @@ endpoint; the relay validates its path and token before opening the remote
 socket. Direct VNC intentionally skips Proxmox VM discovery, QEMU Guest Agent
 checks, and VNC file-transfer detection.
 
+### Direct VNC fullscreen cursor
+
+Direct VNC forces noVNC to use its canvas-based cursor fallback because some
+macOS Screen Sharing endpoints do not render the browser cursor URI reliably.
+The fallback cursor normally lives under `document.body`. When the VNC screen
+enters the browser Fullscreen API, that element moves into the fullscreen top
+layer, so `public/noVNC/core/util/cursor.js` listens for `fullscreenchange` and
+moves the fallback cursor canvas into the active fullscreen element. It moves
+the canvas back to `document.body` when fullscreen ends. This keeps the cursor
+visible in both normal and fullscreen display modes without changing VNC mouse
+input handling.
+
 ### Layout overview (as of T-220/T-221)
 
 ```
