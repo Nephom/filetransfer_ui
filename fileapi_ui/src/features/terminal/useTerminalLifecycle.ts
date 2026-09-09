@@ -136,7 +136,8 @@ type TerminalInstance = {
 //
 // This hook now keeps one Terminal instance *per tab*, created once when
 // the tab first appears and disposed only when the tab is closed (or the
-// whole dock collapses). Switching tabs is just a CSS visibility toggle
+// owning application is unmounted). Switching tabs and collapsing the dock
+// are just CSS visibility toggles
 // (see terminal.css's `.xterm-host`/`.xterm-host.active`) plus a same-size
 // check before ever touching the remote PTY -- there is no more
 // destroy/rebuild/replay cycle on the common tab-switch path.
@@ -193,19 +194,20 @@ export function useTerminalLifecycle({
   const tabIdsKey = tabIds.join(",");
 
   // Creates one Terminal per newly-seen tab id, and disposes any instance
-  // whose tab has been closed. Deliberately does NOT depend on
+  // whose tab has been closed. A collapsed dock keeps existing instances
+  // alive; only creation is paused until the dock is visible again.
+  // Deliberately does NOT depend on
   // `activeTabId` -- switching tabs must never re-run this effect, since
   // doing so is exactly the destroy-and-rebuild behavior this hook
   // replaces (issue #239).
   useEffect(() => {
-    if (!enabled) return undefined;
     let disposed = false;
     const createFor = (tabId: string) => {
       const host = hostRefsRef.current.get(tabId);
       // Host div not mounted yet -- TerminalWorkspace renders one per id
       // in `tabIds`, so this should be rare/transient; a later re-run of
       // this effect (next tabIds change) will pick it up.
-      if (!host || instancesRef.current.has(tabId)) return;
+      if (!enabled || !host || instancesRef.current.has(tabId)) return;
       void loadXtermModules().then(({ Terminal: TerminalCtor, FitAddon: FitAddonCtor, WebglAddonCtor }) => {
         if (disposed || instancesRef.current.has(tabId)) return;
         const currentHost = hostRefsRef.current.get(tabId);
@@ -372,19 +374,16 @@ export function useTerminalLifecycle({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, tabIdsKey, hostRefsRef, terminalsRef, boundaryGuard]);
 
-  // Tears down every live instance immediately when the whole dock is
-  // disabled (collapsed/closed) -- matches the pre-existing behavior of
-  // destroying the terminal when `terminalOpen` goes false. Reopening the
-  // dock recreates instances via the effect above, seeded once from
-  // `getInitialOutput` where applicable.
-  useEffect(() => {
-    if (enabled) return undefined;
+  // A collapsed dock intentionally does not dispose its instances: the host
+  // elements remain mounted and the existing VT parser state must survive
+  // reopening without replaying the capped raw output buffer. This final
+  // cleanup still releases everything if the owning component is unmounted.
+  useEffect(() => () => {
     for (const [tabId, instance] of instancesRef.current) {
       instance.dispose();
       instancesRef.current.delete(tabId);
     }
-    return undefined;
-  }, [enabled]);
+  }, []);
 
   // Activates exactly one tab's terminal at a time when switching between
   // *already-existing* instances: focuses it, re-measures its size now

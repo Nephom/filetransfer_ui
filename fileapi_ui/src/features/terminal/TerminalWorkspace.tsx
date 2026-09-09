@@ -87,13 +87,11 @@ export function TerminalWorkspace({
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
-  if (!open) {
-    return <button className="terminal-restore" onClick={onRestore} aria-label="Restore terminal">
+  return <>
+    {!open && <button className="terminal-restore" onClick={onRestore} aria-label="Restore terminal">
       Terminal <ChevronUpIcon size={12} />
-    </button>;
-  }
-
-  return <section className={`terminal-dock${maximized ? " terminal-maximized" : ""}`} style={{ height: `${height}px` }} aria-label="Terminal panel">
+    </button>}
+    <section className={`terminal-dock${maximized ? " terminal-maximized" : ""}${open ? "" : " terminal-collapsed"}`} style={{ height: open ? `${height}px` : "0px" }} aria-label="Terminal panel" aria-hidden={!open}>
     <div className="terminal-resize-handle" onPointerDown={onResizeStart} role="separator" aria-label="Resize terminal" />
     <header className="terminal-header">
       <div className="terminal-tabs">
@@ -198,5 +196,6 @@ export function TerminalWorkspace({
         </div>
       </div>
     </div>
-  </section>;
+    </section>
+  </>;
 }
