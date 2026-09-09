@@ -25,6 +25,7 @@ type NativeRefs = {
 type Props = NativeRefs & {
   enabled: boolean;
   activeTabId: string;
+  activeSessionId: string;
   tabIds: string[];
   bracketedPasteControlEnabled: boolean;
   setTabs: React.Dispatch<React.SetStateAction<SshTerminalTab[]>>;
@@ -36,7 +37,7 @@ type Props = NativeRefs & {
  * Connection commands and tab CRUD remain in DesktopApp for this first
  * extraction because they also coordinate Workspace Manager state. */
 export function useSshTerminal({
-  enabled, activeTabId, tabIds, bracketedPasteControlEnabled,
+  enabled, activeTabId, activeSessionId, tabIds, bracketedPasteControlEnabled,
   setTabs, setConnected, setNotice, tabsRef, pendingRequestsRef, terminalsRef,
   hostRefsRef, activeTabIdRef, outputRef, sessionIdRef, connectingRef, writeQueuesRef,
   recordingWriteQueuesRef, recordingRef, secretPromptRef, shellInputRef,
@@ -145,6 +146,21 @@ export function useSshTerminal({
   useEffect(() => {
     sessionIdRef.current = tabsRef.current.find((item) => item.id === activeTabId)?.sessionId || "";
   }, [activeTabId, sessionIdRef, tabsRef]);
+
+  // Terminal creation normally measures the visible host before SSH has
+  // returned a session id, so the first resize is intentionally skipped by
+  // onResize above. Once the session exists, synchronize that already-known
+  // xterm size with the remote PTY before full-screen programs use carriage
+  // returns and absolute cursor movement (for example apt's progress bar).
+  useEffect(() => {
+    if (!activeSessionId) return;
+    const terminal = terminalsRef.current.get(activeTabId);
+    if (!terminal) return;
+    const last = lastReportedSizeRef.current.get(activeTabId);
+    if (last && last.cols === terminal.cols && last.rows === terminal.rows) return;
+    lastReportedSizeRef.current.set(activeTabId, { cols: terminal.cols, rows: terminal.rows });
+    void invoke("ssh_resize", { sessionId: activeSessionId, cols: terminal.cols, rows: terminal.rows });
+  }, [activeSessionId, activeTabId, terminalsRef]);
 
   return { boundaryGuard: VT_SESSION_BOUNDARY_GUARD };
 }

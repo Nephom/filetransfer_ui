@@ -1547,6 +1547,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   useSshTerminal({
     enabled: terminalOpen,
     activeTabId: activeSshTabId,
+    activeSessionId: sshTabs.find((tab) => tab.id === activeSshTabId)?.sessionId || "",
     tabIds: sshTabs.map((tab) => tab.id),
     bracketedPasteControlEnabled: desktopSettings.bracketedPasteControlEnabled,
     setTabs: setSshTabs,
