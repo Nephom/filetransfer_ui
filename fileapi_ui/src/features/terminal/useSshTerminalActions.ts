@@ -3,7 +3,7 @@ import type { Terminal } from "@xterm/xterm";
 import { invoke } from "@tauri-apps/api/core";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import type { RecordingStats, SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
-import { appendSshTabOutput, makeSshTabId, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./terminal-utils";
+import { appendSshTabOutput, makeSshTabId, resetTerminalConnection, SSH_SESSION_BOUNDARY_GUARD, stripAnsi } from "./terminal-utils";
 
 type OperationLogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
 
@@ -37,7 +37,6 @@ type Props = {
   setSaveLogDestinationPath: (value: string) => void;
   saveLogNameOpen: boolean;
   setSaveLogNameOpen: (open: boolean) => void;
-  localPath: string;
 };
 
 /** Terminal tab lifecycle, SSH connect/disconnect, and recording start/stop.
@@ -50,7 +49,7 @@ export function useSshTerminalActions({
   setWorkspaceId, selectedEntryId, setSelectedEntryId, setSshProfileId, setTerminalOpen,
   loadSshProfileDraft, onOpenWorkspaceManager, onNotify, onSetNotice, run, onWriteOperationLog,
   describeError, saveLogNameDraft, setSaveLogNameDraft, saveLogDestinationPath,
-  setSaveLogDestinationPath, saveLogNameOpen, setSaveLogNameOpen, localPath,
+  setSaveLogDestinationPath, saveLogNameOpen, setSaveLogNameOpen,
 }: Props) {
   const activeTab = tabs.find((item) => item.id === activeTabId);
   const recordingHasOutput = Boolean(activeTab && (activeTab.recordingRawBytes > 0 || activeTab.recordingPlainBytes > 0));
@@ -94,6 +93,7 @@ export function useSshTerminalActions({
     const hasUnsavedRecording = tab.recordingStartedAt !== null && tab.savedLogPaths.length === 0;
     if (hasUnsavedRecording && !window.confirm(`This tab has an unsaved SSH recording. Close ${tab.title} and discard it?`)) return;
     if (tab.connected && !window.confirm(`Disconnect and close ${tab.title}?`)) return;
+    resetTerminalConnection(terminalInstancesRef.current.get(tabId));
     void run(async () => {
       if (tab.sessionId) await invoke("ssh_disconnect", { sessionId: tab.sessionId });
       // Sweep any pendingRequestsRef entries left mapped to this tab (see
@@ -137,6 +137,7 @@ export function useSshTerminalActions({
   const performSshConnect = (tabId: string, profile: SshProfile) => {
     const attemptId = `${tabId}-${Date.now()}`;
     connectAttemptRef.current[tabId] = attemptId;
+    resetTerminalConnection(terminalInstancesRef.current.get(tabId));
     setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: true }));
     void run(async () => {
       connectingRef.current = true;
@@ -150,7 +151,7 @@ export function useSshTerminalActions({
           username: profile.username,
           privateKeyPath: profile.privateKeyPath || null,
         };
-        setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${VT_SESSION_BOUNDARY_GUARD}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`) }));
+        setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${SSH_SESSION_BOUNDARY_GUARD}Connecting to ${profile.username}@${profile.host}:${profile.port}...\n`) }));
         const id = await invoke<string>("ssh_connect", { profile: nativeProfile, requestId: attemptId });
         if (connectAttemptRef.current[tabId] !== attemptId) {
           // Cancelled or superseded while this connect was in flight, but
@@ -181,7 +182,8 @@ export function useSshTerminalActions({
       } catch (error) {
         if (connectAttemptRef.current[tabId] !== attemptId) return; // cancelled or superseded
         const detail = error instanceof Error ? error.message : String(error);
-        setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${detail}\n`), connecting: false }));
+        resetTerminalConnection(terminalInstancesRef.current.get(tabId));
+        setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${SSH_SESSION_BOUNDARY_GUARD}${detail}\n`), connecting: false }));
         onSetNotice(detail);
         delete pendingRequestsRef.current[attemptId];
       } finally {
@@ -192,7 +194,8 @@ export function useSshTerminalActions({
 
   const cancelSshConnect = (tabId: string) => {
     delete connectAttemptRef.current[tabId];
-    setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: false, output: appendSshTabOutput(item.output, "Connection attempt cancelled.\n") }));
+    resetTerminalConnection(terminalInstancesRef.current.get(tabId));
+    setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connecting: false, output: appendSshTabOutput(item.output, `${SSH_SESSION_BOUNDARY_GUARD}Connection attempt cancelled.\n`) }));
     onNotify("Connection attempt cancelled. The connection may still complete in the background and will be ignored if it does.");
   };
 
@@ -242,9 +245,11 @@ export function useSshTerminalActions({
   const disconnectSsh = () => {
     const tab = activeTab;
     if (!tab?.sessionId) return;
+    resetTerminalConnection(terminalInstancesRef.current.get(tab.id));
     void run(async () => {
       await invoke("ssh_disconnect", { sessionId: tab.sessionId });
-      setTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, "\nDisconnected.\n"), recording: false }));
+      resetTerminalConnection(terminalInstancesRef.current.get(tab.id));
+      setTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, `${SSH_SESSION_BOUNDARY_GUARD}\nDisconnected.\n`), recording: false }));
       connectingRef.current = false;
     });
   };
@@ -332,7 +337,7 @@ export function useSshTerminalActions({
     const profile = workspaces.find((item) => item.id === activeTab?.workspaceId)?.sshEntries.find((item) => item.id === activeTab?.sshEntryId);
     setSaveLogNameDraft(profile?.name || "SSH session");
     void run(async () => {
-      const selectedPath = await invoke<string | null>("pick_local_directory", { path: localPath });
+      const selectedPath = await invoke<string | null>("pick_local_directory", { path: "" });
       if (selectedPath === null) return;
       setSaveLogDestinationPath(selectedPath);
       setSaveLogNameOpen(true);

@@ -69,8 +69,8 @@ The VNC workspace portals one **Direct VNC** card into the shared top
 commandbar. This is a workspace presentation toggle, not a third application
 mode and not a second entry list. When active, the Proxmox entry pane and its
 resize controls are hidden, the VNC reader fills the available width, and the
-Connection Controls panel is replaced with Direct VNC host, port, and standard
-VNC password fields. The noVNC screen element remains mounted so changing the
+Connection Controls panel is replaced with Direct VNC host and port fields.
+Credential fields appear only after the server requests them. The noVNC screen element remains mounted so changing the
 connection source does not invalidate the RFB DOM target.
 
 The toggle confirms before disconnecting an active Proxmox or Direct VNC RFB
@@ -79,6 +79,69 @@ uses a local one-time WebSocket relay whose upstream is the configured TCP VNC
 endpoint; the relay validates its path and token before opening the remote
 socket. Direct VNC intentionally skips Proxmox VM discovery, QEMU Guest Agent
 checks, and VNC file-transfer detection.
+
+### Negotiated Direct VNC credentials
+
+Connect validates only the host and integer TCP port (1-65535), then lets noVNC
+negotiate authentication without speculative credentials. The
+`credentialsrequired.detail.types` event determines the prompt:
+
+| Server request | Supplied credentials |
+|---|---|
+| `password` | VNC/viewer password only; no username is required or sent. |
+| `username`, `password` | Server account username and account password. For macOS Screen Sharing/ARD, use the account short name and its login password, not the separate viewer password. |
+| No credential request | No prompt or keyring access is needed. |
+| Unsupported/malformed field request | Fail clearly rather than repeatedly sending an incomplete object. |
+
+An account request does not identify the server OS or uniquely identify ARD.
+Direct VNC is therefore labeled Remote desktop, with conditional macOS guidance.
+The credential dialog uses the existing FloatingWindow layout and is portaled
+inside the active VNC fullscreen root when needed. Collapsing Connection
+Controls does not hide it. Continue submits the current complete draft once;
+Cancel stops the attempt. Saved credentials are never submitted automatically,
+and rejected credentials require an explicit reconnect rather than an automatic
+retry. The Proxmox branch continues to supply only the relay response's
+`connection.password`; it never reads Direct VNC secrets.
+
+The legacy keyring entry `entryId: "direct-vnc", kind: "password"` remains a
+viewer-password candidate and is not deleted or promoted to an account secret.
+Account passwords use `entryId: "direct-vnc-account:" + JSON.stringify([host.toLowerCase(), port, username.trim()])`
+with `kind: "password"`. Late loads are checked against prompt ownership and
+draft revision, so they cannot overwrite typing or cross account/endpoint
+changes. A successful connection saves the submitted snapshot, not each
+keystroke. Forget saved password targets only the current credential key.
+Storage errors are notices and do not turn a successful connection into a
+network failure. Host, port, and last username remain non-secret local settings.
+
+### Attempt ownership and deadlines
+
+Each invocation of `connect` owns its RFB client, backend connection ID, timer,
+phase, and cleanup closure. `connectionCleanupRef` identifies the current
+cleanup; `sessionGenerationRef` invalidates replaced attempts. Every RFB event
+checks ownership before changing state. A delayed disconnect or timer from an
+old attempt cannot clear the new attempt's timeout.
+
+The 15-second handshake timer begins after RFB construction. It stops while
+the Direct VNC credential dialog waits for input and restarts for a full
+15 seconds when Continue submits credentials. Connected sessions have no
+client-side idle timer. A queued timer checks its identity even after
+`clearTimeout`, preventing a false timeout during credential wait or after
+success. The remote server may still impose its own authentication deadline.
+
+Cancellation during runtime import prevents a later backend start. A backend
+start that finishes after cancellation cleans up its own returned ID, using
+the captured Direct/Proxmox source. Teardown closes ownership before asking RFB
+to disconnect, so the resulting disconnect event cannot replace a security
+failure or timeout reason. A server disconnect during handshake is diagnosed
+from the attempt's phase, not a captured React loading flag.
+
+`fileapi_ui/checks/vnc.test.js` exercises the production component's effects
+and rendered handlers with mocked RFB, Tauri, timers, and DOM. It covers the
+credential requests, current drafts, legacy/account isolation, delayed keyring
+loads, timeout ownership, cancellation/unmount races, diagnostics, fullscreen
+portal placement, and Proxmox password isolation. Live ARD/password-only VNC,
+native keyring, and actual WebView fullscreen rendering remain platform
+acceptance tests, not conclusions from mocks.
 
 ### Direct VNC fullscreen cursor
 
@@ -172,6 +235,7 @@ component itself holds no state.
 | State | Purpose |
 |---|---|
 | `password` / `loading` / `error` / `status` | Proxmox web-session login form + VNC connection status text. |
+| `credentialRequest` / `directPassword` / `accountPassword` / `credentialNotice` | Current negotiated Direct VNC prompt, separate credential drafts, and keyring notices. |
 | `vms` | VM list for the authenticated session (`proxmox_list_vms_session`). |
 | `controlsOpen` | Connection Controls expanded/collapsed (drives `.vnc-auth-panel`/`.vnc-display-split` classes -- see sizing above). |
 | `vmSshSettingsOpen` | Opens the selected VMID's VM SFTP settings in a floating window; it resets closed whenever the VM profile changes. |
@@ -203,6 +267,7 @@ component itself holds no state.
 | `executeUpload` / `runUpload` / `pickAndUpload` | Upload one file (with retry via `classifyQueueError`/`retryDelayMs`), queue it, and the file-picker entry point. |
 | `executeDownload` / `runDownload` / `pickAndDownload` | Same, for downloads (rejects directory downloads under `guest-agent`, which has no directory API). |
 | `connect` | Starts a VNC session: requests a relay ticket, dynamically imports noVNC, wires up the `RFB` instance and its event listeners (`connect` auto-collapses Connection Controls and kicks off `detectTransferMode`). |
+| `credentialRequest.submit` / `forgetDirectCredential` | Submit current requested credentials once, or forget only the prompt's selected keyring entry. |
 | `selectEntry` | Switches the active Proxmox VNC entry (stops any existing connection first). |
 | `toggleViewOnly` | Flips the VNC session between interactive and view-only. |
 

@@ -969,17 +969,20 @@ fn local_roots() -> Vec<String> {
             })
         });
     let elevated = is_elevated();
+    let mut seen = std::collections::HashSet::new();
     (b'A'..=b'Z')
         .filter_map(|letter| {
             let drive = format!("{}:\\", letter as char);
             if !elevated && (home_drive.is_none() || home_drive == Some(letter)) {
                 return None;
             }
-            if Path::new(&drive).is_dir() && std::fs::read_dir(&drive).is_ok() {
-                Some(drive.replace('\\', "/"))
-            } else {
-                None
+            let (root, directory) = resolve_local_read_path(&drive).ok()?;
+            if std::fs::read_dir(&directory).is_err() {
+                return None;
             }
+            // Match listing/tree identities even when a mapped drive resolves to UNC.
+            let identity = local_display_path(root.as_deref(), &directory).ok()?;
+            (!identity.is_empty() && seen.insert(identity.clone())).then_some(identity)
         })
         .collect()
 }
@@ -1111,7 +1114,14 @@ fn local_display_path(root: Option<&Path>, directory: &Path) -> Result<String, S
             .map_err(|error| error.to_string())?
             .to_string_lossy()
             .replace('\\', "/")),
-        None => Ok(directory.to_string_lossy().replace('\\', "/")),
+        None => {
+            let display = directory.to_string_lossy().replace('\\', "/");
+            #[cfg(windows)]
+            if display.starts_with("//") {
+                return Ok(display.trim_end_matches('/').to_string());
+            }
+            Ok(display)
+        }
     }
 }
 
@@ -2256,7 +2266,7 @@ async fn proxmox_agent_upload_file(
     remote_path: String,
     size_limit_bytes: u64,
 ) -> Result<(), String> {
-    let local_path = resolve_local_transfer_path(&local_path)?;
+    let local_path = resolve_local_read_entry(&local_path)?;
     proxmox::agent_upload_file(
         app,
         entry,
@@ -2309,7 +2319,7 @@ async fn scp_upload(
     local_path: String,
     remote_path: String,
 ) -> Result<String, String> {
-    let local_path = resolve_local_transfer_path(&local_path)?;
+    let local_path = resolve_local_read_entry(&local_path)?;
     ssh::sftp::upload_file(profile, local_path.display().to_string(), remote_path).await
 }
 
@@ -2346,7 +2356,7 @@ async fn ssh_upload_path(
     local_path: String,
     remote_destination_folder: String,
 ) -> Result<String, String> {
-    let local_path = resolve_local_transfer_path(&local_path)?;
+    let local_path = resolve_local_read_entry(&local_path)?;
     ssh::sftp::upload_path(
         profile,
         local_path.display().to_string(),
@@ -2995,9 +3005,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        dedupe_candidate_name, is_within_home_or_elevated, resolve_local_download_destination,
-        resolve_local_download_file, resolve_local_new_path, resolve_local_transfer_path,
-        UploadProgressEvent,
+        canonicalize, dedupe_candidate_name, is_local_read_scope, is_within_home_or_elevated,
+        local_display_path, local_list_directory, local_roots, resolve_local_download_destination,
+        resolve_local_download_file, resolve_local_new_path, resolve_local_read_entry,
+        resolve_local_read_path, resolve_local_transfer_path, UploadProgressEvent,
     };
     use std::fs;
     use std::sync::Mutex;
@@ -3093,6 +3104,144 @@ mod tests {
                     || resolved.ends_with("Desktop\\report.txt")
             );
         });
+    }
+
+    #[test]
+    fn local_read_sources_accept_files_directories_and_home() {
+        with_temp_home(|home| {
+            let folder = home.join("source folder");
+            fs::create_dir(&folder).unwrap();
+            let file = folder.join("source.txt");
+            fs::write(&file, b"source bytes").unwrap();
+            for (relative, absolute) in [
+                ("", home.to_path_buf()),
+                ("source folder", folder.clone()),
+                ("source folder/source.txt", file.clone()),
+            ] {
+                let expected = canonicalize(&absolute).unwrap();
+                assert_eq!(resolve_local_read_entry(relative).unwrap(), expected);
+                assert_eq!(
+                    resolve_local_read_entry(absolute.to_str().unwrap()).unwrap(),
+                    expected
+                );
+            }
+            assert_eq!(
+                fs::read(resolve_local_read_entry("source folder/source.txt").unwrap()).unwrap(),
+                b"source bytes"
+            );
+            assert!(resolve_local_read_path(file.to_str().unwrap()).is_err());
+            assert_eq!(
+                local_list_directory("source folder".into()).unwrap().path,
+                "source folder"
+            );
+            assert_eq!(local_list_directory("".into()).unwrap().path, "");
+        });
+    }
+
+    #[test]
+    fn local_read_sources_reject_missing_invalid_and_traversal_paths() {
+        with_temp_home(|home| {
+            fs::create_dir(home.join("folder")).unwrap();
+            fs::write(home.join("file"), b"source bytes").unwrap();
+            for path in [
+                "missing-source",
+                "bad\0name",
+                "../outside",
+                "folder/../file",
+            ] {
+                let entry_error = resolve_local_read_entry(path).unwrap_err();
+                let directory_error = resolve_local_read_path(path).unwrap_err();
+                if path.contains("..") {
+                    assert!(entry_error.contains("must not contain '..'"), "{path:?}");
+                    assert!(
+                        directory_error.contains("must not contain '..'"),
+                        "{path:?}"
+                    );
+                }
+            }
+            let absolute_traversal = home.join("..").join("outside");
+            assert!(
+                resolve_local_read_entry(absolute_traversal.to_str().unwrap())
+                    .unwrap_err()
+                    .contains("must not contain '..'")
+            );
+            assert!(
+                resolve_local_read_entry(home.join("missing-source").to_str().unwrap()).is_err()
+            );
+            #[cfg(windows)]
+            assert!(resolve_local_read_entry(r"folder\..\file")
+                .unwrap_err()
+                .contains("must not contain '..'"));
+        });
+    }
+
+    #[test]
+    fn local_read_scope_does_not_relax_destination_scope() {
+        #[cfg(windows)]
+        let (home, outside) = (
+            std::path::Path::new(r"C:\Users\alice"),
+            std::path::Path::new(r"C:\Windows"),
+        );
+        #[cfg(not(windows))]
+        let (home, outside) = (
+            std::path::Path::new("/home/alice"),
+            std::path::Path::new("/tmp"),
+        );
+        assert!(is_local_read_scope(outside, home, false));
+        assert!(!is_within_home_or_elevated(outside, home, false));
+        assert!(is_within_home_or_elevated(outside, home, true));
+        assert!(is_local_read_scope(home, home, false));
+        assert!(is_within_home_or_elevated(home, home, false));
+        with_temp_home(|home| {
+            let outside = canonicalize(home.parent().unwrap()).unwrap();
+            assert_eq!(
+                resolve_local_read_entry(outside.to_str().unwrap()).unwrap(),
+                outside
+            );
+            if !super::is_elevated() {
+                assert!(resolve_local_transfer_path(outside.to_str().unwrap()).is_err());
+            }
+        });
+    }
+
+    #[test]
+    fn local_root_identities_match_directory_listings_and_are_unique() {
+        with_temp_home(|_| {
+            let roots = local_roots();
+            let unique: std::collections::HashSet<_> = roots.iter().collect();
+            assert_eq!(unique.len(), roots.len());
+            for root in roots {
+                assert!(!root.is_empty());
+                assert_eq!(local_list_directory(root.clone()).unwrap().path, root);
+            }
+        });
+    }
+
+    #[test]
+    fn local_display_keeps_home_relative_identities() {
+        with_temp_home(|home| {
+            assert_eq!(local_display_path(Some(home), home).unwrap(), "");
+            assert_eq!(
+                local_display_path(Some(home), &home.join("Documents")).unwrap(),
+                "Documents"
+            );
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_windows_root_display_normalizes_verbatim_and_unc_trailing_slashes() {
+        for (path, expected) in [
+            (r"C:\", "C:/"),
+            (r"\\?\C:\", "C:/"),
+            (r"\\server\share", "//server/share"),
+            (r"\\server\share\", "//server/share"),
+            (r"\\?\UNC\server\share\", "//server/share"),
+            (r"\\?\UNC\server\share\folder", "//server/share/folder"),
+        ] {
+            let path = super::strip_verbatim_prefix(std::path::PathBuf::from(path));
+            assert_eq!(local_display_path(None, &path).unwrap(), expected);
+        }
     }
 
     #[test]

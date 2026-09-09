@@ -51,15 +51,15 @@ The Location command bar measures its rendered action buttons with `ResizeObserv
 
 ## File data and navigation
 
-The shared `FileItem` shape is `{ name, path, isDirectory, size, modified }`. Remote API paths are Location-relative; SSH paths use SSH absolute-style paths. LOCAL paths are normally HOME-relative (`""`, `Documents/a.txt`). LOCAL is an application-level read-only source: the operating system decides whether a directory can be listed or a file can be opened. On Windows, the HOME drive remains HOME-only for a regular user; other drive roots are offered when they can be enumerated. Unix/macOS roots are exposed for read-only traversal, with OS ACL failures returned at the operation that encounters them. The Rust commands remain the security boundary.
+The shared `FileItem` shape is `{ name, path, isDirectory, size, modified }`. Remote API paths are Location-relative; SSH paths use SSH absolute-style paths. LOCAL paths are normally HOME-relative (`""`, `Documents/a.txt`). LOCAL browser mutations are disabled, but readable sources can be inspected and uploaded. Windows read-source validation accepts canonical absolute paths, including UNC shares and paths outside HOME on the HOME drive; actual access remains subject to OS permissions. Root discovery still hides the HOME drive from regular users. Unix/macOS roots are exposed for read-only traversal. Write destinations use separate Rust validation and are not authorized by the read-source policy.
 
 Important helpers:
 
 | Helper | Responsibility |
 |---|---|
-| `parentPath` | Moves up one API/normal local relative path. |
-| `isAbsoluteLocalPath`, `localBreadcrumbSegments` | Recognize and render elevated Unix/Windows paths. |
-| `localParentPath`, `showLocalUp` | Keep HOME-relative navigation inside HOME while allowing Windows non-HOME drive roots and elevated filesystem/drive roots. |
+| `parentPath` | Moves up one API-relative path; unchanged by LOCAL root handling. |
+| `isAbsoluteLocalPath`, `localBreadcrumbSegments` in `path-utils.ts` | Recognize LOCAL roots and return the root plus child breadcrumb targets. A UNC `//server/share` is one root, not two folders. |
+| `localParentPath`, `showLocalUp` in `path-utils.ts` | Clamp navigation at Unix, drive, and UNC-share roots. An absolute HOME argument is supplied only for elevated navigation above HOME. |
 | `sshParentPath`, `joinSshPath` | Normalize SSH navigation. |
 | `formatSize`, `fileTimestamp`, `compareFileItems`, `sortFileItems` | Display, timestamp normalization, sorting, and directory-first ordering. |
 | `normalizeColumnWidths`, `readPersistedColumnWidths` | Validate persisted Name/Modified/Size percentages before rendering `<col>` elements. |
@@ -67,6 +67,8 @@ Important helpers:
 `loadFiles()` browses either `ssh_list_directory` or `GET /api/files?path=...&sort=...&order=...&directoriesFirst=...`. It resets selection and records start/completion/failure operation logs. `loadTreeChildren()` performs the equivalent directory-only query for the REMOTE folder tree. `loadLocalFiles()` uses `local_list_directory`; `refreshLocalFiles()` reloads the current directory; `loadLocalTreeChildren()` uses `local_list_directories` with a cache and request-generation guard so stale asynchronous responses cannot overwrite a newer navigation.
 
 The LOCAL tree starts with the `HOMEDIR/` node. On Windows, `list_local_roots` adds non-HOME drive roots that the current process can enumerate for regular users; the HOME drive remains represented only by `HOMEDIR/` unless the process is elevated. Unix/macOS also expose `/` as a read-only root. `local_home_path` remains available for HOME-relative breadcrumb handling. Local tree expansion is lazy; remote and local folder nodes expand after a 650 ms drag hover, and drop targets auto-scroll when the pointer approaches a scroll boundary.
+
+Windows roots use the same canonical/display path as directory listings and are deduplicated. If a mapped drive resolves to UNC, the tree displays that UNC identity instead of a separate drive-letter alias. Both `//server/share` and its trailing-slash form navigate as the same root; neither Up nor breadcrumbs manufacture a server-only or local-drive parent. This does not discover additional network shares or mount SMB shares on Unix.
 
 ## Transfer and file actions
 
@@ -84,7 +86,9 @@ All long-running transfers are represented by the shared queue (`TransferQueueIt
 
 API uploads use `inspect_upload_paths` followed by native `api_upload_paths` to `POST /api/upload/multiple`, with `X-Location-ID`, source fingerprint verification, progress events, and retry classification. API downloads use `download_to_disk`/`download_to_disk_at`; SSH uses `ssh_upload_path`, `ssh_download_path`, and related staging commands. Single files and folders have different queue kinds (`download` versus `download-set`), and guest/remote archive behaviour is kept out of the UI thread.
 
-LOCAL never performs write operations. New folder, rename, delete, LOCAL-to-LOCAL move, compression, extraction, and LOCAL undo mutations are disabled. A readable LOCAL file or directory may still be uploaded to REMOTE, subject to the REMOTE `upload` capability. REMOTE-to-LOCAL downloads use a separate writable destination check.
+LOCAL browser mutations remain disabled: new folder, rename, delete, LOCAL-to-LOCAL move, compression, extraction, and LOCAL undo. A readable LOCAL file or directory may still be uploaded to REMOTE, subject to API capabilities or the SSH account's permissions. `ssh_upload_path`, `scp_upload`, and `proxmox_agent_upload_file` validate their existing source through `resolve_local_read_entry`, as API upload inspection already does. File/directory and Guest Agent size limits still apply. REMOTE-to-LOCAL downloads retain their separate writable destination checks.
+
+External editing is distinct from browser mutations. The LOCAL viewer's Edit action opens the original file in Notepad on Windows without a write-permission precheck or fallback copy. OS/share permissions and the editor determine whether saving succeeds. The built-in viewer's size/encoding limits still apply to reaching that action.
 
 Drag/drop supports:
 
@@ -109,6 +113,31 @@ Windows external drag-out is deliberately disabled; the stable Download/Queue ro
 SSH profiles live inside managed Workspaces. A connected SSH terminal tab is also a valid Location-mode browse source. `findSshProfileById()` resolves the profile and `connectedSshBrowseOptions()` exposes only profiles with a connected tab. The SSH entry editor and password commands are owned by `main.tsx`; terminal lifecycle/event bridging is delegated to `useTerminalLifecycle` and `useSshEventBridge`.
 
 Switching away from an SSH browse source clears the source id and reloads the API Location. SSH transfers retain the profile id and use SFTP-native operations; they do not send `X-Location-ID`.
+
+### Terminal paste contract
+
+Each tab keeps its xterm instance through dock collapse and tab changes. Instance disposal is separate from cancellation of asynchronous creation. Pending clipboard reads also capture the active paste context, session ID, and connection-boundary token: switching away and back, reconnecting, closing, or collapsing cannot deliver an old clipboard result into a new context.
+
+Keyboard paste, right-click paste, and native paste events share one validation and dispatch path. Accepted text goes through one `terminal.paste()` call and the existing per-session SSH write queue. Spaces, indentation, tabs, blank lines, trailing whitespace, and logical line breaks are preserved. CRLF/CR are normalized to LF before xterm performs its normal terminal newline conversion. No line is sent separately and no Enter or newline is appended. Left-button selection-copy and OSC 52 clipboard-set behavior are unchanged; selection copies rendered terminal text, not original file bytes.
+
+| Input and setting | Behavior |
+|---|---|
+| Single line without tabs or unsafe controls | Paste without appending Enter; use xterm's bracket framing when the remote application has enabled it. |
+| Line breaks or tabs with remote DEC 2004 enabled | Paste as one protected block, preserving formatting. |
+| Line breaks or tabs without remote protection, or with `ignoreBracketedPasteMode` | Refuse the entire paste with zero bytes sent. No unsafe Continue or whitespace-flattening fallback. |
+| Sanitize bracketed-paste markers checked | Remove actual ESC/CSI bracket delimiters and recognizable visible wrappers at the outside of the text. Keep marker examples inside source code. Validate the result before sending. |
+| Sanitize unchecked | Do not clean the text; actual control markers fail validation instead of escaping the protected paste. |
+| Other unsafe C0/C1 controls or DEL | Refuse the entire paste with either setting. |
+
+The setting retains the persisted `bracketedPasteControlEnabled` key and default. It does not enable paste support in the remote application. Alt/AltGraph and IME composition events are not intercepted as paste shortcuts.
+
+Real connection start/end boundaries reset DEC 2004 in the live terminal and retained output. This reset is separate from `VT_SESSION_BOUNDARY_GUARD`, which is appended after initial replay and must not erase a valid current-session mode advertisement.
+
+`fileapi_ui/checks/terminal.test.js` runs production hook logic with mocked lifecycle/clipboard services and real xterm parsing/input. It checks Python indentation, newline forms, tabs, blank lines, control-code rejection, marker cleaning, one-block dispatch, keyboard variants, copy/OSC 52 behavior, collapse, tab changes, and connection races. This proves local payload handling, not arbitrary remote editor behavior. Remote applications can apply auto-indent or interpret input differently; verify actual shell/editor/Python and tmux combinations before claiming end-to-end formatting or execution safety.
+
+### Save Log destination
+
+Every Save Log picker opens with `{ path: "" }`, independent of the LOCAL pane or a previous destination. Rust resolves this to the process user's HOME; Windows prefers `USERPROFILE` and falls back to `HOME`. A picker result of `null` means cancellation, while `""` is a valid HOME selection. The selected destination still passes the existing write check when saving the recording package. Native picker placement, Windows mappings, ACLs, and original-file Notepad behavior require platform smoke tests in addition to the mocked action and path tests in `fileapi_ui/checks/local-filesystem.test.js`.
 
 ## UI components and overlays
 

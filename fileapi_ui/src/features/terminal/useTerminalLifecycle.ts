@@ -3,7 +3,7 @@ import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
-import { isTerminalPasteShortcut, normalizeTerminalPasteText } from "./terminal-utils";
+import { getTerminalConnectionBoundary, isTerminalPasteShortcut, normalizeTerminalPasteText } from "./terminal-utils";
 
 // Best-effort: attaches the WebGL2 renderer to `terminal` if the runtime
 // supports it, otherwise leaves xterm's default DOM renderer untouched.
@@ -29,8 +29,15 @@ export const loadWebglAddon = (terminal: Terminal, WebglAddonCtor: typeof WebglA
   }
 };
 
-export const normalizeTerminalPaste = (text: string, sanitizeBracketedMarkers: boolean) =>
-  sanitizeBracketedMarkers ? text.replace(/\x1b\[200~/g, "").replace(/\x1b\[201~/g, "") : text;
+export const normalizeTerminalPaste = (text: string, sanitizeBracketedMarkers: boolean) => {
+  if (!sanitizeBracketedMarkers) return text;
+  const clean = text.replace(/(?:\x1b\[|\x9b)20[01]~/g, "");
+  // Only unwrap visible markers at the outside. Python string literals and
+  // other marker examples inside the pasted source must remain untouched.
+  return clean
+    .replace(/^(\s*)(?:(?:\^\[|\\x1b|\\u001b|\\033|\\e)?\[200~)+/i, "$1")
+    .replace(/(?:(?:\^\[|\\x1b|\\u001b|\\033|\\e)?\[201~)+(\s*)$/i, "$1");
+};
 
 // Decodes an OSC 52 clipboard-set request's `Pc;Pd` payload (see xterm's
 // ctlseqs docs). Full-screen interactive programs (an SSH-side TUI running
@@ -149,6 +156,7 @@ export function useTerminalLifecycle({
   terminalsRef,
   boundaryGuard,
   bracketedPasteControlEnabled,
+  getPasteSessionId,
   getInitialOutput,
   onData,
   onResize,
@@ -161,6 +169,7 @@ export function useTerminalLifecycle({
   terminalsRef: MutableRefObject<Map<string, Terminal>>;
   boundaryGuard: string;
   bracketedPasteControlEnabled: boolean;
+  getPasteSessionId: (tabId: string) => string;
   // Called exactly once, at instance-creation time, to seed a (re)created
   // tab's Terminal with whatever it already accumulated -- e.g. the whole
   // dock was collapsed and reopened, or a tab produced output before the
@@ -177,6 +186,13 @@ export function useTerminalLifecycle({
   const seedRef = useRef(getInitialOutput);
   const bracketedPasteRef = useRef(bracketedPasteControlEnabled);
   const activeTabIdRef = useRef(activeTabId);
+  const pasteSessionRef = useRef(getPasteSessionId);
+  pasteSessionRef.current = getPasteSessionId;
+  const sessionId = getPasteSessionId(activeTabId);
+  const pasteContextRef = useRef({ enabled, activeTabId, sessionId });
+  if (pasteContextRef.current.enabled !== enabled || pasteContextRef.current.activeTabId !== activeTabId || pasteContextRef.current.sessionId !== sessionId) {
+    pasteContextRef.current = { enabled, activeTabId, sessionId };
+  }
   dataRef.current = onData;
   resizeRef.current = onResize;
   noticeRef.current = onNotice;
@@ -219,12 +235,24 @@ export function useTerminalLifecycle({
         fit.fit();
         terminalsRef.current.set(tabId, terminal);
         const input = terminal.onData((data) => dataRef.current(tabId, data));
+        let instanceDisposed = false;
+        const canPaste = () => !instanceDisposed && pasteContextRef.current.enabled &&
+          activeTabIdRef.current === tabId && Boolean(pasteSessionRef.current(tabId)) &&
+          getTerminalConnectionBoundary(terminal)?.ready !== false;
         const pasteText = (text: string) => {
-          if (disposed) return;
-          const paste = normalizeTerminalPasteText(text);
-          if (paste.includes("\n") && !terminal.modes.bracketedPasteMode && !window.confirm(
-            "This terminal has not enabled bracketed paste. Pasting multiple lines may execute multiple commands. Continue?"
-          )) return;
+          if (!canPaste()) return;
+          const paste = normalizeTerminalPasteText(normalizeTerminalPaste(text, bracketedPasteRef.current));
+          // Never allow clipboard controls (including embedded paste delimiters)
+          // to escape xterm's single protected paste. Tab and newlines need DEC 2004.
+          if (/[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(paste)) {
+            noticeRef.current("Paste blocked: clipboard text contains unsafe terminal control characters.");
+            return;
+          }
+          if (/[\n\t]/.test(paste) && (!terminal.modes.bracketedPasteMode || terminal.options.ignoreBracketedPasteMode)) {
+            noticeRef.current("Paste blocked: this terminal has not enabled bracketed paste. Text with line breaks or tabs cannot be pasted safely. Enable bracketed paste in the remote application, or paste a single line without tabs.");
+            return;
+          }
+          if (!paste) return;
           // A tab switch can leave focus on the tab header while the newly
           // active host is still becoming visible. Focus this exact instance
           // before dispatching so xterm sends the paste through this tab's
@@ -232,16 +260,21 @@ export function useTerminalLifecycle({
           terminal.focus();
           // xterm.paste() handles bracketed-paste mode and emits onData, which
           // keeps the browser clipboard path identical to typed input.
-          terminal.paste(normalizeTerminalPaste(paste, bracketedPasteRef.current));
+          terminal.paste(paste);
         };
         const readClipboardAndPaste = () => {
-          if (disposed) return;
+          if (!canPaste()) return;
+          const context = pasteContextRef.current;
+          const session = pasteSessionRef.current(tabId);
+          const boundary = getTerminalConnectionBoundary(terminal);
+          const isCurrent = () => canPaste() && context === pasteContextRef.current &&
+            session === pasteSessionRef.current(tabId) && boundary === getTerminalConnectionBoundary(terminal);
           readSystemClipboardText()
             .then((text) => {
-              if (text) pasteText(text);
+              if (isCurrent() && text) pasteText(text);
             })
             .catch(() => {
-              noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
+              if (isCurrent()) noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
             });
         };
         terminal.attachCustomKeyEventHandler((event) => {
@@ -265,10 +298,9 @@ export function useTerminalLifecycle({
         });
         const onPaste = (event: ClipboardEvent) => {
           const text = event.clipboardData?.getData("text/plain");
-          if (text === undefined) return;
           event.preventDefault();
           event.stopImmediatePropagation();
-          pasteText(text);
+          if (text !== undefined) pasteText(text);
         };
         let selectionAtMouseDown = "";
         const onMouseDown = (event: MouseEvent) => {
@@ -306,6 +338,7 @@ export function useTerminalLifecycle({
         currentHost.addEventListener("mouseup", onMouseUp, true);
         currentHost.addEventListener("contextmenu", onContextMenu, true);
         const dispose = () => {
+          instanceDisposed = true;
           input.dispose();
           oscClipboard.dispose();
           currentHost.removeEventListener("paste", onPaste, true);

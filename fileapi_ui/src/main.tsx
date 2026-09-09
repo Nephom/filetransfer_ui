@@ -53,7 +53,7 @@ import { type ManagedSession } from "./features/sessions/sessions-contracts";
 import { useShareLinksState } from "./features/share-links/useShareLinksState";
 import { useShareLinksActions } from "./features/share-links/useShareLinksActions";
 import type { FileItem } from "./file-item-contracts";
-import { downloadPath } from "./path-utils";
+import { downloadPath, isAbsoluteLocalPath, localBreadcrumbSegments, localParentPath as getLocalParentPath, showLocalUp as canNavigateLocalUp } from "./path-utils";
 import { useTransferQueueState } from "./features/queue/useTransferQueueState";
 import { useTransferQueueActions } from "./features/queue/useTransferQueueActions";
 import type { TransferQueueItem } from "./features/queue/queue-contracts";
@@ -537,35 +537,6 @@ const readError = async (response: {
 
 const parentPath = (path: string) =>
   path.split("/").filter(Boolean).slice(0, -1).join("/");
-// A LOCAL path is absolute when browsing a real filesystem root. HOME-relative
-// paths remain the normal representation for the user's HOME tree.
-const isAbsoluteLocalPath = (path: string) => path.startsWith("/") || /^[A-Za-z]:/.test(path);
-// Breadcrumb segments for the LOCAL path bar. Handles both HOME-relative
-// paths and real absolute paths, the
-// latter needing its own logic since naively splitting on "/" loses the
-// leading "/" (Unix) or the drive letter (Windows).
-const localBreadcrumbSegments = (path: string): { label: string; target: string }[] => {
-  if (!isAbsoluteLocalPath(path)) {
-    const parts = path.split("/").filter(Boolean);
-    return parts.map((part, index) => ({ label: part, target: parts.slice(0, index + 1).join("/") }));
-  }
-  if (path.startsWith("/")) {
-    const parts = path.split("/").filter(Boolean);
-    const segments = [{ label: "/", target: "/" }];
-    parts.forEach((part, index) => {
-      segments.push({ label: part, target: `/${parts.slice(0, index + 1).join("/")}` });
-    });
-    return segments;
-  }
-  const parts = path.split("/").filter(Boolean);
-  const drive = parts[0] || "";
-  const rest = parts.slice(1);
-  const segments = [{ label: `${drive}/`, target: `${drive}/` }];
-  rest.forEach((part, index) => {
-    segments.push({ label: part, target: `${drive}/${rest.slice(0, index + 1).join("/")}` });
-  });
-  return segments;
-};
 const sshParentPath = (path: string) => {
   const segments = path.split("/").filter(Boolean);
   return segments.length > 1 ? `/${segments.slice(0, -1).join("/")}` : "/";
@@ -1666,24 +1637,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // Where "up" from `path` should go for the LOCAL pane. Non-elevated
   // sessions can enter other Windows drive roots, but HOME remains the only
   // parent of the relative HOME paths. Elevated sessions can also leave HOME.
-  const localParentPath = (path: string): string => {
-    const absolute = path === "" ? localHomeAbsolute : path;
-    if (!absolute || !isAbsoluteLocalPath(absolute)) return parentPath(path);
-    if (absolute === "/") return "/";
-    const segments = absolute.split("/").filter(Boolean);
-    if (/^[A-Za-z]:$/.test(segments[0] || "")) {
-      return segments.length > 1 ? `${segments[0]}/${segments.slice(1, -1).join("/")}` : `${segments[0]}/`;
-    }
-    return segments.length > 1 ? `/${segments.slice(0, -1).join("/")}` : "/";
-  };
-  const showLocalUp = (): boolean => {
-    if (!isAbsoluteLocalPath(localPath)) return Boolean(localPath || localHomeAbsolute);
-    if (!localPath) return Boolean(localHomeAbsolute);
-    if (localPath === "/") return false;
-    const segments = localPath.split("/").filter(Boolean);
-    if (/^[A-Za-z]:$/.test(segments[0] || "") && segments.length <= 1) return false;
-    return true;
-  };
+  const localParentPath = (path: string): string => getLocalParentPath(path, localHomeAbsolute);
+  const showLocalUp = (): boolean => canNavigateLocalUp(localPath, localHomeAbsolute);
 
   const updateLocalTreeNode = (data: LocalDirectory) => {
     const children = (data.files || [])
@@ -2259,7 +2214,6 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     setSaveLogDestinationPath,
     saveLogNameOpen,
     setSaveLogNameOpen,
-    localPath,
   });
 
   const installSshKey = () => {
@@ -3844,12 +3798,11 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const renderLocalBreadcrumbs = () => {
     const segments = localBreadcrumbSegments(localPath);
-    const absolute = isAbsoluteLocalPath(localPath);
-    const rootLabel = absolute ? (segments[0]?.label || "/") : "HOMEDIR/";
-    const visibleSegments = absolute ? segments.slice(1) : segments;
+    const rootLabel = segments[0].label;
+    const visibleSegments = segments.slice(1);
     return (
       <div className="pane-breadcrumbs crumbs" aria-label="LOCAL path">
-        <button onClick={() => void run(() => loadLocalFiles(absolute ? segments[0]?.target || "/" : ""))}>
+        <button onClick={() => void run(() => loadLocalFiles(segments[0].target))}>
           {rootLabel}
         </button>
         {visibleSegments.map((segment, index) => (

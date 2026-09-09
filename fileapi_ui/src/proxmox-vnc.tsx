@@ -299,8 +299,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const secret = entry ? secrets[entry.id] || {} : {};
   const screenRef = useRef<HTMLDivElement>(null);
   const rfbRef = useRef<{ disconnect: () => void; sendCredentials: (credentials: { username?: string; password: string }) => void; sendCtrlAltDel: () => void; focus: () => void; viewOnly: boolean; scaleViewport: boolean; resizeSession: boolean } | null>(null);
-  const connectionTimeoutRef = useRef<number | null>(null);
-  const pendingConnectionIdRef = useRef<string | null>(null);
+  const connectionCleanupRef = useRef<(() => void) | null>(null);
   const sessionGenerationRef = useRef(0);
   const previousEntryIdRef = useRef(activeEntryId);
   const [password, setPassword] = useState(secret.password || "");
@@ -316,8 +315,16 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [directPort, setDirectPort] = useState(() => Number(localStorage.getItem("fileapi-direct-vnc-port")) || 5900);
   const [directUsername, setDirectUsername] = useState(() => localStorage.getItem("fileapi-direct-vnc-username") || "");
   const [directPassword, setDirectPassword] = useState("");
-  const directVncOpenRef = useRef(false);
-  directVncOpenRef.current = directVncOpen;
+  const [accountPassword, setAccountPassword] = useState("");
+  const [credentialNotice, setCredentialNotice] = useState("");
+  const credentialDraftRevisionRef = useRef(0);
+  const [credentialRequest, setCredentialRequest] = useState<{
+    account: boolean;
+    host: string;
+    port: number;
+    isCurrent: () => boolean;
+    submit: (username: string, password: string, entryId: string) => void;
+  } | null>(null);
   // Issue #232: the Ctrl+Alt+Del/Focus/View only/Fullscreen toolbar used to
   // sit permanently at top-right of the VNC canvas, colliding with the
   // guest OS's own top-of-screen UI. It's now a left-edge drawer that
@@ -368,11 +375,38 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [vmSshDraft, setVmSshDraft] = useState<VmSshProfile>({ username: "root", port: 22, privateKeyPath: "", fallbackIp: "" });
   const [vmSshSettingsOpen, setVmSshSettingsOpen] = useState(false);
 
+  // The legacy key is a viewer-password candidate only. Account secrets are
+  // scoped to the negotiated endpoint and account, never inferred from it.
+  const credentialEntryId = credentialRequest?.account
+    ? `direct-vnc-account:${JSON.stringify([credentialRequest.host.toLowerCase(), credentialRequest.port, directUsername.trim()])}`
+    : "direct-vnc";
+  const credentialAccountName = credentialRequest?.account ? directUsername.trim() : "";
   useEffect(() => {
-    void invoke<string | null>("proxmox_load_secret", { entryId: "direct-vnc", kind: "password" })
-      .then((value) => { if (value !== null) setDirectPassword(value); })
-      .catch(() => undefined);
-  }, []);
+    if (!credentialRequest) return;
+    let cancelled = false;
+    const revision = credentialDraftRevisionRef.current;
+    if (credentialRequest.account) setAccountPassword("");
+    if (credentialRequest.account && !credentialAccountName) return;
+    void invoke<string | null>("proxmox_load_secret", { entryId: credentialEntryId, kind: "password" })
+      .then((value) => {
+        if (cancelled || !credentialRequest.isCurrent() || revision !== credentialDraftRevisionRef.current) return;
+        if (value !== null) (credentialRequest.account ? setAccountPassword : setDirectPassword)(value);
+      })
+      .catch(() => {
+        if (!cancelled && credentialRequest.isCurrent()) setCredentialNotice("Saved credentials could not be loaded. Enter them manually.");
+      });
+    return () => { cancelled = true; };
+  }, [credentialRequest, credentialEntryId, credentialAccountName]);
+  const forgetDirectCredential = async () => {
+    if (!credentialRequest?.isCurrent()) return;
+    credentialDraftRevisionRef.current += 1;
+    (credentialRequest.account ? setAccountPassword : setDirectPassword)("");
+    try {
+      await invoke("proxmox_forget_secret", { entryId: credentialEntryId, kind: "password" });
+    } catch {
+      if (credentialRequest.isCurrent()) setCredentialNotice("Saved credentials could not be forgotten.");
+    }
+  };
   useEffect(() => { localStorage.setItem("fileapi-direct-vnc-host", directHost); }, [directHost]);
   useEffect(() => { localStorage.setItem("fileapi-direct-vnc-port", String(directPort)); }, [directPort]);
   useEffect(() => { localStorage.setItem("fileapi-direct-vnc-username", directUsername); }, [directUsername]);
@@ -414,15 +448,13 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const stopConnection = (updateStatus = true) => {
     sessionGenerationRef.current += 1;
-    if (connectionTimeoutRef.current !== null) {
-      window.clearTimeout(connectionTimeoutRef.current);
-      connectionTimeoutRef.current = null;
-    }
-    rfbRef.current?.disconnect();
-    rfbRef.current = null;
-    const pendingConnectionId = pendingConnectionIdRef.current;
-    pendingConnectionIdRef.current = null;
-    if (pendingConnectionId) void invoke(directVncOpen ? "direct_vnc_cancel" : "proxmox_vnc_cancel", { connectionId: pendingConnectionId });
+    connectionCleanupRef.current?.();
+    connectionCleanupRef.current = null;
+    setCredentialRequest(null);
+    setDirectPassword("");
+    setAccountPassword("");
+    setCredentialNotice("");
+    setLoading(false);
     setViewOnly(false);
     resetTransferState();
     if (updateStatus) setStatus("Disconnected");
@@ -450,13 +482,8 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   }, [activeEntryId, entry?.id, secrets]);
   useEffect(() => () => {
     sessionGenerationRef.current += 1;
-    if (connectionTimeoutRef.current !== null) window.clearTimeout(connectionTimeoutRef.current);
-    rfbRef.current?.disconnect();
-    rfbRef.current = null;
-    if (pendingConnectionIdRef.current) {
-      void invoke(directVncOpenRef.current ? "direct_vnc_cancel" : "proxmox_vnc_cancel", { connectionId: pendingConnectionIdRef.current });
-      pendingConnectionIdRef.current = null;
-    }
+    connectionCleanupRef.current?.();
+    connectionCleanupRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -847,68 +874,142 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const connect = async () => {
     if (isDirectVnc) {
-      if (!directHost.trim() || !directPort || !directUsername.trim() || !directPassword) { setError("Direct VNC host, port, username, and password are required."); return; }
+      if (!directHost.trim() || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535) { setError("Direct VNC requires a host and a port from 1 to 65535."); return; }
     } else if (!nativeEntry || !authenticated) { setError("Log in to this Proxmox entry first."); return; }
     stopConnection(false);
     const sessionGeneration = sessionGenerationRef.current;
-    const sessionEntryId = entry?.id;
+    let rfb: NonNullable<typeof rfbRef.current> | null = null;
+    let connectionId: string | null = null;
+    let timeout: number | null = null;
+    let phase: "starting" | "handshake" | "waiting" | "submitted" | "connected" | "closed" = "starting";
+    let submittedSecret: { entryId: string; value: string } | null = null;
+    const cancelCommand = isDirectVnc ? "direct_vnc_cancel" : "proxmox_vnc_cancel";
+    const isCurrent = () => sessionGeneration === sessionGenerationRef.current && phase !== "closed" && (!rfb || rfbRef.current === rfb);
+    const clearTimer = () => {
+      if (timeout !== null) window.clearTimeout(timeout);
+      timeout = null;
+    };
+    // Each attempt owns its timer, RFB and backend ticket, including while
+    // import/start are pending. Cleanup never touches a replacement's RFB.
+    const release = (disconnect = true) => {
+      phase = "closed";
+      clearTimer();
+      if (rfbRef.current === rfb) rfbRef.current = null;
+      if (connectionCleanupRef.current === release) connectionCleanupRef.current = null;
+      if (connectionId) {
+        void invoke(cancelCommand, { connectionId }).catch(() => undefined);
+        connectionId = null;
+      }
+      if (disconnect) rfb?.disconnect();
+      rfb = null;
+      submittedSecret = null;
+    };
+    const fail = (message: string) => {
+      if (!isCurrent()) return;
+      setStatus("Connection failed"); setError(message); setLoading(false);
+      setCredentialRequest(null); setControlsOpen(true);
+      release();
+    };
+    const armTimer = () => {
+      clearTimer();
+      const timer = window.setTimeout(() => {
+        if (!isCurrent() || timeout !== timer) return;
+        fail("VNC authentication or handshake timed out after 15 seconds.");
+      }, 15_000);
+      timeout = timer;
+    };
+    connectionCleanupRef.current = release;
     setLoading(true); setError(""); setStatus("Connecting...");
     try {
       // noVNC is a public runtime asset, so keep its URL out of Vite's module graph.
       const noVncUrl = new URL("noVNC/core/rfb.js", window.location.href).href;
       const { default: RFB } = await import(/* @vite-ignore */ noVncUrl);
+      if (!isCurrent()) return;
       const connection = isDirectVnc
         ? await invoke<Connection>("direct_vnc_start", { host: directHost.trim(), port: directPort })
         : await invoke<Connection>("proxmox_vnc_start_session", { entry: nativeEntry, sessionId: authSessions[nativeEntry!.id] });
-      pendingConnectionIdRef.current = connection.id;
-      if (sessionGeneration !== sessionGenerationRef.current || (!isDirectVnc && sessionEntryId !== entry?.id)) {
-        await invoke(isDirectVnc ? "direct_vnc_cancel" : "proxmox_vnc_cancel", { connectionId: connection.id });
-        pendingConnectionIdRef.current = null;
+      if (!isCurrent()) {
+        void invoke(cancelCommand, { connectionId: connection.id }).catch(() => undefined);
         return;
       }
+      connectionId = connection.id;
       if (!screenRef.current) throw new Error("VNC screen is unavailable");
-      const rfb = new RFB(screenRef.current, connection.websocketUrl, {
+      const client = new RFB(screenRef.current, connection.websocketUrl, {
         forceCursorFallback: isDirectVnc,
       });
-      pendingConnectionIdRef.current = null;
-      rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = viewOnly;
-      connectionTimeoutRef.current = window.setTimeout(() => {
-        if (sessionGeneration !== sessionGenerationRef.current) return;
-        rfb.disconnect();
-        rfbRef.current = null;
-        setStatus("Connection failed");
-        setError("VNC authentication or handshake timed out after 15 seconds.");
-        connectionTimeoutRef.current = null;
-      }, 15_000);
-      rfb.addEventListener("connect", () => {
-        if (sessionGeneration !== sessionGenerationRef.current) return;
-        if (connectionTimeoutRef.current !== null) { window.clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
-        setStatus("Connected"); setControlsOpen(false); if (!isDirectVnc) void detectTransferMode();
-      });
-      rfb.addEventListener("disconnect", () => {
-        if (connectionTimeoutRef.current !== null) { window.clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
-        if (sessionGeneration === sessionGenerationRef.current) {
-          setStatus("Disconnected");
-          if (loading) setError("VNC server disconnected during connection or authentication.");
+      rfb = client;
+      rfbRef.current = client;
+      phase = "handshake";
+      client.scaleViewport = true; client.resizeSession = false; client.viewOnly = viewOnly;
+      armTimer();
+      client.addEventListener("connect", () => {
+        if (!isCurrent() || phase === "connected") return;
+        clearTimer();
+        phase = "connected";
+        setCredentialRequest(null); setDirectPassword(""); setAccountPassword(""); setLoading(false);
+        setStatus("Connected"); setControlsOpen(false);
+        if (submittedSecret) {
+          void invoke("proxmox_save_secret", { ...submittedSecret, kind: "password" }).catch(() => {
+            if (isCurrent()) setCredentialNotice("Connected, but credentials could not be saved.");
+          });
+          submittedSecret = null;
         }
+        if (!isDirectVnc) void detectTransferMode();
       });
-      rfb.addEventListener("securityfailure", (event: Event) => {
-        if (sessionGeneration !== sessionGenerationRef.current) return;
+      client.addEventListener("disconnect", () => {
+        if (!isCurrent()) return;
+        setLoading(false); setCredentialRequest(null); setControlsOpen(true);
+        if (phase === "connected") setStatus("Disconnected");
+        else {
+          setStatus("Connection failed");
+          setError("VNC server disconnected during connection or authentication.");
+        }
+        release(false);
+      });
+      client.addEventListener("securityfailure", (event: Event) => {
+        if (!isCurrent()) return;
         const detail = (event as CustomEvent<{ reason?: string }>).detail;
-        setStatus("Connection failed");
-        setError(detail?.reason || "VNC security authentication failed.");
+        fail(detail?.reason || "VNC security authentication failed.");
       });
-      rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials(isDirectVnc
-        ? { username: directUsername.trim(), password: directPassword }
-        : { password: connection.password }));
-      rfbRef.current = rfb;
+      client.addEventListener("credentialsrequired", (event: Event) => {
+        if (!isCurrent()) return;
+        const types = (event as CustomEvent<{ types?: string[] }>).detail?.types;
+        if (!Array.isArray(types) || !types.includes("password") || types.some((type) => type !== "password" && type !== "username") || (!isDirectVnc && types.includes("username"))) {
+          fail("Unsupported VNC credential request. This connection cannot supply the requested fields.");
+          return;
+        }
+        if (phase === "waiting") return;
+        if (phase !== "handshake") {
+          fail("VNC credentials were requested again. Reconnect to try different credentials.");
+          return;
+        }
+        if (!isDirectVnc) {
+          phase = "submitted";
+          try { client.sendCredentials({ password: connection.password }); }
+          catch (value) { fail(value instanceof Error ? value.message : String(value)); }
+          return;
+        }
+        clearTimer();
+        phase = "waiting";
+        setStatus("Credentials required"); setControlsOpen(true);
+        setDirectPassword(""); setAccountPassword(""); setCredentialNotice("");
+        const account = types.includes("username");
+        setCredentialRequest({
+          account, host: directHost.trim(), port: directPort,
+          isCurrent: () => isCurrent() && phase === "waiting",
+          submit: (username, password, entryId) => {
+            if (!isCurrent() || phase !== "waiting" || !password || (account && !username.trim())) return;
+            phase = "submitted";
+            submittedSecret = { entryId, value: password };
+            setCredentialRequest(null); setStatus("Authenticating...");
+            armTimer();
+            try { client.sendCredentials(account ? { username: username.trim(), password } : { password }); }
+            catch (value) { fail(value instanceof Error ? value.message : String(value)); }
+          },
+        });
+      });
     } catch (value) {
-      if (sessionGeneration === sessionGenerationRef.current) {
-        setStatus("Connection failed");
-        setError(value instanceof Error ? value.message : String(value));
-      }
-    } finally {
-      if (sessionGeneration === sessionGenerationRef.current) setLoading(false);
+      fail(value instanceof Error ? value.message : String(value));
     }
   };
   const selectEntry = (id: string) => {
@@ -953,7 +1054,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         : "QEMU Guest Agent is DOWN or not installed. Only green means Windows file transfer is available.";
 
   return <>
-    {commandbarHost && createPortal(<button type="button" data-direct-vnc-action="true" className={`direct-vnc-card${directVncOpen ? " active" : ""}`} aria-pressed={directVncOpen} onClick={toggleDirectVnc}><span className="direct-vnc-card-icon" aria-hidden="true" /><span><strong>Direct VNC</strong><small>macOS desktop</small></span></button>, commandbarHost)}
+    {commandbarHost && createPortal(<button type="button" data-direct-vnc-action="true" className={`direct-vnc-card${directVncOpen ? " active" : ""}`} aria-pressed={directVncOpen} onClick={toggleDirectVnc}><span className="direct-vnc-card-icon" aria-hidden="true" /><span><strong>Direct VNC</strong><small>Remote desktop</small></span></button>, commandbarHost)}
     <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}${directVncOpen ? " direct-vnc-open" : ""}`}>
     <div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}>
       <VncEntries
@@ -999,7 +1100,8 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane"><ChevronRightIcon /></button></div>
       : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
     <section ref={vncReaderRef} className="vnc-reader" aria-label="Proxmox VNC workspace">
-      <div className="vnc-reader-heading"><div><span className="eyebrow">{isDirectVnc ? "Direct VNC · macOS Screen Sharing" : `VNC mode · ${workspaceName}`}</span><h1>{isDirectVnc ? "Direct VNC" : entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
+      <div className="vnc-reader-heading"><div><span className="eyebrow">{isDirectVnc ? "Direct VNC" : `VNC mode · ${workspaceName}`}</span><h1>{isDirectVnc ? "Direct VNC" : entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
+      {credentialNotice && <div className="notice vnc-warning">{credentialNotice}</div>}
       <div className={`vnc-display-split${controlsOpen ? "" : " controls-collapsed"}`}>
         <div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}>
           <div className="vnc-auth-heading">
@@ -1008,22 +1110,20 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
           </div>
           {controlsOpen && <>
             {isDirectVnc ? <div className="vnc-auth-grid direct-vnc-auth-grid">
-              <label>Host<input value={directHost} onChange={(event) => setDirectHost(event.target.value)} placeholder="mac-mini.local" /></label>
-              <label>Port<input type="number" min="1" max="65535" value={directPort} onChange={(event) => setDirectPort(Number(event.target.value) || 5900)} /></label>
+              <label>Host<input value={directHost} onChange={(event) => setDirectHost(event.target.value)} placeholder="vnc-server.local" disabled={loading} /></label>
+              <label>Port<input type="number" min="1" max="65535" value={directPort} onChange={(event) => setDirectPort(Number(event.target.value))} disabled={loading} /></label>
             </div> : <div className="vnc-auth-grid">
               <label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label>
               <label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label>
             </div>}
-            {isDirectVnc && <p className="field-help">Use the macOS account short name and the VNC viewer password configured in Screen Sharing. Direct VNC does not provide file transfer.</p>}
-            {isDirectVnc && <label>Username<input value={directUsername} onChange={(event) => setDirectUsername(event.target.value)} placeholder="macOS account short name" autoComplete="username" /></label>}
-            {isDirectVnc && <label>VNC password<input type="password" value={directPassword} onChange={(event) => { const value = event.target.value; setDirectPassword(value); if (value) void invoke("proxmox_save_secret", { entryId: "direct-vnc", kind: "password", value }); else void invoke("proxmox_forget_secret", { entryId: "direct-vnc", kind: "password" }); }} placeholder="Saved in the OS keyring" autoComplete="current-password" /></label>}
+            {isDirectVnc && <p className="field-help">Connect to discover the server's authentication requirements. Direct VNC does not provide file transfer.</p>}
             {!isDirectVnc && selectedVm && <div className="vnc-vm-ssh-card">
               <div className="vnc-vm-ssh-card-copy"><strong>VM SFTP</strong><small>{selectedVm.name || `VM ${selectedVm.vmid}`} · VMID {selectedVm.vmid}</small><span>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</span></div>
               <div className="vnc-vm-ssh-card-side"><span className={`vnc-agent-status ${qemuAgentStatus}`} title={qemuAgentStatusTitle} aria-label={`QEMU Guest Agent: ${qemuAgentStatusLabel}`}><span className="vnc-agent-status-dot" aria-hidden="true" />QEMU Agent: {qemuAgentStatusLabel}</span><button type="button" className="vnc-compact-action" onClick={() => setVmSshSettingsOpen(true)}>Configure</button></div>
             </div>}
             <div className="vnc-actions">
-              <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || (isDirectVnc ? !directHost.trim() || !directUsername.trim() || !directPassword || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535 : !entry || !authenticated || !selectedVm)}>{loading ? "Connecting..." : "Connect"}</button>
-              <button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button>
+              <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || (isDirectVnc ? !directHost.trim() || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535 : !entry || !authenticated || !selectedVm)}>{loading ? "Connecting..." : "Connect"}</button>
+              <button type="button" onClick={() => stopConnection()} disabled={!connectionCleanupRef.current}>Disconnect</button>
             </div>
             {!isDirectVnc && entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}
             {error && <div className="notice rest-error">{error}</div>}
@@ -1056,6 +1156,25 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
           <div ref={screenRef} className="vnc-screen" />
         </div>
       </div>
+      {credentialRequest && createPortal(<FloatingWindow
+        ariaLabel="Direct VNC credentials"
+        className="vnc-vm-ssh-window"
+        header={<strong>{credentialRequest.account ? "VNC account authentication" : "VNC viewer authentication"}</strong>}
+        onClose={() => stopConnection()}
+        footer={<div className="modal-actions">
+          <button type="button" onClick={() => stopConnection()}>Cancel</button>
+          <button type="button" onClick={() => void forgetDirectCredential()} disabled={credentialRequest.account && !directUsername.trim()}>Forget saved password</button>
+          <button type="button" className="confirm" disabled={credentialRequest.account ? !directUsername.trim() || !accountPassword : !directPassword} onClick={() => credentialRequest.submit(directUsername, credentialRequest.account ? accountPassword : directPassword, credentialEntryId)}>Continue</button>
+        </div>}
+      >
+        <div className="vnc-vm-ssh-window-body">
+          <p className="field-help">{credentialRequest.host}:{credentialRequest.port} requests {credentialRequest.account ? "an account username and account password" : "a VNC viewer password"}. Saved values are sent only when you select Continue.</p>
+          {credentialRequest.account && <label className="vnc-vm-ssh-password">Username<input autoFocus value={directUsername} onChange={(event) => { credentialDraftRevisionRef.current += 1; setDirectUsername(event.target.value); }} autoComplete="username" /></label>}
+          <label className="vnc-vm-ssh-password">{credentialRequest.account ? "Account password" : "VNC viewer password"}<input type="password" autoFocus={!credentialRequest.account} value={credentialRequest.account ? accountPassword : directPassword} onChange={(event) => { credentialDraftRevisionRef.current += 1; (credentialRequest.account ? setAccountPassword : setDirectPassword)(event.target.value); }} autoComplete="current-password" /></label>
+          {credentialRequest.account && <p className="field-help">If this server uses macOS Screen Sharing (ARD), use the Mac account short name and its login password, not the separate VNC viewer password.</p>}
+          {credentialNotice && <div className="notice vnc-warning">{credentialNotice}</div>}
+        </div>
+      </FloatingWindow>, isFullscreen && screenShellRef.current ? screenShellRef.current : document.body)}
       {vmSshSettingsOpen && selectedVm && <FloatingWindow
         ariaLabel={`VM SFTP settings for VMID ${selectedVm.vmid}`}
         className="vnc-vm-ssh-window"

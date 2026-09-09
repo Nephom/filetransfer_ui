@@ -4,7 +4,7 @@ import type { Terminal } from "@xterm/xterm";
 import { useTerminalLifecycle } from "./useTerminalLifecycle";
 import { useSshEventBridge } from "./useSshEventBridge";
 import type { RecordingStats, SshTerminalTab } from "./terminal-contracts";
-import { appendSshTabOutput, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./terminal-utils";
+import { appendSshTabOutput, resetTerminalConnection, SSH_SESSION_BOUNDARY_GUARD, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./terminal-utils";
 
 type NativeRefs = {
   tabsRef: MutableRefObject<SshTerminalTab[]>;
@@ -80,14 +80,15 @@ export function useSshTerminal({
       }
     },
     onExit: (tabId, payload) => {
-      setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, `${VT_SESSION_BOUNDARY_GUARD}\n${payload.data}\n`) }));
+      setTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, `${SSH_SESSION_BOUNDARY_GUARD}\n${payload.data}\n`) }));
       // Reset the *live* terminal's parser state too, not just the
       // replayed-from-string one -- a connection cut mid escape/control
       // sequence would otherwise leave this still-mounted instance's VT
       // parser stuck "collecting" and swallow the next connection's output
       // as literal control-string payload (see VT_SESSION_BOUNDARY_GUARD's
       // doc comment in main.tsx).
-      terminalsRef.current.get(tabId)?.write(`${VT_SESSION_BOUNDARY_GUARD}\n${payload.data}\n`);
+      resetTerminalConnection(terminalsRef.current.get(tabId));
+      terminalsRef.current.get(tabId)?.write(`\n${payload.data}\n`);
       lastReportedSizeRef.current.delete(tabId);
       if (tabId === activeTabIdRef.current) {
         setConnected(false);
@@ -104,6 +105,10 @@ export function useSshTerminal({
     terminalsRef,
     boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
     bracketedPasteControlEnabled,
+    getPasteSessionId: (tabId) => {
+      const tab = tabsRef.current.find((item) => item.id === tabId);
+      return tab?.connected && !tab.connecting ? tab.sessionId : "";
+    },
     onNotice: setNotice,
     getInitialOutput: (tabId) => tabsRef.current.find((item) => item.id === tabId)?.output || "",
     onResize: (tabId, cols, rows) => {

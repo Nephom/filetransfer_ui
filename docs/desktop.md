@@ -32,19 +32,31 @@ rejected. Private key files remain on the local machine.
 
 ## Local Filesystem Boundary
 
-The normal local root is the current user's HOME. On Windows, the LOCAL tree
-also discovers drive-letter volumes other than the HOME drive when the current
-user can enumerate their root directory. A regular user can therefore browse
-and use an accessible `D:/` or `E:/` without being granted the rest of `C:/`.
-The Windows ACL remains authoritative: an `Access Denied` result is reported as
-an error and is never represented as an empty directory. Elevated Windows
-sessions may also browse `C:/` and the HOME drive root.
+The normal local root is the current process user's HOME. On Windows this
+prefers `USERPROFILE`, with `HOME` as a fallback. The LOCAL tree also discovers
+enumerable drive-letter volumes other than the HOME drive for regular users.
+Root identities are canonicalized to match directory listings and deduplicated;
+a mapped drive may therefore display its UNC name. A UNC `//server/share` is
+one navigation root, with no Up operation above that share.
 
-Every command that reads, writes, renames, deletes, extracts, or stages a local
-path validates the path in Rust; frontend path strings are not trusted as
-authorization. Relative paths remain HOME-relative, while Windows drive-letter
-paths are allowed only for non-HOME drives and are still subject to normal OS
-ACL checks.
+Frontend path strings are not authorization. Rust read-source resolvers accept
+canonical absolute Windows paths, including UNC and paths outside HOME on the
+HOME drive, subject to OS/share access permissions. Hiding the HOME drive in
+root discovery is not a read-access jail. API, SSH/SFTP, and Guest Agent upload
+sources use this read policy. Relative sources remain HOME-relative.
+
+Write destinations retain separate checks: non-elevated Windows writes allow
+HOME and qualifying non-HOME drive paths, but reject canonical UNC destinations
+outside HOME. Unix non-elevated writes remain HOME-scoped. Expanding readable
+upload sources does not expand download or recording-save destination rights.
+
+LOCAL browser create, rename, delete, move, compress, extract, and undo mutations
+remain disabled. External editing is different: the viewer's Edit action opens
+the original file in Notepad on Windows, without an app-level writability gate,
+elevation, or automatic copy. The OS/editor decides whether a save is allowed;
+this does not bypass Windows ACLs. The built-in viewer still has its existing
+size/encoding limits. Save Log always starts its destination picker at HOME,
+not at the current LOCAL browsing path.
 
 For writes below a destination directory, nFterm creates missing parents and
 then canonicalizes the parent before opening the file. The canonical parent
@@ -97,10 +109,20 @@ The VNC workspace also provides a **Direct VNC** card in the top command bar.
 It switches the same noVNC display to a direct TCP VNC endpoint, which is useful
 for macOS Screen Sharing. The left Proxmox entry pane is hidden while Direct VNC
 is active, and the right display expands to use the available workspace width.
-Direct VNC uses the standard VNC viewer password configured in macOS Screen
-Sharing; it does not use a macOS login password and does not provide file
-transfer. The password is stored in the OS credential store, while the host and
-port are kept as local display settings.
+Direct VNC first connects with the host and port, then shows the credential
+fields requested by the server. Standard VNC needs its viewer password only.
+Account authentication needs the server username and account password; macOS
+Screen Sharing/ARD uses the Mac account short name and its login password, not
+the separate VNC viewer password. The prompt does not infer the server OS from
+these fields. Continue explicitly submits the current draft, and Cancel stops
+the attempt. Direct VNC does not provide file transfer.
+
+Viewer and account passwords are kept separate in the OS credential store.
+Account secrets are scoped by endpoint and username. A legacy saved viewer
+password remains available for password-only prompts but is never automatically
+used as an account password. Successful authentication saves the submitted
+snapshot; typing does not write to the keyring. Host, port, and last username
+are non-secret local settings. See `proxmox_vnc_tech.md` for the key contract.
 
 Switching between Proxmox VNC and Direct VNC asks for confirmation when an RFB
 connection is active. After switching, neither side reconnects automatically.
@@ -108,6 +130,14 @@ Successful Direct VNC sessions have no client-side idle timeout, but a network
 or remote-host disconnect still requires an explicit user reconnect. Direct VNC
 is intended for a trusted LAN, VPN, Tailscale, or SSH tunnel because ordinary
 VNC TCP traffic is not necessarily encrypted.
+
+Each connection attempt owns its handshake timer and cleanup. The 15-second
+timer pauses while a credential prompt waits for input and restarts on Continue;
+the server can impose its own deadline. Late events from an old connection
+cannot cancel a new attempt's timer or overwrite its failure reason. Credential
+prompts remain available in fullscreen. Verify real ARD/viewer authentication,
+native keyring behavior, and Windows share/ACL handling on their target systems;
+mocked component tests do not establish platform interoperability.
 
 Proxmox credentials are submitted to the Proxmox ticket endpoint and retained
 in the OS credential store when the user chooses to save them. The desktop

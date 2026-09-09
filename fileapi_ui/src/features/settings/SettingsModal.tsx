@@ -158,7 +158,7 @@ export function SettingsModal({
         </label>
         <label className="settings-check">
           <input type="checkbox" checked={desktopSettings.bracketedPasteControlEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, bracketedPasteControlEnabled: event.target.checked }))} />
-          <span><strong>Sanitize bracketed-paste markers</strong><small>Remove pasted bracketed-paste control markers from clipboard text before sending it to the remote terminal.</small></span>
+          <span><strong>Sanitize bracketed-paste markers</strong><small>Remove real bracketed-paste control markers and visible outer wrappers from clipboard text. Marker strings inside source code are kept. When off, real control markers block the paste. Unsafe control characters are always blocked. Pasting line breaks or tabs requires bracketed paste to be enabled by the remote application; this setting does not enable it or add Enter.</small></span>
         </label>
         <label className="settings-check">
           <input type="checkbox" checked={desktopSettings.allowLegacySshAlgorithms} onChange={(event) => setDesktopSettings((current) => ({ ...current, allowLegacySshAlgorithms: event.target.checked }))} />
