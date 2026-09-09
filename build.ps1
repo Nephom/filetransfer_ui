@@ -324,7 +324,9 @@ function Install-DesktopDependencies {
     Write-Host "Using Node: $(node --version)"
     Write-Host "Using Rust: $(rustc --version)"
     Write-Host "Installing desktop dependencies..."
-    Invoke-Native "npm.cmd" @("ci", "--ignore-scripts", "--include=optional", "--prefix", $DesktopRoot)
+    # Desktop checks import TypeScript directly from devDependencies. Keep it
+    # installed even when NODE_ENV or npm production settings are inherited.
+    Invoke-Native "npm.cmd" @("ci", "--ignore-scripts", "--include=optional", "--include=dev", "--prefix", $DesktopRoot)
     Invoke-Native "npm.cmd" @("rebuild", "--foreground-scripts", "--prefix", $DesktopRoot)
 
     # Fail fast with a clear message here if `npm ci` did not actually
