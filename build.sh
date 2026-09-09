@@ -288,9 +288,7 @@ cmd_browser() {
 }
 
 install_desktop_node_dependencies() {
-  # Desktop checks import TypeScript directly from fileapi_ui devDependencies.
-  # Be explicit because NODE_ENV/npm production settings otherwise omit it.
-  npm ci --ignore-scripts --include=optional --include=dev --prefix "$ROOT_DIR/fileapi_ui"
+  npm ci --ignore-scripts --include=optional --prefix "$ROOT_DIR/fileapi_ui"
   npm rebuild --foreground-scripts --prefix "$ROOT_DIR/fileapi_ui"
   # Fail fast with a clear message here if `npm ci` did not actually leave
   # every declared dependency resolvable (stale/corrupted npm cache,
@@ -682,7 +680,7 @@ preflight_upstream() {
 
   echo "Upgrade: validating dependencies and tests before changing the active checkout..."
   ROOT_DIR="$checkout"
-  if ! ensure_node || ! install_server_node_dependencies || ! install_desktop_node_dependencies || ! cmd_test; then
+  if ! ensure_node || ! install_server_node_dependencies || ! cmd_test; then
     cleanup_preflight
     echo "Upgrade preflight failed; the active checkout was not changed." >&2
     return 1
@@ -739,7 +737,6 @@ cmd_upgrade() {
   fi
   echo "Upgrade: installing dependencies..."
   cmd_install
-  install_desktop_node_dependencies
   migrate_legacy_configuration "$legacy_config"
   [[ -z "$legacy_config" ]] || rm -f "$legacy_config"
   setup_configuration
