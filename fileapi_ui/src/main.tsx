@@ -2757,7 +2757,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   const canDropOnRemote = (destination: string) =>
     dragSource === "local"
-      ? Boolean(dragItems.length && (remoteSshEntryId ? true : locationOnline && hasCapability("upload")))
+      ? Boolean(dragItems.length && (remoteSshEntryId ? true : session.locationId))
       : dragSource === "remote" && isValidMoveTarget(dragItems, destination);
 
   // Whether the current REMOTE view (SSH or API) allows dragging its items
@@ -2767,7 +2767,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // Mirror of the above for the opposite direction (LOCAL -> REMOTE
   // upload), used to gate drag-over/drop-target feedback consistently with
   // `canDropOnRemote`'s own "local" branch.
-  const canDragLocalToRemote = Boolean(remoteSshEntryId) || (locationOnline && hasCapability("upload"));
+  const canDragLocalToRemote = Boolean(remoteSshEntryId) || Boolean(session.locationId);
 
   // Undo history is intentionally limited to operations that can be reliably
   // and verifiably reversed: rename and move (a move is just a rename that
@@ -4435,7 +4435,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             busy ||
             (splitMode && remoteSshEntryId
               ? activePane !== "local"
-              : !(remoteSshEntryId ? true : locationOnline && hasCapability("upload")))
+               : !(remoteSshEntryId ? true : Boolean(session.locationId)))
           }
           title={splitMode && remoteSshEntryId ? "Send the LOCAL selection to the current REMOTE folder" : undefined}
         >
@@ -4447,7 +4447,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             disabled={
               splitMode && activePane === "local"
                 ? localReadOnly || busy
-                : busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir"))
+                 : busy || !(remoteSshEntryId ? true : Boolean(session.locationId))
             }
           >
             New folder
@@ -4485,7 +4485,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 label: "New folder",
                 disabled: splitMode && activePane === "local"
                   ? localReadOnly || busy
-                  : busy || !(remoteSshEntryId ? true : locationOnline && hasCapability("mkdir")),
+                   : busy || !(remoteSshEntryId ? true : Boolean(session.locationId)),
                 onClick: createFolder,
               },
               {
@@ -4528,7 +4528,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   busy ||
                   (splitMode && activePane === "local") ||
                   !selectedItems.length ||
-                  !(remoteSshEntryId ? true : locationOnline && hasCapability("move")),
+                   !(remoteSshEntryId ? true : Boolean(session.locationId)),
                 onClick: () => notify("Drag selected files to a destination folder to move them."),
               },
               {
@@ -4538,7 +4538,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   ? localReadOnly || busy || localSelectedItems.length !== 1
                   : busy ||
                     selectedItems.length !== 1 ||
-                    !(remoteSshEntryId ? true : locationOnline && hasCapability("rename")),
+                     !(remoteSshEntryId ? true : Boolean(session.locationId)),
                 onClick: rename,
               },
               {
@@ -4561,7 +4561,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   ? localReadOnly || busy || !localSelectedItems.length
                   : busy ||
                     !selectedItems.length ||
-                    !(remoteSshEntryId ? true : locationOnline && hasCapability("delete")),
+                     !(remoteSshEntryId ? true : Boolean(session.locationId)),
                 onClick: remove,
               },
               {
@@ -4621,7 +4621,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 busy ||
                 (splitMode && activePane === "local") ||
                 !selectedItems.length ||
-                !(remoteSshEntryId ? true : locationOnline && hasCapability("move"))
+                 !(remoteSshEntryId ? true : Boolean(session.locationId))
               }
               onClick={() =>
                 notify("Drag selected files to a destination folder to move them.")
@@ -4635,7 +4635,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   ? localReadOnly || busy || localSelectedItems.length !== 1
                   : busy ||
                     selectedItems.length !== 1 ||
-                    !(remoteSshEntryId ? true : locationOnline && hasCapability("rename"))
+                     !(remoteSshEntryId ? true : Boolean(session.locationId))
               }
               onClick={rename}
             >
@@ -4661,7 +4661,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   ? localReadOnly || busy || !localSelectedItems.length
                   : busy ||
                     !selectedItems.length ||
-                    !(remoteSshEntryId ? true : locationOnline && hasCapability("delete"))
+                     !(remoteSshEntryId ? true : Boolean(session.locationId))
               }
               onClick={remove}
             >
