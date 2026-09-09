@@ -298,7 +298,8 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const entry = entries.find((item) => item.id === activeEntryId) || entries[0];
   const secret = entry ? secrets[entry.id] || {} : {};
   const screenRef = useRef<HTMLDivElement>(null);
-  const rfbRef = useRef<{ disconnect: () => void; sendCredentials: (credentials: { password: string }) => void; sendCtrlAltDel: () => void; focus: () => void; viewOnly: boolean; scaleViewport: boolean; resizeSession: boolean } | null>(null);
+  const rfbRef = useRef<{ disconnect: () => void; sendCredentials: (credentials: { username?: string; password: string }) => void; sendCtrlAltDel: () => void; focus: () => void; viewOnly: boolean; scaleViewport: boolean; resizeSession: boolean } | null>(null);
+  const connectionTimeoutRef = useRef<number | null>(null);
   const pendingConnectionIdRef = useRef<string | null>(null);
   const sessionGenerationRef = useRef(0);
   const previousEntryIdRef = useRef(activeEntryId);
@@ -313,6 +314,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [directVncOpen, setDirectVncOpen] = useState(false);
   const [directHost, setDirectHost] = useState(() => localStorage.getItem("fileapi-direct-vnc-host") || "");
   const [directPort, setDirectPort] = useState(() => Number(localStorage.getItem("fileapi-direct-vnc-port")) || 5900);
+  const [directUsername, setDirectUsername] = useState(() => localStorage.getItem("fileapi-direct-vnc-username") || "");
   const [directPassword, setDirectPassword] = useState("");
   const directVncOpenRef = useRef(false);
   directVncOpenRef.current = directVncOpen;
@@ -373,6 +375,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   }, []);
   useEffect(() => { localStorage.setItem("fileapi-direct-vnc-host", directHost); }, [directHost]);
   useEffect(() => { localStorage.setItem("fileapi-direct-vnc-port", String(directPort)); }, [directPort]);
+  useEffect(() => { localStorage.setItem("fileapi-direct-vnc-username", directUsername); }, [directUsername]);
   const stopEntryPaneResize = () => {
     entryPaneResizeRef.current = null;
     window.removeEventListener("pointermove", resizeEntryPane);
@@ -411,6 +414,10 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const stopConnection = (updateStatus = true) => {
     sessionGenerationRef.current += 1;
+    if (connectionTimeoutRef.current !== null) {
+      window.clearTimeout(connectionTimeoutRef.current);
+      connectionTimeoutRef.current = null;
+    }
     rfbRef.current?.disconnect();
     rfbRef.current = null;
     const pendingConnectionId = pendingConnectionIdRef.current;
@@ -443,6 +450,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   }, [activeEntryId, entry?.id, secrets]);
   useEffect(() => () => {
     sessionGenerationRef.current += 1;
+    if (connectionTimeoutRef.current !== null) window.clearTimeout(connectionTimeoutRef.current);
     rfbRef.current?.disconnect();
     rfbRef.current = null;
     if (pendingConnectionIdRef.current) {
@@ -839,7 +847,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const connect = async () => {
     if (isDirectVnc) {
-      if (!directHost.trim() || !directPort || !directPassword) { setError("Direct VNC host, port, and password are required."); return; }
+      if (!directHost.trim() || !directPort || !directUsername.trim() || !directPassword) { setError("Direct VNC host, port, username, and password are required."); return; }
     } else if (!nativeEntry || !authenticated) { setError("Log in to this Proxmox entry first."); return; }
     stopConnection(false);
     const sessionGeneration = sessionGenerationRef.current;
@@ -862,10 +870,35 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       const rfb = new RFB(screenRef.current, connection.websocketUrl);
       pendingConnectionIdRef.current = null;
       rfb.scaleViewport = true; rfb.resizeSession = false; rfb.viewOnly = viewOnly;
-      rfb.addEventListener("connect", () => { if (sessionGeneration === sessionGenerationRef.current) { setStatus("Connected"); setControlsOpen(false); if (!isDirectVnc) void detectTransferMode(); } });
-      rfb.addEventListener("disconnect", () => { if (sessionGeneration === sessionGenerationRef.current) setStatus("Disconnected"); });
-      rfb.addEventListener("securityfailure", (event: Event) => { if (sessionGeneration === sessionGenerationRef.current) setError(String((event as CustomEvent).detail || "VNC security failure")); });
-      rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password: isDirectVnc ? directPassword : connection.password }));
+      connectionTimeoutRef.current = window.setTimeout(() => {
+        if (sessionGeneration !== sessionGenerationRef.current) return;
+        rfb.disconnect();
+        rfbRef.current = null;
+        setStatus("Connection failed");
+        setError("VNC authentication or handshake timed out after 15 seconds.");
+        connectionTimeoutRef.current = null;
+      }, 15_000);
+      rfb.addEventListener("connect", () => {
+        if (sessionGeneration !== sessionGenerationRef.current) return;
+        if (connectionTimeoutRef.current !== null) { window.clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
+        setStatus("Connected"); setControlsOpen(false); if (!isDirectVnc) void detectTransferMode();
+      });
+      rfb.addEventListener("disconnect", () => {
+        if (connectionTimeoutRef.current !== null) { window.clearTimeout(connectionTimeoutRef.current); connectionTimeoutRef.current = null; }
+        if (sessionGeneration === sessionGenerationRef.current) {
+          setStatus("Disconnected");
+          if (loading) setError("VNC server disconnected during connection or authentication.");
+        }
+      });
+      rfb.addEventListener("securityfailure", (event: Event) => {
+        if (sessionGeneration !== sessionGenerationRef.current) return;
+        const detail = (event as CustomEvent<{ reason?: string }>).detail;
+        setStatus("Connection failed");
+        setError(detail?.reason || "VNC security authentication failed.");
+      });
+      rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials(isDirectVnc
+        ? { username: directUsername.trim(), password: directPassword }
+        : { password: connection.password }));
       rfbRef.current = rfb;
     } catch (value) {
       if (sessionGeneration === sessionGenerationRef.current) {
@@ -979,14 +1012,15 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
               <label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label>
               <label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label>
             </div>}
-            {isDirectVnc && <p className="field-help">Use the VNC viewer password configured in macOS Screen Sharing. Direct VNC does not provide file transfer.</p>}
+            {isDirectVnc && <p className="field-help">Use the macOS account short name and the VNC viewer password configured in Screen Sharing. Direct VNC does not provide file transfer.</p>}
+            {isDirectVnc && <label>Username<input value={directUsername} onChange={(event) => setDirectUsername(event.target.value)} placeholder="macOS account short name" autoComplete="username" /></label>}
             {isDirectVnc && <label>VNC password<input type="password" value={directPassword} onChange={(event) => { const value = event.target.value; setDirectPassword(value); if (value) void invoke("proxmox_save_secret", { entryId: "direct-vnc", kind: "password", value }); else void invoke("proxmox_forget_secret", { entryId: "direct-vnc", kind: "password" }); }} placeholder="Saved in the OS keyring" autoComplete="current-password" /></label>}
             {!isDirectVnc && selectedVm && <div className="vnc-vm-ssh-card">
               <div className="vnc-vm-ssh-card-copy"><strong>VM SFTP</strong><small>{selectedVm.name || `VM ${selectedVm.vmid}`} · VMID {selectedVm.vmid}</small><span>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</span></div>
               <div className="vnc-vm-ssh-card-side"><span className={`vnc-agent-status ${qemuAgentStatus}`} title={qemuAgentStatusTitle} aria-label={`QEMU Guest Agent: ${qemuAgentStatusLabel}`}><span className="vnc-agent-status-dot" aria-hidden="true" />QEMU Agent: {qemuAgentStatusLabel}</span><button type="button" className="vnc-compact-action" onClick={() => setVmSshSettingsOpen(true)}>Configure</button></div>
             </div>}
             <div className="vnc-actions">
-              <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || (isDirectVnc ? !directHost.trim() || !directPassword || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535 : !entry || !authenticated || !selectedVm)}>{loading ? "Connecting..." : "Connect"}</button>
+              <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || (isDirectVnc ? !directHost.trim() || !directUsername.trim() || !directPassword || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535 : !entry || !authenticated || !selectedVm)}>{loading ? "Connecting..." : "Connect"}</button>
               <button type="button" onClick={() => stopConnection()} disabled={!rfbRef.current}>Disconnect</button>
             </div>
             {!isDirectVnc && entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}
