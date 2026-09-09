@@ -18,6 +18,22 @@ const nodes = (tree, predicate) => {
   return [...(predicate(tree) ? [tree] : []), ...nodes(tree.props?.children, predicate)];
 };
 const text = (tree) => Array.isArray(tree) ? tree.map(text).join("") : tree && typeof tree === "object" ? text(tree.props?.children) : typeof tree === "string" ? tree : "";
+const floatingWindow = (tree) => nodes(tree, (node) => typeof node.type === "function" && node.type.name === "FloatingWindow")[0];
+const submitFloatingWindow = (app, value = "renamed") => {
+  const first = floatingWindow(app.render());
+  assert.ok(first, "floating dialog");
+  const input = nodes(first.props.children, (node) => node.type === "input")[0];
+  if (input) {
+    input.props.onChange({ target: { value } });
+    app.render();
+  }
+  const current = floatingWindow(app.render());
+  const buttons = current?.props.footer?.props?.children || [];
+  const confirm = (Array.isArray(buttons) ? buttons : [buttons]).find((node) => text(node) === "Confirm");
+  assert.ok(confirm, "floating dialog confirm");
+  confirm.props.onClick?.();
+  current?.props.children?.props?.onSubmit?.({ preventDefault() {} });
+};
 
 test("Location, revision and JSON headers do not depend on bearer authentication", () => {
   for (const token of ["cookie", "", "bearer"]) {
@@ -196,12 +212,9 @@ test("desktop enabled Rename, Move, Undo and Delete operate on actual backend fi
     assert.equal(Boolean(button.props.disabled), false, `${label} must be enabled`);
     button.props.onClick();
     if (label === "Rename" || label === "New folder") {
-      const dialog = nodes(app.render(), (node) => node.props?.role === "dialog")[0];
-      assert.ok(dialog, `${label} dialog`);
-      const input = nodes(dialog, (node) => node.type === "input")[0];
-      input.props.onChange({ target: { value: label === "Rename" ? "renamed" : "created" } });
-      app.render();
-      nodes(app.render(), (node) => node.props?.role === "dialog")[0].props.onSubmit({ preventDefault() {} });
+      submitFloatingWindow(app, label === "Rename" ? "renamed" : "created");
+    } else if (label === "Delete") {
+      submitFloatingWindow(app);
     }
     await settle();
   };
@@ -275,17 +288,13 @@ test("production search rename/delete use the actual parent and full path", asyn
   assert.ok(row); row.props.onClick({});
   const rename = nodes(app.render(), (node) => node.type === "button" && text(node) === "Rename")[0];
    assert.ok(rename); rename.props.onClick();
-   const renameDialog = nodes(app.render(), (node) => node.props?.role === "dialog")[0];
-   assert.ok(renameDialog);
-   nodes(renameDialog, (node) => node.type === "input")[0].props.onChange({ target: { value: "renamed" } });
-   app.render();
-   nodes(app.render(), (node) => node.props?.role === "dialog")[0].props.onSubmit({ preventDefault() {} }); await tick();
+   submitFloatingWindow(app, "renamed"); await tick();
   const request = app.calls.find((call) => call.args.url?.endsWith("/api/files/rename"));
   assert.deepEqual(JSON.parse(new TextDecoder().decode(Uint8Array.from(request.args.body))), { oldName: "same", oldPath: "real/same", newName: "renamed", currentPath: "real" });
   assert.equal(request.args.sessionId, "opaque-A");
   app.search("same"); await tick();
   nodes(app.render(), (node) => node.props?.["data-path"] === "real/same")[0].props.onClick({});
-  nodes(app.render(), (node) => node.type === "button" && text(node) === "Delete")[0].props.onClick(); await tick();
+   nodes(app.render(), (node) => node.type === "button" && text(node) === "Delete")[0].props.onClick(); submitFloatingWindow(app); await tick();
   const deletion = app.calls.find((call) => call.args.url?.endsWith("/api/files/delete"));
   assert.deepEqual(JSON.parse(new TextDecoder().decode(Uint8Array.from(deletion.args.body))), { currentPath: "real", items: [{ name: "same", path: "real/same", isDirectory: false }] });
 });
@@ -337,7 +346,7 @@ test("expired-session Move and Delete recover authentication once before retryin
       nodes(app.render(), (node) => node.props?.className?.startsWith("tree-node") && node.props.onDropCapture)[0].props.onDropCapture({ preventDefault() {}, stopPropagation() {} });
     } else {
       row.props.onClick({});
-      nodes(app.render(), (node) => node.type === "button" && text(node) === "Delete")[0].props.onClick();
+      nodes(app.render(), (node) => node.type === "button" && text(node) === "Delete")[0].props.onClick(); submitFloatingWindow(app);
     }
     await tick();
     assert.equal(app.props.refreshes, 1, `${operation} must recover the expired session`);
@@ -358,7 +367,7 @@ test("Move and Delete show the backend rejection instead of only unconfirmed cou
       nodes(app.render(), (node) => node.props?.className?.startsWith("tree-node") && node.props.onDropCapture)[0].props.onDropCapture({ preventDefault() {}, stopPropagation() {} });
     } else {
       row.props.onClick({});
-      nodes(app.render(), (node) => node.type === "button" && text(node) === "Delete")[0].props.onClick();
+      nodes(app.render(), (node) => node.type === "button" && text(node) === "Delete")[0].props.onClick(); submitFloatingWindow(app);
     }
     await tick();
     assert.match(app.props.notice, /HTTP 409.*Location changed; refresh before retrying/);
@@ -444,7 +453,10 @@ const mutationFiles = [
   { path: "b/other", name: "other", isDirectory: false, size: 1 },
 ];
 const requestBody = (call) => JSON.parse(new TextDecoder().decode(Uint8Array.from(call.args.body)));
-const clickAction = (app, label) => nodes(app.render(), (node) => node.type === "button" && text(node) === label)[0].props.onClick();
+const clickAction = (app, label) => {
+  nodes(app.render(), (node) => node.type === "button" && text(node) === label)[0].props.onClick();
+  if (label === "Delete") submitFloatingWindow(app);
+};
 const startMove = async (app) => {
   app.search("selection"); await tick();
   clickAction(app, "Select all");
@@ -531,7 +543,7 @@ test("production delete counts authoritative path results, not summary counts or
 test("production delete preserves missing results as unconfirmed and stops unsent groups on context change", async () => {
   const pending = deferred();
   const app = desktop((_command, args) => args.url?.includes("/search?") ? nativeJson({ files: mutationFiles }) : args.url?.endsWith("/delete") ? pending.promise : undefined);
-  app.search("selection"); await tick(); clickAction(app, "Select all"); clickAction(app, "Delete");
+   app.search("selection"); await tick(); clickAction(app, "Select all"); clickAction(app, "Delete"); await tick();
   app.props.session = { ...app.props.session, userId: 2, nativeSessionId: "opaque-B" }; app.render(); app.props.notice = "new account notice";
   pending.resolve(nativeJson({ success: false, deletedCount: 1, results: [] }, 207)); await tick();
   assert.equal(app.calls.filter((call) => call.args.url?.endsWith("/delete")).length, 1);

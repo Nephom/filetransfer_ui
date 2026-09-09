@@ -35,6 +35,7 @@ import type { RestApiSecret } from "./rest-api";
 import type { ProxmoxVncSecret } from "./proxmox-vnc";
 import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
+import { FloatingWindow } from "./ui/FloatingWindow";
 import { AppShell } from "./app/AppShell";
 import { DesktopTitlebar } from "./app/DesktopTitlebar";
 import { isMobileViewport } from "./styles/breakpoints";
@@ -146,6 +147,7 @@ type ModalDragSession = {
   onUp: () => void;
 };
 type NamePromptRequest = { title: string; value: string };
+type ConfirmRequest = { title: string; message: string };
 
 
 
@@ -995,6 +997,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [namePrompt, setNamePrompt] = useState<NamePromptRequest | null>(null);
   const [namePromptDraft, setNamePromptDraft] = useState("");
   const namePromptResolver = useRef<((value: string | null) => void) | null>(null);
+  const [confirmPrompt, setConfirmPrompt] = useState<ConfirmRequest | null>(null);
+  const confirmPromptResolver = useRef<((value: boolean) => void) | null>(null);
   const requestName = (title: string, value: string) => new Promise<string | null>((resolve) => {
     namePromptResolver.current = resolve;
     setNamePromptDraft(value);
@@ -1005,6 +1009,16 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     namePromptResolver.current = null;
     setNamePrompt(null);
     setNamePromptDraft("");
+    resolve?.(value);
+  };
+  const requestConfirmation = (message: string, title = "Confirm action") => new Promise<boolean>((resolve) => {
+    confirmPromptResolver.current = resolve;
+    setConfirmPrompt({ title, message });
+  });
+  const finishConfirmation = (value: boolean) => {
+    const resolve = confirmPromptResolver.current;
+    confirmPromptResolver.current = null;
+    setConfirmPrompt(null);
     resolve?.(value);
   };
   const {
@@ -3280,8 +3294,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       const summary = await invoke<UploadSummary>("inspect_upload_paths", {
         paths,
       });
-      const accepted = window.confirm(
+      const accepted = await requestConfirmation(
         `Upload ${summary.files} file${summary.files === 1 ? "" : "s"} and ${summary.directories} folder${summary.directories === 1 ? "" : "s"} to ${path ? `/${path}` : "/"}?`,
+        "Confirm upload",
       );
       if (!accepted) return;
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
@@ -3681,7 +3696,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     run(async () => {
       if (splitMode && activePane === "local") {
         if (!localSelectedItems.length) return;
-        if (desktopSettings.confirmations.delete && !window.confirm(`Delete ${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+        if (desktopSettings.confirmations.delete && !await requestConfirmation(`Delete ${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"}? This cannot be undone.`, "Delete local items")) return;
         for (const item of localSelectedItems) await invoke("local_delete_path", { path: item.path, isDirectory: item.isDirectory });
         await loadLocalFiles(localPath);
         writeOperationLog("delete", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${localPath || ""}`, `Deleted ${localSelectedItems.length} item(s) locally.`, "INFO");
@@ -3690,8 +3705,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       }
       if (
         !selectedItems.length ||
-        (desktopSettings.confirmations.delete && !window.confirm(
+        (desktopSettings.confirmations.delete && !await requestConfirmation(
           `Delete ${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}? This cannot be undone.`,
+          "Delete remote items",
         ))
       )
         return;
@@ -4538,16 +4554,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                     : openRemoteViewer(selectedItems[0]),
               },
               {
-                key: "move",
-                label: "Move",
-                disabled:
-                  busy ||
-                  (splitMode && activePane === "local") ||
-                  !selectedItems.length ||
-                   !(remoteSshEntryId ? true : Boolean(session.locationId)),
-                onClick: () => notify("Drag selected files to a destination folder to move them."),
-              },
-              {
                 key: "rename",
                 label: "Rename",
                 disabled: splitMode && activePane === "local"
@@ -4631,19 +4637,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               }
             >
               View
-            </button>
-            <button
-              disabled={
-                busy ||
-                (splitMode && activePane === "local") ||
-                !selectedItems.length ||
-                 !(remoteSshEntryId ? true : Boolean(session.locationId))
-              }
-              onClick={() =>
-                notify("Drag selected files to a destination folder to move them.")
-              }
-            >
-              Move
             </button>
             <button
               disabled={
@@ -5586,15 +5579,28 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={closeViewer} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
       {logViewOpen && <LogView records={operationLogRecords} modalStyle={modalStyle("log-view")} onDragStart={beginModalDrag("log-view")} onClose={() => setLogViewOpen(false)} onExport={exportOperationLog} />}
       {helpOpen && <HelpModal sections={helpSections} pages={helpPages} selectedPage={selectedHelpPage} selectedSection={selectedHelpSection} selectedIndex={selectedHelpIndex} expandedSections={expandedHelpSections} modalStyle={modalStyle("help")} onDragStart={beginModalDrag("help")} onClose={() => setHelpOpen(false)} onToggleSection={(id) => setExpandedHelpSections((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onSelectPage={setSelectedHelpPageId} />}
-      {namePrompt && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) finishNamePrompt(null); }}>
-          <form className="modal-card name-prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="name-prompt-title" onSubmit={(event) => { event.preventDefault(); finishNamePrompt(namePromptDraft); }}>
-            <h2 id="name-prompt-title">{namePrompt.title}</h2>
-            <label>Name<input autoFocus value={namePromptDraft} onChange={(event) => setNamePromptDraft(event.target.value)} /></label>
-            <div className="dialog-actions"><button type="button" onClick={() => finishNamePrompt(null)} aria-label={`Cancel ${namePrompt.title}`}>Cancel</button><button type="submit" className="primary">Confirm</button></div>
-          </form>
-        </div>
-      )}
+      {namePrompt && <FloatingWindow
+        ariaLabel={namePrompt.title}
+        className="name-prompt-dialog"
+        style={modalStyle("workspace-name")}
+        header={<h2>{namePrompt.title}</h2>}
+        onClose={() => finishNamePrompt(null)}
+        footer={<><button type="button" onClick={() => finishNamePrompt(null)}>Cancel</button><button type="submit" form="name-prompt-form" className="confirm">Confirm</button></>}
+      >
+        <form id="name-prompt-form" onSubmit={(event) => { event.preventDefault(); finishNamePrompt(namePromptDraft); }}>
+          <label>Name<input autoFocus value={namePromptDraft} onChange={(event) => setNamePromptDraft(event.target.value)} /></label>
+        </form>
+      </FloatingWindow>}
+      {confirmPrompt && <FloatingWindow
+        ariaLabel={confirmPrompt.title}
+        className="confirm-prompt-dialog"
+        style={modalStyle("workspace-name")}
+        header={<h2>{confirmPrompt.title}</h2>}
+        onClose={() => finishConfirmation(false)}
+        footer={<><button type="button" onClick={() => finishConfirmation(false)}>Cancel</button><button type="button" className="confirm" onClick={() => finishConfirmation(true)}>Confirm</button></>}
+      >
+        <p>{confirmPrompt.message}</p>
+      </FloatingWindow>}
       </Suspense>
     </AppShell>
   );

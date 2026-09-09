@@ -19,7 +19,15 @@
   overflow: hidden;
 }
 
-.floating-window-footer { flex: 0 0 auto; }
+.floating-window-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  cursor: move;
+}
+.floating-window-header h2 { margin: 0; }
+.floating-window-footer { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: var(--space-2); padding: var(--space-3) var(--space-4); }
 
 .floating-dialog-layer {
   position: fixed;

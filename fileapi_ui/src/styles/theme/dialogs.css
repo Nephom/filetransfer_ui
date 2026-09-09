@@ -74,14 +74,6 @@
 :where(.explorer) .rest-action-dialog { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); }
 :where(.explorer) .token-path-help-popup pre { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg); }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-modal);
-  display: grid;
-  place-items: center;
-  background: color-mix(in srgb, var(--color-bg) 72%, transparent);
-}
 .name-prompt-dialog {
   width: min(420px, calc(100vw - 32px));
   padding: 20px;
@@ -95,6 +87,8 @@
 .name-prompt-dialog label { display: grid; gap: 7px; color: var(--color-text-muted); }
 .name-prompt-dialog input { width: 100%; box-sizing: border-box; }
 .name-prompt-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.confirm-prompt-dialog { width: min(460px, calc(100vw - 32px)); }
+.confirm-prompt-dialog p { margin: 0; color: var(--color-text-muted); line-height: 1.5; }
 
 /* Portaled overlays live under body rather than inside .explorer. */
 .account-menu,
