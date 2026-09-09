@@ -1505,19 +1505,13 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-#[allow(unreachable_code, unused_variables)]
 fn local_create_directory(path: String) -> Result<(), String> {
-    return Err("LOCAL is read-only".to_string());
-    #[allow(unreachable_code)]
     let resolved = resolve_local_new_path(&path)?;
     std::fs::create_dir_all(&resolved).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-#[allow(unreachable_code, unused_variables)]
 fn local_rename_path(old_path: String, new_path: String) -> Result<String, String> {
-    return Err("LOCAL is read-only".to_string());
-    #[allow(unreachable_code)]
     let old_resolved = resolve_local_transfer_path(&old_path)?;
     let mut new_resolved = resolve_local_new_path(&new_path)?;
     if new_resolved != old_resolved && new_resolved.exists() {
@@ -1548,10 +1542,7 @@ fn local_rename_path(old_path: String, new_path: String) -> Result<String, Strin
 }
 
 #[tauri::command]
-#[allow(unreachable_code, unused_variables)]
 fn local_delete_path(path: String, is_directory: bool) -> Result<(), String> {
-    return Err("LOCAL is read-only".to_string());
-    #[allow(unreachable_code)]
     let resolved = resolve_local_transfer_path(&path)?;
     if is_directory {
         std::fs::remove_dir_all(&resolved).map_err(|error| error.to_string())

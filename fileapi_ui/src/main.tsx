@@ -541,6 +541,8 @@ const readError = async (response: {
 
 const parentPath = (path: string) =>
   path.split("/").filter(Boolean).slice(0, -1).join("/");
+const joinLocalPath = (directory: string, name: string) =>
+  directory ? `${directory.replace(/\/+$/, "")}/${name}` : name;
 const sshParentPath = (path: string) => {
   const segments = path.split("/").filter(Boolean);
   return segments.length > 1 ? `/${segments.slice(0, -1).join("/")}` : "/";
@@ -1153,7 +1155,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // clicking around in LOCAL, with no indication of where an action would
   // actually apply.
   const [activePane, setActivePane] = useState<"local" | "remote">("remote");
-  const localReadOnly = true;
+  const localReadOnly = false;
   // `null` means "no active drop target". This must be distinct from `""`,
   // which is a legitimate real path (HOME for LOCAL, and the API-remote
   // storage root) -- using `""` as the sentinel made the HOME/root tree row
@@ -2949,7 +2951,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // same-named item by auto-appending "_(n)".
   const moveLocalItems = (items: FileItem[], destination: string) =>
     run(async () => {
-      notify("LOCAL is read-only. Upload selected items to REMOTE instead.");
+      for (const item of items) {
+        const newPath = joinLocalPath(destination, item.name);
+        const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
+        recordUndoableMove({ source: "local", oldPath: item.path, newPath: finalPath });
+      }
+      await loadLocalFiles(localPath);
+      writeOperationLog("move", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${destination || ""}`, `Moved ${items.length} item(s) locally.`);
+      notify(`Moved ${items.length} item${items.length === 1 ? "" : "s"}.`);
     });
 
   const beginDrag = (event: React.DragEvent, file: FileItem) => {
@@ -3532,18 +3541,34 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       void runQueuedUpload(queueItem);
     });
 
-  const upload = async () =>
-    uploadPaths(await invoke<string[]>("pick_upload_files"));
+  const upload = async () => {
+    try {
+      const paths = await invoke<string[]>("pick_upload_files");
+      if (!paths.length) {
+        writeOperationLog("upload", "cancelled", `LOCAL: ~/${localPath || ""}`, "REMOTE", "Upload file picker was cancelled or returned no files.", "INFO");
+        return;
+      }
+      uploadPaths(paths);
+    } catch (error) {
+      const detail = `Unable to choose upload files: ${describeError(error)}`;
+      writeOperationLog("upload", "failed", `LOCAL: ~/${localPath || ""}`, "REMOTE", detail, "ERROR");
+      setNotice(detail);
+    }
+  };
 
   const createFolder = () =>
     run(async () => {
-      if (splitMode && activePane === "local") {
-        notify("LOCAL is read-only.");
-        return;
-      }
       const folderName = window.prompt("Folder name");
       if (!folderName?.trim()) return;
       const name = folderName.trim();
+      if (splitMode && activePane === "local") {
+        const target = joinLocalPath(localPath, name);
+        await invoke("local_create_directory", { path: target });
+        await loadLocalFiles(localPath);
+        writeOperationLog("create_folder", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${target}`, `Created folder ${name} locally.`);
+        notify(`Created ${name}.`);
+        return;
+      }
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
@@ -3582,15 +3607,21 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   const rename = () =>
     run(async () => {
-      if (splitMode && activePane === "local") {
-        notify("LOCAL is read-only.");
-        return;
-      }
-      if (selectedItems.length !== 1) return;
-      const item = selectedItems[0];
+      const item = splitMode && activePane === "local" ? localSelectedItems[0] : selectedItems[0];
+      if (!item || (splitMode && activePane === "local" ? localSelectedItems.length !== 1 : selectedItems.length !== 1)) return;
       const newName = window.prompt("New name", item.name);
       if (!newName?.trim() || newName === item.name) return;
       const trimmedName = newName.trim();
+      if (splitMode && activePane === "local") {
+        if (/[\\/]/.test(trimmedName) || trimmedName === "." || trimmedName === "..") throw new Error("Enter a filename, not a path.");
+        const newPath = joinLocalPath(parentPath(item.path), trimmedName);
+        const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
+        recordUndoableRename({ source: "local", oldPath: item.path, newPath: finalPath });
+        await loadLocalFiles(localPath);
+        writeOperationLog("rename", "completed", `LOCAL: ~/${item.path}`, `LOCAL: ~/${finalPath}`, `Renamed ${item.name} locally.`);
+        notify(`Renamed ${item.name}.`);
+        return;
+      }
       if (remoteSshEntryId) {
         const profile = findSshProfileById(remoteSshEntryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
@@ -3633,7 +3664,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const remove = () =>
     run(async () => {
       if (splitMode && activePane === "local") {
-        notify("LOCAL is read-only.");
+        if (!localSelectedItems.length) return;
+        if (desktopSettings.confirmations.delete && !window.confirm(`Delete ${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+        for (const item of localSelectedItems) await invoke("local_delete_path", { path: item.path, isDirectory: item.isDirectory });
+        await loadLocalFiles(localPath);
+        writeOperationLog("delete", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${localPath || ""}`, `Deleted ${localSelectedItems.length} item(s) locally.`, "INFO");
+        notify("Deleted selected local items. This cannot be undone.");
         return;
       }
       if (
