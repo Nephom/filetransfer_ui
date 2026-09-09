@@ -195,6 +195,14 @@ test("desktop enabled Rename, Move, Undo and Delete operate on actual backend fi
     assert.ok(button, label);
     assert.equal(Boolean(button.props.disabled), false, `${label} must be enabled`);
     button.props.onClick();
+    if (label === "Rename" || label === "New folder") {
+      const dialog = nodes(app.render(), (node) => node.props?.role === "dialog")[0];
+      assert.ok(dialog, `${label} dialog`);
+      const input = nodes(dialog, (node) => node.type === "input")[0];
+      input.props.onChange({ target: { value: label === "Rename" ? "renamed" : "created" } });
+      app.render();
+      nodes(app.render(), (node) => node.props?.role === "dialog")[0].props.onSubmit({ preventDefault() {} });
+    }
     await settle();
   };
   // Load real health/capabilities instead of invoking disabled buttons directly.
@@ -266,7 +274,12 @@ test("production search rename/delete use the actual parent and full path", asyn
   const row = nodes(app.render(), (node) => node.props?.["data-path"] === "real/same")[0];
   assert.ok(row); row.props.onClick({});
   const rename = nodes(app.render(), (node) => node.type === "button" && text(node) === "Rename")[0];
-  assert.ok(rename); rename.props.onClick(); await tick();
+   assert.ok(rename); rename.props.onClick();
+   const renameDialog = nodes(app.render(), (node) => node.props?.role === "dialog")[0];
+   assert.ok(renameDialog);
+   nodes(renameDialog, (node) => node.type === "input")[0].props.onChange({ target: { value: "renamed" } });
+   app.render();
+   nodes(app.render(), (node) => node.props?.role === "dialog")[0].props.onSubmit({ preventDefault() {} }); await tick();
   const request = app.calls.find((call) => call.args.url?.endsWith("/api/files/rename"));
   assert.deepEqual(JSON.parse(new TextDecoder().decode(Uint8Array.from(request.args.body))), { oldName: "same", oldPath: "real/same", newName: "renamed", currentPath: "real" });
   assert.equal(request.args.sessionId, "opaque-A");

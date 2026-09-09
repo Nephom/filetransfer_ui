@@ -145,6 +145,7 @@ type ModalDragSession = {
   onMove: (event: MouseEvent) => void;
   onUp: () => void;
 };
+type NamePromptRequest = { title: string; value: string };
 
 
 
@@ -991,6 +992,21 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [saveLogNameOpen, setSaveLogNameOpen] = useState(false);
   const [saveLogNameDraft, setSaveLogNameDraft] = useState("");
   const [saveLogDestinationPath, setSaveLogDestinationPath] = useState("");
+  const [namePrompt, setNamePrompt] = useState<NamePromptRequest | null>(null);
+  const [namePromptDraft, setNamePromptDraft] = useState("");
+  const namePromptResolver = useRef<((value: string | null) => void) | null>(null);
+  const requestName = (title: string, value: string) => new Promise<string | null>((resolve) => {
+    namePromptResolver.current = resolve;
+    setNamePromptDraft(value);
+    setNamePrompt({ title, value });
+  });
+  const finishNamePrompt = (value: string | null) => {
+    const resolve = namePromptResolver.current;
+    namePromptResolver.current = null;
+    setNamePrompt(null);
+    setNamePromptDraft("");
+    resolve?.(value);
+  };
   const {
     settingsOpen, setSettingsOpen,
     settingsPanel, setSettingsPanel,
@@ -3558,7 +3574,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   const createFolder = () =>
     run(async () => {
-      const folderName = window.prompt("Folder name");
+      const folderName = await requestName("New folder", "");
       if (!folderName?.trim()) return;
       const name = folderName.trim();
       if (splitMode && activePane === "local") {
@@ -3609,7 +3625,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     run(async () => {
       const item = splitMode && activePane === "local" ? localSelectedItems[0] : selectedItems[0];
       if (!item || (splitMode && activePane === "local" ? localSelectedItems.length !== 1 : selectedItems.length !== 1)) return;
-      const newName = window.prompt("New name", item.name);
+      const newName = await requestName("Rename", item.name);
       if (!newName?.trim() || newName === item.name) return;
       const trimmedName = newName.trim();
       if (splitMode && activePane === "local") {
@@ -5570,6 +5586,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={closeViewer} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
       {logViewOpen && <LogView records={operationLogRecords} modalStyle={modalStyle("log-view")} onDragStart={beginModalDrag("log-view")} onClose={() => setLogViewOpen(false)} onExport={exportOperationLog} />}
       {helpOpen && <HelpModal sections={helpSections} pages={helpPages} selectedPage={selectedHelpPage} selectedSection={selectedHelpSection} selectedIndex={selectedHelpIndex} expandedSections={expandedHelpSections} modalStyle={modalStyle("help")} onDragStart={beginModalDrag("help")} onClose={() => setHelpOpen(false)} onToggleSection={(id) => setExpandedHelpSections((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onSelectPage={setSelectedHelpPageId} />}
+      {namePrompt && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) finishNamePrompt(null); }}>
+          <form className="modal-card name-prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="name-prompt-title" onSubmit={(event) => { event.preventDefault(); finishNamePrompt(namePromptDraft); }}>
+            <h2 id="name-prompt-title">{namePrompt.title}</h2>
+            <label>Name<input autoFocus value={namePromptDraft} onChange={(event) => setNamePromptDraft(event.target.value)} /></label>
+            <div className="dialog-actions"><button type="button" onClick={() => finishNamePrompt(null)} aria-label={`Cancel ${namePrompt.title}`}>Cancel</button><button type="submit" className="primary">Confirm</button></div>
+          </form>
+        </div>
+      )}
       </Suspense>
     </AppShell>
   );
