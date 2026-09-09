@@ -2,10 +2,7 @@
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const SecurityManager = require('../security/security');
-const { systemLogger } = require('../utils/logger');
-
-// Configuration manager will be injected
-let configManager = null;
+const { systemLogger, redactLogData, redactUrl } = require('../utils/logger');
 
 const securityManager = new SecurityManager();
 
@@ -19,11 +16,10 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   handler: (req, res) => {
-    securityManager.logSecurityEvent('RATE_LIMIT_EXCEEDED', {
+    securityManager.logSecurityEvent('RATE_LIMIT_EXCEEDED', redactLogData({
       ip: req.ip,
-      userAgent: req.get('User-Agent'),
-      endpoint: req.path
-    });
+      endpoint: redactUrl(req.path)
+    }));
     
     res.status(429).json({
       error: 'Too many authentication attempts, please try again later.'
@@ -69,8 +65,7 @@ const createSecurityHeaders = (config) => {
         styleSrc: ["'self'", "'unsafe-inline'"], // Allow inline styles for themes
         scriptSrc: [
           "'self'",
-          "'unsafe-inline'", // Allow inline scripts for React components
-          "'unsafe-eval'" // Required for Babel JSX transformation
+          "'unsafe-inline'" // Existing private pages still use inline scripts
         ].concat(isDevelopment ? [
           // In development, allow CDN fallbacks
           "https://unpkg.com",
@@ -110,31 +105,26 @@ const createRequestLogger = (config) => {
   return (req, res, next) => {
     const startTime = Date.now();
 
-    // Log request
-    systemLogger.logSystem('INFO', `📥 ${req.method} ${req.path} - ${req.ip} - ${req.get('User-Agent')}`);
+    const requestDetails = redactLogData({
+      method: req.method,
+      endpoint: redactUrl(req.originalUrl || req.url || req.path),
+      ip: req.ip
+    });
+    systemLogger.logSystem('INFO', `HTTP request: ${JSON.stringify(requestDetails)}`);
 
     // Log response when finished
     res.on('finish', () => {
       const duration = Date.now() - startTime;
-      const statusColor = res.statusCode >= 400 ? '🔴' : '🟢';
-      systemLogger.logSystem('INFO', `📤 ${statusColor} ${res.statusCode} ${req.method} ${req.path} - ${duration}ms`);
+      systemLogger.logSystem('INFO', `HTTP response: ${JSON.stringify({ ...requestDetails, statusCode: res.statusCode, duration })}`);
 
       // Log security events for suspicious activity
       if (res.statusCode === 401) {
-        securityManager.logSecurityEvent('UNAUTHORIZED_ACCESS', {
-          ip: req.ip,
-          userAgent: req.get('User-Agent'),
-          endpoint: req.path,
-          method: req.method
-        });
+        securityManager.logSecurityEvent('UNAUTHORIZED_ACCESS', requestDetails);
       }
 
       if (res.statusCode >= 500) {
         securityManager.logSecurityEvent('SERVER_ERROR', {
-          ip: req.ip,
-          userAgent: req.get('User-Agent'),
-          endpoint: req.path,
-          method: req.method,
+          ...requestDetails,
           statusCode: res.statusCode
         });
       }
@@ -155,13 +145,13 @@ const createInputValidator = (config) => {
   return (req, res, next) => {
     // Check for common attack patterns
     const suspiciousPatterns = [
-      /\.\.\//g,  // Path traversal
-      /<script/gi, // XSS
-      /union.*select/gi, // SQL injection
-      /javascript:/gi, // JavaScript injection
-      /vbscript:/gi, // VBScript injection
-      /onload=/gi, // Event handler injection
-      /onerror=/gi, // Event handler injection
+      /(?:^|[\\/])\.\.(?:[\\/]|$)/, // Parent path component, not a filename substring
+      /<script/i, // XSS
+      /union.*select/i, // SQL injection
+      /javascript:/i, // JavaScript injection
+      /vbscript:/i, // VBScript injection
+      /onload=/i, // Event handler injection
+      /onerror=/i, // Event handler injection
     ];
 
     const checkValue = (value) => {
@@ -178,15 +168,12 @@ const createInputValidator = (config) => {
     // Check all request data
     const allData = { ...req.query, ...req.body, ...req.params };
 
-    for (const [key, value] of Object.entries(allData)) {
+    for (const value of Object.values(allData)) {
       if (checkValue(value)) {
-        securityManager.logSecurityEvent('SUSPICIOUS_INPUT', {
+        securityManager.logSecurityEvent('SUSPICIOUS_INPUT', redactLogData({
           ip: req.ip,
-          userAgent: req.get('User-Agent'),
-          endpoint: req.path,
-          suspiciousField: key,
-          suspiciousValue: value
-        });
+          endpoint: redactUrl(req.path)
+        }));
 
         return res.status(400).json({
           error: 'Invalid input detected'
@@ -217,12 +204,10 @@ const createFileUploadSecurity = (config) => {
         const ext = require('path').extname(file.originalname).toLowerCase();
 
         if (dangerousExtensions.includes(ext)) {
-          securityManager.logSecurityEvent('DANGEROUS_FILE_UPLOAD', {
+          securityManager.logSecurityEvent('DANGEROUS_FILE_UPLOAD', redactLogData({
             ip: req.ip,
-            userAgent: req.get('User-Agent'),
-            filename: file.originalname,
             extension: ext
-          });
+          }));
 
           return res.status(400).json({
             error: `File type ${ext} is not allowed for security reasons`
@@ -260,7 +245,9 @@ const createRateLimiters = (config) => {
   };
 };
 
-// Initialize security middleware with configuration
+// Build a new handler set on startup and after supported settings changes.
+// Register parent wrappers before routes so they dispatch to the latest set.
+// Body/file validation must run after the relevant request parser.
 const initializeSecurity = (config) => {
   const rateLimiters = createRateLimiters(config);
 

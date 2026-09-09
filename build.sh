@@ -32,7 +32,7 @@ while [[ $# -gt 0 ]]; do
       SELF_UPDATE_DRY_RUN=1
       shift
       ;;
-    install|setup|build|test|upgrade|self-update|help)
+    install|setup|build|browser|test|upgrade|self-update|help)
       [[ -z "$COMMAND" ]] || { echo "Only one command may be provided." >&2; exit 2; }
       COMMAND="$1"
       shift
@@ -54,6 +54,7 @@ Commands:
   install  Install server dependencies on Alpine Linux or Ubuntu.
   setup    Create missing local configuration and ask for deployment values.
   build    Build the Ubuntu 22.04+ Tauri DEB package.
+  browser  Build and validate production browser assets (no service startup).
   test     Run backend sandbox tests.
   upgrade      Fast-forward from GitHub, migrate configuration, update dependencies, and run backend tests.
   self-update  Fetch and syntax-check the upstream build.sh; use --continue to run upgrade with it.
@@ -276,9 +277,14 @@ ensure_rust() {
 }
 
 install_server_node_dependencies() {
-  npm ci --ignore-scripts --include=optional --prefix "$ROOT_DIR"
+  npm ci --ignore-scripts --include=optional --include=dev --prefix "$ROOT_DIR"
   npm rebuild --foreground-scripts --prefix "$ROOT_DIR"
   (cd "$ROOT_DIR" && node -e 'for (const name of ["bcrypt", "sqlite3", "unrs-resolver"]) require.resolve(name);')
+  cmd_browser
+}
+
+cmd_browser() {
+  npm run build:browser --prefix "$ROOT_DIR" && npm run check:browser --prefix "$ROOT_DIR"
 }
 
 install_desktop_node_dependencies() {
@@ -746,6 +752,7 @@ case "$COMMAND" in
   install) cmd_install ;;
   setup) cmd_setup ;;
   build) cmd_build ;;
+  browser) cmd_browser ;;
   test) cmd_test ;;
   upgrade) cmd_upgrade ;;
   self-update) self_update ;;

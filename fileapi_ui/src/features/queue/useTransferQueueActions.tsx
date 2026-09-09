@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useRef } from "react";
+import { locationHeaders } from "../remote-browser/remote-browser-contracts";
 import { listen } from "@tauri-apps/api/event";
 import {
   formatQueueProgress,
@@ -33,7 +35,7 @@ export type UseTransferQueueActionsParams = {
   setNotice: (message: string) => void;
   api: (endpoint: string, init?: RequestInit) => Promise<ApiLikeResponse>;
   readError: (response: ApiLikeResponse) => Promise<string>;
-  session: { token: string; locationId: string; ignoreTlsErrors: boolean };
+  session: { token: string; locationId: string; ignoreTlsErrors: boolean; nativeSessionId?: string; userId?: number | null; locationRevision?: string };
   serverUrl: () => string;
   writeOperationLog: (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string, level?: "DEBUG" | "INFO" | "WARN" | "ERROR") => void;
   describeError: (error: unknown) => string;
@@ -84,6 +86,30 @@ export function useTransferQueueActions({
   queueProgressSamplesRef, latestQueueProgressRef, queueCompletionHandlersRef,
   cancelledQueueItemsRef, queueSchedulerRef,
 }: UseTransferQueueActionsParams) {
+  // Runtime-only contexts never enter the queue store or localStorage.
+  const contexts = useRef(new Map<string, {
+    origin: string; sessionId?: string; headers: [string, string][]; ignoreTlsErrors: boolean;
+    ownerId?: number | null; locationId: string; locationRevision?: string;
+    batchId?: string; attemptId?: string; cancel?: () => Promise<void>;
+  }>());
+  const alive = useRef(true);
+  const waits = useRef(new Map<number, () => void>());
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; for (const [timer, resolve] of waits.current) { window.clearTimeout(timer); resolve(); } waits.current.clear(); };
+  }, []);
+  const captureContext = (item: TransferQueueItem) => {
+    let context = contexts.current.get(item.id);
+    if (!context) {
+      context = { origin: serverUrl(), sessionId: session.nativeSessionId, headers: locationHeaders({ ...session, locationId: item.locationId }), ignoreTlsErrors: session.ignoreTlsErrors, ownerId: session.userId, locationId: item.locationId, locationRevision: session.locationRevision };
+      contexts.current.set(item.id, context);
+    }
+    return context;
+  };
+  const wait = (ms: number) => new Promise<void>((resolve) => {
+    const timer = window.setTimeout(() => { waits.current.delete(timer); resolve(); }, ms);
+    waits.current.set(timer, resolve);
+  });
   const logQueueEvent = (item: TransferQueueItem, event: string, fields: Record<string, unknown> = {}, level: "DEBUG" | "INFO" | "WARN" | "ERROR" = "INFO") => {
     const destination = item.kind === "upload"
       ? `${item.locationName}:${item.destinationPath || "/"}`
@@ -109,6 +135,7 @@ export function useTransferQueueActions({
   };
 
   const updateQueueItem = (id: string, update: Partial<TransferQueueItem>) => {
+    if (!alive.current) return;
     setTransferQueue((current) => {
       const now = Date.now();
       const updated = current.map((item) => {
@@ -165,12 +192,19 @@ export function useTransferQueueActions({
     const current = transferQueue.find((item) => item.id === id);
     if (!current || ["completed", "failed", "cancelled", "needs_user_action"].includes(current.status)) return;
     cancelledQueueItemsRef.current.add(id);
+    const context = contexts.current.get(id);
+    if (current.kind === "upload" && !current.sshEntryId && context) {
+      updateQueueItem(id, { cancellationRequested: true, detail: "Cancellation requested. Waiting for the server outcome." });
+      void invoke("cancel_transfer", { transferId: context.attemptId || id }).catch(() => undefined);
+      void context.cancel?.();
+      return;
+    }
     queueProgressSamplesRef.current.delete(id);
     latestQueueProgressRef.current.delete(id);
     queueCompletionHandlersRef.current.delete(id);
     void invoke("cancel_transfer", { transferId: id })
-      .then(() => logQueueEvent(current, "cancel_requested", { backendCancelSucceeded: true, alreadyRunning: current.status === "running" }))
-      .catch((error) => logQueueEvent(current, "cancel_requested", { backendCancelSucceeded: false, alreadyRunning: current.status === "running", failureType: "cancel_command", errorMessage: describeError(error) }, "WARN"));
+      .then(() => logQueueEvent(current, "cancel_requested", { nativeCancelRequested: true, alreadyRunning: current.status === "running" }))
+      .catch((error) => logQueueEvent(current, "cancel_requested", { nativeCancelRequested: false, alreadyRunning: current.status === "running", failureType: "cancel_command", errorMessage: describeError(error) }, "WARN"));
     updateQueueItem(id, { status: "cancelled", detail: "Cancelled by user." });
     logQueueEvent(current, "cancelled", { finalCancelledState: true });
   };
@@ -230,125 +264,131 @@ export function useTransferQueueActions({
   };
 
   const executeQueuedUpload = async (item: TransferQueueItem) => {
-    writeOperationLog("upload", "started", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "Transfer queue upload started.", "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: "Inspecting local files (this does not load file contents into the UI)..." });
+    const context = captureContext(item);
+    const attemptId = crypto.randomUUID();
+    context.attemptId = attemptId;
+    const isCurrent = () => alive.current && context.attemptId === attemptId;
+    updateQueueItem(item.id, { status: "running", detail: item.serverBatchId ? "Reconciling server upload..." : "Preparing upload..." });
     let unlistenProgress: (() => void) | undefined;
-    try {
-      const summary = await invoke<{ files: number; directories: number; totalSize: number; sources: { path: string; size: number; modified: number }[] }>("inspect_upload_paths", { paths: item.paths });
-      unlistenProgress = await listen<{ transferId: string; bytesCompleted: number; bytesTotal: number }>(
-        "upload-progress",
-        (event) => {
-          if (event.payload.transferId !== item.id || isQueueItemCancelled(item.id)) return;
-          const { bytesCompleted, bytesTotal } = event.payload;
-          const progress = updateQueueProgress(item.id, bytesCompleted, bytesTotal || null, 0, summary.files);
-          updateQueueItem(item.id, {
-            detail: `Uploading ${formatSize(bytesCompleted)} / ${formatSize(bytesTotal)}${formatQueueProgress(progress)}`,
-          });
-        },
-      );
-      const headers: [string, string][] = session.token && session.token !== "cookie"
-        ? [
-            ["Authorization", `Bearer ${session.token}`],
-            ["X-Location-ID", item.locationId],
-          ]
-        : [["X-Location-ID", item.locationId]];
-      updateQueueItem(item.id, {
-        detail: `Prepared ${summary.files} file${summary.files === 1 ? "" : "s"} (${formatSize(summary.totalSize)}); streaming upload...`,
+    let dispatched = false;
+    let cancellationSent = false;
+    const request = async (endpoint: string, method = "GET", body?: unknown) => {
+      if (!context.sessionId) throw new Error("The original native session is unavailable. Sign in and re-add the transfer.");
+      const raw = await invoke<NativeApiResponse>("api_request", {
+        url: `${context.origin}${endpoint}`, method,
+        headers: [...context.headers, ...(body === undefined ? [] : [["Content-Type", "application/json"]])],
+        body: body === undefined ? undefined : Array.from(new TextEncoder().encode(JSON.stringify(body))),
+        ignoreTlsErrors: context.ignoreTlsErrors, sessionId: context.sessionId,
       });
-      updateQueueItem(item.id, { progress: initialQueueProgress(summary.files, summary.totalSize || null) });
-      const currentSources = await invoke<{ files: number; directories: number; totalSize: number; sources: { path: string; size: number; modified: number }[] }>("inspect_upload_paths", { paths: item.paths });
-      const sourceChanged = summary.sources.length !== currentSources.sources.length
-        || summary.sources.some((source, index) => {
-          const current = currentSources.sources[index];
-          return !current || current.path !== source.path || current.size !== source.size || current.modified !== source.modified;
-        });
-      if (sourceChanged) throw new Error("Upload source changed after it was queued. Re-add the file to upload the new content.");
-      const rawResponse = await invoke<NativeApiResponse>("api_upload_paths", {
-        transferId: item.id,
-        expectedSources: summary.sources,
-        url: `${serverUrl()}/api/upload/multiple`,
-        headers,
-        paths: item.paths,
-        path: item.destinationPath,
-        ignoreTlsErrors: session.ignoreTlsErrors,
-      });
-      const response: ApiLikeResponse = {
-        ok: rawResponse.status >= 200 && rawResponse.status < 300,
-        status: rawResponse.status,
-        text: async () => new TextDecoder().decode(new Uint8Array(rawResponse.body)),
-        json: async () => JSON.parse(new TextDecoder().decode(new Uint8Array(rawResponse.body))),
-      };
-      if (!response.ok) throw new Error(await readError(response));
-      const { batchId } = (await response.json()) as { batchId?: string };
-      if (!batchId) {
-        if (isQueueItemCancelled(item.id)) return;
-        updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.` });
-        writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${summary.files} file${summary.files === 1 ? "" : "s"}.`);
-        return;
+      const text = new TextDecoder().decode(new Uint8Array(raw.body));
+      if (raw.status < 200 || raw.status >= 300) throw new Error(`Upload server request failed (HTTP ${raw.status}).`);
+      return JSON.parse(text);
+    };
+    context.cancel = async () => {
+      if (!context.batchId || cancellationSent || !isCurrent()) return;
+      cancellationSent = true;
+      try { await request(`/api/progress/batch/${encodeURIComponent(context.batchId)}/cancel`, "POST"); }
+      catch {
+        updateQueueItem(item.id, { uploadOutcome: "reconcile", detail: "Server cancellation is unconfirmed. Checking the original batch." });
       }
-      for (let attempt = 0; attempt < 600; attempt += 1) {
-        if (isQueueItemCancelled(item.id)) return;
-        const progressResponse = await invoke<NativeApiResponse>("api_request", {
-          url: `${serverUrl()}/api/progress/batch/${encodeURIComponent(batchId)}`,
-          method: "GET",
-          headers,
-          body: null,
-          ignoreTlsErrors: session.ignoreTlsErrors,
-        });
-        if (isQueueItemCancelled(item.id)) return;
-        const progressBytes = new Uint8Array(progressResponse.body);
-        const progressOk = progressResponse.status >= 200 && progressResponse.status < 300;
-        const progressLike: ApiLikeResponse = {
-          ok: progressOk,
-          status: progressResponse.status,
-          text: async () => new TextDecoder().decode(progressBytes),
-          json: async () => JSON.parse(new TextDecoder().decode(progressBytes)),
-        };
-        if (!progressLike.ok) throw new Error(await readError(progressLike));
-        const batch = await progressLike.json() as { status: string; progress: number; successCount: number; totalFiles: number; failedCount: number; totalSize?: number; transferredSize?: number };
-        const totalBytes = batch.totalSize || summary.totalSize || null;
-        const completedBytes = batch.transferredSize || (totalBytes ? Math.round(totalBytes * batch.progress / 100) : 0);
-        const queueProgress = updateQueueProgress(item.id, completedBytes, totalBytes, batch.successCount, batch.totalFiles);
-        updateQueueItem(item.id, { detail: `${batch.successCount}/${batch.totalFiles} files (${Math.round(batch.progress)}%)${totalBytes ? ` · ${formatSize(completedBytes)} / ${formatSize(totalBytes)}` : ""}${formatQueueProgress(queueProgress)}` });
-        if (batch.status === "completed") {
-          if (isQueueItemCancelled(item.id)) return;
-          updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.` });
-          writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${batch.successCount} file${batch.successCount === 1 ? "" : "s"}.`);
-          await loadFiles(path);
+    };
+    try {
+      if (item.serverBatchId) context.batchId = item.serverBatchId;
+      const reconciling = Boolean(context.batchId);
+      if (!context.batchId) {
+        if (isQueueItemCancelled(item.id)) {
+          updateQueueItem(item.id, { status: "cancelled", detail: "Cancelled before server reservation." });
           return;
         }
-        if (batch.status === "failed" || batch.status === "partial_fail") {
-          throw new Error(`${batch.failedCount} file${batch.failedCount === 1 ? "" : "s"} failed.`);
+        const reservation = await request("/api/upload/batches", "POST", { path: item.destinationPath, clientAttemptId: attemptId });
+        if (typeof reservation.batchId !== "string" || !reservation.batchId || reservation.locationId !== context.locationId) throw new Error("Invalid upload reservation response; no bytes were sent.");
+        context.batchId = reservation.batchId;
+        updateQueueItem(item.id, { serverBatchId: context.batchId, clientAttemptId: attemptId, serverOrigin: context.origin, ownerId: context.ownerId ?? undefined, locationRevision: context.locationRevision, uploadOutcome: "reserved" });
+      }
+      if (!isCurrent()) return;
+      if (!reconciling && !isQueueItemCancelled(item.id)) {
+        const summary = await invoke<{ files: number; directories: number; totalSize: number; sources: { path: string; size: number; modified: number }[] }>("inspect_upload_paths", { paths: item.paths });
+        if (!isCurrent()) return;
+        unlistenProgress = await listen<{ transferId: string; bytesCompleted: number; bytesTotal: number }>(
+          "upload-progress",
+          (event) => {
+            if (event.payload.transferId !== attemptId || !isCurrent() || isQueueItemCancelled(item.id)) return;
+            const { bytesCompleted, bytesTotal } = event.payload;
+            const progress = updateQueueProgress(item.id, bytesCompleted, bytesTotal ?? null, 0, summary.files);
+            updateQueueItem(item.id, { detail: `Sending request: ${formatSize(bytesCompleted)} / ${formatSize(bytesTotal)}${formatQueueProgress(progress)}` });
+          },
+        );
+        if (!isCurrent()) return;
+        updateQueueItem(item.id, { progress: initialQueueProgress(summary.files, summary.totalSize) });
+        const currentSources = await invoke<{ files: number; directories: number; totalSize: number; sources: { path: string; size: number; modified: number }[] }>("inspect_upload_paths", { paths: item.paths });
+        const sourceChanged = summary.sources.length !== currentSources.sources.length
+          || summary.sources.some((source, index) => {
+            const current = currentSources.sources[index];
+            return !current || current.path !== source.path || current.size !== source.size || current.modified !== source.modified;
+          });
+        if (sourceChanged) throw new Error("Upload source changed after it was queued. Re-add the file to upload the new content.");
+        if (!isCurrent()) return;
+        if (!isQueueItemCancelled(item.id)) {
+          dispatched = true;
+          updateQueueItem(item.id, { uploadOutcome: "reconcile" });
+          try {
+            const rawResponse = await invoke<NativeApiResponse>("api_upload_paths", {
+              transferId: attemptId, expectedSources: summary.sources,
+              url: `${context.origin}/api/upload/multiple`,
+              headers: [...context.headers, ["X-Upload-Batch-ID", context.batchId]],
+              paths: item.paths, path: item.destinationPath,
+              ignoreTlsErrors: context.ignoreTlsErrors, sessionId: context.sessionId,
+            });
+            if (rawResponse.status >= 200 && rawResponse.status < 300) updateQueueItem(item.id, { uploadOutcome: "accepted" });
+          } catch {
+            // A lost acceptance response is not permission to send the files again.
+            updateQueueItem(item.id, { detail: "Upload response lost. Reconciling the reserved batch." });
+          }
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      }
+      unlistenProgress?.(); unlistenProgress = undefined;
+      queueProgressSamplesRef.current.delete(item.id);
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        if (!isCurrent()) return;
+        if (isQueueItemCancelled(item.id)) await context.cancel();
+        const batch = await request(`/api/progress/batch/${encodeURIComponent(context.batchId!)}`);
+        if (!isCurrent()) return;
+        if (!Number.isFinite(batch.transferredSize) || batch.transferredSize < 0 || !Number.isFinite(batch.totalSize) || batch.totalSize < 0) throw new Error("Invalid server byte counters.");
+        const totalBytes = batch.totalSizeKnown === true ? batch.totalSize : null;
+        const completedBytes = batch.transferredSize;
+        const queueProgress = updateQueueProgress(item.id, completedBytes, totalBytes, batch.successCount, batch.totalFiles);
+        if (totalBytes === 0 && batch.status === "completed") {
+          // Empty/directory-only batches complete by server settlement, not byte division.
+          queueProgress.percentage = 100;
+          updateQueueItem(item.id, { progress: queueProgress });
+        }
+        const detail = `${batch.successCount}/${batch.totalFiles} files committed; ${batch.failedCount || 0} failed; ${batch.cancelledCount || 0} cancelled. ${batch.phase || batch.status}${formatQueueProgress(queueProgress)}`;
+        updateQueueItem(item.id, { detail });
+        if (["completed", "cancelled", "failed", "partial_fail", "expired"].includes(batch.status)) {
+          const status = batch.status === "completed" ? "completed" : batch.status === "cancelled" ? "cancelled" : "failed";
+          updateQueueItem(item.id, { status, uploadOutcome: "settled", detail });
+          await loadFiles(path).catch(() => undefined);
+          return;
+        }
+        await wait(1000);
       }
       throw new Error("Upload progress timed out.");
     } catch (error) {
-      if (isQueueItemCancelled(item.id)) return;
-      const recovery = classifyQueueError(error);
-      const detail = recovery.message;
-      const retryCount = item.retryCount || 0;
-      if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
-        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
-        updateQueueItem(item.id, nextItem);
-        logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
-        logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) }, "INFO");
-        window.setTimeout(() => { logQueueEvent(nextItem, "retry_started", { attempt: retryCount + 1, maximumAttempts: 3 }); updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedUpload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
-        return;
-      }
-      if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
+      if (!isCurrent()) return;
+      if (context.batchId && !dispatched && !item.serverBatchId) await context.cancel();
       updateQueueItem(item.id, {
-        status: recovery.needsUserAction ? "needs_user_action" : "failed",
-        detail: `[${recovery.category}] ${detail}`,
-        errorCategory: recovery.category,
+        status: "needs_user_action", uploadOutcome: context.batchId ? "reconcile" : undefined,
+        detail: context.batchId ? `Server outcome unconfirmed. Retry checks the original batch without re-uploading. ${describeError(error)}` : describeError(error),
       });
-      writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Upload failed: ${detail}`, "ERROR");
     } finally {
       unlistenProgress?.();
+      context.cancel = undefined;
     }
   };
 
   const executeQueuedDownload = async (item: TransferQueueItem) => {
+    if (!alive.current || isQueueItemCancelled(item.id)) return;
+    const context = captureContext(item);
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
     logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, archiveFormat: item.archiveFormat || null }, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? `Preparing ${item.archiveFormat} archive...` : "Downloading..." });
@@ -359,7 +399,7 @@ export function useTransferQueueActions({
     const unlistenProgress = await listen<{ transferId: string; bytesCompleted: number; bytesTotal?: number }>(
       "download-progress",
       (event) => {
-        if (event.payload.transferId !== item.id) return;
+        if (event.payload.transferId !== item.id || !alive.current || isQueueItemCancelled(item.id)) return;
         const { bytesCompleted, bytesTotal } = event.payload;
         const knownTotalBytes = latestQueueProgressRef.current.get(item.id)?.totalBytes
           ?? item.progress?.totalBytes
@@ -369,9 +409,11 @@ export function useTransferQueueActions({
     );
     try {
       if (item.archiveFormat) {
-        await new Promise((resolve) => window.setTimeout(resolve, 100));
+        await wait(100);
         updateQueueItem(item.id, { detail: `Streaming ${item.archiveFormat} download...` });
       }
+      if (!alive.current || isQueueItemCancelled(item.id)) return;
+      if (!context.sessionId) throw new Error("The original native session is unavailable. Re-add the transfer.");
       const destination = await invoke<string>("download_to_disk", {
         transferId: item.id,
         url: item.downloadUrl,
@@ -380,7 +422,8 @@ export function useTransferQueueActions({
         body: item.downloadBody,
         fileName: item.downloadFileName || "download.bin",
         destinationFolder: item.localDestinationFolder || "",
-        ignoreTlsErrors: session.ignoreTlsErrors,
+        ignoreTlsErrors: context.ignoreTlsErrors,
+        sessionId: context.sessionId,
       });
       if (isQueueItemCancelled(item.id)) return;
       const completionHandler = queueCompletionHandlersRef.current.get(item.id);
@@ -405,7 +448,7 @@ export function useTransferQueueActions({
         updateQueueItem(item.id, nextItem);
         logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
         logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) });
-        window.setTimeout(() => { logQueueEvent(nextItem, "retry_started", { attempt: retryCount + 1, maximumAttempts: 3 }); updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownload({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
+        void wait(retryDelayMs(retryCount + 1)).then(() => { if (!alive.current || isQueueItemCancelled(item.id)) return; updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownload({ ...nextItem, status: "queued" }); });
         return;
       }
       if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
@@ -417,18 +460,19 @@ export function useTransferQueueActions({
   };
 
   const executeQueuedDownloadSet = async (item: TransferQueueItem) => {
+    if (!alive.current || isQueueItemCancelled(item.id)) return;
+    const context = captureContext(item);
     const files = item.setFiles || [];
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
     logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, itemCount: files.length }, "DEBUG");
     updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${files.length} files...`, setCompleted: 0 });
-    const headers: [string, string][] = session.token && session.token !== "cookie"
-      ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
-      : [];
+    const headers = context.headers;
     let completed = 0;
     let lastDestinationRoot = "";
     try {
       for (const file of files) {
-        if (isQueueItemCancelled(item.id)) return;
+        if (!alive.current || isQueueItemCancelled(item.id)) return;
+        if (!context.sessionId) throw new Error("The original native session is unavailable. Re-add the transfer.");
         // `file.relativePath` already starts with the selected item's own
         // top-level name (the flatten endpoint prefixes it with each
         // selected item's name) -- it must not also be nested under an
@@ -436,13 +480,14 @@ export function useTransferQueueActions({
         // selected directory would end up duplicated inside itself.
         const destination = await invoke<string>("download_to_disk_at", {
           transferId: item.id,
-          url: `${serverUrl()}/api/files/download/${downloadPath(file.remotePath)}`,
+          url: `${context.origin}/api/files/download/${downloadPath(file.remotePath)}`,
           method: "GET",
           headers,
           body: undefined,
           destinationFolder: item.localDestinationFolder || "",
           relativePath: file.relativePath,
-          ignoreTlsErrors: session.ignoreTlsErrors,
+          ignoreTlsErrors: context.ignoreTlsErrors,
+          sessionId: context.sessionId,
         });
         completed += 1;
         lastDestinationRoot = destination.slice(0, destination.length - (file.relativePath.length + 1));
@@ -463,7 +508,7 @@ export function useTransferQueueActions({
         updateQueueItem(item.id, nextItem);
         logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
         logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) });
-        window.setTimeout(() => { logQueueEvent(nextItem, "retry_started", { attempt: retryCount + 1, maximumAttempts: 3 }); updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownloadSet({ ...nextItem, status: "queued" }); }, retryDelayMs(retryCount + 1));
+        void wait(retryDelayMs(retryCount + 1)).then(() => { if (!alive.current || isQueueItemCancelled(item.id)) return; updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownloadSet({ ...nextItem, status: "queued" }); });
         return;
       }
       if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
@@ -503,18 +548,27 @@ export function useTransferQueueActions({
 
   const runOnce = (id: string, execute: () => Promise<void>) => queueSchedulerRef.current.runExclusive(id, execute);
   const runQueuedSshUpload = (item: TransferQueueItem, profile: SshProfile) => runOnce(item.id, () => executeQueuedSshUpload(item, profile));
-  const runQueuedUpload = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedUpload(item));
-  const runQueuedDownload = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedDownload(item));
-  const runQueuedDownloadSet = (item: TransferQueueItem) => runOnce(item.id, () => executeQueuedDownloadSet(item));
+  const runQueuedUpload = (item: TransferQueueItem) => { captureContext(item); return runOnce(item.id, () => executeQueuedUpload(item)); };
+  const runQueuedDownload = (item: TransferQueueItem) => { captureContext(item); return runOnce(item.id, () => executeQueuedDownload(item)); };
+  const runQueuedDownloadSet = (item: TransferQueueItem) => { captureContext(item); return runOnce(item.id, () => executeQueuedDownloadSet(item)); };
   const runQueuedSshDownload = (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => runOnce(item.id, () => executeQueuedSshDownload(item, profile, items));
 
   const retryDesktopQueueItem = (item: TransferQueueItem) => {
+    const context = contexts.current.get(item.id);
+    if (!item.sshEntryId && (!context || context.sessionId !== session.nativeSessionId || context.origin !== serverUrl() || context.ownerId !== session.userId)) {
+      setNotice(item.serverBatchId ? "The original upload session is unavailable. Server outcome is unconfirmed; do not re-upload automatically." : "The original transfer session is unavailable. Re-add the transfer to authenticate again.");
+      return;
+    }
+    if (item.kind === "upload" && item.uploadOutcome === "settled") {
+      setNotice("This batch has settled. Review its partial results before adding any remaining files.");
+      return;
+    }
     if (item.kind === "download" && !item.sshEntryId && !item.downloadUrl) {
       setNotice("This restored download no longer contains its request credentials. Re-add the download to retry it safely.");
       return;
     }
     if (!(["failed", "needs_user_action"] as string[]).includes(item.status)) return;
-    cancelledQueueItemsRef.current.delete(item.id);
+    if (!item.cancellationRequested) cancelledQueueItemsRef.current.delete(item.id);
     const retryItem = { ...item, status: "queued" as const, detail: "Retry queued", finishedAt: undefined };
     updateQueueItem(item.id, retryItem);
     writeOperationLog(item.kind === "upload" ? "upload" : "download", "retry", item.label, item.destinationPath, `Manual retry requested (attempt ${(item.retryCount || 0) + 1}).`, "INFO");
@@ -605,13 +659,7 @@ export function useTransferQueueActions({
     const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
     const fileName = singleFile ? selectedItems[0].name : `archive.${archiveFormat}`;
     const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-    const headers: [string, string][] = session.token && session.token !== "cookie"
-      ? [
-          ["Authorization", `Bearer ${session.token}`],
-          ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : []),
-          ...(singleFile ? [] : [["Content-Type", "application/json"] as [string, string]]),
-        ]
-      : [];
+    const headers = locationHeaders(session, !singleFile);
     const body = singleFile ? undefined : Array.from(new TextEncoder().encode(JSON.stringify({
       items: selectedItems.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
       currentPath: path,

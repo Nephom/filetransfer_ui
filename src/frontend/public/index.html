@@ -54,6 +54,10 @@
         .selection-count { color: #78c9ee; font-size: 13px; }
         .notice { display: flex; align-items: center; gap: 8px; margin: 0 20px 10px; padding: 9px 12px; border-radius: 4px; font-size: 13px; }.error-notice { color: #ffb8ae; background: #3b1d28; border: 1px solid #813847; }.transfer-notice { color: #9be8ff; background: #0d3850; border: 1px solid #226c88; }.activity-dot { width: 7px; height: 7px; border-radius: 50%; background: #6bf0ca; box-shadow: 0 0 0 0 rgba(107,240,202,.6); animation: pulse 1.4s infinite; }
         .file-area { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 12px; }
+        .file-area { overflow-anchor: none; }
+        .content { min-height: 0; }
+        .virtual-grid-spacer { grid-column: 1 / -1; padding: 0; border: 0; pointer-events: none; }
+        .virtual-table-spacer, .virtual-table-spacer td { padding: 0 !important; border: 0; line-height: 0; }
         .file-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14px; }
         .file-table th { height: 36px; color: #79a1c3; text-align: left; font-size: 11px; letter-spacing: .05em; font-weight: 700; border-bottom: 1px solid #254764; user-select: none; }
         .file-table th:first-child, .file-table td:first-child { width: 48%; padding-left: 12px; }
@@ -78,12 +82,6 @@
 </head>
 <body>
     <div id="root"></div>
-    <script crossorigin src="/lib/react.development.js"></script>
-    <script crossorigin src="/lib/react-dom.development.js"></script>
-    <script src="/lib/babel.min.js"></script>
-    <script src="/components/LoginForm.js"></script>
-    <script src="/queue/store.js"></script>
-    <script type="text/babel" src="/components/FileBrowser.js"></script>
-    <script type="text/babel" src="/app.js"></script>
+    <script type="module" src="__BROWSER_ENTRY__"></script>
 </body>
 </html>

@@ -1,4 +1,5 @@
 import type { ShareLink, ShareResponse } from "./share-links-contracts";
+import { useRef } from "react";
 
 // Minimal structural shape of main.tsx's ApiResponse, matching exactly what
 // this hook calls on it -- avoids importing main.tsx's own (unexported)
@@ -23,6 +24,7 @@ export type UseShareLinksActionsParams = {
   shareLinkMode: "secure" | "direct";
   shareLinkExpirationDays: number;
   ensureApiRemote: () => void;
+  isContextCurrent: () => boolean;
   // The single selected, non-directory REMOTE file share() creates a link
   // for -- only its `path` is read, so callers can pass a plain object
   // rather than the full FileItem shape.
@@ -49,12 +51,15 @@ export type UseShareLinksActionsParams = {
 export function useShareLinksActions({
   run, notify, api, readError, session, serverUrl, activeLocationDisplayName,
   writeOperationLog, describeError, shareLinkMode, shareLinkExpirationDays,
-  ensureApiRemote, selectedShareableItem,
+  ensureApiRemote, isContextCurrent, selectedShareableItem,
   shareLinks, setShareLinks, setShareLinksLoading,
   setShareUrl, setShareLinksOpen, setSharePasswordOpen, setSharePasswordDraft,
 }: UseShareLinksActionsParams) {
-  const createShareLink = (password?: string) =>
+  const pendingShare = useRef<((password?: string) => Promise<void>) | null>(null);
+  const listGeneration = useRef(0);
+  const createCapturedShareLink = (password?: string) =>
     run(async () => {
+      if (!isContextCurrent()) throw new Error("The share's original Location has changed. Select the file again.");
       ensureApiRemote();
       const item = selectedShareableItem;
       if (!item || item.isDirectory) return;
@@ -78,13 +83,14 @@ export function useShareLinksActions({
         });
         if (!response.ok) throw new Error(await readError(response));
         const data = (await response.json()) as ShareResponse;
+        if (!isContextCurrent()) return;
         // "direct" mode returns a plain URL that streams the file straight
         // from the server with no page in between and no Authorization/JWT
         // header required, for tools that only accept a bare link (e.g. a
         // BMC firmware page). "secure" mode returns the share.html page
         // link, which supports the optional password set above.
         const url =
-          shareLinkMode === "direct"
+          shareLinkMode === "direct" && !password && data.data?.hasPassword !== true
             ? data.data?.directDownloadFullUrl ||
               (data.data?.directDownloadUrl ? `${serverUrl()}${data.data.directDownloadUrl}` : "")
             : data.data?.fullUrl ||
@@ -93,6 +99,7 @@ export function useShareLinksActions({
         setShareUrl(url);
         setSharePasswordOpen(false);
         setSharePasswordDraft("");
+        pendingShare.current = null;
         writeOperationLog("share", "completed", sourceLabel, "Public share link", JSON.stringify({ operationId, locationId: session.locationId, filePath: item.path, mode: shareLinkMode, expiration: shareLinkExpirationDays, passwordConfigured: Boolean(password), durationMs: Math.round(performance.now() - started) }));
         notify("Share link created.");
       } catch (error) {
@@ -100,26 +107,32 @@ export function useShareLinksActions({
         throw error;
       }
     });
+  const createShareLink = (password?: string) => (pendingShare.current || createCapturedShareLink)(password);
 
   const loadShareLinks = async () => {
     if (!session.token) return;
+    const generation = ++listGeneration.current;
     setShareLinksLoading(true);
     try {
       const response = await api(session.role === "admin" ? "/api/admin/share-links" : "/api/files/shares");
       if (!response.ok) throw new Error(await readError(response));
       const data = (await response.json()) as { data?: ShareLink[] };
+      if (!isContextCurrent() || generation !== listGeneration.current) return;
       setShareLinks(data.data || []);
+    } catch (error) {
+      if (isContextCurrent() && generation === listGeneration.current) throw error;
     } finally {
-      setShareLinksLoading(false);
+      if (isContextCurrent() && generation === listGeneration.current) setShareLinksLoading(false);
     }
   };
 
   const openShareLinks = () => {
     setShareLinksOpen(true);
-    void loadShareLinks();
+    void run(loadShareLinks);
   };
 
   const shareLinkUrl = (link: ShareLink, kind: "secure" | "direct") => {
+    if (kind === "direct" && link.hasPassword === true) return "";
     const relative = kind === "direct" ? link.directDownloadUrl : link.shareUrl;
     return relative ? `${serverUrl()}${relative}` : "";
   };
@@ -166,9 +179,11 @@ export function useShareLinksActions({
   ].filter((group) => group.links.length > 0);
 
   const share = () => {
+    pendingShare.current = null;
     const item = selectedShareableItem;
     if (!item || item.isDirectory) return;
     if (shareLinkMode === "secure") {
+      pendingShare.current = createCapturedShareLink;
       // The web UI's equivalent flow also lets the user set a password at
       // share time (it's per-link, not a global default), so ask here too
       // instead of always sharing without one.

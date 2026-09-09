@@ -1,5 +1,6 @@
 export type ShareResponse = {
   data?: {
+    hasPassword?: boolean;
     fullUrl?: string;
     shareUrl?: string;
     directDownloadUrl?: string;
@@ -8,6 +9,7 @@ export type ShareResponse = {
 };
 
 export type ShareLink = {
+  hasPassword?: boolean;
   shareToken: string;
   userId?: number | string;
   creatorUsername?: string;

@@ -1,1393 +1,495 @@
-const EventEmitter = require('events');
+const EventEmitter = require('node:events');
+const { AsyncLocalStorage } = require('node:async_hooks');
+const { createHash } = require('node:crypto');
 const { createClient } = require('redis');
-const path = require('path');
-const fs = require('fs').promises;
-const { systemLogger } = require('../utils/logger');
+const path = require('node:path');
+const fs = require('node:fs').promises;
+const { performance } = require('node:perf_hooks');
+const { assertSafePath, assertSafeTree, containsPath, pathError } = require('./path-safety');
 
-/**
- * Redis-based file system cache with polling-based monitoring
- * Optimized for large file systems (640K+ files)
- */
 class RedisFileSystemCache extends EventEmitter {
-  constructor(storagePath = './storage', redisOptions = {}) {
+  constructor(storagePath = './storage', options = {}) {
     super();
-    this.storagePath = path.resolve(storagePath); // Ensure it's an absolute path
-    this.redisOptions = {
-      host: redisOptions.host || 'localhost',
-      port: redisOptions.port || 6379,
-      ...redisOptions
-    };
-    this.redisClient = null;
+    const { locationId = 'default', redisClient, cacheTtlMs = 3000, ...redisOptions } = options;
+    this.cacheTtlMs = Number.isFinite(cacheTtlMs) ? Math.max(0, Math.min(cacheTtlMs, 3000)) : 3000;
+    this.storagePath = path.resolve(storagePath);
+    this.configuredRoot = this.storagePath;
+    this.locationId = locationId;
+    this.redisOptions = redisOptions;
+    this.redisClient = redisClient || null;
     this.initialized = false;
-    this.metrics = {
-      directoryScans: 0,
-      scanErrors: 0,
-      hotCacheHits: 0,
-      memoryCacheHits: 0,
-      redisCacheHits: 0,
-      redisErrors: 0,
-      cacheMisses: 0
-    };
+    this.rootIdentity = null;
+    this.namespace = null;
     this.directoryCache = new Map();
-    this.directoryMtimes = new Map(); // Track directory modification times
-    this.activeDirs = new Set(); // Track directories user has entered
+    this.snapshotMetadata = new WeakMap();
+    this.directoryMtimes = new Map();
+    this.activeDirs = new Set();
+    this.hotCache = new Map();
+    this.hotCacheMaxSize = 50;
+    this.hotCacheAccessOrder = [];
+    this.lastMtimeCheck = new Map();
+    this.mtimeCheckThrottle = 2000;
+    this.rootPollFrequency = 3000;
     this.rootPollingInterval = null;
-    this.rootPollFrequency = 3000; // Poll root directory every 3 seconds
-
-    // Global index for search
+    this.indexingInterval = null;
     this.isIndexing = false;
     this.indexProgress = { current: 0, total: 0, status: 'idle' };
-    this.indexingInterval = null;
-
-    // Performance optimization: Memory-level cache for hot directories
-    this.hotCache = new Map(); // LRU-style cache for frequently accessed directories
-    this.hotCacheMaxSize = 50; // Keep up to 50 directories in hot cache
-    this.hotCacheAccessOrder = []; // Track access order for LRU eviction
-
-    // Mtime check throttling to prevent excessive fs.stat() calls
-    this.lastMtimeCheck = new Map(); // Track last mtime check timestamp for each directory
-    this.mtimeCheckThrottle = 2000; // Don't check mtime more than once per 2 seconds for same directory
+    this.lastIndex = null;
+    this.metrics = { directoryScans: 0, scanErrors: 0, hotCacheHits: 0, memoryCacheHits: 0, redisCacheHits: 0, redisErrors: 0, cacheMisses: 0 };
+    this.work = Promise.resolve();
+    this.reads = new Set();
+    this.workContext = new AsyncLocalStorage();
+    this.closing = false;
+    this.closed = false;
+    this.generation = 0;
+    this.snapshotGeneration = 0;
   }
 
-  /**
-   * Initialize the cache and connect to Redis
-   * OPTIMIZED: Check if root directory is already cached in Redis to avoid re-scanning on restart
-   */
-  async initialize() {
-    try {
-      await systemLogger.logSystem('INFO', 'Initializing Redis file system cache...');
+  // Serialize scans and Redis work, including timers, so clear and close have a real
+  // settlement boundary. Nested public aliases stay in the admitted job.
+  _run(callback) {
+    if (this.workContext.getStore() === this) return callback();
+    if (this.closing || this.closed) return Promise.reject(pathError('ESHUTDOWN', 'Cache is closing'));
+    const background = this.workContext.getStore();
+    const job = this.work.then(() => this.workContext.run(this, async () => {
+      if (background && (background.generation !== this.generation || this.closing)) return;
+      await this._checked(this.configuredRoot);
+      return callback();
+    }));
+    this.work = job.catch(() => {});
+    return job;
+  }
 
-      // Connect to Redis
-      this.redisClient = createClient(this.redisOptions);
+  _read(callback) {
+    if (this.closing || this.closed) return Promise.reject(pathError('ESHUTDOWN', 'Cache is closing'));
+    const job = Promise.resolve().then(callback).then(result => {
+      if (this.closing || this.closed) throw pathError('ESHUTDOWN', 'Cache is closing');
+      return result;
+    });
+    this.reads.add(job);
+    job.then(() => this.reads.delete(job), () => this.reads.delete(job));
+    return job;
+  }
 
-      this.redisClient.on('error', (err) => {
-        systemLogger.logSystem('ERROR', `Redis Client Error: ${err.message}`);
-      });
-
-      this.redisClient.on('connect', () => {
-        systemLogger.logSystem('INFO', 'Connected to Redis');
-      });
-
-      await this.redisClient.connect();
-
-      // OPTIMIZATION: Check if root directory is already cached in Redis
-      const needsScan = await this.checkAndLoadRootCache();
-
-      if (needsScan) {
-        // Cache not found or outdated, perform initial scan
-        systemLogger.logSystem('INFO', '📁 Performing initial root directory scan...');
-        await this.updateDirectoryCache(this.storagePath);
-      } else {
-        systemLogger.logSystem('INFO', '✅ Root directory loaded from Redis cache (no scan needed)');
-      }
-
-      // Start polling root directory for changes
-      this.startRootPolling();
-
-      this.initialized = true;
-      systemLogger.logSystem('INFO', 'Redis file system cache initialized successfully (polling mode)');
-
-      // Start periodic global indexing for search functionality
-      // This runs in background and doesn't block initialization
-      // OPTIMIZED: Use incremental indexing instead of full rebuild
-      systemLogger.logSystem('INFO', 'Starting incremental indexing for search...');
-      this.startPeriodicIndexing(6); // Re-index every 6 hours
-
-      return true;
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to initialize Redis cache: ${error.message}`);
-      throw this.createStorageError(error, 'initialize');
+  async _checked(target, options = {}) {
+    const canonical = await fs.realpath(this.configuredRoot);
+    const stats = await fs.stat(canonical);
+    const identity = `${canonical}:${stats.dev}:${stats.ino}`;
+    if (this.rootIdentity && identity !== this.rootIdentity) throw pathError('ESTALE', 'Cache root identity changed');
+    if (!this.rootIdentity) {
+      this.rootIdentity = identity;
+      this.storagePath = canonical;
+      this.namespace = `fs:v2:${createHash('sha256').update(JSON.stringify([this.locationId, identity])).digest('hex')}:`;
     }
+    return assertSafePath(this.configuredRoot, target, options);
+  }
+
+  key(family, relative = '') {
+    if (!this.namespace) throw pathError('EINVAL', 'Cache root has not been checked');
+    return `${this.namespace}${family}:${Buffer.from(relative).toString('base64url')}`;
+  }
+
+  async *_keys(family = '') {
+    if (!this.redisClient?.isReady) return;
+    const prefix = `${this.namespace}${family ? `${family}:` : ''}`;
+    for await (const batch of this.redisClient.scanIterator({ MATCH: `${prefix}*`, COUNT: 1000 })) {
+      for (const key of Array.isArray(batch) ? batch : [batch]) if (key.startsWith(prefix)) yield key;
+    }
+  }
+
+  async _deleteKeys(family = '', predicate = () => true) {
+    const batch = [];
+    for await (const key of this._keys(family)) {
+      if (!predicate(key)) continue;
+      batch.push(key);
+      if (batch.length === 1000) { await this.redisClient.del(batch); batch.length = 0; }
+    }
+    if (batch.length) await this.redisClient.del(batch);
+  }
+
+  initialize() {
+    if (this.closing || this.closed) return Promise.reject(pathError('ESHUTDOWN', 'Cache is closing'));
+    if (this.initialization) return this.initialization;
+    if (this.initialized) return Promise.resolve(true);
+    this.initialization = this._run(async () => {
+      if (!this.redisClient) {
+        this.redisClient = createClient(this.redisOptions);
+        this.redisClient.on('error', error => this.emit('warning', { code: error.code || 'REDIS_ERROR' }));
+      }
+      if (!this.redisClient.isReady) await this.redisClient.connect();
+      // Cold migration: do not read or remove any unscoped legacy data.
+      await this._deleteKeys();
+      await this.updateDirectoryCache(this.storagePath);
+      this.initialized = true;
+      if (!this.closing) {
+        this.startRootPolling();
+        this.startPeriodicIndexing();
+      }
+      return true;
+    }).finally(() => { this.initialization = null; });
+    return this.initialization;
   }
 
   createStorageError(error, operation) {
-    const storageError = new Error(`Storage operation failed during ${operation}`);
-    storageError.name = 'StorageCacheError';
-    storageError.storageCode = error.storageCode || error.code || 'STORAGE_ERROR';
-    storageError.operation = operation;
-    storageError.statusCode = 503;
-    storageError.cause = error;
-    return storageError;
+    const result = new Error(`Storage operation failed during ${operation}`, { cause: error });
+    Object.assign(result, { name: 'StorageCacheError', code: error.code || error.storageCode || 'STORAGE_ERROR', storageCode: error.storageCode || error.code || 'STORAGE_ERROR', operation, statusCode: 503 });
+    return result;
   }
 
-  /**
-   * Check if root directory cache exists in Redis and is still valid
-   * Returns true if scan is needed, false if cache is valid
-   * OPTIMIZATION: Avoid re-scanning root directory on every restart
-   */
-  async checkAndLoadRootCache() {
-    try {
-      const rootPath = path.resolve(this.storagePath);
-      const dirKey = `dir:${rootPath}`;
+  async checkAndLoadRootCache() { return this._run(async () => true); }
 
-      // Check if cache exists in Redis
-      const cachedData = await this.redisClient.hGetAll(dirKey);
-
-      if (!cachedData || !cachedData.contents) {
-        systemLogger.logSystem('INFO', '⚠️  No existing cache found in Redis for root directory');
-        return true; // Need to scan
-      }
-
-      // Get current directory mtime
-      const currentStat = await fs.stat(rootPath);
-      const currentMtime = currentStat.mtime.getTime();
-
-      // Check if we have cached mtime
-      const cachedMtime = parseInt(cachedData.mtime || 0);
-
-      if (cachedMtime === 0) {
-        // Old cache format without mtime, need to rescan
-        systemLogger.logSystem('INFO', '⚠️  Cache exists but missing mtime, will rescan');
-        return true;
-      }
-
-      if (currentMtime <= cachedMtime) {
-        // Cache is still valid, load it
-        const contents = JSON.parse(cachedData.contents);
-        this.directoryCache.set(rootPath, contents);
-        this.directoryMtimes.set(rootPath, cachedMtime);
-        this.updateHotCache(rootPath, contents);
-
-        systemLogger.logSystem('INFO', `✅ Loaded ${contents.length} items from Redis cache (mtime match)`);
-        return false; // No scan needed
-      } else {
-        // Directory has been modified since last cache
-        systemLogger.logSystem('INFO', `⚠️  Root directory modified (cached: ${new Date(cachedMtime).toISOString()}, current: ${new Date(currentMtime).toISOString()})`);
-        return true; // Need to scan
-      }
-
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        systemLogger.logSystem('ERROR', `Root directory does not exist: ${this.storagePath}`);
-      } else {
-        systemLogger.logSystem('WARN', `Failed to check root cache: ${error.message}`);
-      }
-      return true; // On error, better to scan
-    }
+  _background(callback) {
+    if (this.closing || this.closed) return;
+    const generation = this.generation;
+    // Timers created inside initialize must not inherit its reentrant job token.
+    this.workContext.run({ generation }, () => callback().catch(error => this.emit('warning', { code: error.code || 'CACHE_ERROR' })));
   }
 
-  /**
-   * Start polling root directory for changes
-   */
   startRootPolling() {
-    this.rootPollingInterval = setInterval(async () => {
-      try {
-        const rootStat = await fs.stat(this.storagePath);
-        const cachedMtime = this.directoryMtimes.get(this.storagePath);
-
-        if (!cachedMtime || rootStat.mtime.getTime() > cachedMtime) {
-          systemLogger.logSystem('INFO', 'Root directory changed, refreshing cache...');
-          await this.updateDirectoryCache(this.storagePath);
-          this.directoryMtimes.set(this.storagePath, rootStat.mtime.getTime());
-          this.emit('rootChange', { path: this.storagePath });
-        }
-      } catch (error) {
-        systemLogger.logSystem('ERROR', `Root polling error: ${error.message}`);
-      }
-    }, this.rootPollFrequency);
-
-    systemLogger.logSystem('INFO', `Started polling root directory every ${this.rootPollFrequency}ms`);
+    if (this.rootPollingInterval || this.closing || this.closed) return;
+    this.rootPollingInterval = setInterval(() => this._background(() => this.refreshCache()), this.rootPollFrequency);
+    this.rootPollingInterval.unref?.();
   }
-
-  /**
-   * Stop polling root directory
-   */
-  stopRootPolling() {
-    if (this.rootPollingInterval) {
-      clearInterval(this.rootPollingInterval);
-      this.rootPollingInterval = null;
-      systemLogger.logSystem('INFO', 'Stopped root directory polling');
-    }
+  stopRootPolling() { clearInterval(this.rootPollingInterval); this.rootPollingInterval = null; }
+  startPeriodicIndexing(intervalHours = 6, { immediate = true } = {}) {
+    if (this.indexingInterval || this.closing || this.closed) return;
+    this.indexingInterval = setInterval(() => this._background(() => this.buildIncrementalIndex()), intervalHours * 3600000);
+    this.indexingInterval.unref?.();
+    if (immediate) this._background(() => this.buildGlobalIndex());
   }
+  stopPeriodicIndexing() { clearInterval(this.indexingInterval); this.indexingInterval = null; }
 
-  /**
-   * Load ignore list from .ignoreDirs file (in project root)
-   */
   async loadIgnoreList() {
-    // Store .ignoreDirs in project root, same location as server.log and logs/
-    const ignoreFile = path.join(__dirname, '../../../.ignoreDirs');
-    const defaultIgnoreList = [
-      'node_modules',
-      '.git',
-      '.Trash-1000',
-      'vm',
-      '.nfs'
-    ];
-
+    const defaults = ['node_modules', '.git', '.Trash-1000', 'vm', '.nfs'];
     try {
-      const content = await fs.readFile(ignoreFile, 'utf8');
-      const customIgnores = content
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => line && !line.startsWith('#'));
-
-      return [...defaultIgnoreList, ...customIgnores];
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        // Create .ignoreDirs file with default ignores
-        await this.createIgnoreFile(ignoreFile, defaultIgnoreList);
-      }
-      return defaultIgnoreList;
-    }
+      const text = await fs.readFile(path.join(__dirname, '../../../.ignoreDirs'), 'utf8');
+      return [...defaults, ...text.split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith('#'))];
+    } catch (error) { if (error.code !== 'ENOENT') throw error; return defaults; }
   }
 
-  /**
-   * Create .ignoreDirs file with default ignores (in project root)
-   */
-  async createIgnoreFile(ignoreFile, defaultIgnoreList) {
-    try {
-      const content = defaultIgnoreList.join('\n');
-      await fs.writeFile(ignoreFile, `# Ignore file for file system cache\n# Add directories to ignore (one per line)\n# This file is in the project root, same as server.log\n${content}\n`);
-      systemLogger.logSystem('INFO', `Created .ignoreDirs file at: ${ignoreFile}`);
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to create .ignoreDirs file: ${error.message}`);
-    }
-  }
-
-  /**
-   * Update hot cache with LRU eviction
-   */
   updateHotCache(absolutePath, contents) {
-    // Add or update in hot cache
-    this.hotCache.set(absolutePath, {
-      contents: contents,
-      timestamp: Date.now()
-    });
+    this.hotCache.delete(absolutePath);
+    this.hotCache.set(absolutePath, { contents, timestamp: this.snapshotMetadata.get(contents)?.timestamp });
+    while (this.hotCache.size > this.hotCacheMaxSize) this.hotCache.delete(this.hotCache.keys().next().value);
+    this.hotCacheAccessOrder = [...this.hotCache.keys()];
+  }
+  getFromHotCache(absolutePath) { return this.hotCache.get(absolutePath)?.contents || null; }
+  shouldCheckMtime(absolutePath) { return Date.now() - (this.lastMtimeCheck.get(absolutePath) || 0) > this.mtimeCheckThrottle; }
 
-    // Update access order (move to end = most recently used)
-    const existingIndex = this.hotCacheAccessOrder.indexOf(absolutePath);
-    if (existingIndex !== -1) {
-      this.hotCacheAccessOrder.splice(existingIndex, 1);
+  async _scan(dirPath) {
+    const absolute = await this._checked(dirPath, { allowMissing: false });
+    const ignored = await this.loadIgnoreList();
+    const contents = [];
+    for (const name of await fs.readdir(absolute)) {
+      // Check links even when the name is excluded from the search index.
+      const fullPath = await this._checked(path.join(absolute, name), { allowMissing: false });
+      const stats = await fs.lstat(fullPath);
+      if (ignored.includes(name)) continue;
+      const data = { path: fullPath, name, size: stats.size, modified: stats.mtimeMs, isDirectory: stats.isDirectory() };
+      if (!data.isDirectory) data.hash = `${stats.size}-${stats.mtimeMs}`;
+      contents.push(data);
     }
-    this.hotCacheAccessOrder.push(absolutePath);
+    const stats = await fs.lstat(absolute);
+    return { absolute, contents, mtime: stats.mtimeMs, stats };
+  }
 
-    // Evict least recently used if cache is too large
-    while (this.hotCacheAccessOrder.length > this.hotCacheMaxSize) {
-      const lruPath = this.hotCacheAccessOrder.shift();
-      // Don't evict root directory from hot cache
-      if (lruPath !== this.storagePath) {
-        this.hotCache.delete(lruPath);
-        systemLogger.logSystem('DEBUG', `Evicted from hot cache: ${lruPath}`);
-      } else {
-        // If root is the oldest, evict the next item instead and keep root
-        if (this.hotCacheAccessOrder.length > 0) {
-          const nextLruPath = this.hotCacheAccessOrder.shift();
-          this.hotCache.delete(nextLruPath);
-          systemLogger.logSystem('DEBUG', `Evicted from hot cache (preserved root): ${nextLruPath}`);
+  updateDirectoryCache(dirPath, recursive = false) {
+    return this._run(async () => {
+      if (recursive) {
+        const absolute = await this._checked(dirPath, { allowMissing: false });
+        const entries = await assertSafeTree(absolute);
+        if (!entries[0].stats.isDirectory()) throw pathError('ENOTDIR', 'Index target is not a directory');
+        const ignored = await this.loadIgnoreList();
+        let contents;
+        // Preflight the selected subtree once, not the entire Location or each
+        // descendant tree again. Normal file mutations only scan their parents.
+        for (const entry of entries) {
+          if (!entry.stats.isDirectory() || path.relative(absolute, entry.path).split(path.sep).some(name => ignored.includes(name))) continue;
+          const current = await this.updateDirectoryCache(entry.path);
+          if (entry.path === absolute) contents = current;
         }
-        this.hotCacheAccessOrder.unshift(lruPath); // Put root back at front
-        break; // Exit loop to prevent infinite iteration
+        return contents;
       }
-    }
-  }
-
-  /**
-   * Get from hot cache if available and fresh
-   */
-  getFromHotCache(absolutePath) {
-    const cached = this.hotCache.get(absolutePath);
-    if (cached) {
-      // Update access order
-      const existingIndex = this.hotCacheAccessOrder.indexOf(absolutePath);
-      if (existingIndex !== -1) {
-        this.hotCacheAccessOrder.splice(existingIndex, 1);
-        this.hotCacheAccessOrder.push(absolutePath);
-      }
-      return cached.contents;
-    }
-    return null;
-  }
-
-  /**
-   * Check if mtime check should be performed (throttled)
-   */
-  shouldCheckMtime(absolutePath) {
-    // Root directory: rely on rootPollingInterval, don't check on every enterDirectory
-    if (absolutePath === this.storagePath) {
-      return false; // Root polling handles this
-    }
-
-    const lastCheck = this.lastMtimeCheck.get(absolutePath);
-    if (!lastCheck) {
-      return true; // Never checked, should check
-    }
-
-    const timeSinceLastCheck = Date.now() - lastCheck;
-    return timeSinceLastCheck > this.mtimeCheckThrottle;
-  }
-
-  /**
-   * Cache directory contents when user enters a directory.
-   * To be called when a user enters a directory in the UI.
-   */
-  async enterDirectory(dirPath) {
-    const absolutePath = path.resolve(dirPath);
-    const isRootDir = absolutePath === this.storagePath;
-
-    systemLogger.logSystem('INFO', `User entering directory: ${absolutePath}`);
-
-    try {
-      // OPTIMIZATION 1: Check hot cache first (memory-level cache)
-      const hotCached = this.getFromHotCache(absolutePath);
-      if (hotCached) {
-        systemLogger.logSystem('DEBUG', `✅ Returning from hot cache: ${absolutePath}`);
-        this.activeDirs.add(absolutePath);
-        return hotCached;
-      }
-
-      // OPTIMIZATION 2: For root directory, trust the polling mechanism
-      // Don't perform expensive fs.stat() on every request
-      if (isRootDir) {
-        const cached = this.directoryCache.get(absolutePath);
-        if (cached !== undefined) {
-          // Root directory cache exists (even if empty array)
-          systemLogger.logSystem('DEBUG', `✅ Returning cached root directory (polling active) - ${cached.length} items`);
-          this.activeDirs.add(absolutePath);
-          this.updateHotCache(absolutePath, cached);
-          return cached;
-        } else {
-          // Root directory not cached yet - this should only happen during startup
-          systemLogger.logSystem('WARN', `⚠️  Root directory not in cache - performing initial load`);
-          await this.updateDirectoryCache(absolutePath);
-          const contents = this.directoryCache.get(absolutePath) || [];
-          this.activeDirs.add(absolutePath);
-          this.updateHotCache(absolutePath, contents);
-          return contents;
-        }
-      }
-
-      // OPTIMIZATION 3: Throttle mtime checks to reduce fs.stat() calls
-      const shouldCheck = this.shouldCheckMtime(absolutePath);
-
-      if (shouldCheck) {
-        // Check if directory mtime has changed
-        const stat = await fs.stat(absolutePath);
-        const cachedMtime = this.directoryMtimes.get(absolutePath);
-
-        // Update last check timestamp
-        this.lastMtimeCheck.set(absolutePath, Date.now());
-
-        // Update cache if directory changed or not cached
-        if (!cachedMtime || stat.mtime.getTime() > cachedMtime) {
-          systemLogger.logSystem('INFO', `Caching directory (mtime changed): ${absolutePath}`);
-          await this.updateDirectoryCache(absolutePath);
-          this.directoryMtimes.set(absolutePath, stat.mtime.getTime());
-        } else {
-          systemLogger.logSystem('DEBUG', `Directory unchanged: ${absolutePath}`);
-        }
-      } else {
-        systemLogger.logSystem('DEBUG', `Mtime check throttled: ${absolutePath}`);
-      }
-
-      // Mark as active directory
-      this.activeDirs.add(absolutePath);
-
-      // Return the cached contents
-      const contents = this.directoryCache.get(absolutePath) || [];
-
-      // Update hot cache for fast subsequent access
-      this.updateHotCache(absolutePath, contents);
-
-      return contents;
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to enter directory: ${error.message}`);
-      throw error;
-    }
-  }
-
-  /**
-   * Clean up cache when user leaves a directory.
-   * To be called when a user leaves a directory in the UI.
-   */
-  async leaveDirectory(dirPath) {
-    const absolutePath = path.resolve(dirPath);
-    const isRootDir = absolutePath === this.storagePath;
-
-    // Never clear root directory
-    if (isRootDir) {
-      return;
-    }
-
-    systemLogger.logSystem('INFO', `User leaving directory: ${absolutePath}`);
-
-    try {
-      // Remove from active directories
-      this.activeDirs.delete(absolutePath);
-
-      // Clear from memory cache (immediate, non-blocking)
-      this.directoryCache.delete(absolutePath);
-      this.directoryMtimes.delete(absolutePath);
-
-      // Clear from mtime check cache to prevent memory leak
-      this.lastMtimeCheck.delete(absolutePath);
-
-      // Clear from hot cache and access order
-      this.hotCache.delete(absolutePath);
-      const accessIndex = this.hotCacheAccessOrder.indexOf(absolutePath);
-      if (accessIndex !== -1) {
-        this.hotCacheAccessOrder.splice(accessIndex, 1);
-      }
-
-      // OPTIMIZATION: Clear from Redis in background (non-blocking)
-      // Don't await - let it run asynchronously to avoid blocking user navigation
-      if (this.redisClient && this.redisClient.isReady) {
-        const dirKey = `dir:${absolutePath}`;
-
-        // Execute Redis cleanup in background without blocking
-        setImmediate(async () => {
-          try {
-            await this.redisClient.del(dirKey);
-
-            // Clear all file entries under this directory from Redis
-            // For large file systems (800K+ files), this can be slow
-            // Run in background to avoid blocking user experience
-            const pattern = `file:${absolutePath}/*`;
-            const keys = [];
-
-            // Use SCAN instead of KEYS for production safety
-            for await (const key of this.redisClient.scanIterator({ MATCH: pattern, COUNT: 1000 })) {
-              keys.push(key);
-
-              // Delete in batches to avoid blocking Redis too long
-              if (keys.length >= 5000) {
-                await this.redisClient.del(keys);
-                keys.length = 0; // Clear array
-              }
-            }
-
-            if (keys.length > 0) {
-              await this.redisClient.del(keys);
-            }
-
-            systemLogger.logSystem('DEBUG', `Background cleanup completed for: ${absolutePath}`);
-          } catch (redisError) {
-            systemLogger.logSystem('WARN', `Background Redis cleanup failed: ${redisError.message}`);
-          }
-        });
-
-        systemLogger.logSystem('DEBUG', `Started background cleanup for: ${absolutePath}`);
-      }
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to leave directory: ${error.message}`);
-    }
-  }
-
-  /**
-   * Invalidate every cache layer for a directory.
-   * Mutating operations must invalidate before rescanning so deletions and
-   * empty directories cannot be masked by the hot cache.
-   */
-  async invalidateDirectory(dirPath, { recursive = false } = {}) {
-    const absolutePath = path.resolve(dirPath);
-    const matches = (candidate) => candidate === absolutePath ||
-      (recursive && candidate.startsWith(`${absolutePath}${path.sep}`));
-
-    for (const cachePath of [...this.directoryCache.keys()]) {
-      if (matches(cachePath)) this.directoryCache.delete(cachePath);
-    }
-    for (const cachePath of [...this.directoryMtimes.keys()]) {
-      if (matches(cachePath)) this.directoryMtimes.delete(cachePath);
-    }
-    for (const cachePath of [...this.lastMtimeCheck.keys()]) {
-      if (matches(cachePath)) this.lastMtimeCheck.delete(cachePath);
-    }
-    for (const cachePath of [...this.hotCache.keys()]) {
-      if (matches(cachePath)) this.hotCache.delete(cachePath);
-    }
-    this.hotCacheAccessOrder = this.hotCacheAccessOrder.filter(cachePath => !matches(cachePath));
-
-    if (this.redisClient && this.redisClient.isReady) {
+      this.metrics.directoryScans++;
       try {
-        await this.redisClient.del(`dir:${absolutePath}`);
-        if (recursive) {
-          const keys = [];
-          for await (const key of this.redisClient.scanIterator({ MATCH: `dir:${absolutePath}${path.sep}*`, COUNT: 1000 })) {
-            keys.push(key);
+        const generation = this.snapshotGeneration;
+        const timestamp = performance.now();
+        const { absolute, contents, mtime, stats } = await this._scan(dirPath);
+        for (const entry of contents) Object.freeze(entry);
+        Object.freeze(contents);
+        if (this.redisClient?.isReady) {
+          const children = new Map(contents.map(entry => [entry.name, entry]));
+          // Preserve unchanged descendants. Remove only missing immediate
+          // children and subtrees whose former directory is gone or now a file.
+          for (const family of ['entry', 'mtime', 'dir']) {
+            await this._deleteKeys(family, key => {
+              const relativeKey = Buffer.from(key.slice(`${this.namespace}${family}:`.length), 'base64url').toString();
+              const candidate = path.resolve(this.storagePath, relativeKey);
+              if (candidate === absolute || !containsPath(absolute, candidate)) return false;
+              const relative = path.relative(absolute, candidate);
+              const name = relative.split(path.sep)[0];
+              const child = children.get(name);
+              return !child || (!child.isDirectory && (relative !== name || family !== 'entry'));
+            });
           }
-          if (keys.length > 0) await this.redisClient.del(keys);
-        }
-      } catch (redisError) {
-        this.metrics.redisErrors++;
-        systemLogger.logSystem('WARN', `Redis cache invalidation failed: ${redisError.message}`);
-      }
-    }
-  }
-
-  /**
-   * Invalidate and rebuild one directory from the filesystem.
-   */
-  async refreshDirectory(dirPath) {
-    // Replace cache only after a complete scan succeeds. A transient NFS
-    // failure must preserve the last known-good directory contents.
-    return await this.updateDirectoryCache(dirPath);
-  }
-
-
-  /**
-   * Update directory cache (non-recursive, only direct children)
-   * Uses mtime+size instead of MD5 for change detection
-   * OPTIMIZED: Uses Promise.all for parallel fs.stat() and Redis pipeline for batch operations
-   */
-  async updateDirectoryCache(dirPath, recursive = false) {
-    this.metrics.directoryScans++;
-    try {
-      // Ensure the directory path is absolute before using
-      const absoluteDirPath = path.resolve(dirPath);
-      const ignoreList = await this.loadIgnoreList();
-      const files = await fs.readdir(absoluteDirPath);
-      let scanError = null;
-
-      // OPTIMIZATION: Process files in parallel using Promise.allSettled
-      const filePromises = files.map(async (fileName) => {
-        // Skip ignored directories
-        if (ignoreList.includes(fileName)) {
-          return null;
-        }
-
-        const fullPath = path.join(absoluteDirPath, fileName);
-
-        try {
-          const stat = await fs.stat(fullPath);
-          const relativePath = path.relative(this.storagePath, fullPath);
-
-          const fileData = {
-            path: fullPath,
-            name: fileName,
-            size: stat.size || 0,
-            modified: stat.mtime.getTime(),
-            isDirectory: stat.isDirectory()
-          };
-
-          // For files, use size+mtime as pseudo-hash (no need to read file content)
-          if (!stat.isDirectory()) {
-            fileData.hash = `${stat.size}-${stat.mtime.getTime()}`;
+          for (const entry of contents) {
+            const relative = path.relative(this.storagePath, entry.path);
+            await this.redisClient.set(this.key('entry', relative), JSON.stringify({ ...entry, path: relative }));
           }
-
-          return fileData;
-        } catch (err) {
-          if (err.code !== 'EACCES') {
-            systemLogger.logSystem('ERROR', `Error processing item in directory: ${fullPath} - ${err.message}`);
-          }
-          if (err.code !== 'ENOENT' && err.code !== 'ENOTDIR') scanError = err;
-          return null;
-        }
-      });
-
-      // Wait for all file processing to complete
-      const results = await Promise.allSettled(filePromises);
-      const dirContents = results
-        .filter(result => result.status === 'fulfilled' && result.value !== null)
-        .map(result => result.value);
-
-      if (scanError) throw scanError;
-
-      const isRootDir = absoluteDirPath === this.storagePath;
-      const dirKey = `dir:${absoluteDirPath}`;
-
-      // Get directory mtime for cache validation
-      const dirStat = await fs.stat(absoluteDirPath);
-      const dirMtime = dirStat.mtime.getTime();
-
-      // OPTIMIZATION: Use Redis pipeline for batch operations if available
-      if (this.redisClient && this.redisClient.isReady) {
-        try {
-          // Store directory data in Redis with mtime for cache validation
-          await this.redisClient.hSet(dirKey, {
-            contents: JSON.stringify(dirContents),
-            cached: Date.now().toString(),
-            mtime: dirMtime.toString(), // OPTIMIZATION: Store mtime for restart validation
-            isRoot: isRootDir.toString()
+          const relativeDirectory = path.relative(this.storagePath, absolute);
+          if (relativeDirectory) await this.redisClient.set(this.key('entry', relativeDirectory), JSON.stringify({ path: relativeDirectory, name: path.basename(absolute), size: stats.size, modified: mtime, isDirectory: true }));
+          await this.redisClient.set(this.key('mtime', path.relative(this.storagePath, absolute)), String(mtime));
+          await this.redisClient.hSet(this.key('dir', path.relative(this.storagePath, absolute)), {
+            contents: JSON.stringify(contents), cached: String(Date.now()), mtime: String(mtime), isRoot: String(absolute === this.storagePath)
           });
-        } catch (redisError) {
-          systemLogger.logSystem('WARN', `Redis cache update failed: ${redisError.message}`);
-          // Continue with memory cache even if Redis fails
         }
-      }
-
-      // Update memory mtime tracking
-      this.directoryMtimes.set(absoluteDirPath, dirMtime);
-
-      // Update memory cache
-      this.directoryCache.set(absoluteDirPath, dirContents);
-
-      // Update hot cache for frequently accessed directories
-      this.updateHotCache(absoluteDirPath, dirContents);
-
-      const cacheType = isRootDir ? '(hot cache)' : '(regular cache)';
-      systemLogger.logSystem('INFO', `Cached directory ${cacheType}: ${absoluteDirPath} (${dirContents.length} items)`);
-    } catch (error) {
-      this.metrics.scanErrors++;
-      if (error.code === 'EACCES') {
-        // Skip directories we can't access
-        systemLogger.logSystem('WARN', `Skipping directory cache update for ${error.path} due to permission error.`);
-      } else {
-        systemLogger.logSystem('ERROR', `Failed to update directory cache: ${error.message}`);
-      }
-      throw this.createStorageError(error, 'directory_scan');
-    }
-  }
-
-  /**
-   * Get directory contents from cache
-   * OPTIMIZED: Check hot cache first before Redis
-   */
-  async getDirectoryContents(dirPath) {
-    try {
-      // Ensure the directory path is absolute before using
-      const absoluteDirPath = path.resolve(dirPath);
-
-      // OPTIMIZATION: Check hot cache first (fastest)
-      const hotCached = this.getFromHotCache(absoluteDirPath);
-      if (hotCached) {
-        this.metrics.hotCacheHits++;
-        systemLogger.logSystem('DEBUG', `getDirectoryContents from hot cache: ${absoluteDirPath}`);
-        return hotCached;
-      }
-
-      // Check memory cache second
-      const memoryCached = this.directoryCache.get(absoluteDirPath);
-      if (memoryCached !== undefined) {
-        this.metrics.memoryCacheHits++;
-        systemLogger.logSystem('DEBUG', `getDirectoryContents from memory cache: ${absoluteDirPath}`);
-        this.updateHotCache(absoluteDirPath, memoryCached);
-        return memoryCached;
-      }
-
-      // Finally check Redis if available
-      if (this.redisClient && this.redisClient.isReady) {
-        try {
-          const dirKey = `dir:${absoluteDirPath}`;
-          const dirData = await this.redisClient.hGetAll(dirKey);
-
-          if (Object.keys(dirData).length > 0) {
-            this.metrics.redisCacheHits++;
-            const contents = JSON.parse(dirData.contents || '[]');
-            this.directoryCache.set(absoluteDirPath, contents);
-            this.updateHotCache(absoluteDirPath, contents);
-            return contents;
-          }
-        } catch (redisError) {
-          this.metrics.redisErrors++;
-          systemLogger.logSystem('WARN', `Redis fetch failed: ${redisError.message}`);
-          // Continue to update cache from filesystem
+        if (generation === this.snapshotGeneration) {
+          this.snapshotMetadata.set(contents, { timestamp, generation });
+          this.directoryCache.set(absolute, contents);
+          this.directoryMtimes.set(absolute, mtime);
+          this.updateHotCache(absolute, contents);
         }
+        return contents;
+      } catch (error) {
+        this.metrics.scanErrors++;
+        throw this.createStorageError(error, 'directory_scan');
       }
-
-      // If not in cache anywhere, update cache (will populate all cache levels)
-      this.metrics.cacheMisses++;
-      await this.updateDirectoryCache(absoluteDirPath);
-      const cachedContents = this.directoryCache.get(absoluteDirPath);
-      return cachedContents || [];
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to get directory contents: ${error.message}`);
-      throw error;
-    }
-  }
-
-
-
-  /**
-   * Refresh the root directory cache
-   */
-  async refreshCache() {
-    try {
-      systemLogger.logSystem('INFO', 'Refreshing root directory cache...');
-
-      // Re-cache only the root directory (non-recursive)
-      const rootStat = await fs.stat(this.storagePath);
-      await this.updateDirectoryCache(this.storagePath);
-      this.directoryMtimes.set(this.storagePath, rootStat.mtime.getTime());
-
-      systemLogger.logSystem('INFO', 'Root directory cache refresh completed');
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to refresh cache: ${error.message}`);
-      throw error;
-    }
-  }
-
-  /**
-   * Get cache information
-   */
-  /**
-   * Alias for updateDirectoryCache to ensure compatibility with server.js
-   */
-  async scanDirectory(dirPath) {
-    return await this.updateDirectoryCache(dirPath);
-  }
-
-  async getCacheInfo() {
-    try {
-      const totalDirectories = this.directoryCache.size;
-      const activeDirectories = this.activeDirs.size;
-
-      // Redis is optional for local fallback and test environments.
-      const dbSize = this.redisClient && this.redisClient.isReady
-        ? await this.redisClient.dbSize()
-        : 0;
-
-      return {
-        initialized: this.initialized,
-        totalDirectories,
-        activeDirectories,
-        redisDbSize: dbSize,
-        isPolling: !!this.rootPollingInterval,
-        pollFrequency: this.rootPollFrequency,
-        cacheMetrics: { ...this.metrics }
-      };
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to get cache info: ${error.message}`);
-      return {
-        initialized: this.initialized,
-        totalDirectories: 0,
-        activeDirectories: 0,
-        redisDbSize: 0,
-        isPolling: !!this.rootPollingInterval,
-        cacheMetrics: { ...this.metrics },
-        error: error.message
-      };
-    }
-  }
-
-  /**
-   * Get cache statistics (alias for getCacheInfo)
-   */
-  async getStats() {
-    return await this.getCacheInfo();
-  }
-
-  /**
-   * Close the cache and disconnect from Redis.
-   */
-  async close() {
-    systemLogger.logSystem('INFO', 'Closing Redis cache...');
-
-    // Stop root polling
-    this.stopRootPolling();
-
-    // Stop periodic indexing
-    this.stopPeriodicIndexing();
-
-    // Clear all active directories
-    for (const dirPath of this.activeDirs) {
-      await this.leaveDirectory(dirPath);
-    }
-
-    if (this.redisClient) {
-      await this.redisClient.quit();
-      this.redisClient = null;
-    }
-    this.initialized = false;
-    systemLogger.logSystem('INFO', 'Redis cache closed');
-  }
-
-  /**
-   * Clear all cache data except root directory (hot cache)
-   */
-  async clearCache() {
-    if (!this.redisClient || !this.redisClient.isReady) {
-      systemLogger.logSystem('ERROR', 'Cannot clear cache: Redis client is not connected.');
-      return;
-    }
-
-    try {
-      systemLogger.logSystem('INFO', 'Clearing file system cache (preserving root directory)...');
-
-      // Save root directory cache
-      const rootPath = path.resolve(this.storagePath);
-      const rootDirKey = `dir:${rootPath}`;
-      const rootCache = await this.redisClient.hGetAll(rootDirKey);
-
-      // Clear all cache
-      await this.redisClient.flushDb();
-
-      // Restore root directory cache
-      if (Object.keys(rootCache).length > 0) {
-        await this.redisClient.hSet(rootDirKey, rootCache);
-        systemLogger.logSystem('INFO', 'Root directory cache preserved');
-      }
-
-      // Clear memory cache except root
-      const rootMemoryCache = this.directoryCache.get(rootPath);
-      const rootMtime = this.directoryMtimes.get(rootPath);
-
-      this.directoryCache.clear();
-      this.directoryMtimes.clear();
-      this.activeDirs.clear();
-
-      if (rootMemoryCache) {
-        this.directoryCache.set(rootPath, rootMemoryCache);
-      }
-      if (rootMtime) {
-        this.directoryMtimes.set(rootPath, rootMtime);
-      }
-
-      systemLogger.logSystem('INFO', 'Cache cleared successfully (root directory preserved).');
-      this.emit('clear');
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to clear cache: ${error.message}`);
-    }
-  }
-
-  /**
-   * Get files in a directory from cache
-   */
-  async getFilesInDirectory(dirPath) {
-    try {
-      // Use enterDirectory to ensure proper caching
-      return await this.enterDirectory(dirPath);
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to get files in directory: ${error.message}`);
-      return [];
-    }
-  }
-
-  /**
-   * Get files in a directory with pagination support
-   * OPTIMIZATION: For large directories, support offset and limit
-   */
-  async getFilesInDirectoryPaginated(dirPath, offset = 0, limit = 1000) {
-    try {
-      // Get full directory contents using optimized enterDirectory
-      const allFiles = await this.enterDirectory(dirPath);
-
-      // Calculate pagination
-      const total = allFiles.length;
-      const start = Math.max(0, offset);
-      const end = limit > 0 ? Math.min(start + limit, total) : total;
-      const files = allFiles.slice(start, end);
-
-      return {
-        files: files,
-        total: total,
-        offset: start,
-        limit: limit,
-        hasMore: end < total
-      };
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to get paginated files: ${error.message}`);
-      return {
-        files: [],
-        total: 0,
-        offset: 0,
-        limit: limit,
-        hasMore: false,
-        error: error.message
-      };
-    }
-  }
-
-  /**
-   * Search files using Redis global index (fast, cache-based)
-   * Returns files currently in cache, or indicates if indexing is in progress
-   */
-  async searchFiles(query) {
-    try {
-      const storageRoot = path.resolve(this.storagePath);
-      const normalizedQuery = query.toLowerCase();
-
-      // Search in Redis index using SCAN to find matching keys
-      const matchingFiles = [];
-      const searchPattern = `index:*${normalizedQuery}*`;
-
-      // Use SCAN to iterate through keys matching the pattern
-      for await (const key of this.redisClient.scanIterator({ MATCH: searchPattern, COUNT: 100 })) {
-        try {
-          const fileData = await this.redisClient.get(key);
-          if (fileData) {
-            const file = JSON.parse(fileData);
-            matchingFiles.push(file);
-
-            // Limit results to prevent memory issues
-            if (matchingFiles.length >= 1000) {
-              systemLogger.logSystem('WARN', `Search results limited to 1000 for query: ${query}`);
-              break;
-            }
-          }
-        } catch (e) {
-          // Skip corrupted entries
-          continue;
-        }
-      }
-
-      // Check index status
-      const indexStatus = await this.redisClient.get('index:status');
-      const indexStats = indexStatus ? JSON.parse(indexStatus) : null;
-
-      systemLogger.logSystem('INFO', `Search completed for "${query}": ${matchingFiles.length} results from index`);
-
-      return {
-        files: matchingFiles,
-        // Search the completed portion of the index while a refresh is running.
-        // Initial scans do not know their total file count, so blocking here produced
-        // an unhelpful "0/0" message and made search unavailable.
-        indexing: false,
-        indexUpdating: this.isIndexing,
-        indexStats: indexStats,
-        resultCount: matchingFiles.length
-      };
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to search files: ${error.message}`);
-      return {
-        files: [],
-        error: error.message,
-        indexing: this.isIndexing
-      };
-    }
-  }
-
-  /**
-   * Build global file index by recursively scanning storagePath
-   * Runs in background and updates Redis with all file paths
-   * DEPRECATED: Use buildIncrementalIndex() for better performance
-   */
-  async buildGlobalIndex(force = false) {
-    if (this.isIndexing) {
-      systemLogger.logSystem('WARN', 'Index building already in progress');
-      return;
-    }
-
-    this.isIndexing = true;
-    this.indexProgress = { current: 0, total: 0, status: 'counting' };
-
-    try {
-      systemLogger.logSystem('INFO', force ? 'Starting FULL index rebuild (forced)...' : 'Starting global index build...');
-      const ignoreList = await this.loadIgnoreList();
-      const storageRoot = path.resolve(this.storagePath);
-
-      // Clear old index entries only if forced
-      if (force) {
-        systemLogger.logSystem('INFO', 'Clearing old index entries...');
-        const oldKeys = [];
-        for await (const key of this.redisClient.scanIterator({ MATCH: 'index:*', COUNT: 1000 })) {
-          oldKeys.push(key);
-          if (oldKeys.length >= 10000) {
-            await this.redisClient.del(oldKeys);
-            oldKeys.length = 0;
-          }
-        }
-        if (oldKeys.length > 0) {
-          await this.redisClient.del(oldKeys);
-        }
-      }
-
-      // Recursively scan and index all files
-      const startTime = Date.now();
-      await this.indexDirectory(storageRoot, ignoreList);
-      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-
-      // Save index status
-      const indexStatus = {
-        lastUpdated: Date.now(),
-        totalFiles: this.indexProgress.current,
-        duration: duration,
-        status: 'completed',
-        type: force ? 'full' : 'initial'
-      };
-      await this.redisClient.set('index:status', JSON.stringify(indexStatus));
-
-      this.indexProgress.status = 'completed';
-      systemLogger.logSystem('INFO', `Global index build completed: ${this.indexProgress.current} files indexed in ${duration}s`);
-    } catch (error) {
-      this.indexProgress.status = 'error';
-      systemLogger.logSystem('ERROR', `Failed to build global index: ${error.message}`);
-    } finally {
-      this.isIndexing = false;
-    }
-  }
-
-  /**
-   * Incremental index update - only re-index changed directories
-   * OPTIMIZATION: Much faster than full rebuild for large file systems
-   */
-  async buildIncrementalIndex() {
-    if (this.isIndexing) {
-      systemLogger.logSystem('WARN', 'Index building already in progress');
-      return;
-    }
-
-    this.isIndexing = true;
-    this.indexProgress = { current: 0, total: 0, status: 'incremental_scan' };
-
-    try {
-      systemLogger.logSystem('INFO', '🔄 Starting incremental index update...');
-      const startTime = Date.now();
-      const ignoreList = await this.loadIgnoreList();
-      const storageRoot = path.resolve(this.storagePath);
-
-      let dirsScanned = 0;
-      let dirsUpdated = 0;
-      let filesUpdated = 0;
-      const staleIndexKeys = [];
-
-      // Get all indexed directories from Redis
-      const indexedDirs = new Set();
-      for await (const key of this.redisClient.scanIterator({ MATCH: 'index:mtime:*', COUNT: 1000 })) {
-        const dirPath = key.replace(/^index:mtime:/, '');
-        indexedDirs.add(dirPath);
-      }
-
-      systemLogger.logSystem('INFO', `Found ${indexedDirs.size} directories in index`);
-
-      // Check each indexed directory for changes
-      for (const dirPath of indexedDirs) {
-        dirsScanned++;
-
-        try {
-          const absolutePath = path.isAbsolute(dirPath) ? dirPath : path.join(storageRoot, dirPath);
-          const currentStat = await fs.stat(absolutePath);
-          const currentMtime = currentStat.mtime.getTime();
-
-          // Get cached mtime from Redis
-          const mtimeKey = `index:mtime:${dirPath}`;
-          const cachedMtime = await this.redisClient.get(mtimeKey);
-
-          if (!cachedMtime || parseInt(cachedMtime) < currentMtime) {
-            // Directory changed, re-index it
-            systemLogger.logSystem('DEBUG', `Re-indexing changed directory: ${dirPath}`);
-            const updatedCount = await this.indexDirectoryNonRecursive(absolutePath, ignoreList);
-            dirsUpdated++;
-            filesUpdated += updatedCount;
-
-            // Update mtime in Redis
-            await this.redisClient.set(mtimeKey, currentMtime.toString());
-          }
-
-          // Log progress every 100 directories
-          if (dirsScanned % 100 === 0) {
-            systemLogger.logSystem('DEBUG', `Incremental scan progress: ${dirsScanned} dirs scanned, ${dirsUpdated} updated`);
-          }
-
-        } catch (err) {
-          if (err.code === 'ENOENT') {
-            // Directory no longer exists, mark for cleanup
-            staleIndexKeys.push(`index:mtime:${dirPath}`);
-            // Also need to remove all index entries for files in this directory
-            const pattern = `index:*:${dirPath}/*`;
-            for await (const key of this.redisClient.scanIterator({ MATCH: pattern, COUNT: 1000 })) {
-              staleIndexKeys.push(key);
-            }
-          } else {
-            systemLogger.logSystem('WARN', `Error checking directory ${dirPath}: ${err.message}`);
-          }
-        }
-      }
-
-      // Clean up stale index entries
-      if (staleIndexKeys.length > 0) {
-        systemLogger.logSystem('INFO', `Removing ${staleIndexKeys.length} stale index entries...`);
-        // Delete in batches
-        for (let i = 0; i < staleIndexKeys.length; i += 1000) {
-          const batch = staleIndexKeys.slice(i, i + 1000);
-          await this.redisClient.del(batch);
-        }
-      }
-
-      // Scan for new directories (directories not in index yet)
-      await this.scanForNewDirectories(storageRoot, ignoreList, indexedDirs);
-
-      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-
-      // Save index status
-      const indexStatus = {
-        lastUpdated: Date.now(),
-        duration: duration,
-        status: 'completed',
-        type: 'incremental',
-        dirsScanned: dirsScanned,
-        dirsUpdated: dirsUpdated,
-        filesUpdated: filesUpdated,
-        staleEntriesRemoved: staleIndexKeys.length
-      };
-      await this.redisClient.set('index:status', JSON.stringify(indexStatus));
-
-      this.indexProgress.status = 'completed';
-      systemLogger.logSystem('INFO', `✅ Incremental index update completed in ${duration}s: ${dirsScanned} dirs scanned, ${dirsUpdated} updated, ${filesUpdated} files updated, ${staleIndexKeys.length} stale entries removed`);
-
-    } catch (error) {
-      this.indexProgress.status = 'error';
-      systemLogger.logSystem('ERROR', `Failed to build incremental index: ${error.message}`);
-    } finally {
-      this.isIndexing = false;
-    }
-  }
-
-  /**
-   * Index a single directory (non-recursive) and return number of files indexed
-   * Used by incremental indexing to update only changed directories
-   */
-  async indexDirectoryNonRecursive(dirPath, ignoreList) {
-    let filesIndexed = 0;
-
-    try {
-      const items = await fs.readdir(dirPath);
-
-      for (const itemName of items) {
-        if (ignoreList.includes(itemName)) {
-          continue;
-        }
-
-        const fullPath = path.join(dirPath, itemName);
-
-        try {
-          const stat = await fs.stat(fullPath);
-          const relativePath = path.relative(this.storagePath, fullPath);
-
-          const fileData = {
-            path: relativePath,
-            name: itemName,
-            size: stat.size || 0,
-            modified: stat.mtime.getTime(),
-            isDirectory: stat.isDirectory()
-          };
-
-          // Store in Redis with lowercase name for case-insensitive search
-          const indexKey = `index:${itemName.toLowerCase()}:${relativePath}`;
-          await this.redisClient.set(indexKey, JSON.stringify(fileData), { EX: 86400 * 7 }); // 7 day TTL
-
-          filesIndexed++;
-        } catch (err) {
-          if (err.code !== 'EACCES' && err.code !== 'ENOENT') {
-            systemLogger.logSystem('WARN', `Error indexing ${fullPath}: ${err.message}`);
-          }
-        }
-      }
-    } catch (error) {
-      if (error.code !== 'EACCES') {
-        throw error;
-      }
-    }
-
-    return filesIndexed;
-  }
-
-  /**
-   * Scan for new directories that are not yet in the index
-   * OPTIMIZATION: Use iterative approach instead of recursion to prevent stack overflow
-   * for very large file systems with deep directory structures
-   */
-  async scanForNewDirectories(startPath, ignoreList, existingDirs) {
-    // Use a queue for breadth-first traversal instead of recursion
-    const directoriesToScan = [startPath];
-    let newDirsFound = 0;
-    let processedCount = 0;
-
-    try {
-      while (directoriesToScan.length > 0) {
-        const currentPath = directoriesToScan.shift();
-        processedCount++;
-
-        // Yield to event loop every 50 directories to prevent blocking
-        if (processedCount % 50 === 0) {
-          await new Promise(resolve => setImmediate(resolve));
-        }
-
-        try {
-          const items = await fs.readdir(currentPath);
-
-          for (const itemName of items) {
-            if (ignoreList.includes(itemName)) {
-              continue;
-            }
-
-            const fullPath = path.join(currentPath, itemName);
-
-            try {
-              const stat = await fs.stat(fullPath);
-
-              if (stat.isDirectory()) {
-                const relativePath = path.relative(this.storagePath, fullPath);
-
-                // Check if this directory is already indexed
-                if (!existingDirs.has(relativePath) && !existingDirs.has(fullPath)) {
-                  newDirsFound++;
-
-                  // OPTIMIZATION: Only log summary every 100 new directories
-                  if (newDirsFound % 100 === 0) {
-                    systemLogger.logSystem('DEBUG', `Found ${newDirsFound} new directories to index...`);
-                  }
-
-                  // Index this new directory
-                  await this.indexDirectoryNonRecursive(fullPath, ignoreList);
-
-                  // Store mtime
-                  const mtimeKey = `index:mtime:${relativePath}`;
-                  await this.redisClient.set(mtimeKey, stat.mtime.getTime().toString());
-
-                  // Add to existing dirs to prevent re-indexing
-                  existingDirs.add(relativePath);
-                }
-
-                // Add subdirectory to queue for scanning
-                directoriesToScan.push(fullPath);
-              }
-            } catch (err) {
-              if (err.code !== 'EACCES' && err.code !== 'ENOENT') {
-                systemLogger.logSystem('WARN', `Error scanning ${fullPath}: ${err.message}`);
-              }
-            }
-          }
-        } catch (error) {
-          if (error.code !== 'EACCES') {
-            systemLogger.logSystem('DEBUG', `Cannot access directory ${currentPath}: ${error.message}`);
-          }
-        }
-      }
-
-      if (newDirsFound > 0) {
-        systemLogger.logSystem('INFO', `Scanned ${processedCount} directories, indexed ${newDirsFound} new directories`);
-      }
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Error in scanForNewDirectories: ${error.message}`);
-    }
-  }
-
-  /**
-   * Recursively index a directory and its contents
-   * OPTIMIZATION: Also stores directory mtime for incremental updates
-   */
-  async indexDirectory(dirPath, ignoreList) {
-    try {
-      const items = await fs.readdir(dirPath);
-      const relativeDirPath = path.relative(this.storagePath, dirPath);
-
-      // Store directory mtime for incremental indexing
-      try {
-        const dirStat = await fs.stat(dirPath);
-        const mtimeKey = `index:mtime:${relativeDirPath || '.'}`;
-        await this.redisClient.set(mtimeKey, dirStat.mtime.getTime().toString());
-      } catch (mtimeErr) {
-        // Non-fatal, continue indexing
-        systemLogger.logSystem('DEBUG', `Failed to store mtime for ${dirPath}: ${mtimeErr.message}`);
-      }
-
-      for (const itemName of items) {
-        // Skip ignored directories
-        if (ignoreList.includes(itemName)) {
-          continue;
-        }
-
-        const fullPath = path.join(dirPath, itemName);
-
-        try {
-          const stat = await fs.stat(fullPath);
-          const relativePath = path.relative(this.storagePath, fullPath);
-
-          // Index this file/directory
-          const fileData = {
-            path: relativePath,
-            name: itemName,
-            size: stat.size || 0,
-            modified: stat.mtime.getTime(),
-            isDirectory: stat.isDirectory()
-          };
-
-          // Store in Redis with lowercase name as part of key for case-insensitive search
-          const indexKey = `index:${itemName.toLowerCase()}:${relativePath}`;
-          await this.redisClient.set(indexKey, JSON.stringify(fileData), { EX: 86400 * 7 }); // 7 day TTL
-
-          this.indexProgress.current++;
-
-          // Log progress every 10000 files
-          if (this.indexProgress.current % 10000 === 0) {
-            systemLogger.logSystem('INFO', `Indexing progress: ${this.indexProgress.current} files processed`);
-          }
-
-          // If it's a directory, recursively index it
-          if (stat.isDirectory()) {
-            await this.indexDirectory(fullPath, ignoreList);
-          }
-        } catch (err) {
-          if (err.code === 'EACCES') {
-            // Skip permission denied
-            continue;
-          } else if (err.code === 'ENOENT') {
-            // Skip if file was deleted during indexing
-            continue;
-          } else {
-            systemLogger.logSystem('WARN', `Error indexing ${fullPath}: ${err.message}`);
-          }
-        }
-      }
-    } catch (error) {
-      if (error.code === 'EACCES') {
-        // Skip directories we can't access
-        return;
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Start periodic re-indexing in background
-   * OPTIMIZED: Uses incremental indexing instead of full rebuild
-   * Re-indexes every 6 hours by default
-   */
-  startPeriodicIndexing(intervalHours = 6) {
-    if (this.indexingInterval) {
-      systemLogger.logSystem('WARN', 'Periodic indexing already started');
-      return;
-    }
-
-    const intervalMs = intervalHours * 60 * 60 * 1000;
-
-    // Check if index exists, if not do initial full build
-    this.redisClient.get('index:status').then(status => {
-      if (!status) {
-        // No index exists, do initial full build
-        systemLogger.logSystem('INFO', 'No existing index found, performing initial full index build...');
-        this.buildGlobalIndex(false);
-      } else {
-        // Index exists, do incremental update
-        systemLogger.logSystem('INFO', 'Existing index found, performing incremental update...');
-        this.buildIncrementalIndex();
-      }
-    }).catch(err => {
-      systemLogger.logSystem('WARN', `Failed to check index status: ${err.message}, performing full build`);
-      this.buildGlobalIndex(false);
     });
-
-    // Schedule periodic incremental updates (much faster than full rebuild)
-    this.indexingInterval = setInterval(() => {
-      systemLogger.logSystem('INFO', 'Starting periodic incremental index update...');
-      this.buildIncrementalIndex();
-    }, intervalMs);
-
-    systemLogger.logSystem('INFO', `Periodic incremental indexing started (every ${intervalHours} hours)`);
   }
 
-  /**
-   * Stop periodic indexing
-   */
-  stopPeriodicIndexing() {
-    if (this.indexingInterval) {
-      clearInterval(this.indexingInterval);
-      this.indexingInterval = null;
-      systemLogger.logSystem('INFO', 'Periodic indexing stopped');
-    }
+  getDirectoryContents(dirPath) {
+    return this._read(async () => {
+      const cachedContents = async () => {
+        const generation = this.snapshotGeneration;
+        const absolute = await this._checked(dirPath, { allowMissing: false });
+        const stats = await fs.lstat(absolute);
+        if (!stats.isDirectory()) throw pathError('ENOTDIR', 'Cached listing target is not a directory');
+        const hot = this.getFromHotCache(absolute);
+        const contents = hot || this.directoryCache.get(absolute);
+        const metadata = contents && this.snapshotMetadata.get(contents);
+        if (!metadata || generation !== this.snapshotGeneration || metadata.generation !== generation
+          || performance.now() - metadata.timestamp >= this.cacheTtlMs
+          || this.directoryMtimes.get(absolute) !== stats.mtimeMs) return null;
+        this.metrics[hot ? 'hotCacheHits' : 'memoryCacheHits']++;
+        this.updateHotCache(absolute, contents);
+        return contents;
+      };
+      const cached = await cachedContents();
+      if (cached) return cached;
+      return this._run(async () => {
+        // Coalesce concurrent misses and the server's enterDirectory/list pair.
+        const refreshed = await cachedContents();
+        if (refreshed) return refreshed;
+        this.metrics.cacheMisses++;
+        return this.updateDirectoryCache(dirPath);
+      });
+    });
+  }
+  enterDirectory(dirPath) {
+    return this._read(async () => {
+      const absolute = await this._checked(dirPath, { allowMissing: false });
+      const contents = await this.getDirectoryContents(absolute);
+      this.activeDirs.add(absolute);
+      return contents;
+    });
+  }
+  leaveDirectory(dirPath) {
+    return this._run(async () => {
+      const absolute = await this._checked(dirPath);
+      this.activeDirs.delete(absolute);
+      if (absolute !== this.storagePath) await this.invalidateDirectory(absolute, { preserveIndex: true });
+    });
   }
 
-  /**
-   * Get indexing status and statistics
-   */
-  async getIndexStatus() {
-    try {
-      const indexStatus = await this.redisClient.get('index:status');
-      const status = indexStatus ? JSON.parse(indexStatus) : null;
+  invalidateDirectory(dirPath, { recursive = false, preserveIndex = false } = {}) {
+    // Expire snapshots immediately, even if Redis invalidation waits for indexing.
+    this.snapshotGeneration++;
+    return this._run(async () => {
+      const absolute = await this._checked(dirPath);
+      const matches = candidate => candidate === absolute || (recursive && containsPath(absolute, candidate));
+      for (const cache of [this.directoryCache, this.directoryMtimes, this.lastMtimeCheck, this.hotCache]) {
+        for (const candidate of cache.keys()) if (matches(candidate)) cache.delete(candidate);
+      }
+      this.hotCacheAccessOrder = [...this.hotCache.keys()];
+      // Decode opaque key suffixes instead of inserting paths into Redis globs.
+      for (const family of preserveIndex ? ['dir'] : ['dir', 'entry', 'mtime']) {
+        await this._deleteKeys(family, key => {
+          const relative = Buffer.from(key.slice(`${this.namespace}${family}:`.length), 'base64url').toString();
+          const candidate = path.resolve(this.storagePath, relative);
+          return matches(candidate) || (family === 'entry' && path.dirname(candidate) === absolute);
+        });
+      }
+    });
+  }
 
-      return {
-        isIndexing: this.isIndexing,
-        progress: this.indexProgress,
-        lastIndex: status,
-        periodicIndexing: !!this.indexingInterval
-      };
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `Failed to get index status: ${error.message}`);
-      return {
-        isIndexing: this.isIndexing,
-        progress: this.indexProgress,
-        error: error.message
-      };
-    }
+  refreshDirectory(dirPath) { return this.updateDirectoryCache(dirPath); }
+  refreshPaths(paths) {
+    this.snapshotGeneration++;
+    return this._run(async () => {
+      const parents = new Set();
+      const trees = new Set();
+      for (const target of paths) {
+        const absolute = await this._checked(target);
+        await this.invalidateDirectory(absolute, { recursive: true });
+        try {
+          if ((await fs.lstat(absolute)).isDirectory()) trees.add(absolute);
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        // Include ancestors for newly created nested folders. Each is scanned
+        // non-recursively, so sibling directory contents are never traversed.
+        for (let parent = path.dirname(absolute); containsPath(this.storagePath, parent); parent = path.dirname(parent)) {
+          parents.add(parent);
+          if (parent === this.storagePath) break;
+        }
+      }
+      const selectedTrees = [...trees].filter(tree => ![...trees].some(other => other !== tree && containsPath(other, tree)));
+      for (const parent of parents) {
+        if (selectedTrees.some(tree => containsPath(tree, parent))) continue;
+        try { await this._checked(parent, { allowMissing: false }); }
+        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+        await this.updateDirectoryCache(parent);
+      }
+      for (const tree of selectedTrees) await this.updateDirectoryCache(tree, true);
+    });
+  }
+  scanDirectory(dirPath) { return this.updateDirectoryCache(dirPath); }
+  refreshCache() { return this.updateDirectoryCache(this.storagePath); }
+  getFilesInDirectory(dirPath) { return this.enterDirectory(dirPath); }
+  getFilesInDirectoryPaginated(dirPath, offset = 0, limit = 1000) {
+    return this._read(async () => {
+      const all = await this.enterDirectory(dirPath);
+      const start = Math.max(0, Number(offset) || 0);
+      const end = limit > 0 ? Math.min(start + Number(limit), all.length) : all.length;
+      return { files: all.slice(start, end), total: all.length, offset: start, limit, hasMore: end < all.length };
+    });
+  }
+
+  getFileInfo(filePath) {
+    return this._run(async () => {
+      const absolute = await this._checked(path.isAbsolute(filePath) ? filePath : path.resolve(this.storagePath, filePath), { allowMissing: false });
+      const stats = await fs.lstat(absolute);
+      return { path: path.relative(this.storagePath, absolute), name: path.basename(absolute), size: stats.size, modified: stats.mtimeMs, isDirectory: stats.isDirectory() };
+    });
+  }
+
+  searchFiles(query) {
+    return this._run(async () => {
+      const files = [];
+      const literal = String(query).toLowerCase();
+      for await (const key of this._keys('entry')) {
+        let record;
+        try { record = JSON.parse(await this.redisClient.get(key)); } catch (error) {
+          if (error instanceof SyntaxError) continue;
+          throw error;
+        }
+        if (!record || typeof record.name !== 'string' || typeof record.path !== 'string' || !record.name.toLowerCase().includes(literal)) continue;
+        try {
+          const current = await this.getFileInfo(record.path);
+          files.push(current);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+          await this.redisClient.del(key);
+          continue;
+        }
+        if (files.length >= 1000) break;
+      }
+      const status = await this.getIndexStatus();
+      return { files, indexing: false, indexUpdating: this.isIndexing, indexStats: status.lastIndex, resultCount: files.length };
+    });
+  }
+
+  buildGlobalIndex(force = false) {
+    if (this.indexJob) return this.indexJob;
+    this.indexJob = this._run(async () => {
+      this.isIndexing = true;
+      this.indexProgress = { current: 0, total: 0, status: 'scanning' };
+      try {
+        const start = Date.now();
+        const entries = await assertSafeTree(await this._checked(this.storagePath, { allowMissing: false }));
+        const ignored = await this.loadIgnoreList();
+        await this._deleteKeys('entry');
+        await this._deleteKeys('mtime');
+        for (const { path: absolute, stats } of entries) {
+          const relative = path.relative(this.storagePath, absolute);
+          if (relative.split(path.sep).some(component => ignored.includes(component))) continue;
+          if (stats.isDirectory() && this.redisClient?.isReady) await this.redisClient.set(this.key('mtime', relative), String(stats.mtimeMs));
+          if (!relative) continue;
+          const record = { path: relative, name: path.basename(absolute), size: stats.size, modified: stats.mtimeMs, isDirectory: stats.isDirectory() };
+          if (this.redisClient?.isReady) await this.redisClient.set(this.key('entry', relative), JSON.stringify(record));
+          this.indexProgress.current++;
+        }
+        this.indexProgress.total = this.indexProgress.current;
+        this.indexProgress.status = 'completed';
+        const lastIndex = { lastUpdated: Date.now(), totalFiles: this.indexProgress.current, duration: ((Date.now() - start) / 1000).toFixed(2), status: 'completed', type: force ? 'full' : 'refresh' };
+        if (this.redisClient?.isReady) await this.redisClient.set(this.key('meta', 'index'), JSON.stringify(lastIndex));
+        this.lastIndex = Object.freeze(lastIndex);
+      } catch (error) {
+        this.indexProgress.status = 'error';
+        throw error;
+      } finally { this.isIndexing = false; }
+    }).finally(() => { this.indexJob = null; });
+    return this.indexJob;
+  }
+
+  buildIncrementalIndex() { return this.buildGlobalIndex(); }
+  indexDirectory(dirPath, ignoreList) { return this.updateDirectoryCache(dirPath, true); }
+  async indexDirectoryNonRecursive(dirPath, ignoreList) { return (await this.updateDirectoryCache(dirPath)).length; }
+  scanForNewDirectories(startPath, ignoreList, existingDirs) { return this.indexDirectory(startPath, ignoreList); }
+
+  getIndexStatus() {
+    return this._read(async () => {
+      await this._checked(this.configuredRoot, { allowMissing: false });
+      return { isIndexing: this.isIndexing, progress: { ...this.indexProgress }, lastIndex: this.lastIndex && { ...this.lastIndex }, periodicIndexing: !!this.indexingInterval };
+    });
+  }
+  getCacheInfo() {
+    return this._run(async () => {
+      let count = 0;
+      for await (const key of this._keys()) count++;
+      return { initialized: this.initialized, totalDirectories: this.directoryCache.size, activeDirectories: this.activeDirs.size, redisDbSize: count, isPolling: !!this.rootPollingInterval, pollFrequency: this.rootPollFrequency, cacheMetrics: { ...this.metrics } };
+    });
+  }
+  getStats() { return this.getCacheInfo(); }
+
+  clearCache() {
+    this.generation++;
+    this.snapshotGeneration++;
+    this.stopRootPolling();
+    this.stopPeriodicIndexing();
+    return this._run(async () => {
+      this.generation++;
+      this.snapshotGeneration++;
+      this.stopRootPolling();
+      this.stopPeriodicIndexing();
+      await this._deleteKeys();
+      for (const cache of [this.directoryCache, this.directoryMtimes, this.activeDirs, this.hotCache, this.lastMtimeCheck]) cache.clear();
+      this.hotCacheAccessOrder = [];
+      this.indexProgress = { current: 0, total: 0, status: 'idle' };
+      this.lastIndex = null;
+      this.emit('clear');
+      // Polling may rebuild fresh data later; no old index job survives this point.
+      if (this.initialized && !this.closing) {
+        this.startRootPolling();
+        this.startPeriodicIndexing(6, { immediate: false });
+      }
+    });
+  }
+
+  close() {
+    if (this.closeJob) return this.closeJob;
+    this.closing = true;
+    this.stopRootPolling();
+    this.stopPeriodicIndexing();
+    this.closeJob = (async () => {
+      await this.work;
+      await Promise.allSettled([...this.reads]);
+      if (this.redisClient?.isOpen || this.redisClient?.isReady) await this.redisClient.quit();
+      this.redisClient = null;
+      this.initialized = false;
+      this.closed = true;
+      for (const cache of [this.directoryCache, this.directoryMtimes, this.activeDirs, this.hotCache, this.lastMtimeCheck]) cache.clear();
+      this.hotCacheAccessOrder = [];
+    })();
+    return this.closeJob;
   }
 }
 

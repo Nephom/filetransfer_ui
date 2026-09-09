@@ -2,17 +2,83 @@ const fs = require('fs').promises;
 const path = require('path');
 const net = require('net');
 
-// Create logs directory if it doesn't exist (for IP-specific logs)
 const logsDir = process.env.LOGS_DIR || path.join(__dirname, '../../../logs');
-fs.mkdir(logsDir, { recursive: true }).catch(console.error);
 
 // Server log is in root directory (used by start.sh/status.sh/stop.sh)
 const serverLogFile = process.env.SERVER_LOG_FILE || path.join(__dirname, '../../../server.log');
 
+const REDACTED = '[REDACTED]';
+
+function redactUrl(value) {
+  let url = String(value);
+  let suffix = '';
+  // Decode before matching so encoded separators cannot hide credential paths.
+  for (let i = 0; i < 3; i++) {
+    const query = url.indexOf('?');
+    const hash = url.indexOf('#');
+    const end = hash < 0 ? url.length : hash;
+    if (query >= 0 && query < end) {
+      // Split before decoding: encoded '&' and '=' are part of a private value,
+      // not extra parameter names that can be retained in the log.
+      suffix = '?' + url.slice(query + 1, end).split('&').map(part => {
+        const equal = part.indexOf('=');
+        return equal < 0 ? REDACTED : `${part.slice(0, equal).replace(/[^a-z0-9_.%\[\]-]/gi, '_')}=${REDACTED}`;
+      }).join('&') + (hash < 0 ? '' : `#${REDACTED}`);
+      url = url.slice(0, query);
+    } else if (hash >= 0) {
+      suffix = `#${REDACTED}`;
+      url = url.slice(0, hash);
+    }
+    const decoded = url.replace(/(?:%[0-9a-f]{2})+/gi, part => {
+      try { return decodeURIComponent(part); } catch { return '[INVALID_ENCODING]'; }
+    });
+    if (decoded === url) break;
+    if (i === 2) return '[REDACTED_URL]';
+    url = decoded;
+  }
+  url = url.replace(/(https?:\/\/)[^/@\s]+@/gi, `$1${REDACTED}@`)
+    .replace(/(\/(?:api\/)?(?:files\/)?share\/)[^/?#\s]+/gi, `$1${REDACTED}`)
+    .replace(/(\/api\/admin\/share-links\/)[^/?#\s]+/gi, `$1${REDACTED}`)
+    .replace(/(\/(?:auth\/)?(?:browser-handoff|handoff|reset-password|reset-token)\/)[^/?#\s]+/gi, `$1${REDACTED}`);
+  return (url + suffix).replace(/[\r\n]/g, ' ');
+}
+
+function redactLogData(value, seen = new WeakSet()) {
+  if (typeof value === 'string') {
+    if (/^\s*[\[{]/.test(value)) {
+      try { return JSON.stringify(redactLogData(JSON.parse(value), seen)); } catch { /* Not JSON. */ }
+    }
+    return value.replace(/(?:https?:\/\/|\/)[^\s<>"']+/gi, redactUrl)
+      .replace(/\b(?:cookie|set-cookie|authorization)\s*:\s*[^\r\n]*/gi, `Credentials: ${REDACTED}`)
+      .replace(/\bBearer\s+[^\s,"']+/gi, `Bearer ${REDACTED}`)
+      .replace(/\b((?:[\w-]*(?:password|passwd|secret|token|cookie|authorization|credential|api[_-]?key)[\w-]*))["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, `$1: ${REDACTED}`)
+      .replace(/[\r\n]/g, ' ');
+  }
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  if (value instanceof Error) return { name: value.name, message: redactLogData(value.message, seen) };
+  if (Array.isArray(value)) return value.map(item => redactLogData(item, seen));
+  const result = Object.create(null);
+  for (const [key, item] of Object.entries(value)) {
+    result[key] = /password|passwd|secret|token|cookie|authorization|credential|api[_-]?key|^body$|^query$/i.test(key)
+      ? REDACTED : /url|uri|referer|referrer/i.test(key) && typeof item === 'string'
+        ? redactUrl(item) : redactLogData(item, seen);
+  }
+  return result;
+}
+
+const logText = value => typeof value === 'string' ? redactLogData(value) : JSON.stringify(redactLogData(value));
+
 class SystemLogger {
-  constructor() {
-    this.logsDir = logsDir;
-    this.serverLogFile = serverLogFile;
+  constructor(options = {}) {
+    this.logsDir = options.logsDir || logsDir;
+    this.serverLogFile = options.serverLogFile || serverLogFile;
+    this.fileSink = options.fileSink || (async (file, entry) => {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.appendFile(file, entry);
+    });
+    this.consoleSink = options.consoleSink || (entry => console.log(entry));
     this.logLevel = 'INFO';
   }
 
@@ -74,13 +140,13 @@ class SystemLogger {
       const sanitizedIP = ip.replace(/\./g, '_');
       const logFile = path.join(this.logsDir, `${sanitizedIP}.log`);
 
-      let logEntry = `[${this.getFormattedDate()}] [${level}] ${message}`;
+      let logEntry = `[${this.getFormattedDate()}] [${level}] ${logText(message)}`;
 
       // Add request details if available
       if (req) {
         // Only add URL if req has method and originalUrl (full Express request)
         if (req.method && req.originalUrl) {
-          logEntry += ` | URL: ${req.method} ${req.originalUrl}`;
+          logEntry += ` | URL: ${req.method} ${redactUrl(req.originalUrl)}`;
         }
 
         // Only add user agent if req has headers (full Express request)
@@ -102,19 +168,19 @@ class SystemLogger {
 
       logEntry += '\n';
 
-      await fs.appendFile(logFile, logEntry);
+      await this.fileSink(logFile, logText(logEntry.trimEnd()) + '\n');
     } catch (error) {
-      console.error('Failed to write IP log file:', error);
+      this.consoleSink('Failed to write IP log file');
     }
   }
 
   // Log to server.log (system events only)
   async logToServerFile(level, message) {
     try {
-      const logEntry = `[${this.getFormattedDate()}] [${level}] ${message}\n`;
-      await fs.appendFile(this.serverLogFile, logEntry);
+      const logEntry = `[${this.getFormattedDate()}] [${level}] ${logText(message)}\n`;
+      await this.fileSink(this.serverLogFile, logEntry);
     } catch (error) {
-      console.error('Failed to write server log file:', error);
+      this.consoleSink('Failed to write server log file');
     }
   }
 
@@ -124,7 +190,7 @@ class SystemLogger {
     await this.logToServerFile(level, message);
     // Also output to console for immediate visibility
     const prefix = level === 'ERROR' ? '❌' : level === 'WARN' ? '⚠️' : 'ℹ️';
-    console.log(`${prefix} [SYSTEM] ${message}`);
+    this.consoleSink(`${prefix} [SYSTEM] ${logText(message)}`);
   }
 
   // Log authentication events (IP-specific log only)
@@ -134,7 +200,7 @@ class SystemLogger {
     let message = `AUTH ${event.toUpperCase()} - User: ${username}, Status: ${status}`;
 
     if (details) {
-      message += `, Details: ${JSON.stringify(details)}`;
+      message += `, Details: ${JSON.stringify(redactLogData(details))}`;
     }
 
     await this.logToIPFile(ip, success ? 'INFO' : 'WARN', message, req);
@@ -147,7 +213,7 @@ class SystemLogger {
     let message = `API ${operation.toUpperCase()} - Resource: ${resource}, Status: ${status}`;
 
     if (details) {
-      message += `, Details: ${JSON.stringify(details)}`;
+      message += `, Details: ${JSON.stringify(redactLogData(details))}`;
     }
 
     await this.logToIPFile(ip, success ? 'INFO' : 'WARN', message, req);
@@ -160,7 +226,7 @@ class SystemLogger {
     let message = `FILE ${operation.toUpperCase()} - Path: ${filePath}, Status: ${status}`;
 
     if (details) {
-      message += `, Details: ${JSON.stringify(details)}`;
+      message += `, Details: ${JSON.stringify(redactLogData(details))}`;
     }
 
     await this.logToIPFile(ip, success ? 'INFO' : 'WARN', message, req);
@@ -210,7 +276,7 @@ class SystemLogger {
   async logCacheOperation(operation, details, req = null) {
     if (req) {
       const ip = this.getClientIP(req);
-      const message = `CACHE ${operation.toUpperCase()} - ${JSON.stringify(details)}`;
+      const message = `CACHE ${operation.toUpperCase()} - ${JSON.stringify(redactLogData(details))}`;
       await this.logToIPFile(ip, 'INFO', message, req);
     }
   }
@@ -218,12 +284,13 @@ class SystemLogger {
   // Log security events (IP-specific)
   async logSecurity(event, details, req) {
     const ip = this.getClientIP(req);
-    const message = `SECURITY ${event.toUpperCase()} - ${JSON.stringify(details)}`;
+    const message = `SECURITY ${event.toUpperCase()} - ${JSON.stringify(redactLogData(details))}`;
     await this.logToIPFile(ip, 'WARN', message, req);
   }
 
   // Log file upload operations (IP-specific)
   async logUpload(fileName, success, req, details = null) {
+    details = redactLogData(details);
     const ip = this.getClientIP(req);
     const status = success ? 'SUCCESS' : 'FAILED';
     let message = `UPLOAD - File: ${fileName}, Status: ${status}`;
@@ -248,6 +315,7 @@ class SystemLogger {
 
   // Log file download operations (IP-specific)
   async logDownload(fileName, downloadType, success, req, details = null) {
+    details = redactLogData(details);
     const ip = this.getClientIP(req);
     const status = success ? 'SUCCESS' : 'FAILED';
     let message = `DOWNLOAD - File: ${fileName}, Type: ${downloadType}, Status: ${status}`;
@@ -255,9 +323,6 @@ class SystemLogger {
     if (details) {
       if (details.size !== undefined) {
         message += `, Size: ${details.size} bytes`;
-      }
-      if (details.shareToken) {
-        message += `, ShareToken: ${details.shareToken}`;
       }
       if (details.fileCount !== undefined) {
         message += `, Files: ${details.fileCount}`;
@@ -275,6 +340,7 @@ class SystemLogger {
 
   // Log batch upload summary (system-level, server.log only)
   async logBatchSummary(batchId, stats) {
+    stats = redactLogData(stats);
     let message = `BATCH UPLOAD SUMMARY - BatchID: ${batchId}`;
 
     if (stats.totalFiles !== undefined) {
@@ -311,4 +377,4 @@ process.on('SIGUSR1', () => {
   systemLogger.logSystem('INFO', 'Log rotation complete');
 });
 
-module.exports = { SystemLogger, systemLogger, createLogger: () => systemLogger };
+module.exports = { SystemLogger, systemLogger, createLogger: () => systemLogger, redactUrl, redactLogData };

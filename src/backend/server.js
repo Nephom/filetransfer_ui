@@ -35,6 +35,9 @@ const { modifiedTimestamp, normalizeSort, sortFiles } = require('./utils/file-so
 const { archiveFilename, contentDisposition } = require('./utils/archive-filename');
 const { getVersion } = require('../../scripts/version');
 const { clearSessionCookie, getSessionToken, setSessionCookie } = require('./auth/session-cookie');
+const { withOperationLocks } = require('./file-system/operation-locks');
+const { assertSafeTree, assertTransferPaths } = require('./file-system/path-safety');
+const { publicDirectory, checkBrowserBuild } = require('../../scripts/build-browser');
 
 
 
@@ -50,10 +53,34 @@ const app = express();
 
 // These will be initialized after config is loaded
 let authManager;
-let fileSystem;
 let locationManager;
 let locationPermissionManager;
 const locationFileSystems = new Map();
+const initializingFileSystems = new Map();
+const storageRequests = new Set();
+let runtimeChanging = false;
+let configurationWrites = Promise.resolve();
+const configurationChange = handler => (req, res, next) => {
+  const job = configurationWrites.then(() => handler(req, res));
+  configurationWrites = job.catch(() => {});
+  job.catch(next);
+};
+
+const getLocationFileSystem = async (location) => {
+  if (locationFileSystems.has(location.id)) return locationFileSystems.get(location.id);
+  if (!initializingFileSystems.has(location.id)) {
+    const instance = new EnhancedMemoryFileSystem(location.rootPath, { locationId: location.id });
+    const initializing = instance.initialize().then(() => {
+      locationFileSystems.set(location.id, instance);
+      return instance;
+    }).catch(async (error) => {
+      await instance.close().catch(() => {});
+      throw error;
+    }).finally(() => initializingFileSystems.delete(location.id));
+    initializingFileSystems.set(location.id, initializing);
+  }
+  return initializingFileSystems.get(location.id);
+};
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const publicLocationLabel = (location) => `${location.displayName} (${location.id})`;
@@ -78,6 +105,19 @@ const publicErrorMessage = (error) => {
 };
 
 const getRequestedLocationId = (req) => req.query?.locationId || req.body?.locationId || req.headers['x-location-id'];
+const itemRelativePath = (item, currentPath = '') => {
+  if (!item || typeof item.name !== 'string' || !item.name || /[\\/\x00-\x1f]/.test(item.name) || ['.', '..'].includes(item.name)) {
+    throw Object.assign(new Error('Each item requires a basename'), { statusCode: 400 });
+  }
+  if (typeof currentPath !== 'string' || (item.path !== undefined && (typeof item.path !== 'string' || !item.path))) {
+    throw Object.assign(new Error('Invalid item path'), { statusCode: 400 });
+  }
+  const value = (item.path === undefined ? path.posix.join(currentPath, item.name) : item.path).replace(/\\/g, '/');
+  if (value.startsWith('/') || /^[a-z]:/i.test(value) || value.split('/').includes('..') || path.posix.basename(value) !== item.name) {
+    throw Object.assign(new Error('Item path must match its name inside the Location'), { statusCode: 400 });
+  }
+  return value;
+};
 
 // Pass capability=null for authenticated infrastructure operations (such as
 // cache/index maintenance) that are not file permission operations.
@@ -96,6 +136,16 @@ const getStorageContext = async (req, relativePath = '', capability = 'list', re
   if (!location || !location.enabled) {
     throw Object.assign(new Error('Location is unavailable'), { statusCode: 404 });
   }
+  const headerLocationId = getRequestedLocationId(req) || (locationManager.getLocation('default') ? 'default' : null);
+  const targetLocationId = req.body?.targetLocationId || req.body?.destinationLocationId || headerLocationId;
+  const revisions = [
+    headerLocationId === locationId ? req.headers['x-location-revision'] : undefined,
+    (req.body?.sourceLocationId || headerLocationId) === locationId ? req.body?.sourceLocationRevision : undefined,
+    targetLocationId === locationId ? req.body?.targetLocationRevision : undefined
+  ].filter(value => value !== undefined);
+  if (revisions.some(value => value !== locationManager.getRevision(locationId))) {
+    throw Object.assign(new Error('Location changed; refresh before retrying'), { statusCode: 409 });
+  }
   if (capability && !locationPermissionManager) {
     throw Object.assign(new Error('Location permission service is not ready'), { statusCode: 503 });
   }
@@ -108,30 +158,23 @@ const getStorageContext = async (req, relativePath = '', capability = 'list', re
     });
   }
 
-  let targetPath;
-  try {
-    targetPath = locationManager.resolveRelativePath(locationId, relativePath || '');
-  } catch (error) {
-    throw Object.assign(new Error('Path is outside the selected Location'), { statusCode: 403 });
+  if (typeof relativePath !== 'string' || path.isAbsolute(relativePath) || /[\x00-\x1f]/.test(relativePath)) {
+    throw Object.assign(new Error('A Location-relative path is required'), { statusCode: 400 });
   }
-
-  let locationFileSystem = locationFileSystems.get(locationId);
-  if (!locationFileSystem) {
-    locationFileSystem = new EnhancedMemoryFileSystem(location.rootPath);
-    await locationFileSystem.initialize();
-    locationFileSystems.set(locationId, locationFileSystem);
-  }
+  const rootPath = await locationManager.resolveCheckedPath(locationId, '', { allowMissing: false });
+  const targetPath = await locationManager.resolveCheckedPath(locationId, relativePath, { allowMissing: true });
+  const locationFileSystem = await getLocationFileSystem(location);
 
   return {
     locationId,
     location,
-    rootPath: location.rootPath,
+    rootPath,
     targetPath,
     fileSystem: locationFileSystem
   };
 };
 
-const refreshDirectoryCache = async (directoryPath, operation, req, targetFileSystem = fileSystem) => {
+const refreshDirectoryCache = async (directoryPath, operation, req, targetFileSystem = null) => {
   if (!targetFileSystem?.cache) return;
   if (targetFileSystem.cache.refreshDirectory) {
     await targetFileSystem.cache.refreshDirectory(directoryPath);
@@ -141,12 +184,26 @@ const refreshDirectoryCache = async (directoryPath, operation, req, targetFileSy
   systemLogger.logCacheOperation(operation, { path: directoryPath }, req);
 };
 let securityMiddleware;
+const refreshSecurity = () => { securityMiddleware = initializeSecurity(configManager); };
 let isCacheReady = false;
 const userActiveDirectories = new Map(); // Track active directory per user
 let httpServerInstance = null;
 let httpsServerInstance = null;
 let tempUploadCleanupInterval = null;
 const browserHandoffs = new Map();
+const scheduleTempCleanup = () => {
+  if (tempUploadCleanupInterval) clearInterval(tempUploadCleanupInterval);
+  tempUploadCleanupInterval = setInterval(() => {
+    uploadApi.cleanupTempUploads(configManager.get('maintenance.tempUploadRetentionDays')).catch(() => {});
+  }, configManager.get('maintenance.tempUploadCleanupIntervalHours') * 60 * 60 * 1000);
+  tempUploadCleanupInterval.unref?.();
+};
+const resetTokenClient = async () => {
+  if (runtimeChanging) throw Object.assign(new Error('Storage configuration is changing'), { statusCode: 503 });
+  const location = locationManager?.getLocations({ includeDisabled: false }).find(item => item.id === 'default')
+    || locationManager?.getLocations({ includeDisabled: false })[0];
+  return location ? (await getLocationFileSystem(location)).cache.redisClient : null;
+};
 
 // Security checks and recommendations on startup
 async function performSecurityChecks(config) {
@@ -221,20 +278,40 @@ function getNetworkInterfaces() {
 // Security middleware will be initialized after config is loaded
 
 // Basic middleware
+for (const name of ['securityHeaders', 'requestLogger']) {
+  app.use((req, res, next) => securityMiddleware ? securityMiddleware[name](req, res, next) : next());
+}
 app.use(cors({
   credentials: true,
   origin: true,
   exposedHeaders: ['Authorization'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Location-ID', 'X-Location-Revision', 'X-Upload-Batch-ID']
 }));
 // Increase JSON body limit to 100MB for large file metadata
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
-app.use(express.static(path.join(__dirname, '../frontend/public'), {
+app.use((req, res, next) => securityMiddleware ? securityMiddleware.validateInput(req, res, next) : next());
+app.use((req, res, next) => {
+  if (securityMiddleware && /^\/api\/(?:files|upload|folders|archive)(?:\/|$)/.test(req.path)) {
+    return securityMiddleware.fileLimiter(req, res, next);
+  }
+  next();
+});
+app.use((req, res, next) => {
+  if (!/^\/api\/(?:files|upload|folders|archive|locations)(?:\/|$)/.test(req.path)) return next();
+  if (runtimeChanging) return res.status(503).json({ error: 'Storage configuration is changing; retry shortly' });
+  let release;
+  const settled = new Promise(resolve => { release = resolve; });
+  storageRequests.add(settled);
+  const done = () => { storageRequests.delete(settled); release(); };
+  res.once('finish', done);
+  res.once('close', done);
+  next();
+});
+app.use(express.static(publicDirectory, {
   setHeaders: (response, filePath) => {
-    if (/\.(?:html|js|jsx|css)$/.test(filePath)) {
-      response.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    }
+    response.setHeader('Cache-Control', /\.(?:js|css)$/.test(filePath)
+      ? 'public, max-age=31536000, immutable' : 'no-store');
   }
 }));
 
@@ -242,39 +319,37 @@ app.use(express.static(path.join(__dirname, '../frontend/public'), {
 const uploadApi = new UploadAPI();
 app.use('/api', uploadApi.getRouter());
 
-const configureLocationRuntime = () => {
-  for (const cachedFileSystem of locationFileSystems.values()) {
-    if (cachedFileSystem !== fileSystem) {
-      const closing = cachedFileSystem.cache?.close?.();
-      closing?.catch(() => {});
-    }
-  }
+const configureLocationRuntime = async () => {
+  if (runtimeChanging) throw Object.assign(new Error('Storage reconfiguration is already in progress'), { statusCode: 409 });
+  const nextManager = new LocationManager(configManager.getConfig());
+  runtimeChanging = true;
+  try {
+  await Promise.all([...storageRequests]);
+  await uploadApi.waitForIdle();
+  await Promise.allSettled([...initializingFileSystems.values()]);
+  await Promise.all([...locationFileSystems.values()].map(instance => instance.close()));
   locationFileSystems.clear();
+  userActiveDirectories.clear();
 
-  locationManager = new LocationManager(configManager.getConfig());
+  locationManager = nextManager;
   locationPermissionManager = new LocationPermissionManager(locationManager);
+  locationPermissionManager.setAccountResolver(resolveCurrentAccount);
   locationPermissionManager.setUserResolver((username) => userManager.getUser(username));
   locationPermissionManager.setRoleResolver((roleId) => roleManager.getRole(roleId));
   roleManager.setLocationPermissionManager(locationPermissionManager);
   shareRoutes.setLocationPermissionManager?.(locationPermissionManager);
 
-  const defaultLocation = locationManager.getLocation('default');
-  if (fileSystem && defaultLocation && defaultLocation.rootPath === path.resolve(fileSystem.storagePath)) {
-    locationFileSystems.set('default', fileSystem);
-  }
-
-  uploadApi.setCache(fileSystem?.cache);
+  uploadApi.setCache(null);
   uploadApi.setLocationManager(locationManager, async (locationId) => {
-    let targetFileSystem = locationFileSystems.get(locationId);
-    if (!targetFileSystem) {
-      const location = locationManager.getLocation(locationId);
-      if (!location) return null;
-      targetFileSystem = new EnhancedMemoryFileSystem(location.rootPath);
-      await targetFileSystem.initialize();
-      locationFileSystems.set(locationId, targetFileSystem);
-    }
+    const location = locationManager.getLocation(locationId);
+    if (!location) return null;
+    const targetFileSystem = await getLocationFileSystem(location);
     return targetFileSystem.cache;
   }, locationPermissionManager);
+  isCacheReady = true;
+  } finally {
+    runtimeChanging = false;
+  }
 };
 
 // Share routes - /api/share/:token/download does NOT require authentication
@@ -332,7 +407,7 @@ app.get('/admin', sendPrivatePage('admin.html'));
 app.get('/super', sendPrivatePage('super.html'));
 
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/public/index.html'));
+  res.sendFile(path.join(publicDirectory, 'index.html'));
 });
 
 app.get('/api/version', (req, res) => {
@@ -443,15 +518,21 @@ app.post('/auth/browser-handoff', authenticate, requireStaffRole, (req, res) => 
   res.json({ url: `/auth/browser-handoff/${code}` });
 });
 
-app.get('/auth/browser-handoff/:code', (req, res) => {
+app.get('/auth/browser-handoff/:code', async (req, res) => {
   const handoff = browserHandoffs.get(req.params.code);
   browserHandoffs.delete(req.params.code);
   if (!handoff || handoff.expiresAt < Date.now()) return res.status(410).send('This browser sign-in link has expired.');
-
+  try {
+    const decoded = require('jsonwebtoken').verify(handoff.token, configManager.get('security.jwtSecret'));
+    const current = await resolveCurrentAccount(decoded);
+    if (!current.exists || !current.active || !['admin', 'superuser'].includes(current.role)) {
+      return res.status(401).send('This account can no longer open the console.');
+    }
+  } catch { return res.status(401).send('This browser sign-in session has expired.'); }
   const destination = req.query.destination === '/super' ? '/super' : '/admin';
-  res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'Content-Type': 'text/html; charset=utf-8' });
+  res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
   setSessionCookie(req, res, handoff.token);
-  res.send(`<!doctype html><meta name="referrer" content="no-referrer"><script>location.replace(${JSON.stringify(destination)});</script>`);
+  res.redirect(303, destination);
 });
 
 // Change password endpoint
@@ -462,7 +543,7 @@ app.post('/auth/change-password', (req, res, next) => {
   } else {
     next();
   }
-}, authenticate, async (req, res) => {
+}, authenticate, configurationChange(async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
@@ -487,20 +568,16 @@ app.post('/auth/change-password', (req, res, next) => {
       }
 
       const hashedPassword = await bcrypt.hash(newPassword, 12);
-      const configPath = './src/config.ini';
-      let configContent = await fs.readFile(configPath, 'utf8');
-      configContent = configContent.replace(/^password=.*$/m, `password=${hashedPassword}`);
-      configContent = configContent.includes('passwordHashed=true')
-        ? configContent.replace(/^passwordHashed=.*$/m, 'passwordHashed=true')
-        : `${configContent}\npasswordHashed=true`;
-      await fs.writeFile(configPath, configContent);
-      await configManager.load();
+      configManager.set('auth.password', hashedPassword);
+      configManager.set('auth.passwordHashed', true);
+      await configManager.save();
     } else {
       await userManager.changeOwnPassword(req.user.username, currentPassword, newPassword);
     }
 
     systemLogger.logSystem('INFO', `Password changed successfully for user: ${req.user.username}`);
 
+    clearSessionCookie(req, res);
     res.json({
       success: true,
       message: 'Password changed successfully. Please login again with your new password.'
@@ -509,7 +586,7 @@ app.post('/auth/change-password', (req, res, next) => {
     systemLogger.logSystem('ERROR', `Password change error: ${error.message}`);
     res.status(500).json({ error: 'Failed to change password' });
   }
-});
+}));
 
 // Token verification endpoint
 app.post('/auth/verify', (req, res, next) => {
@@ -593,7 +670,7 @@ app.post('/auth/forgot-password', (req, res, next) => {
     }
 
     // Use Redis to store the reset token
-    const redisClient = fileSystem.cache.redisClient;
+    const redisClient = await resetTokenClient();
     if (!redisClient) {
       return res.status(500).json({ error: 'Redis client not available' });
     }
@@ -654,7 +731,7 @@ app.post('/auth/reset-password', (req, res, next) => {
     }
 
     // Check if reset token exists and is valid in Redis
-    const redisClient = fileSystem.cache.redisClient;
+    const redisClient = await resetTokenClient();
     if (!redisClient) {
       return res.status(500).json({ error: 'Redis client not available' });
     }
@@ -821,7 +898,8 @@ app.get('/api/files/cache-stats', authenticate, async (req, res) => {
   try {
     const context = await getStorageContext(req, '', null);
     const stats = await context.fileSystem.getCacheInfo ? await context.fileSystem.getCacheInfo() : { message: 'Cache stats not available' };
-    res.json({ ...stats, locationId: context.locationId });
+    const { storagePath: _privatePath, ...publicStats } = stats;
+    res.json({ ...publicStats, locationId: context.locationId });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Cache stats error: ${error.message}`);
     res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
@@ -880,12 +958,10 @@ app.post('/api/files/rebuild-index', authenticate, async (req, res) => {
 app.get('/api/locations', authenticate, async (req, res) => {
   try {
     if (!locationManager) return res.status(503).json({ error: 'Location service is not ready' });
-    const currentUser = req.user.role === 'admin'
-      ? req.user
-      : await userManager.getUser(req.user.username) || req.user;
+    const currentUser = req.user;
     const locations = await Promise.all(locationPermissionManager.getAccessibleLocations(currentUser).map(async (location) => {
       const health = await locationManager.getHealth(location.id);
-      return { ...location, status: health.status, errorCode: health.errorCode };
+      return { ...location, revision: locationManager.getRevision(location.id), status: health.status, errorCode: health.errorCode };
     }));
     res.json({ success: true, locations });
   } catch (error) {
@@ -966,7 +1042,9 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
       }
     });
 
-    const fileStream = fsSync.createReadStream(fullPath);
+    if (res.destroyed) return;
+    const fileStream = fsSync.createReadStream(fullPath, { flags: fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW });
+    res.once('close', () => fileStream.destroy());
     systemLogger.logSystem('INFO', `DOWNLOAD STREAM OPEN - User: ${userName}, File: ${fileName}`);
     fileStream.pipe(res);
 
@@ -976,7 +1054,7 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
       systemLogger.logDownload(fileName, 'authenticated', false, req, { error: error.message });
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to download file' });
-      }
+      } else res.destroy(error);
     });
   } catch (error) {
     // Catch file not found errors from fs.stat
@@ -1023,8 +1101,10 @@ app.get('/api/files', authenticate, async (req, res) => {
     systemLogger.logSystem('INFO', `📊 Cache operation took ${cacheOperationTime}ms for ${isRootDir ? 'ROOT' : 'subdirectory'}`);
     // ------------------------------------
 
+    let timeout;
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('Request timeout')), 30000);
+      timeout = setTimeout(() => reject(new Error('Request timeout')), 30000);
+      timeout.unref?.();
     });
 
     // Fetch the complete directory before sorting so pagination cannot cut the
@@ -1034,7 +1114,7 @@ app.get('/api/files', authenticate, async (req, res) => {
     const rawFiles = await Promise.race([
       locationFileSystem.list(targetPath, listOptions),
       timeoutPromise
-    ]);
+    ]).finally(() => clearTimeout(timeout));
 
     const rawList = rawFiles && rawFiles.files !== undefined ? rawFiles.files : rawFiles;
     const transformedAllFiles = rawList.map(file => {
@@ -1127,11 +1207,11 @@ app.post('/api/folders', authenticate, async (req, res) => {
   try {
     const { folderName, currentPath } = req.body;
 
-    if (!folderName || !folderName.trim()) {
+    if (typeof folderName !== 'string' || !folderName.trim()) {
       return res.status(400).json({ error: 'Folder name is required' });
     }
 
-    const relativePath = currentPath ? path.join(currentPath, folderName.trim()) : folderName.trim();
+    const relativePath = itemRelativePath({ name: folderName.trim() }, currentPath ?? '');
     const context = await getStorageContext(req, relativePath, 'mkdir');
     const parentContext = await getStorageContext(req, currentPath || '', 'mkdir');
 
@@ -1172,40 +1252,46 @@ app.post('/api/files/directory', authenticate, async (req, res) => {
 // Delete files or folders (specific route - must be before wildcard)
 app.delete('/api/files/delete', authenticate, async (req, res) => {
   try {
-    const { items, currentPath } = req.body;
-
-    if (!items || !Array.isArray(items)) {
+    const { items, currentPath = '' } = req.body;
+    if (!Array.isArray(items) || !items.length) {
       return res.status(400).json({ error: 'Items array is required' });
     }
-
+    const paths = [...new Set(items.map(item => itemRelativePath(item, currentPath)))];
+    const contexts = await Promise.all(paths.map(value => getStorageContext(req, value, 'delete')));
+    for (const context of contexts) {
+      if (context.targetPath === context.rootPath) throw Object.assign(new Error('Cannot delete a Location root'), { statusCode: 403 });
+    }
+    const targets = contexts.filter(context => !contexts.some(parent => parent !== context && context.targetPath.startsWith(parent.targetPath + path.sep)));
+    const results = [];
     const deletedItems = [];
-    const context = await getStorageContext(req, currentPath || '', 'delete');
-
-    for (const item of items) {
-      const itemContext = await getStorageContext(req, path.join(currentPath || '', item.name), 'delete');
-
-      await context.fileSystem.delete(itemContext.targetPath);
-      deletedItems.push(item.name);
-      systemLogger.logFileOperation('delete', path.join(currentPath || '', item.name), true, req, { type: item.isDirectory ? 'directory' : 'file' });
-    }
-
-    // Force cache refresh for the parent directory
-    if (context.fileSystem.cache) {
-      try {
-        await refreshDirectoryCache(context.targetPath, 'refresh_after_delete', req, context.fileSystem);
-      } catch (cacheError) {
-        // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
+    await withOperationLocks(targets.map(context => context.targetPath), async () => {
+      for (const context of targets) await assertSafeTree(context.targetPath);
+      for (const context of targets) {
+        const covered = contexts.filter(item => item.targetPath === context.targetPath || item.targetPath.startsWith(context.targetPath + path.sep));
+        try {
+          await context.fileSystem.delete(context.targetPath);
+          for (const item of covered) {
+            const relative = path.relative(item.rootPath, item.targetPath);
+            results.push({ path: relative, success: true });
+            deletedItems.push(path.basename(item.targetPath));
+          }
+        } catch (error) {
+          for (const item of covered) results.push({ path: path.relative(item.rootPath, item.targetPath), success: false, error: publicErrorMessage(error) });
+        }
       }
-    }
-
-    res.json({
-      success: true,
+    });
+    for (const context of targets) await refreshDirectoryCache(path.dirname(context.targetPath), 'refresh_after_delete', req, context.fileSystem).catch(() => {});
+    const success = results.every(item => item.success);
+    res.status(success ? 200 : 207).json({
+      success,
       message: `${deletedItems.length} item(s) deleted successfully`,
-      deletedItems,
-      locationId: context.locationId
+      deletedItems, deletedCount: deletedItems.length, results,
+      locationId: contexts[0].locationId
     });
   } catch (error) {
-    systemLogger.logFileOperation('delete', req.body.currentPath || '/', false, req, { error: error.message, items: req.body.items?.map(i => i.name) });
+    systemLogger.logFileOperation('delete', req.body.currentPath || '/', false, req, {
+      error: error.message, items: Array.isArray(req.body.items) ? req.body.items.map(item => item?.name) : undefined
+    });
     res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
@@ -1213,14 +1299,14 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
 // Rename file or folder (specific route - must be before wildcard)
 app.put('/api/files/rename', authenticate, async (req, res) => {
   try {
-    const { oldName, newName, currentPath } = req.body;
-
-    if (!oldName || !newName) {
+    const { oldName, oldPath, newName, currentPath = '' } = req.body;
+    if ((!oldName && !oldPath) || (oldPath !== undefined && typeof oldPath !== 'string') || typeof newName !== 'string' || !newName) {
       return res.status(400).json({ error: 'Both old and new names are required' });
     }
-
-    const oldContext = await getStorageContext(req, path.join(currentPath || '', oldName), 'rename');
-    const newContext = await getStorageContext(req, path.join(currentPath || '', newName), 'rename');
+    const source = itemRelativePath({ name: oldName || path.posix.basename(oldPath), path: oldPath }, currentPath);
+    const destination = itemRelativePath({ name: newName }, path.posix.dirname(source));
+    const oldContext = await getStorageContext(req, source, 'rename');
+    const newContext = await getStorageContext(req, destination, 'rename');
 
     // Perform rename
     await oldContext.fileSystem.rename(oldContext.targetPath, newContext.targetPath);
@@ -1235,10 +1321,10 @@ app.put('/api/files/rename', authenticate, async (req, res) => {
       }
     }
 
-    systemLogger.logFileOperation('rename', path.join(currentPath || '', oldName), true, req, { newName, oldName });
-    res.json({ success: true, locationId: oldContext.locationId, message: 'Item renamed successfully' });
+    systemLogger.logFileOperation('rename', source, true, req, { newName, oldName });
+    res.json({ success: true, locationId: oldContext.locationId, oldPath: source, path: destination, message: 'Item renamed successfully' });
   } catch (error) {
-    systemLogger.logFileOperation('rename', path.join(req.body.currentPath || '', req.body.oldName), false, req, { error: error.message });
+    systemLogger.logFileOperation('rename', req.body.oldPath || req.body.oldName || '', false, req, { error: error.message });
     res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
@@ -1248,33 +1334,64 @@ app.post('/api/files/create', authenticate, async (req, res) => {
   try {
     const { fileName, currentPath, content = '' } = req.body;
 
-    if (!fileName || !fileName.trim()) {
+    if (typeof fileName !== 'string' || !fileName.trim() || typeof content !== 'string') {
       return res.status(400).json({ error: 'File name is required' });
     }
 
-    const context = await getStorageContext(req, path.join(currentPath || '', fileName.trim()), 'write');
+    const relativePath = itemRelativePath({ name: fileName.trim() }, currentPath ?? '');
+    const context = await getStorageContext(req, relativePath, 'write');
 
     await context.fileSystem.write(context.targetPath, content);
 
     await refreshDirectoryCache(path.dirname(context.targetPath), 'refresh_after_create', req, context.fileSystem);
 
-    systemLogger.logFileOperation('create', path.join(currentPath || '', fileName.trim()), true, req, { fileName, size: content.length });
+    systemLogger.logFileOperation('create', relativePath, true, req, { fileName, size: Buffer.byteLength(content) });
     res.json({ success: true, locationId: context.locationId, message: 'File created successfully' });
   } catch (error) {
-    systemLogger.logFileOperation('create', path.join(req.body.currentPath || '', req.body.fileName), false, req, { error: error.message });
+    systemLogger.logFileOperation('create', typeof req.body.currentPath === 'string' ? req.body.currentPath : '', false, req, { error: error.message });
     res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
 
 // Copy/Move/Paste operations (specific routes - must be before wildcard)
+const preflightStorageTransfer = async (sourceContext, destinationContext, moving) => {
+  if ((moving && sourceContext.targetPath === sourceContext.rootPath) || destinationContext.targetPath === destinationContext.rootPath) {
+    throw Object.assign(new Error('Cannot mutate a Location root'), { statusCode: 403 });
+  }
+  await assertTransferPaths(sourceContext.targetPath, destinationContext.targetPath);
+  const sourceEntries = await assertSafeTree(sourceContext.targetPath);
+  let destinationEntries = [];
+  try {
+    destinationEntries = await assertSafeTree(destinationContext.targetPath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const sourceIdentities = new Set(sourceEntries.map(({ stats }) => `${stats.dev}:${stats.ino}`));
+  const destinations = new Map(destinationEntries.map(entry => [entry.path, entry.stats]));
+  for (const entry of sourceEntries) {
+    const target = path.join(destinationContext.targetPath, path.relative(sourceContext.targetPath, entry.path));
+    const stats = destinations.get(target);
+    if (stats && (sourceIdentities.has(`${stats.dev}:${stats.ino}`) || stats.isDirectory() !== entry.stats.isDirectory())) {
+      throw Object.assign(new Error('Destination aliases a source object or has an incompatible type'), { statusCode: 409 });
+    }
+  }
+  return { sourceEntries, destinationEntries };
+};
+
 app.post('/api/files/copy', authenticate, async (req, res) => {
   try {
     const { sourcePath, destinationPath, sourceLocationId, targetLocationId, destinationLocationId } = req.body;
+    if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
+      return res.status(400).json({ success: false, error: 'Source and destination paths are required' });
+    }
     const targetId = targetLocationId || destinationLocationId;
     const sourceContext = await getStorageContext(req, sourcePath, 'copy', sourceLocationId);
     const destinationContext = await getStorageContext(req, destinationPath, 'copy', targetId);
-    await destinationContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
-    await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_copy', req, destinationContext.fileSystem);
+    await withOperationLocks([sourceContext.targetPath, destinationContext.targetPath], async () => {
+      await preflightStorageTransfer(sourceContext, destinationContext, false);
+      await destinationContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
+      await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_copy', req, destinationContext.fileSystem).catch(() => {});
+    });
     res.json({ success: true, locationId: destinationContext.locationId, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
   } catch (error) {
     res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
@@ -1282,95 +1399,139 @@ app.post('/api/files/copy', authenticate, async (req, res) => {
 });
 
 app.post('/api/files/move', authenticate, async (req, res) => {
+  let copied = false;
   try {
     const { sourcePath, destinationPath, sourceLocationId, targetLocationId, destinationLocationId } = req.body;
+    if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
+      return res.status(400).json({ success: false, error: 'Source and destination paths are required' });
+    }
     const targetId = targetLocationId || destinationLocationId;
     const sourceContext = await getStorageContext(req, sourcePath, 'move', sourceLocationId);
     const destinationContext = await getStorageContext(req, destinationPath, 'move', targetId);
-    if (sourceContext.locationId === destinationContext.locationId) {
-      await sourceContext.fileSystem.move(sourceContext.targetPath, destinationContext.targetPath);
-    } else {
-      await destinationContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
-      await sourceContext.fileSystem.delete(sourceContext.targetPath);
-    }
-    await refreshDirectoryCache(path.dirname(sourceContext.targetPath), 'refresh_after_move_source', req, sourceContext.fileSystem);
-    await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_move_destination', req, destinationContext.fileSystem);
+    await withOperationLocks([sourceContext.targetPath, destinationContext.targetPath], async () => {
+      await preflightStorageTransfer(sourceContext, destinationContext, true);
+      try {
+        if (sourceContext.locationId === destinationContext.locationId) {
+          await sourceContext.fileSystem.move(sourceContext.targetPath, destinationContext.targetPath);
+        } else {
+          await destinationContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
+          copied = true;
+          await sourceContext.fileSystem.delete(sourceContext.targetPath);
+        }
+      } finally {
+        await refreshDirectoryCache(path.dirname(sourceContext.targetPath), 'refresh_after_move_source', req, sourceContext.fileSystem).catch(() => {});
+        await refreshDirectoryCache(path.dirname(destinationContext.targetPath), 'refresh_after_move_destination', req, destinationContext.fileSystem).catch(() => {});
+      }
+    });
     res.json({ success: true, locationId: destinationContext.locationId, sourceLocationId: sourceContext.locationId, targetLocationId: destinationContext.locationId });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
+    res.status(error.statusCode || 500).json({ success: false, copied, error: publicErrorMessage(error) });
   }
 });
 
 // Paste (copy or move) files (specific route - must be before wildcard)
 app.post('/api/files/paste', authenticate, async (req, res) => {
+  const processedItems = [];
+  const results = [];
   try {
     const { items, operation, targetPath, sourceLocationId, targetLocationId, destinationLocationId } = req.body;
 
-    if (!items || !Array.isArray(items) || !operation) {
-      return res.status(400).json({ error: 'Items array and operation are required' });
+    if (!Array.isArray(items) || items.length === 0 || !['copy', 'cut'].includes(operation)) {
+      return res.status(400).json({ success: false, error: 'A non-empty items array and copy or cut operation are required', processedItems, results });
     }
 
-    const processedItems = [];
-    const sourceDirectories = new Set();
     const pasteCapability = operation === 'copy' ? 'copy' : 'move';
     const targetId = targetLocationId || destinationLocationId;
-    const targetContext = await getStorageContext(req, targetPath || '', pasteCapability, targetId);
-
+    const targetContext = await getStorageContext(req, targetPath ?? '', pasteCapability, targetId);
+    const operands = [];
     for (const item of items) {
-      // Build source path from item.path (relative path from frontend)
-      const itemSourceLocationId = item.sourceLocationId || sourceLocationId;
-      const sourceContext = await getStorageContext(req, item.path, pasteCapability, itemSourceLocationId);
-      const targetItemContext = await getStorageContext(req, path.join(targetPath || '', item.name), pasteCapability, targetContext.locationId);
-      const sourceFullPath = sourceContext.targetPath;
-      const targetFullPath = targetItemContext.targetPath;
-
-      sourceDirectories.add({ fileSystem: sourceContext.fileSystem, path: path.dirname(sourceFullPath) });
-
-      if (operation === 'copy') {
-        await targetItemContext.fileSystem.copy(sourceFullPath, targetFullPath);
-        systemLogger.logFileOperation('copy', path.join(targetPath || '', item.name), true, req, { source: sourceFullPath, target: targetFullPath });
-      } else if (operation === 'cut') {
-        if (sourceContext.locationId === targetItemContext.locationId) {
-          await sourceContext.fileSystem.move(sourceFullPath, targetFullPath);
-        } else {
-          await targetItemContext.fileSystem.copy(sourceFullPath, targetFullPath);
-          await sourceContext.fileSystem.delete(sourceFullPath);
-        }
-        systemLogger.logFileOperation('move', path.join(targetPath || '', item.name), true, req, { source: sourceFullPath, target: targetFullPath });
-      }
-
-      processedItems.push(item.name);
+      const sourcePath = itemRelativePath(item);
+      const destinationPath = itemRelativePath({ name: item.name }, targetPath ?? '');
+      const sourceContext = await getStorageContext(req, sourcePath, pasteCapability, item.sourceLocationId || sourceLocationId);
+      const destinationContext = await getStorageContext(req, destinationPath, pasteCapability, targetContext.locationId);
+      operands.push({ item, sourcePath, destinationPath, sourceContext, destinationContext });
     }
 
-    // Force cache refresh for both source and target directories
-    if (targetContext.fileSystem.cache) {
-      try {
-        // Refresh target directory
-        const targetDir = targetContext.targetPath;
-        await refreshDirectoryCache(targetDir, 'refresh_after_paste', req, targetContext.fileSystem);
+    await withOperationLocks(operands.flatMap(({ sourceContext, destinationContext }) => [sourceContext.targetPath, destinationContext.targetPath]), async () => {
+      if (!(await fs.lstat(targetContext.targetPath)).isDirectory()) {
+        throw Object.assign(new Error('Paste target must be a directory'), { statusCode: 400 });
+      }
+      const sourceIdentities = new Set();
+      const destinationEntries = [];
+      const destinationIdentities = new Map();
+      const destinationNames = new Set();
+      const sourcePaths = [];
+      const treePaths = [];
+      for (const { sourceContext, destinationContext } of operands) {
+        const destinationName = destinationContext.targetPath.normalize('NFC').toLowerCase();
+        if (destinationNames.has(destinationName)) throw Object.assign(new Error('Paste destinations must be distinct'), { statusCode: 409 });
+        destinationNames.add(destinationName);
+        const manifest = await preflightStorageTransfer(sourceContext, destinationContext, operation === 'cut');
+        for (const entry of manifest.sourceEntries) sourceIdentities.add(`${entry.stats.dev}:${entry.stats.ino}`);
+        for (const entry of manifest.destinationEntries) {
+          const identity = `${entry.stats.dev}:${entry.stats.ino}`;
+          if (destinationIdentities.has(identity) && destinationIdentities.get(identity) !== destinationName) {
+            throw Object.assign(new Error('Paste destinations alias one another'), { statusCode: 409 });
+          }
+          destinationIdentities.set(identity, destinationName);
+        }
+        for (const entry of [...manifest.sourceEntries, ...manifest.destinationEntries]) treePaths.push(entry.path);
+        destinationEntries.push(...manifest.destinationEntries);
+        sourcePaths.push(sourceContext.targetPath);
+      }
+      // A later operand must not read a source changed by an earlier operand.
+      for (const { destinationContext } of operands) {
+        for (const source of sourcePaths) await assertTransferPaths(source, destinationContext.targetPath);
+      }
+      if (destinationEntries.some(({ stats }) => sourceIdentities.has(`${stats.dev}:${stats.ino}`))) {
+        throw Object.assign(new Error('Paste destination aliases a selected source'), { statusCode: 409 });
+      }
+      if (operation === 'cut') {
+        for (let i = 0; i < sourcePaths.length; i++) {
+          for (let j = 0; j < i; j++) await assertTransferPaths(sourcePaths[i], sourcePaths[j]);
+        }
+      }
 
-        // For move operations, refresh every affected source directory in its own Location cache.
-        if (operation === 'cut') {
-          for (const sourceDirectory of sourceDirectories) {
-            if (sourceDirectory.path !== targetDir || sourceDirectory.fileSystem !== targetContext.fileSystem) {
-              await refreshDirectoryCache(sourceDirectory.path, 'refresh_after_paste_source', req, sourceDirectory.fileSystem);
+      await withOperationLocks(treePaths, async () => {
+        for (const { item, sourcePath, destinationPath, sourceContext, destinationContext } of operands) {
+          let copied = false;
+          try {
+            if (operation === 'copy' || sourceContext.locationId !== destinationContext.locationId) {
+              await destinationContext.fileSystem.copy(sourceContext.targetPath, destinationContext.targetPath);
+              copied = true;
+              if (operation === 'cut') await sourceContext.fileSystem.delete(sourceContext.targetPath);
+            } else {
+              await sourceContext.fileSystem.move(sourceContext.targetPath, destinationContext.targetPath);
+            }
+            processedItems.push(item.name);
+            results.push({ name: item.name, path: sourcePath, sourceLocationId: sourceContext.locationId, success: true });
+          } catch (error) {
+            results.push({ name: item.name, path: sourcePath, sourceLocationId: sourceContext.locationId, success: false, copied, error: publicErrorMessage(error) });
+          } finally {
+            await refreshDirectoryCache(targetContext.targetPath, 'refresh_after_paste', req, targetContext.fileSystem).catch(() => {});
+            if (operation === 'cut') {
+              await refreshDirectoryCache(path.dirname(sourceContext.targetPath), 'refresh_after_paste_source', req, sourceContext.fileSystem).catch(() => {});
             }
           }
+          systemLogger.logFileOperation(pasteCapability, destinationPath, results[results.length - 1].success, req, {
+            source: sourceContext.targetPath, target: destinationContext.targetPath
+          });
         }
-      } catch (cacheError) {
-        // Non-fatal cache error (not logged)('Cache refresh error (non-fatal):', cacheError.message);
-      }
-    }
+      });
+    });
 
-    res.json({
-      success: true,
+    const success = results.every(item => item.success);
+    res.status(success ? 200 : processedItems.length ? 207 : 500).json({
+      success,
       locationId: targetContext.locationId,
       message: `${processedItems.length} item(s) ${operation === 'copy' ? 'copied' : 'moved'} successfully`,
-      processedItems
+      ...(success ? {} : { error: 'One or more paste items failed' }),
+      processedItems,
+      results
     });
   } catch (error) {
-    systemLogger.logFileOperation(req.body.operation === 'copy' ? 'copy' : 'move', req.body.targetPath || '/', false, req, { error: error.message, items: req.body.items?.map(i => i.name) });
-    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
+    systemLogger.logFileOperation(req.body?.operation === 'copy' ? 'copy' : 'move', req.body?.targetPath || '/', false, req, { error: error.message });
+    res.status(error.statusCode || (error.code === 'ENOENT' ? 404 : 500)).json({ success: false, error: publicErrorMessage(error), processedItems, results });
   }
 });
 
@@ -1380,7 +1541,8 @@ app.post('/api/archive', authenticate, async (req, res) => {
   let archiveFormat = 'zip';
   let items = [];
   try {
-    ({ items, currentPath = '', format = 'zip', sessionName = '' } = req.body);
+    const { items: requestedItems, currentPath = '', format = 'zip', sessionName = '' } = req.body;
+    items = requestedItems;
     archiveFormat = format === 'tar.gz' ? 'tar.gz' : 'zip';
 
     if (!items || !Array.isArray(items) || items.length === 0) {
@@ -1390,16 +1552,7 @@ app.post('/api/archive', authenticate, async (req, res) => {
     await getStorageContext(req, currentPath, 'read');
     const resolvedItems = [];
     for (const item of items) {
-      if (!item || typeof item.name !== 'string' || item.name.trim() === '') {
-        return res.status(400).json({ error: 'Each archive item must have a name' });
-      }
-
-      // Search results carry a full relative item.path while directory listings use currentPath.
-      // Resolve both forms before validating the storage-root boundary.
-      const parentPath = typeof item.path === 'string' && item.path
-        ? path.dirname(item.path)
-        : currentPath;
-      const itemContext = await getStorageContext(req, path.join(parentPath, item.name), 'read');
+      const itemContext = await getStorageContext(req, itemRelativePath(item, currentPath), 'read');
       resolvedItems.push({ item, itemPath: itemContext.targetPath });
     }
 
@@ -1407,74 +1560,77 @@ app.post('/api/archive', authenticate, async (req, res) => {
     // an archive is being downloaded into its LOCAL pane.
     archiveFileName = archiveFilename(sessionName, archiveFormat);
 
-    // Validate every source before sending headers so clients receive useful JSON errors.
-    for (const { item, itemPath } of resolvedItems) {
-      try {
-        await fs.stat(itemPath);
-      } catch (error) {
-        return res.status(error.code === 'ENOENT' ? 404 : 400).json({
-          error: `Unable to archive ${item.name}: ${error.code === 'ENOENT' ? 'item not found' : error.message}`
-        });
-      }
-    }
-
-    res.setHeader('Content-Type', archiveFormat === 'tar.gz' ? 'application/gzip' : 'application/zip');
-    res.setHeader('Content-Disposition', contentDisposition(archiveFileName));
-
-    // Create archiver instance
-    const archive = archiveFormat === 'tar.gz'
-      ? archiver('tar', { gzip: true, gzipOptions: { level: 9 } })
-      : archiver('zip', { zlib: { level: 9 } });
-
-    // Pipe archive to response
-    archive.pipe(res);
-
-    // Handle archiver warnings and errors
-    archive.on('warning', (err) => {
-      if (err.code === 'ENOENT') {
-        systemLogger.logSystem('WARN', `Archive warning: ${err.message}`);
-      } else {
-        throw err;
-      }
-    });
-
-    archive.on('error', (err) => {
-      systemLogger.logSystem('ERROR', `Archive error: ${err.message}`);
-      systemLogger.logDownload(archiveFileName, 'archive', false, req, {
-        fileCount: items.length,
-        error: err.message
-      });
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed to create archive' });
-      }
-    });
-
-    // Track archive statistics
-    let totalArchiveSize = 0;
-
-    // Add each item to the archive
-    for (const { item, itemPath } of resolvedItems) {
-
-      try {
-        const stats = await fs.stat(itemPath);
-
-        if (stats.isDirectory()) {
-          // Add directory recursively
-          archive.directory(itemPath, item.name);
-          // For directories, we can't easily get total size, so skip counting
-        } else {
-          // Add single file
-          archive.file(itemPath, { name: item.name });
-          totalArchiveSize += stats.size;
+    const totalArchiveSize = await withOperationLocks(resolvedItems.map(entry => entry.itemPath), async () => {
+      const manifest = [];
+      const names = new Set();
+      for (const { item, itemPath } of resolvedItems) {
+        for (const entry of await assertSafeTree(itemPath)) {
+          const relative = path.relative(itemPath, entry.path);
+          const name = relative ? `${item.name}/${relative.split(path.sep).join('/')}` : item.name;
+          // Archive readers treat backslashes and drive prefixes as path syntax.
+          if (name.split('/').some(part => /[\\\x00-\x1f]/.test(part) || /^[a-z]:/i.test(part))) {
+            throw Object.assign(new Error('Unsafe archive entry name'), { statusCode: 400 });
+          }
+          if (names.has(name)) throw Object.assign(new Error('Archive entry names must be distinct'), { statusCode: 409 });
+          names.add(name);
+          manifest.push({ ...entry, name });
         }
-      } catch (err) {
-        systemLogger.logSystem('ERROR', `Failed to add ${item.name} to archive: ${err.message}`);
-        // Continue with other items
       }
-    }
 
-    // Finalize the archive
-    await archive.finalize();
+      return withOperationLocks(manifest.map(entry => entry.path), async () => {
+        if (res.destroyed) throw Object.assign(new Error('Archive request closed'), { statusCode: 409 });
+        const archive = archiveFormat === 'tar.gz'
+          ? archiver('tar', { gzip: true, gzipOptions: { level: 9 } })
+          : archiver('zip', { zlib: { level: 9 } });
+        await new Promise((resolve, reject) => {
+          let settled = false;
+          let sourceStream;
+          const fail = (error) => {
+            if (settled) return;
+            settled = true;
+            sourceStream?.destroy();
+            archive.unpipe(res);
+            archive.abort();
+            archive.destroy();
+            if (res.headersSent) res.destroy();
+            reject(error);
+          };
+          archive.on('warning', fail);
+          archive.on('error', fail);
+          res.once('error', fail);
+          res.once('close', () => {
+            if (!res.writableFinished) fail(new Error('Archive request closed'));
+          });
+          res.once('finish', () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+          });
+          const appendEntries = async () => {
+            res.setHeader('Content-Type', archiveFormat === 'tar.gz' ? 'application/gzip' : 'application/zip');
+            res.setHeader('Content-Disposition', contentDisposition(archiveFileName));
+            archive.pipe(res);
+            for (const entry of manifest) {
+              if (settled) return;
+              if (entry.stats.isDirectory()) {
+                archive.append(Buffer.alloc(0), { name: `${entry.name}/`, type: 'directory', stats: entry.stats });
+              } else {
+                // Open one checked file at a time. Keep real Stats for tar sizes.
+                sourceStream = fsSync.createReadStream(entry.path, { flags: fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW });
+                await new Promise((fileResolve, fileReject) => {
+                  sourceStream.once('error', fileReject);
+                  sourceStream.once('close', fileResolve);
+                  archive.append(sourceStream, { name: entry.name, stats: entry.stats });
+                });
+              }
+            }
+            if (!settled) await archive.finalize();
+          };
+          appendEntries().catch(fail);
+        });
+        return manifest.reduce((sum, entry) => sum + (entry.stats.isFile() ? entry.stats.size : 0), 0);
+      });
+    });
 
     // Log successful archive download
     systemLogger.logDownload(archiveFileName, 'archive', true, req, {
@@ -1489,8 +1645,12 @@ app.post('/api/archive', authenticate, async (req, res) => {
       format: archiveFormat,
       error: error.message
     });
-    if (!res.headersSent) {
-      res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
+    if (!res.headersSent && !res.destroyed) {
+      res.removeHeader('Content-Disposition');
+      res.removeHeader('Content-Type');
+      res.status(error.statusCode || (error.code === 'ENOENT' ? 404 : 500)).json({ error: publicErrorMessage(error) });
+    } else if (!res.destroyed) {
+      res.destroy();
     }
   }
 });
@@ -1501,19 +1661,15 @@ app.post('/api/archive', authenticate, async (req, res) => {
 // client needs a flat file list up front so it can queue one transfer per
 // file and preserve the original folder structure at the destination.
 const flattenPathEntries = async (absolutePath, relativePrefix, remotePrefix, results) => {
-  const stats = await fs.stat(absolutePath);
-  if (stats.isDirectory()) {
-    const children = await fs.readdir(absolutePath);
-    for (const child of children) {
-      await flattenPathEntries(
-        path.join(absolutePath, child),
-        relativePrefix ? `${relativePrefix}/${child}` : child,
-        remotePrefix ? `${remotePrefix}/${child}` : child,
-        results
-      );
-    }
-  } else if (stats.isFile()) {
-    results.push({ relativePath: relativePrefix, remotePath: remotePrefix, size: stats.size });
+  const manifest = await assertSafeTree(absolutePath);
+  for (const entry of manifest) {
+    if (!entry.stats.isFile()) continue;
+    const relative = path.relative(absolutePath, entry.path).split(path.sep).join('/');
+    results.push({
+      relativePath: relative ? `${relativePrefix}/${relative}` : relativePrefix,
+      remotePath: relative ? `${remotePrefix}/${relative}` : remotePrefix,
+      size: entry.stats.size
+    });
   }
 };
 
@@ -1526,94 +1682,25 @@ app.post('/api/files/flatten', authenticate, async (req, res) => {
     await getStorageContext(req, currentPath, 'read');
 
     const results = [];
+    const resolvedItems = [];
     for (const item of items) {
-      if (!item || typeof item.name !== 'string' || item.name.trim() === '') {
-        return res.status(400).json({ error: 'Each item must have a name' });
-      }
-      const parentPath = typeof item.path === 'string' && item.path
-        ? path.dirname(item.path)
-        : currentPath;
-      const remotePath = typeof item.path === 'string' && item.path ? item.path : path.join(currentPath, item.name);
-      const itemContext = await getStorageContext(req, path.join(parentPath, item.name), 'read');
-      try {
-        await flattenPathEntries(itemContext.targetPath, item.name, remotePath, results);
-      } catch (error) {
-        return res.status(error.code === 'ENOENT' ? 404 : 400).json({
-          error: `Unable to read ${item.name}: ${error.code === 'ENOENT' ? 'item not found' : error.message}`
-        });
-      }
+      const remotePath = itemRelativePath(item, currentPath);
+      const itemContext = await getStorageContext(req, remotePath, 'read');
+      resolvedItems.push({ item, itemContext, remotePath });
     }
+    await withOperationLocks(resolvedItems.map(({ itemContext }) => itemContext.targetPath), async () => {
+      for (const { item, itemContext, remotePath } of resolvedItems) {
+        await flattenPathEntries(itemContext.targetPath, item.name, remotePath, results);
+      }
+    });
 
     res.json({ files: results, totalFiles: results.length, totalBytes: results.reduce((sum, entry) => sum + entry.size, 0) });
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
+    res.status(error.statusCode || (error.code === 'ENOENT' ? 404 : 500)).json({ error: publicErrorMessage(error) });
   }
 });
 
-// Progress tracking routes
-app.get('/api/progress/:transferId', authenticate, (req, res) => {
-  try {
-    const progress = transferManager.getTransfer(req.params.transferId);
-    if (!progress) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 402,
-          message: 'Transfer ID 不存在'
-        }
-      });
-    }
-    res.json(progress);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Batch progress tracking route
-app.get('/api/progress/batch/:batchId', authenticate, (req, res) => {
-  try {
-    const { batchId } = req.params;
-
-    // Get batch information
-    const batch = transferManager.getBatch(batchId);
-    if (!batch) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 403,
-          message: 'Batch ID 不存在'
-        }
-      });
-    }
-
-    // Calculate batch statistics
-    const stats = transferManager.calculateBatchStats(batchId);
-
-    // Return response matching SPEC format
-    res.json({
-      batchId: batch.batchId,
-      status: batch.status,
-      totalFiles: stats.totalFiles,
-      successCount: stats.successCount,
-      failedCount: stats.failedCount,
-      pendingCount: stats.pendingCount,
-      totalSize: stats.totalSize,
-      transferredSize: stats.transferredSize,
-      progress: stats.progress,
-      files: stats.files
-    });
-  } catch (error) {
-    systemLogger.logSystem('ERROR', `Batch progress error: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      error: {
-        code: 500,
-        message: 'Internal server error',
-        details: error.message
-      }
-    });
-  }
-});
+// UploadAPI owns progress and cancellation routes and their ownership checks.
 
 // Settings API endpoints
 app.get('/api/settings', authenticate, async (req, res) => {
@@ -1634,50 +1721,32 @@ app.get('/api/settings', authenticate, async (req, res) => {
   }
 });
 
-app.put('/api/settings', authenticate, async (req, res) => {
+app.put('/api/settings', requireAdmin, configurationChange(async (req, res) => {
   try {
-    const {
-      enableRateLimit,
-      enableSecurityHeaders,
-      enableInputValidation,
-      enableFileUploadSecurity,
-      enableRequestLogging,
-      enableCSP
-    } = req.body;
-
-    // Update configuration
-    configManager.set('security.enableRateLimit', enableRateLimit === true);
-    configManager.set('security.enableSecurityHeaders', enableSecurityHeaders === true);
-    configManager.set('security.enableInputValidation', enableInputValidation === true);
-    configManager.set('security.enableFileUploadSecurity', enableFileUploadSecurity === true);
-    configManager.set('security.enableRequestLogging', enableRequestLogging === true);
-    configManager.set('security.enableCSP', enableCSP === true);
-
-    // Save configuration to file
-    await configManager.save();
-
-    if (updatedFields.includes('fileSystem.locations')) {
-      configureLocationRuntime();
+    const allowed = ['enableRateLimit', 'enableSecurityHeaders', 'enableInputValidation',
+      'enableFileUploadSecurity', 'enableRequestLogging', 'enableCSP'];
+    if (!req.body || Array.isArray(req.body) || !Object.keys(req.body).length ||
+        Object.entries(req.body).some(([key, value]) => !allowed.includes(key) || typeof value !== 'boolean')) {
+      return res.status(400).json({ error: 'Supply supported boolean security settings' });
     }
-
-    systemLogger.logSystem('INFO', `Security settings updated by user: ${req.user?.username}, Settings: ${JSON.stringify({
-      enableRateLimit,
-      enableSecurityHeaders,
-      enableInputValidation,
-      enableFileUploadSecurity,
-      enableRequestLogging,
-      enableCSP
-    })}`);
-
+    const previous = Object.fromEntries(Object.keys(req.body).map(key => [key, configManager.get(`security.${key}`)]));
+    for (const [key, value] of Object.entries(req.body)) configManager.set(`security.${key}`, value);
+    try { await configManager.save(); }
+    catch (error) {
+      for (const [key, value] of Object.entries(previous)) configManager.set(`security.${key}`, value);
+      throw error;
+    }
+    refreshSecurity();
+    systemLogger.logSystem('INFO', `Security settings updated by administrator: ${req.user.username}`);
     res.json({
       success: true,
-      message: 'Settings saved successfully. Server restart may be required for some changes to take effect.'
+      message: 'Settings saved and applied successfully.'
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Settings save error: ${error.message}`);
     res.status(500).json({ error: 'Failed to save settings' });
   }
-});
+}));
 
 // Admin User Management Endpoints
 //
@@ -1916,6 +1985,9 @@ app.post('/api/admin/users/bulk', requireStaffRole, async (req, res) => {
     const hasRoleChange = Object.prototype.hasOwnProperty.call(changes, 'role');
     const hasRoleIdChange = Object.prototype.hasOwnProperty.call(changes, 'roleId');
     const hasActiveChange = Object.prototype.hasOwnProperty.call(changes, 'active');
+    if (hasActiveChange && typeof changes.active !== 'boolean') {
+      return res.status(400).json({ error: 'active must be a boolean' });
+    }
     const hasLocationChange = changes.locationPermissions !== undefined
       && typeof changes.locationPermissions === 'object';
     const locationMode = changes.locationPermissionsMode === 'replace' ? 'replace' : 'merge';
@@ -2173,7 +2245,7 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
   }
 });
 
-app.put('/api/admin/config', requireAdmin, async (req, res) => {
+app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) => {
   try {
     const { server, fileSystem, locations, maintenance, logging, security, shareLinks, ssl, auth } = req.body;
     const updatedFields = [];
@@ -2202,6 +2274,7 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
         if (typeof auth.username !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(auth.username.trim())) {
           throw new Error('auth.username must be 3-64 characters and contain only letters, numbers, dot, underscore, or hyphen');
         }
+        if (await userManager.getUser(auth.username.trim())) throw new Error('auth.username must not match an existing regular account');
         add('auth.username', auth.username.trim());
         updatedFields.push('auth.username');
       }
@@ -2337,10 +2410,20 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
     const maxExpiration = shareLinks?.maxExpiration ?? configManager.get('shareLinks.maxExpiration');
     if (defaultExpiration > maxExpiration) throw new Error('shareLinks.defaultExpiration cannot exceed shareLinks.maxExpiration');
 
+    if (updatedFields.includes('fileSystem.locations') && runtimeChanging) {
+      return res.status(409).json({ error: 'Storage reconfiguration is already in progress' });
+    }
+    const previous = pending.map(([key]) => [key, configManager.get(key)]);
     pending.forEach(([key, value]) => configManager.set(key, value));
-
-    // Save configuration to file
-    await configManager.save();
+    try { await configManager.save(); }
+    catch (error) {
+      previous.forEach(([key, value]) => configManager.set(key, value));
+      throw error;
+    }
+    if (updatedFields.includes('fileSystem.locations')) await configureLocationRuntime();
+    if (updatedFields.some(field => field.startsWith('security.') && field !== 'security.jwtSecret')) refreshSecurity();
+    if (updatedFields.includes('logging.level')) systemLogger.setLogLevel(configManager.get('logging.level'));
+    if (updatedFields.some(field => field.startsWith('maintenance.'))) scheduleTempCleanup();
 
     systemLogger.logSystem('INFO', `Configuration updated by admin: ${req.user?.username}, Updated fields: ${JSON.stringify(updatedFields)}`);
 
@@ -2367,13 +2450,13 @@ app.put('/api/admin/config', requireAdmin, async (req, res) => {
     const statusCode = /must be|Unknown configuration|cannot exceed|non-empty|locations|auth\./.test(error.message) ? 400 : 500;
     res.status(statusCode).json({ error: error.message || 'Failed to update configuration' });
   }
-});
+}));
 
 app.post('/api/admin/config/backup', requireAdmin, async (req, res) => {
   try {
     const backup = {
       timestamp: new Date().toISOString(),
-      config: configManager.getAll(),
+      config: structuredClone(configManager.getConfig()),
       createdBy: req.user?.username
     };
     
@@ -2395,7 +2478,7 @@ app.post('/api/admin/config/backup', requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/admin/config/reset', requireAdmin, async (req, res) => {
+app.post('/api/admin/config/reset', requireAdmin, configurationChange(async (req, res) => {
   try {
     const { section } = req.body;
     
@@ -2435,6 +2518,7 @@ app.post('/api/admin/config/reset', requireAdmin, async (req, res) => {
     
     await configManager.save();
 
+    if (section === 'security') refreshSecurity();
     systemLogger.logSystem('INFO', `Configuration section '${section}' reset to defaults by admin: ${req.user?.username}`);
 
     res.json({
@@ -2445,18 +2529,19 @@ app.post('/api/admin/config/reset', requireAdmin, async (req, res) => {
     systemLogger.logSystem('ERROR', `Failed to reset config section: ${error.message}`);
     res.status(500).json({ error: 'Failed to reset configuration section' });
   }
-});
+}));
 
 // Clear file cache endpoint
 app.post('/api/admin/cache/clear', requireAdmin, async (req, res) => {
   try {
-    // Clear the in-memory cache
-    await fileSystem.clearCache();
+    const context = await getStorageContext(req, '', null);
+    await context.fileSystem.clearCache();
 
     systemLogger.logSystem('INFO', `Cache cleared by admin: ${req.user?.username}`);
 
     res.json({
       success: true,
+      locationId: context.locationId,
       message: 'File cache cleared successfully'
     });
   } catch (error) {
@@ -2468,6 +2553,8 @@ app.post('/api/admin/cache/clear', requireAdmin, async (req, res) => {
 // Service restart endpoint
 app.post('/api/admin/service/restart', requireAdmin, async (req, res) => {
   try {
+    checkBrowserBuild();
+    if (runtimeChanging) return res.status(409).json({ error: 'Storage configuration is changing' });
     const username = req.user?.username || 'unknown';
 
     // Try to acquire restart lock
@@ -2486,6 +2573,7 @@ app.post('/api/admin/service/restart', requireAdmin, async (req, res) => {
     }
 
     systemLogger.logSystem('INFO', `SERVICE RESTART initiated by user: ${username}`);
+    runtimeChanging = true;
 
     // Send response before restarting
     res.json({
@@ -2518,11 +2606,12 @@ app.post('/api/admin/service/restart', requireAdmin, async (req, res) => {
           });
         }
 
-        // Close file system
-        if (fileSystem && fileSystem.close) {
-          await fileSystem.close();
-          console.log('✅ File system closed');
-        }
+        await Promise.all([...storageRequests]);
+        await uploadApi.waitForIdle();
+        await Promise.allSettled([...initializingFileSystems.values()]);
+        await Promise.all([...locationFileSystems.values()].map(instance => instance.close()));
+        locationFileSystems.clear();
+        await database.close();
 
         systemLogger.logSystem('INFO', 'Graceful restart completed, restarting process...');
 
@@ -2535,6 +2624,10 @@ app.post('/api/admin/service/restart', requireAdmin, async (req, res) => {
           env: process.env
         });
 
+        await new Promise((resolve, reject) => {
+          child.once('spawn', resolve);
+          child.once('error', reject);
+        });
         child.unref();
 
         // Exit current process
@@ -2615,8 +2708,20 @@ function httpsRedirectMiddleware(httpsPort) {
 }
 
 // Start server with configuration
+const listenOnHost = (listener, port, host) => new Promise((resolve, reject) => {
+  const failed = error => { listener.removeListener('error', failed); reject(error); };
+  listener.once('error', failed);
+  try {
+    listener.listen(port, host, () => {
+      listener.removeListener('error', failed);
+      resolve(listener);
+    });
+  } catch (error) { failed(error); }
+});
+
 async function startServer() {
   try {
+    checkBrowserBuild();
     // Load configuration first
     await configManager.load();
     systemLogger.setLogLevel(configManager.get('logging.level'));
@@ -2626,12 +2731,7 @@ async function startServer() {
     systemLogger.logSystem('INFO', 'Database initialized successfully');
 
     // Initialize security middleware with configuration
-    securityMiddleware = initializeSecurity(configManager);
-
-    // Apply security middleware
-    app.use(securityMiddleware.securityHeaders);
-    app.use(securityMiddleware.requestLogger);
-    app.use(securityMiddleware.validateInput);
+    refreshSecurity();
 
     // Initialize components after config is loaded
     const jwtSecret = configManager.get('security.jwtSecret');
@@ -2663,7 +2763,7 @@ async function startServer() {
     };
 
     await runTempUploadCleanup();
-    tempUploadCleanupInterval = setInterval(runTempUploadCleanup, tempUploadCleanupIntervalHours * 60 * 60 * 1000);
+    scheduleTempCleanup();
     systemLogger.logSystem('INFO', `TEMP UPLOAD CLEANUP SCHEDULER - RetentionDays: ${tempUploadRetentionDays}, IntervalHours: ${tempUploadCleanupIntervalHours}`);
 
     const transferCleanupInterval = 15 * 60 * 1000;
@@ -2676,28 +2776,21 @@ async function startServer() {
     }, transferCleanupInterval);
     transferCleanupTimer.unref?.();
 
-    // Initialize enhanced file system with in-memory cache
-    fileSystem = new EnhancedMemoryFileSystem(storagePath);
-    configureLocationRuntime();
-    systemLogger.logSystem('INFO', 'Initializing file system cache in the background...');
-    fileSystem.initialize().then(() => {
-      isCacheReady = true;
-      systemLogger.logSystem('INFO', '✅ File system cache is ready.');
-    }).catch(error => {
-      systemLogger.logSystem('ERROR', `Failed to initialize file system cache: ${error.message}`);
-      // The server will continue to run, but search and file listing might not work correctly.
-    });
+    // Each authorized Location initializes once, on first access.
+    await configureLocationRuntime();
 
     // Start periodic cache refresh for external changes (e.g., every 10 minutes)
     const cacheRefreshInterval = 10 * 60 * 1000;
-    setInterval(() => {
-      if (fileSystem && fileSystem.cache && fileSystem.cache.refreshCache) {
-        systemLogger.logSystem('INFO', 'Performing scheduled full cache refresh to sync external changes...');
-        fileSystem.cache.refreshCache();
+    const cacheTimer = setInterval(() => {
+      if (runtimeChanging) return;
+      for (const instance of locationFileSystems.values()) {
+        instance.cache.refreshCache().catch(error => systemLogger.logSystem('WARN', `Scheduled cache refresh failed: ${error.message}`));
       }
     }, cacheRefreshInterval);
+    cacheTimer.unref?.();
 
     const port = configManager.get('server.port') || 3000;
+    const host = configManager.get('server.host') || 'localhost';
     const httpsPort = configManager.get('ssl.httpsPort') || 9443;
     const enableHttpsRedirect = configManager.get('ssl.enableHttpsRedirect') !== false; // Default true
 
@@ -2707,14 +2800,8 @@ async function startServer() {
     console.log('- Storage Path:', storagePath);
     console.log('- Server Timeout: 10 hours (for large file transfers)');
 
-    // Log cache information
-    const cacheInfo = await fileSystem.getCacheInfo();
-    console.log('- Cache Status:', cacheInfo.initialized ? 'Active' : 'Inactive');
-    if (cacheInfo.initialized) {
-      console.log(`- Cached Files: ${cacheInfo.totalFiles}`);
-      console.log(`- Cached Directories: ${cacheInfo.totalDirectories}`);
-      console.log(`- File Watcher: ${cacheInfo.isWatching ? 'Active' : 'Inactive'}`);
-    }
+    console.log('- Bind address:', host);
+    console.log('- Location caches: initialized on demand');
 
     // Generate local certificates on first startup when setup enabled it.
     let sslOptions = await loadSSLCertificates();
@@ -2766,13 +2853,11 @@ async function startServer() {
         httpsServer.keepAliveTimeout = 36000000; // 10 hours
         httpsServer.headersTimeout = 36000000; // 10 hours
 
-        httpsServer.listen(httpsPort, () => {
-          systemLogger.logSystem('INFO', `HTTPS server started on port ${httpsPort}`);
-          systemLogger.logSystem('INFO', `HTTPS timeout set to ${httpsServer.timeout / 1000 / 60} minutes for large file transfers`);
-        });
+        await listenOnHost(httpsServer, httpsPort, host);
+        systemLogger.logSystem('INFO', `HTTPS server listening on ${host}:${httpsPort}`);
       } catch (error) {
         systemLogger.logSystem('ERROR', `Failed to start HTTPS server: ${error.message}`);
-        console.log('  ❌ Failed to start HTTPS server, continuing with HTTP only');
+        throw error;
       }
     } else {
       console.log('- SSL Status: Disabled (no certificates found)');
@@ -2797,7 +2882,8 @@ async function startServer() {
     httpServer.keepAliveTimeout = 36000000; // 10 hours
     httpServer.headersTimeout = 36000000; // 10 hours
 
-    httpServer.listen(port, async () => {
+    await listenOnHost(httpServer, port, host);
+    {
       console.log(`\n🌐 File Transfer API is now running!`);
       console.log('='.repeat(50));
 
@@ -2877,7 +2963,7 @@ async function startServer() {
         );
         const msToMidnight = night.getTime() - now.getTime();
 
-        setTimeout(async () => {
+        const cleanupTimer = setTimeout(async () => {
           try {
             const deleted = await shareManager.cleanupExpiredLinks();
             systemLogger.logSystem('INFO', `Share links cleanup completed. Deleted ${deleted} expired links.`);
@@ -2887,12 +2973,13 @@ async function startServer() {
           // Schedule next cleanup
           scheduleCleanup();
         }, msToMidnight);
+        cleanupTimer.unref?.();
       };
 
       // Start cleanup scheduler
       scheduleCleanup();
       systemLogger.logSystem('INFO', 'Share links cleanup scheduler started (runs daily at 3 AM)');
-    });
+    }
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to start server: ${error.message}`);
     process.exit(1);
@@ -2900,6 +2987,7 @@ async function startServer() {
 }
 
 // Global error handlers to prevent silent crashes
+function installProcessHandlers() {
 process.on('uncaughtException', (error) => {
   systemLogger.logSystem('ERROR', `❌ UNCAUGHT EXCEPTION: ${error.message}`);
   systemLogger.logSystem('ERROR', `Stack trace: ${error.stack}`);
@@ -2928,9 +3016,11 @@ process.on('SIGTERM', async () => {
   console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
   await gracefulShutdown();
 });
+}
 
 async function gracefulShutdown() {
   try {
+    runtimeChanging = true;
     systemLogger.logSystem('INFO', 'Starting graceful shutdown...');
     console.log('Closing servers...');
 
@@ -2960,9 +3050,10 @@ async function gracefulShutdown() {
     }
 
     console.log('Closing file system cache...');
-    if (fileSystem && fileSystem.close) {
-      await fileSystem.close();
-    }
+    await uploadApi.waitForIdle();
+    await Promise.allSettled([...initializingFileSystems.values()]);
+    await Promise.all([...locationFileSystems.values()].map(instance => instance.close()));
+    await database.close();
     console.log('✅ File system cache closed');
 
     systemLogger.logSystem('INFO', 'Server shutdown completed successfully');
@@ -2974,6 +3065,13 @@ async function gracefulShutdown() {
   }
 }
 
-startServer();
+app.locals.configureLocationRuntime = configureLocationRuntime;
+app.locals.refreshSecurity = refreshSecurity;
+app.locals.listenOnHost = listenOnHost;
+
+if (require.main === module) {
+  installProcessHandlers();
+  startServer();
+}
 
 module.exports = app;

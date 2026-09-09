@@ -4,17 +4,28 @@
  */
 
 const express = require('express');
-const router = express.Router();
 const path = require('path');
 const fs = require('fs').promises;
-const shareManager = require('../auth/share-manager');
-const configManager = require('../config/index');
-const { systemLogger } = require('../utils/logger');
-const { authenticate, requireAdmin } = require('../middleware/auth');
-const userManager = require('../auth/user-manager');
 const rateLimit = require('express-rate-limit');
-const { LocationManager } = require('../location');
-let locationPermissionManager = null;
+
+function createShareRouter(dependencies = {}) {
+const router = express.Router();
+const shareManager = dependencies.shareManager || require('../auth/share-manager');
+const configManager = dependencies.configManager || require('../config/index');
+const systemLogger = dependencies.logger || require('../utils/logger').systemLogger;
+const { authenticate, requireAdmin } = dependencies.auth || require('../middleware/auth');
+const userManager = dependencies.userManager || require('../auth/user-manager');
+const LocationManager = dependencies.LocationManager || require('../location').LocationManager;
+let locationPermissionManager = dependencies.locationPermissionManager || null;
+
+router.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  res.set('Referrer-Policy', 'no-referrer');
+  if (Object.keys(req.query).some(key => /password/i.test(key))) {
+    return res.status(400).json({ success: false, message: 'Use POST body credentials; query passwords are not accepted' });
+  }
+  next();
+});
 
 const setLocationPermissionManager = (manager) => {
   locationPermissionManager = manager;
@@ -29,11 +40,11 @@ const getLocationContext = (locationId) => {
   return { manager, locationId: selectedId, location };
 };
 
-const assertSharePermission = async (user, locationId) => {
-  if (!locationPermissionManager) {
+const assertSharePermission = async (user, locationId, manager = locationPermissionManager) => {
+  if (!manager) {
     throw Object.assign(new Error('Location permission service is not ready'), { statusCode: 503 });
   }
-  await locationPermissionManager.assertCurrent(user, locationId, 'share');
+  await manager.assertCurrent(user, locationId, 'share');
 };
 
 // Rate limiter for share link creation (max 10 per minute per user)
@@ -66,20 +77,38 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     // Get user from JWT (set by auth middleware)
     const userId = req.user?.id || req.user?.username || 'anonymous';
 
-    if (!filePath) {
+    if (typeof filePath !== 'string' || !filePath) {
       return res.status(400).json({ success: false, message: '文件路徑不能為空' });
     }
 
     // Security: Prevent path traversal
     const normalizedPath = path.normalize(filePath);
     if (normalizedPath.includes('..')) {
-      systemLogger.logSystem('WARN', `Path traversal attempt detected: ${filePath}`);
+      systemLogger.logSystem('WARN', 'Invalid share creation path');
       return res.status(400).json({ success: false, message: '無效的文件路徑' });
     }
 
     const context = getLocationContext(locationId);
-    await assertSharePermission(req.user, context.locationId);
-    const fullPath = context.manager.resolveRelativePath(context.locationId, normalizedPath);
+    context.revision = context.manager.getRevision(context.locationId);
+    context.permissionManager = locationPermissionManager;
+    context.permissionLocationManager = context.permissionManager?.locationManager;
+    const requestedRevision = req.get('X-Location-Revision');
+    const assertLocationCurrent = () => {
+      const currentManager = new LocationManager(configManager.getConfig());
+      if ((requestedRevision !== undefined && requestedRevision !== context.revision) ||
+          !currentManager.getLocation(context.locationId) ||
+          currentManager.getRevision(context.locationId) !== context.revision ||
+          context.permissionManager !== locationPermissionManager ||
+          context.permissionLocationManager !== context.permissionManager?.locationManager ||
+          (context.permissionManager && (!context.permissionLocationManager?.getLocation(context.locationId) ||
+            context.permissionLocationManager.getRevision(context.locationId) !== context.revision))) {
+        throw Object.assign(new Error('Location changed; refresh the file selection'), { statusCode: 409 });
+      }
+    };
+    assertLocationCurrent();
+    await assertSharePermission(req.user, context.locationId, context.permissionManager);
+    assertLocationCurrent();
+    const fullPath = await context.manager.resolveCheckedPath(context.locationId, normalizedPath, { allowMissing: false });
 
     // Check if file exists
     try {
@@ -95,20 +124,22 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     const fileName = path.basename(normalizedPath);
 
     // Create share link
+    assertLocationCurrent();
     const shareLink = await shareManager.createShareLink(
       userId,
       normalizedPath,
       fileName,
       {
         locationId: context.locationId,
-        expiresIn: expiresIn ? parseInt(expiresIn) : undefined,
-        maxDownloads: maxDownloads ? parseInt(maxDownloads) : undefined,
-        password
+        expiresIn: expiresIn == null ? undefined : Number(expiresIn),
+        maxDownloads: maxDownloads == null ? undefined : Number(maxDownloads),
+        password,
+        assertLocationCurrent
       }
     );
 
     // Log share link creation
-    systemLogger.logSystem('INFO', `Share link created for file: ${fileName} by user: ${userId}`);
+    systemLogger.logSystem('INFO', 'Share link creation completed');
 
     res.json({
       success: true,
@@ -118,6 +149,9 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
         fullUrl: `${req.protocol}://${req.get('host')}${shareLink.shareUrl}`,
         directDownloadUrl: shareLink.directDownloadUrl,
         directDownloadFullUrl: `${req.protocol}://${req.get('host')}${shareLink.directDownloadUrl}`,
+        hasPassword: shareLink.hasPassword,
+        directDownloadMethod: shareLink.directDownloadMethod,
+        supportsDirectDownload: shareLink.supportsDirectDownload,
         expiresAt: shareLink.expiresAt,
         maxDownloads: shareLink.maxDownloads,
         locationId: context.locationId,
@@ -125,8 +159,9 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
       }
     });
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Share link creation failed: ${error.message}`);
-    res.status(error.statusCode || 500).json({ success: false, message: error.message });
+    systemLogger.logSystem('ERROR', 'Share link creation failed');
+    res.status(error.statusCode || 500).json({ success: false, message: error.statusCode === 409
+      ? 'Location changed; refresh the file selection' : 'Unable to create share link' });
   }
 });
 
@@ -134,10 +169,13 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
  * GET /api/share/:shareToken/download
  * Download file using share token (NO authentication required)
  */
-router.get('/share/:shareToken/download', downloadFailLimiter, async (req, res) => {
+const download = async (req, res) => {
   try {
     const { shareToken } = req.params;
-    const password = req.query.password;
+    const password = req.method === 'POST' ? req.body?.password : undefined;
+    if (password != null && typeof password !== 'string') {
+      return res.status(400).json({ success: false, message: 'Invalid password format' });
+    }
 
     // Validate share token
     const shareLink = await shareManager.validateShareToken(shareToken, password);
@@ -154,59 +192,61 @@ router.get('/share/:shareToken/download', downloadFailLimiter, async (req, res) 
     // Security: Prevent path traversal
     const normalizedPath = path.normalize(shareLink.filePath);
     if (normalizedPath.includes('..')) {
-      systemLogger.logSystem('WARN', `Path traversal attempt in share link: ${shareToken}`);
+      systemLogger.logSystem('WARN', 'Invalid stored share path');
       return res.status(400).json({ success: false, message: '無效的文件路徑' });
     }
 
     const context = getLocationContext(shareLink.locationId);
-    const fullPath = context.manager.resolveRelativePath(context.locationId, normalizedPath);
+    const fullPath = await context.manager.resolveCheckedPath(context.locationId, normalizedPath, { allowMissing: false });
 
-    // Check if file exists
+    // Check the file before admission. Failed transfers after admission still count.
+    let stats;
     try {
       await fs.access(fullPath);
+      stats = await fs.stat(fullPath);
+      if (!stats.isFile()) return res.status(404).json({ success: false, message: 'File not found' });
     } catch (error) {
-      systemLogger.logSystem('ERROR', `Shared file not found: ${fullPath}`);
+      systemLogger.logSystem('WARN', 'Shared file unavailable');
       return res.status(404).json({ success: false, message: '文件不存在' });
     }
 
-    // Increment download counter
-    await shareManager.incrementDownloadCount(shareToken);
-
-    // Get file size
-    const stats = await fs.stat(fullPath);
+    // HEAD consumes no admission. Every admitted GET/POST, including Range,
+    // consumes one count, even if the client disconnects or streaming fails.
+    if (req.method !== 'HEAD' && !(await shareManager.admitDownload(shareToken))) {
+      return res.status(410).json({ success: false, message: 'Share link expired, revoked, or exhausted' });
+    }
 
     // Keep the public endpoint useful to appliance clients (BMC/iLO) that
     // consume the response as a raw file rather than as a browser download.
     res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Content-Length', stats.size);
     res.type(path.extname(shareLink.fileName) || 'application/octet-stream');
 
-    // Log download (using new logDownload method)
-    systemLogger.logDownload(shareLink.fileName, 'share-link', true, req, {
-      shareToken,
-      size: stats.size
-    });
-
     // Stream file to client
-    res.download(fullPath, shareLink.fileName, (err) => {
+    res.download(fullPath, shareLink.fileName, { cacheControl: false, lastModified: false }, (err) => {
       if (err) {
-        systemLogger.logSystem('ERROR', `File download error: ${err.message}`);
         systemLogger.logDownload(shareLink.fileName, 'share-link', false, req, {
-          shareToken,
-          error: err.message
+          error: 'File transfer failed'
         });
         if (!res.headersSent) {
+          res.removeHeader('Content-Length');
+          res.removeHeader('Content-Disposition');
           res.status(500).json({ success: false, message: '文件下載失敗' });
+        } else if (!res.writableEnded) {
+          res.destroy();
         }
+      } else if (req.method !== 'HEAD') {
+        systemLogger.logDownload(shareLink.fileName, 'share-link', true, req, { size: stats.size });
       }
     });
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Share download failed: ${error.message}`);
+    systemLogger.logSystem('ERROR', 'Share download failed');
     if (!res.headersSent) {
-      res.status(500).json({ success: false, message: '下載失敗' });
+      res.status(error.code === 'ENOENT' ? 404 : error.statusCode || 500).json({ success: false, message: '下載失敗' });
     }
   }
-});
+};
+router.get('/share/:shareToken/download', downloadFailLimiter, download);
+router.post('/share/:shareToken/download', downloadFailLimiter, express.json({ limit: '16kb' }), download);
 
 /**
  * GET /api/files/shares
@@ -232,7 +272,7 @@ router.get('/files/shares', authenticate, async (req, res) => {
       data: permittedLinks
     });
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Failed to get user share links: ${error.message}`);
+    systemLogger.logSystem('ERROR', 'Failed to get user share links');
     res.status(500).json({ success: false, message: '獲取分享連結列表失敗' });
   }
 });
@@ -258,12 +298,12 @@ router.delete('/files/share/:shareToken', authenticate, async (req, res) => {
       return res.status(404).json({ success: false, message: '分享連結不存在或無權限撤銷' });
     }
 
-    systemLogger.logSystem('INFO', `Share link revoked: ${shareToken} by user: ${userId}`);
+    systemLogger.logSystem('INFO', 'Share link revoked by owner');
 
     res.json({ success: true, message: '分享連結已撤銷' });
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Failed to revoke share link: ${error.message}`);
-    res.status(error.statusCode || 500).json({ success: false, message: error.message || '撤銷分享連結失敗' });
+    systemLogger.logSystem('ERROR', 'Failed to revoke share link');
+    res.status(error.statusCode || 500).json({ success: false, message: '撤銷分享連結失敗' });
   }
 });
 
@@ -287,7 +327,7 @@ router.get('/admin/share-links', requireAdmin, async (req, res) => {
       }))
     });
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Failed to get all share links: ${error.message}`);
+    systemLogger.logSystem('ERROR', 'Failed to get all share links');
     res.status(500).json({ success: false, message: '獲取全部分享連結列表失敗' });
   }
 });
@@ -332,8 +372,8 @@ router.delete('/files/share/:shareToken/history', authenticate, async (req, res)
 
     res.json({ success: true, message: '過期分享連結已從歷史記錄移除' });
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Failed to delete expired share link: ${error.message}`);
-    res.status(error.statusCode || 500).json({ success: false, message: error.message || '移除過期分享連結失敗' });
+    systemLogger.logSystem('ERROR', 'Failed to delete expired share link');
+    res.status(error.statusCode || 500).json({ success: false, message: '移除過期分享連結失敗' });
   }
 });
 
@@ -359,8 +399,8 @@ router.delete('/files/share/:shareToken/history/revoked', authenticate, async (r
 
     res.json({ success: true, message: '已撤銷分享連結已從歷史記錄移除' });
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Failed to delete revoked share link: ${error.message}`);
-    res.status(error.statusCode || 500).json({ success: false, message: error.message || '移除已撤銷分享連結失敗' });
+    systemLogger.logSystem('ERROR', 'Failed to delete revoked share link');
+    res.status(error.statusCode || 500).json({ success: false, message: '移除已撤銷分享連結失敗' });
   }
 });
 
@@ -384,14 +424,18 @@ router.get('/share/:shareToken/info', async (req, res) => {
       success: true,
       data: {
         fileName: shareLink.fileName,
-        hasPassword: !!shareLink.password,
+        hasPassword: shareLink.hasPassword,
+        directDownloadMethod: shareLink.directDownloadMethod,
+        supportsDirectDownload: shareLink.supportsDirectDownload,
         expiresAt: shareLink.expiresAt,
         maxDownloads: shareLink.maxDownloads,
-        isActive: shareLink.isActive
+        isActive: shareLink.isActive,
+        isExpired: shareLink.isExpired,
+        isExhausted: shareLink.isExhausted
       }
     });
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Failed to get public share link info: ${error.message}`);
+    systemLogger.logSystem('ERROR', 'Failed to get public share link info');
     res.status(500).json({ success: false, message: '獲取分享連結信息失敗' });
   }
 });
@@ -417,10 +461,14 @@ router.get('/files/share/:shareToken/info', authenticate, async (req, res) => {
       data: shareLink
     });
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Failed to get share link info: ${error.message}`);
-    res.status(error.statusCode || 500).json({ success: false, message: error.message || '獲取分享連結信息失敗' });
+    systemLogger.logSystem('ERROR', 'Failed to get share link info');
+    res.status(error.statusCode || 500).json({ success: false, message: '獲取分享連結信息失敗' });
   }
 });
 
-module.exports = router;
-module.exports.setLocationPermissionManager = setLocationPermissionManager;
+router.setLocationPermissionManager = setLocationPermissionManager;
+return router;
+}
+
+module.exports = createShareRouter();
+module.exports.createShareRouter = createShareRouter;

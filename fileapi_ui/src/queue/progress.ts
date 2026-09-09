@@ -18,8 +18,8 @@ const MIN_SPEED_SAMPLE_MS = 300;
 
 export const initialQueueProgress = (totalItems = 1, totalBytes: number | null = null): QueueProgress => ({
   completedBytes: 0,
-  totalBytes,
-  percentage: totalBytes && totalBytes > 0 ? 0 : null,
+  totalBytes: totalBytes !== null && Number.isFinite(totalBytes) && totalBytes >= 0 ? totalBytes : null,
+  percentage: totalBytes !== null && Number.isFinite(totalBytes) && totalBytes >= 0 ? 0 : null,
   bytesPerSecond: null,
   etaSeconds: null,
   completedItems: 0,
@@ -36,8 +36,8 @@ export const updateQueueProgress = (
   sample: ProgressSample[] | undefined,
 ): QueueProgress => {
   const now = Date.now();
-  const safeBytes = Math.max(0, completedBytes);
-  const safeTotal = totalBytes && totalBytes > 0 ? totalBytes : null;
+  const safeBytes = Number.isFinite(completedBytes) ? Math.max(0, completedBytes) : 0;
+  const safeTotal = totalBytes !== null && Number.isFinite(totalBytes) && totalBytes >= 0 ? totalBytes : null;
   const samples = sample || [];
   const oldest = samples[0];
   const elapsed = oldest ? now - oldest.at : 0;
@@ -46,7 +46,9 @@ export const updateQueueProgress = (
     : previous?.bytesPerSecond ?? null;
   const percentage = safeTotal === null
     ? null
-    : Math.min(100, Math.max(0, (safeBytes / safeTotal) * 100));
+    : safeTotal === 0
+      ? (totalItems > 0 && completedItems >= totalItems ? 100 : 0)
+      : Math.min(100, Math.max(0, (safeBytes / safeTotal) * 100));
   const etaSeconds = bytesPerSecond && bytesPerSecond > 0 && safeTotal !== null
     ? Math.max(0, (safeTotal - safeBytes) / bytesPerSecond)
     : null;
@@ -76,7 +78,7 @@ export const formatQueueRate = (bytesPerSecond: number | null) => {
 };
 
 export const formatQueueEta = (seconds: number | null) => {
-  if (!seconds || !Number.isFinite(seconds)) return "--";
+  if (seconds === null || !Number.isFinite(seconds)) return "--";
   const rounded = Math.ceil(seconds);
   if (rounded < 60) return `${rounded}s`;
   const minutes = Math.floor(rounded / 60);

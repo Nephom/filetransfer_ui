@@ -52,8 +52,43 @@ needs_user_action -> queued (explicit user retry)
 ```
 
 `retrying` and `needs_user_action` are reserved for explicit recovery decisions.
-They must not be presented as resumable transfer support. A running item must
-never be marked completed by a late callback after cancellation.
+They must not be presented as resumable transfer support. A late callback must
+not overwrite a confirmed terminal cancellation. A cancellation request alone
+is not terminal: if the server committed the work first, completion can win.
+
+### API Upload Attempts
+
+The approved browser/desktop contract and server wiring are implemented. Final
+verification passes 261 Node tests with no failures/skips, including 94 desktop
+checks and all 30 server tests. The desktop TypeScript/Vite build also passes.
+Fourteen native session tests pass, including actual backend cookie login,
+multipart upload, cancellation, byte/download integrity, ownership, revision,
+and logout checks through production native transport. Desktop hooks still use
+explicit native mocks; the new fixture does not launch Tauri or dispatch the
+AppHandle-dependent api_upload_paths command. See the
+[final report](./review-remediation.md#final-report) for exact boundaries.
+
+1. Capture the server origin, authenticated session, owner, Location, and destination before sending files. Desktop keeps the native session handle and request credentials in a private runtime map, not persisted Queue metadata.
+2. Reserve with `POST /api/upload/batches`, using `{ path, clientAttemptId }`. Retain the returned batch ID before native/browser multipart dispatch. Send it as `X-Upload-Batch-ID` to `POST /api/upload/multiple`.
+3. Poll `GET /api/progress/batch/:batchId` using the captured context. A lost upload response or failed progress request requires reconciliation of that batch, not another multipart upload.
+4. Request cancellation through a separate `POST /api/progress/batch/:batchId/cancel` control request. Abort local transport where supported, but do not report server cancellation until the server reports settlement. `202`/`cancelling` is still unconfirmed.
+5. Retain committed files and report the returned completed/failed/cancelled counts. `completed` may win a cancellation race; a failed cleanup is not confirmed cancellation.
+
+Desktop moves an unconfirmed outcome to `needs_user_action` with
+`uploadOutcome: "reconcile"`. With the original runtime session still available,
+manual Retry checks the original batch without resending its files. After
+restart or loss of that session, do not silently bind the old attempt to new
+credentials or re-upload it. Review the server outcome and storage first.
+
+The browser and desktop executors retain their separate scheduling and UI
+implementations. SSH/SFTP and ordinary downloads do not acquire this server
+upload reservation protocol. Updated API clients require the updated backend;
+there is no fallback that treats client-only abort as confirmed cancellation.
+Legacy upload endpoints remain supported for external clients, but clients
+without a reservation cannot recover an unknown batch ID from a lost acceptance
+response. See [upload.md](./api/upload.md) and [progress.md](./api/progress.md)
+for the integrated service contract. Real deployment and platform smoke tests
+remain separate from the verified local fixtures.
 
 ## Queue Item
 
@@ -75,6 +110,10 @@ Each implementation keeps the following logical fields:
 | `progress.totalItems` | Total children in a multi-file operation |
 | `createdAt` / `finishedAt` | Lifecycle timestamps where supported |
 | `error` | Normalized category and diagnostic detail on failure |
+| `serverBatchId` / `clientAttemptId` | Non-secret server reservation and client attempt identity for reconciliation |
+| `serverOrigin` / `ownerId` / `locationRevision` | Captured API context metadata; never a credential or permission grant |
+| `uploadOutcome` | Desktop API attempt state: `reserved`, `accepted`, `reconcile`, or `settled` |
+| `cancellationRequested` | Stop was requested; this flag does not prove server cleanup or cancellation |
 
 ## Progress
 
@@ -89,6 +128,15 @@ The UI should use these fallbacks:
 - Multi-file operation: show aggregate bytes and item counts.
 - Terminal state: emit one final snapshot and release listeners, timers,
   stream readers, abort controllers and Blob references.
+
+The server keeps `totalSize` and `progress` numeric even when the total is
+unknown: `totalSizeKnown: false` distinguishes that case from known zero bytes.
+Desktop maps an unknown total to `progress.totalBytes: null` and no percentage.
+Use actual `transferredSize`, not request framing or a declared file size;
+`committedSize` separately describes published files. Known zero-byte work
+finishes by server settlement, not division by zero. Directory-only batches
+may complete with zero files and zero bytes. A byte percentage of 100 is not
+proof that publication or cleanup has finished.
 
 ## Failure Decisions
 
@@ -107,6 +155,9 @@ The UI should use these fallbacks:
 The queue does not implement chunk resume or checksum manifests. Without a
 verifiable checkpoint, the safe fallback is a controlled full retransfer after
 cleanup, never an undocumented append or a claim of resume support.
+For an accepted or possibly accepted API upload, the original batch must first
+be reconciled. The generic network retry rule does not authorize a duplicate
+upload, including after a `404` poll or server restart.
 
 ## History Cleanup
 
@@ -127,12 +178,14 @@ cleanup. The server runs both `TransferManager.cleanup()` and the legacy
 records are retained and terminal records are removed after the server
 retention window. Re-running cleanup is safe.
 
-The server runs `TransferManager.cleanup()` every 15 minutes, retains active
-`pending`, `uploading` and `processing` records, and removes terminal transfer
-and batch records after 24 hours by default. Records that remain active without
-progress for 24 hours are first marked failed with a stale-record diagnostic;
-they are never silently deleted while still active. This is separate from
-frontend history cleanup and is not crash recovery.
+The server scheduler invokes `TransferManager.cleanup()` every 15 minutes.
+The implemented manager expires unused reservations after 15 minutes and makes
+terminal transfer/batch records eligible for removal after 24 hours by default.
+Active records and registered workers remain retained until settlement; lack
+of progress alone does not fail or remove them. This includes pending,
+uploading, processing, and cancelling work. This is separate from frontend
+history cleanup and is not crash recovery. Server restart loses in-memory
+telemetry and does not confirm an unknown upload outcome.
 
 ## Adding a Transfer Entry Point
 

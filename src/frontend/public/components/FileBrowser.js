@@ -1,3 +1,7 @@
+import React from 'react';
+import WebQueueStore from '../queue/store.js';
+import VirtualFileList from './VirtualFileList.js';
+
 const formatSize = (size) => {
     if (!size) return size === 0 ? '0 B' : '--';
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -41,7 +45,30 @@ const compareFiles = (left, right, key, direction, directoriesFirst = false) => 
     if (!result) result = compareFileNames(left.name, right.name) || String(left.path || '').localeCompare(String(right.path || ''));
     return direction === 'desc' ? -result : result;
 };
-const sortFiles = (items, key = 'name', direction = 'asc', directoriesFirst = false) => [...items].sort((left, right) => compareFiles(left, right, key, direction, directoriesFirst));
+export const sortFiles = (items, key = 'name', direction = 'asc', directoriesFirst = key === 'directory') => [...items].sort((left, right) => compareFiles(left, right, key, direction, directoriesFirst));
+export const deleteGroups = (items, currentPath) => {
+    const groups = new Map();
+    items.forEach(item => {
+        const path = normalisePath(item.path || [currentPath, item.name].filter(Boolean).join('/'));
+        const parent = path.split('/').slice(0, -1).join('/');
+        if (!groups.has(parent)) groups.set(parent, []);
+        groups.get(parent).push({ name: path.split('/').pop(), path, isDirectory: item.isDirectory });
+    });
+    return [...groups].map(([currentPath, items]) => ({ currentPath, items }));
+};
+export function createRequestGate() {
+    let generation = 0;
+    let controller;
+    return {
+        invalidate() { generation += 1; controller?.abort(); },
+        capture() { const current = generation; return () => current === generation; },
+        begin() {
+            this.invalidate();
+            controller = new AbortController();
+            return { signal: controller.signal, current: this.capture() };
+        }
+    };
+}
 const fileType = (item) => {
     if (item.isDirectory) return 'File folder';
     const extension = item.name?.split('.').pop();
@@ -110,7 +137,7 @@ const collectDroppedUpload = async (dataTransfer) => {
     return { files, directories: [] };
 };
 
-const FileBrowser = ({ token, user, onLogout }) => {
+export default function FileBrowser({ token, user, onLogout }) {
     const [files, setFiles] = React.useState([]);
     const [locations, setLocations] = React.useState([]);
     const [locationId, setLocationId] = React.useState('');
@@ -152,92 +179,131 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const downloadInProgress = React.useRef(false);
     const locationsLoaded = React.useRef(false);
     const locationRefreshInProgress = React.useRef(false);
-    const filesRequestGeneration = React.useRef(0);
+    const requestGate = React.useRef(null);
+    if (!requestGate.current) requestGate.current = createRequestGate();
+    const sessionRef = React.useRef(null);
+    if (!sessionRef.current) sessionRef.current = { active: true, controller: new AbortController() };
+    const navigationPathRef = React.useRef('');
+    const locationIdRef = React.useRef(locationId);
+    locationIdRef.current = locationId;
+    const locationsRef = React.useRef([]);
     const queueItemsRef = React.useRef([]);
     const queueJobsRef = React.useRef(new Map());
     const queueAbortControllersRef = React.useRef(new Map());
     const queueRunningRef = React.useRef(false);
     const queueRetryTimersRef = React.useRef(new Map());
-    const queueStoreRef = React.useRef(new window.FileTransferWebQueueStore());
+    const uploadAttemptsRef = React.useRef(new Map());
+    const queueStoreRef = React.useRef(null);
+    if (!queueStoreRef.current) queueStoreRef.current = new WebQueueStore();
     const openPrivateConsole = async (destination) => {
+        const session = sessionRef.current;
         try {
             const response = await fetch('/auth/browser-handoff', {
                 method: 'POST',
-                headers: { Authorization: `Bearer ${token}` }
+                headers: token ? { Authorization: `Bearer ${token}` } : {}
             });
             if (!response.ok) throw new Error('Unable to open the console');
             const { url } = await response.json();
+            if (!session.active) return;
             window.location.assign(`${url}?destination=${encodeURIComponent(destination)}`);
         } catch (handoffError) {
-            setError(handoffError.message);
+            if (session.active) setError(handoffError.message);
         }
     };
     queueItemsRef.current = queueItems;
     React.useEffect(() => { queueStoreRef.current.replace(queueItems); }, [queueItems]);
 
-    const authHeaders = {
-        Authorization: `Bearer ${token}`,
-        ...(locationId ? { 'X-Location-ID': locationId } : {})
+    // Each render's actions retain the revision that produced their file/selection data.
+    const headersForLocation = (requestedLocationId) => {
+        const revision = locations.find(location => location.id === requestedLocationId)?.revision;
+        return {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(requestedLocationId ? { 'X-Location-ID': requestedLocationId } : {}),
+            ...(revision ? { 'X-Location-Revision': revision } : {})
+        };
     };
-    const headersForLocation = (requestedLocationId) => ({
-        Authorization: `Bearer ${token}`,
-        ...(requestedLocationId ? { 'X-Location-ID': requestedLocationId } : {})
-    });
-    const sortedFiles = sortFiles(files, sortKey, sortDirection);
-    const selectedItems = files.filter((file) => selected.includes(itemKey(file)));
+    const authHeaders = headersForLocation(locationId);
+    const locationRevision = locations.find(location => location.id === locationId)?.revision;
+    const isCurrentLocation = (id, revision) => locationsRef.current.some(location => location.id === id && location.revision === revision);
+    const sortedFiles = React.useMemo(() => sortFiles(files, sortKey, sortDirection), [files, sortKey, sortDirection]);
+    const selectedSet = React.useMemo(() => new Set(selected), [selected]);
+    const sortedIndices = React.useMemo(() => new Map(sortedFiles.map((file, index) => [itemKey(file), index])), [sortedFiles]);
+    const selectedItems = React.useMemo(() => files.filter(file => selectedSet.has(itemKey(file))), [files, selectedSet]);
     const pathForItem = (item) => normalisePath(item.path || (currentPath ? `${currentPath}/${item.name}` : item.name));
 
     const loadLocations = async () => {
         if (locationRefreshInProgress.current) return;
         locationRefreshInProgress.current = true;
+        const session = sessionRef.current;
         if (!locationsLoaded.current) setLocationsLoading(true);
         try {
-            const response = await fetch('/api/locations', { headers: { Authorization: `Bearer ${token}` } });
+            const response = await fetch('/api/locations', { headers: headersForLocation(''), signal: session.controller.signal });
             if (!response.ok) throw new Error('Unable to load Locations.');
             const data = await response.json();
+            if (!session.active) return;
             const available = (data.locations || []).filter((location) => location && location.id);
+            const changed = new Set(locationsRef.current.filter(previous => !available.some(location => location.id === previous.id && location.revision === previous.revision)).map(location => location.id));
+            locationsRef.current = available;
             locationsLoaded.current = true;
             setLocations(available);
             setLocationTrees((current) => Object.fromEntries(available.map((location) => [
                 location.id,
-                current[location.id] || { path: '', name: '/', expanded: true, loaded: false, children: [] }
+                (!changed.has(location.id) && current[location.id]) || { path: '', name: '/', expanded: true, loaded: false, children: [] }
             ])));
             setExpandedLocations((current) => Object.fromEntries(available.map((location, index) => [location.id, current[location.id] ?? index === 0])));
-            setLocationId((current) => available.some((location) => location.id === current) ? current : available[0]?.id || '');
-        } catch (requestError) { setError(requestError.message); }
+            const nextLocationId = available.some(location => location.id === locationIdRef.current) ? locationIdRef.current : available[0]?.id || '';
+            if (changed.size) {
+                setModal(null); setContext(null); setCreatedShareLinks(null);
+                setDragItems([]); setDropTarget(null); setFileDropTarget(null);
+                setTransferStatus('');
+            }
+            if (nextLocationId !== locationIdRef.current || changed.has(nextLocationId)) {
+                requestGate.current.invalidate();
+                navigationPathRef.current = '';
+                setFiles([]); setSelected([]); selectionAnchor.current = null;
+                setCurrentPath(''); setDisplayPath('/'); setSearch(''); setSearching(false); setPathBeforeSearch('');
+                setTransferStatus('');
+                setLocationId(nextLocationId);
+            }
+        } catch (requestError) { if (session.active) setError(requestError.message); }
         finally {
             locationRefreshInProgress.current = false;
-            setLocationsLoading(false);
+            if (session.active) setLocationsLoading(false);
         }
     };
 
     const loadFiles = async (path = currentPath, requestedLocationId = locationId, { forceReload = false } = {}) => {
-        const requestGeneration = ++filesRequestGeneration.current;
-        setLoading(true); setError(''); setContext(null);
+        const request = requestGate.current.begin();
+        setLoading(true); setError(''); setContext(null); setModal(null); setSelected([]); setFiles([]);
+        selectionAnchor.current = null;
         try {
             const response = await fetch(`/api/files?path=${encodeURIComponent(path)}&sort=${encodeURIComponent(sortKey)}&order=${sortDirection}`, {
                 headers: headersForLocation(requestedLocationId),
+                signal: request.signal,
                 ...(forceReload ? { cache: 'no-store' } : {})
             });
             if (!response.ok) throw new Error('Unable to load this folder.');
             const data = await response.json();
-            if (requestGeneration !== filesRequestGeneration.current) return;
+            if (!request.current()) return;
             setFiles((data.files || []).filter((file) => file && file.name));
             setCurrentPath(data.currentPath || '');
             setDisplayPath(data.currentPath || '/');
             setSearching(false); setSearch(''); setSelected([]);
         } catch (requestError) {
-            if (requestGeneration === filesRequestGeneration.current) setError(requestError.message);
+            if (request.current()) setError(requestError.message);
         } finally {
-            if (requestGeneration === filesRequestGeneration.current) setLoading(false);
+            if (request.current()) setLoading(false);
         }
     };
 
     const refreshCurrentDirectory = async () => {
         const refreshPath = currentPath;
         const refreshLocationId = locationId;
+        const current = requestGate.current.capture();
         setLoading(true); setError('');
         try {
+            await loadLocations();
+            if (!current()) return;
             const response = await fetch('/api/files/refresh-cache', {
                 method: 'POST',
                 headers: { ...headersForLocation(refreshLocationId), 'Content-Type': 'application/json' },
@@ -245,11 +311,10 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 cache: 'no-store'
             });
             if (!response.ok) throw new Error('Unable to refresh this folder.');
-            await Promise.all([
-                loadLocations(),
-                loadFiles(refreshPath, refreshLocationId, { forceReload: true })
-            ]);
+            if (!current()) return;
+            await loadFiles(refreshPath, refreshLocationId, { forceReload: true });
         } catch (requestError) {
+            if (!current()) return;
             setError(requestError.message);
             setLoading(false);
         }
@@ -262,10 +327,15 @@ const FileBrowser = ({ token, user, onLogout }) => {
 
     const loadTreeChildren = async (requestedLocationId, path, force = false) => {
         const targetPath = normalisePath(path);
+        const session = sessionRef.current;
+        const current = requestGate.current.capture();
+        const headers = headersForLocation(requestedLocationId);
+        const revision = headers['X-Location-Revision'];
         try {
-            const response = await fetch(`/api/files?path=${encodeURIComponent(targetPath)}`, { headers: headersForLocation(requestedLocationId) });
+            const response = await fetch(`/api/files?path=${encodeURIComponent(targetPath)}`, { headers, signal: session.controller.signal });
             if (!response.ok) throw new Error('Unable to load folders.');
             const data = await response.json();
+            if (!session.active || !isCurrentLocation(requestedLocationId, revision)) return;
             const children = (data.files || [])
                 .filter((file) => file && file.name && file.isDirectory)
                 .map((file) => ({ path: normalisePath(file.path), name: file.name, expanded: false, loaded: false, children: [] }))
@@ -279,7 +349,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 )
             }));
         } catch (requestError) {
-            if (!force) setError(requestError.message);
+            if (!force && session.active && current() && isCurrentLocation(requestedLocationId, revision)) setError(requestError.message);
         }
     };
 
@@ -305,10 +375,13 @@ const FileBrowser = ({ token, user, onLogout }) => {
         if (expanded) loadTreeChildren(requestedLocationId, '');
     };
 
-    React.useEffect(() => { loadLocations(); }, [token]);
+    React.useEffect(() => {
+        sessionRef.current = { active: true, controller: new AbortController() };
+        loadLocations();
+        return () => { sessionRef.current.active = false; sessionRef.current.controller.abort(); requestGate.current.invalidate(); };
+    }, [token, user.id, user.username]);
 
     React.useEffect(() => {
-        if (!token) return undefined;
         const healthTimer = window.setInterval(() => { loadLocations(); }, 15000);
         return () => window.clearInterval(healthTimer);
     }, [token]);
@@ -319,14 +392,15 @@ const FileBrowser = ({ token, user, onLogout }) => {
         return () => window.removeEventListener('locations-updated', handleLocationsUpdated);
     }, [token]);
     React.useEffect(() => {
-        if (!locationId) return;
-        loadFiles('');
+        if (!locationId) {
+            requestGate.current.invalidate();
+            setFiles([]); setSelected([]); setLoading(false); setModal(null); setContext(null);
+            setCurrentPath(''); setDisplayPath('/'); setSearch(''); setSearching(false);
+            return;
+        }
+        loadFiles(navigationPathRef.current);
         loadTreeChildren(locationId, '');
-    }, [locationId]);
-    React.useEffect(() => {
-        if (!locationId || searching) return;
-        loadFiles(currentPath);
-    }, [sortKey, sortDirection]);
+    }, [locationId, locationRevision]);
     React.useEffect(() => {
         if (modal !== 'move') return;
         locations.forEach((location) => {
@@ -349,13 +423,23 @@ const FileBrowser = ({ token, user, onLogout }) => {
         queueAbortControllersRef.current.forEach((controller) => controller.abort());
         queueAbortControllersRef.current.clear();
         queueJobsRef.current.clear();
+        uploadAttemptsRef.current.forEach(attempt => {
+            if (attempt.batchId && !attempt.terminal) {
+                void fetch(`/api/progress/batch/${encodeURIComponent(attempt.batchId)}/cancel`, { method: 'POST', headers: attempt.headers, keepalive: true }).catch(() => {});
+            }
+            attempt.control.abort();
+        });
+        uploadAttemptsRef.current.clear();
     }, []);
     React.useEffect(() => { localStorage.setItem('file-view-mode', viewMode); }, [viewMode]);
     React.useEffect(() => { localStorage.setItem('archive-format', archiveFormat); }, [archiveFormat]);
 
     const activeLocation = locations.find((location) => location.id === locationId);
     const hasCapability = (capability) => activeLocation?.capabilities?.includes(capability) === true;
-    const selectLocation = (nextLocationId) => {
+    const selectLocation = (nextLocationId, path = '') => {
+        requestGate.current.invalidate();
+        navigationPathRef.current = path;
+        setModal(null); setFiles([]); setTransferStatus('');
         if (nextLocationId === locationId) {
             setCurrentPath('');
             setDisplayPath('/');
@@ -364,7 +448,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
             setSearching(false);
             setPathBeforeSearch('');
             setContext(null);
-            loadFiles('', nextLocationId);
+            loadFiles(path, nextLocationId);
             return;
         }
         setLocationId(nextLocationId);
@@ -388,18 +472,20 @@ const FileBrowser = ({ token, user, onLogout }) => {
     };
 
     const loadShareLinks = async () => {
+        const current = requestGate.current.capture();
         setShareLinksLoading(true);
         setError('');
         try {
-            const response = await fetch('/api/files/shares', { headers: { Authorization: `Bearer ${token}` } });
+            const response = await fetch('/api/files/shares', { headers: headersForLocation('') });
             const data = await response.json().catch(() => ({}));
+            if (!current()) return;
             if (!response.ok) throw new Error(data.message || 'Unable to load share links.');
             const statusRank = (link) => link.isExpired ? 2 : link.isActive ? 0 : 1;
             setShareLinks([...(data.data || [])].sort((left, right) => statusRank(left) - statusRank(right)));
         } catch (requestError) {
-            setError(requestError.message);
+            if (current()) setError(requestError.message);
         } finally {
-            setShareLinksLoading(false);
+            if (current()) setShareLinksLoading(false);
         }
     };
 
@@ -411,53 +497,65 @@ const FileBrowser = ({ token, user, onLogout }) => {
 
     const revokeShareLink = async (shareToken) => {
         if (!window.confirm('Revoke this share link? Existing downloads will stop working.')) return;
+        const current = requestGate.current.capture();
         try {
             const response = await fetch(`/api/files/share/${encodeURIComponent(shareToken)}`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` }
+                headers: headersForLocation('')
             });
             const data = await response.json().catch(() => ({}));
+            if (!current()) return;
             if (!response.ok) throw new Error(data.message || 'Unable to revoke share link.');
             showSuccess('Share link revoked.');
             await loadShareLinks();
         } catch (requestError) {
-            setError(requestError.message);
+            if (current()) setError(requestError.message);
         }
     };
 
     const deleteExpiredShareLink = async (shareToken) => {
+        const current = requestGate.current.capture();
         try {
             const response = await fetch(`/api/files/share/${encodeURIComponent(shareToken)}/history`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` }
+                headers: headersForLocation('')
             });
             const data = await response.json().catch(() => ({}));
+            if (!current()) return;
             if (!response.ok) throw new Error(data.message || 'Unable to remove expired share link.');
             showSuccess('Expired share link removed from history.');
             await loadShareLinks();
         } catch (requestError) {
-            setError(requestError.message);
+            if (current()) setError(requestError.message);
         }
     };
 
     const deleteRevokedShareLink = async (shareToken) => {
+        const current = requestGate.current.capture();
         try {
             const response = await fetch(`/api/files/share/${encodeURIComponent(shareToken)}/history/revoked`, {
                 method: 'DELETE',
-                headers: { Authorization: `Bearer ${token}` }
+                headers: headersForLocation('')
             });
             const data = await response.json().catch(() => ({}));
+            if (!current()) return;
             if (!response.ok) throw new Error(data.message || 'Unable to remove revoked share link.');
             showSuccess('Revoked share link removed from history.');
             await loadShareLinks();
         } catch (requestError) {
-            setError(requestError.message);
+            if (current()) setError(requestError.message);
         }
     };
 
-    const shareLinkUrl = (link, kind) => `${window.location.origin}${kind === 'direct' ? link.directDownloadUrl : link.shareUrl}`;
+    const canCopyDirectShare = (link) => link.hasPassword === false && link.supportsDirectDownload === true && link.directDownloadMethod === 'GET';
+    const shareLinkUrl = (link, kind) => {
+        if (kind === 'direct' && (!canCopyDirectShare(link) || !link.directDownloadUrl)) return '';
+        return `${window.location.origin}${kind === 'direct' ? link.directDownloadUrl : link.shareUrl}`;
+    };
     const copyShareLink = async (link, kind) => {
-        await navigator.clipboard.writeText(shareLinkUrl(link, kind));
+        const url = shareLinkUrl(link, kind);
+        if (!url) return;
+        await navigator.clipboard.writeText(url);
         showSuccess(`${kind === 'direct' ? 'Direct' : 'Secure'} link copied.`);
     };
     const shareLinkStatus = (link) => link.isExpired ? 'Expired' : link.isExhausted ? 'Exhausted' : link.isActive ? 'Active' : 'Revoked';
@@ -475,30 +573,33 @@ const FileBrowser = ({ token, user, onLogout }) => {
         }
         const query = search.trim();
         if (!query) return loadFiles(searching ? pathBeforeSearch : currentPath);
-        setLoading(true); setError(''); setContext(null);
+        const request = requestGate.current.begin();
+        setLoading(true); setError(''); setContext(null); setModal(null); setSelected([]); setFiles([]);
+        selectionAnchor.current = null;
         try {
             if (!searching) setPathBeforeSearch(currentPath);
-            const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}`, { headers: authHeaders });
+            const response = await fetch(`/api/files/search?query=${encodeURIComponent(query)}`, { headers: authHeaders, signal: request.signal });
             const data = await response.json();
+            if (!request.current()) return;
             if (!response.ok || data.indexing) throw new Error(data.message || 'Search is not available yet.');
             const results = (data.files || []).filter((file) => file && typeof file.name === 'string' && file.name.trim() && typeof file.path === 'string' && file.path.trim());
-            setFiles(sortFiles(results, sortKey, sortDirection)); setDisplayPath(`Search results for "${query}"`); setSearching(true); setSelected([]);
-        } catch (requestError) { setError(requestError.message); setFiles([]); }
-        finally { setLoading(false); }
+            setFiles(results); setDisplayPath(`Search results for "${query}"`); setSearching(true); setSelected([]);
+        } catch (requestError) { if (request.current()) { setError(requestError.message); setFiles([]); } }
+        finally { if (request.current()) setLoading(false); }
     };
 
     const openFolder = (file) => { if (file.isDirectory) loadFiles(file.path); };
     const goUp = () => { if (searching) return loadFiles(pathBeforeSearch); if (currentPath) loadFiles(currentPath.split('/').slice(0, -1).join('/')); };
     const clearSearch = () => {
         setSearch('');
-        if (searching) loadFiles(pathBeforeSearch);
+        loadFiles(searching ? pathBeforeSearch : currentPath);
     };
     const choose = (file, event) => {
         const key = itemKey(file);
-        const index = sortedFiles.findIndex((item) => itemKey(item) === key);
+        const index = sortedIndices.get(key) ?? -1;
         const anchorIndex = selectionAnchor.current === null
             ? -1
-            : sortedFiles.findIndex((item) => itemKey(item) === selectionAnchor.current);
+            : sortedIndices.get(selectionAnchor.current) ?? -1;
         if (event.shiftKey && anchorIndex >= 0 && index >= 0) {
             const start = Math.min(anchorIndex, index);
             const end = Math.max(anchorIndex, index);
@@ -522,6 +623,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
         window.setTimeout(() => URL.revokeObjectURL(url), 60000);
     };
     const updateQueueItem = (id, patch) => {
+        if (!sessionRef.current.active) return;
         const next = queueItemsRef.current.map((item) => {
             if (item.id !== id) return item;
             if (item.status === 'cancelled' && patch.status && patch.status !== 'cancelled') return item;
@@ -554,9 +656,16 @@ const FileBrowser = ({ token, user, onLogout }) => {
         if (queueItemsRef.current.find((item) => item.id === id)?.status === 'cancelled') return;
         updateQueueItem(id, { status, detail, finishedAt: Date.now() });
         if (!['failed', 'needs_user_action'].includes(status)) queueJobsRef.current.delete(id);
+        const attempt = uploadAttemptsRef.current.get(id);
+        if (attempt?.terminal) {
+            attempt.control.abort();
+            uploadAttemptsRef.current.delete(id);
+            queueJobsRef.current.delete(id);
+        }
         window.setTimeout(pruneQueueItems, 0);
     };
     const runNextQueueItem = async () => {
+        if (!sessionRef.current.active) return;
         if (queueRunningRef.current) return;
         const item = queueItemsRef.current.find((candidate) => candidate.status === 'queued');
         if (!item) return;
@@ -572,16 +681,17 @@ const FileBrowser = ({ token, user, onLogout }) => {
         setDownloading(true);
         let retryScheduled = false;
         try {
-            const detail = await job(item.id, controller.signal);
-            finishQueueItem(item.id, 'completed', detail || 'Transfer completed.');
+            const result = await job(item.id, controller.signal);
+            finishQueueItem(item.id, result?.status || 'completed', result?.detail || result || 'Transfer completed.');
         } catch (requestError) {
-            if (controller.signal.aborted) {
+            if (!sessionRef.current.active) return;
+            if (controller.signal.aborted && item.kind !== 'upload') {
                 finishQueueItem(item.id, 'cancelled', 'Cancelled by user.');
                 return;
             }
             const category = classifyTransferError(requestError);
             const retryCount = item.retryCount || 0;
-            const retryable = ['network', 'timeout', 'server_error'].includes(category) && retryCount < 3;
+            const retryable = item.kind !== 'upload' && ['network', 'timeout', 'server_error'].includes(category) && retryCount < 3;
             if (retryable) {
                 retryScheduled = true;
                 updateQueueItem(item.id, { status: 'retrying', retryCount: retryCount + 1, detail: `[${category}] Retry ${retryCount + 1}/3 scheduled`, errorCategory: category });
@@ -594,7 +704,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 queueRetryTimersRef.current.set(item.id, timer);
             } else {
                 updateQueueItem(item.id, { errorCategory: category });
-                const needsUserAction = ['authentication', 'permission', 'conflict', 'source_missing', 'source_changed', 'destination_unavailable', 'validation', 'unknown'].includes(category);
+                const needsUserAction = item.kind === 'upload' || ['authentication', 'permission', 'conflict', 'source_missing', 'source_changed', 'destination_unavailable', 'validation', 'unknown'].includes(category);
                 finishQueueItem(item.id, needsUserAction ? 'needs_user_action' : 'failed', `[${category}] ${requestError.message || 'Transfer failed.'}`);
             }
         } finally {
@@ -709,10 +819,18 @@ const FileBrowser = ({ token, user, onLogout }) => {
         if (!item || !['queued', 'running', 'retrying'].includes(item.status)) return;
         const controller = queueAbortControllersRef.current.get(id);
         controller?.abort();
+        if (item.kind === 'upload' && controller) {
+            const attempt = uploadAttemptsRef.current.get(id);
+            if (attempt) attempt.cancelRequested = true;
+            updateQueueItem(id, { detail: 'Cancellation requested; waiting for server settlement.' });
+            return;
+        }
         const retryTimer = queueRetryTimersRef.current.get(id);
         if (retryTimer) window.clearTimeout(retryTimer);
         queueRetryTimersRef.current.delete(id);
         queueJobsRef.current.delete(id);
+        uploadAttemptsRef.current.get(id)?.control.abort();
+        uploadAttemptsRef.current.delete(id);
         updateQueueItem(id, { status: 'cancelled', detail: 'Cancelled by user.', finishedAt: Date.now() });
         window.setTimeout(pruneQueueItems, 0);
     };
@@ -743,10 +861,11 @@ const FileBrowser = ({ token, user, onLogout }) => {
         queueItemsRef.current = next;
         setQueueItems(next);
     };
-    const uploadFormData = (queueId, data, totalBytes, signal) => new Promise((resolve, reject) => {
+    const uploadFormData = (queueId, data, attempt, signal) => new Promise((resolve, reject) => {
+        if (signal.aborted) { reject(new Error('Upload transport cancelled.')); return; }
         const request = new XMLHttpRequest();
         request.open('POST', '/api/upload/multiple');
-        Object.entries(authHeaders).forEach(([name, value]) => request.setRequestHeader(name, value));
+        Object.entries({ ...attempt.headers, 'X-Upload-Batch-ID': attempt.batchId }).forEach(([name, value]) => request.setRequestHeader(name, value));
         const samples = [];
         request.upload.onprogress = (event) => {
             if (!event.lengthComputable) {
@@ -760,11 +879,11 @@ const FileBrowser = ({ token, user, onLogout }) => {
             const bytesPerSecond = oldest && now > oldest.at
                 ? (event.loaded - oldest.bytes) / ((now - oldest.at) / 1000)
                 : null;
-            const eta = bytesPerSecond && totalBytes ? Math.max(0, (totalBytes - event.loaded) / bytesPerSecond) : null;
+            const eta = bytesPerSecond ? Math.max(0, (event.total - event.loaded) / bytesPerSecond) : null;
             const percentage = event.total > 0 ? event.loaded / event.total * 100 : null;
             updateQueueItem(queueId, {
-                detail: `Uploading file data ${formatSize(event.loaded)} / ${formatSize(event.total)}${percentage === null ? '' : ` (${Math.round(percentage)}%)`}${bytesPerSecond ? ` · ${formatRate(bytesPerSecond)}` : ''}${eta ? ` · ETA ${Math.ceil(eta)}s` : ''}`,
-                progress: { completedBytes: event.loaded, totalBytes: totalBytes || event.total || null, percentage: totalBytes ? event.loaded / totalBytes * 100 : percentage, bytesPerSecond, etaSeconds: eta, completedItems: 0, totalItems: 1, updatedAt: now }
+                detail: `Sending request body ${formatSize(event.loaded)} / ${formatSize(event.total)}${percentage === null ? '' : ` (${Math.round(percentage)}%)`}${bytesPerSecond ? ` · ${formatRate(bytesPerSecond)}` : ''}`,
+                transportProgress: { completedBytes: event.loaded, totalBytes: event.total, percentage, bytesPerSecond, etaSeconds: eta, updatedAt: now }
             });
         };
         const abort = () => request.abort();
@@ -772,13 +891,13 @@ const FileBrowser = ({ token, user, onLogout }) => {
         request.onerror = () => { signal?.removeEventListener('abort', abort); reject(new Error('Upload network request failed.')); };
         request.onabort = () => { signal?.removeEventListener('abort', abort); reject(new Error('Upload request was cancelled.')); };
         request.onload = () => {
+            signal?.removeEventListener('abort', abort);
             let result = {};
             try { result = JSON.parse(request.responseText || '{}'); } catch { /* handled as an API error below */ }
             if (request.status < 200 || request.status >= 300) {
                 reject(new Error(result.error?.message || result.error || 'Upload failed.'));
                 return;
             }
-            signal?.removeEventListener('abort', abort);
             resolve(result);
         };
         request.send(data);
@@ -804,6 +923,12 @@ const FileBrowser = ({ token, user, onLogout }) => {
     };
 
     const moveItems = async (items, destination, destinationLocationId = locationId) => {
+        if (moving) return;
+        const viewCurrent = requestGate.current.capture();
+        const sourceRevision = locationRevision;
+        const targetRevision = locations.find(location => location.id === destinationLocationId)?.revision;
+        const current = () => viewCurrent() && isCurrentLocation(locationId, sourceRevision) && isCurrentLocation(destinationLocationId, targetRevision);
+        const targets = items.map(item => ({ name: item.name, isDirectory: item.isDirectory, path: pathForItem(item), sourceLocationId: locationId }));
         const targetPath = normalisePath(destination);
         if (!isValidMoveTarget(items, targetPath, destinationLocationId)) {
             setError('Choose a folder other than the current folder or a folder inside a selected folder.');
@@ -811,25 +936,47 @@ const FileBrowser = ({ token, user, onLogout }) => {
         }
         setMoving(true); setError(''); setTransferStatus(`Moving ${items.length} item${items.length === 1 ? '' : 's'} to ${destinationLocationId}:${targetPath ? `/${targetPath}` : '/'}...`);
         try {
-            const response = await fetch('/api/files/paste', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map((item) => ({ name: item.name, isDirectory: item.isDirectory, path: pathForItem(item), sourceLocationId: locationId })), operation: 'cut', sourceLocationId: locationId, targetLocationId: destinationLocationId, targetPath }) });
+            const response = await fetch('/api/files/paste', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: targets, operation: 'cut', sourceLocationId: locationId, sourceLocationRevision: sourceRevision, targetLocationId: destinationLocationId, targetLocationRevision: targetRevision, targetPath }) });
             const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Move failed.');
-            setModal(null); setDragItems([]); setDropTarget(null); showSuccess(data.message || 'Move complete.');
-            setLocationTrees((current) => ({
-                ...current,
-                [locationId]: { path: '', name: '/', expanded: true, loaded: false, children: [] },
-                [destinationLocationId]: { path: '', name: '/', expanded: true, loaded: false, children: [] }
-            }));
-            loadTreeChildren(locationId, '', true);
-            if (destinationLocationId !== locationId) loadTreeChildren(destinationLocationId, '', true);
-            loadFiles(currentPath);
-        } catch (requestError) { setTransferStatus(''); setError(requestError.message); }
+            if (!current()) return;
+            const outcomes = new Map();
+            for (const result of Array.isArray(data.results) ? data.results : []) {
+                if (result?.sourceLocationId !== locationId || typeof result.path !== 'string') continue;
+                const path = normalisePath(result.path);
+                outcomes.set(path, outcomes.has(path) ? null : result);
+            }
+            const moved = new Set();
+            let failed = 0;
+            let copied = 0;
+            for (const item of targets) {
+                const result = outcomes.get(item.path);
+                if (result?.success === true) moved.add(item.path);
+                else if (result?.success === false) {
+                    failed++;
+                    if (result.copied === true) copied++;
+                }
+            }
+            const unconfirmed = targets.length - moved.size - failed;
+            setModal(null); setDragItems([]); setDropTarget(null);
+            if (moved.size) {
+                const movedKeys = new Set(items.filter(item => moved.has(pathForItem(item))).map(itemKey));
+                setFiles(previous => previous.filter(item => !movedKeys.has(itemKey(item))));
+                setSelected(previous => previous.filter(key => !movedKeys.has(key)));
+                if (movedKeys.has(selectionAnchor.current)) selectionAnchor.current = null;
+            }
+            showSuccess(`Moved ${moved.size} of ${targets.length} items. ${failed} failed. ${unconfirmed} unconfirmed.`);
+            if (failed || unconfirmed) setError(`${copied ? `${copied} copied but not moved; source cleanup failed. ` : ''}${unconfirmed ? 'Some move outcomes are unconfirmed. ' : ''}Check both Locations before retrying.`);
+            if (moved.size || copied) {
+                loadTreeChildren(locationId, '', true);
+                if (destinationLocationId !== locationId) loadTreeChildren(destinationLocationId, '', true);
+            }
+        } catch (requestError) { if (current()) { setModal(null); setTransferStatus(''); setError(`Move outcome is unconfirmed: ${requestError.message} Check both Locations before retrying.`); } }
         finally { setMoving(false); }
     };
 
     const beginDrag = (event, file) => {
-        const items = selected.includes(itemKey(file)) ? selectedItems : [file];
-        if (!selected.includes(itemKey(file))) setSelected([itemKey(file)]);
+        const items = selectedSet.has(itemKey(file)) ? selectedItems : [file];
+        if (!selectedSet.has(itemKey(file))) setSelected([itemKey(file)]);
         setDragItems(items); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', items.map((item) => item.name).join(', '));
     };
     const endDrag = () => { window.clearTimeout(dragExpandTimer.current); setDragItems([]); setDropTarget(null); setFileDropTarget(null); };
@@ -841,29 +988,57 @@ const FileBrowser = ({ token, user, onLogout }) => {
 
     const remove = async () => {
         if (!selectedItems.length || !window.confirm(`Delete ${selectedItems.length} selected item${selectedItems.length === 1 ? '' : 's'}?`)) return;
-        try {
-            const response = await fetch('/api/files/delete', { method: 'DELETE', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: selectedItems.map(({ name, isDirectory }) => ({ name, isDirectory })), currentPath }) });
-            if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Delete failed.'); } showSuccess(`Deleted ${selectedItems.length} item${selectedItems.length === 1 ? '' : 's'}.`); loadFiles(currentPath); loadTreeChildren(locationId, '', true);
-        } catch (requestError) { setError(requestError.message); }
+        const current = requestGate.current.capture();
+        const groups = deleteGroups(selectedItems, currentPath);
+        const session = sessionRef.current;
+        let deleted = 0;
+        const failures = [];
+        for (const group of groups) {
+            if (!session.active) break;
+            try {
+                const response = await fetch('/api/files/delete', { method: 'DELETE', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify(group) });
+                const data = await response.json();
+                const results = data.deletedItems || data.results;
+                const count = Array.isArray(results) ? results.filter(result => typeof result === 'string' || result.success === true).length : Number.isFinite(data.deletedCount) ? data.deletedCount : response.ok && data.success === true ? group.items.length : 0;
+                deleted += count;
+                if (!response.ok || count < group.items.length) failures.push(`${data.error || data.message || `Some items in /${group.currentPath} were not deleted.`}${!Array.isArray(results) && !Number.isFinite(data.deletedCount) ? ' Remaining deletion outcomes are unconfirmed.' : ''}`);
+            } catch (requestError) { failures.push(`${requestError.message} Deletion outcome is unconfirmed.`); }
+        }
+        if (!current()) return;
+        const refresh = loadFiles(currentPath, locationId);
+        const refreshCurrent = requestGate.current.capture();
+        await refresh;
+        if (!refreshCurrent()) return;
+        loadTreeChildren(locationId, '', true);
+        showSuccess(`Deleted ${deleted} of ${selectedItems.length} selected items.`);
+        if (failures.length) setError(failures.join(' '));
     };
     const saveFolder = async (event) => {
         event.preventDefault(); const name = event.target.folderName.value.trim(); if (!name) return;
+        const current = requestGate.current.capture();
         try {
             const response = await fetch('/api/folders', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ folderName: name, currentPath }) });
+            if (!current()) return;
             if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Could not create folder.'); } setModal(null); showSuccess('Folder created.'); loadFiles(currentPath); loadTreeChildren(locationId, '', true);
-        } catch (requestError) { setError(requestError.message); }
+        } catch (requestError) { if (current()) setError(requestError.message); }
     };
     const saveRename = async (event) => {
         event.preventDefault(); const newName = event.target.newName.value.trim(); if (!newName || !selectedItems[0]) return;
+        const current = requestGate.current.capture();
+        const oldPath = pathForItem(selectedItems[0]);
+        const parent = oldPath.split('/').slice(0, -1).join('/');
         try {
-            const response = await fetch('/api/files/rename', { method: 'PUT', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ oldName: selectedItems[0].name, newName, currentPath }) });
+            const response = await fetch('/api/files/rename', { method: 'PUT', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ oldPath, oldName: selectedItems[0].name, newName, currentPath: parent }) });
+            if (!current()) return;
             if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Rename complete.'); } setModal(null); showSuccess('Rename complete.'); loadFiles(currentPath); loadTreeChildren(locationId, '', true);
-        } catch (requestError) { setError(requestError.message); }
+        } catch (requestError) { if (current()) setError(requestError.message); }
     };
     const uploadFiles = async (items, directories = []) => {
         if (!items.length && !directories.length) return;
         const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const totalBytes = items.reduce((sum, item) => sum + (Number(item.file.size) || 0), 0) || null;
+        const totalBytes = items.reduce((sum, item) => sum + (Number(item.file.size) || 0), 0);
+        const attempt = { path: currentPath, locationId, headers: { ...authHeaders }, session: sessionRef.current, control: new AbortController(), current: requestGate.current.capture(), batchId: null, sent: false, terminal: false, cancelRequested: false };
+        uploadAttemptsRef.current.set(id, attempt);
         enqueueTransfer({
             id,
             label: `Upload ${items.length} file${items.length === 1 ? '' : 's'}`,
@@ -873,35 +1048,77 @@ const FileBrowser = ({ token, user, onLogout }) => {
             finishedAt: null,
             progress: { completedBytes: 0, totalBytes, percentage: totalBytes ? 0 : null, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: items.length, updatedAt: Date.now() }
         }, async (queueId, signal) => {
-            const data = new FormData();
-            items.forEach(({ file, relativePath }) => {
-                data.append('files', file, file.name);
-                data.append('filePaths[]', relativePath);
-            });
-            directories.forEach((directory) => data.append('directoryPaths[]', directory));
-            data.append('path', currentPath);
-            const result = await uploadFormData(queueId, data, totalBytes, signal);
-            let completed = !result.batchId;
-            if (result.batchId) {
-                for (let attempt = 0; attempt < 600; attempt += 1) {
-                    const progressResponse = await fetch(`/api/progress/batch/${encodeURIComponent(result.batchId)}`, { headers: authHeaders, signal });
-                    const progress = await progressResponse.json().catch(() => ({}));
-                    if (!progressResponse.ok) throw new Error(progress.error || 'Unable to read upload progress.');
-                    const completedBytes = totalBytes ? Math.round(totalBytes * (Number(progress.progress) || 0) / 100) : 0;
-                    const now = Date.now();
-                    updateQueueItem(queueId, {
-                        detail: `Uploading ${progress.successCount}/${progress.totalFiles} files (${Math.round(progress.progress)}%)${totalBytes ? ` · ${formatSize(completedBytes)} / ${formatSize(totalBytes)}` : ''}`,
-                        progress: { completedBytes, totalBytes, percentage: totalBytes ? Number(progress.progress) : null, bytesPerSecond: null, etaSeconds: null, completedItems: progress.successCount || 0, totalItems: progress.totalFiles || items.length, updatedAt: now }
-                    });
-                    if (progress.status === 'completed') { completed = true; break; }
-                    if (progress.status === 'failed' || progress.status === 'partial_fail') throw new Error(`Upload finished with ${progress.failedCount} failed file${progress.failedCount === 1 ? '' : 's'}.`);
-                    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+            const controlFetch = async (url, options = {}) => {
+                if (!attempt.session.active) throw new Error('Upload session ended.');
+                const controller = new AbortController();
+                const abort = () => controller.abort();
+                const timer = window.setTimeout(abort, 10000);
+                attempt.control.signal.addEventListener('abort', abort, { once: true });
+                if (attempt.control.signal.aborted) abort();
+                try {
+                    const response = await fetch(url, { ...options, headers: { ...attempt.headers, ...options.headers }, signal: controller.signal });
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error?.message || data.error || `Upload control request failed (${response.status}).`);
+                    return data;
+                } finally {
+                    window.clearTimeout(timer);
+                    attempt.control.signal.removeEventListener('abort', abort);
                 }
+            };
+            if (!attempt.batchId) {
+                const reservation = await controlFetch('/api/upload/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: attempt.path, clientAttemptId: id }) });
+                if (!reservation.batchId || reservation.locationId !== attempt.locationId) throw new Error('Invalid upload reservation. No files were sent.');
+                attempt.batchId = reservation.batchId;
+                updateQueueItem(queueId, { batchId: attempt.batchId, locationId: attempt.locationId });
             }
-            if (!completed) throw new Error('Upload progress timed out.');
-            if (totalBytes) updateQueueItem(queueId, { progress: { completedBytes: totalBytes, totalBytes, percentage: 100, bytesPerSecond: null, etaSeconds: null, completedItems: items.length, totalItems: items.length, updatedAt: Date.now() } });
-            loadFiles(currentPath); loadTreeChildren(locationId, '', true);
-            return `Uploaded ${items.length} file${items.length === 1 ? '' : 's'} and ${directories.length} folder${directories.length === 1 ? '' : 's'}.`;
+            if (signal.aborted) attempt.cancelRequested = true;
+            if (!attempt.sent && !attempt.cancelRequested) {
+                const data = new FormData();
+                items.forEach(({ file, relativePath }) => {
+                    data.append('files', file, file.name);
+                    data.append('filePaths[]', relativePath);
+                });
+                directories.forEach(directory => data.append('directoryPaths[]', directory));
+                data.append('path', attempt.path);
+                // Once dispatched, even a lost acceptance response must be reconciled, never resent.
+                attempt.sent = true;
+                try { await uploadFormData(queueId, data, attempt, signal); }
+                catch { updateQueueItem(queueId, { detail: 'Transport ended; checking the reserved server batch.' }); }
+            }
+            let failures = 0;
+            let cancelSent = false;
+            for (let poll = 0; poll < 600; poll++) {
+                if (!attempt.session.active) throw new Error('Upload session ended.');
+                if (signal.aborted) attempt.cancelRequested = true;
+                try {
+                    if (attempt.cancelRequested && !cancelSent) {
+                        await controlFetch(`/api/progress/batch/${encodeURIComponent(attempt.batchId)}/cancel`, { method: 'POST' });
+                        cancelSent = true;
+                    }
+                    const progress = await controlFetch(`/api/progress/batch/${encodeURIComponent(attempt.batchId)}`);
+                    failures = 0;
+                    const detail = `${progress.phase || progress.status}: ${progress.successCount || 0} completed, ${progress.failedCount || 0} failed, ${progress.cancelledCount || 0} cancelled, ${progress.pendingCount || 0} pending.`;
+                    updateQueueItem(queueId, {
+                        detail: attempt.cancelRequested ? `Cancellation requested. ${detail}` : detail,
+                        progress: { completedBytes: progress.transferredSize, totalBytes: progress.totalSizeKnown ? progress.totalSize : null, percentage: progress.totalSizeKnown ? progress.progress : null, bytesPerSecond: null, etaSeconds: null, completedItems: progress.successCount, totalItems: (progress.successCount || 0) + (progress.failedCount || 0) + (progress.cancelledCount || 0) + (progress.pendingCount || 0), updatedAt: Date.now() }
+                    });
+                    if (['completed', 'failed', 'partial_fail', 'cancelled', 'expired'].includes(progress.status)) {
+                        attempt.terminal = true;
+                        if (attempt.current()) { loadFiles(attempt.path, attempt.locationId); loadTreeChildren(attempt.locationId, '', true); }
+                        return { status: progress.status === 'completed' ? 'completed' : progress.status === 'cancelled' ? 'cancelled' : 'failed', detail };
+                    }
+                } catch (error) {
+                    if (++failures >= 5 || !attempt.session.active) throw new Error(`Server outcome unconfirmed: ${error.message} Retry checks batch ${attempt.batchId}; it does not resend files.`);
+                    updateQueueItem(queueId, { detail: 'Server outcome unconfirmed; retrying batch control only.' });
+                }
+                await new Promise((resolve, reject) => {
+                    const abort = () => { window.clearTimeout(timer); reject(new Error('Upload session ended.')); };
+                    const timer = window.setTimeout(() => { attempt.control.signal.removeEventListener('abort', abort); resolve(); }, 1000);
+                    attempt.control.signal.addEventListener('abort', abort, { once: true });
+                    if (attempt.control.signal.aborted) abort();
+                });
+            }
+            throw new Error(`Server outcome unconfirmed. Retry checks batch ${attempt.batchId}; it does not resend files.`);
         });
     };
 
@@ -932,10 +1149,11 @@ const FileBrowser = ({ token, user, onLogout }) => {
     const isExternalFileDrag = (event) => Array.from(event.dataTransfer.types || []).includes('Files') && !dragItems.length;
     const createShare = async (event) => {
         event.preventDefault(); const file = selectedItems[0]; if (!file) return;
+        const current = requestGate.current.capture();
         try {
             const response = await fetch('/api/files/share', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ locationId, filePath: file.path, expiresIn: Number(event.target.expiresIn.value), maxDownloads: Number(event.target.maxDownloads.value) }) });
-            const data = await response.json(); if (!response.ok) throw new Error(data.message || 'Could not create share link.'); setCreatedShareLinks({ secure: data.data.fullUrl, direct: data.data.directDownloadFullUrl }); showSuccess('Share links created.');
-        } catch (requestError) { setError(requestError.message); }
+            const data = await response.json(); if (!current()) return; if (!response.ok) throw new Error(data.message || 'Could not create share link.'); setCreatedShareLinks({ secure: data.data.fullUrl, direct: canCopyDirectShare(data.data) ? data.data.directDownloadFullUrl : '' }); showSuccess('Share links created.');
+        } catch (requestError) { if (current()) setError(requestError.message); }
     };
     const savePassword = async (event) => {
         event.preventDefault();
@@ -981,21 +1199,21 @@ const FileBrowser = ({ token, user, onLogout }) => {
         } : {};
         const sharedProps = { draggable: true, onDragStart: (event) => beginDrag(event, file), onDragEnd: endDrag, onClick: (event) => choose(file, event), onDoubleClick: () => file.isDirectory ? openFolder(file) : download([file]), onContextMenu: (event) => openContext(event, file), ...dropHandlers };
         if (viewMode === 'grid') {
-            return <article key={itemKey(file)} tabIndex="0" className={`file-tile ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><span className="tile-icon">{fileIcon(file)}</span><strong>{file.name}</strong><span>{file.type || fileType(file)}</span><small>{file.isDirectory ? 'Drop files here' : formatSize(file.size)}</small></article>;
+            return <article key={itemKey(file)} role="listitem" tabIndex="0" className={`file-tile ${selectedSet.has(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><span className="tile-icon">{fileIcon(file)}</span><strong>{file.name}</strong><span>{file.type || fileType(file)}</span><small>{file.isDirectory ? 'Drop files here' : formatSize(file.size)}</small></article>;
         }
-        return <tr key={itemKey(file)} tabIndex="0" className={`file-row ${selected.includes(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><td><span className="file-name-cell"><span className="file-icon">{fileIcon(file)}</span>{file.name}</span></td><td className="muted">{formatDate(file.modified || file.modifiedTime)}</td><td className="muted">{file.type || fileType(file)}</td><td className="muted">{file.isDirectory ? '--' : formatSize(file.size)}</td></tr>;
+        return <tr key={itemKey(file)} tabIndex="0" className={`file-row ${selectedSet.has(itemKey(file)) ? 'selected' : ''} ${isDropTarget ? 'drop-target' : ''}`} {...sharedProps}><td><span className="file-name-cell"><span className="file-icon">{fileIcon(file)}</span>{file.name}</span></td><td className="muted">{formatDate(file.modified || file.modifiedTime)}</td><td className="muted">{file.type || fileType(file)}</td><td className="muted">{file.isDirectory ? '--' : formatSize(file.size)}</td></tr>;
     };
 
      const renderTree = (requestedLocationId = locationId, onChooseDestination) => {
          const tree = locationTrees[requestedLocationId] || { path: '', name: '/', expanded: true, loaded: false, children: [] };
-         return <FolderTree node={tree} currentPath={requestedLocationId === locationId ? currentPath : ''} dragItems={dragItems} dropTarget={dropTarget} onChooseDestination={onChooseDestination} onToggle={(node) => toggleFolder(requestedLocationId, node)} onNavigate={(path) => { selectLocation(requestedLocationId); loadFiles(path, requestedLocationId); }} onDragOver={(event, node) => { if (isExternalFileDrag(event)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setDropTarget(node.path); return; } if (isValidMoveTarget(dragItems, node.path, requestedLocationId)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(node.path); scheduleTreeExpand(requestedLocationId, node); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, node) => { if (isExternalFileDrag(event)) { void handleExternalDrop(event); return; } event.preventDefault(); endDrag(); moveItems(dragItems, node.path, requestedLocationId); }} />;
+         return <FolderTree node={tree} currentPath={requestedLocationId === locationId ? currentPath : ''} dragItems={dragItems} dropTarget={dropTarget} onChooseDestination={onChooseDestination} onToggle={(node) => toggleFolder(requestedLocationId, node)} onNavigate={(path) => selectLocation(requestedLocationId, path)} onDragOver={(event, node) => { if (isExternalFileDrag(event)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setDropTarget(node.path); return; } if (isValidMoveTarget(dragItems, node.path, requestedLocationId)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(node.path); scheduleTreeExpand(requestedLocationId, node); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, node) => { if (isExternalFileDrag(event)) { void handleExternalDrop(event); return; } event.preventDefault(); endDrag(); moveItems(dragItems, node.path, requestedLocationId); }} />;
       };
       const renderLocationTree = (requestedLocationId) => {
           const tree = locationTrees[requestedLocationId];
           if (!tree || !tree.loaded) return <span className="tree-loading">Loading folders...</span>;
-          return <div className="tree-children">{tree.children.map((node) => <FolderTree key={node.path} node={node} currentPath={requestedLocationId === locationId ? currentPath : ''} dragItems={dragItems} dropTarget={dropTarget} onToggle={(child) => toggleFolder(requestedLocationId, child)} onNavigate={(path) => { selectLocation(requestedLocationId); loadFiles(path, requestedLocationId); }} onDragOver={(event, child) => { if (isValidMoveTarget(dragItems, child.path, requestedLocationId)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(child.path); scheduleTreeExpand(requestedLocationId, child); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, child) => { event.preventDefault(); endDrag(); moveItems(dragItems, child.path, requestedLocationId); }} />)}</div>;
+          return <div className="tree-children">{tree.children.map((node) => <FolderTree key={node.path} node={node} currentPath={requestedLocationId === locationId ? currentPath : ''} dragItems={dragItems} dropTarget={dropTarget} onToggle={(child) => toggleFolder(requestedLocationId, child)} onNavigate={(path) => selectLocation(requestedLocationId, path)} onDragOver={(event, child) => { if (isValidMoveTarget(dragItems, child.path, requestedLocationId)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(child.path); scheduleTreeExpand(requestedLocationId, child); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, child) => { event.preventDefault(); endDrag(); moveItems(dragItems, child.path, requestedLocationId); }} />)}</div>;
        };
-       const renderQueueItem = (item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span>{item.detail}</span>{item.progress && <small>{item.progress.completedBytes ? `${formatSize(item.progress.completedBytes)}${item.progress.totalBytes ? ` / ${formatSize(item.progress.totalBytes)}` : ''}` : 'Preparing'}{item.progress.percentage === null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}{['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}{['failed', 'needs_user_action'].includes(item.status) && <button type="button" onClick={() => retryQueueItem(item.id)}>Retry</button>}{['completed', 'failed', 'cancelled'].includes(item.status) && <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>}</li>;
+       const renderQueueItem = (item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span>{item.detail}</span>{item.progress && <small>{formatSize(item.progress.completedBytes)}{item.progress.totalBytes == null ? '' : ` / ${formatSize(item.progress.totalBytes)}`}{item.progress.percentage == null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}{['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}{['failed', 'needs_user_action'].includes(item.status) && queueJobsRef.current.has(item.id) && <button type="button" onClick={() => retryQueueItem(item.id)}>{item.batchId ? 'Reconcile' : 'Retry'}</button>}{['completed', 'failed', 'cancelled'].includes(item.status) && <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>}</li>;
 
      return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>
               <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountRef}><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{user.role === 'admin' && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super Panel</button>}{user.role !== 'admin' && <button onClick={() => { setAccountOpen(false); setModal('password'); }}>Change password</button>}<hr /><button className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
@@ -1009,7 +1227,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
          <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
           <main className="workspace"><aside className="sidebar"><span className="sidebar-label">Locations</span>{locationsLoading && locations.length === 0 ? <span className="tree-loading">Loading Locations...</span> : locations.map((location) => <section className="location-section" key={location.id}><div className={`tree-node ${location.id === locationId ? 'active' : ''}`} onDragOver={(event) => { if (isExternalFileDrag(event)) return; if (isValidMoveTarget(dragItems, '', location.id)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(`${location.id}:`); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event) => { if (isExternalFileDrag(event)) return; event.preventDefault(); endDrag(); moveItems(dragItems, '', location.id); }}><button className="tree-toggle" aria-label={`${expandedLocations[location.id] ? 'Collapse' : 'Expand'} ${location.displayName}`} onClick={() => toggleLocation(location.id)}>{expandedLocations[location.id] ? '−' : '+'}</button><button className={`tree-folder ${dropTarget === `${location.id}:` ? 'drop-target' : ''}`} onClick={() => selectLocation(location.id)}><span className="folder-mini" />{location.displayName}</button><span className={`location-status-dot ${location.status === 'online' ? 'online' : ''}`} title={location.status || 'unknown'} aria-label={location.status || 'unknown'} /></div>{expandedLocations[location.id] && renderLocationTree(location.id)}</section>)}</aside>
              <section className="content" onDragOver={handleExternalDragOver} onDrop={handleExternalDrop}><div className="content-heading"><div><span className="eyebrow">CURRENT DIRECTORY</span><h1>{displayPath}</h1></div>{selectedItems.length > 0 && <span className="selection-count">{selectedItems.length} selected</span>}</div>{error && <div className="notice error-notice">{error}</div>}{transferStatus && <div className="notice transfer-notice"><span className={downloading || moving ? 'activity-dot' : ''} />{transferStatus}</div>}
-                 <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : viewMode === 'grid' ? <div className="file-grid" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{sortedFiles.map(renderFileItem)}</div> : <table className="file-table"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody>{sortedFiles.map(renderFileItem)}</tbody></table>}</div>
+                 <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : <VirtualFileList items={sortedFiles} mode={viewMode} renderItem={renderFileItem} onChoose={choose} onOpen={file => file.isDirectory ? openFolder(file) : download([file])} onClear={() => setSelected([])} />}</div>
             </section></main>
         <footer className="statusbar"><span>{files.length} item{files.length === 1 ? '' : 's'}</span><span>{searching ? 'Search results' : currentPath ? `/${currentPath}` : '/'}</span></footer>
           {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading || !hasCapability('read')} onClick={() => action(startDownload)}>Download</button><button disabled={moving || !hasCapability('move')} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => action(() => { setCreatedShareLinks(null); setModal('share'); })}>Share</button><hr /><button disabled={!hasCapability('delete')} onClick={() => action(remove)}>Delete</button></div>}
@@ -1017,7 +1235,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
          {modal === 'move' && <Dialog title="Move selected items" onClose={() => setModal(null)}><p>Choose a destination. You cannot move an item into its current folder or one of its own subfolders.</p><div className="move-tree">{locations.map((location) => <section key={location.id}><strong>{location.displayName}</strong>{renderTree(location.id, (node) => moveItems(selectedItems, node.path, location.id))}</section>)}</div><div className="modal-actions"><button type="button" onClick={() => setModal(null)}>Cancel</button></div></Dialog>}
         {modal === 'password' && <Dialog title="Change password" onClose={() => setModal(null)}><form onSubmit={savePassword}><p>Changing your password signs this device out.</p><label>Current password<input name="currentPassword" type="password" autoFocus required /></label><label>New password<input name="newPassword" type="password" minLength="6" required /></label><label>Confirm new password<input name="confirmPassword" type="password" minLength="6" required /></label><DialogActions onClose={() => setModal(null)} label="Change password" /></form></Dialog>}
         {modal === 'rename' && selectedItems[0] && <Dialog title="Rename" onClose={() => setModal(null)}><form onSubmit={saveRename}><p>Rename {selectedItems[0].name}.</p><label>New name<input name="newName" defaultValue={selectedItems[0].name} autoFocus required /></label><DialogActions onClose={() => setModal(null)} label="Rename" /></form></Dialog>}
-        {modal === 'share' && selectedItems[0] && <Dialog title="Share file" onClose={() => setModal(null)}>{createdShareLinks ? <><p>Anyone with either link can download {selectedItems[0].name}.</p><label>Secure link<input value={createdShareLinks.secure} readOnly onFocus={(event) => event.target.select()} /></label><label>Direct download link<input value={createdShareLinks.direct} readOnly onFocus={(event) => event.target.select()} /></label><div className="modal-actions"><button type="button" onClick={() => navigator.clipboard.writeText(createdShareLinks.secure)}>Copy secure</button><button type="button" onClick={() => navigator.clipboard.writeText(createdShareLinks.direct)}>Copy direct</button><button className="confirm" onClick={() => setModal(null)}>Done</button></div></> : <form onSubmit={createShare}><p>Create download links for {selectedItems[0].name}.</p><label>Expires<select name="expiresIn" defaultValue="86400"><option value="3600">In 1 hour</option><option value="86400">In 1 day</option><option value="604800">In 7 days</option><option value="0">Never</option></select></label><label>Downloads<select name="maxDownloads" defaultValue="0"><option value="0">Unlimited</option><option value="1">1 download</option><option value="10">10 downloads</option><option value="100">100 downloads</option></select></label><DialogActions onClose={() => setModal(null)} label="Create links" /></form>}</Dialog>}
+        {modal === 'share' && selectedItems[0] && <Dialog title="Share file" onClose={() => setModal(null)}>{createdShareLinks ? <><p>{createdShareLinks.direct ? 'Anyone with either link can download' : 'Use the secure link to download'} {selectedItems[0].name}.</p><label>Secure link<input value={createdShareLinks.secure} readOnly onFocus={(event) => event.target.select()} /></label>{createdShareLinks.direct && <label>Direct download link<input value={createdShareLinks.direct} readOnly onFocus={(event) => event.target.select()} /></label>}<div className="modal-actions"><button type="button" onClick={() => navigator.clipboard.writeText(createdShareLinks.secure)}>Copy secure</button>{createdShareLinks.direct && <button type="button" onClick={() => navigator.clipboard.writeText(createdShareLinks.direct)}>Copy direct</button>}<button className="confirm" onClick={() => setModal(null)}>Done</button></div></> : <form onSubmit={createShare}><p>Create download links for {selectedItems[0].name}.</p><label>Expires<select name="expiresIn" defaultValue="86400"><option value="3600">In 1 hour</option><option value="86400">In 1 day</option><option value="604800">In 7 days</option><option value="0">Never</option></select></label><label>Downloads<select name="maxDownloads" defaultValue="0"><option value="0">Unlimited</option><option value="1">1 download</option><option value="10">10 downloads</option><option value="100">100 downloads</option></select></label><DialogActions onClose={() => setModal(null)} label="Create links" /></form>}</Dialog>}
         {modal === 'downloadMode' && <Dialog title="Choose download mode" onClose={() => setModal(null)}>
             <p>Download {selectedItems.length} selected item{selectedItems.length === 1 ? '' : 's'} as a single archive, or queue every file individually (preserving the original folder structure where your browser supports it).</p>
             <label className="archive-format-option"><input type="radio" name="downloadMode" checked={downloadModeDraft === 'tar.gz'} onChange={() => setDownloadModeDraft('tar.gz')} /><span><strong>tar.gz archive</strong></span></label>
@@ -1033,7 +1251,7 @@ const FileBrowser = ({ token, user, onLogout }) => {
                 <button type="button" onClick={() => setModal(null)}>Cancel</button>
             </div>
         </Dialog>}
-         {modal === 'shareLinks' && <Dialog title="Share Links" onClose={() => setModal(null)}><div className="share-links-dialog"><div className="share-links-toolbar"><p>Links created by {user.username}.</p><button type="button" onClick={loadShareLinks} disabled={shareLinksLoading}>{shareLinksLoading ? 'Refreshing...' : 'Refresh'}</button></div>{shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : <div className="share-link-groups">{shareLinkGroups.map((group) => <section className="share-link-group" key={group.key}><div className="share-link-group-heading"><h3>{group.label}</h3><span>{group.links.length}</span>{group.key === 'revoked' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteRevokedShareLink(link.shareToken)))}>Clear all revoked</button>}{group.key === 'expired' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteExpiredShareLink(link.shareToken)))}>Clear all expired</button>}</div><div className="share-links-list">{group.links.map((link) => { const secureUrl = shareLinkUrl(link, 'secure'); const directUrl = shareLinkUrl(link, 'direct'); const status = shareLinkStatus(link); return <article className="share-link-card" key={link.shareToken}><div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div><small>Location: {link.locationId || '--'} · Created: {formatDate(link.createdAt)}</small><small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : ' / unlimited'} · Expires: {link.expiresAt ? formatDate(link.expiresAt) : 'never'}</small><label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.target.select()} /></label><label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.target.select()} /></label><div className="modal-actions">{status === 'Active' && <><button type="button" onClick={() => void copyShareLink(link, 'secure')}>Copy secure</button><button type="button" onClick={() => void copyShareLink(link, 'direct')}>Copy direct</button><button type="button" className="danger" onClick={() => void revokeShareLink(link.shareToken)}>Revoke</button></>}{status === 'Revoked' && <button type="button" onClick={() => void deleteRevokedShareLink(link.shareToken)}>Clear revoked</button>}{status === 'Expired' && <button type="button" onClick={() => void deleteExpiredShareLink(link.shareToken)}>Clear expired</button>}</div></article>; })}</div></section>)}</div>}</div></Dialog>}
+         {modal === 'shareLinks' && <Dialog title="Share Links" onClose={() => setModal(null)}><div className="share-links-dialog"><div className="share-links-toolbar"><p>Links created by {user.username}.</p><button type="button" onClick={loadShareLinks} disabled={shareLinksLoading}>{shareLinksLoading ? 'Refreshing...' : 'Refresh'}</button></div>{shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : <div className="share-link-groups">{shareLinkGroups.map((group) => <section className="share-link-group" key={group.key}><div className="share-link-group-heading"><h3>{group.label}</h3><span>{group.links.length}</span>{group.key === 'revoked' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteRevokedShareLink(link.shareToken)))}>Clear all revoked</button>}{group.key === 'expired' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteExpiredShareLink(link.shareToken)))}>Clear all expired</button>}</div><div className="share-links-list">{group.links.map((link) => { const secureUrl = shareLinkUrl(link, 'secure'); const directUrl = shareLinkUrl(link, 'direct'); const status = shareLinkStatus(link); return <article className="share-link-card" key={link.shareToken}><div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div><small>Location: {link.locationId || '--'} · Created: {formatDate(link.createdAt)}</small><small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : ' / unlimited'} · Expires: {link.expiresAt ? formatDate(link.expiresAt) : 'never'}</small><label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.target.select()} /></label>{directUrl && <label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.target.select()} /></label>}<div className="modal-actions">{status === 'Active' && <><button type="button" onClick={() => void copyShareLink(link, 'secure')}>Copy secure</button>{directUrl && <button type="button" onClick={() => void copyShareLink(link, 'direct')}>Copy direct</button>}<button type="button" className="danger" onClick={() => void revokeShareLink(link.shareToken)}>Revoke</button></>}{status === 'Revoked' && <button type="button" onClick={() => void deleteRevokedShareLink(link.shareToken)}>Clear revoked</button>}{status === 'Expired' && <button type="button" onClick={() => void deleteExpiredShareLink(link.shareToken)}>Clear expired</button>}</div></article>; })}</div></section>)}</div>}</div></Dialog>}
           {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue ({queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length} active)</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No transfers in history.</p> : <><strong>Active</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['queued', 'running', 'retrying', 'needs_user_action'].includes(item.status)).map(renderQueueItem)}</ul>{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <><strong>History</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['completed', 'failed', 'cancelled'].includes(item.status)).map(renderQueueItem)}</ul></>}</>}{queueItems.some((item) => item.status === 'completed') && <button type="button" onClick={() => clearQueueStatus('completed')}>Clear completed</button>}{queueItems.some((item) => item.status === 'failed') && <button type="button" onClick={() => clearQueueStatus('failed')}>Clear failed</button>}{queueItems.some((item) => item.status === 'cancelled') && <button type="button" onClick={() => clearQueueStatus('cancelled')}>Clear cancelled</button>}{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <button type="button" onClick={clearQueueHistory}>Clear history</button>}</div>}
     </div>;
 };

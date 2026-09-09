@@ -1,424 +1,318 @@
-/**
- * Transfer Management System
- * Handles real-time progress tracking for file transfers
- */
-
 const EventEmitter = require('events');
-const fs = require('fs').promises;
-const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID } = require('crypto');
+
+const terminal = new Set(['completed', 'failed', 'cancelled', 'partial_fail', 'expired']);
+const bytes = value => Number.isSafeInteger(value) && value >= 0;
+const percentage = (total, transferred, known, completed) => known
+  ? (total ? Math.min(100, Math.round(transferred / total * 10000) / 100) : (completed ? 100 : 0)) : 0;
+const sameOwner = (a, b) => !!a && !!b && a.id === b.id && a.username === b.username;
+const conflict = () => Object.assign(new Error('Batch reservation is unavailable'), { statusCode: 409 });
 
 class TransferManager extends EventEmitter {
-  /**
-   * Initialize transfer manager
-   */
-  constructor() {
+  #controls = new Map();
+
+  constructor({ now = Date.now, reservationMs = 15 * 60 * 1000, maxReservations = 1000 } = {}) {
     super();
+    this.now = now;
+    this.reservationMs = Math.min(Math.max(reservationMs, 1), 60 * 60 * 1000);
+    this.maxReservations = maxReservations;
     this.transfers = new Map();
     this.batches = new Map();
-    this.transferIdCounter = 0;
   }
 
-  /**
-   * Start a new file transfer
-   * @param {Object} options - Transfer options
-   * @returns {string} Transfer ID
-   */
+  _identity(record, options) {
+    Object.defineProperties(record, {
+      owner: { value: options.owner ? Object.freeze({ id: options.owner.id, username: options.owner.username }) : null, enumerable: true },
+      locationId: { value: options.locationId || null, enumerable: true },
+      locationRevision: { value: options.locationRevision, enumerable: true }
+    });
+    return record;
+  }
+
   startTransfer(options = {}) {
-    const transferId = options.id || uuidv4();
-
-    const transfer = {
-      id: transferId,
-      status: 'pending', // pending | uploading | processing | completed | failed
-      fileName: options.fileName || null,
-      source: options.source,
-      destination: options.destination,
-      totalSize: options.totalSize || 0,
-      transferredSize: 0,
-      startTime: Date.now(),
-      progress: 0,
-      error: null,
-      batchId: options.batchId || null
-    };
-    transfer.updatedAt = transfer.startTime;
-
-    this.transfers.set(transferId, transfer);
-
-    // Emit event for new transfer
-    this.emit('transferStarted', transfer);
-
-    return transferId;
+    const id = options.id || randomUUID();
+    if (this.transfers.has(id)) throw conflict();
+    const batch = options.batchId ? this.getBatch(options.batchId) : null;
+    if (batch && terminal.has(batch.status)) throw conflict();
+    const record = this._identity({
+      id, batchId: options.batchId || null, fileName: options.fileName || null,
+      source: options.source, destination: options.destination,
+      status: 'pending', phase: options.phase || 'pending',
+      totalSize: bytes(options.totalSize) ? options.totalSize : 0,
+      totalSizeKnown: options.totalSizeKnown ?? bytes(options.totalSize),
+      transferredSize: 0, committedSize: 0, progress: 0, error: null,
+      startTime: this.now(), updatedAt: this.now()
+    }, batch || options);
+    if (!record.totalSizeKnown) record.totalSize = 0;
+    this.transfers.set(id, record);
+    if (batch) this.addTransferToBatch(batch.batchId, id);
+    this.emit('transferStarted', record);
+    return id;
   }
 
-  /**
-   * Update transfer progress
-   * @param {string} transferId - Transfer ID
-   * @param {number} transferredBytes - Bytes transferred
-   * @param {number} totalBytes - Total bytes to transfer
-   */
-  updateProgress(transferId, transferredBytes, totalBytes = null) {
-    const transfer = this.transfers.get(transferId);
-    if (!transfer) {
-      throw new Error(`Transfer ${transferId} not found`);
-    }
-
-    // Update total if provided
+  updateProgress(id, transferredBytes, totalBytes = null) {
+    const record = this.getTransfer(id);
+    if (!record || terminal.has(record.status)) return record;
+    if (!bytes(transferredBytes) || (totalBytes !== null && !bytes(totalBytes))) throw new TypeError('Invalid byte count');
     if (totalBytes !== null) {
-      transfer.totalSize = totalBytes;
+      record.totalSize = totalBytes;
+      record.totalSizeKnown = true;
     }
-
-    // Update transferred bytes
-    transfer.transferredSize = Math.max(0, transfer.totalSize > 0
-      ? Math.min(Number(transferredBytes) || 0, transfer.totalSize)
-      : Number(transferredBytes) || 0);
-    transfer.updatedAt = Date.now();
-
-    // Calculate progress percentage
-    if (transfer.totalSize > 0) {
-      transfer.progress = parseFloat(((transfer.transferredSize / transfer.totalSize) * 100).toFixed(2));
-    } else {
-      transfer.progress = 0;
-    }
-
-    // Update status based on progress
-    if (transfer.status !== 'completed' && transfer.status !== 'failed') {
-      if (transfer.progress >= 100) {
-        transfer.status = 'processing';
-      } else if (transfer.transferredSize > 0) {
-        transfer.status = 'uploading';
-      }
-    }
-
-    // Emit progress update
-    this.emit('progressUpdate', transfer);
-
-    return transfer;
+    record.transferredSize = Math.max(record.transferredSize, transferredBytes);
+    record.progress = percentage(record.totalSize, record.transferredSize, record.totalSizeKnown, false);
+    record.updatedAt = this.now();
+    this.emit('progressUpdate', record);
+    return record;
   }
 
-  /**
-   * Update transfer status
-   * @param {string} transferId - Transfer ID
-   * @param {string} status - New status (pending | uploading | processing | completed | failed)
-   */
-  updateTransferStatus(transferId, status) {
-    const transfer = this.transfers.get(transferId);
-    if (!transfer) {
-      throw new Error(`Transfer ${transferId} not found`);
-    }
-
-    const validStatuses = ['pending', 'uploading', 'processing', 'completed', 'failed'];
-    if (!validStatuses.includes(status)) {
-      throw new Error(`Invalid status: ${status}. Must be one of: ${validStatuses.join(', ')}`);
-    }
-
-    transfer.status = status;
-    transfer.updatedAt = Date.now();
-    this.emit('statusUpdate', transfer);
-
-    return transfer;
+  updateTransferStatus(id, status, phase = status) {
+    const record = this.getTransfer(id);
+    if (!record || terminal.has(record.status) || record.status === 'cancelling') return record;
+    if (!['pending', 'uploading', 'processing'].includes(status)) throw new TypeError('Use a terminal transition method');
+    Object.assign(record, { status, phase, updatedAt: this.now() });
+    this.emit('statusUpdate', record);
+    return record;
   }
 
-  /**
-   * Complete a transfer
-   * @param {string} transferId - Transfer ID
-   * @param {Object} result - Transfer result
-   */
-  completeTransfer(transferId, result = {}) {
-    const transfer = this.transfers.get(transferId);
-    if (!transfer) {
-      throw new Error(`Transfer ${transferId} not found`);
+  _finish(record, status) {
+    if (!record || terminal.has(record.status)) return false;
+    Object.assign(record, { status, phase: status, updatedAt: this.now(), endTime: this.now() });
+    record.duration = record.endTime - (record.startTime ?? record.createdAt);
+    return true;
+  }
+
+  completeTransfer(id, result = {}) {
+    const record = this.getTransfer(id);
+    if (!this._finish(record, 'completed')) return record;
+    // Completion never invents bytes or merges caller-controlled identity/status.
+    record.file = result.file;
+    record.result = 'success';
+    record.committedSize = record.transferredSize;
+    record.progress = percentage(record.totalSize, record.transferredSize, record.totalSizeKnown, true);
+    this.emit('transferCompleted', record);
+    return record;
+  }
+
+  failTransfer(id, error) {
+    const record = this.getTransfer(id);
+    if (this._finish(record, 'failed')) {
+      record.error = error;
+      this.emit('transferFailed', record);
     }
-
-    transfer.status = 'completed';
-    transfer.endTime = Date.now();
-    transfer.duration = transfer.endTime - transfer.startTime;
-
-    // Ensure progress reflects completion
-    if (typeof transfer.totalSize === 'number' && transfer.totalSize > 0) {
-      transfer.transferredSize = transfer.totalSize;
-      transfer.progress = 100;
-    } else if (result?.file?.size) {
-      transfer.transferredSize = result.file.size;
-      transfer.totalSize = result.file.size;
-      transfer.progress = 100;
-    } else {
-      transfer.progress = 100;
-    }
-
-    transfer.updatedAt = Date.now();
-
-    // Merge result data
-    Object.assign(transfer, result);
-
-    // Emit completion event
-    this.emit('transferCompleted', transfer);
-
-    return transfer;
+    return record;
   }
 
-  /**
-   * Fail a transfer
-   * @param {string} transferId - Transfer ID
-   * @param {string} error - Error message
-   */
-  failTransfer(transferId, error) {
-    const transfer = this.transfers.get(transferId);
-    if (!transfer) {
-      throw new Error(`Transfer ${transferId} not found`);
-    }
-
-    transfer.status = 'failed';
-    transfer.error = error;
-    transfer.updatedAt = Date.now();
-    transfer.endTime = Date.now();
-    transfer.duration = transfer.endTime - transfer.startTime;
-
-    // Emit failure event
-    this.emit('transferFailed', transfer);
-
-    return transfer;
+  settleCancelledTransfer(id) {
+    const record = this.getTransfer(id);
+    this._finish(record, 'cancelled');
+    return record;
   }
 
-  /**
-   * Get transfer status
-   * @param {string} transferId - Transfer ID
-   * @returns {Object|null} Transfer status or null if not found
-   */
-  getTransfer(transferId) {
-    const transfer = this.transfers.get(transferId);
-    if (!transfer) {
-      return null;
-    }
-
-    if (typeof transfer.transferredSize === 'number' && typeof transfer.totalSize === 'number' && transfer.totalSize > 0) {
-      transfer.progress = parseFloat(((transfer.transferredSize / transfer.totalSize) * 100).toFixed(2));
-    } else if (transfer.status === 'completed') {
-      transfer.progress = 100;
-    }
-
-    return transfer;
-  }
-
-  /**
-   * Get all transfers
-   * @returns {Array} Array of all transfers
-   */
-  getAllTransfers() {
-    return Array.from(this.transfers.values());
-  }
-
-  /**
-   * Remove completed transfer
-   * @param {string} transferId - Transfer ID
-   */
-  removeTransfer(transferId) {
-    return this.transfers.delete(transferId);
-  }
-
-  /**
-   * Get transfer statistics
-   * @returns {Object} Transfer statistics
-   */
-  getStats() {
-    const transfers = this.getAllTransfers();
-
-    return {
-      total: transfers.length,
-      completed: transfers.filter(t => t.status === 'completed').length,
-      uploading: transfers.filter(t => t.status === 'uploading').length,
-      processing: transfers.filter(t => t.status === 'processing').length,
-      failed: transfers.filter(t => t.status === 'failed').length,
-      pending: transfers.filter(t => t.status === 'pending').length
-    };
-  }
-
-  /**
-   * Create a new batch for multi-file upload
-   * @param {Object} options - Batch options
-   * @returns {string} Batch ID
-   */
   createBatch(options = {}) {
-    const batchId = options.batchId || uuidv4();
-
-    const batch = {
-      batchId,
-      status: 'uploading', // uploading | completed | partial_fail
-      totalFiles: options.totalFiles || 0,
-      files: [], // Array of transferIds
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    };
-
+    const batchId = options.batchId || randomUUID();
+    if (this.batches.has(batchId)) throw conflict();
+    const batch = this._identity({
+      batchId, status: options.reserved ? 'reserved' : 'uploading',
+      phase: options.reserved ? 'reserved' : 'receiving',
+      totalFiles: options.totalFiles || 0, files: [], inventoryComplete: false,
+      path: options.path || '', targetPath: options.targetPath,
+      clientAttemptId: options.clientAttemptId,
+      createdAt: this.now(), updatedAt: this.now(),
+      expiresAt: options.reserved ? this.now() + this.reservationMs : null
+    }, options);
     this.batches.set(batchId, batch);
-
-    // Emit event for new batch
     this.emit('batchCreated', batch);
-
     return batchId;
   }
 
-  /**
-   * Get batch information
-   * @param {string} batchId - Batch ID
-   * @returns {Object|null} Batch object or null if not found
-   */
-  getBatch(batchId) {
-    return this.batches.get(batchId) || null;
-  }
-
-  /**
-   * Add transfer to batch
-   * @param {string} batchId - Batch ID
-   * @param {string} transferId - Transfer ID
-   */
-  addTransferToBatch(batchId, transferId) {
-    const batch = this.batches.get(batchId);
-    if (!batch) {
-      throw new Error(`Batch ${batchId} not found`);
-    }
-
-    if (!batch.files.includes(transferId)) {
-      batch.files.push(transferId);
-      batch.updatedAt = Date.now();
-    }
-
-    return batch;
-  }
-
-  /**
-   * Update batch progress (recalculate based on individual transfers)
-   * @param {string} batchId - Batch ID
-   */
-  updateBatchProgress(batchId) {
-    const batch = this.batches.get(batchId);
-    if (!batch) {
-      throw new Error(`Batch ${batchId} not found`);
-    }
-
-    batch.updatedAt = Date.now();
-
-    // Calculate batch status based on all transfers
-    const stats = this.calculateBatchStats(batchId);
-
-    // Update batch status
-    if (stats.successCount + stats.failedCount === batch.totalFiles && batch.totalFiles > 0) {
-      if (stats.failedCount === 0) {
-        batch.status = 'completed';
-      } else if (stats.successCount > 0) {
-        batch.status = 'partial_fail';
-      } else {
-        batch.status = 'failed';
+  reserveBatch(options) {
+    this.expireReservations();
+    if (options.clientAttemptId) {
+      const existing = this.getAllBatches().find(batch => sameOwner(batch.owner, options.owner) &&
+        batch.clientAttemptId === options.clientAttemptId);
+      if (existing) {
+        if (existing.status !== 'reserved' || existing.locationId !== options.locationId ||
+            existing.locationRevision !== options.locationRevision || existing.path !== options.path) throw conflict();
+        return existing.batchId;
       }
     }
+    if (this.getAllBatches().filter(batch => batch.status === 'reserved').length >= this.maxReservations) {
+      throw Object.assign(new Error('Reservation capacity reached'), { statusCode: 429 });
+    }
+    return this.createBatch({ ...options, reserved: true });
+  }
 
-    this.emit('batchProgressUpdated', batch);
-
+  claimBatch(id, context) {
+    this.expireReservations();
+    const batch = this.getBatch(id);
+    if (!batch || batch.status !== 'reserved' || !sameOwner(batch.owner, context.owner) ||
+        batch.locationId !== context.locationId || batch.locationRevision !== context.locationRevision ||
+        batch.path !== context.path || batch.targetPath !== context.targetPath) throw conflict();
+    Object.assign(batch, { status: 'uploading', phase: 'receiving', updatedAt: this.now() });
     return batch;
   }
 
-  /**
-   * Calculate batch statistics
-   * @param {string} batchId - Batch ID
-   * @returns {Object} Batch statistics
-   */
-  calculateBatchStats(batchId) {
-    const batch = this.batches.get(batchId);
-    if (!batch) {
-      throw new Error(`Batch ${batchId} not found`);
+  expireReservations(now = this.now()) {
+    for (const batch of this.batches.values()) {
+      if (batch.status === 'reserved' && batch.expiresAt <= now) this._finish(batch, 'expired');
     }
+  }
 
-    const transfers = batch.files.map(id => this.transfers.get(id)).filter(t => t);
+  addTransferToBatch(batchId, id) {
+    const batch = this.getBatch(batchId);
+    const transfer = this.getTransfer(id);
+    if (!batch || !transfer || transfer.batchId !== batchId || terminal.has(batch.status)) throw conflict();
+    if (!batch.files.includes(id)) batch.files.push(id);
+    batch.totalFiles = Math.max(batch.totalFiles, batch.files.length);
+    return batch;
+  }
 
-    const stats = {
-      totalFiles: batch.totalFiles,
-      successCount: transfers.filter(t => t.status === 'completed').length,
-      failedCount: transfers.filter(t => t.status === 'failed').length,
-      pendingCount: transfers.filter(t => t.status === 'pending').length,
-      uploadingCount: transfers.filter(t => t.status === 'uploading').length,
-      processingCount: transfers.filter(t => t.status === 'processing').length,
-      totalSize: transfers.reduce((sum, t) => sum + (t.totalSize || 0), 0),
-      transferredSize: transfers.reduce((sum, t) => sum + (t.transferredSize || 0), 0),
-      progress: 0,
-      files: transfers.map(t => ({
-        fileName: t.fileName,
-        status: t.status,
-        progress: t.progress,
-        error: t.error || null
-      }))
+  sealBatch(id) {
+    const batch = this.getBatch(id);
+    batch.inventoryComplete = true;
+    batch.totalFiles = batch.files.length;
+    batch.phase = 'processing';
+    batch.updatedAt = this.now();
+  }
+
+  calculateBatchStats(id) {
+    const batch = this.getBatch(id);
+    if (!batch) return null;
+    const transfers = batch.files.map(id => this.getTransfer(id)).filter(Boolean);
+    const count = status => transfers.filter(record => record.status === status).length;
+    const totalSizeKnown = batch.inventoryComplete && transfers.length === batch.totalFiles && transfers.every(t => t.totalSizeKnown);
+    const totalSize = totalSizeKnown ? transfers.reduce((sum, t) => sum + t.totalSize, 0) : 0;
+    const transferredSize = transfers.reduce((sum, t) => sum + t.transferredSize, 0);
+    const successCount = count('completed');
+    const failedCount = count('failed');
+    const cancelledCount = count('cancelled');
+    return {
+      totalFiles: batch.totalFiles, successCount, failedCount, cancelledCount,
+      pendingCount: batch.totalFiles - successCount - failedCount - cancelledCount,
+      uploadingCount: count('uploading'), processingCount: count('processing'),
+      totalSize, totalSizeKnown, transferredSize,
+      committedSize: transfers.reduce((sum, t) => sum + t.committedSize, 0),
+      progress: percentage(totalSize, transferredSize, totalSizeKnown, batch.status === 'completed'),
+      files: transfers.map(t => this.serializeTransfer(t.id))
     };
+  }
 
-    // Calculate overall progress
-    if (stats.totalSize > 0) {
-      stats.progress = parseFloat(((stats.transferredSize / stats.totalSize) * 100).toFixed(2));
+  updateBatchProgress(id, { settled = false, error = null, workComplete = false } = {}) {
+    const batch = this.getBatch(id);
+    if (!batch || terminal.has(batch.status)) return batch;
+    const stats = this.calculateBatchStats(id);
+    if (settled && stats.pendingCount === 0) {
+      const completed = batch.inventoryComplete && stats.successCount === stats.totalFiles && (stats.totalFiles > 0 || workComplete);
+      const status = error ? 'failed' : completed ? 'completed' : stats.cancelledCount || batch.status === 'cancelling' ? 'cancelled'
+        : stats.failedCount ? (stats.successCount ? 'partial_fail' : 'failed') : 'completed';
+      this._finish(batch, status);
+      batch.error = error;
     }
-
-    return stats;
+    this.emit('batchProgressUpdated', batch);
+    return batch;
   }
 
-  /**
-   * Get all batches
-   * @returns {Array} Array of all batches
-   */
-  getAllBatches() {
-    return Array.from(this.batches.values());
+  // Controls stay outside records and exist until all stream and cleanup work settles.
+  registerWorker(id, controller, settled, isBatch = false) {
+    const key = `${isBatch ? 'batch' : 'transfer'}:${id}`;
+    if (this.#controls.has(key)) throw new Error('Worker already registered');
+    const control = { controller, settled: Promise.resolve(settled), cancellation: null };
+    this.#controls.set(key, control);
+    control.settled.finally(() => {
+      if (this.#controls.get(key) === control) this.#controls.delete(key);
+    }).catch(() => {});
   }
 
-  /**
-   * Remove batch
-   * @param {string} batchId - Batch ID
-   */
-  removeBatch(batchId) {
-    return this.batches.delete(batchId);
-  }
-
-  /**
-   * Remove terminal transfer and batch records after the retention window.
-   * Active records remain available to progress endpoints.
-   */
-  cleanup(retentionMs = 24 * 60 * 60 * 1000, now = Date.now(), staleActiveMs = 24 * 60 * 60 * 1000) {
-    const activeStatuses = new Set(['pending', 'uploading', 'processing']);
-    let transfersRemoved = 0;
-    for (const [transferId, transfer] of this.transfers) {
-      if (activeStatuses.has(transfer.status)) {
-        const lastActivity = transfer.updatedAt || transfer.startTime;
-        if (now - lastActivity >= staleActiveMs) {
-          transfer.status = 'failed';
-          transfer.error = { category: 'server_error', message: 'Transfer record became stale without progress.' };
-          transfer.endTime = now;
-          transfer.updatedAt = now;
-        } else {
-          continue;
-        }
-      }
-      const terminalAt = transfer.endTime || transfer.updatedAt || transfer.startTime;
-      if (now - terminalAt < retentionMs) continue;
-      this.transfers.delete(transferId);
-      transfersRemoved += 1;
+  async _cancel(id, isBatch) {
+    const record = isBatch ? this.getBatch(id) : this.getTransfer(id);
+    if (!record || terminal.has(record.status)) return record;
+    const wasReserved = record.status === 'reserved';
+    const control = this.#controls.get(`${isBatch ? 'batch' : 'transfer'}:${id}`);
+    record.status = 'cancelling';
+    record.phase = 'cancelling';
+    record.updatedAt = this.now();
+    if (!control) {
+      // Only unclaimed reservations have no worker. Never confirm an uncontrolled active job.
+      if (isBatch && wasReserved) this._finish(record, 'cancelled');
+      return record;
     }
+    if (!control.cancellation) {
+      control.cancellation = (async () => {
+        control.controller.abort();
+        try { await control.settled; } catch { /* Worker records cleanup failure. */ }
+        return record;
+      })();
+    }
+    return control.cancellation;
+  }
 
+  cancelTransfer(id) { return this._cancel(id, false); }
+  cancelBatch(id) { return this._cancel(id, true); }
+  getTransfer(id) { return this.transfers.get(id) || null; }
+  getBatch(id) { this.expireReservations(); return this.batches.get(id) || null; }
+  getAllTransfers() { return Array.from(this.transfers.values()); }
+  getAllBatches() { return Array.from(this.batches.values()); }
+
+  serializeTransfer(id) {
+    const t = this.getTransfer(id);
+    if (!t) return null;
+    const file = t.file;
+    const safePath = typeof file?.path === 'string' && !file.path.startsWith('/') &&
+      !file.path.includes('\\') && !file.path.split('/').includes('..') && !/^[a-z]:/i.test(file.path);
+    return {
+      id: t.id, batchId: t.batchId, locationId: t.locationId, fileName: t.fileName,
+      status: t.status, phase: t.phase, totalSize: t.totalSizeKnown ? t.totalSize : 0,
+      totalSizeKnown: t.totalSizeKnown, transferredSize: t.transferredSize,
+      committedSize: t.committedSize, progress: t.progress,
+      startTime: t.startTime, updatedAt: t.updatedAt, endTime: t.endTime,
+      error: t.error ? { code: 'UPLOAD_FAILED', message: 'Upload could not be completed' } : null,
+      ...(safePath ? { file: { name: file.name, path: file.path, size: file.size } } : {})
+    };
+  }
+
+  serializeBatch(id) {
+    const batch = this.getBatch(id);
+    if (!batch) return null;
+    return {
+      batchId: id, locationId: batch.locationId, status: batch.status, phase: batch.phase,
+      createdAt: batch.createdAt, updatedAt: batch.updatedAt, expiresAt: batch.expiresAt,
+      ...this.calculateBatchStats(id),
+      error: batch.error ? { code: 'UPLOAD_FAILED', message: 'Upload could not be completed' } : null
+    };
+  }
+
+  removeTransfer(id) {
+    const t = this.getTransfer(id);
+    if (!t || !terminal.has(t.status) || this.#controls.has(`transfer:${id}`) || (t.batchId && this.batches.has(t.batchId))) return false;
+    return this.transfers.delete(id);
+  }
+
+  removeBatch(id) {
+    const batch = this.getBatch(id);
+    if (!batch || !terminal.has(batch.status) || this.#controls.has(`batch:${id}`) ||
+        batch.files.some(id => this.#controls.has(`transfer:${id}`))) return false;
+    return this.batches.delete(id);
+  }
+
+  getStats() {
+    const all = this.getAllTransfers();
+    return Object.fromEntries(['total', 'completed', 'uploading', 'processing', 'failed', 'pending', 'cancelled']
+      .map(status => [status, status === 'total' ? all.length : all.filter(t => t.status === status).length]));
+  }
+
+  cleanup(retentionMs = 24 * 60 * 60 * 1000, now = this.now()) {
+    this.expireReservations(now);
     let batchesRemoved = 0;
-    for (const [batchId, batch] of this.batches) {
-      if (batch.status === 'uploading') {
-        const lastActivity = batch.updatedAt || batch.createdAt;
-        if (now - lastActivity >= staleActiveMs) {
-          batch.status = 'failed';
-          batch.updatedAt = now;
-          batch.error = 'Batch record became stale without progress.';
-        } else {
-          continue;
-        }
-      }
-      const terminalAt = batch.updatedAt || batch.createdAt;
-      if (now - terminalAt < retentionMs) continue;
-      this.batches.delete(batchId);
-      batchesRemoved += 1;
+    let transfersRemoved = 0;
+    for (const batch of this.batches.values()) {
+      if (terminal.has(batch.status) && now - batch.endTime >= retentionMs && this.removeBatch(batch.batchId)) batchesRemoved++;
     }
-
+    for (const t of this.transfers.values()) {
+      if (terminal.has(t.status) && now - t.endTime >= retentionMs && this.removeTransfer(t.id)) transfersRemoved++;
+    }
     return { transfersRemoved, batchesRemoved };
   }
 }
 
-// Export singleton instance for easy access
 const transferManager = new TransferManager();
-
 module.exports = { TransferManager, transferManager };

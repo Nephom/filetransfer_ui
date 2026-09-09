@@ -1,375 +1,212 @@
-# Upload API Documentation
+# Upload API
 
-This document describes upload implementation details. Read [API_REFERENCE.md](./API_REFERENCE.md) first for the current contract. New browser and desktop clients must use `POST /api/upload/multiple` for all uploads.
+Use `POST /api/upload/multiple` for new browser and desktop integrations. All upload,
+reservation, progress, and cancellation routes require a current account authenticated
+by the HttpOnly session cookie or `Authorization: Bearer <token>`. Authentication
+finishes **before multipart parsing or staging storage**. Body/query credentials are
+not accepted. Multipart metadata is not an authentication channel.
+Account IDs retain their original type: numeric IDs (including administrator `0`)
+and nonempty string IDs are supported, but numeric `7` does not match string `"7"`.
 
----
+## Reserve Before Sending
 
-## Single File Upload with Real-Time Progress
+```http
+POST /api/upload/batches
+Content-Type: application/json
+X-Location-ID: <authorized Location ID>
 
-`POST /api/upload/single-progress` remains documented for existing integrations. It is not the default route for new clients.
-
-Upload a single file with real-time progress tracking.
-
-### Endpoint
-
-```
-POST /api/upload/single-progress
-```
-
-### Authentication
-
-Requires JWT token in Authorization header.
-
-### Request Headers
-
-| Header | Type | Required | Description |
-|--------|------|----------|-------------|
-| `Authorization` | string | Yes | Bearer token format: `Bearer <jwt_token>` |
-| `Content-Type` | string | Yes | Must be `multipart/form-data` |
-
-### Request Body (FormData)
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `file` | File | Yes | The file to upload |
-| `fileName` | string | Yes | Name of the file (UTF-8 encoded) |
-| `path` | string | No | Destination directory path (relative to storage root, defaults to root) |
-
-### Request Example
-
-```javascript
-const formData = new FormData();
-formData.append('file', fileObject);
-formData.append('fileName', 'document.pdf');
-formData.append('path', 'uploads/documents');
-
-const response = await fetch('/api/upload/single-progress', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer YOUR_JWT_TOKEN'
-  },
-  body: formData
-});
-
-const data = await response.json();
-console.log('Transfer ID:', data.transferId);
+{"path":"documents","clientAttemptId":"optional-client-attempt-id"}
 ```
 
-### Response
+`path` is a required string relative to the Location root; use `""` for that root.
+`clientAttemptId`, when supplied, is a nonempty string of at most 128 characters.
+No other JSON properties are accepted. JSON is limited to 20 KiB.
 
-#### Success Response (202 Accepted)
+The response is `201 Created`:
 
 ```json
 {
-  "success": true,
-  "transferId": "550e8400-e29b-41d4-a716-446655440000",
-  "message": "Upload initiated. Poll for progress."
+  "batchId": "opaque-uuid",
+  "status": "reserved",
+  "locationId": "default",
+  "expiresAt": 1788956100000
 }
 ```
 
-#### Response Fields
+The reservation stores the current account ID **and** username, Location revision,
+and checked destination internally. It expires 15 minutes after creation; polling
+and repeated reservation requests do not extend that time. At most 1,000 unclaimed
+reservations can exist at once. Capacity exhaustion returns `429`.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `success` | boolean | Always `true` for successful initiation |
-| `transferId` | string | UUID for tracking upload progress |
-| `message` | string | Status message |
+A repeated `clientAttemptId` returns the same unclaimed, unexpired reservation only
+when owner, Location, revision, and target still match. It returns `409` after claim
+or a conflicting/terminal attempt. Keep the original batch ID for reconciliation.
+Reservations are single-use, not durable or resumable sessions.
 
-#### Error Response (4xx/5xx)
+## Multipart Upload
 
-```json
-{
-  "success": false,
-  "error": {
-    "code": 301,
-    "message": "檔案Content-Length不完整",
-    "details": "Content-Length header is required and must be greater than 0"
-  }
-}
-```
-
-### Error Codes
-
-| Code | HTTP Status | Message | Description |
-|------|-------------|---------|-------------|
-| 301 | 400 | 檔案Content-Length不完整 | Content-Length header missing or zero |
-| 302 | 499 | 檔案上傳中斷 | Upload interrupted by client or network |
-| 304 | 400 | 檔案名稱包含非法字元 | Filename contains illegal characters |
-| 401 | 507 | 服務端磁碟空間已滿，請洽管理員 | Server disk space full (ENOSPC) |
-| 413 | 413 | 檔案大小超過限制 | File size exceeds maximum allowed |
-| 500 | 500 | Internal server error | Unexpected server error |
-
-### Usage Flow
-
-1. **Initiate Upload**: Send POST request with file
-2. **Receive Transfer ID**: Server responds with `transferId` immediately (202 Accepted)
-3. **Poll Progress**: Use `GET /api/progress/:transferId` to track progress
-4. **Complete**: Progress reaches 100% and status becomes `completed`
-
-### Notes
-
-- Upload is processed asynchronously using Busboy streaming
-- Progress tracking reflects actual file write progress on server
-- Temporary files are automatically cleaned up on errors
-- All filenames are sanitized and validated for UTF-8 encoding
-- Path traversal attacks are prevented
-
----
-
-## Multi-File Upload with Batch Tracking
-
-Upload multiple files or folders with batch progress tracking.
-
-### Endpoint
-
-```
+```http
 POST /api/upload/multiple
+X-Location-ID: <authorized Location ID>
+X-Location-Revision: <optional current opaque revision>
+X-Upload-Batch-ID: <optional reserved batch ID>
+Content-Type: multipart/form-data; boundary=<generated by client>
 ```
 
-### Authentication
+| Field | Meaning |
+| --- | --- |
+| `files` | Repeated file parts, up to 1,000 files |
+| `path` | Relative destination directory, defaults to the reservation path or root |
+| `filePaths[]` | Optional relative path for each file, in file order |
+| `directoryPaths[]` | Optional relative directories, including empty directories |
+| `locationId` | Legacy Location selector; must agree with the header/reservation |
 
-Requires JWT token in Authorization header.
+`filePaths` and `directoryPaths` without brackets are also supported. If file paths
+are supplied, their count must equal the file count. Each metadata array is limited
+to 1,000 entries. Scalar fields must not repeat. A request needs at least one file
+or directory. Metadata may precede or follow the files; publication waits for the
+entire multipart parser and all staged writes to settle.
 
-### Request Headers
+When `X-Location-Revision` is supplied, the server checks it against the selected
+Location before receiving multipart bytes and rejects a mismatch with `409`.
+Select that Location with `X-Location-ID` (or the legacy query selector/default),
+not a later multipart field. Reservation and progress/cancellation requests honor
+the same optional revision header. Root/revision checks also run after parsing and
+before publication, so an upload cannot cross a runtime Location replacement.
 
-| Header | Type | Required | Description |
-|--------|------|----------|-------------|
-| `Authorization` | string | Yes | Bearer token format: `Bearer <jwt_token>` |
-| `Content-Type` | string | Yes | Must be `multipart/form-data` |
+The current `fileSystem.maxFileSize` is read for every request and enforced per file.
+Exactly that many bytes and zero-byte files are valid. There is no additional
+aggregate file-byte limit. All routes enforce file/count limits, including legacy
+single-progress uploads. Multipart fields are limited to 16 KiB each, field names
+to 100 characters, 2,010 fields, 3,010 parts, and 32 MiB of aggregate field metadata.
+Unknown fields, body credentials, duplicate scalars, extra single-upload files,
+truncated parts, and malformed multipart requests are rejected. `Content-Length` is
+not required and is never treated as a file size.
 
-### Request Body (FormData)
+When `security.enableFileUploadSecurity` is true, parsed original filenames and
+effective destination filenames reject the existing case-insensitive extension
+denylist: `.exe`, `.bat`, `.cmd`, `.com`, `.pif`, `.scr`, `.vbs`, `.js`, `.jar`,
+`.php`, `.asp`, `.aspx`, `.jsp`, `.sh`, `.ps1`, `.py`, and `.rb`. Filename overrides
+and folder metadata cannot bypass this check. Rejected requests clean all owned
+staging before dispatch. This policy adds no 100 MiB size cap; the configured
+per-file limit remains authoritative. The flag is read for each upload validation.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `files` | File[] | Yes | Array of files to upload |
-| `filePaths[]` | string[] | No | Relative paths for folder structure (for folder uploads) |
-| `path` | string | No | Destination directory path (defaults to root) |
-
-### Request Example
-
-#### Multiple Files
-
-```javascript
-const formData = new FormData();
-files.forEach(file => {
-  formData.append('files', file);
-});
-formData.append('path', 'uploads/images');
-
-const response = await fetch('/api/upload/multiple', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer YOUR_JWT_TOKEN'
-  },
-  body: formData
-});
-
-const data = await response.json();
-console.log('Batch ID:', data.batchId);
-```
-
-#### Folder Upload
-
-```javascript
-const formData = new FormData();
-files.forEach(file => {
-  formData.append('files', file);
-  if (file.webkitRelativePath) {
-    formData.append('filePaths[]', file.webkitRelativePath);
-  }
-});
-formData.append('path', 'uploads/my-project');
-
-const response = await fetch('/api/upload/multiple', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Bearer YOUR_JWT_TOKEN'
-  },
-  body: formData
-});
-
-const data = await response.json();
-console.log('Batch ID:', data.batchId);
-```
-
-### Response
-
-#### Success Response (202 Accepted)
+For a file batch, the server returns `202 Accepted` after parsing, metadata/path
+validation, and registration of **all** pending children:
 
 ```json
 {
   "success": true,
-  "batchId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
-  "message": "Batch upload initiated. Poll for batch progress."
+  "batchId": "opaque-uuid",
+  "message": "Upload accepted. Poll for progress."
 }
 ```
 
-#### Response Fields
+Publication then runs in the background. With a reservation, its batch ID also
+allows progress/cancellation while multipart bytes are arriving. Without one,
+clients learn the ID only in the acceptance response. An acceptance response lost
+in transit does not cancel accepted server work. Do not retransmit the batch to
+recover from an unsuccessful progress poll.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `success` | boolean | Always `true` for successful initiation |
-| `batchId` | string | UUID for tracking batch progress |
-| `message` | string | Status message |
-
-#### Error Response (4xx/5xx)
+Directory-only requests preserve the synchronous `200` response fields:
 
 ```json
 {
-  "success": false,
-  "error": {
-    "code": 500,
-    "message": "Batch upload initiation failed",
-    "details": "Error message details"
-  }
+  "success": true,
+  "batchId": "opaque-uuid",
+  "locationId": "default",
+  "message": "Folders uploaded successfully.",
+  "folders": 2
 }
 ```
 
-### Usage Flow
+## Existing Endpoints
 
-1. **Initiate Batch Upload**: Send POST request with multiple files
-2. **Receive Batch ID**: Server responds with `batchId` immediately (202 Accepted)
-3. **Poll Batch Progress**: Use `GET /api/progress/batch/:batchId` to track progress
-4. **Complete**: All files processed, batch status becomes `completed`, `partial_fail`, or `failed`
+| Endpoint | File field | Response |
+| --- | --- | --- |
+| `POST /api/upload` | Repeated `files` | Same batch/directory behavior as `/upload/multiple` |
+| `POST /api/upload/multiple` | Repeated `files` | `202` batch acceptance, or `200` directory-only result |
+| `POST /api/upload/single` | One `file` | `200` after publication, with `transferId` and `file` |
+| `POST /api/upload/progress` | One `file` | Same synchronous result, with measured counters |
+| `POST /api/upload/single-progress` | One `file` | `202` with `transferId` after full multipart validation |
 
-### Batch Processing
+Single-file routes accept `path`, `locationId`, and optional `fileName`. Their legacy
+query selectors remain supported. UTF-8 and literal percent characters in multipart
+filenames are preserved; query decoding is performed once by Express. Responses
+retain the requested original `file.name` and expose the actual collision-resolved
+Location-relative `file.path` and measured `file.size`.
 
-- Files are processed in the background after immediate response
-- Each file creates an individual transfer within the batch
-- Batch progress is calculated from all file transfers
-- Individual file failures don't stop the batch
-- Folder structure is preserved when `filePaths[]` is provided
+## Storage And Cleanup
 
-### Notes
+All final paths and directory targets use the configured Location's checked path
+policy. Absolute paths, traversal components, and symbolic links below a Location
+root are rejected. Authorization and Location revision are checked again before
+publication and after the output stream settles.
 
-- Maximum file size and count limits apply (configurable in server settings)
-- Files are processed sequentially to manage server resources
-- Failed files are tracked with error messages
-- Batch status reflects overall completion state
-- All files are subject to same validation as single file upload
+The server stages files in a private request directory. Parser, metadata,
+authorization, storage, and transport failures await staged stream settlement and
+cleanup. Accepted work owns the staged directory even if sending its response
+fails. Periodic cleanup excludes active stages; failed cleanup is reported as a
+failure and leaves abandoned staging eligible for a later sweep.
 
----
+Destination creation uses exclusive `wx` opening under the shared operation locks.
+Existing names are retried as `name_(1).ext`, `name_(2).ext`, and so on; `.tar.gz`
+keeps the established `name_(1).tar.gz` convention. Only a successfully reserved,
+uncommitted output can be removed by that upload. The locks remain held through
+stream settlement and failure cleanup. Existing or committed outputs from other
+uploads are never removed to resolve a collision or failure.
 
-## Legacy Upload Endpoint
+These are process-local guarantees for cooperating operations, not an OS sandbox
+against hostile external writers, other server processes, or other NFS clients.
+Partial destination files may exist while publication is in progress; completion
+is the commit boundary. A post-commit cache-refresh failure is a warning and does
+not turn a successful upload into a re-upload request.
 
-For backward compatibility, the original upload endpoint is still available.
+## Cancellation And Errors
 
-### Endpoint
+Use `POST /api/progress/batch/:batchId/cancel` or
+`POST /api/progress/:transferId/cancel`. Cancellation aborts active streams and
+shared-lock waits, removes queued staged work, and waits for owned cleanup.
+Committed outputs, including already created directories, remain in place.
+Cancelling a receiving child interrupts the multipart request because its parser
+can no longer produce a valid complete batch; other uncommitted children fail.
+Cancelling a pending/processing child after acceptance leaves siblings running.
 
-```
-POST /api/upload
-```
+Cancellation can lose a race with completion. A cleanup I/O failure returns a failed
+state rather than claiming confirmed cancellation. See [progress.md](./progress.md)
+for phases, counters, partial outcomes, safe polling, and retention.
 
-This endpoint uses the old synchronous upload mechanism without real-time progress tracking. **Recommended to use the new endpoints above for better user experience.**
+Errors use safe JSON, without internal paths, stack traces, or raw credentials.
+Typical HTTP statuses are `400` for invalid metadata/multipart, `401` for failed
+authentication, `403` for denied access, `404` for unknown/not-owned records, `409`
+for consumed/mismatched reservations or changed Location state, `413` for limits,
+`429` for reservation capacity, and `5xx` for storage/service failure.
 
-### Differences from New Endpoints
+## Server Integration
 
-- Waits for all files to upload before responding (200 OK)
-- No real-time progress tracking
-- No transfer ID or batch ID returned
-- Less efficient for large files or multiple files
+`UploadAPI` registers upload, reservation, GET progress, and POST cancel routes in
+one router. Mount `uploadApi.getRouter()` at `/api`; do not leave old inline progress
+routes ahead of this router. Retain
+`setLocationManager(manager, cacheResolver, locationPermissionManager)` and
+`setCache(cache)`. Cross-origin integration must allow `Authorization`,
+`Content-Type`, `X-Location-ID`, and `X-Upload-Batch-ID` as appropriate, along with
+cookie credentials. Server wiring is maintained separately from this module.
 
----
+Also allow `X-Location-Revision` for desktop clients. Do not add the legacy security
+middleware's independent 100 MiB check to this parser's validated requests.
 
-## Best Practices
+`await uploadApi.waitForIdle()` waits for authenticated upload requests already
+entering intake, accepted workers, cache refresh, and cleanup settlement. It does
+not cancel jobs, block new requests, wait for unused reservations, or assert that
+every job succeeded. Stop new admission before using it as a shutdown barrier.
+Do not call it while holding filesystem locks needed by those workers.
 
-### File Naming
-
-- Use UTF-8 encoded filenames
-- Avoid special characters: `< > : " | ? * \0-\x1F`
-- Avoid path traversal characters: `..`, `/`, `\`
-- URL-encode filenames in query parameters
-
-### Error Handling
-
-```javascript
-try {
-  const response = await fetch('/api/upload/single-progress', {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` },
-    body: formData
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json();
-
-    switch (errorData.error.code) {
-      case 301:
-        console.error('Missing Content-Length header');
-        break;
-      case 401:
-        console.error('Server disk space full');
-        break;
-      case 302:
-        console.error('Upload interrupted');
-        break;
-      case 304:
-        console.error('Invalid filename characters');
-        break;
-      default:
-        console.error('Upload failed:', errorData.error.message);
-    }
-
-    return;
-  }
-
-  const { transferId } = await response.json();
-  // Start polling for progress...
-
-} catch (error) {
-  console.error('Network error:', error);
-}
-```
-
-### Progress Polling
-
-```javascript
-async function pollProgress(transferId) {
-  const pollInterval = setInterval(async () => {
-    try {
-      const response = await fetch(`/api/progress/${transferId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-
-      if (!response.ok) {
-        clearInterval(pollInterval);
-        console.error('Failed to fetch progress');
-        return;
-      }
-
-      const progress = await response.json();
-      updateProgressBar(progress.progress);
-
-      if (progress.status === 'completed') {
-        clearInterval(pollInterval);
-        console.log('Upload completed!');
-      } else if (progress.status === 'failed') {
-        clearInterval(pollInterval);
-        console.error('Upload failed:', progress.error);
-      }
-
-    } catch (error) {
-      clearInterval(pollInterval);
-      console.error('Polling error:', error);
-    }
-  }, 1000); // Poll every second
-}
-```
-
-### Security Considerations
-
-- Always use HTTPS in production
-- Validate JWT token on every request
-- Sanitize all filenames on server side
-- Implement rate limiting for upload endpoints
-- Set appropriate file size limits
-- Validate file types if needed
-- Prevent path traversal attacks
-
-### Performance Tips
-
-- For large files, use single file endpoint for better progress tracking
-- For many small files, use batch upload to reduce overhead
-- Poll progress at reasonable intervals (1-2 seconds)
-- Stop polling when upload completes or fails
-- Clean up resources and intervals on component unmount
+For runtime Location replacement, the parent can swap managers and use shared
+operation locks on the old/new canonical roots as a publication/cache-close
+barrier. Upload file publication and its post-commit cache refresh stay under the
+same destination lock. Directory cache refresh also holds a destination lock.
+Cache references are tied to the resolved context and checked across asynchronous
+cache resolution; old absolute paths cannot be sent to a replacement cache. A
+post-commit runtime change skips stale cache refresh with a warning, not a file
+rollback. A root-lock barrier alone does not drain multipart reception; use the
+admission gate and `waitForIdle()` when complete intake/worker settlement is needed.

@@ -3,8 +3,6 @@
  * Provides authentication and authorization for API routes
  */
 
-const AuthManager = require('../auth');
-
 class AuthMiddleware {
   /**
    * Initialize authentication middleware
@@ -23,9 +21,7 @@ class AuthMiddleware {
    */
   async authenticate(req, res, next) {
     try {
-      // Prefer the HttpOnly browser session; retain Bearer support for API clients.
-      const authHeader = req.headers.authorization;
-      const token = getSessionToken(req) || (authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null);
+      const token = extractAuthToken(req);
       if (!token) {
         return res.status(401).json({
           error: 'Authorization header missing or invalid'
@@ -33,10 +29,12 @@ class AuthMiddleware {
       }
 
       // Verify token
-      const decoded = this.authManager.verifyToken(token);
-
-      // Attach user info to request
-      req.user = decoded;
+      const decoded = await this.authManager.verifyToken(token);
+      const current = await resolveCurrentAccount(decoded);
+      if (!current.exists || !current.active) {
+        return res.status(401).json({ error: 'Account no longer exists or is inactive' });
+      }
+      req.user = current.user;
 
       next();
     } catch (error) {
@@ -52,14 +50,19 @@ class AuthMiddleware {
    * @returns {Function} Middleware function
    */
   authorize(requiredRoles) {
-    return (req, res, next) => {
+    return async (req, res, next) => {
       if (!req.user) {
         return res.status(401).json({
           error: 'Authentication required'
         });
       }
 
-      if (!requiredRoles.includes(req.user.role)) {
+      const current = await resolveCurrentAccount(req.user);
+      if (!current.exists || !current.active) {
+        return res.status(401).json({ error: 'Account no longer exists or is inactive' });
+      }
+      req.user = current.user;
+      if (!requiredRoles.includes(current.role)) {
         return res.status(403).json({
           error: 'Insufficient permissions'
         });
@@ -101,12 +104,18 @@ const setJwtSecret = (secret) => {
   jwtSecret = secret;
 };
 
+const extractAuthToken = (req) => {
+  const sessionToken = getSessionToken(req);
+  if (sessionToken) return sessionToken;
+  const authorization = req.headers.authorization;
+  return typeof authorization === 'string'
+    ? /^Bearer[\t ]+([^\s]+)$/i.exec(authorization)?.[1] || null
+    : null;
+};
+
 const authenticate = async (req, res, next) => {
   try {
-    // Prefer the HttpOnly browser session; retain Bearer support for API clients.
-    const sessionToken = getSessionToken(req);
-    const authHeader = req.headers.authorization;
-    const token = sessionToken || (authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null);
+    const token = extractAuthToken(req);
     if (!token) {
       return res.status(401).json({
         error: 'Authorization header missing or invalid'
@@ -116,8 +125,11 @@ const authenticate = async (req, res, next) => {
     // Verify token using JWT directly
     const decoded = jwt.verify(token, jwtSecret);
 
-    // Attach user info to request
-    req.user = decoded;
+    const current = await resolveCurrentAccount(decoded);
+    if (!current.exists || !current.active) {
+      return res.status(401).json({ error: 'Account no longer exists or is inactive' });
+    }
+    req.user = current.user;
 
     next();
   } catch (error) {
@@ -136,16 +148,27 @@ const authenticate = async (req, res, next) => {
  * account) would not take effect until the caller's existing token expired.
  */
 async function resolveCurrentAccount(decoded) {
+  const missing = { exists: false, active: false, role: null, user: null };
+  if (!decoded || typeof decoded.username !== 'string' || !decoded.username || decoded.id == null) return missing;
   const configUsername = configManager.get('auth.username') || 'admin';
-  if (decoded && decoded.username === configUsername) {
-    return { exists: true, active: true, role: 'admin' };
+  if (decoded.username === configUsername) {
+    if (decoded.id !== 0) return missing;
+    const user = {
+      id: 0, username: configUsername, role: 'admin', active: true,
+      permissions: ['all'], isConfigUser: true
+    };
+    return { exists: true, active: true, role: 'admin', user };
   }
+  if (decoded.id === 0) return missing;
   try {
     const user = await userManager.getUser(decoded.username);
-    if (!user) return { exists: false, active: false, role: null };
-    return { exists: true, active: user.active !== false, role: user.role || 'user' };
+    if (!user || user.username !== decoded.username || user.id !== decoded.id) return missing;
+    const role = user.role || 'user';
+    if (!['user', 'superuser'].includes(role)) return missing;
+    const active = user.active === true;
+    return { exists: true, active, role, user: { ...user, role, active, isConfigUser: false } };
   } catch (error) {
-    return { exists: false, active: false, role: null };
+    return missing;
   }
 }
 
@@ -159,9 +182,7 @@ async function resolveCurrentAccount(decoded) {
 function requireRole(allowedRoles) {
   return async (req, res, next) => {
     try {
-      const sessionToken = getSessionToken(req);
-      const authHeader = req.headers.authorization;
-      const token = sessionToken || (authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null);
+      const token = extractAuthToken(req);
       if (!token) {
         return res.status(401).json({ error: 'Authorization header missing or invalid' });
       }
@@ -180,7 +201,7 @@ function requireRole(allowedRoles) {
         return res.status(403).json({ error: 'Forbidden: insufficient privileges' });
       }
 
-      req.user = { ...decoded, role: current.role };
+      req.user = current.user;
       next();
     } catch (error) {
       return res.status(401).json({ error: 'Invalid or expired token' });
@@ -199,4 +220,4 @@ const requireAdmin = requireRole(['admin']);
 // role themselves.
 const requireStaffRole = requireRole(['admin', 'superuser']);
 
-module.exports = { AuthMiddleware, authenticate, setJwtSecret, requireAdmin, requireStaffRole, resolveCurrentAccount };
+module.exports = { AuthMiddleware, authenticate, setJwtSecret, requireAdmin, requireStaffRole, resolveCurrentAccount, extractAuthToken };

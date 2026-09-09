@@ -35,10 +35,12 @@
 .active-pane-indicator strong { color: var(--color-primary); }
 .pane-resize-handle { flex: 0 0 var(--space-2); min-height: 0; background: transparent; cursor: col-resize; border-left: 1px solid var(--color-border); }
 .pane-resize-handle:hover, .pane-resize-handle:active { background: var(--color-primary); border-left-color: var(--color-primary); }
-.local-pane-heading { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-3) var(--space-2); color: var(--color-text); }
+.local-pane-heading { display: flex; flex-direction: column; min-width: 0; gap: var(--space-1); padding: var(--space-3) var(--space-3) var(--space-2); color: var(--color-text); }
 .local-pane-heading .sidebar-label { padding: 0; color: var(--color-success); }
 .pane-breadcrumbs { width: 100%; min-width: 0; height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-2); }
 .pane-breadcrumbs button { overflow: hidden; max-width: clamp(140px, 18vw, 180px); text-overflow: ellipsis; white-space: nowrap; }
+/* Leave a small LOCAL-only gutter and retain the profile's breadcrumb button height. */
+.local-pane-heading .pane-breadcrumbs { box-sizing: border-box; width: calc(100% - var(--space-2)); max-width: 100%; min-width: 0; flex: 0 0 var(--ui-button-height, var(--control-height-base)); }
 .content-heading .pane-breadcrumbs { margin-top: var(--space-1); }
 .content-heading > div { min-width: 0; flex: 1 1 auto; }
 .remote-navigation-row { display: flex; align-items: center; min-width: 0; gap: var(--space-3); }

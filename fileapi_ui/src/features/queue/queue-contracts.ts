@@ -5,6 +5,13 @@ import type { FileItem } from "../../file-item-contracts";
 export type TransferQueueItem = {
   id: string;
   operationId?: string;
+  serverBatchId?: string;
+  clientAttemptId?: string;
+  serverOrigin?: string;
+  ownerId?: number | string;
+  locationRevision?: string;
+  uploadOutcome?: "reserved" | "accepted" | "reconcile" | "settled";
+  cancellationRequested?: boolean;
   label: string;
   kind: "upload" | "download" | "download-set";
   paths: string[];
@@ -58,12 +65,15 @@ export const readPersistedQueue = (): TransferQueueItem[] => {
       .map((item) => {
         const withOperationId = { ...item, operationId: item.operationId || item.id };
         if (!["queued", "running", "retrying"].includes(item.status)) return withOperationId;
-        const requiresRequeue = item.kind === "download" && !item.sshEntryId;
+        const requiresRequeue = !item.sshEntryId;
         return {
           ...withOperationId,
           status: "needs_user_action",
           errorCategory: "unknown",
-          detail: requiresRequeue
+          ...(item.serverBatchId ? { uploadOutcome: "reconcile" as const } : {}),
+          detail: item.serverBatchId
+            ? "Server upload outcome is unconfirmed. Reconcile the original batch; do not re-upload."
+            : requiresRequeue
             ? "Transfer was interrupted when nFterm closed. Re-add it to authenticate again."
             : "Transfer was interrupted when nFterm closed. Review and retry it.",
           error: {
@@ -80,4 +90,3 @@ export const readPersistedQueue = (): TransferQueueItem[] => {
     return [];
   }
 };
-

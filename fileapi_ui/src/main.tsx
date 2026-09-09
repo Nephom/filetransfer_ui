@@ -10,6 +10,7 @@ import {
 import { selectActiveQueueItems, selectQueueHistory } from "./queue/selectors";
 import { clampRefreshDelayMs, decodeJwtExpiryMs, tokenRefreshLeadMs } from "./features/auth/auth-contracts";
 import type { RemoteLocation } from "./features/remote-browser/remote-browser-contracts";
+import { locationHeaders, remoteParent, groupRemoteDeletes, remoteMutationResults, remoteMutationError } from "./features/remote-browser/remote-browser-contracts";
 import { useRemoteApiActions } from "./features/remote-browser/useRemoteApiActions";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon, CollapseIcon, ExpandIcon, SortAscIcon, SortDescIcon, WarningIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
@@ -85,6 +86,8 @@ type Session = {
   host: string;
   port: string;
   token: string;
+  nativeSessionId?: string;
+  locationRevision?: string;
   username: string;
   userId: number | null;
   role: string;
@@ -119,6 +122,7 @@ type UndoEntry = {
   description: string;
   source: "api" | "ssh" | "local";
   locationId?: string;
+  context?: string;
   entryId?: string;
   oldPath: string;
   newPath: string;
@@ -474,7 +478,7 @@ const initialSession: Session = {
   ignoreTlsErrors: false,
   saveUserInformation: false,
 };
-const apiCredentialEntryId = "api-login";
+const apiCredentialEntryId = (session: Session) => `api-login:https://${session.host.trim().toLowerCase()}:${Number(session.port) || session.port.trim()}:${encodeURIComponent(session.username)}`;
 
 // T-210: reads the raw persisted file-table column widths with the same
 // per-field fallback defaults as before, but WITHOUT normalizing them --
@@ -642,6 +646,8 @@ type DesktopAppProps = {
   // re-login attempt itself failed -- callers must fall back to signing
   // the user out in that case (#233).
   refreshSessionToken: () => Promise<string | null>;
+  logoutSession: () => Promise<void>;
+  invalidateCredentials: () => Promise<void>;
 };
 
 type LoginScreenProps = {
@@ -680,8 +686,8 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
     setSession((current) => ({ ...current, saveUserInformation: enabled }));
     if (!enabled) {
       void Promise.all([
-        invoke("rest_forget_secret", { entryId: apiCredentialEntryId, kind: "username" }),
-        invoke("rest_forget_secret", { entryId: apiCredentialEntryId, kind: "password" }),
+        invoke("rest_forget_secret", { entryId: apiCredentialEntryId(session), kind: "username" }),
+        invoke("rest_forget_secret", { entryId: apiCredentialEntryId(session), kind: "password" }),
       ]).catch(() => undefined);
     }
   };
@@ -719,8 +725,8 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
   );
 }
 
-function App() {
-  const [session, setSession] = useState<Session>(() => {
+export function App() {
+  const [session, setSessionState] = useState<Session>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("nfterm-session") || "null") as Partial<Session> | null;
       return {
@@ -735,22 +741,41 @@ function App() {
       return initialSession;
     }
   });
-  const [password, setPassword] = useState("");
+  const sessionRef = useRef(session);
+  const authGeneration = useRef(0);
+  const credentialsInvalid = useRef(false);
+  const setSession: React.Dispatch<React.SetStateAction<Session>> = (update) => {
+    const current = sessionRef.current;
+    const next = typeof update === "function" ? update(current) : update;
+    if ((current.token && !next.token) || current.host !== next.host || current.port !== next.port || current.username !== next.username) {
+      authGeneration.current++;
+      setPassword("");
+    }
+    sessionRef.current = next;
+    setSessionState(next);
+  };
+  const [password, setPasswordState] = useState("");
+  const passwordRevision = useRef(0);
+  const setPassword: React.Dispatch<React.SetStateAction<string>> = (update) => {
+    passwordRevision.current++;
+    setPasswordState(update);
+  };
   useEffect(() => {
+    setPassword("");
     if (!session.saveUserInformation) return undefined;
+    const revision = passwordRevision.current;
     let cancelled = false;
     void Promise.all([
-      invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId, kind: "username" }),
-      invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId, kind: "password" }),
+      invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId(session), kind: "username" }),
+      invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId(session), kind: "password" }),
     ])
       .then(([username, storedPassword]) => {
-        if (cancelled) return;
-        if (username !== null) setSession((current) => ({ ...current, username }));
-        if (storedPassword !== null) setPassword(storedPassword);
+        if (cancelled || revision !== passwordRevision.current || credentialsInvalid.current || sessionRef.current.token) return;
+        if (username === session.username && storedPassword !== null) setPassword(storedPassword);
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [session.saveUserInformation]);
+  }, [session.saveUserInformation, session.host, session.port, session.username]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [uiProfile, setUiProfile] = useState<DesktopSettings["uiProfile"]>(() => {
@@ -787,31 +812,38 @@ function App() {
   // and by `refreshSessionToken`'s silent, background re-login (issue
   // #233) -- both must end up with byte-for-byte the same session update,
   // so this logic must not be duplicated in two places that could drift.
-  const performLogin = async (usernameToUse: string, passwordToUse: string) => {
-    validateServer(session);
-    const responseValue = await invoke<NativeApiResponse>("api_request", {
-      url: `${serverUrl(session)}/auth/login`,
-      method: "POST",
-      headers: [["Content-Type", "application/json"]],
-      body: Array.from(new TextEncoder().encode(JSON.stringify({ username: usernameToUse, password: passwordToUse }))),
-      ignoreTlsErrors: session.ignoreTlsErrors,
-    });
-    const response = new ApiResponse(responseValue.status, responseValue.body);
-    if (!response.ok) throw new Error(await readError(response));
-    const data = await response.json();
-    const authenticatedUsername = data.user.username || usernameToUse;
-     // Native Tauri requests keep the HttpOnly cookie in the Rust reqwest
-     // client. Use an in-memory marker for the existing authenticated-state
-     // checks; never treat it as a bearer token or persist it as a secret.
-     const sessionMarker = typeof data.token === "string" && data.token ? data.token : "cookie";
-    setSession((current) => ({ ...current, token: sessionMarker, username: authenticatedUsername, userId: data.user.id ?? null, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
-    // `setSession` above only schedules a state update -- this function's
-    // own callers (a 401 retry in `api()`, or the token-lifetime timer)
-    // need the new token's actual string value *right now*, in this same
-    // tick, to use for an immediate retry or to compute the next refresh
-    // delay, not on the next render. Returning it directly avoids relying
-    // on a stale `session.token` closure value.
-    return { username: authenticatedUsername, token: sessionMarker };
+  const performLogin = async (usernameToUse: string, passwordToUse: string, refresh = false) => {
+    const captured = sessionRef.current;
+    validateServer(captured);
+    const generation = refresh ? authGeneration.current : ++authGeneration.current;
+    const nativeSessionId = refresh ? captured.nativeSessionId : await invoke<string>("create_api_session", { origin: serverUrl(captured), ignoreTlsErrors: captured.ignoreTlsErrors });
+    if (!nativeSessionId) throw new Error("The native API session is unavailable. Sign in again.");
+    try {
+      if (generation !== authGeneration.current) throw new Error("Sign-in was superseded.");
+      const responseValue = await invoke<NativeApiResponse>("api_request", {
+        url: `${serverUrl(captured)}/auth/login`,
+        sessionId: nativeSessionId,
+        method: "POST",
+        headers: [["Content-Type", "application/json"]],
+        body: Array.from(new TextEncoder().encode(JSON.stringify({ username: usernameToUse, password: passwordToUse }))),
+        ignoreTlsErrors: captured.ignoreTlsErrors,
+      });
+      const response = new ApiResponse(responseValue.status, responseValue.body);
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json();
+      if (data.success === false || !data.user || !Number.isInteger(data.user.id) || data.user.id < 0 || typeof data.user.username !== "string" || !data.user.username || (data.token != null && (typeof data.token !== "string" || !data.token))) throw new Error("The server returned an invalid login response.");
+      if (refresh && (data.user.id !== captured.userId || data.user.username !== captured.username)) throw new Error("The refreshed account does not match this session.");
+      if (generation !== authGeneration.current) throw new Error("Sign-in was superseded.");
+      const authenticatedUsername = data.user.username;
+      // The marker is not a bearer token. Cookies live only in this native session's jar.
+      const sessionMarker = typeof data.token === "string" && data.token ? data.token : "cookie";
+      setSession((current) => ({ ...current, nativeSessionId, token: sessionMarker, username: authenticatedUsername, userId: data.user.id, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
+      // Return the new token immediately for a retry, without waiting for React's render.
+      return { username: authenticatedUsername, token: sessionMarker };
+    } catch (error) {
+      if (!refresh) await invoke("clear_api_session", { sessionId: nativeSessionId }).catch(() => undefined);
+      throw error;
+    }
   };
 
   const login = async (event: React.FormEvent) => {
@@ -820,15 +852,17 @@ function App() {
     setNotice("");
     try {
       const { username: authenticatedUsername } = await performLogin(session.username, password);
+      credentialsInvalid.current = false;
+      const credentialId = apiCredentialEntryId({ ...session, username: authenticatedUsername });
       if (session.saveUserInformation) {
         await Promise.all([
-          invoke("rest_save_secret", { entryId: apiCredentialEntryId, kind: "username", value: authenticatedUsername }),
-          invoke("rest_save_secret", { entryId: apiCredentialEntryId, kind: "password", value: password }),
+          invoke("rest_save_secret", { entryId: credentialId, kind: "username", value: authenticatedUsername }),
+          invoke("rest_save_secret", { entryId: credentialId, kind: "password", value: password }),
         ]);
       } else {
         await Promise.all([
-          invoke("rest_forget_secret", { entryId: apiCredentialEntryId, kind: "username" }),
-          invoke("rest_forget_secret", { entryId: apiCredentialEntryId, kind: "password" }),
+          invoke("rest_forget_secret", { entryId: credentialId, kind: "username" }),
+          invoke("rest_forget_secret", { entryId: credentialId, kind: "password" }),
         ]);
       }
       setPassword("");
@@ -849,19 +883,42 @@ function App() {
   // saved password there is nothing to safely re-authenticate with, and
   // callers must fall back to sending the user back to the login screen.
   const refreshSessionToken = async (): Promise<string | null> => {
-    if (!session.saveUserInformation) return null;
+    const captured = sessionRef.current;
+    const generation = authGeneration.current;
+    if (!captured.token || !captured.saveUserInformation || credentialsInvalid.current) return null;
     try {
       const [storedUsername, storedPassword] = await Promise.all([
-        invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId, kind: "username" }),
-        invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId, kind: "password" }),
+        invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId(captured), kind: "username" }),
+        invoke<string | null>("rest_load_secret", { entryId: apiCredentialEntryId(captured), kind: "password" }),
       ]);
-      const usernameToUse = storedUsername || session.username;
-      const passwordToUse = storedPassword || password;
-      if (!usernameToUse || !passwordToUse) return null;
-      const { token } = await performLogin(usernameToUse, passwordToUse);
+      if (generation !== authGeneration.current || credentialsInvalid.current || storedUsername !== captured.username || !storedPassword) return null;
+      const { token } = await performLogin(storedUsername, storedPassword, true);
       return token;
     } catch {
       return null;
+    }
+  };
+
+  const invalidateCredentials = async () => {
+    credentialsInvalid.current = true;
+    authGeneration.current++;
+    setPassword("");
+    setSession((current) => ({ ...current, saveUserInformation: false }));
+    await Promise.all(["username", "password"].map((kind) => invoke("rest_forget_secret", { entryId: apiCredentialEntryId(sessionRef.current), kind })));
+  };
+  const logoutSession = async () => {
+    const captured = sessionRef.current;
+    authGeneration.current++;
+    setSession({ ...captured, token: "", nativeSessionId: undefined, userId: null, role: "", permissions: [], locationId: "", locationRevision: undefined });
+    setPassword("");
+    // Clear the native cookie jar even when the server cannot be reached.
+    try {
+      if (captured.nativeSessionId) await invoke("api_request", {
+        url: `${serverUrl(captured)}/auth/logout`, method: "POST", headers: locationHeaders(captured),
+        sessionId: captured.nativeSessionId, ignoreTlsErrors: captured.ignoreTlsErrors,
+      });
+    } finally {
+      if (captured.nativeSessionId) await invoke("clear_api_session", { sessionId: captured.nativeSessionId });
     }
   };
 
@@ -872,10 +929,10 @@ function App() {
     // Keep the same safe defaults used by the settings hook when storage is invalid.
   }
   if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} uiProfile={uiProfile} glassMenusEnabled={savedAppearance.glassMenusEnabled} glassDialogsEnabled={savedAppearance.glassDialogsEnabled} onUiProfileChange={changeUiProfile} onSubmit={login} />;
-  return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} refreshSessionToken={refreshSessionToken} />;
+  return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} refreshSessionToken={refreshSessionToken} logoutSession={logoutSession} invalidateCredentials={invalidateCredentials} />;
 }
 
-function DesktopApp({ session, setSession, password, setPassword, busy, setBusy, notice, setNotice, refreshSessionToken }: DesktopAppProps) {
+export function DesktopApp({ session, setSession, password, setPassword, busy, setBusy, notice, setNotice, refreshSessionToken, logoutSession, invalidateCredentials }: DesktopAppProps) {
   const [files, setFiles] = useState<FileItem[]>([]);
   const [localFiles, setLocalFiles] = useState<FileItem[]>([]);
   const [localPath, setLocalPath] = useState("");
@@ -960,6 +1017,17 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     return () => window.clearInterval(timer);
   }, [logViewOpen]);
   const [search, setSearch] = useState("");
+  const remoteGeneration = useRef(0);
+  const runGeneration = useRef(0);
+  const treeGeneration = useRef(0);
+  const treeRequests = useRef(new Map<string, number>());
+  const remoteMounted = useRef(true);
+  const remoteIdentity = JSON.stringify([serverUrl(session), session.nativeSessionId, session.userId, session.locationId, session.locationRevision, remoteSshEntryId]);
+  const currentRemote = useRef({ identity: remoteIdentity, path });
+  currentRemote.current = { identity: remoteIdentity, path };
+  const isRemoteCurrent = () => remoteMounted.current && currentRemote.current.identity === remoteIdentity;
+  const isViewCurrent = () => isRemoteCurrent() && currentRemote.current.path === path;
+  useEffect(() => { remoteMounted.current = true; return () => { remoteMounted.current = false; remoteGeneration.current++; treeGeneration.current++; }; }, []);
   const [searching, setSearching] = useState(false);
   const [pathBeforeSearch, setPathBeforeSearch] = useState("");
   const [viewMode, setViewMode] = useState<"details" | "grid">(() =>
@@ -1061,6 +1129,9 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const [viewerContent, setViewerContent] = useState("");
   const [viewerLocalPath, setViewerLocalPath] = useState("");
   const [viewerRemotePath, setViewerRemotePath] = useState("");
+  const viewerGeneration = useRef(0);
+  const viewerContextRef = useRef("");
+  const closeViewer = () => { viewerGeneration.current++; setViewerOpen(false); };
   const dragPreparationRef = useRef(new Map<string, Promise<string>>());
   const dragExpandTimerRef = useRef<number | undefined>(undefined);
   const dragScrollIntervalRef = useRef<number | null>(null);
@@ -1130,6 +1201,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const localFileListRef = useRef<HTMLDivElement>(null);
   const dragItemsRef = useRef<FileItem[]>([]);
   const dragSourceRef = useRef<"local" | "remote" | "">("");
+  const dragContextRef = useRef("");
   const noticeTimer = useRef<number | undefined>();
   // Dedupes concurrent 401 responses: if several in-flight requests all
   // hit an expired token at once, only the first should trigger a real
@@ -1285,7 +1357,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       } else if (queueOpen) {
         setQueueOpen(false);
       } else if (viewerOpen) {
-        setViewerOpen(false);
+        closeViewer();
       } else if (contextMenu) {
         setContextMenu(null);
       } else if (locationMenuOpen) {
@@ -1509,15 +1581,21 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // twice (once with the old token, once with a freshly refreshed one)
   // without duplicating the request-building logic itself.
   const rawApiRequest = async (endpoint: string, init: RequestInit, token: string, locationId: string) => {
+    if (!remoteMounted.current || !session.nativeSessionId) throw new Error("The Location session has ended.");
     const headers = new Headers(init.headers);
     if (token && token !== "cookie") headers.set("Authorization", `Bearer ${token}`);
     if (locationId) headers.set("X-Location-ID", locationId);
+    // Preserve the root associated with this render/selection. Never upgrade
+    // a pending mutation to a newer root merely because health data refreshed.
+    const revision = (locationId === session.locationId ? session.locationRevision : undefined) ?? locations.find((location) => location.id === locationId)?.revision;
+    if (revision) headers.set("X-Location-Revision", revision);
     const body =
       init.body === undefined
         ? undefined
         : Array.from(new TextEncoder().encode(String(init.body)));
     const response = await invoke<NativeApiResponse>("api_request", {
       url: `${serverUrl(session)}${endpoint}`,
+      sessionId: session.nativeSessionId,
       method: init.method || "GET",
       headers: Array.from(headers.entries()),
       body,
@@ -1542,26 +1620,55 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   // refresh with.
   const api = async (endpoint: string, init: RequestInit = {}) => {
     const response = await rawApiRequest(endpoint, init, session.token, session.locationId);
-    if (response.status !== 401) return response;
+    if (response.status !== 401 || endpoint.startsWith("/auth/")) return response;
+    if (!isRemoteCurrent()) return response;
     const refreshedToken = await refreshTokenOnce();
     if (!refreshedToken) {
-      setSession((current) => ({ ...current, token: "" }));
+      if (!isRemoteCurrent()) return response;
+      void logoutSession().catch(() => undefined);
       notify("Your session expired. Please sign in again.");
       return response;
     }
-    return rawApiRequest(endpoint, init, refreshedToken, session.locationId);
+    if (!isRemoteCurrent()) return response;
+    const retried = await rawApiRequest(endpoint, init, refreshedToken, session.locationId);
+    if (retried.status === 401 && isRemoteCurrent()) void logoutSession().catch(() => undefined);
+    return retried;
   };
 
   const apiForLocation = async (endpoint: string, locationId: string) => {
     const response = await rawApiRequest(endpoint, { method: "GET" }, session.token, locationId);
     if (response.status !== 401) return response;
+    if (!isRemoteCurrent()) return response;
     const refreshedToken = await refreshTokenOnce();
     if (!refreshedToken) {
-      setSession((current) => ({ ...current, token: "" }));
+      if (!isRemoteCurrent()) return response;
+      void logoutSession().catch(() => undefined);
       notify("Your session expired. Please sign in again.");
       return response;
     }
-    return rawApiRequest(endpoint, { method: "GET" }, refreshedToken, locationId);
+    if (!isRemoteCurrent()) return response;
+    const retried = await rawApiRequest(endpoint, { method: "GET" }, refreshedToken, locationId);
+    if (retried.status === 401 && isRemoteCurrent()) void logoutSession().catch(() => undefined);
+    return retried;
+  };
+
+  const captureRemoteMutation = () => {
+    const captured = { ...session };
+    const generation = remoteGeneration.current;
+    return {
+      session: captured,
+      isViewCurrent: () => isViewCurrent() && generation === remoteGeneration.current,
+      request: async (endpoint: string, method: string, payload: unknown) => {
+        if (!captured.nativeSessionId || !isRemoteCurrent()) throw new Error("The original Location session or root changed. Pending operations were not sent.");
+        // api() belongs to the same captured render. It rechecks identity
+        // before the single 401 retry, and never retries a lost response/409.
+        return api(endpoint, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      },
+    };
   };
 
   // The REMOTE/API connection slice pulled out of main.tsx ahead of the
@@ -1574,10 +1681,25 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     api, readError, session, setSession, remoteSshEntryId,
     managedSessions, sshTabs, locations, setLocations, setLocationsLoading,
     locationsLoadedRef: locationsLoaded, locationRefreshInProgressRef: locationRefreshInProgress,
+    sessionIdentity: JSON.stringify([serverUrl(session), session.nativeSessionId, session.userId]),
+    onLocationInvalidated: () => {
+      setUndoStack((current) => current.filter((entry) => entry.source !== "api"));
+      if (remoteSshEntryId) return;
+      remoteGeneration.current++;
+      treeGeneration.current++;
+      setFiles([]); setSelected([]); setSearch(""); setSearching(false); setPath("");
+      setUndoStack([]); closeViewer(); setSharePasswordOpen(false); setShareUrl("");
+      dragPreparationRef.current.clear();
+      setFolderTree({ path: "", name: "/", expanded: true, loaded: false, children: [] });
+    },
   });
 
   const loadFiles = async (nextPath = path, sshEntryOverride: string | null = null) => {
+    if (sshEntryOverride === null && !isViewCurrent()) return;
+    const generation = ++remoteGeneration.current;
     const sshEntryId = sshEntryOverride !== null ? sshEntryOverride : remoteSshEntryId;
+    const expectedIdentity = JSON.stringify([serverUrl(session), session.nativeSessionId, session.userId, session.locationId, session.locationRevision, sshEntryId]);
+    const isCurrent = () => remoteMounted.current && generation === remoteGeneration.current && currentRemote.current.identity === expectedIdentity;
     const operationId = crypto.randomUUID();
     const started = performance.now();
     const operation = sshEntryId ? "ssh_browse" : "api_browse";
@@ -1591,6 +1713,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           throw new Error("The SSH connection for this remote view is no longer available.");
         }
         const data = await invoke<LocalDirectory>("ssh_list_directory", { profile, path: nextPath });
+        if (!isCurrent()) return;
         setFiles(data.files || []);
         setPath(data.path || "");
         setSearching(false);
@@ -1605,6 +1728,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       if (!response.ok) throw new Error(await readError(response));
       const data = await response.json();
       const files = data.files || [];
+      if (!isCurrent()) return;
       setFiles(files);
       setPath(data.currentPath || "");
       setSearching(false);
@@ -1612,6 +1736,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       setSelected([]);
       writeOperationLog(operation, "completed", source, data.currentPath || nextPath, JSON.stringify({ operationId, path: data.currentPath || nextPath, fileCount: files.length, durationMs: Math.round(performance.now() - started), locationId: session.locationId, httpStatus: response.status }), "INFO");
     } catch (error) {
+      if (!isCurrent()) return;
       writeOperationLog(operation, "failed", source, nextPath, JSON.stringify({ operationId, path: nextPath, durationMs: Math.round(performance.now() - started), failureType: "browse", errorMessage: describeError(error), locationId: session.locationId, sshEntryId }), "ERROR");
       throw error;
     }
@@ -1758,52 +1883,52 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         };
 
   const loadTreeChildren = async (treePath: string, force = false, sshEntryOverride: string | null = null) => {
+    if (sshEntryOverride === null && !isRemoteCurrent()) return;
+    const generation = treeGeneration.current;
+    const request = (treeRequests.current.get(treePath) || 0) + 1;
+    treeRequests.current.set(treePath, request);
     const sshEntryId = sshEntryOverride !== null ? sshEntryOverride : remoteSshEntryId;
-    let childFiles: FileItem[];
-    if (sshEntryId) {
-      const profile = findSshProfileById(sshEntryId);
-      if (!profile) {
-        if (!force) throw new Error("The SSH connection for this remote view is no longer available.");
-        return;
-      }
-      try {
+    const expectedIdentity = JSON.stringify([serverUrl(session), session.nativeSessionId, session.userId, session.locationId, session.locationRevision, sshEntryId]);
+    const isCurrent = () => remoteMounted.current && generation === treeGeneration.current && treeRequests.current.get(treePath) === request && currentRemote.current.identity === expectedIdentity;
+    try {
+      let childFiles: FileItem[];
+      if (sshEntryId) {
+        const profile = findSshProfileById(sshEntryId);
+        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
         const data = await invoke<LocalDirectory>("ssh_list_directory", { profile, path: treePath });
         childFiles = data.files || [];
-      } catch (error) {
-        if (!force) throw error instanceof Error ? error : new Error(String(error));
-        return;
+      } else {
+        const response = await api(
+          `/api/files?path=${encodeURIComponent(treePath)}&sort=name&order=asc`,
+        );
+        if (!response.ok) throw new Error(await readError(response));
+        const data = await response.json();
+        childFiles = data.files || [];
       }
-    } else {
-      const response = await api(
-        `/api/files?path=${encodeURIComponent(treePath)}&sort=name&order=asc`,
+      if (!isCurrent()) return;
+      const children = childFiles
+        .filter((file: FileItem) => file.isDirectory)
+        .map((file: FileItem) => ({
+          path: file.path,
+          name: file.name,
+          expanded: false,
+          loaded: false,
+          children: [],
+        }))
+        .sort((left: FolderNode, right: FolderNode) =>
+          compareFileNames(left.name, right.name),
+        );
+      setFolderTree((tree) =>
+        updateTreeNode(tree, treePath, (node) => ({
+          ...node,
+          expanded: true,
+          loaded: true,
+          children,
+        })),
       );
-      if (!response.ok) {
-        if (!force) throw new Error(await readError(response));
-        return;
-      }
-      const data = await response.json();
-      childFiles = data.files || [];
+    } catch (error) {
+      if (isCurrent() && !force) throw error;
     }
-    const children = childFiles
-      .filter((file: FileItem) => file.isDirectory)
-      .map((file: FileItem) => ({
-        path: file.path,
-        name: file.name,
-        expanded: false,
-        loaded: false,
-        children: [],
-      }))
-      .sort((left: FolderNode, right: FolderNode) =>
-        compareFileNames(left.name, right.name),
-      );
-    setFolderTree((tree) =>
-      updateTreeNode(tree, treePath, (node) => ({
-        ...node,
-        expanded: true,
-        loaded: true,
-        children,
-      })),
-    );
   };
 
   const toggleFolder = (node: FolderNode) => {
@@ -1908,7 +2033,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       void refreshTokenOnce().then((refreshedToken) => {
         if (cancelled) return;
         if (!refreshedToken) {
-          setSession((current) => ({ ...current, token: "" }));
+          void logoutSession().catch(() => undefined);
           notify("Your session expired. Please sign in again.");
         }
       });
@@ -1953,16 +2078,18 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   }, [session.token]);
 
   useEffect(() => {
-    if (session.token && session.locationId) {
+    if (session.token && session.locationId && !remoteSshEntryId) {
       const nextPath = pendingRemotePath ?? "";
       if (pendingRemotePath !== null) setPendingRemotePath(null);
       void loadFiles(nextPath).catch((error) => setNotice(error.message));
       void loadTreeChildren("").catch((error) => setNotice(error.message));
     }
-  }, [session.token, session.locationId]);
+  }, [session.nativeSessionId, session.locationId, session.locationRevision]);
 
   const selectLocation = (locationId: string) => {
-    const wasSsh = Boolean(remoteSshEntryId);
+    remoteGeneration.current++; treeGeneration.current++;
+    setFiles([]); closeViewer(); setSharePasswordOpen(false); setShareUrl("");
+    dragPreparationRef.current.clear();
     writeOperationLog("location", "selected", session.locationId || "none", locationId || "none", "Location selected.", "INFO");
     setRemoteSshEntryId("");
     setPath("");
@@ -1978,21 +2105,20 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       children: [],
     });
     if (locationId === session.locationId) {
-      // Same API Location as before: the [session.locationId] effect will
-      // not re-fire, so if we were leaving SSH browsing we must refresh
-      // explicitly to avoid leaving the old SSH listing on screen.
-      if (wasSsh) {
-        void run(async () => {
-          await Promise.all([loadFiles("", ""), loadTreeChildren("", true, "")]);
-        });
-      }
+      // The Location effect does not run when its identifier is unchanged.
+      void run(async () => {
+        await Promise.all([loadFiles("", ""), loadTreeChildren("", true, "")]);
+      });
       return;
     }
-    setSession((current) => ({ ...current, locationId }));
+    setSession((current) => ({ ...current, locationId, locationRevision: locations.find((location) => location.id === locationId)?.revision }));
   };
 
   const selectSshBrowse = (entryId: string) => {
     if (entryId === remoteSshEntryId) return;
+    remoteGeneration.current++; treeGeneration.current++;
+    setFiles([]); closeViewer(); setSharePasswordOpen(false); setShareUrl("");
+    dragPreparationRef.current.clear();
     writeOperationLog("ssh_browse", "selected", remoteSshEntryId || "none", entryId, "SSH browse entry selected.", "INFO");
     setRemoteSshEntryId(entryId);
     setPath("/");
@@ -2013,14 +2139,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   };
 
   const run = async (action: () => Promise<void>) => {
+    const generation = ++runGeneration.current;
     setBusy(true);
     setNotice("");
     try {
       await action();
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      if (generation === runGeneration.current && isViewCurrent()) setNotice(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy(false);
+      if (generation === runGeneration.current && remoteMounted.current) setBusy(false);
     }
   };
 
@@ -2561,28 +2688,35 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const searchFiles = () => {
     if (!canSearchRemote) return;
+    const generation = ++remoteGeneration.current;
     return run(async () => {
-      const query = search.trim();
-      if (!query) {
-        if (searching) await loadFiles(pathBeforeSearch);
-        return;
+      try {
+        const query = search.trim();
+        if (!query) {
+          if (searching) await loadFiles(pathBeforeSearch);
+          return;
+        }
+        if (!searching) setPathBeforeSearch(path);
+        const response = await api(
+          `/api/files/search?query=${encodeURIComponent(query)}`,
+        );
+        const data = await response.json();
+        if (!isViewCurrent() || generation !== remoteGeneration.current) return;
+        if (!response.ok || data.indexing)
+          throw new Error(data.message || "Search is not available yet.");
+        setFiles(
+          (data.files || []).filter((file: FileItem) => file.name && file.path),
+        );
+        setSearching(true);
+        setSelected([]);
+      } catch (error) {
+        if (isViewCurrent() && generation === remoteGeneration.current) throw error;
       }
-      if (!searching) setPathBeforeSearch(path);
-      const response = await api(
-        `/api/files/search?query=${encodeURIComponent(query)}`,
-      );
-      const data = await response.json();
-      if (!response.ok || data.indexing)
-        throw new Error(data.message || "Search is not available yet.");
-      setFiles(
-        (data.files || []).filter((file: FileItem) => file.name && file.path),
-      );
-      setSearching(true);
-      setSelected([]);
     });
   };
 
   const clearSearch = () => {
+    remoteGeneration.current++;
     setSearch("");
     if (searching) void run(() => loadFiles(pathBeforeSearch));
   };
@@ -2592,7 +2726,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       <input
         className="search"
         value={search}
-        onChange={(event) => setSearch(event.target.value)}
+        onChange={(event) => { remoteGeneration.current++; setSearch(event.target.value); }}
         onKeyDown={(event) => {
           if (event.key === "Enter") searchFiles();
           if (event.key === "Escape") clearSearch();
@@ -2643,7 +2777,8 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   const recordUndoEntry = (entry: Omit<UndoEntry, "id">) => {
     if (!desktopSettings.undoHistoryEnabled) return;
     const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-    setUndoStack((current) => [...current, { ...entry, id }].slice(-MAX_UNDO_ENTRIES));
+    if (entry.source === "api" && !isRemoteCurrent()) return;
+    setUndoStack((current) => [...current, { ...entry, id, ...(entry.source === "api" ? { context: remoteIdentity } : {}) }].slice(-MAX_UNDO_ENTRIES));
   };
 
   const recordUndoableRename = (options: { source: "api" | "ssh" | "local"; locationId?: string; entryId?: string; oldPath: string; newPath: string }) =>
@@ -2679,20 +2814,24 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           await invoke("local_rename_path", { oldPath: entry.newPath, newPath: entry.oldPath });
           await loadLocalFiles(localPath);
         } else {
+          if (entry.context && entry.context !== remoteIdentity) throw new Error("This undo belongs to a previous Location root or session.");
           if (entry.locationId && entry.locationId !== session.locationId) {
             throw new Error("Switch LOCATION back to the Remote this operation happened on before undoing it.");
           }
           const oldName = entry.oldPath.split("/").pop() || entry.oldPath;
           const newParent = entry.newPath.split("/").slice(0, -1).join("/");
           const newName = entry.newPath.split("/").pop() || entry.newPath;
-          const response = await api("/api/files/rename", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ oldName: newName, newName: oldName, currentPath: newParent }),
-          });
-          if (!response.ok) throw new Error(await readError(response));
+          const oldParent = remoteParent(entry.oldPath);
+          const moved = oldParent !== newParent;
+          const context = captureRemoteMutation();
+          const response = await context.request(moved ? "/api/files/move" : "/api/files/rename", moved ? "POST" : "PUT", moved
+            ? { sourcePath: entry.newPath, destinationPath: entry.oldPath, sourceLocationId: context.session.locationId, targetLocationId: context.session.locationId }
+            : { oldPath: entry.newPath, oldName: newName, newName: oldName, currentPath: newParent });
+          const data = await response.json();
+          const [outcome] = remoteMutationResults([{ path: entry.newPath, name: newName }], data, response.status);
+          if (outcome.success !== true) throw new Error(`Undo was not confirmed. ${remoteMutationError(data, response.status)} Check the original Location before retrying.`);
         }
-        setUndoStack((current) => current.slice(0, -1));
+        setUndoStack((current) => current.filter((item) => item.id !== entry.id));
         // Only refresh the REMOTE listing for entries that actually
         // happened on REMOTE (ssh/api) -- the "local" branch above already
         // refreshed LOCAL itself via loadLocalFiles(). Calling loadFiles()
@@ -2713,6 +2852,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const moveItems = (items: FileItem[], destination: string, source = dragSourceRef.current) =>
     run(async () => {
+      if (source === "remote" && dragContextRef.current !== remoteIdentity) throw new Error("The dragged files belong to a previous remote view. Select them again.");
       writeOperationLog("drag", "dropped", source === "local" ? "LOCAL" : "REMOTE", destination, JSON.stringify({ itemCount: items.length, sourceType: source === "local" ? "LOCAL" : "REMOTE", destinationType: source === "local" ? "REMOTE" : "LOCAL" }), "INFO");
       if (source === "local") {
         uploadLocalItemsToRemote(items, destination);
@@ -2746,46 +2886,58 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         return;
       }
       const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${destination}`;
+      const context = captureRemoteMutation();
+      const targets = items.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath }));
+      let completed = 0;
+      let failed = 0;
+      let undoCount = 0;
       try {
-        const response = await api("/api/files/paste", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            items: items.map(({ name, isDirectory, path: itemPath }) => ({
-              name,
-              isDirectory,
-              path: itemPath,
-            })),
-            operation: "cut",
-            targetPath: destination,
-          }),
+        const response = await context.request("/api/files/paste", "POST", {
+          items: targets,
+          operation: "cut",
+          targetPath: destination,
+          sourceLocationId: context.session.locationId,
+          targetLocationId: context.session.locationId,
         });
-        if (!response.ok) throw new Error(await readError(response));
         const data = await response.json();
-        for (const item of items) {
+        const outcomes = remoteMutationResults(targets, data, response.status);
+        const targetNames = new Map(targets.map((item) => [item.path, item.name]));
+        const moved = outcomes.filter((result) => result.success === true).map((result) => ({
+          ...result, targetPath: result.targetPath ?? [destination.replace(/\/+$/, ""), targetNames.get(result.path)!].filter(Boolean).join("/"),
+        }));
+        const targetCounts = new Map<string, number>();
+        for (const result of moved) targetCounts.set(result.targetPath, (targetCounts.get(result.targetPath) || 0) + 1);
+        completed = moved.length;
+        failed = outcomes.filter((result) => result.success === false).length;
+        for (const result of moved) {
+          // Two sources mapped to one destination cannot both be undone safely.
+          if (targetCounts.get(result.targetPath) !== 1) continue;
           recordUndoableMove({
             source: "api",
-            locationId: session.locationId,
-            oldPath: item.path,
-            newPath: `${destination.replace(/\/+$/, "")}/${item.name}`,
+            locationId: context.session.locationId,
+            oldPath: result.path,
+            newPath: result.targetPath,
+          });
+          undoCount++;
+        }
+        const errorDetail = remoteMutationError(data, response.status);
+        const detail = `${completed}/${targets.length} moves confirmed; ${failed} failed; ${targets.length - completed - failed} unconfirmed.${undoCount < completed ? " Some destinations cannot be undone safely." : ""}${errorDetail ? ` ${errorDetail}.` : ""}${completed < targets.length ? " Review the original Location before retrying." : ""}`;
+        writeOperationLog("move", completed === targets.length ? "completed" : "partial", sourceLabel, destinationLabel, detail, completed === targets.length ? "INFO" : "WARN");
+        if (context.isViewCurrent()) {
+          setDragItems([]); setDropTarget(null); setContextMenu(null);
+          notify(detail);
+        }
+      } catch (error) {
+        const detail = `${completed}/${targets.length} moves confirmed; ${failed} failed; ${targets.length - completed - failed} unconfirmed. Check the original Location before retrying. ${describeError(error)}`;
+        writeOperationLog("move", "unconfirmed", sourceLabel, destinationLabel, detail, "WARN");
+        if (context.isViewCurrent()) notify(detail);
+      } finally {
+        if (context.isViewCurrent()) {
+          setFolderTree({ path: "", name: "/", expanded: true, loaded: false, children: [] });
+          await Promise.all([loadFiles(path), loadTreeChildren("", true)]).catch(() => {
+            if (isViewCurrent()) notify(`${completed}/${targets.length} moves confirmed. Refresh failed; check the original Location before retrying.`);
           });
         }
-        setDragItems([]);
-        setDropTarget(null);
-        setContextMenu(null);
-        writeOperationLog("move", "completed", sourceLabel, destinationLabel, `Moved ${items.length} item(s) through the API Remote.`);
-        notify(data.message || "Move complete.");
-        setFolderTree({
-          path: "",
-          name: "/",
-          expanded: true,
-          loaded: false,
-          children: [],
-        });
-        await Promise.all([loadFiles(path), loadTreeChildren("", true)]);
-      } catch (error) {
-        writeOperationLog("move", "failed", sourceLabel, destinationLabel, `Failed to move through the API Remote: ${describeError(error)}`, "ERROR");
-        throw error;
       }
     });
 
@@ -2805,6 +2957,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     if (!selected.includes(file.path)) setSelected([file.path]);
     dragItemsRef.current = items;
     dragSourceRef.current = "remote";
+    dragContextRef.current = remoteIdentity;
     setDragItems(items);
     setDragSource("remote");
     writeOperationLog("drag", "started", "REMOTE", file.path, JSON.stringify({ fileCount: items.length, source: "remote" }), "DEBUG");
@@ -2844,7 +2997,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const prepareRemoteDrag = (file: FileItem) => {
     const items = selected.includes(file.path) ? selectedItems : [file];
-    const preparationKey = items.map((item) => item.path).join("\0");
+    const preparationKey = `${remoteIdentity}\0${items.map((item) => item.path).join("\0")}`;
     if (dragPreparationRef.current.has(preparationKey)) return;
     if (remoteSshEntryId) {
       const profile = findSshProfileById(remoteSshEntryId);
@@ -2883,9 +3036,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       return;
     }
     const singleFile = items.length === 1 && !items[0].isDirectory;
-     const headers: [string, string][] = session.token && session.token !== "cookie"
-      ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
-      : [];
+    const headers = locationHeaders(session);
     if (singleFile) {
       const queueItem: TransferQueueItem = {
         id: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`,
@@ -2900,6 +3051,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         localDestinationFolder: localPath,
       };
       const preparation = queueDragPreparation(queueItem, () => invoke<string>("download_to_drag_staging", {
+          sessionId: session.nativeSessionId,
           url: `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`,
           method: "GET",
           headers,
@@ -2953,6 +3105,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       for (const entry of files) {
         lastRelativePath = needsWrapper ? `${setLabel}/${entry.relativePath}` : entry.relativePath;
         lastDestination = await invoke<string>("download_to_drag_staging_at", {
+          sessionId: session.nativeSessionId,
           url: `${serverUrl(session)}/api/files/download/${downloadPath(entry.remotePath)}`,
           method: "GET",
           headers,
@@ -3017,12 +3170,15 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const openLocalFile = (filePath: string) =>
     void run(async () => {
+      const generation = ++viewerGeneration.current;
+      viewerContextRef.current = "";
       if (filePath.toLowerCase().endsWith(".pdf")) {
         await invoke("open_local_file", { path: filePath });
         notify("Opened the PDF in the default application.");
         return;
       }
       const content = await invoke<string>("read_local_file", { path: filePath });
+      if (generation !== viewerGeneration.current) return;
       setViewerTitle(filePath.split(/[\\/]/).pop() || filePath);
       setViewerContent(content);
       setViewerLocalPath(filePath);
@@ -3034,19 +3190,28 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const openRemoteViewer = (file: FileItem) =>
     void run(async () => {
+      const generation = ++viewerGeneration.current;
       if (file.isDirectory) return;
-      const response = await api(`/api/files/content/${downloadPath(file.path)}`);
-      if (!response.ok) throw new Error(await readError(response));
-      const data = (await response.json()) as { content?: string };
-      setViewerTitle(file.name);
-      setViewerContent(data.content || "");
-      setViewerLocalPath("");
-      setViewerRemotePath(file.path);
-      setViewerOpen(true);
+      try {
+        const response = await api(`/api/files/content/${downloadPath(file.path)}`);
+        if (!response.ok) throw new Error(await readError(response));
+        const data = (await response.json()) as { content?: string };
+        if (!isViewCurrent() || generation !== viewerGeneration.current) return;
+        viewerContextRef.current = remoteIdentity;
+        setViewerTitle(file.name);
+        setViewerContent(data.content || "");
+        setViewerLocalPath("");
+        setViewerRemotePath(file.path);
+        setViewerOpen(true);
+      } catch (error) {
+        if (isViewCurrent() && generation === viewerGeneration.current) throw error;
+      }
     });
 
   const editViewerFile = () =>
     void run(async () => {
+      const generation = viewerGeneration.current;
+      if (viewerRemotePath && viewerContextRef.current !== remoteIdentity) throw new Error("The viewer belongs to a previous Location. Open the file again.");
       let localPathForEdit = viewerLocalPath;
       if (!localPathForEdit && viewerRemotePath) {
         const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `edit-${Date.now()}`;
@@ -3062,14 +3227,13 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
           detail: "Waiting to download editor copy",
           downloadUrl: `${serverUrl(session)}/api/files/download/${downloadPath(viewerRemotePath)}`,
           downloadMethod: "GET",
-         downloadHeaders: session.token && session.token !== "cookie"
-            ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
-            : [],
+          downloadHeaders: locationHeaders(session),
           downloadFileName: viewerTitle,
           localDestinationFolder: "Downloads",
           progress: initialQueueProgress(1, null),
         };
         queueCompletionHandlersRef.current.set(id, async (destination) => {
+          if (generation !== viewerGeneration.current || !isRemoteCurrent()) return;
           setViewerLocalPath(destination);
           await invoke("edit_local_file", { path: destination });
           notify(`Opened ${viewerTitle} in the default text editor.`);
@@ -3134,6 +3298,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const downloadRemoteItemsToLocal = (items: FileItem[], destination: string = localPath) =>
     void run(async () => {
+      if (dragContextRef.current && dragContextRef.current !== remoteIdentity) throw new Error("The dragged files belong to a previous remote view. Select them again.");
       if (!items.length) {
         writeOperationLog(
           "download",
@@ -3204,9 +3369,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
       const singleFile = items.length === 1 && !items[0].isDirectory;
       if (singleFile) {
-        const headers: [string, string][] = session.token && session.token !== "cookie"
-          ? [["Authorization", `Bearer ${session.token}`], ...(session.locationId ? [["X-Location-ID", session.locationId] as [string, string]] : [])]
-          : [];
+        const headers = locationHeaders(session);
         const queueItem: TransferQueueItem = {
           id,
           label: items[0].name,
@@ -3445,16 +3608,16 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         return;
       }
       const sourceLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${item.path}`;
-      const newFullPath = path ? `${path}/${trimmedName}` : trimmedName;
+      if (/[\\/]/.test(trimmedName) || trimmedName === "." || trimmedName === "..") throw new Error("Enter a filename, not a path.");
+      const parent = remoteParent(item.path);
+      const newFullPath = parent ? `${parent}/${trimmedName}` : trimmedName;
+      const context = captureRemoteMutation();
       try {
-        const response = await api("/api/files/rename", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            oldName: item.name,
-            newName: trimmedName,
-            currentPath: path,
-          }),
+        const response = await context.request("/api/files/rename", "PUT", {
+          oldName: item.name,
+          oldPath: item.path,
+          newName: trimmedName,
+          currentPath: parent,
         });
         if (!response.ok) throw new Error(await readError(response));
         recordUndoableRename({ source: "api", locationId: session.locationId, oldPath: item.path, newPath: newFullPath });
@@ -3499,25 +3662,33 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         return;
       }
       const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`;
+      const context = captureRemoteMutation();
+      const groups = groupRemoteDeletes(selectedItems);
+      let completed = 0;
+      let failed = 0;
+      const errors: string[] = [];
       try {
-        const response = await api("/api/files/delete", {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            items: selectedItems.map(({ name, isDirectory }) => ({
-              name,
-              isDirectory,
-            })),
-            currentPath: path,
-          }),
-        });
-        if (!response.ok) throw new Error(await readError(response));
-        await loadFiles(path);
-        writeOperationLog("delete", "completed", sourceLabel, destinationLabel, "Deleted through the API Remote. This cannot be undone.");
-        notify("Deleted selected items. This cannot be undone.");
+        for (const group of groups) {
+          const response = await context.request("/api/files/delete", "DELETE", group);
+          const data = await response.json();
+          const errorDetail = remoteMutationError(data, response.status);
+          if (errorDetail) errors.push(errorDetail);
+          const outcomes = remoteMutationResults(group.items, data, response.status);
+          completed += outcomes.filter((result) => result.success === true).length;
+          failed += outcomes.filter((result) => result.success === false).length;
+          if (!response.ok) break;
+        }
+        const detail = `${completed}/${selectedItems.length} deletions confirmed; ${failed} failed; ${selectedItems.length - completed - failed} unconfirmed. This cannot be undone.${errors.length ? ` ${errors.join("; ")}` : ""}`;
+        writeOperationLog("delete", completed === selectedItems.length ? "completed" : "partial", sourceLabel, destinationLabel, detail, completed === selectedItems.length ? "INFO" : "WARN");
+        if (context.isViewCurrent()) notify(detail);
       } catch (error) {
-        writeOperationLog("delete", "failed", sourceLabel, destinationLabel, `Failed to delete through the API Remote: ${describeError(error)}`, "ERROR");
-        throw error;
+        const detail = `${completed}/${selectedItems.length} deletions confirmed; ${failed} failed; ${selectedItems.length - completed - failed} unconfirmed. ${describeError(error)}`;
+        writeOperationLog("delete", "unconfirmed", sourceLabel, destinationLabel, detail, "WARN");
+        if (context.isViewCurrent()) notify(detail);
+      } finally {
+        if (context.isViewCurrent()) await loadFiles(path).catch(() => {
+          if (isViewCurrent()) notify(`${completed}/${selectedItems.length} deletions confirmed. Refresh failed; check the original Location.`);
+        });
       }
     });
 
@@ -3542,6 +3713,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
     shareLinkMode: desktopSettings.shareLinkMode,
     shareLinkExpirationDays: desktopSettings.shareLinkExpirationDays,
     ensureApiRemote,
+    isContextCurrent: isRemoteCurrent,
     selectedShareableItem: selectedItems.length === 1 ? selectedItems[0] : undefined,
     shareLinks, setShareLinks, setShareLinksLoading,
     setShareUrl, setShareLinksOpen, setSharePasswordOpen, setSharePasswordDraft,
@@ -3630,26 +3802,16 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
       });
       if (!response.ok) throw new Error(await readError(response));
       setChangePasswordOpen(false);
-      setSession((current) => ({ ...current, token: "" }));
+      try { await invalidateCredentials(); }
+      finally { await logoutSession().catch(() => undefined); }
       notify("Password changed. Please sign in again.");
     });
   };
 
   const signOut = () => {
     setAccountOpen(false);
-    // Clearing `session.token` here also tears down the auto-refresh
-    // effect above (it depends on `session.token`), whose cleanup sets
-    // `cancelled = true` -- so a refresh already in flight at the moment
-    // of sign-out cannot land afterward and silently sign the user back
-    // in (#233).
-    setSession((current) => ({
-      ...current,
-      token: "",
-      username: "",
-      userId: null,
-      role: "",
-      permissions: [],
-    }));
+    remoteGeneration.current++; treeGeneration.current++;
+    void logoutSession().catch(() => setNotice("Signed out locally. The server logout request could not be confirmed."));
   };
 
   const selectedHelpPage = helpPages.find((page) => page.id === selectedHelpPageId) || helpPages[0];
@@ -5369,7 +5531,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         />
       )}
       {queueOpen && <QueueModal items={transferQueue} activeItems={activeTransferQueue} historyItems={transferHistory} renderItem={(item) => renderDesktopQueueItem(item as TransferQueueItem)} modalStyle={modalStyle("queue")} onDragStart={beginModalDrag("queue")} onClose={() => setQueueOpen(false)} onClearStatus={clearQueueStatus} onClearHistory={clearFinishedQueue} />}
-      {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={() => setViewerOpen(false)} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
+      {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={closeViewer} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
       {logViewOpen && <LogView records={operationLogRecords} modalStyle={modalStyle("log-view")} onDragStart={beginModalDrag("log-view")} onClose={() => setLogViewOpen(false)} onExport={exportOperationLog} />}
       {helpOpen && <HelpModal sections={helpSections} pages={helpPages} selectedPage={selectedHelpPage} selectedSection={selectedHelpSection} selectedIndex={selectedHelpIndex} expandedSections={expandedHelpSections} modalStyle={modalStyle("help")} onDragStart={beginModalDrag("help")} onClose={() => setHelpOpen(false)} onToggleSection={(id) => setExpandedHelpSections((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onSelectPage={setSelectedHelpPageId} />}
       </Suspense>

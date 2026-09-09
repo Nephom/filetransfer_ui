@@ -213,32 +213,62 @@ class UserManager {
       throw new Error(`User '${username}' not found`);
     }
 
-    // Prevent role escalation to admin; the single system administrator is
-    // always sourced from config.ini and can never be stored in users.json.
-    if (updates.role === 'admin') {
-      throw new Error('Cannot change user role to admin. Admin is managed in config.ini');
+    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+      throw new Error('Account updates must be an object');
     }
-    if (updates.role !== undefined && !ASSIGNABLE_SYSTEM_ROLES.includes(updates.role)) {
-      throw new Error(`Invalid role '${updates.role}'. Must be one of: ${ASSIGNABLE_SYSTEM_ROLES.join(', ')}`);
-    }
-
-    // Handle password change
-    if (updates.password) {
-      if (updates.password.length < 6) {
-        throw new Error('Password must be at least 6 characters long');
+    const editableFields = ['email', 'password', 'role', 'active', 'permissions', 'locationPermissions', 'roleId'];
+    const changes = {};
+    const isCapabilityList = (value) => Array.isArray(value) && value.every((item) => typeof item === 'string');
+    for (const [field, value] of Object.entries(updates)) {
+      if (field === 'username' || field === 'id') {
+        if (value !== user[field]) throw new Error(`Account ${field} is immutable`);
+        continue;
       }
-      updates.password = await bcrypt.hash(updates.password, this.saltRounds);
+      if (!editableFields.includes(field)) throw new Error(`Unsupported account update field: ${field}`);
+      if (value === undefined) continue;
+      switch (field) {
+        case 'email':
+          if (typeof value !== 'string') throw new Error('email must be a string');
+          break;
+        case 'password':
+          if (typeof value !== 'string' || value.length < 6) {
+            throw new Error('Password must be a string at least 6 characters long');
+          }
+          break;
+        case 'role':
+          if (!ASSIGNABLE_SYSTEM_ROLES.includes(value)) throw new Error('Invalid system role');
+          break;
+        case 'active':
+          if (typeof value !== 'boolean') throw new Error('active must be a boolean');
+          break;
+        case 'roleId':
+          if (value !== null && typeof value !== 'string') throw new Error('roleId must be a string or null');
+          break;
+        case 'permissions':
+          if (!isCapabilityList(value)) throw new Error('permissions must be an array of strings');
+          break;
+        case 'locationPermissions':
+          if (!value || typeof value !== 'object' || Array.isArray(value)
+            || !Object.values(value).every(isCapabilityList)) {
+            throw new Error('locationPermissions must map Location IDs to arrays of strings');
+          }
+          break;
+      }
+      changes[field] = value;
     }
-
-    if (updates.permissions !== undefined) {
-      updates.permissions = normalizeStoredPermissions(updates.permissions);
+    // Validate the whole update before hashing or changing any stored fields.
+    if (changes.password !== undefined) changes.password = await bcrypt.hash(changes.password, this.saltRounds);
+    if (changes.permissions !== undefined) changes.permissions = normalizeStoredPermissions(changes.permissions);
+    if (changes.locationPermissions !== undefined) {
+      changes.locationPermissions = Object.fromEntries(Object.entries(changes.locationPermissions)
+        .map(([locationId, capabilities]) => [locationId, [...capabilities]]));
     }
 
     // Update user
     const updatedUser = {
       ...user,
-      ...updates,
-      role: updates.role !== undefined ? updates.role : (user.role || 'user'),
+      ...changes,
+      role: changes.role !== undefined ? changes.role : (user.role || 'user'),
       updated: new Date().toISOString()
     };
 
@@ -355,7 +385,8 @@ class UserManager {
       throw new Error('User manager not initialized');
     }
 
-    const configUsername = configManager.get('auth.username');
+    if (typeof username !== 'string' || !username || typeof password !== 'string' || !password) return null;
+    const configUsername = configManager.get('auth.username') || 'admin';
 
     // If authenticating the admin user, use config.ini as the source of truth.
     if (username === configUsername) {
@@ -392,7 +423,8 @@ class UserManager {
 
     // For any other user, use the standard users.json logic.
     const user = this.users.get(username);
-    if (!user || !user.active) {
+    if (!user || user.active !== true || user.username !== username || user.id === 0 || user.id == null
+      || !ASSIGNABLE_SYSTEM_ROLES.includes(user.role || 'user')) {
       return null;
     }
 

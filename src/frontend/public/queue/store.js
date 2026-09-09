@@ -1,5 +1,4 @@
-(function attachQueueStore(global) {
-    class WebQueueStore {
+export default class WebQueueStore {
         constructor() {
             this.items = new Map();
         }
@@ -19,7 +18,4 @@
             this.items.set(id, { ...item, ...patch });
             return true;
         }
-    }
-
-    global.FileTransferWebQueueStore = WebQueueStore;
-})(window);
+}

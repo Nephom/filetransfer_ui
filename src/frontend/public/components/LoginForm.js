@@ -1,7 +1,4 @@
-// Make LoginForm component available globally (must be before the component definition)
-if (!window.FileTransferApp) {
-    window.FileTransferApp = {};
-}
+import React from 'react';
 
 const LoginForm = ({ onLogin }) => {
     const [credentials, setCredentials] = React.useState({ username: '', password: '' });
@@ -292,13 +289,4 @@ const LoginForm = ({ onLogin }) => {
     );
 };
 
-// Make LoginForm component available globally
-if (!window.FileTransferApp) {
-    window.FileTransferApp = {};
-}
-window.FileTransferApp.LoginForm = LoginForm;
-
-// Export for use in main app
-if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { LoginForm };
-}
+export default LoginForm;

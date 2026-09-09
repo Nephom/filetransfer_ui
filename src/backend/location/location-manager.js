@@ -1,5 +1,7 @@
 const fs = require('node:fs').promises;
 const path = require('node:path');
+const { createHash } = require('node:crypto');
+const { assertSafePath, pathError } = require('../file-system/path-safety');
 
 const LOCATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
@@ -11,6 +13,7 @@ class LocationManager {
     this.platform = platform;
     this.mountInfoReader = mountInfoReader || (fsModule.readFile ? (filePath, encoding) => fsModule.readFile(filePath, encoding) : null);
     this.locations = this._normalizeLocations();
+    this.rootIdentities = new Map();
   }
 
   _normalizeLocations() {
@@ -94,7 +97,38 @@ class LocationManager {
   getNamespace(locationId) {
     const location = this.getLocation(locationId);
     if (!location) throw new Error(`Unknown Location: ${locationId}`);
-    return `location:${location.id}`;
+    return `location:${location.id}:${this.getRevision(locationId)}`;
+  }
+
+  getRevision(locationId) {
+    const location = this.getLocation(locationId);
+    if (!location) throw new Error(`Unknown Location: ${locationId}`);
+    return createHash('sha256').update(JSON.stringify(location)).digest('hex');
+  }
+
+  async _checkedRoot(location) {
+    const canonicalRoot = await this.fs.realpath(location.rootPath);
+    const stats = await this.fs.stat(canonicalRoot);
+    if (!stats.isDirectory()) throw pathError('ENOTDIR', 'Location root is not a directory');
+    const identity = `${canonicalRoot}:${stats.dev}:${stats.ino}`;
+    const previous = this.rootIdentities.get(location.id);
+    if (previous && previous !== identity) throw pathError('ESTALE', 'Location root identity changed; refresh configuration');
+    this.rootIdentities.set(location.id, identity);
+    return canonicalRoot;
+  }
+
+  async resolveCheckedPath(locationId, relativePath = '', options = {}) {
+    const location = this.getLocation(locationId);
+    if (!location) throw pathError('ENOENT', 'Unknown Location');
+    if (!location.enabled) throw pathError('EACCES', 'Location is disabled');
+    const target = this.resolveRelativePath(locationId, relativePath);
+    if (location.storageType === 'nfs' && !(await this.isMounted(location.rootPath))) {
+      throw pathError('NOT_MOUNTED', 'Location is not mounted');
+    }
+    const canonicalRoot = await this._checkedRoot(location);
+    const result = await assertSafePath(canonicalRoot, path.resolve(canonicalRoot, path.relative(location.rootPath, target)), options);
+    if (options.protectRoot && result === canonicalRoot) throw pathError('EPERM', 'Cannot mutate a Location root');
+    return result;
   }
 
   resolveRelativePath(locationId, relativePath = '') {
@@ -103,7 +137,7 @@ class LocationManager {
     const candidate = path.resolve(location.rootPath, relativePath);
     const relative = path.relative(location.rootPath, candidate);
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-      throw new Error('Path escapes the Location root');
+      throw pathError('EACCES', 'Path escapes the Location root');
     }
     return candidate;
   }
@@ -119,6 +153,7 @@ class LocationManager {
       }
       const stats = await this.fs.stat(location.rootPath);
       if (!stats.isDirectory()) return { ...location, status: 'error', errorCode: 'ENOTDIR' };
+      await this._checkedRoot(location);
       await this.fs.access(location.rootPath);
       return { ...location, status: 'online' };
     } catch (error) {

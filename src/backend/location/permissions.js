@@ -21,11 +21,17 @@ class LocationPermissionManager {
   constructor(locationManager) {
     this.locationManager = locationManager;
     this.userResolver = null;
+    this.accountResolver = null;
     this.roleResolver = null;
   }
 
   setUserResolver(userResolver) {
     this.userResolver = userResolver;
+  }
+
+  // Resolver: (identity) => { exists, active, role, user }. Includes config admin.
+  setAccountResolver(accountResolver) {
+    this.accountResolver = accountResolver;
   }
 
   // Resolver: (roleId) => Role | null. Lets a user's `roleId` supply a
@@ -120,13 +126,22 @@ class LocationPermissionManager {
   }
 
   async assertCurrent(user, locationId, capability) {
-    if (!this.userResolver && user?.role !== 'admin') {
+    if (!this.accountResolver && !this.userResolver) {
       throw Object.assign(new Error('Location permission service is not ready.'), { statusCode: 503 });
     }
-    const currentUser = user?.role === 'admin'
-      ? user
-      : await this.userResolver(user.username);
-    if (!currentUser || currentUser.active === false) {
+    let currentUser = null;
+    if (user && typeof user.username === 'string' && user.id != null) {
+      if (this.accountResolver) {
+        const account = await this.accountResolver(user);
+        if (account?.exists && account.active) currentUser = account.user;
+      } else {
+        currentUser = await this.userResolver(user.username);
+        // A username-only resolver cannot establish the config administrator.
+        if (currentUser?.role === 'admin' || currentUser?.id === 0) currentUser = null;
+      }
+    }
+    if (!currentUser || currentUser.active !== true
+      || currentUser.id !== user.id || currentUser.username !== user.username) {
       throw Object.assign(new Error('Account no longer exists or is inactive.'), { statusCode: 401 });
     }
     this.assert(currentUser, locationId, capability);

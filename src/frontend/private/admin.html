@@ -849,6 +849,13 @@
     </div>
 
     <script>
+        // These private-page requests use only the HttpOnly session cookie.
+        const fetch = (url, options = {}) => {
+            const headers = new Headers(options.headers);
+            headers.delete('Authorization');
+            return window.fetch(url, { ...options, headers, credentials: 'same-origin' });
+        };
+
         // Fetch initial stats
         async function fetchStats() {
             try {
@@ -1373,45 +1380,61 @@
                 return;
             }
 
-            let html = `<table class="user-table"><thead><tr>
-                <th style="width: 34px;"><input type="checkbox" id="selectAllVisible" onchange="toggleSelectAllVisible(this.checked)"></th>
+            usersList.innerHTML = `<table class="user-table"><thead><tr>
+                <th style="width: 34px;"><input type="checkbox" id="selectAllVisible"></th>
                 <th>Username</th><th>Email</th><th>System Role</th><th>Permission Role</th><th>Source</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>`;
+            const selectAll = document.getElementById('selectAllVisible');
+            selectAll.addEventListener('change', () => toggleSelectAllVisible(selectAll.checked));
+            const body = usersList.querySelector('tbody');
 
             users.forEach(user => {
                 const lastLogin = user.lastLogin ? new Date(user.lastLogin).toLocaleString() : 'Never';
                 const isConfigUser = user.isConfigUser || user.created === 'System Default';
-                const source = isConfigUser ? '<span style="background: rgba(147, 51, 234, 0.3); padding: 4px 8px; border-radius: 4px; font-size: 0.85rem;">config.ini</span>' : '<span style="background: rgba(59, 130, 246, 0.3); padding: 4px 8px; border-radius: 4px; font-size: 0.85rem;">users.json</span>';
                 const roleColor = user.role === 'admin' ? 'rgba(239, 68, 68, 0.3)' : (user.role === 'superuser' ? 'rgba(245, 158, 11, 0.3)' : 'rgba(34, 197, 94, 0.3)');
                 const permissionRole = rolesCache.find((role) => role.id === user.roleId);
-                const permissionRoleLabel = permissionRole ? `<span class="role-chip">${escapeHtml(permissionRole.name)}</span>` : '<span class="source-chip fallback">Fallback</span>';
                 const manageable = canActorManageUser(user);
-                const checked = selectedUsernames.has(user.username) ? 'checked' : '';
-
-                html += `
-                    <tr>
-                        <td>${manageable ? `<input type="checkbox" ${checked} onchange="toggleUserSelection('${user.username}', this.checked)">` : ''}</td>
-                        <td>${user.username}</td>
-                        <td>${user.email || 'N/A'}</td>
-                        <td><span style="background: ${roleColor}; padding: 4px 8px; border-radius: 4px;">${user.role}</span></td>
-                        <td>${permissionRoleLabel}</td>
-                        <td>${source}</td>
-                        <td>${lastLogin}</td>
-                        <td>
-                            ${isConfigUser
-                                ? '<span style="opacity: 0.5; font-size: 0.85rem;">🔒 Managed in Manager Config</span>'
-                                : manageable
-                                    ? `<button class="btn btn-small" onclick="openEditUser('${user.username}')">✏️ Edit</button>
-                                       <button class="btn btn-small danger" onclick="deleteUser('${user.username}')">🗑️ Delete</button>`
-                                    : '<span style="opacity: 0.5; font-size: 0.85rem;">🔒 Admin only</span>'
-                            }
-                        </td>
-                    </tr>
-                `;
+                const row = body.insertRow();
+                const selection = row.insertCell();
+                if (manageable) {
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.checked = selectedUsernames.has(user.username);
+                    checkbox.addEventListener('change', () => toggleUserSelection(user.username, checkbox.checked));
+                    selection.appendChild(checkbox);
+                }
+                row.insertCell().textContent = user.username;
+                row.insertCell().textContent = user.email || 'N/A';
+                const roleBadge = appendText(row.insertCell(), 'span', user.role);
+                roleBadge.style.cssText = `background: ${roleColor}; padding: 4px 8px; border-radius: 4px;`;
+                appendText(row.insertCell(), 'span', permissionRole ? permissionRole.name : 'Fallback', permissionRole ? 'role-chip' : 'source-chip fallback');
+                const source = appendText(row.insertCell(), 'span', isConfigUser ? 'config.ini' : 'users.json');
+                source.style.cssText = `background: ${isConfigUser ? 'rgba(147, 51, 234, 0.3)' : 'rgba(59, 130, 246, 0.3)'}; padding: 4px 8px; border-radius: 4px; font-size: 0.85rem;`;
+                row.insertCell().textContent = lastLogin;
+                const actions = row.insertCell();
+                if (manageable) {
+                    appendAction(actions, '✏️ Edit', () => openEditUser(user.username));
+                    appendAction(actions, '🗑️ Delete', () => deleteUser(user.username), true);
+                } else {
+                    appendText(actions, 'span', isConfigUser ? '🔒 Managed in Manager Config' : '🔒 Admin only').style.cssText = 'opacity: 0.5; font-size: 0.85rem;';
+                }
             });
-
-            html += '</tbody></table>';
-            usersList.innerHTML = html;
             updateBulkToolbar();
+        }
+
+        function appendText(parent, tag, text, className = '') {
+            const element = document.createElement(tag);
+            element.textContent = text ?? '';
+            element.className = className;
+            parent.appendChild(element);
+            return element;
+        }
+
+        function appendAction(parent, label, action, danger = false) {
+            const button = appendText(parent, 'button', label, `btn btn-small${danger ? ' danger' : ''}`);
+            button.type = 'button';
+            button.addEventListener('click', action);
+            parent.appendChild(document.createTextNode(' '));
+            return button;
         }
 
         async function createUser() {
@@ -1475,7 +1498,7 @@
             }
 
             try {
-                const response = await fetch(`/api/admin/users/${username}`, {
+                const response = await fetch(`/api/admin/users/${encodeURIComponent(username)}`, {
                     method: 'DELETE',
                     headers: {
                         'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -1775,24 +1798,21 @@
                 return;
             }
 
-            let html = '<div class="status-note">A Role is the shared source of Location permissions. Changes apply immediately to every assigned user.</div><table class="user-table"><thead><tr><th>Name</th><th>Description</th><th>Locations granted</th><th>Assigned users</th><th>Actions</th></tr></thead><tbody>';
+            rolesList.innerHTML = '<div class="status-note">A Role is the shared source of Location permissions. Changes apply immediately to every assigned user.</div><table class="user-table"><thead><tr><th>Name</th><th>Description</th><th>Locations granted</th><th>Assigned users</th><th>Actions</th></tr></thead><tbody></tbody></table>';
+            const body = rolesList.querySelector('tbody');
             roles.forEach((role) => {
                 const grantedLocations = Object.keys(role.locationPermissions || {}).length;
-                html += `
-                    <tr>
-                        <td>${role.name}</td>
-                        <td>${role.description || '<span style="opacity:0.6;">—</span>'}</td>
-                        <td>${grantedLocations}</td>
-                        <td>${role.assignedUserCount || 0}</td>
-                        <td>
-                            <button class="btn btn-small" onclick="editRole('${role.id}')">✏️ Edit</button>
-                            <button class="btn btn-small danger" onclick="deleteRole('${role.id}')">🗑️ Delete</button>
-                        </td>
-                    </tr>
-                `;
+                const row = body.insertRow();
+                row.insertCell().textContent = role.name;
+                const description = row.insertCell();
+                if (role.description) description.textContent = role.description;
+                else appendText(description, 'span', '—').style.opacity = '0.6';
+                row.insertCell().textContent = grantedLocations;
+                row.insertCell().textContent = role.assignedUserCount || 0;
+                const actions = row.insertCell();
+                appendAction(actions, '✏️ Edit', () => editRole(role.id));
+                appendAction(actions, '🗑️ Delete', () => deleteRole(role.id), true);
             });
-            html += '</tbody></table>';
-            rolesList.innerHTML = html;
         }
 
         function renderRoleMatrix(existingPermissions = {}, containerId = 'roleMatrixContainer', cellClass = 'role-matrix-cell') {
@@ -1802,20 +1822,26 @@
                 return;
             }
 
-            let html = '<table class="locations-table"><thead><tr><th>Location</th>';
-            capabilitiesCache.forEach((capability) => { html += `<th style="text-align:center;">${capability}</th>`; });
-            html += '</tr></thead><tbody>';
+            container.innerHTML = '<table class="locations-table"><thead><tr><th>Location</th></tr></thead><tbody></tbody></table>';
+            const header = container.querySelector('thead tr');
+            capabilitiesCache.forEach(capability => { appendText(header, 'th', capability).style.textAlign = 'center'; });
+            const body = container.querySelector('tbody');
             locationsCache.forEach((location) => {
                 const granted = existingPermissions[location.id] || [];
-                html += `<tr><td>${location.displayName} (${location.id})</td>`;
+                const row = body.insertRow();
+                row.insertCell().textContent = `${location.displayName} (${location.id})`;
                 capabilitiesCache.forEach((capability) => {
-                    const checked = granted.includes(capability) ? 'checked' : '';
-                    html += `<td style="text-align:center;"><input type="checkbox" class="${cellClass}" data-location="${location.id}" data-capability="${capability}" ${checked}></td>`;
+                    const cell = row.insertCell();
+                    cell.style.textAlign = 'center';
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.className = cellClass;
+                    checkbox.dataset.location = location.id;
+                    checkbox.dataset.capability = capability;
+                    checkbox.checked = granted.includes(capability);
+                    cell.appendChild(checkbox);
                 });
-                html += '</tr>';
             });
-            html += '</tbody></table>';
-            container.innerHTML = html;
         }
 
         function showAddRoleForm() {
@@ -1844,7 +1870,7 @@
         }
 
         function collectMatrixPermissions(cellClass = 'role-matrix-cell') {
-            const locationPermissions = {};
+            const locationPermissions = Object.create(null);
             document.querySelectorAll(`.${cellClass}:checked`).forEach((checkbox) => {
                 const locationId = checkbox.dataset.location;
                 const capability = checkbox.dataset.capability;
@@ -2107,38 +2133,27 @@
         }
 
         function displaySANs(sanConfig) {
-            const ipList = document.getElementById('ipList');
-            const hostnameList = document.getElementById('hostnameList');
-
-            // Display IPs
-            let ipHtml = '';
-            if (sanConfig.ips && sanConfig.ips.length > 0) {
-                sanConfig.ips.forEach(ip => {
-                    const isAutoDetected = sanConfig.autoDetected && sanConfig.autoDetected.includes(ip);
-                    const badge = isAutoDetected ? '<span style="background: rgba(59, 130, 246, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; margin-left: 8px;">Auto</span>' : '';
-                    const removeBtn = !isAutoDetected ? `<button class="btn btn-small danger" onclick="removeSAN('${ip}', 'ip')" style="margin-left: 10px;">Remove</button>` : '';
-                    ipHtml += `<div style="background: rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">`;
-                    ipHtml += `<span>${ip}${badge}</span>${removeBtn}`;
-                    ipHtml += '</div>';
+            for (const [type, listId, values, emptyMessage] of [
+                ['ip', 'ipList', sanConfig.ips, 'No IP addresses configured'],
+                ['hostname', 'hostnameList', sanConfig.hostnames, 'No hostnames configured']
+            ]) {
+                const list = document.getElementById(listId);
+                list.replaceChildren();
+                if (!values?.length) {
+                    appendText(list, 'p', emptyMessage).style.cssText = 'opacity: 0.6; font-size: 0.9rem;';
+                    continue;
+                }
+                values.forEach(value => {
+                    const row = appendText(list, 'div', '');
+                    row.style.cssText = 'background: rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;';
+                    const label = appendText(row, 'span', value);
+                    if (type === 'ip' && sanConfig.autoDetected?.includes(value)) {
+                        appendText(label, 'span', 'Auto').style.cssText = 'background: rgba(59, 130, 246, 0.3); padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; margin-left: 8px;';
+                    } else {
+                        appendAction(row, 'Remove', () => removeSAN(value, type), true).style.marginLeft = '10px';
+                    }
                 });
-            } else {
-                ipHtml = '<p style="opacity: 0.6; font-size: 0.9rem;">No IP addresses configured</p>';
             }
-            ipList.innerHTML = ipHtml;
-
-            // Display Hostnames
-            let hostnameHtml = '';
-            if (sanConfig.hostnames && sanConfig.hostnames.length > 0) {
-                sanConfig.hostnames.forEach(hostname => {
-                    hostnameHtml += `<div style="background: rgba(255, 255, 255, 0.1); padding: 10px; border-radius: 8px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">`;
-                    hostnameHtml += `<span>${hostname}</span>`;
-                    hostnameHtml += `<button class="btn btn-small danger" onclick="removeSAN('${hostname}', 'hostname')" style="margin-left: 10px;">Remove</button>`;
-                    hostnameHtml += '</div>';
-                });
-            } else {
-                hostnameHtml = '<p style="opacity: 0.6; font-size: 0.9rem;">No hostnames configured</p>';
-            }
-            hostnameList.innerHTML = hostnameHtml;
         }
 
         async function generateCertificate() {

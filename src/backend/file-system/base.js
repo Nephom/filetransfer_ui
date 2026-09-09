@@ -1,323 +1,153 @@
+const fs = require('node:fs').promises;
+const path = require('node:path');
+const { assertSafePath, assertSafeTree, assertTransferPaths, containsPath, pathError } = require('./path-safety');
+const { withOperationLocks } = require('./operation-locks');
 
-/**
- * Base File System Classes
- * Defines the core abstract and local file system implementations.
- */
-
-const fs = require('fs').promises;
-const path = require('path');
-
-/**
- * Local File System Implementation
- */
 class LocalFileSystem {
-  /**
-   * Read a file from the local file system
-   * @param {string} path - Path to the file
-   * @returns {Promise<Buffer|string>} File content
-   */
-  async read(path) {
-    try {
-      return await fs.readFile(path);
-    } catch (error) {
-      throw new Error(`Failed to read file ${path}: ${error.message}`);
-    }
+  constructor({ storagePath } = {}) {
+    this.storagePath = storagePath && path.resolve(storagePath);
+    this.rootIdentity = null;
   }
 
-  /**
-   * Write content to a file
-   * @param {string} path - Path to the file
-   * @param {Buffer|string} content - Content to write
-   * @param {Object} options - Write options
-   * @returns {Promise<void>}
-   */
-  async write(path, content, options = {}) {
-    try {
-      await fs.writeFile(path, content, options);
-    } catch (error) {
-      throw new Error(`Failed to write file ${path}: ${error.message}`);
+  async checked(target, { allowMissing = true, external = false, protectRoot = false } = {}) {
+    let root = this.storagePath;
+    if (!root || external) root = path.parse(path.resolve(target)).root;
+    const canonical = await fs.realpath(root);
+    const stats = await fs.stat(canonical);
+    if (this.storagePath && !external) {
+      const identity = `${canonical}:${stats.dev}:${stats.ino}`;
+      if (this.rootIdentity && this.rootIdentity !== identity) throw pathError('ESTALE', 'Location root identity changed');
+      this.rootIdentity = identity;
     }
+    const safe = await assertSafePath(root, target, { allowMissing });
+    if (protectRoot && safe === canonical) throw pathError('EPERM', 'Cannot mutate a storage root');
+    return safe;
   }
 
-  /**
-   * Delete a file or directory
-   * @param {string} path - Path to delete
-   * @returns {Promise<void>}
-   */
-  async delete(path) {
-    try {
-      await fs.rm(path, { recursive: true });
-    } catch (error) {
-      throw new Error(`Failed to delete ${path}: ${error.message}`);
-    }
+  async read(target) { return fs.readFile(await this.checked(target, { allowMissing: false })); }
+
+  async write(target, content, options = {}) {
+    return withOperationLocks([target], async () => {
+      target = await this.checked(target, { protectRoot: true });
+      await fs.writeFile(target, content, options);
+    }, { signal: options.signal });
   }
 
-  /**
-   * List contents of a directory
-   * @param {string} path - Path to directory
-   * @returns {Promise<Array>} List of items in directory
-   */
-  async list(path) {
-    try {
-      const items = await fs.readdir(path);
-      const itemsWithStats = await Promise.all(
-        items.map(async (item) => {
-          const itemPath = `${path}/${item}`;
-          try {
-            const stats = await fs.stat(itemPath);
-            return {
-              name: item,
-              path: itemPath,
-              isDirectory: stats.isDirectory(),
-              size: stats.size,
-              modified: stats.mtime.toISOString()
-            };
-          } catch (error) {
-            // If we can't get stats, assume it's a file
-            return {
-              name: item,
-              path: itemPath,
-              isDirectory: false,
-              size: 0,
-              modified: new Date().toISOString()
-            };
-          }
-        })
-      );
-      return itemsWithStats;
-    } catch (error) {
-      throw new Error(`Failed to list directory ${path}: ${error.message}`);
-    }
+  async delete(target) {
+    return withOperationLocks([target], async () => {
+      target = await this.checked(target, { allowMissing: false, protectRoot: true });
+      const entries = await assertSafeTree(target);
+      await withOperationLocks(entries.map(entry => entry.path), () => fs.rm(target, { recursive: true }));
+    });
   }
 
-  /**
-   * Create a directory
-   * @param {string} path - Path to create
-   * @returns {Promise<void>}
-   */
-  async mkdir(path) {
-    try {
-      await fs.mkdir(path, { recursive: true });
-    } catch (error) {
-      throw new Error(`Failed to create directory ${path}: ${error.message}`);
-    }
+  async list(target) {
+    target = await this.checked(target, { allowMissing: false });
+    return Promise.all((await fs.readdir(target)).map(async name => {
+      const item = await this.checked(path.join(target, name), { allowMissing: false });
+      const stats = await fs.lstat(item);
+      return { name, path: item, isDirectory: stats.isDirectory(), size: stats.size, modified: stats.mtime.toISOString() };
+    }));
   }
 
-  /**
-   * Check if a file or directory exists
-   * @param {string} path - Path to check
-   * @returns {Promise<boolean>} True if exists
-   */
-  async exists(path) {
+  async mkdir(target) {
+    return withOperationLocks([target], async () => fs.mkdir(await this.checked(target), { recursive: true }));
+  }
+
+  async exists(target) {
     try {
-      await fs.access(path);
+      await this.checked(target, { allowMissing: false });
       return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Get file metadata
-   * @param {string} path - Path to file
-   * @returns {Promise<Object>} File metadata
-   */
-  async stat(path) {
-    try {
-      const stats = await fs.stat(path);
-      return {
-        size: stats.size,
-        isFile: stats.isFile(),
-        isDirectory: stats.isDirectory(),
-        modified: stats.mtime,
-        created: stats.birthtime
-      };
     } catch (error) {
-      throw new Error(`Failed to get stats for ${path}: ${error.message}`);
+      if (error.code === 'ENOENT') return false;
+      throw error;
     }
   }
 
-  /**
-   * Rename/move a file or directory
-   * @param {string} oldPath - Current path
-   * @param {string} newPath - New path
-   * @returns {Promise<void>}
-   */
-  async rename(oldPath, newPath) {
-    try {
-      await fs.rename(oldPath, newPath);
-    } catch (error) {
-      throw new Error(`Failed to rename ${oldPath} to ${newPath}: ${error.message}`);
-    }
+  async stat(target) {
+    const stats = await fs.lstat(await this.checked(target, { allowMissing: false }));
+    return { size: stats.size, isFile: stats.isFile(), isDirectory: stats.isDirectory(), modified: stats.mtime, created: stats.birthtime };
   }
 
-  /**
-   * Copy a file or directory
-   * @param {string} sourcePath - Source path
-   * @param {string} destinationPath - Destination path
-   * @returns {Promise<void>}
-   */
-  async copy(sourcePath, destinationPath) {
-    try {
-      const stats = await fs.stat(sourcePath);
+  async transferPaths(source, destination, moving = false) {
+    // A destination filesystem also accepts a caller-authorized other Location
+    // or trusted upload-temp source. It is still checked without following links.
+    const external = this.storagePath && !containsPath(this.storagePath, path.resolve(source))
+      && !containsPath(await fs.realpath(this.storagePath), path.resolve(source));
+    source = await this.checked(source, { allowMissing: false, external, protectRoot: moving });
+    destination = await this.checked(destination, { protectRoot: true });
+    return assertTransferPaths(source, destination);
+  }
 
-      if (stats.isDirectory()) {
-        // Copy directory recursively
-        await fs.mkdir(destinationPath, { recursive: true });
-        const items = await fs.readdir(sourcePath);
+  async rename(source, destination) {
+    return withOperationLocks([source, destination], async () => {
+      ({ source, destination } = await this.transferPaths(source, destination, true));
+      const entries = await assertSafeTree(source);
+      try { entries.push(...await assertSafeTree(destination)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      await withOperationLocks(entries.map(entry => entry.path), () => fs.rename(source, destination));
+    });
+  }
 
-        for (const item of items) {
-          const srcPath = path.join(sourcePath, item);
-          const destPath = path.join(destinationPath, item);
-          await this.copy(srcPath, destPath);
+  async copy(source, destination) {
+    return withOperationLocks([source, destination], async () => {
+      ({ source, destination } = await this.transferPaths(source, destination));
+      const entries = await assertSafeTree(source);
+      let destinationEntries = [];
+      try { destinationEntries = await assertSafeTree(destination); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      // Preflight every merge target, including hard-link aliases inside trees.
+      const sourceIdentities = new Set(entries.map(({ stats }) => `${stats.dev}:${stats.ino}`));
+      for (const entry of entries) {
+        const target = path.join(destination, path.relative(source, entry.path));
+        await this.checked(target);
+        try {
+          const stats = await fs.lstat(target);
+          if (sourceIdentities.has(`${stats.dev}:${stats.ino}`)) throw pathError('EINVAL', 'Destination aliases a source object');
+          if (stats.isDirectory() !== entry.stats.isDirectory()) throw pathError('EEXIST', 'Source and destination types differ');
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      await withOperationLocks([...entries, ...destinationEntries].map(entry => entry.path), async () => {
+        for (const entry of entries) {
+          const target = path.join(destination, path.relative(source, entry.path));
+          if (entry.stats.isDirectory()) await fs.mkdir(target, { recursive: true });
+          else await fs.copyFile(entry.path, target);
         }
-      } else {
-        // Copy file
-        await fs.copyFile(sourcePath, destinationPath);
-      }
-    } catch (error) {
-      throw new Error(`Failed to copy ${sourcePath} to ${destinationPath}: ${error.message}`);
-    }
+      });
+    });
   }
 
-  /**
-   * Move a file or directory
-   * @param {string} sourcePath - Source path
-   * @param {string} destinationPath - Destination path
-   * @returns {Promise<void>}
-   */
-  async move(sourcePath, destinationPath) {
-    try {
-      await this.rename(sourcePath, destinationPath);
-    } catch (error) {
-      // If rename fails (e.g., across different filesystems), try copy + delete
+  async move(source, destination) {
+    return withOperationLocks([source, destination], async () => {
+      ({ source, destination } = await this.transferPaths(source, destination, true));
       try {
-        await this.copy(sourcePath, destinationPath);
-        await this.delete(sourcePath);
-      } catch (copyError) {
-        throw new Error(`Failed to move ${sourcePath} to ${destinationPath}: ${error.message}`);
+        await this.rename(source, destination);
+      } catch (error) {
+        if (error.code !== 'EXDEV') throw error;
+        await this.copy(source, destination);
+        // The source may be outside this destination instance (staged uploads).
+        if (this.storagePath && !containsPath(await fs.realpath(this.storagePath), source)) {
+          await new LocalFileSystem().delete(source);
+        } else await this.delete(source);
       }
-    }
+    });
   }
 }
 
 class FileSystem {
-  /**
-   * Initialize the file system abstraction
-   * @param {Object} options - Configuration options
-   */
   constructor(options = {}) {
     this.options = options;
     this.backend = this._initializeBackend();
   }
-
-  /**
-   * Initialize the appropriate backend based on configuration
-   * @private
-   */
-  _initializeBackend() {
-    // For now, we'll default to local file system
-    // In a real implementation, this would support multiple backends
-    return new LocalFileSystem();
-  }
-
-  /**
-   * Read a file from the file system
-   * @param {string} path - Path to the file
-   * @returns {Promise<Buffer|string>} File content
-   */
-  async read(path) {
-    return await this.backend.read(path);
-  }
-
-  /**
-   * Write content to a file
-   * @param {string} path - Path to the file
-   * @param {Buffer|string} content - Content to write
-   * @param {Object} options - Write options
-   * @returns {Promise<void>}
-   */
-  async write(path, content, options = {}) {
-    return await this.backend.write(path, content, options);
-  }
-
-  /**
-   * Delete a file or directory
-   * @param {string} path - Path to delete
-   * @returns {Promise<void>}
-   */
-  async delete(path) {
-    return await this.backend.delete(path);
-  }
-
-  /**
-   * List contents of a directory
-   * @param {string} path - Path to directory
-   * @returns {Promise<Array>} List of items in directory
-   */
-  async list(path) {
-    return await this.backend.list(path);
-  }
-
-  /**
-   * Create a directory
-   * @param {string} path - Path to create
-   * @returns {Promise<void>}
-   */
-  async mkdir(path) {
-    return await this.backend.mkdir(path);
-  }
-
-  /**
-   * Check if a file or directory exists
-   * @param {string} path - Path to check
-   * @returns {Promise<boolean>} True if exists
-   */
-  async exists(path) {
-    return await this.backend.exists(path);
-  }
-
-  /**
-   * Get file metadata
-   * @param {string} path - Path to file
-   * @returns {Promise<Object>} File metadata
-   */
-  async stat(path) {
-    return await this.backend.stat(path);
-  }
-
-  /**
-   * Rename a file or directory
-   * @param {string} oldPath - Current path
-   * @param {string} newPath - New path
-   * @returns {Promise<void>}
-   */
-  async rename(oldPath, newPath) {
-    return await this.backend.rename(oldPath, newPath);
-  }
-
-  /**
-   * Copy a file or directory
-   * @param {string} sourcePath - Source path
-   * @param {string} destinationPath - Destination path
-   * @returns {Promise<void>}
-   */
-  async copy(sourcePath, destinationPath) {
-    return await this.backend.copy(sourcePath, destinationPath);
-  }
-
-  /**
-   * Move a file or directory
-   * @param {string} sourcePath - Source path
-   * @param {string} destinationPath - Destination path
-   * @returns {Promise<void>}
-   */
-  async move(sourcePath, destinationPath) {
-    return await this.backend.move(sourcePath, destinationPath);
-  }
+  _initializeBackend() { return new LocalFileSystem(this.options); }
+  async read(target) { return this.backend.read(target); }
+  async write(target, content, options = {}) { return this.backend.write(target, content, options); }
+  async delete(target) { return this.backend.delete(target); }
+  async list(target) { return this.backend.list(target); }
+  async mkdir(target) { return this.backend.mkdir(target); }
+  async exists(target) { return this.backend.exists(target); }
+  async stat(target) { return this.backend.stat(target); }
+  async rename(source, destination) { return this.backend.rename(source, destination); }
+  async copy(source, destination) { return this.backend.copy(source, destination); }
+  async move(source, destination) { return this.backend.move(source, destination); }
 }
 
-module.exports = {
-  FileSystem,
-  LocalFileSystem,
-};
+module.exports = { FileSystem, LocalFileSystem };

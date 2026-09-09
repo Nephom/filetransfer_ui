@@ -4,6 +4,8 @@ set -u
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT_DIR/scripts/runtime.sh"
 
+check_browser_build || exit 1
+
 PORT="$(server_port)"
 STORAGE_PATH="$(storage_path)"
 

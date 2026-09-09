@@ -15,6 +15,7 @@ use std::io::{Read, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -25,6 +26,87 @@ static CANCELLED_TRANSFER_IDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new(
 static API_CLIENTS: OnceLock<Mutex<HashMap<bool, Client>>> = OnceLock::new();
 static DOWNLOAD_CLIENTS: OnceLock<Mutex<HashMap<bool, Client>>> = OnceLock::new();
 static SESSION_COOKIE_JARS: OnceLock<Mutex<HashMap<bool, Arc<Jar>>>> = OnceLock::new();
+static API_SESSIONS: OnceLock<Mutex<HashMap<String, Arc<ApiSession>>>> = OnceLock::new();
+static UPLOAD_ATTEMPTS: OnceLock<Mutex<HashMap<String, Arc<UploadCancellation>>>> = OnceLock::new();
+
+struct UploadCancellation {
+    signal: tokio::sync::watch::Sender<bool>,
+    reader_waker: futures_util::task::AtomicWaker,
+}
+
+impl UploadCancellation {
+    fn new() -> Self {
+        Self {
+            signal: tokio::sync::watch::channel(false).0,
+            reader_waker: futures_util::task::AtomicWaker::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.signal.send_replace(true);
+        self.reader_waker.wake();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        *self.signal.borrow()
+    }
+
+    async fn cancelled(&self) {
+        let mut receiver = self.signal.subscribe();
+        let _ = receiver.wait_for(|cancelled| *cancelled).await;
+    }
+}
+
+struct UploadAttempt {
+    id: String,
+    cancellation: Arc<UploadCancellation>,
+}
+
+impl UploadAttempt {
+    fn start(id: String) -> Result<Self, String> {
+        // Lock in the same order as cancel_transfer, so cancellation before
+        // dispatch cannot be lost between checking the marker and registering.
+        let cancelled = cancelled_transfer_ids().lock().map_err(|e| e.to_string())?;
+        if cancelled.contains(&id) {
+            return Err("Upload transport cancelled; server outcome is unconfirmed".to_string());
+        }
+        let mut attempts = UPLOAD_ATTEMPTS
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|e| e.to_string())?;
+        if attempts.contains_key(&id) {
+            return Err("Upload attempt is already active; use a fresh transferId".to_string());
+        }
+        let cancellation = Arc::new(UploadCancellation::new());
+        attempts.insert(id.clone(), cancellation.clone());
+        Ok(Self { id, cancellation })
+    }
+}
+
+impl Drop for UploadAttempt {
+    fn drop(&mut self) {
+        // Also stop a body reader retained by the HTTP task after its caller
+        // drops the request future or receives an early response.
+        self.cancellation.cancel();
+        if let Ok(mut attempts) = UPLOAD_ATTEMPTS.get_or_init(Default::default).lock() {
+            attempts.remove(&self.id);
+        }
+    }
+}
+
+async fn await_upload<T>(
+    cancellation: &UploadCancellation,
+    work: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::select! {
+        biased;
+        // A complete response wins a simultaneous late cancellation. Never
+        // replace an already received batch acceptance with a transport error.
+        result = work => result,
+        _ = cancellation.cancelled() =>
+            Err("Upload transport cancelled; server outcome is unconfirmed".to_string()),
+    }
+}
 
 fn cancelled_transfer_ids() -> &'static Mutex<HashSet<String>> {
     CANCELLED_TRANSFER_IDS.get_or_init(|| Mutex::new(HashSet::new()))
@@ -39,10 +121,18 @@ fn is_transfer_cancelled(id: &str) -> bool {
 
 #[tauri::command]
 fn cancel_transfer(transfer_id: String) -> Result<(), String> {
-    cancelled_transfer_ids()
+    let mut cancelled = cancelled_transfer_ids()
+        .lock()
+        .map_err(|error| error.to_string())?;
+    cancelled.insert(transfer_id.clone());
+    if let Some(attempt) = UPLOAD_ATTEMPTS
+        .get_or_init(Default::default)
         .lock()
         .map_err(|error| error.to_string())?
-        .insert(transfer_id);
+        .get(&transfer_id)
+    {
+        attempt.cancel();
+    }
     Ok(())
 }
 
@@ -107,11 +197,9 @@ struct UploadProgressEvent {
 
 struct UploadProgressReader<R> {
     inner: R,
-    app: tauri::AppHandle,
-    transfer_id: String,
-    completed_before: u64,
-    completed: u64,
-    total: u64,
+    cancellation: Arc<UploadCancellation>,
+    completed: Arc<AtomicU64>,
+    emit: Arc<dyn Fn(u64) + Send + Sync>,
     last_emit: Instant,
 }
 
@@ -121,7 +209,8 @@ impl<R: AsyncRead + Unpin> AsyncRead for UploadProgressReader<R> {
         cx: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        if is_transfer_cancelled(&self.transfer_id) {
+        self.cancellation.reader_waker.register(cx.waker());
+        if self.cancellation.is_cancelled() {
             return Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
                 "Transfer cancelled",
@@ -131,16 +220,9 @@ impl<R: AsyncRead + Unpin> AsyncRead for UploadProgressReader<R> {
         let result = Pin::new(&mut self.inner).poll_read(cx, buffer);
         if let Poll::Ready(Ok(())) = &result {
             let read = (buffer.filled().len() - before) as u64;
-            self.completed += read;
+            let completed = self.completed.fetch_add(read, Ordering::Relaxed) + read;
             if read > 0 && self.last_emit.elapsed().as_millis() >= 200 {
-                let _ = self.app.emit(
-                    "upload-progress",
-                    UploadProgressEvent {
-                        transfer_id: self.transfer_id.clone(),
-                        bytes_completed: self.completed_before + self.completed,
-                        bytes_total: self.total,
-                    },
-                );
+                (self.emit)(completed);
                 self.last_emit = Instant::now();
             }
         }
@@ -345,6 +427,124 @@ fn describe_error<E: std::error::Error>(error: E) -> String {
     message
 }
 
+fn http_origin(value: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(value).map_err(|_| "Invalid HTTP(S) URL".to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("Expected an HTTP(S) URL without embedded credentials".to_string());
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+struct ApiSession {
+    origin: String,
+    ignore_tls_errors: bool,
+    jar: Arc<Jar>,
+    clients: Mutex<HashMap<bool, Client>>,
+}
+
+impl ApiSession {
+    fn new(origin: &str, ignore_tls_errors: bool) -> Result<Self, String> {
+        Ok(Self {
+            origin: http_origin(origin)?,
+            ignore_tls_errors,
+            jar: Arc::new(Jar::default()),
+            clients: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn client(&self, url: &str, ignore_tls_errors: bool, download: bool) -> Result<Client, String> {
+        if http_origin(url)? != self.origin {
+            return Err("API session origin mismatch".to_string());
+        }
+        if ignore_tls_errors != self.ignore_tls_errors {
+            return Err("API session TLS policy mismatch".to_string());
+        }
+        let mut clients = self.clients.lock().map_err(|error| error.to_string())?;
+        if let Some(client) = clients.get(&download) {
+            return Ok(client.clone());
+        }
+        let origin = self.origin.clone();
+        let mut builder = Client::builder()
+            .timeout(Duration::from_secs(if download { 300 } else { 30 }))
+            .cookie_provider(self.jar.clone())
+            .danger_accept_invalid_certs(self.ignore_tls_errors)
+            .danger_accept_invalid_hostnames(self.ignore_tls_errors)
+            // Cookie domains do not isolate ports. Check every redirect before
+            // reqwest can attach this session's cookie or forward a request body.
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                if http_origin(attempt.url().as_str()).ok().as_ref() != Some(&origin) {
+                    attempt.error("API session redirect origin mismatch")
+                } else if attempt.previous().len() >= 10 {
+                    attempt.error("Too many redirects")
+                } else {
+                    attempt.follow()
+                }
+            }));
+        if download {
+            builder = builder.no_gzip();
+        }
+        let client = builder.build().map_err(describe_error)?;
+        clients.insert(download, client.clone());
+        Ok(client)
+    }
+}
+
+#[tauri::command]
+fn create_api_session(origin: String, ignore_tls_errors: Option<bool>) -> Result<String, String> {
+    let session = Arc::new(ApiSession::new(
+        &origin,
+        ignore_tls_errors.unwrap_or(false),
+    )?);
+    let id = uuid::Uuid::new_v4().to_string();
+    API_SESSIONS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(id.clone(), session);
+    Ok(id)
+}
+
+#[tauri::command]
+fn clear_api_session(session_id: String) -> Result<(), String> {
+    // Removing the handle does not mutate any jar already held by an active
+    // request. A later login always receives a new, independent jar.
+    API_SESSIONS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(&session_id);
+    Ok(())
+}
+
+fn request_client(
+    url: &str,
+    session_id: Option<&str>,
+    ignore_tls_errors: bool,
+    download: bool,
+) -> Result<Client, String> {
+    if let Some(id) = session_id {
+        let session = API_SESSIONS
+            .get_or_init(Default::default)
+            .lock()
+            .map_err(|error| error.to_string())?
+            .get(id)
+            .cloned()
+            .ok_or_else(|| "Unknown or cleared API session".to_string())?;
+        return session.client(url, ignore_tls_errors, download);
+    }
+    // Omitted handles retain the generic REST client behavior. An invalid
+    // supplied handle must never fall through to these shared cookie jars.
+    if download {
+        download_client(ignore_tls_errors)
+    } else {
+        api_client(ignore_tls_errors)
+    }
+}
+
 fn api_client(ignore_tls_errors: bool) -> Result<Client, String> {
     let clients = API_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(cache) = clients.lock() {
@@ -450,11 +650,15 @@ async fn api_request(
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
     ignore_tls_errors: bool,
+    session_id: Option<String>,
 ) -> Result<ApiResponse, String> {
     let method = method
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
-    let request = apply_headers(api_client(ignore_tls_errors)?.request(method, url), headers);
+    let request = apply_headers(
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, false)?.request(method, url),
+        headers,
+    );
     let request = if let Some(body) = body {
         request.body(body)
     } else {
@@ -1621,72 +1825,72 @@ async fn api_upload_paths(
     paths: Vec<String>,
     path: String,
     ignore_tls_errors: bool,
+    session_id: Option<String>,
 ) -> Result<ApiResponse, String> {
-    // Queue retries reuse the item id. Clear the previous cancellation marker
-    // only when a new backend transfer attempt actually starts.
-    reset_transfer_cancellation(&transfer_id);
-    if is_transfer_cancelled(&transfer_id) {
-        return Err("Transfer cancelled".to_string());
-    }
-    validate_upload_sources(&expected_sources)?;
-    let (files, directories) = collect_upload_paths(&paths)?;
-    let total_size = files
-        .iter()
-        .map(|(file_path, _)| std::fs::metadata(file_path).map(|metadata| metadata.len()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .sum::<u64>();
-    let mut form = multipart::Form::new().text("path", path);
-    let mut completed_before = 0;
-    for directory in directories {
-        form = form.text("directoryPaths[]", directory);
-    }
-    for (file_path, relative_path) in files {
-        let file_name = file_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "Invalid upload filename".to_string())?;
-        let file_size = std::fs::metadata(&file_path)
+    // transferId identifies this dispatch attempt, not a reusable queue row.
+    let attempt = UploadAttempt::start(transfer_id.clone())?;
+    let client = request_client(&url, session_id.as_deref(), ignore_tls_errors, false)?;
+    await_upload(&attempt.cancellation, async {
+        validate_upload_sources(&expected_sources)?;
+        let (files, directories) = collect_upload_paths(&paths)?;
+        let total_size = files
+            .iter()
+            .map(|(file_path, _)| std::fs::metadata(file_path).map(|metadata| metadata.len()))
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())?
-            .len();
-        let file = tokio::fs::File::open(&file_path)
-            .await
-            .map_err(|error| error.to_string())?;
-        let reader = UploadProgressReader {
-            inner: file,
-            app: app.clone(),
-            transfer_id: transfer_id.clone(),
-            completed_before,
-            completed: 0,
-            total: total_size,
-            last_emit: Instant::now() - std::time::Duration::from_secs(1),
-        };
-        let stream = tokio_util::io::ReaderStream::new(reader);
-        let part =
-            multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), file_size)
-                .file_name(file_name.to_string());
-        form = form.text("filePaths[]", relative_path);
-        form = form.part("files", part);
-        completed_before += file_size;
-    }
-    let request = apply_headers(
-        api_client(ignore_tls_errors)?.post(url).multipart(form),
-        headers,
-    );
-    let response = response_from(request.send().await.map_err(describe_error)?).await?;
-    if is_transfer_cancelled(&transfer_id) {
-        return Err("Transfer cancelled".to_string());
-    }
-    let _ = app.emit(
-        "upload-progress",
-        UploadProgressEvent {
-            transfer_id,
-            bytes_completed: total_size,
-            bytes_total: total_size,
-        },
-    );
-    Ok(response)
+            .into_iter()
+            .sum::<u64>();
+        let mut form = multipart::Form::new().text("path", path);
+        let completed = Arc::new(AtomicU64::new(0));
+        let emit: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |bytes_completed| {
+            let _ = app.emit(
+                "upload-progress",
+                UploadProgressEvent {
+                    transfer_id: transfer_id.clone(),
+                    bytes_completed,
+                    bytes_total: total_size,
+                },
+            );
+        });
+        emit(0);
+        for directory in directories {
+            form = form.text("directoryPaths[]", directory);
+        }
+        for (file_path, relative_path) in files {
+            let file_name = file_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| "Invalid upload filename".to_string())?;
+            let file_size = std::fs::metadata(&file_path)
+                .map_err(|error| error.to_string())?
+                .len();
+            let file = tokio::fs::File::open(&file_path)
+                .await
+                .map_err(|error| error.to_string())?;
+            let reader = UploadProgressReader {
+                inner: file,
+                cancellation: attempt.cancellation.clone(),
+                completed: completed.clone(),
+                emit: emit.clone(),
+                last_emit: Instant::now() - std::time::Duration::from_secs(1),
+            };
+            let stream = tokio_util::io::ReaderStream::new(reader);
+            let part =
+                multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), file_size)
+                    .file_name(file_name.to_string());
+            form = form.text("filePaths[]", relative_path);
+            form = form.part("files", part);
+        }
+        if attempt.cancellation.is_cancelled() {
+            return Err("Upload transport cancelled; server outcome is unconfirmed".to_string());
+        }
+        let request = apply_headers(client.post(url).multipart(form), headers);
+        let response = response_from(request.send().await.map_err(describe_error)?).await?;
+        // Source reads are transport progress, not proof of server acceptance.
+        emit(completed.load(Ordering::Relaxed));
+        Ok(response)
+    })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1701,6 +1905,7 @@ async fn download_to_disk(
     file_name: String,
     destination_folder: String,
     ignore_tls_errors: bool,
+    session_id: Option<String>,
 ) -> Result<String, String> {
     reset_transfer_cancellation(&transfer_id);
     if is_transfer_cancelled(&transfer_id) {
@@ -1710,7 +1915,7 @@ async fn download_to_disk(
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
     let request = apply_headers(
-        download_client(ignore_tls_errors)?.request(method, url),
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, true)?.request(method, url),
         headers,
     )
     .header(reqwest::header::ACCEPT_ENCODING, "identity");
@@ -1822,6 +2027,7 @@ async fn download_to_disk_at(
     destination_folder: String,
     relative_path: String,
     ignore_tls_errors: bool,
+    session_id: Option<String>,
 ) -> Result<String, String> {
     reset_transfer_cancellation(&transfer_id);
     if is_transfer_cancelled(&transfer_id) {
@@ -1831,7 +2037,7 @@ async fn download_to_disk_at(
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
     let request = apply_headers(
-        download_client(ignore_tls_errors)?.request(method, url),
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, true)?.request(method, url),
         headers,
     )
     .header(reqwest::header::ACCEPT_ENCODING, "identity");
@@ -1895,11 +2101,15 @@ async fn download_to_drag_staging(
     body: Option<Vec<u8>>,
     file_name: String,
     ignore_tls_errors: bool,
+    session_id: Option<String>,
 ) -> Result<String, String> {
     let method = method
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
-    let request = apply_headers(api_client(ignore_tls_errors)?.request(method, url), headers);
+    let request = apply_headers(
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, false)?.request(method, url),
+        headers,
+    );
     let request = if let Some(body) = body {
         request.body(body)
     } else {
@@ -1958,11 +2168,15 @@ async fn download_to_drag_staging_at(
     set_id: String,
     relative_path: String,
     ignore_tls_errors: bool,
+    session_id: Option<String>,
 ) -> Result<String, String> {
     let method = method
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
-    let request = apply_headers(api_client(ignore_tls_errors)?.request(method, url), headers);
+    let request = apply_headers(
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, false)?.request(method, url),
+        headers,
+    );
     let request = if let Some(body) = body {
         request.body(body)
     } else {
@@ -2896,6 +3110,725 @@ mod phase1_filename_tests {
     }
 }
 
+#[cfg(test)]
+mod native_session_tests {
+    use super::*;
+    use reqwest::cookie::CookieStore;
+    use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn canonical_origin_includes_scheme_and_effective_port() {
+        assert_eq!(
+            http_origin("HTTPS://EXAMPLE.COM:443/a").unwrap(),
+            "https://example.com"
+        );
+        assert_ne!(
+            http_origin("http://localhost:8000").unwrap(),
+            http_origin("http://localhost:8001").unwrap()
+        );
+        assert_ne!(
+            http_origin("http://localhost").unwrap(),
+            http_origin("https://localhost").unwrap()
+        );
+        for invalid in [
+            "not a URL",
+            "file:///tmp/a",
+            "ftp://example.com",
+            "https://user:pass@example.com",
+        ] {
+            assert!(ApiSession::new(invalid, false).is_err());
+        }
+    }
+
+    #[test]
+    fn session_rejects_cross_port_host_scheme_and_tls_mismatch() {
+        let session = ApiSession::new("https://example.com:8443", true).unwrap();
+        for url in [
+            "https://example.com:8444/a",
+            "https://other.example:8443/a",
+            "http://example.com:8443/a",
+        ] {
+            assert_eq!(
+                session.client(url, true, false).unwrap_err(),
+                "API session origin mismatch"
+            );
+        }
+        assert_eq!(
+            session
+                .client("https://example.com:8443/a", false, true)
+                .unwrap_err(),
+            "API session TLS policy mismatch"
+        );
+        assert!(session.client("file:///tmp/a", true, false).is_err());
+        assert!(session.clients.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cookie_jars_are_isolated_even_when_cookie_domains_ignore_ports() {
+        let first = ApiSession::new("http://localhost:8000", false).unwrap();
+        let second = ApiSession::new("http://localhost:8001", false).unwrap();
+        let later_login = ApiSession::new("http://localhost:8000", false).unwrap();
+        let url = reqwest::Url::parse("http://localhost:8000/api").unwrap();
+        let cross_port = reqwest::Url::parse("http://localhost:8001/api").unwrap();
+        first
+            .jar
+            .add_cookie_str("session=first; HttpOnly; Path=/", &url);
+        assert!(first.jar.cookies(&cross_port).is_some());
+        assert!(second.jar.cookies(&cross_port).is_none());
+        assert!(later_login.jar.cookies(&url).is_none());
+        assert!(first.client(cross_port.as_str(), false, false).is_err());
+    }
+
+    #[test]
+    fn clearing_is_idempotent_and_active_arcs_cannot_reach_new_login() {
+        let id = create_api_session("https://example.com".into(), None).unwrap();
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        let old = API_SESSIONS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .get(&id)
+            .unwrap()
+            .clone();
+        assert!(!old.ignore_tls_errors);
+        clear_api_session(id.clone()).unwrap();
+        clear_api_session(id.clone()).unwrap();
+        assert_eq!(
+            request_client("https://example.com", Some(&id), false, false).unwrap_err(),
+            "Unknown or cleared API session"
+        );
+        let new_id = create_api_session("https://example.com".into(), Some(false)).unwrap();
+        let new = API_SESSIONS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .get(&new_id)
+            .unwrap()
+            .clone();
+        assert_ne!(id, new_id);
+        let url = reqwest::Url::parse("https://example.com/api").unwrap();
+        old.jar
+            .add_cookie_str("session=late-old-response; Path=/; Secure", &url);
+        assert!(new.jar.cookies(&url).is_none());
+        assert!(old.jar.cookies(&url).is_some());
+        clear_api_session(new_id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn clients_are_cached_per_session_and_share_only_its_jar() {
+        let session = ApiSession::new("https://example.com", false).unwrap();
+        session
+            .client("https://example.com/login", false, false)
+            .unwrap();
+        session
+            .client("https://example.com/upload", false, false)
+            .unwrap();
+        assert_eq!(session.clients.lock().unwrap().len(), 1);
+        session
+            .client("https://example.com/download", false, true)
+            .unwrap();
+        assert_eq!(session.clients.lock().unwrap().len(), 2);
+        // The generic REST jar is separate, and clearing a native handle must
+        // not remove it or an unrelated native session.
+        let generic = session_cookie_jar(false).unwrap();
+        assert!(!Arc::ptr_eq(&generic, &session.jar));
+        let id = create_api_session("https://example.com".into(), None).unwrap();
+        clear_api_session(id).unwrap();
+        assert!(Arc::ptr_eq(&generic, &session_cookie_jar(false).unwrap()));
+    }
+
+    #[test]
+    fn earlier_cancel_is_not_reset_and_other_attempts_are_unaffected() {
+        let id = uuid::Uuid::new_v4().to_string();
+        cancel_transfer(id.clone()).unwrap();
+        assert!(UploadAttempt::start(id.clone()).is_err());
+        assert!(is_transfer_cancelled(&id));
+        let next = UploadAttempt::start(uuid::Uuid::new_v4().to_string()).unwrap();
+        assert!(!next.cancellation.is_cancelled());
+        // Only remove this test's marker, not any application's shared state.
+        reset_transfer_cancellation(&id);
+    }
+
+    #[tokio::test]
+    async fn cancellation_wakes_response_wait_and_drops_pending_work() {
+        let attempt = UploadAttempt::start(uuid::Uuid::new_v4().to_string()).unwrap();
+        let id = attempt.id.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, mut dropped_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let result: Result<(), String> = await_upload(&attempt.cancellation, async move {
+                let _drop_signal = dropped_tx;
+                started_tx.send(()).unwrap();
+                std::future::pending().await
+            })
+            .await;
+            result
+        });
+        started_rx.await.unwrap();
+        cancel_transfer(id.clone()).unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("server outcome is unconfirmed"));
+        assert_eq!(
+            dropped_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        );
+        assert!(!UPLOAD_ATTEMPTS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .contains_key(&id));
+        reset_transfer_cancellation(&id);
+    }
+
+    #[tokio::test]
+    async fn complete_response_wins_late_cancel_without_inventing_success() {
+        for status in [202, 400, 500] {
+            let cancellation = UploadCancellation::new();
+            cancellation.cancel();
+            let response = reqwest::Response::from(
+                http::Response::builder()
+                    .status(status)
+                    .body(r#"{"batchId":"owned-batch"}"#)
+                    .unwrap(),
+            );
+            let result = await_upload(&cancellation, response_from(response))
+                .await
+                .unwrap();
+            assert_eq!(result.status, status);
+            assert_eq!(result.body, br#"{"batchId":"owned-batch"}"#);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_an_incomplete_response_body() {
+        let cancellation = Arc::new(UploadCancellation::new());
+        let signal = cancellation.clone();
+        let stream = futures_util::stream::pending::<Result<Vec<u8>, std::io::Error>>();
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .status(202)
+                .body(reqwest::Body::wrap_stream(stream))
+                .unwrap(),
+        );
+        let task =
+            tokio::spawn(async move { await_upload(&cancellation, response_from(response)).await });
+        signal.cancel();
+        assert!(tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+    }
+
+    #[test]
+    fn attempt_drop_signals_body_and_removes_registry_entry() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let attempt = UploadAttempt::start(id.clone()).unwrap();
+        assert!(UploadAttempt::start(id.clone()).is_err());
+        let signal = attempt.cancellation.clone();
+        drop(attempt);
+        assert!(signal.is_cancelled());
+        assert!(!UPLOAD_ATTEMPTS
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn progress_counts_actual_reads_across_files_including_zero() {
+        let count = Arc::new(AtomicU64::new(0));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        for bytes in [b"ab".as_slice(), b"".as_slice(), b"cde".as_slice()] {
+            let captured = events.clone();
+            let mut reader = UploadProgressReader {
+                inner: bytes,
+                cancellation: Arc::new(UploadCancellation::new()),
+                completed: count.clone(),
+                emit: Arc::new(move |count| captured.lock().unwrap().push(count)),
+                last_emit: Instant::now() - Duration::from_secs(1),
+            };
+            reader.read_to_end(&mut Vec::new()).await.unwrap();
+        }
+        assert_eq!(count.load(Ordering::Relaxed), 5);
+        assert_eq!(*events.lock().unwrap(), vec![2, 5]);
+        let zero = serde_json::to_value(UploadProgressEvent {
+            transfer_id: "empty".into(),
+            bytes_completed: 0,
+            bytes_total: 0,
+        })
+        .unwrap();
+        assert_eq!(zero["bytesCompleted"], 0);
+        assert_eq!(zero["bytesTotal"], 0);
+    }
+
+    #[test]
+    fn cancellation_wakes_a_pending_source_read_without_counting_bytes() {
+        struct WakeCount(AtomicU64);
+        impl futures_util::task::ArcWake for WakeCount {
+            fn wake_by_ref(arc_self: &Arc<Self>) {
+                arc_self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let (input, _writer) = tokio::io::duplex(16);
+        let cancellation = Arc::new(UploadCancellation::new());
+        let count = Arc::new(AtomicU64::new(0));
+        let mut reader = UploadProgressReader {
+            inner: input,
+            cancellation: cancellation.clone(),
+            completed: count.clone(),
+            emit: Arc::new(|_| panic!("No bytes were read")),
+            last_emit: Instant::now(),
+        };
+        let wakes = Arc::new(WakeCount(AtomicU64::new(0)));
+        let waker = futures_util::task::waker(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut bytes = [0; 8];
+        let mut buffer = ReadBuf::new(&mut bytes);
+        assert!(Pin::new(&mut reader)
+            .poll_read(&mut cx, &mut buffer)
+            .is_pending());
+        cancellation.cancel();
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+        assert!(matches!(
+            Pin::new(&mut reader).poll_read(&mut cx, &mut buffer),
+            Poll::Ready(Err(_))
+        ));
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn early_http_error_preserves_partial_read_count() {
+        let completed = Arc::new(AtomicU64::new(0));
+        let cancellation = Arc::new(UploadCancellation::new());
+        let mut reader = UploadProgressReader {
+            inner: b"sixbytes".as_slice(),
+            cancellation: cancellation.clone(),
+            completed: completed.clone(),
+            emit: Arc::new(|_| {}),
+            last_emit: Instant::now(),
+        };
+        reader.read_exact(&mut [0; 2]).await.unwrap();
+        let response = reqwest::Response::from(
+            http::Response::builder()
+                .status(413)
+                .body("rejected")
+                .unwrap(),
+        );
+        assert_eq!(
+            await_upload(&cancellation, response_from(response))
+                .await
+                .unwrap()
+                .status,
+            413
+        );
+        cancellation.cancel();
+        assert!(reader.read(&mut [0; 8]).await.is_err());
+        assert_eq!(completed.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn actual_backend_cookie_upload_cancellation_and_logout() {
+        use std::io::BufRead;
+        use std::process::{Child, Command, Stdio};
+
+        struct Fixture {
+            child: Option<Child>,
+            reader: Option<std::thread::JoinHandle<()>>,
+            root: PathBuf,
+            sessions: Vec<String>,
+        }
+        impl Fixture {
+            fn stop(&mut self) {
+                if let Some(mut child) = self.child.take() {
+                    let _ = child.kill();
+                    child.wait().expect("reap owned Node fixture");
+                }
+                if let Some(reader) = self.reader.take() {
+                    reader.join().expect("join fixture stdout reader");
+                }
+            }
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                self.stop();
+                for id in self.sessions.drain(..) {
+                    let _ = clear_api_session(id);
+                }
+                // Only this UUID directory was created by this test. Never
+                // delete the shared opencode parent or a child-supplied path.
+                std::fs::remove_dir_all(&self.root).expect("remove owned fixture directory");
+            }
+        }
+        async fn send(
+            origin: &str,
+            session: &str,
+            endpoint: &str,
+            method: &str,
+            headers: &[(String, String)],
+            body: Option<serde_json::Value>,
+        ) -> ApiResponse {
+            let mut headers = headers.to_vec();
+            if body.is_some() {
+                headers.push(("Content-Type".into(), "application/json".into()));
+            }
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                api_request(
+                    format!("{origin}{endpoint}"),
+                    method.into(),
+                    headers,
+                    body.map(|value| serde_json::to_vec(&value).unwrap()),
+                    false,
+                    Some(session.into()),
+                ),
+            )
+            .await
+            .expect("native API request deadline")
+            .expect("native API transport")
+        }
+        fn json(response: ApiResponse, status: u16) -> serde_json::Value {
+            assert_eq!(
+                response.status,
+                status,
+                "{}",
+                String::from_utf8_lossy(&response.body)
+            );
+            serde_json::from_slice(&response.body).expect("backend JSON response")
+        }
+
+        let parent = std::env::temp_dir().join("opencode");
+        assert!(
+            parent.is_dir(),
+            "approved temporary parent must already exist"
+        );
+        let root = parent
+            .canonicalize()
+            .unwrap()
+            .join(format!("native-backend-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).expect("create exclusive disposable fixture directory");
+        let mut fixture = Fixture {
+            child: None,
+            reader: None,
+            root: root.clone(),
+            sessions: vec![],
+        };
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../checks/backend-fixture.cjs");
+        // Keep only executable/system/temp lookup variables. In particular,
+        // NODE_OPTIONS, dotenv flags, credentials and proxy configuration are
+        // not inherited by the child. This does not mutate the Rust process env.
+        let environment = ["PATH", "SystemRoot", "WINDIR", "TMPDIR", "TMP", "TEMP"]
+            .into_iter()
+            .filter_map(|key| std::env::var_os(key).map(|value| (key, value)));
+        fixture.child = Some(
+            Command::new("node")
+                .arg(script)
+                .arg(&root)
+                .current_dir(&root)
+                .env_clear()
+                .envs(environment)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .expect("start test-owned Node fixture; no dependency fetch"),
+        );
+        let stdout = fixture.child.as_mut().unwrap().stdout.take().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        fixture.reader = Some(std::thread::spawn(move || {
+            let mut line = String::new();
+            let result = std::io::BufReader::new(stdout.take(4096))
+                .read_line(&mut line)
+                .map(|_| line);
+            let _ = ready_tx.send(result);
+        }));
+        let ready = ready_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("bounded fixture startup")
+            .expect("fixture stdout");
+        let ready: serde_json::Value =
+            serde_json::from_str(&ready).expect("fixture emits one ready JSON line");
+        let port = ready["port"]
+            .as_u64()
+            .filter(|port| (1..=65535).contains(port))
+            .expect("ephemeral fixture port");
+        let origin = format!("http://127.0.0.1:{port}");
+        let admin = create_api_session(origin.clone(), None).unwrap();
+        fixture.sessions.push(admin.clone());
+        let user = create_api_session(origin.clone(), None).unwrap();
+        fixture.sessions.push(user.clone());
+
+        tokio::time::timeout(Duration::from_secs(40), async {
+            json(
+                send(&origin, &admin, "/api/locations", "GET", &[], None).await,
+                401,
+            );
+            for (session, username, id) in
+                [(&admin, "fixture-admin", 0), (&user, "fixture-user", 7)]
+            {
+                let response = send(
+                    &origin,
+                    session,
+                    "/auth/login",
+                    "POST",
+                    &[],
+                    Some(serde_json::json!({
+                        "username": username, "password": "native-fixture-password"
+                    })),
+                )
+                .await;
+                assert!(response
+                    .headers
+                    .iter()
+                    .any(|(name, value)| name == "set-cookie" && value.contains("HttpOnly")));
+                let login = json(response, 200);
+                assert_eq!(login["user"]["id"], id);
+                assert!(login.get("token").is_none());
+                let verified = json(
+                    send(&origin, session, "/auth/verify", "POST", &[], None).await,
+                    200,
+                );
+                assert_eq!(verified["user"]["id"], id);
+            }
+            // All subsequent authentication uses the native jar, not copied
+            // Cookie/Authorization headers or a test-signed JWT.
+            let locations = json(
+                send(&origin, &admin, "/api/locations", "GET", &[], None).await,
+                200,
+            );
+            let revision = locations["locations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|location| location["id"] == "default")
+                .unwrap()["revision"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert!(!revision.is_empty());
+            let headers = vec![
+                ("X-Location-ID".into(), "default".into()),
+                ("X-Location-Revision".into(), revision),
+            ];
+            let mut stale = headers.clone();
+            stale[1].1 = "stale-revision".into();
+            json(
+                send(&origin, &admin, "/api/files", "GET", &stale, None).await,
+                409,
+            );
+            json(
+                send(&origin, &admin, "/api/files", "GET", &headers, None).await,
+                200,
+            );
+
+            for (filename, contents, cancel) in [
+                ("cancelled.txt", b"cancel this upload".as_slice(), true),
+                ("completed.txt", b"native measured bytes".as_slice(), false),
+            ] {
+                let reserved = json(
+                    send(
+                        &origin,
+                        &admin,
+                        "/api/upload/batches",
+                        "POST",
+                        &headers,
+                        Some(serde_json::json!({ "path": "" })),
+                    )
+                    .await,
+                    201,
+                );
+                let batch = reserved["batchId"].as_str().unwrap();
+                let progress_url = format!("/api/progress/batch/{batch}");
+                if cancel {
+                    assert_eq!(
+                        json(
+                            send(&origin, &admin, "/__test/hold", "POST", &[], None).await,
+                            200
+                        )["held"],
+                        true
+                    );
+                }
+                let completed = Arc::new(AtomicU64::new(0));
+                let reader = UploadProgressReader {
+                    inner: contents,
+                    cancellation: Arc::new(UploadCancellation::new()),
+                    completed: completed.clone(),
+                    emit: Arc::new(|_| {}),
+                    last_emit: Instant::now(),
+                };
+                let part = multipart::Part::stream_with_length(
+                    reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(reader)),
+                    contents.len() as u64,
+                )
+                .file_name(filename.to_string());
+                let form = multipart::Form::new()
+                    .text("path", "")
+                    .text("filePaths[]", filename)
+                    .part("files", part);
+                let url = format!("{origin}/api/upload/multiple");
+                let mut upload_headers = headers.clone();
+                upload_headers.push(("X-Upload-Batch-ID".into(), batch.into()));
+                // api_upload_paths requires a live AppHandle. Exercise its real
+                // session client, progress reader, multipart and response core
+                // against the actual backend parser without launching Tauri.
+                let request = apply_headers(
+                    request_client(&url, Some(&admin), false, false)
+                        .unwrap()
+                        .post(url)
+                        .multipart(form),
+                    upload_headers,
+                );
+                let accepted = json(
+                    response_from(request.send().await.unwrap()).await.unwrap(),
+                    202,
+                );
+                assert_eq!(accepted["batchId"], batch);
+                assert_eq!(completed.load(Ordering::Relaxed), contents.len() as u64);
+                json(
+                    send(&origin, &user, &progress_url, "GET", &headers, None).await,
+                    404,
+                );
+                json(
+                    send(
+                        &origin,
+                        &user,
+                        &format!("{progress_url}/cancel"),
+                        "POST",
+                        &headers,
+                        None,
+                    )
+                    .await,
+                    404,
+                );
+                if cancel {
+                    let pending = json(
+                        send(&origin, &admin, &progress_url, "GET", &headers, None).await,
+                        200,
+                    );
+                    assert_eq!(pending["pendingCount"], 1);
+                    assert_eq!(pending["totalSize"], contents.len());
+                    let cancelled = json(
+                        send(
+                            &origin,
+                            &admin,
+                            &format!("{progress_url}/cancel"),
+                            "POST",
+                            &headers,
+                            None,
+                        )
+                        .await,
+                        200,
+                    );
+                    assert_eq!(cancelled["status"], "cancelled");
+                    assert_eq!(cancelled["cancelledCount"], 1);
+                    assert_eq!(cancelled["successCount"], 0);
+                    let empty = json(
+                        send(&origin, &admin, "/__test/inspect", "GET", &[], None).await,
+                        200,
+                    );
+                    assert_eq!(
+                        empty,
+                        serde_json::json!({ "storage": { "files": 0, "bytes": 0 },
+                        "staging": { "files": 0, "bytes": 0 }, "forbiddenCalls": [] })
+                    );
+                    json(
+                        send(&origin, &admin, "/__test/release", "POST", &[], None).await,
+                        200,
+                    );
+                    let after_release = json(
+                        send(&origin, &admin, "/__test/inspect", "GET", &[], None).await,
+                        200,
+                    );
+                    assert_eq!(after_release, empty);
+                } else {
+                    // Inspect waits for actual worker settlement, not a guessed delay.
+                    let inspected = json(
+                        send(&origin, &admin, "/__test/inspect", "GET", &[], None).await,
+                        200,
+                    );
+                    assert_eq!(
+                        inspected,
+                        serde_json::json!({ "storage": { "files": 1, "bytes": contents.len() },
+                        "staging": { "files": 0, "bytes": 0 }, "forbiddenCalls": [] })
+                    );
+                    let progress = json(
+                        send(&origin, &admin, &progress_url, "GET", &headers, None).await,
+                        200,
+                    );
+                    assert_eq!(progress["status"], "completed");
+                    assert_eq!(progress["totalSize"], contents.len());
+                    assert_eq!(progress["transferredSize"], contents.len());
+                    assert_eq!(progress["successCount"], 1);
+                    let downloaded = send(
+                        &origin,
+                        &admin,
+                        &format!("/api/files/download/{filename}"),
+                        "GET",
+                        &headers,
+                        None,
+                    )
+                    .await;
+                    assert_eq!(downloaded.status, 200);
+                    assert_eq!(downloaded.body, contents);
+                }
+            }
+            json(
+                send(&origin, &admin, "/auth/logout", "POST", &[], None).await,
+                200,
+            );
+            json(
+                send(&origin, &admin, "/api/locations", "GET", &[], None).await,
+                401,
+            );
+            json(
+                send(&origin, &user, "/api/locations", "GET", &[], None).await,
+                200,
+            );
+        })
+        .await
+        .expect("real backend integration deadline");
+
+        fixture.stop();
+        // Simulate logout network failure, then clear the still-authenticated
+        // second session. Invalidated handles must fail before network dispatch.
+        let failed_logout = api_request(
+            format!("{origin}/auth/logout"),
+            "POST".into(),
+            vec![],
+            None,
+            false,
+            Some(user.clone()),
+        );
+        assert!(tokio::time::timeout(Duration::from_secs(3), failed_logout)
+            .await
+            .unwrap()
+            .is_err());
+        clear_api_session(user.clone()).unwrap();
+        clear_api_session(user.clone()).unwrap();
+        let invalidated = api_request(
+            format!("{origin}/api/locations"),
+            "GET".into(),
+            vec![],
+            None,
+            false,
+            Some(user),
+        )
+        .await;
+        assert!(matches!(invalidated, Err(error) if error == "Unknown or cleared API session"));
+        drop(fixture);
+        assert!(!root.exists(), "owned fixture directory was removed");
+        println!("Real backend gate: numeric 0/7 cookie auth; Location revision 409; reserved multipart 202; foreign batch 404; confirmed cancellation with zero outputs; measured completion/download; logout 401; failed-network handle clear; child reaped and owned temp removed");
+    }
+}
+
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     tauri::Builder::default()
@@ -2911,6 +3844,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            create_api_session,
+            clear_api_session,
             api_request,
             tcp_check_reachable,
             ssh_check_transport_reachable,

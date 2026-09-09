@@ -1,526 +1,187 @@
-# Progress Tracking API Documentation
+# Upload Progress And Cancellation
 
-This document describes progress endpoint details. The current API contract is [API_REFERENCE.md](./API_REFERENCE.md). New clients uploading through `/api/upload/multiple` must poll the batch endpoint.
+Progress records are in-memory upload diagnostics, not durable or resumable jobs.
+Use the batch ID from [batch reservation](./upload.md) before sending multipart
+bytes. Keep that ID even when upload acceptance or a progress response is lost.
 
-Progress records are in-memory diagnostics, not durable transfer sessions.
-Terminal records are retained for up to 24 hours by the server cleanup timer;
-active records are never removed by cleanup. Client Queue history cleanup is a
-separate concern. No endpoint implies resumability after a client restart.
+## Routes And Authorization
 
----
+| Method | Route | Result |
+| --- | --- | --- |
+| `GET` | `/api/progress/batch/:batchId` | Safe batch summary and child records |
+| `GET` | `/api/progress/:transferId` | Safe single-transfer record |
+| `POST` | `/api/progress/batch/:batchId/cancel` | Actual batch state after cancellation settlement |
+| `POST` | `/api/progress/:transferId/cancel` | Actual transfer state after cancellation settlement |
 
-## Get Single Transfer Progress
+Every request authenticates the current account using a session cookie or Bearer
+token. Both account ID and username must match the stored owner. The stored
+Location must still permit upload/write and have the same revision. An optional
+`X-Location-ID` must agree with the record; it cannot select a different Location
+for an existing job. Missing/not-owned records return `404`; revoked permissions
+return `403`; changed Location revisions return `409`. Owner identity, canonical
+roots, staging/destination paths, revision hashes, credentials, and worker controls
+are never included in public progress.
 
-Query the progress of a single file upload.
+Account IDs are compared without coercion, including numeric administrator `0` and
+numeric regular-account IDs. A string ID with the same digits cannot access a
+numeric owner's records. If supplied, `X-Location-Revision` must match the current
+stored Location revision; a stale revision returns `409` rather than polling or
+cancelling work in a different runtime context.
 
-### Endpoint
+Successful responses use `Cache-Control: no-store` and `200`. A cancellation still
+unconfirmed as `cancelling` uses `202`; that is not confirmation that cleanup has
+finished. POST cancellation is idempotent and uses the same safe response shape as
+GET. GET does not cancel work.
 
-```
-GET /api/progress/:transferId
-```
+## Byte Semantics
 
-### Authentication
+| Field | Meaning |
+| --- | --- |
+| `totalSize` | Numeric file-content total; `0` while unknown |
+| `totalSizeKnown` | Distinguishes unknown totals from a measured zero-byte total |
+| `transferredSize` | Actual file-content bytes observed while receiving/staging; never multipart framing |
+| `committedSize` | Measured bytes in successfully published files |
+| `progress` | Numeric percentage, rounded to two decimals and bounded to 0-100 |
+| `phase` | Current lifecycle stage, independent of byte percentage |
 
-Requires JWT token in Authorization header.
+Transport progress is separate: browser/native request-byte counters may include
+multipart framing and do not prove server receipt or commitment. `Content-Length`
+is not used for `totalSize`. Receiving totals are unknown until file streams have
+ended. A batch total remains unknown until its complete validated inventory has
+been registered and every child's size is measured.
 
-### Request Headers
+`transferredSize` counts payload bytes, including bytes later discarded on failure
+or cancellation. It is not a disk-flush or publication acknowledgement. During
+processing, received/staged bytes are not counted a second time as files are copied
+to their destinations. Completion never pads a counter to a declared total.
 
-| Header | Type | Required | Description |
-|--------|------|----------|-------------|
-| `Authorization` | string | Yes | Bearer token format: `Bearer <jwt_token>` |
+For a known nonzero total, `progress = transferredSize / totalSize * 100`, rounded
+and capped at 100. Unknown totals have numeric progress `0`. Known zero-byte work
+has progress `0` while pending and `100` only when completed. File bytes may reach
+100 before publication: **status, not percentage, determines success**.
 
-### URL Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `transferId` | string (UUID) | Yes | Transfer ID returned from upload initiation |
-
-### Request Example
-
-```javascript
-const transferId = '550e8400-e29b-41d4-a716-446655440000';
-
-const response = await fetch(`/api/progress/${transferId}`, {
-  headers: {
-    'Authorization': 'Bearer YOUR_JWT_TOKEN'
-  }
-});
-
-const progress = await response.json();
-console.log('Upload progress:', progress.progress + '%');
-```
-
-### Response
-
-#### Success Response (200 OK)
+## Transfer Response
 
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "uploading",
+  "id": "transfer-uuid",
+  "batchId": "batch-uuid",
+  "locationId": "default",
   "fileName": "document.pdf",
-  "totalSize": 10485760,
-  "transferredSize": 4194304,
-  "progress": 40.00,
+  "status": "processing",
+  "phase": "processing",
+  "totalSize": 1024,
+  "totalSizeKnown": true,
+  "transferredSize": 1024,
+  "committedSize": 0,
+  "progress": 100,
+  "startTime": 1788955200000,
+  "updatedAt": 1788955201000,
   "error": null
 }
 ```
 
-#### Response Fields
+`endTime` is present after settlement. A completed file also includes allowlisted
+`file: {name, path, size}`, where `path` is relative to its Location and includes
+collision renaming. Failure errors contain only a fixed public code/message, not
+raw filesystem errors or stack traces.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string (UUID) | Transfer ID |
-| `status` | string | Current transfer status (see below) |
-| `fileName` | string | Name of the file being uploaded |
-| `totalSize` | number | Total file size in bytes |
-| `transferredSize` | number | Bytes transferred so far |
-| `progress` | number | Progress percentage (0.00 - 100.00) |
-| `error` | object/null | Error information if status is `failed` |
+| Status | Meaning |
+| --- | --- |
+| `pending` | Validated staged child waiting for processing |
+| `uploading` | File payload is arriving (`phase: receiving`) |
+| `processing` | Waiting for storage locks or publishing staged content |
+| `cancelling` | Stop requested; worker/cleanup has not settled |
+| `completed` | Output committed; later cancellation cannot remove it |
+| `failed` | Work or cleanup failed |
+| `cancelled` | This uncommitted child's work stopped and cleanup settled |
 
-#### Transfer Status Values
+The terminal phases match their statuses. Late progress, failure, and completion
+callbacks cannot overwrite a terminal result.
 
-| Status | Description |
-|--------|-------------|
-| `pending` | Transfer created but upload not started |
-| `uploading` | File is being uploaded to server |
-| `processing` | Upload complete, server processing file |
-| `completed` | Transfer successfully completed |
-| `failed` | Transfer failed (see `error` field) |
-
-#### Error Response (404 Not Found)
+## Batch Response
 
 ```json
 {
-  "success": false,
-  "error": {
-    "code": 402,
-    "message": "Transfer ID 不存在"
-  }
-}
-```
-
-### Progress Calculation
-
-Progress is calculated as:
-```javascript
-progress = (transferredSize / totalSize) * 100
-```
-
-Rounded to 2 decimal places.
-
-### Polling Recommendations
-
-- **Poll Interval**: 1-2 seconds
-- **Stop Polling When**: Status is `completed` or `failed`
-- **Timeout**: Consider implementing a timeout after 5-10 minutes for very large files
-- **Error Handling**: Stop polling if API returns 404 (transfer not found)
-
-### Example: Polling Implementation
-
-```javascript
-async function pollTransferProgress(transferId, onProgress, onComplete, onError) {
-  const pollInterval = setInterval(async () => {
-    try {
-      const response = await fetch(`/api/progress/${transferId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-
-      if (!response.ok) {
-        clearInterval(pollInterval);
-        onError('Failed to fetch progress');
-        return;
-      }
-
-      const progress = await response.json();
-
-      // Update UI with progress
-      onProgress(progress);
-
-      // Check completion
-      if (progress.status === 'completed') {
-        clearInterval(pollInterval);
-        onComplete(progress);
-      } else if (progress.status === 'failed') {
-        clearInterval(pollInterval);
-        onError(progress.error || 'Upload failed');
-      }
-
-    } catch (error) {
-      clearInterval(pollInterval);
-      onError(error.message);
-    }
-  }, 1000);
-
-  return pollInterval; // Return for manual cleanup if needed
-}
-
-// Usage
-const pollInterval = pollTransferProgress(
-  transferId,
-  (progress) => {
-    console.log(`Progress: ${progress.progress}%`);
-    updateProgressBar(progress.progress);
-  },
-  (result) => {
-    console.log('Upload completed:', result);
-    showSuccessMessage();
-  },
-  (error) => {
-    console.error('Upload error:', error);
-    showErrorMessage(error);
-  }
-);
-```
-
----
-
-## Get Batch Progress
-
-Query the progress of a multi-file batch upload.
-
-### Endpoint
-
-```
-GET /api/progress/batch/:batchId
-```
-
-### Authentication
-
-Requires JWT token in Authorization header.
-
-### Request Headers
-
-| Header | Type | Required | Description |
-|--------|------|----------|-------------|
-| `Authorization` | string | Yes | Bearer token format: `Bearer <jwt_token>` |
-
-### URL Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `batchId` | string (UUID) | Yes | Batch ID returned from multi-file upload initiation |
-
-### Request Example
-
-```javascript
-const batchId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
-
-const response = await fetch(`/api/progress/batch/${batchId}`, {
-  headers: {
-    'Authorization': 'Bearer YOUR_JWT_TOKEN'
-  }
-});
-
-const batchProgress = await response.json();
-console.log(`Batch: ${batchProgress.successCount}/${batchProgress.totalFiles} completed`);
-```
-
-### Response
-
-#### Success Response (200 OK)
-
-```json
-{
-  "batchId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "batchId": "batch-uuid",
+  "locationId": "default",
   "status": "uploading",
-  "totalFiles": 10,
-  "successCount": 7,
-  "failedCount": 1,
+  "phase": "processing",
+  "createdAt": 1788955200000,
+  "updatedAt": 1788955201000,
+  "expiresAt": 1788956100000,
+  "totalFiles": 3,
+  "successCount": 1,
+  "failedCount": 0,
+  "cancelledCount": 0,
   "pendingCount": 2,
-  "totalSize": 52428800,
-  "transferredSize": 41943040,
-  "progress": 80.00,
-  "files": [
-    {
-      "fileName": "image1.jpg",
-      "status": "completed",
-      "progress": 100.00,
-      "error": null
-    },
-    {
-      "fileName": "image2.png",
-      "status": "completed",
-      "progress": 100.00,
-      "error": null
-    },
-    {
-      "fileName": "archive.zip",
-      "status": "failed",
-      "progress": 0,
-      "error": "服務端磁碟空間已滿，請洽管理員"
-    },
-    {
-      "fileName": "video.mp4",
-      "status": "uploading",
-      "progress": 45.50,
-      "error": null
-    }
-  ]
+  "uploadingCount": 0,
+  "processingCount": 1,
+  "totalSize": 3072,
+  "totalSizeKnown": true,
+  "transferredSize": 3072,
+  "committedSize": 1024,
+  "progress": 100,
+  "files": [],
+  "error": null
 }
 ```
 
-#### Response Fields
+`files` contains safe child transfer objects using the preceding transfer schema;
+it is omitted from the example for brevity. Existing count names are unchanged:
+`pendingCount` includes every nonterminal child, including uploading, processing,
+and cancelling children, not just children whose status is literally `pending`.
+`uploadingCount` and `processingCount` are subsets, not additional pending work.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `batchId` | string (UUID) | Batch ID |
-| `status` | string | Current batch status (see below) |
-| `totalFiles` | number | Total number of files in batch |
-| `successCount` | number | Number of successfully uploaded files |
-| `failedCount` | number | Number of failed files |
-| `pendingCount` | number | Number of files pending/uploading/processing |
-| `totalSize` | number | Total size of all files in bytes |
-| `transferredSize` | number | Total bytes transferred across all files |
-| `progress` | number | Overall batch progress percentage (0.00 - 100.00) |
-| `files` | array | Array of individual file progress objects |
+After inventory validation:
 
-#### Batch Status Values
-
-| Status | Description |
-|--------|-------------|
-| `uploading` | Batch is currently being processed |
-| `completed` | All files uploaded successfully |
-| `partial_fail` | Some files succeeded, some failed |
-| `failed` | All files failed |
-
-#### File Object Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `fileName` | string | Name of the file |
-| `status` | string | File transfer status (same as single transfer) |
-| `progress` | number | File progress percentage (0.00 - 100.00) |
-| `error` | string/null | Error message if file failed |
-
-#### Error Response (404 Not Found)
-
-```json
-{
-  "success": false,
-  "error": {
-    "code": 403,
-    "message": "Batch ID 不存在"
-  }
-}
+```text
+totalFiles = successCount + failedCount + cancelledCount + pendingCount
 ```
 
-### Batch Completion Logic
+All validated children are registered before `202` acceptance. During reserved
+multipart reception, only discovered children can be counted; `totalSizeKnown`
+remains false. Directory-only batches have zero children, known zero bytes after
+validation, and settle only after directory operations and cleanup finish.
 
-A batch is considered complete when:
-```
-successCount + failedCount === totalFiles
-```
+| Batch status | Meaning |
+| --- | --- |
+| `reserved` | Owned reservation, not yet claimed; phase is `reserved` |
+| `uploading` | Intake (`receiving`) or accepted storage work (`processing`) |
+| `cancelling` | Cancellation requested; workers/cleanup still settling |
+| `completed` | All work committed successfully, including zero-byte/directory-only work |
+| `partial_fail` | Some files completed and some failed |
+| `failed` | Intake/outer worker/cleanup failed, or all files failed |
+| `cancelled` | Cancellation settled; inspect counts for committed/failed children |
+| `expired` | An unused reservation passed its fixed expiry |
 
-Final status is determined by:
-- **completed**: `failedCount === 0`
-- **partial_fail**: `failedCount > 0 && successCount > 0`
-- **failed**: `successCount === 0`
+## Cancellation Races
 
-### Example: Batch Progress Polling
+Cancellation aborts receiving/publication streams and shared-lock waits. Queued
+children have their staging files removed without waiting for an unrelated active
+sibling. An individual accepted child can be cancelled while siblings continue.
+Cancelling a child during multipart reception interrupts that multipart request;
+it cannot be published as a fully validated batch.
 
-```javascript
-async function pollBatchProgress(batchId, onProgress, onComplete, onError) {
-  const pollInterval = setInterval(async () => {
-    try {
-      const response = await fetch(`/api/progress/batch/${batchId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+The cancellation response waits for affected work and owned cleanup. A cancelled
+batch can retain completed files and directories; it is not a rollback. If all
+outputs committed before the stop request took effect, `completed` wins. If cleanup
+fails, the server reports `failed`, not confirmed `cancelled`. A failed HTTP request
+or a client transport abort is not itself a server cancellation acknowledgement.
 
-      if (!response.ok) {
-        clearInterval(pollInterval);
-        onError('Failed to fetch batch progress');
-        return;
-      }
+## Polling And Retention
 
-      const batchData = await response.json();
+Poll approximately every 1-2 seconds while active. Retry failed GET requests with
+backoff using the same ID. Never restart file upload merely because a poll failed,
+timed out, or returned `404`; after a server restart or retention cleanup, the
+outcome may be unknown. Reconcile storage/user intent instead of creating duplicates.
+Stop automatic polling on terminal status, or when the owning session/Location
+changes; retain the attempt ID for later explicit reconciliation.
 
-      // Update UI with progress
-      onProgress(batchData);
-
-      // Check if batch is complete
-      const isComplete = (
-        batchData.status === 'completed' ||
-        batchData.status === 'partial_fail' ||
-        batchData.status === 'failed'
-      );
-
-      if (isComplete) {
-        clearInterval(pollInterval);
-        onComplete(batchData);
-      }
-
-    } catch (error) {
-      clearInterval(pollInterval);
-      onError(error.message);
-    }
-  }, 1000);
-
-  return pollInterval;
-}
-
-// Usage
-const pollInterval = pollBatchProgress(
-  batchId,
-  (batch) => {
-    console.log(`Batch progress: ${batch.progress}%`);
-    console.log(`Files: ${batch.successCount}/${batch.totalFiles} completed`);
-
-    updateProgressBar(batch.progress);
-    updateFileList(batch.files);
-  },
-  (result) => {
-    if (result.status === 'completed') {
-      console.log('All files uploaded successfully!');
-    } else if (result.status === 'partial_fail') {
-      console.warn(`${result.failedCount} files failed`);
-    } else {
-      console.error('All files failed');
-    }
-
-    showCompletionMessage(result);
-  },
-  (error) => {
-    console.error('Batch polling error:', error);
-    showErrorMessage(error);
-  }
-);
-```
-
----
-
-## Progress Statistics
-
-Both single transfer and batch progress provide detailed statistics for monitoring.
-
-### Real-Time Updates
-
-- Progress is updated in real-time as files are written to disk
-- Network transfer speed depends on client connection
-- Server processing includes file validation and storage
-- Progress reflects actual bytes written, not just received
-
-### Performance Metrics
-
-From progress data, you can calculate:
-
-#### Upload Speed
-
-```javascript
-const uploadSpeed = transferredSize / (Date.now() - startTime);
-console.log(`Speed: ${(uploadSpeed / 1024 / 1024).toFixed(2)} MB/s`);
-```
-
-#### Estimated Time Remaining
-
-```javascript
-const remainingBytes = totalSize - transferredSize;
-const timeRemaining = remainingBytes / uploadSpeed;
-console.log(`ETA: ${Math.ceil(timeRemaining / 1000)} seconds`);
-```
-
-#### Batch Statistics
-
-```javascript
-// Success rate
-const successRate = (successCount / totalFiles) * 100;
-console.log(`Success rate: ${successRate.toFixed(1)}%`);
-
-// Average file size
-const avgFileSize = totalSize / totalFiles;
-console.log(`Average file size: ${(avgFileSize / 1024).toFixed(2)} KB`);
-```
-
----
-
-## Best Practices
-
-### Efficient Polling
-
-```javascript
-class ProgressPoller {
-  constructor(endpoint, token, interval = 1000) {
-    this.endpoint = endpoint;
-    this.token = token;
-    this.interval = interval;
-    this.pollInterval = null;
-  }
-
-  start(onProgress, onComplete, onError) {
-    this.pollInterval = setInterval(async () => {
-      try {
-        const response = await fetch(this.endpoint, {
-          headers: { 'Authorization': `Bearer ${this.token}` }
-        });
-
-        if (!response.ok) {
-          this.stop();
-          onError('Failed to fetch progress');
-          return;
-        }
-
-        const data = await response.json();
-        onProgress(data);
-
-        if (this.isComplete(data)) {
-          this.stop();
-          onComplete(data);
-        }
-
-      } catch (error) {
-        this.stop();
-        onError(error.message);
-      }
-    }, this.interval);
-  }
-
-  stop() {
-    if (this.pollInterval) {
-      clearInterval(this.pollInterval);
-      this.pollInterval = null;
-    }
-  }
-
-  isComplete(data) {
-    // Override in subclass
-    return data.status === 'completed' || data.status === 'failed';
-  }
-}
-
-// Usage
-const poller = new ProgressPoller(`/api/progress/${transferId}`, token);
-poller.start(
-  (progress) => updateUI(progress),
-  (result) => console.log('Done:', result),
-  (error) => console.error('Error:', error)
-);
-
-// Cleanup on component unmount
-onUnmount(() => poller.stop());
-```
-
-### Error Handling
-
-Always handle these scenarios:
-- Network errors during polling
-- 404 errors (transfer/batch not found)
-- Authentication errors (expired token)
-- Timeout for extremely long uploads
-- Component unmount during polling
-
-### Memory Management
-
-- Stop polling when component unmounts
-- Clear intervals to prevent memory leaks
-- Don't keep large progress histories in memory
-- Clean up completed transfers after display
-
-### UI/UX Recommendations
-
-- Show progress bar for visual feedback
-- Display current status text (uploading/processing/completed)
-- Show file count for batch uploads
-- Display individual file status in batch
-- Provide cancel option (if implemented)
-- Show error messages clearly
-- Auto-refresh file list on completion
+Unused reservations expire after 15 minutes without being extended by reads.
+Terminal records become eligible for removal after the default 24-hour retention
+window; actual removal depends on the server cleanup schedule. Active records are
+not failed or removed because they stop emitting progress. Active batch children
+and privately registered workers stay retained until settlement. Client queue
+history cleanup is independent. A server process restart loses these records and
+does not imply resumability or confirmation of an unknown outcome.

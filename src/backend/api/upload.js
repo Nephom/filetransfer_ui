@@ -1,1347 +1,539 @@
-/**
- * File Upload API Endpoints
- * Handles file upload operations with progress tracking
- */
-
 const express = require('express');
-const multer = require('multer');
+const Busboy = require('busboy');
+const fs = require('fs');
 const path = require('path');
+const { Transform } = require('stream');
+const { pipeline } = require('stream/promises');
+const { randomUUID } = require('crypto');
+const { setMaxListeners } = require('events');
 const { transferManager } = require('../transfer');
-const { FileSystem } = require('../file-system');
-const { systemLogger } = require('../utils/logger');
-const { nextAvailablePath } = require('../utils/dedupe-filename');
+const { dedupeFilename } = require('../utils/dedupe-filename');
 
-const pathIsWithin = (root, candidate) => candidate === root || candidate.startsWith(`${root}${path.sep}`);
-
-const safeRelativePath = (value, label) => {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`${label} must be a non-empty relative path`);
+const activeStages = new Set();
+// Match middleware/security.js's extension policy, without its obsolete 100 MiB cap.
+const dangerousExtensions = new Set([
+  '.exe', '.bat', '.cmd', '.com', '.pif', '.scr', '.vbs', '.js', '.jar',
+  '.php', '.asp', '.aspx', '.jsp', '.sh', '.ps1', '.py', '.rb'
+]);
+const terminal = new Set(['completed', 'failed', 'cancelled', 'partial_fail', 'expired']);
+const fault = (statusCode, message) => Object.assign(new Error(message), { statusCode });
+const relativePath = (value, allowEmpty = false) => {
+  if (typeof value !== 'string' || value.length > 16384 || /[\x00-\x1f]/.test(value)) throw fault(400, 'Invalid relative path');
+  const portable = value.replace(/\\/g, '/');
+  if ((!portable && !allowEmpty) || portable.startsWith('/') || /^[a-z]:/i.test(portable) || portable.split('/').includes('..')) {
+    throw fault(400, 'Invalid relative path');
   }
-
-  const portablePath = value.replace(/\\/g, '/');
-  if (portablePath.startsWith('/') || path.posix.isAbsolute(portablePath)) {
-    throw new Error(`${label} must be relative`);
-  }
-
-  const normalized = path.posix.normalize(portablePath);
-  if (normalized === '..' || normalized.startsWith('../') || normalized.includes('/../')) {
-    throw new Error(`${label} contains an unsafe path`);
-  }
-  return normalized;
+  const normalized = path.posix.normalize(portable);
+  if (normalized === '.' && !allowEmpty) throw fault(400, 'Invalid relative path');
+  return normalized === '.' ? '' : normalized;
+};
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
 };
 
-const asFieldArray = (value) => Array.isArray(value) ? value : value ? [value] : [];
-
 class UploadAPI {
-  constructor() {
+  #workers = new Set();
+
+  constructor(options = {}) {
     this.router = express.Router();
-    this.fileSystem = new FileSystem();
+    this.transfers = options.transferManager || transferManager;
+    this.authenticate = options.authenticate || ((...args) => require('../middleware/auth').authenticate(...args));
+    this.getConfig = options.getConfig || (key => require('../config').get(key));
+    this.fs = options.fs || fs;
+    this.tempDir = path.resolve(options.tempDir || './temp/uploads');
+    this.withOperationLocks = options.withOperationLocks || ((...args) => require('../file-system/operation-locks').withOperationLocks(...args));
+    this.assertSafePath = options.assertSafePath || ((...args) => require('../file-system/path-safety').assertSafePath(...args));
+    this.assertSafeTree = options.assertSafeTree || ((...args) => require('../file-system/path-safety').assertSafeTree(...args));
+    this.logger = options.logger || { logSystem: (...args) => require('../utils/logger').systemLogger.logSystem(...args) };
     this.cache = null;
     this.locationManager = null;
     this.locationPermissionManager = null;
     this.cacheResolver = null;
-    this.uploadLocks = new Map();
-    this._setupMiddleware();
     this._setupRoutes();
   }
 
-  setCache(cache) {
-    this.cache = cache;
-  }
-
+  setCache(cache) { this.cache = cache; }
   setLocationManager(locationManager, cacheResolver = null, locationPermissionManager = null) {
     this.locationManager = locationManager;
     this.cacheResolver = cacheResolver;
     this.locationPermissionManager = locationPermissionManager;
   }
 
-  async _resolveLocation(req, relativePath = '', capability = 'upload') {
-    if (!this.locationManager) {
-      throw Object.assign(new Error('Location service is not ready'), { statusCode: 503 });
-    }
-
-    const locationId = req.body?.locationId || req.headers['x-location-id'] ||
-      (this.locationManager.getLocation('default') ? 'default' : null);
-    if (!locationId) throw new Error('locationId is required');
-    const location = this.locationManager.getLocation(locationId);
-    if (!location || !location.enabled) throw new Error('Location is unavailable');
-    if (!this.locationPermissionManager) {
-      throw Object.assign(new Error('Location permission service is not ready'), { statusCode: 503 });
-    }
-    // Upload handlers authenticate multipart requests before resolving their target.
-    for (const requiredCapability of Array.isArray(capability) ? capability : [capability]) {
-      await this.locationPermissionManager.assertCurrent(req.user, locationId, requiredCapability);
-    }
-
-    return {
-      locationId,
-      rootPath: location.rootPath,
-      targetPath: this.locationManager.resolveRelativePath(locationId, relativePath)
-    };
+  async waitForIdle() {
+    // The parent must stop new admission first and must not hold locks needed by workers.
+    while (this.#workers.size) await Promise.all([...this.#workers]);
   }
 
-  async _refreshCacheDirectory(directoryPath, locationId = 'default') {
-    const cache = this.cacheResolver ? await this.cacheResolver(locationId) : this.cache;
-    if (!cache) return;
-    if (cache.refreshDirectory) {
-      await cache.refreshDirectory(directoryPath);
-    } else if (cache.scanDirectory) {
-      await cache.scanDirectory(directoryPath);
+  _owner(req) {
+    const id = req.user?.id;
+    const validId = (typeof id === 'string' && id.length > 0) || (Number.isSafeInteger(id) && id >= 0);
+    if (!validId || typeof req.user.username !== 'string' || !req.user.username) {
+      throw fault(401, 'Authentication required');
     }
+    return { id: req.user.id, username: req.user.username };
   }
 
-  async _withUploadLock(lockPath, operation) {
-    const previous = this.uploadLocks.get(lockPath) || Promise.resolve();
-    let release;
-    const current = new Promise((resolve) => { release = resolve; });
-    this.uploadLocks.set(lockPath, current);
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-      if (this.uploadLocks.get(lockPath) === current) this.uploadLocks.delete(lockPath);
-    }
+  async _resolveLocation(req, rel = '', explicitId) {
+    const mgr = this.locationManager;
+    const permissions = this.locationPermissionManager;
+    const cacheResolver = this.cacheResolver;
+    const cache = this.cache;
+    if (!mgr || !permissions) throw fault(503, 'Location service is not ready');
+    const locationId = explicitId || req.headers['x-location-id'] || req.body?.locationId || req.query?.locationId ||
+      (mgr.getLocation('default') ? 'default' : null);
+    const location = typeof locationId === 'string' && mgr.getLocation(locationId);
+    if (!location || !location.enabled) throw fault(403, 'Location is unavailable');
+    for (const capability of ['upload', 'write']) await permissions.assertCurrent(req.user, locationId, capability);
+    const revision = mgr.getRevision(locationId);
+    if (req.headers['x-location-revision'] !== undefined && req.headers['x-location-revision'] !== revision) throw fault(409, 'Location changed');
+    const rootPath = await mgr.resolveCheckedPath(locationId, '', { allowMissing: false });
+    const targetPath = await mgr.resolveCheckedPath(locationId, relativePath(rel, true), { allowMissing: true });
+    if (mgr !== this.locationManager || permissions !== this.locationPermissionManager || revision !== mgr.getRevision(locationId)) throw fault(409, 'Location changed');
+    return { locationId, locationRevision: revision, rootPath, targetPath, path: relativePath(rel, true), owner: this._owner(req),
+      manager: mgr, cacheResolver, cache };
   }
 
-  async _moveUploadedFile(sourcePath, requestedPath) {
-    return this._withUploadLock(path.dirname(requestedPath), async () => {
-      const finalPath = await nextAvailablePath(
-        requestedPath,
-        (candidate) => this.fileSystem.exists(candidate),
-      );
-      await this.fileSystem.move(sourcePath, finalPath);
-      return finalPath;
-    });
+  async _authorizeRecord(req, record) {
+    const owner = this._owner(req);
+    if (!record || record.owner?.id !== owner.id || record.owner?.username !== owner.username) throw fault(404, 'Upload not found');
+    if (req.headers['x-location-id'] && req.headers['x-location-id'] !== record.locationId) throw fault(403, 'Location does not match upload');
+    const context = await this._resolveLocation(req, record.path || '', record.locationId);
+    if (context.locationRevision !== record.locationRevision) throw fault(409, 'Location changed');
+    return context;
   }
 
-  /**
-   * Setup multer storage configuration
-   * @private
-   */
-  _setupMiddleware() {
-    const fs = require('fs');
-    const path = require('path');
-    
-    // Ensure temp upload directory exists
-    const tempDir = './temp';
-    const uploadsDir = './temp/uploads';
-    
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
-    }
-    
-    // Configure multer for file uploads
-    const storage = multer.diskStorage({
-      destination: (req, file, cb) => {
-        // Use a temporary directory for uploads
-        cb(null, uploadsDir);
-      },
-      filename: (req, file, cb) => {
-        // Generate unique filename
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-      }
-    });
-
-    this.upload = multer({
-      storage: storage,
-      // No file size limit
-      fileFilter: (req, file, cb) => {
-        // Allow all file types for now
-        cb(null, true);
-      }
-    });
-  }
-
-  /**
-   * Delete only stale regular files left behind by interrupted Multer uploads.
-   */
-  async cleanupTempUploads(retentionDays) {
-    const fs = require('fs').promises;
-    const uploadsDir = path.resolve('./temp/uploads');
-    const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-    let scanned = 0;
-    let deleted = 0;
-    let releasedBytes = 0;
-
-    try {
-      const entries = await fs.readdir(uploadsDir, { withFileTypes: true });
-
-      for (const entry of entries) {
-        if (!entry.isFile()) continue;
-
-        const filePath = path.join(uploadsDir, entry.name);
-        const stats = await fs.stat(filePath);
-        scanned += 1;
-
-        if (stats.mtimeMs >= cutoff) continue;
-
-        await fs.unlink(filePath);
-        deleted += 1;
-        releasedBytes += stats.size;
-        systemLogger.logSystem('DEBUG', `TEMP UPLOAD CLEANUP - Deleted ${entry.name}, AgeMs: ${Math.round(Date.now() - stats.mtimeMs)}, Size: ${stats.size}`);
-      }
-
-      systemLogger.logSystem('INFO', `TEMP UPLOAD CLEANUP - RetentionDays: ${retentionDays}, Scanned: ${scanned}, Deleted: ${deleted}, ReleasedBytes: ${releasedBytes}`);
-      return { scanned, deleted, releasedBytes };
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `TEMP UPLOAD CLEANUP FAILED - RetentionDays: ${retentionDays}, Error: ${error.message}`);
-      throw error;
+  async _recheck(user, context) {
+    const current = await this._resolveLocation({ user, headers: {} }, context.path, context.locationId);
+    if (current.locationRevision !== context.locationRevision || current.targetPath !== context.targetPath || current.rootPath !== context.rootPath) {
+      throw fault(409, 'Location changed');
     }
   }
 
-  /**
-   * Setup API routes
-   * @private
-   */
+  _respondError(res, error) {
+    if (res.headersSent || res.destroyed) return;
+    const status = error.statusCode || ({ ENOSPC: 507, EACCES: 403, EPERM: 403, ENOENT: 404, ABORT_ERR: 409 }[error.code]) || 500;
+    res.status(status).json({ success: false, error: { code: status, message: status < 500 ?
+      ({ 400: 'Invalid upload request', 401: 'Authentication required', 403: 'Upload access denied', 404: 'Upload not found',
+        409: 'Upload state or Location changed', 413: 'Upload limit exceeded', 429: 'Reservation capacity reached' }[status] || 'Upload rejected') : 'Upload could not be completed' } });
+  }
+
   _setupRoutes() {
-    // Multer error handler middleware
-    const handleMulterError = (err, req, res, next) => {
-      // If no error, continue to next middleware
-      if (!err) {
-        return next();
-      }
+    const auth = (req, res, next) => Promise.resolve(this.authenticate(req, res, next)).catch(error => this._respondError(res, error));
+    const route = fn => (req, res) => Promise.resolve().then(() => fn(req, res)).catch(error => this._respondError(res, error));
+    this.router.post('/upload/batches', auth, express.json({ limit: '20kb' }), route(async (req, res) => {
+      const body = req.body;
+      if (!body || Array.isArray(body) || Object.keys(body).some(key => !['path', 'clientAttemptId'].includes(key)) ||
+          typeof body.path !== 'string' || (body.clientAttemptId !== undefined &&
+            (typeof body.clientAttemptId !== 'string' || !body.clientAttemptId || body.clientAttemptId.length > 128))) throw fault(400, 'Invalid reservation');
+      const context = await this._resolveLocation(req, body.path);
+      const batchId = this.transfers.reserveBatch({ ...context, clientAttemptId: body.clientAttemptId });
+      const batch = this.transfers.getBatch(batchId);
+      res.status(201).json({ batchId, status: 'reserved', locationId: batch.locationId, expiresAt: batch.expiresAt });
+    }));
+    for (const [endpoint, single, asynchronous] of [
+      ['/upload', false, true], ['/upload/multiple', false, true], ['/upload/single', true, false],
+      ['/upload/progress', true, false], ['/upload/single-progress', true, true]
+    ]) this.router.post(endpoint, auth, route((req, res) => this._handleUpload(req, res, { single, asynchronous })));
 
-      systemLogger.logSystem('ERROR', `❌ Upload error occurred`);
-      systemLogger.logSystem('ERROR', `Error message: ${err.message}`);
-      systemLogger.logSystem('ERROR', `Error code: ${err.code}`);
-      systemLogger.logSystem('ERROR', `Error field: ${err.field}`);
-      systemLogger.logSystem('ERROR', `Error stack: ${err.stack}`);
+    // Batch paths must precede the single-transfer parameter route.
+    for (const isBatch of [true, false]) {
+      const endpoint = isBatch ? '/progress/batch/:batchId' : '/progress/:transferId';
+      const progress = cancel => route(async (req, res) => {
+        const id = isBatch ? req.params.batchId : req.params.transferId;
+        const record = isBatch ? this.transfers.getBatch(id) : this.transfers.getTransfer(id);
+        await this._authorizeRecord(req, record);
+        if (cancel) await (isBatch ? this.transfers.cancelBatch(id) : this.transfers.cancelTransfer(id));
+        const result = isBatch ? this.transfers.serializeBatch(id) : this.transfers.serializeTransfer(id);
+        res.set('Cache-Control', 'no-store').status(result.status === 'cancelling' ? 202 : 200).json(result);
+      });
+      this.router.get(endpoint, auth, progress(false));
+      this.router.post(`${endpoint}/cancel`, auth, progress(true));
+    }
+  }
 
-      // Handle multer-specific errors
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(413).json({
-          success: false,
-          error: {
-            code: 413,
-            message: '檔案大小超過限制',
-            details: err.message
-          }
-        });
-      }
-
-      if (err.code === 'LIMIT_FILE_COUNT') {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 400,
-            message: '檔案數量超過限制',
-            details: err.message
-          }
-        });
-      }
-
-      if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 400,
-            message: '未預期的檔案欄位',
-            details: err.message
-          }
-        });
-      }
-
-      // Handle file system errors
-      if (err.code === 'ENOENT') {
-        return res.status(404).json({
-          success: false,
-          error: {
-            code: 404,
-            message: '目標路徑不存在',
-            details: err.message
-          }
-        });
-      }
-
-      if (err.code === 'EACCES' || err.code === 'EPERM') {
-        return res.status(403).json({
-          success: false,
-          error: {
-            code: 403,
-            message: '權限不足，無法存取檔案',
-            details: err.message
-          }
-        });
-      }
-
-      if (err.code === 'ENOSPC') {
-        return res.status(507).json({
-          success: false,
-          error: {
-            code: 507,
-            message: '磁碟空間不足',
-            details: err.message
-          }
-        });
-      }
-
-      // Generic error
-      systemLogger.logSystem('ERROR', `❌ Unhandled upload error type: ${err.constructor.name}`);
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 500,
-          message: '檔案上傳錯誤',
-          details: err.message
+  _registerFile(file, batchId, parentController) {
+    file.transferId = this.transfers.startTransfer({ batchId, fileName: file.originalname,
+      totalSize: file.measured ? file.size : undefined, phase: file.measured ? 'pending' : 'receiving' });
+    file.controller = new AbortController();
+    file.done = deferred();
+    file.abort = () => file.controller.abort();
+    parentController.signal.addEventListener('abort', file.abort, { once: true });
+    if (parentController.signal.aborted) file.abort();
+    this.transfers.registerWorker(file.transferId, file.controller, file.done.promise);
+    if (file.measured) this.transfers.updateProgress(file.transferId, file.size, file.size);
+    else this.transfers.updateTransferStatus(file.transferId, 'uploading', 'receiving');
+    file.cancelQueued = () => {
+      if (!file.ready || file.processing || file.cancellation || terminal.has(this.transfers.getTransfer(file.transferId).status)) return;
+      file.cancellation = (async () => {
+        try {
+          await this.fs.promises.unlink(file.path).catch(error => { if (error.code !== 'ENOENT') throw error; });
+          this.transfers.settleCancelledTransfer(file.transferId);
+        } catch (error) {
+          file.cleanupFailed = true;
+          this.transfers.failTransfer(file.transferId, error);
+        } finally {
+          parentController.signal.removeEventListener('abort', file.abort);
+          file.done.resolve();
         }
+      })();
+    };
+    file.controller.signal.addEventListener('abort', file.cancelQueued, { once: true });
+  }
+
+  async _parse(req, state, single) {
+    const maxFileSize = this.getConfig('fileSystem.maxFileSize');
+    if (!Number.isSafeInteger(maxFileSize) || maxFileSize <= 0 || maxFileSize >= Number.MAX_SAFE_INTEGER) throw fault(503, 'Invalid upload limit');
+    // One extra byte distinguishes an exact-size file from Busboy's inclusive limit event.
+    let parser;
+    try { parser = Busboy({ headers: req.headers, defParamCharset: 'utf8', limits: {
+      fileSize: maxFileSize + 1, files: single ? 1 : 1000, fields: 2010, parts: 3010, fieldSize: 16384, fieldNameSize: 100
+    } }); } catch { throw fault(400, 'Invalid multipart content type'); }
+    await this.fs.promises.mkdir(this.tempDir, { recursive: true });
+    state.stage = await this.fs.promises.mkdtemp(path.join(this.tempDir, 'upload-'));
+    activeStages.add(state.stage);
+    const writes = [];
+    const streams = new Set();
+    let firstError;
+    let metadataBytes = 0;
+    const fail = error => {
+      firstError ||= error;
+      // Do not destroy Busboy reentrantly from a file/limit callback.
+      queueMicrotask(() => {
+        req.unpipe(parser);
+        for (const stream of streams) stream.destroy(firstError);
+        parser.destroy(firstError);
+        req.resume();
       });
     };
-
-    // Main upload endpoint that handles files field (used by frontend)
-    // Use .fields() to accept both 'files' and 'filePaths[]' for folder uploads
-    this.router.post('/upload',
-      this.upload.fields([
-        { name: 'files', maxCount: 1000 },
-        { name: 'filePaths[]', maxCount: 1000 },
-        { name: 'directoryPaths[]', maxCount: 1000 }
-      ]),
-      handleMulterError,
-      (req, res) => {
-        // Normalize files array for folder uploads
-        req.files = req.files?.files || [];
-        // Simplified: _handleMultipleUpload can handle one or many files
-        this._handleMultipleUpload(req, res);
-      }
-    );
-
-    // Alternative endpoint for single file upload with 'file' field
-    this.router.post('/upload/single',
-      this.upload.single('file'),
-      handleMulterError,
-      (req, res) => {
-        this._handleSingleUpload(req, res);
-      }
-    );
-
-    // Alternative endpoint for multiple file upload with 'files' field
-    this.router.post('/upload/multiple',
-      this.upload.fields([
-        { name: 'files', maxCount: 1000 },
-        { name: 'filePaths[]', maxCount: 1000 },
-        { name: 'directoryPaths[]', maxCount: 1000 }
-      ]),
-      handleMulterError,
-      (req, res) => {
-        // Normalize files array for folder uploads
-        req.files = req.files?.files || [];
-        this._handleMultipleUpload(req, res);
-      }
-    );
-
-    // Upload with progress tracking
-    this.router.post('/upload/progress', this.upload.single('file'), (req, res) => {
-      this._handleUploadWithProgress(req, res);
+    const abort = () => fail(fault(409, 'Upload cancelled'));
+    const interrupted = () => fail(fault(400, 'Upload interrupted'));
+    state.controller.signal.addEventListener('abort', abort, { once: true });
+    req.once('aborted', interrupted);
+    req.once('error', interrupted);
+    const parsed = new Promise((resolve, reject) => {
+      parser.once('finish', resolve);
+      parser.once('error', error => { firstError ||= fault(400, 'Malformed multipart'); reject(firstError); });
     });
-
-    // New single-file progress upload endpoint (uses Busboy, no multer)
-    this.router.post('/upload/single-progress', (req, res) => {
-      this._handleSingleProgressUpload(req, res);
+    parser.on('field', (name, value, info) => {
+      metadataBytes += Buffer.byteLength(name) + Buffer.byteLength(value);
+      if (info.nameTruncated || info.valueTruncated || name.length > 100 || metadataBytes > 32 * 1024 * 1024) return fail(fault(413, 'Metadata limit exceeded'));
+      if (!['path', 'locationId', 'fileName', 'filePaths', 'filePaths[]', 'directoryPaths', 'directoryPaths[]'].includes(name)) return fail(fault(400, 'Unexpected multipart field'));
+      const key = name.replace(/\[\]$/, '');
+      const values = state.fields[key] ||= [];
+      values.push(value);
+      if (values.length > (['filePaths', 'directoryPaths'].includes(key) ? 1000 : 1)) fail(fault(400, 'Duplicate or excess metadata'));
     });
+    parser.on('file', (name, stream, info) => {
+      streams.add(stream);
+      stream.on('error', () => {});
+      if (name !== (single ? 'file' : 'files') || !info.filename || Buffer.byteLength(info.filename) > 16384) {
+        stream.resume();
+        return fail(fault(400, 'Unexpected file'));
+      }
+      const file = { path: path.join(state.stage, randomUUID()), originalname: path.basename(info.filename.replace(/\\/g, '/')), size: 0 };
+      state.files.push(file);
+      if (state.batchId) this._registerFile(file, state.batchId, state.controller);
+      const signal = file.controller?.signal || state.controller.signal;
+      stream.once('limit', () => fail(fault(413, 'File limit exceeded')));
+      const measure = new Transform({ transform: (chunk, encoding, callback) => {
+        file.size += chunk.length;
+        if (file.size > maxFileSize) return callback(fault(413, 'File limit exceeded'));
+        if (file.transferId) this.transfers.updateProgress(file.transferId, file.size);
+        callback(null, chunk);
+      } });
+      const write = pipeline(stream, measure, this.fs.createWriteStream(file.path, { flags: 'wx', mode: 0o600 }), { signal })
+        .then(() => {
+          if (stream.truncated) throw fault(413, 'Truncated file');
+          file.measured = true;
+          if (file.transferId) this.transfers.updateProgress(file.transferId, file.size, file.size);
+        }).catch(error => { fail(error); }).finally(() => streams.delete(stream));
+      writes.push(write);
+    });
+    for (const event of ['filesLimit', 'fieldsLimit', 'partsLimit']) parser.once(event, () => fail(fault(413, 'Multipart count exceeded')));
+    try {
+      if (state.controller.signal.aborted) abort();
+      else if (req.aborted) interrupted();
+      else req.pipe(parser);
+      await parsed;
+    } catch (error) { firstError ||= error; fail(firstError); }
+    finally {
+      await Promise.all(writes);
+      state.controller.signal.removeEventListener('abort', abort);
+      req.removeListener('aborted', interrupted);
+      req.removeListener('error', interrupted);
+    }
+    if (firstError) throw firstError;
   }
 
-  /**
-   * Handle single file upload
-   * @private
-   */
-  async _handleSingleUpload(req, res) {
+  async _cleanupStage(state) {
+    if (!state.stage) return;
+    const stage = state.stage;
     try {
-      // Manual authentication check for multipart requests
-      const jwt = require('jsonwebtoken');
-      const configManager = require('../config');
-      const { getSessionToken } = require('../auth/session-cookie');
-      const jwtSecret = configManager.get('security.jwtSecret');
-      if (!jwtSecret) throw new Error('JWT secret is not configured');
-      
-      // Try to get token from header first
-      let token = null;
-      token = getSessionToken(req);
-      const authHeader = req.headers.authorization;
-      if (!token && authHeader?.startsWith('Bearer ')) token = authHeader.substring(7);
-      
-      // If not in header, try to get from body (for multipart)
-      if (!token && req.body && req.body.token) {
-        token = req.body.token;
+      await this.fs.promises.rm(stage, { recursive: true, force: true });
+      state.stage = null;
+    } finally {
+      // All streams have settled here. A failed deletion must remain eligible for a later sweep.
+      activeStages.delete(stage);
+    }
+  }
+
+  async _handleUpload(req, res, { single, asynchronous }) {
+    this._owner(req);
+    const state = { files: [], fields: Object.create(null), controller: new AbortController(), stage: null, batchId: null };
+    setMaxListeners(1010, state.controller.signal);
+    const done = deferred();
+    this.#workers.add(done.promise);
+    done.promise.then(() => this.#workers.delete(done.promise));
+    let context;
+    let admission;
+    let handedOff = false;
+    const reservedId = req.headers['x-upload-batch-id'];
+    const registerBatch = () => this.transfers.registerWorker(state.batchId, state.controller, done.promise, true);
+    try {
+      if (Object.keys(req.query || {}).some(key => /token|password|authorization/i.test(key))) throw fault(400, 'Body/query credentials are not supported');
+      if (reservedId) {
+        if (single || typeof reservedId !== 'string') throw fault(400, 'Invalid batch reservation');
+        const batch = this.transfers.getBatch(reservedId);
+        context = await this._authorizeRecord(req, batch);
+        this.transfers.claimBatch(reservedId, context);
+        state.batchId = reservedId;
+        registerBatch();
+      } else if (req.headers['x-location-revision'] !== undefined) {
+        admission = await this._resolveLocation(req, '', req.query?.locationId);
       }
-      
-      if (!token) {
-        return res.status(401).json({
-          error: 'Authorization token missing'
-        });
-      }
-      
-      try {
-        const decoded = jwt.verify(token, jwtSecret);
-        req.user = decoded; // Attach user info to request
-      } catch (authError) {
-        return res.status(401).json({
-          error: 'Invalid or expired token'
-        });
-      }
-      
-      if (!req.file) {
-        return res.status(400).json({
-          error: 'No file uploaded'
-        });
-      }
-
-      // Get currentPath from request body to determine destination directory
-      const currentPath = req.body.path || '';
-      const locationContext = await this._resolveLocation(req, currentPath, ['upload', 'write']);
-      const normalizedFinalDir = locationContext.targetPath;
-      const normalizedStoragePath = locationContext.rootPath;
-
-      // Create directory if it doesn't exist
-      await this.fileSystem.mkdir(normalizedFinalDir);
-      
-      // Final file path
-      const requestedPath = path.join(normalizedFinalDir, path.basename(req.file.originalname));
-
-      // Create transfer record
-      const transferId = transferManager.startTransfer({
-        source: req.file.path,
-        destination: requestedPath,
-        totalSize: req.file.size
-      });
-
-      // Move file to final destination in storage
-      const finalPath = await this._moveUploadedFile(req.file.path, requestedPath);
-      await this._refreshCacheDirectory(normalizedFinalDir, locationContext.locationId);
-
-      // Update transfer as complete
-      transferManager.completeTransfer(transferId, {
-        result: 'success',
-        file: {
-          name: path.basename(req.file.originalname),
-          path: path.relative(normalizedStoragePath, finalPath),
-          size: req.file.size
+      await this._parse(req, state, single);
+      const fields = state.fields;
+      const rel = relativePath(fields.path?.[0] ?? req.query?.path ?? context?.path ?? '', true);
+      const locationId = fields.locationId?.[0] || req.query?.locationId;
+      if (context && (rel !== context.path || (locationId && locationId !== context.locationId))) throw fault(409, 'Reservation target mismatch');
+      if (req.headers['x-location-id'] && locationId && locationId !== req.headers['x-location-id']) throw fault(400, 'Conflicting Location');
+      context ||= await this._resolveLocation(req, rel, locationId);
+      if (admission && (context.locationId !== admission.locationId || context.locationRevision !== admission.locationRevision ||
+          context.rootPath !== admission.rootPath)) throw fault(409, 'Location changed');
+      await this._recheck(req.user, context);
+      const filePaths = (fields.filePaths || []).map(value => relativePath(value));
+      const directories = (fields.directoryPaths || []).map(value => relativePath(value));
+      if ((filePaths.length && filePaths.length !== state.files.length) || (!state.files.length && !directories.length) ||
+          (single && (state.files.length !== 1 || filePaths.length || directories.length))) throw fault(400, 'Invalid upload inventory');
+      const secureFiles = this.getConfig('security.enableFileUploadSecurity') === true;
+      for (let index = 0; index < state.files.length; index++) {
+        const file = state.files[index];
+        const originalname = file.originalname;
+        if (single && (fields.fileName?.[0] || req.query?.fileName)) file.originalname = this._sanitizeFilename(fields.fileName?.[0] || req.query.fileName);
+        const name = filePaths[index] || relativePath(file.originalname);
+        if (secureFiles && [originalname, file.originalname, name].some(value => dangerousExtensions.has(path.extname(value).toLowerCase()))) {
+          throw fault(400, 'File type is not allowed');
         }
-      });
-
-      // Log successful upload
-      systemLogger.logUpload(path.basename(req.file.originalname), true, req, {
-        transferId,
-        size: req.file.size
-      });
-
-      res.json({
-        success: true,
-        transferId,
-        message: 'File uploaded successfully',
-        file: {
-          name: path.basename(req.file.originalname),
-          path: path.relative(normalizedStoragePath, finalPath),
-          size: req.file.size
-        }
-      });
+        file.destination = await context.manager.resolveCheckedPath(context.locationId, path.posix.join(rel, name), { allowMissing: true });
+      }
+      state.directories = [];
+      for (const directory of directories) {
+        const target = await context.manager.resolveCheckedPath(context.locationId, path.posix.join(rel, directory), { allowMissing: true });
+        let stat;
+        try { stat = await this.fs.promises.lstat(target); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (stat && !stat.isDirectory()) throw fault(400, 'Directory target is not a directory');
+        state.directories.push(target);
+      }
+      await this._recheck(req.user, context);
+      if (!state.batchId) {
+        state.batchId = this.transfers.createBatch(context);
+        registerBatch();
+        for (const file of state.files) this._registerFile(file, state.batchId, state.controller);
+      }
+      this.transfers.sealBatch(state.batchId);
+      for (const file of state.files) {
+        file.ready = true;
+        this.transfers.updateTransferStatus(file.transferId, 'pending');
+        if (file.controller.signal.aborted) file.cancelQueued();
+      }
+      const worker = Promise.resolve().then(() => this._processFiles(state, context, req.user)).finally(done.resolve);
+      // The worker owns all staged files from this point, including response-write failure.
+      handedOff = true;
+      if (!state.files.length || !asynchronous) {
+        await worker;
+        const batch = this.transfers.getBatch(state.batchId);
+        if (batch?.status !== 'completed') throw fault(batch?.status === 'cancelled' ? 409 : 500, 'Upload failed');
+        if (!state.files.length) return res.json({ success: true, batchId: state.batchId, locationId: context.locationId,
+          message: 'Folders uploaded successfully.', folders: directories.length });
+        const record = this.transfers.serializeTransfer(state.files[0].transferId);
+        return res.json({ success: true, transferId: record.id, message: 'File uploaded successfully', file: record.file });
+      }
+      worker.catch(() => { this._warn('Upload worker failed'); });
+      res.status(202).json({ success: true, ...(single ? { transferId: state.files[0].transferId } : { batchId: state.batchId }),
+        message: 'Upload accepted. Poll for progress.' });
     } catch (error) {
-      systemLogger.logError(`Upload failed: ${error.message}`, req);
-
-      // Log failed upload
-      systemLogger.logUpload(req.file?.originalname || 'unknown', false, req, {
-        error: error.message
-      });
-
-      res.status(500).json({
-        error: 'Upload failed',
-        message: error.message
-      });
+      if (!handedOff) {
+        let cleanupError;
+        try { await this._cleanupStage(state); } catch (failure) { cleanupError = failure; }
+        this._settleRemaining(state, cleanupError || error, !!cleanupError);
+        if (state.batchId) this.transfers.updateBatchProgress(state.batchId, { settled: true,
+          error: cleanupError || (state.controller.signal.aborted ? null : error) });
+        done.resolve();
+      }
+      this._respondError(res, error);
     }
   }
 
-  /**
-   * Handle multiple file uploads with batch tracking
-   * @private
-   */
-  async _handleMultipleUpload(req, res) {
+  _settleRemaining(state, error, cleanupFailed = false) {
+    for (const file of state.files) {
+      if (!file.transferId) continue;
+      const record = this.transfers.getTransfer(file.transferId);
+      if (!terminal.has(record.status)) {
+        if (file.controller.signal.aborted && !cleanupFailed) this.transfers.settleCancelledTransfer(file.transferId);
+        else this.transfers.failTransfer(file.transferId, error);
+      }
+      state.controller.signal.removeEventListener('abort', file.abort);
+      file.controller.signal.removeEventListener('abort', file.cancelQueued);
+      file.done.resolve();
+    }
+  }
+
+  async _processFiles(state, context, user) {
+    let outerError;
+    let workComplete = false;
     try {
-      systemLogger.logSystem('INFO', `📥 [BATCH UPLOAD START] Multi-file upload initiated`);
-      systemLogger.logSystem('INFO', `Headers: ${JSON.stringify(req.headers)}`);
-      systemLogger.logSystem('INFO', `Body keys: ${Object.keys(req.body).join(', ')}`);
-      systemLogger.logSystem('INFO', `Files object type: ${typeof req.files}`);
-      systemLogger.logSystem('INFO', `Files object keys: ${req.files ? Object.keys(req.files).join(', ') : 'null'}`);
-
-      // Manual authentication check for multipart requests
-      const jwt = require('jsonwebtoken');
-      const configManager = require('../config');
-      const { getSessionToken } = require('../auth/session-cookie');
-      const jwtSecret = configManager.get('security.jwtSecret');
-      if (!jwtSecret) throw new Error('JWT secret is not configured');
-
-      systemLogger.logSystem('INFO', `[BATCH] Step 1: Checking authentication`);
-
-      // Try to get token from header first
-      let token = null;
-      token = getSessionToken(req);
-      const authHeader = req.headers.authorization;
-      if (!token && authHeader?.startsWith('Bearer ')) token = authHeader.substring(7);
-
-      // If not in header, try to get from body (for multipart)
-      if (!token && req.body && req.body.token) {
-        token = req.body.token;
+      for (const directory of state.directories) {
+        await this.withOperationLocks([context.targetPath, directory], async () => {
+          state.controller.signal.throwIfAborted();
+          await this._recheck(user, context);
+          await this.assertSafePath(context.rootPath, directory, { allowMissing: true });
+          await this.fs.promises.mkdir(directory, { recursive: true });
+        }, { signal: state.controller.signal });
       }
-
-      if (!token) {
-        systemLogger.logSystem('ERROR', `[BATCH] Authorization token missing`);
-        return res.status(401).json({
-          error: 'Authorization token missing'
-        });
-      }
-
-      try {
-        const decoded = jwt.verify(token, jwtSecret);
-        req.user = decoded; // Attach user info to request
-        systemLogger.logSystem('INFO', `[BATCH] Step 1: Authentication successful for user: ${decoded.username}`);
-      } catch (authError) {
-        systemLogger.logSystem('ERROR', `[BATCH] JWT verification failed: ${authError.message}`);
-        return res.status(401).json({
-          error: 'Invalid or expired token'
-        });
-      }
-
-      systemLogger.logSystem('INFO', `[BATCH] Step 2: Validating files`);
-      systemLogger.logSystem('INFO', `[BATCH] req.files type: ${typeof req.files}`);
-      systemLogger.logSystem('INFO', `[BATCH] req.files is array: ${Array.isArray(req.files)}`);
-      systemLogger.logSystem('INFO', `[BATCH] req.files length: ${req.files ? req.files.length : 'undefined'}`);
-
-      const filePaths = asFieldArray(req.body.filePaths ?? req.body['filePaths[]']).map((filePath, index) => safeRelativePath(filePath, `filePaths[${index}]`));
-      const directoryPaths = asFieldArray(req.body.directoryPaths ?? req.body['directoryPaths[]']).map((directoryPath, index) => safeRelativePath(directoryPath, `directoryPaths[${index}]`));
-      if ((!req.files || req.files.length === 0) && directoryPaths.length === 0) {
-        systemLogger.logSystem('ERROR', `[BATCH] No files uploaded`);
-        return res.status(400).json({
-          error: 'No files uploaded'
-        });
-      }
-      if (filePaths.length > 0 && filePaths.length !== (req.files || []).length) {
-        return res.status(400).json({ error: 'The uploaded file paths do not match the uploaded files.' });
-      }
-      req.files = req.files || [];
-
-      systemLogger.logSystem('INFO', `[BATCH] Received ${req.files.length} files`);
-      (req.files || []).forEach((file, index) => {
-        systemLogger.logSystem('INFO', `[BATCH] File ${index + 1}: ${file.originalname} (${file.size} bytes)`);
-      });
-
-      // Get currentPath from request body to determine destination directory
-      const currentPath = req.body.path || '';
-      const locationContext = await this._resolveLocation(req, currentPath, ['upload', 'write']);
-      const normalizedFinalDir = locationContext.targetPath;
-      const normalizedStoragePath = locationContext.rootPath;
-
-      if (req.files.length === 0) {
-        for (const relativeDirectory of directoryPaths) {
-          const directoryPath = path.resolve(normalizedFinalDir, relativeDirectory);
-          if (!pathIsWithin(normalizedFinalDir, directoryPath)) {
-            return res.status(400).json({ error: 'Unsafe directory path.' });
-          }
-          await this.fileSystem.mkdir(directoryPath);
-        }
-        await this._refreshCacheDirectory(normalizedFinalDir, locationContext.locationId);
-        return res.json({ success: true, locationId: locationContext.locationId, message: 'Folders uploaded successfully.', folders: directoryPaths.length });
-      }
-
-      // 1. Create batch for this multi-file upload
-      const batchId = transferManager.createBatch({
-        totalFiles: req.files.length
-      });
-
-      // 2. Immediately respond with 202 Accepted and batchId
-      res.status(202).json({
-        success: true,
-        batchId,
-        message: 'Batch upload initiated. Poll for batch progress.'
-      });
-
-      // 3. Process files in background (with error handling)
-      this._processFilesInBackground(req.files, batchId, {
-        currentPath,
-        normalizedFinalDir,
-        normalizedStoragePath,
-        locationId: locationContext.locationId,
-        filePaths,
-        directoryPaths,
-        user: req.user
-      }).catch(error => {
-        // Log the error but don't crash the server
-        systemLogger.logSystem('ERROR', `Background file processing error for batch ${batchId}: ${error.message}`);
-
-        // Mark remaining files as failed
-        transferManager.updateBatchProgress(batchId);
-      });
-
-    } catch (error) {
-      systemLogger.logError(`Upload failed: ${error.message}`, req);
-
-      // If response hasn't been sent yet
-      if (!res.headersSent) {
-        res.status(500).json({
-          error: 'Upload failed',
-          message: error.message
-        });
-      }
-    }
-  }
-
-  /**
-   * Process multiple files in background and update batch progress
-   * @param {Array} files - Array of uploaded files from multer
-   * @param {string} batchId - Batch ID
-   * @param {Object} metadata - Upload metadata (paths, user info, etc.)
-   * @private
-   */
-  async _processFilesInBackground(files, batchId, metadata) {
-    const { normalizedFinalDir, normalizedStoragePath, filePaths, directoryPaths, user, locationId } = metadata;
-    const hasFolderStructure = Array.isArray(filePaths) && filePaths.length > 0;
-
-    const startTime = Date.now();
-    let totalBytes = 0;
-
-    for (const relativeDirectory of directoryPaths || []) {
-      const safeDirectory = safeRelativePath(relativeDirectory, 'directoryPaths');
-      const directoryPath = path.resolve(normalizedFinalDir, safeDirectory);
-      if (!pathIsWithin(normalizedFinalDir, directoryPath)) {
-        throw new Error(`Unsafe directory path: ${relativeDirectory}`);
-      }
-      await this.fileSystem.mkdir(directoryPath);
-    }
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      let transferId = null;
-
-      try {
-        // Determine final file path
-        let finalPath;
-        if (hasFolderStructure && filePaths[i]) {
-          // Use the relative path to preserve folder structure
-          const relativePath = safeRelativePath(filePaths[i], `filePaths[${i}]`);
-          finalPath = path.resolve(normalizedFinalDir, relativePath);
-          if (!pathIsWithin(normalizedFinalDir, finalPath)) {
-            throw new Error(`Unsafe file path: ${relativePath}`);
-          }
-
-          // Ensure the parent directory exists
-          const parentDir = path.dirname(finalPath);
-          await this.fileSystem.mkdir(parentDir);
-        } else {
-          // Just use the filename
-          finalPath = path.resolve(normalizedFinalDir, path.basename(file.originalname));
-        }
-
-        // Ensure the destination path is still within the storage directory
-        const normalizedFinalPath = path.resolve(finalPath);
-        if (!normalizedFinalPath.startsWith(normalizedStoragePath)) {
-          systemLogger.logError(`Security: Attempted path traversal with path: ${finalPath}`, { user });
-
-          // Create a failed transfer for this file
-          transferId = transferManager.startTransfer({
-            fileName: path.basename(file.originalname),
-            source: file.path,
-            destination: finalPath,
-            totalSize: file.size,
-            batchId,
-            status: 'failed'
-          });
-
-          transferManager.failTransfer(transferId, {
-            code: 403,
-            message: 'Path traversal attempt',
-            details: `Invalid path: ${finalPath}`
-          });
-
-          transferManager.addTransferToBatch(batchId, transferId);
-          continue; // Skip this file
-        }
-
-        // Create directory if it doesn't exist
-        await this.fileSystem.mkdir(normalizedFinalDir);
-
-        // Create transfer record
-        transferId = transferManager.startTransfer({
-          fileName: path.basename(file.originalname),
-          source: file.path,
-          destination: normalizedFinalPath,
-          totalSize: file.size,
-          batchId,
-          status: 'pending'
-        });
-
-        // Add transfer to batch
-        transferManager.addTransferToBatch(batchId, transferId);
-
-        // Update status to processing
-        transferManager.updateTransferStatus(transferId, 'processing');
-
-        // Move file to final destination in storage
-        systemLogger.logSystem('DEBUG', `UPLOAD MOVE START - BatchID: ${batchId}, TransferID: ${transferId}, TempFile: ${path.basename(file.path)}, Size: ${file.size}`);
-        finalPath = await this._moveUploadedFile(file.path, normalizedFinalPath);
-        await this._refreshCacheDirectory(path.dirname(finalPath), locationId);
-        systemLogger.logSystem('DEBUG', `UPLOAD MOVE COMPLETE - BatchID: ${batchId}, TransferID: ${transferId}, File: ${path.basename(file.originalname)}, Size: ${file.size}`);
-
-        // Update transfer as complete
-        transferManager.completeTransfer(transferId, {
-          result: 'success',
-          file: {
-            name: path.basename(file.originalname),
-            path: path.relative(normalizedStoragePath, finalPath),
-            size: file.size
-          }
-        });
-
-        // Log successful upload (using new logUpload method)
-        systemLogger.logUpload(path.basename(file.originalname), true, { user }, {
-          transferId,
-          batchId,
-          size: file.size
-        });
-
-        totalBytes += file.size;
-
-      } catch (error) {
-        // If transfer was created, mark it as failed
-        if (transferId) {
-          transferManager.failTransfer(transferId, {
-            code: 500,
-            message: 'File processing failed',
-            details: error.message
-          });
-        } else {
-          // Create a failed transfer record
-          transferId = transferManager.startTransfer({
-            fileName: path.basename(file.originalname),
-            source: file.path,
-            totalSize: file.size,
-            batchId,
-            status: 'failed'
-          });
-
-          transferManager.addTransferToBatch(batchId, transferId);
-
-          transferManager.failTransfer(transferId, {
-            code: 500,
-            message: 'File processing failed',
-            details: error.message
-          });
-        }
-
-        // Log failed upload (using new logUpload method)
-        systemLogger.logUpload(path.basename(file.originalname), false, { user }, {
-          transferId,
-          batchId,
-          error: error.message
-        });
-      }
-
-      // Update batch progress after each file
-      transferManager.updateBatchProgress(batchId);
-    }
-
-    // Final batch update
-    transferManager.updateBatchProgress(batchId);
-
-    systemLogger.logSystem('INFO', `Batch ${batchId} processing completed`);
-
-    // Log batch summary if it's a large batch (>100 files or >1GB)
-    const duration = Date.now() - startTime;
-    const batchStats = transferManager.calculateBatchStats(batchId);
-
-    if (files.length > 100 || totalBytes > 1073741824) {
-      await systemLogger.logBatchSummary(batchId, {
-        totalFiles: files.length,
-        successCount: batchStats.successCount,
-        failedCount: batchStats.failedCount,
-        totalBytes: totalBytes,
-        duration: duration
-      });
-    }
-  }
-
-  /**
-   * Handle upload with progress tracking
-   * @private
-   */
-  async _handleUploadWithProgress(req, res) {
-    try {
-      // Manual authentication check for multipart requests
-      const jwt = require('jsonwebtoken');
-      const configManager = require('../config');
-      const { getSessionToken } = require('../auth/session-cookie');
-      const jwtSecret = configManager.get('security.jwtSecret');
-      if (!jwtSecret) throw new Error('JWT secret is not configured');
-      
-      // Try to get token from header first
-      let token = null;
-      token = getSessionToken(req);
-      const authHeader = req.headers.authorization;
-      if (!token && authHeader?.startsWith('Bearer ')) token = authHeader.substring(7);
-      
-      // If not in header, try to get from body (for multipart)
-      if (!token && req.body && req.body.token) {
-        token = req.body.token;
-      }
-      
-      if (!token) {
-        return res.status(401).json({
-          error: 'Authorization token missing'
-        });
-      }
-      
-      try {
-        const decoded = jwt.verify(token, jwtSecret);
-        req.user = decoded; // Attach user info to request
-      } catch (authError) {
-        return res.status(401).json({
-          error: 'Invalid or expired token'
-        });
-      }
-      
-      if (!req.file) {
-        return res.status(400).json({
-          error: 'No file uploaded'
-        });
-      }
-
-      // Get currentPath from request body to determine destination directory
-      const currentPath = req.body.path || '';
-      const locationContext = await this._resolveLocation(req, currentPath, ['upload', 'write']);
-      const normalizedFinalDir = locationContext.targetPath;
-      const normalizedStoragePath = locationContext.rootPath;
-      
-      // Create directory if it doesn't exist
-      await this.fileSystem.mkdir(normalizedFinalDir);
-      
-      // Final file path
-      const requestedPath = path.join(normalizedFinalDir, path.basename(req.file.originalname));
-
-      // Create transfer record
-      const transferId = transferManager.startTransfer({
-        source: req.file.path,
-        destination: requestedPath,
-        totalSize: req.file.size
-      });
-
-      // Simulate progress updates (in real implementation, this would happen during file write)
-      let progress = 0;
-      const interval = setInterval(() => {
-        progress += 10;
-        if (progress >= 100) {
-          clearInterval(interval);
-        }
-
-        // Update progress
-        transferManager.updateProgress(transferId, Math.min(progress * req.file.size / 100, req.file.size));
-      }, 200);
-
-      // Simulate completion
-      setTimeout(async () => {
-        clearInterval(interval);
-
-        // Move file to final destination in storage
-        const finalPath = await this._moveUploadedFile(req.file.path, requestedPath);
-        await this._refreshCacheDirectory(path.dirname(finalPath), locationContext.locationId);
-
-        // Update transfer as complete
-        transferManager.completeTransfer(transferId, {
-          result: 'success',
-          file: {
-            name: path.basename(req.file.originalname),
-            path: path.relative(normalizedStoragePath, finalPath),
-            size: req.file.size
-          }
-        });
-
-        // Send response when done
-        res.json({
-          success: true,
-          transferId,
-          message: 'File uploaded successfully with progress tracking',
-          file: {
-            name: path.basename(req.file.originalname),
-            path: path.relative(normalizedStoragePath, finalPath),
-            size: req.file.size
-          }
-        });
-      }, 2000);
-    } catch (error) {
-      systemLogger.logError(`Upload failed: ${error.message}`, req);
-      res.status(500).json({
-        error: 'Upload failed',
-        message: error.message
-      });
-    }
-  }
-
-  /**
-   * Handle single file upload with real-time progress tracking using Busboy
-   * @param {Object} req - Express request
-   * @param {Object} res - Express response
-   * @private
-   */
-  async _handleSingleProgressUpload(req, res) {
-    const Busboy = require('busboy');
-    const fs = require('fs');
-
-    // 添加詳細日誌記錄請求開始
-    systemLogger.logSystem('INFO', `📥 [UPLOAD START] Single file upload initiated`);
-    systemLogger.logSystem('INFO', `Headers: ${JSON.stringify(req.headers)}`);
-
-    try {
-      // 1. Manual JWT authentication (since we're not using multer middleware)
-      const jwt = require('jsonwebtoken');
-      const configManager = require('../config');
-      const { getSessionToken } = require('../auth/session-cookie');
-      const jwtSecret = configManager.get('security.jwtSecret');
-      if (!jwtSecret) throw new Error('JWT secret is not configured');
-
-      systemLogger.logSystem('INFO', `[UPLOAD] Step 1: Checking authentication`);
-
-      const authHeader = req.headers.authorization;
-      const token = getSessionToken(req) || (authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null);
-      if (!token) {
-        systemLogger.logSystem('ERROR', `[UPLOAD] Authentication failed: missing or invalid auth header`);
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 401,
-            message: 'Missing or invalid authorization token'
-          }
-        });
-      }
-
-      try {
-        const decoded = jwt.verify(token, jwtSecret);
-        req.user = decoded;
-        systemLogger.logSystem('INFO', `[UPLOAD] Step 1: Authentication successful for user: ${decoded.username}`);
-      } catch (authError) {
-        systemLogger.logSystem('ERROR', `[UPLOAD] JWT verification failed: ${authError.message}`);
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 401,
-            message: 'Invalid or expired token'
-          }
-        });
-      }
-
-      // 2. Validate Content-Length header
-      systemLogger.logSystem('INFO', `[UPLOAD] Step 2: Validating Content-Length`);
-      const contentLength = parseInt(req.headers['content-length']);
-      systemLogger.logSystem('INFO', `[UPLOAD] Content-Length: ${contentLength} bytes`);
-
-      if (!contentLength || contentLength === 0) {
-        systemLogger.logSystem('ERROR', `[UPLOAD] Invalid Content-Length: ${contentLength}`);
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 301,
-            message: '檔案Content-Length不完整',
-            details: 'Content-Length header is required and must be greater than 0'
-          }
-        });
-      }
-
-      // 3. Get filename and path from query parameters OR form fields
-      // Priority: query params > form fields (will be extracted from busboy)
-      systemLogger.logSystem('INFO', `[UPLOAD] Step 3: Getting filename and path`);
-      let fileName = req.query.fileName;
-      let uploadPath = req.query.path || '';
-      let locationId = req.query.locationId || req.headers['x-location-id'];
-      systemLogger.logSystem('INFO', `[UPLOAD] Initial fileName from query: ${fileName}, path: ${uploadPath}`);
-
-      // fileName and path will be extracted from busboy form fields if not in query
-      // We'll validate fileName later when we get it from busboy
-
-      // 4. Initialize Busboy FIRST to extract form fields
-      systemLogger.logSystem('INFO', `[UPLOAD] Step 4: Initializing Busboy`);
-      const busboy = Busboy({
-        headers: req.headers,
-        limits: {
-          files: 1, // Only accept single file
-          fileSize: configManager.get('fileSystem.maxFileSize') || Infinity
-        }
-      });
-
-      let fileProcessed = false;
-      let uploadedBytes = 0;
-      let transferId = null;
-
-      // Listen to 'field' event to get fileName and path from FormData
-      busboy.on('field', (fieldname, value) => {
-        systemLogger.logSystem('INFO', `[UPLOAD] Busboy field received: ${fieldname} = ${value}`);
-
-        // Update fileName and uploadPath from form fields if not in query
-        if (fieldname === 'fileName' && !fileName) {
-          fileName = value;
-          systemLogger.logSystem('INFO', `[UPLOAD] fileName updated from form field: ${fileName}`);
-        }
-        if (fieldname === 'path') {
-          uploadPath = value;
-          systemLogger.logSystem('INFO', `[UPLOAD] uploadPath updated from form field: ${uploadPath}`);
-        }
-        if (fieldname === 'locationId' && !locationId) {
-          locationId = value;
-        }
-      });
-
-      // Helper function to process file upload
-      const processFile = async (fieldname, fileStream, info) => {
-        const { filename, encoding, mimeType } = info;
-        systemLogger.logSystem('INFO', `[UPLOAD] Step 5: Processing file - fieldname: ${fieldname}, filename: ${filename}, mimeType: ${mimeType}`);
-
-        if (fileProcessed) {
-          systemLogger.logSystem('WARN', `[UPLOAD] Additional file ignored (already processed one file)`);
-          fileStream.resume(); // Discard additional files
-          return;
-        }
-        fileProcessed = true;
-
-        // Now we have fileName from either query or form field
-        // If still no fileName, use the filename from file upload
-        if (!fileName) {
-          fileName = filename || 'unnamed_file';
-          systemLogger.logSystem('INFO', `[UPLOAD] fileName fallback to upload filename: ${fileName}`);
-        }
-
-        systemLogger.logSystem('INFO', `[UPLOAD] Final fileName: ${fileName}, uploadPath: ${uploadPath}`);
-
-        // Validate and sanitize filename
-        let sanitizedFileName;
+      for (const file of state.files) {
+        if (file.cancellation) { await file.cancellation; continue; }
+        file.processing = true;
+        let failure;
         try {
-          sanitizedFileName = this._sanitizeFilename(fileName);
-          systemLogger.logSystem('INFO', `[UPLOAD] Sanitized fileName: ${sanitizedFileName}`);
-        } catch (error) {
-          // Fail the transfer since we can't proceed
-          fileStream.resume(); // Discard file stream
-          systemLogger.logSystem('ERROR', `[UPLOAD] Filename sanitization failed: ${error.message}, error code: ${error.code}`);
-
-          if (!res.headersSent) {
-            return res.status(400).json({
-              success: false,
-              error: {
-                code: error.code || 304,
-                message: error.message || '檔案名稱無效',
-                details: `Invalid filename: ${fileName}`
-              }
-            });
+          file.controller.signal.throwIfAborted();
+          this.transfers.updateTransferStatus(file.transferId, 'processing');
+          const finalPath = await this._publish(file, context, user);
+          // Publication wins a later cancellation. Cache failure cannot undo a committed output.
+          this.transfers.completeTransfer(file.transferId, { file: {
+            name: file.originalname, path: path.relative(context.rootPath, finalPath).split(path.sep).join('/'), size: file.size
+          } });
+        } catch (error) { failure = error; }
+        finally {
+          try { await this.fs.promises.unlink(file.path); }
+          catch (error) { if (error.code !== 'ENOENT') { failure = error; file.cleanupFailed = true; } }
+          if (failure) {
+            if (file.controller.signal.aborted && !file.cleanupFailed) this.transfers.settleCancelledTransfer(file.transferId);
+            else this.transfers.failTransfer(file.transferId, failure);
           }
-          return;
+          state.controller.signal.removeEventListener('abort', file.abort);
+          file.controller.signal.removeEventListener('abort', file.cancelQueued);
+          file.done.resolve();
         }
-
-        // Determine destination path (NOW with correct uploadPath)
-        systemLogger.logSystem('INFO', `[UPLOAD] Step 6: Determining destination path`);
-        const locationContext = await this._resolveLocation({ ...req, body: { locationId } }, uploadPath, ['upload', 'write']);
-        const storageRoot = locationContext.rootPath;
-        systemLogger.logSystem('INFO', `[UPLOAD] Storage root: ${storageRoot}, uploadPath: ${uploadPath}`);
-        const targetDir = locationContext.targetPath;
-        const requestedPath = path.join(targetDir, sanitizedFileName);
-        const finalPath = await this._withUploadLock(path.dirname(requestedPath), () =>
-          nextAvailablePath(requestedPath, (candidate) => this.fileSystem.exists(candidate)));
-
-        systemLogger.logSystem('INFO', `[UPLOAD] Target directory: ${targetDir}`);
-        systemLogger.logSystem('INFO', `[UPLOAD] Final path: ${finalPath}`);
-
-        // Security check: ensure path is within storage root
-        const relativeFinalPath = path.relative(storageRoot, finalPath);
-        if (relativeFinalPath === '..' || relativeFinalPath.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFinalPath)) {
-          fileStream.resume(); // Discard file stream
-          systemLogger.logSystem('ERROR', `[UPLOAD] SECURITY: Path traversal attempt - finalPath: ${finalPath}, storageRoot: ${storageRoot}`);
-
-          if (!res.headersSent) {
-            return res.status(403).json({
-              success: false,
-              error: {
-                code: 403,
-                message: 'Path traversal attempt blocked'
-              }
-            });
-          }
-          return;
-        }
-
-        // Create transfer ID and initialize transfer
-        systemLogger.logSystem('INFO', `[UPLOAD] Step 7: Creating transfer record`);
-        transferId = transferManager.startTransfer({
-          fileName: sanitizedFileName,
-          totalSize: contentLength,
-          destination: finalPath,
-          status: 'pending'
-        });
-        systemLogger.logSystem('INFO', `[UPLOAD] Transfer created with ID: ${transferId}`);
-
-        // Send 202 Accepted response immediately (if not already sent)
-        if (!res.headersSent) {
-          systemLogger.logSystem('INFO', `[UPLOAD] Step 8: Sending 202 Accepted response`);
-          res.status(202).json({
-            success: true,
-            transferId,
-            message: 'Upload initiated. Poll for progress.'
-          });
-        }
-
-        // Update status to 'uploading'
-        transferManager.updateTransferStatus(transferId, 'uploading');
-        systemLogger.logSystem('INFO', `[UPLOAD] Step 9: Transfer status updated to 'uploading'`);
-
-        // Create destination directory if it doesn't exist
-        systemLogger.logSystem('INFO', `[UPLOAD] Step 10: Creating destination directory: ${targetDir}`);
-        try {
-          await this.fileSystem.mkdir(targetDir);
-          systemLogger.logSystem('INFO', `[UPLOAD] Destination directory ready`);
-        } catch (mkdirError) {
-          systemLogger.logSystem('ERROR', `[UPLOAD] Failed to create directory: ${mkdirError.message}`);
-          fileStream.resume();
-          transferManager.failTransfer(transferId, {
-            code: 500,
-            message: '無法創建目標目錄',
-            details: mkdirError.message
-          });
-          return;
-        }
-
-        // Create write stream to destination
-        systemLogger.logSystem('INFO', `[UPLOAD] Step 11: Creating write stream to: ${finalPath}`);
-        const writeStream = fs.createWriteStream(finalPath);
-
-        // Track upload progress
-        let lastLogTime = 0;
-        fileStream.on('data', (chunk) => {
-          uploadedBytes += chunk.length;
-
-          // Update transfer progress in real-time
-          transferManager.updateProgress(transferId, uploadedBytes, contentLength);
-
-          // Log progress immediately on first chunk and then at most once per second
-          const now = Date.now();
-          if (lastLogTime === 0 || now - lastLogTime >= 1000) {
-            const progress = ((uploadedBytes / contentLength) * 100).toFixed(2);
-            systemLogger.logSystem('INFO', `[UPLOAD] Progress: ${progress}% (${uploadedBytes}/${contentLength} bytes)`);
-            lastLogTime = now;
-          }
-        });
-
-        fileStream.on('end', () => {
-          if (uploadedBytes >= contentLength) {
-            systemLogger.logSystem('INFO', `[UPLOAD] Progress: 100% (${uploadedBytes}/${contentLength} bytes)`);
-          }
-        });
-
-        // Pipe file stream to write stream
-
-        // Pipe file stream to write stream
-        systemLogger.logSystem('INFO', `[UPLOAD] Step 12: Piping file stream to write stream`);
-        fileStream.pipe(writeStream);
-
-        // Handle write stream completion
-        writeStream.on('finish', () => {
-          systemLogger.logSystem('INFO', `[UPLOAD] ✅ Upload completed successfully - transferId: ${transferId}, size: ${uploadedBytes} bytes`);
-          this._refreshCacheDirectory(targetDir, locationContext.locationId).catch((cacheError) => {
-            systemLogger.logSystem('WARN', `[UPLOAD] Cache refresh failed: ${cacheError.message}`);
-          });
-          transferManager.completeTransfer(transferId, {
-            result: 'success',
-            file: {
-              name: sanitizedFileName,
-              path: path.relative(storageRoot, finalPath),
-              size: uploadedBytes
-            }
-          });
-          systemLogger.logUpload(sanitizedFileName, true, req, {
-            transferId,
-            size: uploadedBytes
-          });
-        });
-
-        // Handle write stream errors
-        writeStream.on('error', (err) => {
-          systemLogger.logSystem('ERROR', `[UPLOAD] ❌ Write stream error - code: ${err.code}, message: ${err.message}`);
-          systemLogger.logSystem('ERROR', `[UPLOAD] Error stack: ${err.stack}`);
-
-          // Check for disk space error
-          if (err.code === 'ENOSPC') {
-            transferManager.failTransfer(transferId, {
-              code: 401,
-              message: '服務端磁碟空間已滿，請洽管理員',
-              details: err.message
-            });
-          } else {
-            transferManager.failTransfer(transferId, {
-              code: 500,
-              message: '檔案寫入失敗',
-              details: err.message
-            });
-          }
-
-          // Clean up partial file
-          fs.unlink(finalPath, () => {});
-
-          systemLogger.logUpload(sanitizedFileName, false, req, {
-            transferId,
-            error: err.message
-          });
-        });
-
-        // Handle file stream errors (upload interruption)
-        fileStream.on('error', (err) => {
-          systemLogger.logSystem('ERROR', `[UPLOAD] ❌ File stream error: ${err.message}`);
-          systemLogger.logSystem('ERROR', `[UPLOAD] Error stack: ${err.stack}`);
-
-          transferManager.failTransfer(transferId, {
-            code: 302,
-            message: '檔案上傳中斷',
-            details: err.message
-          });
-
-          // Clean up partial file
-          writeStream.destroy();
-          fs.unlink(finalPath, () => {});
-
-          systemLogger.logUpload(sanitizedFileName, false, req, {
-            transferId,
-            error: 'Upload interrupted'
-          });
-        });
-      };
-
-      // 5. Listen to 'file' event (when a file field is encountered)
-      // Note: Frontend now sends 'path' field BEFORE 'file', so uploadPath will be available here
-      busboy.on('file', async (fieldname, fileStream, info) => {
-        const { filename, encoding, mimeType } = info;
-        systemLogger.logSystem('INFO', `[UPLOAD] Step 5: File event received - fieldname: ${fieldname}, filename: ${filename}, mimeType: ${mimeType}`);
-
-        if (fileProcessed) {
-          systemLogger.logSystem('WARN', `[UPLOAD] Additional file ignored (already processed one file)`);
-          fileStream.resume(); // Discard additional files
-          return;
-        }
-
-        // Process file immediately (path field was received before this)
-        await processFile(fieldname, fileStream, info);
-      });
-
-      // 10. Handle file size limit exceeded
-      busboy.on('limit', () => {
-        systemLogger.logSystem('WARN', `[UPLOAD] File size limit exceeded`);
-        if (transferId) {
-          transferManager.failTransfer(transferId, {
-            code: 413,
-            message: '檔案大小超過限制',
-            details: `Maximum file size: ${configManager.get('fileSystem.maxFileSize')} bytes`
-          });
-        }
-      });
-
-      // 11. Handle busboy errors
-      busboy.on('error', (err) => {
-        systemLogger.logSystem('ERROR', `[UPLOAD] ❌ Busboy error: ${err.message}`);
-        systemLogger.logSystem('ERROR', `[UPLOAD] Busboy error stack: ${err.stack}`);
-        if (transferId) {
-          transferManager.failTransfer(transferId, {
-            code: 500,
-            message: '上傳處理錯誤',
-            details: err.message
-          });
-        }
-      });
-
-      // 12. Handle request close/abort (client disconnected)
-      req.on('close', () => {
-        systemLogger.logSystem('WARN', `[UPLOAD] Client disconnected - transferId: ${transferId}`);
-        if (transferId) {
-          const transfer = transferManager.getTransfer(transferId);
-          if (transfer && transfer.status === 'uploading') {
-            transferManager.failTransfer(transferId, {
-              code: 302,
-              message: '檔案上傳中斷',
-              details: 'Client disconnected'
-            });
-
-            // Clean up partial file (finalPath may not be defined if disconnected early)
-            if (typeof finalPath !== 'undefined') {
-              fs.unlink(finalPath, () => {});
-            }
-          }
-        }
-      });
-
-      // 13. Pipe request to busboy
-      systemLogger.logSystem('INFO', `[UPLOAD] Step 13: Piping request to Busboy`);
-      req.pipe(busboy);
-
-    } catch (error) {
-      systemLogger.logSystem('ERROR', `[UPLOAD] ❌❌❌ CRITICAL ERROR in _handleSingleProgressUpload: ${error.message}`);
-      systemLogger.logSystem('ERROR', `[UPLOAD] Error stack: ${error.stack}`);
-
-      // If response hasn't been sent yet
-      if (!res.headersSent) {
-        res.status(500).json({
-          success: false,
-          error: {
-            code: 500,
-            message: 'Internal server error',
-            details: error.message
-          }
-        });
+        this.transfers.updateBatchProgress(state.batchId);
       }
+      workComplete = true;
+      if (state.directories.length) {
+        try {
+          await this.withOperationLocks([context.targetPath], () => this._refreshCacheDirectory(context.targetPath, context));
+        }
+        catch { this._warn('Committed directory upload cache refresh failed'); }
+      }
+    } catch (error) { outerError = error; }
+    await Promise.all(state.files.map(file => file.cancellation));
+    let cleanupError;
+    try { await this._cleanupStage(state); } catch (error) { cleanupError = error; }
+    this._settleRemaining(state, cleanupError || outerError || fault(500, 'Worker stopped'), !!cleanupError);
+    const fileCleanupError = state.files.some(file => file.cleanupFailed) ? fault(500, 'Upload cleanup failed') : null;
+    this.transfers.updateBatchProgress(state.batchId, { settled: true,
+      error: cleanupError || fileCleanupError || (state.controller.signal.aborted ? null : outerError), workComplete });
+  }
+
+  async _publish(file, context, user) {
+    const signal = file.controller.signal;
+    // Lock the parent through exclusive creation, stream settlement, authorization, and cleanup.
+    return this.withOperationLocks([context.targetPath, path.dirname(file.destination), file.path], async () => {
+      signal.throwIfAborted();
+      await this._recheck(user, context);
+      await this.assertSafePath(context.rootPath, path.dirname(file.destination), { allowMissing: true });
+      await this.fs.promises.mkdir(path.dirname(file.destination), { recursive: true });
+      let handle;
+      let finalPath;
+      let owned = false;
+      let committed = false;
+      try {
+        for (let attempt = 0; ; attempt++) {
+          signal.throwIfAborted();
+          finalPath = attempt ? path.join(path.dirname(file.destination), dedupeFilename(path.basename(file.destination), attempt)) : file.destination;
+          await this.assertSafePath(context.rootPath, finalPath, { allowMissing: true });
+          try { handle = await this.fs.promises.open(finalPath, 'wx', 0o666); owned = true; break; }
+          catch (error) { if (error.code !== 'EEXIST') throw error; }
+        }
+        await pipeline(this.fs.createReadStream(file.path), handle.createWriteStream(), { signal });
+        await handle.close();
+        handle = null;
+        if ((await this.fs.promises.stat(finalPath)).size !== file.size) throw fault(500, 'Published file size mismatch');
+        await this._recheck(user, context);
+        signal.throwIfAborted();
+        committed = true;
+        try { await this._refreshCacheDirectory(path.dirname(finalPath), context); }
+        catch { this._warn('Committed upload cache refresh failed'); }
+        return finalPath;
+      } finally {
+        try {
+          if (handle) await handle.close();
+        } finally {
+          // finalPath alone is not proof of ownership: only a successful wx open is.
+          if (!committed && owned) {
+            try { await this.fs.promises.unlink(finalPath); }
+            catch (error) { file.cleanupFailed = true; throw error; }
+          }
+        }
+      }
+    }, { signal });
+  }
+
+  async _refreshCacheDirectory(directory, context) {
+    const isCurrent = () => this.locationManager === context.manager && this.cacheResolver === context.cacheResolver &&
+      this.cache === context.cache && context.manager.getRevision(context.locationId) === context.locationRevision;
+    if (!isCurrent()) throw fault(409, 'Location changed');
+    const cache = context.cacheResolver ? await context.cacheResolver(context.locationId) : context.cache;
+    if (!isCurrent()) throw fault(409, 'Location changed');
+    if (cache?.refreshDirectory) await cache.refreshDirectory(directory);
+    else if (cache?.scanDirectory) await cache.scanDirectory(directory);
+  }
+
+  _warn(message) { try { this.logger.logSystem('WARN', message); } catch { /* Logging cannot change a committed result. */ } }
+
+  async cleanupTempUploads(retentionDays) {
+    if (!Number.isFinite(retentionDays) || retentionDays < 0) throw new TypeError('Invalid retention');
+    this.transfers.expireReservations();
+    const result = { scanned: 0, deleted: 0, releasedBytes: 0 };
+    let entries;
+    try { entries = await this.fs.promises.readdir(this.tempDir, { withFileTypes: true }); }
+    catch (error) { if (error.code === 'ENOENT') return result; throw error; }
+    for (const entry of entries) {
+      const candidate = path.join(this.tempDir, entry.name);
+      if (activeStages.has(candidate) || (!entry.isFile() && !entry.isDirectory()) || (entry.isDirectory() && !entry.name.startsWith('upload-'))) continue;
+      const stat = await this.fs.promises.lstat(candidate);
+      result.scanned++;
+      if (stat.mtimeMs >= Date.now() - retentionDays * 86400000) continue;
+      await this.assertSafeTree(candidate);
+      await this.fs.promises.rm(candidate, { recursive: entry.isDirectory(), force: true });
+      result.deleted++;
+      if (entry.isFile()) result.releasedBytes += stat.size;
     }
+    return result;
   }
 
-  /**
-   * Get upload progress for a transfer
-   * @param {string} transferId - Transfer ID
-   * @returns {Object} Progress information
-   */
-  getUploadProgress(transferId) {
-    return transferManager.getTransfer(transferId);
-  }
-
-  /**
-   * Get all uploads
-   * @returns {Array} Array of all transfers
-   */
-  getAllUploads() {
-    return transferManager.getAllTransfers();
-  }
-
-  /**
-   * Sanitize filename for safe file system operations
-   * @param {string} filename - Raw filename from client
-   * @returns {string} Sanitized filename
-   * @private
-   */
   _sanitizeFilename(filename) {
-    // Decode URL encoding
-    let decoded = decodeURIComponent(filename);
-
-    // Ensure UTF-8 encoding
-    decoded = Buffer.from(decoded, 'utf8').toString('utf8');
-
-    // Remove path traversal characters
-    decoded = decoded.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
-
-    // Validate no illegal characters (Windows/Linux compatible)
-    if (/[<>:"|?*\x00-\x1F]/.test(decoded)) {
-      const error = {
-        code: 304,
-        message: '檔案名稱包含非法字元',
-        details: `Invalid filename: ${filename}`
-      };
-      throw error;
-    }
-
-    return decoded;
+    if (typeof filename !== 'string') throw fault(400, 'Invalid filename');
+    // Express has already decoded query parameters. Multipart filenames are literal UTF-8.
+    const value = filename.replace(/[\/\\]/g, '_').replace(/\.\./g, '_');
+    if (!value || value === '.' || /[<>:"|?*\x00-\x1f]/.test(value)) throw fault(400, 'Invalid filename');
+    return value;
   }
 
-  /**
-   * Get router instance
-   */
-  getRouter() {
-    return this.router;
-  }
+  getUploadProgress(id) { return this.transfers.serializeTransfer(id); }
+  getAllUploads() { return this.transfers.getAllTransfers().map(t => this.transfers.serializeTransfer(t.id)); }
+  getRouter() { return this.router; }
 }
 
 module.exports = UploadAPI;

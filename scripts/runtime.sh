@@ -7,6 +7,10 @@ PID_FILE="$PROJECT_ROOT/server.pid"
 LOCK_FILE="$PROJECT_ROOT/server.lock"
 LOG_FILE="$PROJECT_ROOT/server.log"
 
+check_browser_build() {
+  node "$PROJECT_ROOT/scripts/build-browser.js" --check
+}
+
 read_env_value() {
   local key="$1"
   local value=""

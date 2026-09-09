@@ -27,13 +27,67 @@ If `definitions` is omitted, `LocationManager` exposes one `default` Location fr
 ## Runtime Rules
 
 - Location configuration is server-controlled. A request cannot choose or construct a root path.
-- Relative paths are resolved under the selected Location root and traversal outside that root is rejected.
-- A Location has its own filesystem, cache, and search scope. Shared Redis deployments must prefix keys with `location:<id>`.
-- Changing `rootPath` for an existing `id` requires a service restart. The old cache scope is discarded; files are not copied or deleted automatically.
+- Relative paths are checked under the canonical Location root. Traversal outside that root is rejected. The configured root itself may be an administrator-selected symbolic link; no symbolic link below that root is allowed, including internal links, dangling links, and linked parents of new files.
+- A Location has its own filesystem, cache, and search scope. Redis keys use `fs:v2:<scope-hash>:<family>:<encoded-relative-path>`. The scope hash binds the Location ID to the canonical root and its device/inode identity.
+- Configuration updates must replace the Location manager and drain affected filesystem instances before retiring them. `getRevision(locationId)` returns a synchronous opaque configuration hash for detecting changes. A root that changes physical identity inside an existing runtime fails with `ESTALE`; it is not silently rebound. No files are copied or deleted by configuration refresh.
 - Disabling a Location prevents new selection. Existing sessions must be revalidated and moved to another enabled Location.
 - A missing mount reports `offline`; a permission failure reports `permission_denied`; other I/O failures report `error`.
 - Health failures are not represented as an empty directory. Listing and mutation APIs must return an explicit Location/storage error.
 - Location initialization may be lazy. Health checks and cache scans should run only when a Location is selected or explicitly inspected.
+
+## Path And Operation Safety
+
+`LocationManager.resolveCheckedPath(locationId, relativePath, options = {})` is the access resolver. It returns a canonical absolute path after checking the enabled Location, NFS mount state, bound root identity, and each existing path component. `options.allowMissing` defaults to `true`; reads should use `false`. Mutations of a selected root should use `options.protectRoot: true`. The synchronous `resolveRelativePath()` is only a lexical resolver, not authorization for I/O. Public Location responses do not contain roots or internal hashes.
+
+The filesystem exports these CommonJS helpers:
+
+```js
+const {
+  assertSafePath,      // async (rootPath, targetPath, { allowMissing = true } = {}) -> canonical absolute path
+  assertSafeTree,      // async (canonicalTargetPath) -> [{ path, stats }], including the target
+  assertTransferPaths // async (canonicalSource, canonicalDestination) -> { source, destination }
+} = require('./file-system/path-safety');
+const { withOperationLocks } = require('./file-system/operation-locks');
+```
+
+`assertSafeTree()` checks the complete selection without following links. Copy, delete, and rename preflight recursive selections before mutation. Archive and flatten callers must also preflight before creating output or sending headers. A linked selection is rejected, not silently truncated. Unsupported special objects in recursive selections are rejected too.
+
+Overlapping Locations are permitted. Copy, move, and rename reject equal paths, hard-link aliases, and ancestor/descendant operands. Copy also checks existing destination trees and nested hard-link merge targets before creating any output. The base implementation protects its own configured root from destructive mutations. The caller must separately protect each authorized Location root, including a source owned by another Location.
+
+`withOperationLocks(paths, async callback, { signal } = {})` acquires canonical path and existing inode locks atomically. Parent and child paths conflict. Disjoint operations can proceed. Lock names conservatively fold case and Unicode normalization, including missing targets; this can serialize case-only distinct names on case-sensitive storage. Queued requests recheck inode identity before dispatch. Nested calls reuse their transaction through AsyncLocalStorage; discovered tree identities remain locked until the enclosing transaction settles. Acquire all top-level operands up front. A contended nested expansion fails with `EDEADLK` instead of waiting in a deadlock. Cancellation while waiting returns `ABORT_ERR`. Once admitted, the callback must stop and settle its streams before it resolves or rejects; the lock helper does not itself abort a running stream.
+
+The server must hold one transaction across cross-Location copy and source deletion:
+
+```js
+await withOperationLocks([sourcePath, destinationPath], async () => {
+  await destinationFileSystem.copy(sourcePath, destinationPath);
+  await sourceFileSystem.delete(sourcePath);
+});
+```
+
+Both paths must first come from their own authorized Location contexts. Destination primitives accept checked cross-Location and trusted upload-temp sources outside their own root, but still enforce no-follow source trees. Construct each runtime as `new EnhancedMemoryFileSystem(rootPath, { locationId })`. Existing operation method names remain available. In-process mutations reconcile affected initialized cache instances, including overlapping views and a nested Location inside a copied destination. Copy updates destination scopes, not an unchanged source scope. A post-mutation cache failure emits a warning rather than making a committed storage operation appear to fail.
+
+Move uses copy/delete fallback only for `EXDEV`. Failed copy never triggers source deletion. A copy failure can leave partial destination data; a delete failure after a successful copy can leave both copies. Report the actual error rather than claiming an atomic rollback or retrying automatically. Error codes such as `ELOOP`, `EINVAL`, `EACCES`, `EPERM`, `ESTALE`, and `EXDEV` are preserved.
+
+These are process-local coordination guarantees, not a filesystem sandbox against hostile external writers, a second server process, or other NFS clients. External link/root replacement between system calls requires OS-level isolation. A server reconfiguration/shutdown must stop admitting old-context requests and drain outer copy/delete transactions and upload streams before calling filesystem `close()`. Close rejects new filesystem/cache work with `ESHUTDOWN`, waits for admitted work, stops timers, and then disconnects Redis. Reuse a new instance after close.
+
+## Redis Cache Migration
+
+All directory hashes, search entries, directory mtimes, index status, invalidation, and statistics are scoped. Search scans only the entry family and matches user input literally, so `*`, `?`, brackets, and backslashes do not become Redis patterns. Metadata is never treated as a file. Listing hits validate the canonical root, directory path, and directory mtime before returning an immutable metadata snapshot from that instance's checked scan. Search hits and actual file I/O still validate current paths; cached metadata never authorizes access through a link or outside the root.
+
+Initialization cold-rebuilds its own scope. It never loads ambiguous legacy data and never removes unscoped keys, old root scopes, another Location's data, or unrelated keys such as password resets. Clear uses scoped SCAN/deletion, never `FLUSHDB` or `FLUSHALL`. Statistics count only the current scope, not the Redis database.
+
+Hot and memory snapshots expire after at most 3000 ms, measured with a monotonic clock from scan start. The cache constructor accepts a shorter `cacheTtlMs`; values above 3000 ms are capped and zero disables hits. Hits and hot-cache promotion do not extend the deadline. Thus an external in-place file edit can show old metadata only within that bounded interval; changed directory mtimes, explicit refresh, and application invalidation trigger a new checked scan sooner. Invalidation expires in-memory snapshots immediately even when Redis cleanup is queued. Returned snapshots cannot be modified by callers.
+
+The existing server `enterDirectory()` followed by filesystem `list()` reuses the same fresh snapshot instead of scanning twice. Concurrent misses recheck the cache when they reach the scan queue, so one scan can satisfy the group. `cacheMetrics.directoryScans` counts actual scan attempts; `hotCacheHits`, `memoryCacheHits`, and `cacheMisses` record the selected read path. Fixture tests assert both these counts and actual `readdir` calls.
+
+Navigation and storage mutation have different index effects. `leaveDirectory()` evicts the directory view with `preserveIndex: true`; it does not remove search entries or index mtimes. Each successful checked `updateDirectoryCache()` scan, including upload `refreshDirectory()` calls, writes current immediate search entries and directory metadata. It removes missing immediate children and cached subtrees whose directory was deleted or replaced by a file. Descendants of unchanged sibling directories remain indexed. Search still checks retained records against the live no-follow path policy.
+
+Enhanced filesystem mutations call `cache.refreshPaths(paths)` with canonical affected paths in each cache's own root. This expires stale views, removes selected old index scopes, refreshes parent/ancestor directories non-recursively, and indexes existing changed directory subtrees after a complete no-follow preflight. File create/write/rename/move/delete does not perform a full Location tree rebuild. Directory copy/rename indexes the selected destination subtree, including new descendants. Deleted subtrees are removed without scanning unrelated sibling trees. `indexDirectory(path)` is also limited to its selected subtree. Reconciliation uses scoped Redis SCAN with bounded deletion batches; it does not rebuild or modify other Locations. The index-status last-completed summary remains a historical full-index summary, not a live file census.
+
+Clear drains previously admitted cache work and invalidates queued old-generation background jobs before removing the scope. Fresh root polling and the next periodic index may repopulate current data. `refreshCache()` on the enhanced filesystem clears and rebuilds the active scope without closing/reusing a closed Redis client. Periodic full-index refresh still uses a checked whole-root walk; `buildIncrementalIndex()` retains its method name but does not skip subtrees based on stale mtimes. Ordinary navigation, uploads, and mutations no longer depend on that periodic job to restore searchable entries. Fresh cached browsing, including pagination, bypasses the indexing queue after boundary validation. Index status returns a copied current progress/last-completed summary without waiting for the index or reading Redis. Close also drains these independent reads. Expired/missing listings, search, and Redis-backed statistics can still wait behind indexing. Large-tree and scoped Redis pruning latency have not been benchmarked in this change.
+
+Before deploying this migration, stop every old application process: old binaries can still call whole-database cache clear. Do not delete old keys automatically. Review and remove obsolete namespaces separately only with an explicit operational decision and backup. A same-ID root change uses a new root scope; the old scope is preserved, not migrated into the new root.
 
 ## NFS Mount Lifecycle
 

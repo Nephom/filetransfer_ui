@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
     <title>Shared File Download - LAB File Manager</title>
     <style>
         * {
@@ -189,7 +190,7 @@
             />
         </div>
 
-        <button id="downloadBtn" class="download-btn" onclick="handleDownload()">
+        <button id="downloadBtn" class="download-btn" disabled>
             <span id="btnText">📥 Download File</span>
         </button>
 
@@ -210,11 +211,19 @@
 
         let requiresPassword = false;
         let fileName = '';
+        let downloadPending = false;
+        let shareReady = false;
+        const downloadUrls = new Set();
+        window.addEventListener('pagehide', () => {
+            document.getElementById('passwordInput').value = '';
+            downloadUrls.forEach(url => URL.revokeObjectURL(url));
+            downloadUrls.clear();
+        });
 
         // Check share link info on page load
         async function checkShareInfo() {
             try {
-                const response = await fetch(`/api/share/${shareToken}/info`);
+                const response = await fetch(`/api/share/${encodeURIComponent(shareToken)}/info`, { referrerPolicy: 'no-referrer', cache: 'no-store' });
 
                 if (response.ok) {
                     const data = await response.json();
@@ -224,25 +233,32 @@
                         document.getElementById('fileInfo').style.display = 'block';
 
                         // Check if password is required
-                        requiresPassword = data.data.hasPassword || false;
+                        requiresPassword = data.data.hasPassword === true;
                         if (requiresPassword) {
                             document.getElementById('passwordSection').style.display = 'block';
                         }
+                        if (!data.data.isActive || data.data.isExpired || data.data.isExhausted) {
+                            throw new Error('This share link is no longer available.');
+                        }
+                        shareReady = true;
+                        document.getElementById('downloadBtn').disabled = false;
+                    } else {
+                        throw new Error('Unable to read share information.');
                     }
                 } else {
-                    // If info endpoint doesn't exist, just try to download
-                    // Password requirement will be detected on download attempt
+                    throw new Error('This share link is unavailable.');
                 }
             } catch (error) {
-                console.log('Could not fetch share info:', error);
-                // Continue anyway, will handle on download
+                document.getElementById('errorMessage').textContent = error.message;
+                document.getElementById('errorMessage').classList.add('show');
             }
         }
 
         // Call on page load
-        checkShareInfo();
+        if (shareToken) checkShareInfo();
 
         async function handleDownload() {
+            if (downloadPending || !shareReady) return;
             const downloadBtn = document.getElementById('downloadBtn');
             const btnText = document.getElementById('btnText');
             const errorMessage = document.getElementById('errorMessage');
@@ -254,19 +270,29 @@
 
             // Get password if provided
             const password = passwordInput.value;
+            if (requiresPassword && !password) {
+                errorMessage.textContent = 'Please enter the share password.';
+                errorMessage.classList.add('show');
+                passwordInput.focus();
+                return;
+            }
+            downloadPending = true;
 
             // Show loading state
             downloadBtn.disabled = true;
             btnText.innerHTML = '<span class="loading"></span> Downloading...';
 
             try {
-                // Build download URL with password if provided
-                let downloadUrl = `/api/share/${shareToken}/download`;
-                if (password) {
-                    downloadUrl += `?password=${encodeURIComponent(password)}`;
-                }
-
-                const response = await fetch(downloadUrl);
+                const downloadUrl = `/api/share/${encodeURIComponent(shareToken)}/download`;
+                const response = await fetch(downloadUrl, {
+                    method: requiresPassword || password ? 'POST' : 'GET',
+                    ...(requiresPassword || password ? {
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ password })
+                    } : {}),
+                    referrerPolicy: 'no-referrer',
+                    cache: 'no-store'
+                });
 
                 if (response.ok) {
                     // Get the file blob
@@ -284,24 +310,25 @@
 
                     // Create download link
                     const url = window.URL.createObjectURL(blob);
+                    downloadUrls.add(url);
                     const a = document.createElement('a');
                     a.href = url;
                     a.download = filename;
+                    a.rel = 'noreferrer';
                     document.body.appendChild(a);
                     a.click();
                     document.body.removeChild(a);
-                    window.setTimeout(() => window.URL.revokeObjectURL(url), 60000);
+                    window.setTimeout(() => {
+                        window.URL.revokeObjectURL(url);
+                        downloadUrls.delete(url);
+                    }, 60000);
 
                     // Show success message
                     btnText.textContent = '✅ Downloaded!';
-                    setTimeout(() => {
-                        btnText.textContent = '📥 Download File';
-                        downloadBtn.disabled = false;
-                    }, 2000);
 
                 } else {
                     // Handle errors
-                    const errorData = await response.json();
+                    const errorData = await response.json().catch(() => ({}));
                     let errorMsg = errorData.message || 'Download failed';
 
                     if (response.status === 401 || errorMsg.includes('密碼') || errorMsg.includes('password')) {
@@ -311,8 +338,10 @@
                         passwordInput.focus();
                     } else if (response.status === 410) {
                         errorMsg = '❌ This share link has expired or reached its download limit.';
+                        shareReady = false;
                     } else if (response.status === 404) {
                         errorMsg = '❌ Share link not found or has been revoked.';
+                        shareReady = false;
                     }
 
                     errorMessage.textContent = errorMsg;
@@ -321,12 +350,18 @@
                     downloadBtn.disabled = false;
                 }
             } catch (error) {
-                errorMessage.textContent = '❌ Network error: ' + error.message;
+                errorMessage.textContent = '❌ The download did not complete. Please try again.';
                 errorMessage.classList.add('show');
                 btnText.textContent = '📥 Download File';
                 downloadBtn.disabled = false;
+            } finally {
+                passwordInput.value = '';
+                downloadPending = false;
+                downloadBtn.disabled = !shareReady;
             }
         }
+
+        document.getElementById('downloadBtn').addEventListener('click', handleDownload);
 
         // Allow Enter key to trigger download
         document.getElementById('passwordInput')?.addEventListener('keypress', function(e) {

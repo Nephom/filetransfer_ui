@@ -4,6 +4,9 @@ set -u
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$ROOT_DIR/scripts/runtime.sh"
 
+# Validate replacement assets before discovering or stopping the active process.
+check_browser_build || exit 1
+
 PID=""
 if [[ -f "$PID_FILE" ]]; then
   PID="$(cat "$PID_FILE")"
