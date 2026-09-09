@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -4144,7 +4144,12 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
 
   const mobileLayout = desktopSettings.uiProfile === "mobile"
     || (desktopSettings.uiProfile === "auto" && isMobileViewport(viewport));
-  const commandbarRef = useRef<HTMLElement>(null);
+  const commandbarRef = useRef<HTMLElement | null>(null);
+  const [commandbarHost, setCommandbarHost] = useState<HTMLElement | null>(null);
+  const setCommandbarElement = useCallback((element: HTMLElement | null) => {
+    commandbarRef.current = element;
+    setCommandbarHost(element);
+  }, []);
   const [commandBarOverflow, setCommandBarOverflow] = useState(mobileLayout);
   const commandBarOverflowRef = useRef(mobileLayout);
   const commandBarRequiredWidthRef = useRef<number | null>(null);
@@ -4256,7 +4261,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
         onOpenHelp={() => { setAccountOpen(false); setHelpOpen(true); }}
         onSignOut={signOut}
       />
-      <nav ref={commandbarRef} className="commandbar" aria-label={appMode === "rest" ? "REST API actions" : "File actions"}>
+      <nav ref={setCommandbarElement} className="commandbar" aria-label={appMode === "rest" ? "REST API actions" : "File actions"}>
         {splitMode && (
           <span className="active-pane-indicator" title="New folder/Rename/Delete/View/Select all act on this pane">
             Acting on: <strong>{activePane === "local" ? "LOCAL" : "REMOTE"}</strong>
@@ -4606,13 +4611,14 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
             <VncWorkspaceController
               key={vncWorkspace?.id || "default-vnc-workspace"}
               workspaceName={vncWorkspace?.name || "No Workspace"}
-             entries={vncWorkspace?.proxmoxVncEntries || []}
+              entries={vncWorkspace?.proxmoxVncEntries || []}
               activeEntryId={activeVncEntryId}
               secrets={vncSecrets}
+              commandbarHost={commandbarHost}
               collapseMainPaneEnabled={desktopSettings.collapseMainPaneEnabled}
               onSelectEntry={setActiveVncEntryId}
-             onChangeEntries={(entries) => {
-               if (vncWorkspace) {
+              onChangeEntries={(entries) => {
+                if (vncWorkspace) {
                  setManagedSessions((current) => current.map((workspace) => workspace.id === vncWorkspace.id ? { ...workspace, proxmoxVncEntries: entries } : workspace));
                  return;
                }

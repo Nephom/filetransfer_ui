@@ -155,6 +155,7 @@ type Props = {
   entries: ProxmoxVncEntry[];
   activeEntryId: string;
   secrets: Record<string, ProxmoxVncSecret>;
+  commandbarHost: HTMLElement | null;
   collapseMainPaneEnabled: boolean;
   onSelectEntry: (id: string) => void;
   onChangeEntries: (entries: ProxmoxVncEntry[]) => void;
@@ -293,7 +294,7 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditE
   </aside>;
 }
 
-export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, secrets, collapseMainPaneEnabled, onSelectEntry, onChangeEntries, onChangeSecret, onAddEntry, onEditEntry, onRemoveEntry }: Props) {
+export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, secrets, commandbarHost, collapseMainPaneEnabled, onSelectEntry, onChangeEntries, onChangeSecret, onAddEntry, onEditEntry, onRemoveEntry }: Props) {
   const entry = entries.find((item) => item.id === activeEntryId) || entries[0];
   const secret = entry ? secrets[entry.id] || {} : {};
   const screenRef = useRef<HTMLDivElement>(null);
@@ -315,7 +316,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [directPassword, setDirectPassword] = useState("");
   const directVncOpenRef = useRef(false);
   directVncOpenRef.current = directVncOpen;
-  const [commandbarHost, setCommandbarHost] = useState<HTMLElement | null>(null);
   // Issue #232: the Ctrl+Alt+Del/Focus/View only/Fullscreen toolbar used to
   // sit permanently at top-right of the VNC canvas, colliding with the
   // guest OS's own top-of-screen UI. It's now a left-edge drawer that
@@ -373,11 +373,6 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   }, []);
   useEffect(() => { localStorage.setItem("fileapi-direct-vnc-host", directHost); }, [directHost]);
   useEffect(() => { localStorage.setItem("fileapi-direct-vnc-port", String(directPort)); }, [directPort]);
-  useEffect(() => {
-    setCommandbarHost(document.querySelector<HTMLElement>(".commandbar"));
-    return () => setCommandbarHost(null);
-  }, []);
-
   const stopEntryPaneResize = () => {
     entryPaneResizeRef.current = null;
     window.removeEventListener("pointermove", resizeEntryPane);

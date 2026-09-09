@@ -6,6 +6,7 @@ export type VncWorkspaceControllerProps = {
   entries: ProxmoxVncEntry[];
   activeEntryId: string;
   secrets: Record<string, ProxmoxVncSecret>;
+  commandbarHost: HTMLElement | null;
   collapseMainPaneEnabled: boolean;
   onSelectEntry: (id: string) => void;
   onChangeEntries: (entries: ProxmoxVncEntry[]) => void;
