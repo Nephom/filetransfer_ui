@@ -4238,7 +4238,7 @@ function DesktopApp({ session, setSession, password, setPassword, busy, setBusy,
   };
 
       return (
-    <AppShell style={themeVariables} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ${desktopSettings.glassMainEnabled ? "" : "glass-main-off"} ${desktopSettings.glassMenusEnabled ? "" : "glass-menus-off"} ${desktopSettings.glassDialogsEnabled ? "" : "glass-dialogs-off"} ${appMode !== "location" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
+    <AppShell style={themeVariables} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ${desktopSettings.glassMainEnabled ? "" : "glass-main-off"} ${desktopSettings.glassMenusEnabled ? "" : "glass-menus-off"} ${desktopSettings.glassDialogsEnabled ? "" : "glass-dialogs-off"} ${appMode === "rest" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
       <Suspense fallback={null}>
       <DesktopTitlebar
         appMode={appMode}
