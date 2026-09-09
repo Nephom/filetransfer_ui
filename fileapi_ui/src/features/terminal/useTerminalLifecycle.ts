@@ -3,7 +3,7 @@ import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
-import { normalizeRightClickPaste } from "./terminal-utils";
+import { isTerminalPasteShortcut, normalizeTerminalPasteText } from "./terminal-utils";
 
 // Best-effort: attaches the WebGL2 renderer to `terminal` if the runtime
 // supports it, otherwise leaves xterm's default DOM renderer untouched.
@@ -217,13 +217,29 @@ export function useTerminalLifecycle({
         fit.fit();
         terminalsRef.current.set(tabId, terminal);
         const input = terminal.onData((data) => dataRef.current(tabId, data));
-        const pasteText = (text: string, fromRightClick = false) => {
+        const pasteText = (text: string) => {
           if (disposed) return;
+          const paste = normalizeTerminalPasteText(text);
+          if (paste.includes("\n") && !terminal.modes.bracketedPasteMode && !window.confirm(
+            "This terminal has not enabled bracketed paste. Pasting multiple lines may execute multiple commands. Continue?"
+          )) return;
           // xterm.paste() handles bracketed-paste mode and emits onData, which
           // keeps the browser clipboard path identical to typed input.
-          const paste = fromRightClick ? normalizeRightClickPaste(text) : text;
           terminal.paste(normalizeTerminalPaste(paste, bracketedPasteRef.current));
         };
+        terminal.attachCustomKeyEventHandler((event) => {
+          if (!isTerminalPasteShortcut(event)) return true;
+          event.preventDefault();
+          event.stopPropagation();
+          readSystemClipboardText()
+            .then((text) => {
+              if (text) pasteText(text);
+            })
+            .catch(() => {
+              noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
+            });
+          return false;
+        });
         // Lets a remote full-screen program (one that has grabbed the mouse
         // for its own selection UI, disabling xterm's native selection --
         // see the doc comment on decodeOscClipboardSet) hand its selection to
@@ -274,7 +290,7 @@ export function useTerminalLifecycle({
           event.stopImmediatePropagation();
           readSystemClipboardText()
             .then((text) => {
-              if (text) pasteText(text, true);
+              if (text) pasteText(text);
             })
             .catch(() => {
               noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
