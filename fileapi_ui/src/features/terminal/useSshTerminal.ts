@@ -118,7 +118,9 @@ export function useSshTerminal({
       const last = lastReportedSizeRef.current.get(tabId);
       if (last && last.cols === cols && last.rows === rows) return;
       lastReportedSizeRef.current.set(tabId, { cols, rows });
-      void invoke("ssh_resize", { sessionId: tab.sessionId, cols, rows });
+      void invoke("ssh_resize", { sessionId: tab.sessionId, cols, rows }).catch((error) => {
+        console.warn("SSH terminal resize failed.", error instanceof Error ? error.message : String(error));
+      });
     },
     onData: (tabId, data) => {
       const tab = tabsRef.current.find((item) => item.id === tabId);
@@ -159,8 +161,10 @@ export function useSshTerminal({
     const last = lastReportedSizeRef.current.get(activeTabId);
     if (last && last.cols === terminal.cols && last.rows === terminal.rows) return;
     lastReportedSizeRef.current.set(activeTabId, { cols: terminal.cols, rows: terminal.rows });
-    void invoke("ssh_resize", { sessionId: activeSessionId, cols: terminal.cols, rows: terminal.rows });
-  }, [activeSessionId, activeTabId, terminalsRef]);
+    void invoke("ssh_resize", { sessionId: activeSessionId, cols: terminal.cols, rows: terminal.rows }).catch((error) => {
+      console.warn("SSH terminal resize failed.", error instanceof Error ? error.message : String(error));
+    });
+  }, [activeSessionId, activeTabId]);
 
   return { boundaryGuard: VT_SESSION_BOUNDARY_GUARD };
 }
