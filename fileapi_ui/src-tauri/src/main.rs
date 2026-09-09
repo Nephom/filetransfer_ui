@@ -3932,7 +3932,8 @@ fn main() {
 mod tests {
     use super::{
         canonicalize, dedupe_candidate_name, is_local_read_scope, is_within_home_or_elevated,
-        local_display_path, local_list_directory, local_roots, resolve_local_download_destination,
+        local_create_directory, local_delete_path, local_display_path, local_list_directory,
+        local_rename_path, local_roots, resolve_local_download_destination,
         resolve_local_download_file, resolve_local_new_path, resolve_local_read_entry,
         resolve_local_read_path, resolve_local_transfer_path, UploadProgressEvent,
     };
@@ -4098,6 +4099,20 @@ mod tests {
             assert!(resolve_local_read_entry(r"folder\..\file")
                 .unwrap_err()
                 .contains("must not contain '..'"));
+        });
+    }
+
+    #[test]
+    fn local_mutations_are_enabled_but_remain_home_scoped() {
+        with_temp_home(|home| {
+            local_create_directory("created".into()).expect("HOME folder creation should work");
+            fs::write(home.join("original.txt"), b"bytes").unwrap();
+            let renamed = local_rename_path("original.txt".into(), "renamed.txt".into()).expect("HOME rename should work");
+            assert_eq!(renamed, "renamed.txt");
+            assert!(home.join("renamed.txt").is_file());
+            local_delete_path("renamed.txt".into(), false).expect("HOME delete should work");
+            assert!(!home.join("renamed.txt").exists());
+            assert!(local_create_directory("../outside".into()).is_err());
         });
     }
 
