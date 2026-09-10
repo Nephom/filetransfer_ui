@@ -1,6 +1,7 @@
 import { useRef, useState, type MutableRefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { SshTerminalTab } from "./terminal-contracts";
+import type { RecordingPlainTranscript } from "./terminal-utils";
 
 export function useSshTerminalState() {
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -26,6 +27,7 @@ export function useSshTerminalState() {
   const sshConnectingRef = useRef(false);
   const sshWriteQueuesRef = useRef(new Map<string, Promise<void>>());
   const recordingWriteQueuesRef = useRef(new Map<string, Promise<void>>());
+  const recordingPlainTranscriptsRef = useRef(new Map<string, RecordingPlainTranscript>());
   const recordingRef = useRef(false);
   const sshSecretPromptRef = useRef(false);
   const activeSshTabIdRef = useRef("");
@@ -71,6 +73,7 @@ export function useSshTerminalState() {
     saveLogDestinationPath, setSaveLogDestinationPath,
     terminalHostRefsRef, terminalInstancesRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
     recordingWriteQueuesRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
+    recordingPlainTranscriptsRef,
     pendingSshConnectRequestsRef, connectAttemptRef, sshTabsRef, shellInputRef,
   };
 }

@@ -1111,7 +1111,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     stopTerminalResize, resizeTerminal, beginTerminalResize, toggleTerminalMaximized,
     sshConnected, setSshConnected, sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
     terminalHostRefsRef, terminalInstancesRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
-    recordingWriteQueuesRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
+    recordingWriteQueuesRef, recordingPlainTranscriptsRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
     pendingSshConnectRequestsRef, connectAttemptRef, sshTabsRef, shellInputRef,
   } = terminalState;
   // Issue #239: registers/unregisters each SSH tab's host div into the
@@ -1630,6 +1630,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     connectingRef: sshConnectingRef,
     writeQueuesRef: sshWriteQueuesRef,
     recordingWriteQueuesRef,
+    recordingPlainTranscriptsRef,
     recordingRef,
     secretPromptRef: sshSecretPromptRef,
     shellInputRef,
@@ -2455,6 +2456,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
     connectingRef: sshConnectingRef,
     recordingWriteQueuesRef,
+    recordingPlainTranscriptsRef,
     workspaces: managedSessions,
     workspaceId: workspaceSessionId,
     setWorkspaceId: setWorkspaceSessionId,

@@ -3,7 +3,7 @@ import type { Terminal } from "@xterm/xterm";
 import { invoke } from "@tauri-apps/api/core";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import type { RecordingStats, SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
-import { appendSshTabOutput, makeSshTabId, resetTerminalConnection, SSH_SESSION_BOUNDARY_GUARD, stripAnsi } from "./terminal-utils";
+import { appendSshTabOutput, makeSshTabId, RecordingPlainTranscript, resetTerminalConnection, SSH_SESSION_BOUNDARY_GUARD } from "./terminal-utils";
 
 type OperationLogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
 
@@ -17,6 +17,7 @@ type Props = {
   pendingRequestsRef: MutableRefObject<Record<string, string>>;
   connectingRef: MutableRefObject<boolean>;
   recordingWriteQueuesRef: MutableRefObject<Map<string, Promise<void>>>;
+  recordingPlainTranscriptsRef?: MutableRefObject<Map<string, RecordingPlainTranscript>>;
   workspaces: TerminalWorkspaceSession[];
   workspaceId: string;
   setWorkspaceId: (id: string) => void;
@@ -45,7 +46,7 @@ type Props = {
  * coupling limited to this explicit prop surface. */
 export function useSshTerminalActions({
   tabs, setTabs, activeTabId, setActiveTabId, terminalInstancesRef, connectAttemptRef,
-  pendingRequestsRef, connectingRef, recordingWriteQueuesRef, workspaces, workspaceId,
+  pendingRequestsRef, connectingRef, recordingWriteQueuesRef, recordingPlainTranscriptsRef, workspaces, workspaceId,
   setWorkspaceId, selectedEntryId, setSelectedEntryId, setSshProfileId, setTerminalOpen,
   loadSshProfileDraft, onOpenWorkspaceManager, onNotify, onSetNotice, run, onWriteOperationLog,
   describeError, saveLogNameDraft, setSaveLogNameDraft, saveLogDestinationPath,
@@ -94,6 +95,7 @@ export function useSshTerminalActions({
     if (hasUnsavedRecording && !window.confirm(`This tab has an unsaved SSH recording. Close ${tab.title} and discard it?`)) return;
     if (tab.connected && !window.confirm(`Disconnect and close ${tab.title}?`)) return;
     resetTerminalConnection(terminalInstancesRef.current.get(tabId));
+    recordingPlainTranscriptsRef?.current.delete(tabId);
     void run(async () => {
       if (tab.sessionId) await invoke("ssh_disconnect", { sessionId: tab.sessionId });
       // Sweep any pendingRequestsRef entries left mapped to this tab (see
@@ -258,12 +260,15 @@ export function useSshTerminalActions({
     if (!activeTab?.connected) return;
     const tab = activeTab;
     const startedAt = Date.now();
+    const parser = new RecordingPlainTranscript();
+    const plainSeed = parser.consume(tab.output);
     void run(async () => {
       const stats = await invoke<RecordingStats>("start_ssh_recording", {
         tabId: tab.id,
         rawSeed: tab.output,
-        plainSeed: stripAnsi(tab.output),
+        plainSeed,
       });
+      recordingPlainTranscriptsRef?.current.set(tab.id, parser);
       setTabs((current) => current.map((item) => item.id !== tab.id ? item : {
         ...item,
         recording: true,
@@ -285,6 +290,7 @@ export function useSshTerminalActions({
       const pending = recordingWriteQueuesRef.current.get(tab.id) || Promise.resolve();
       await pending.catch(() => undefined);
       await invoke("stop_ssh_recording", { tabId: tab.id });
+      recordingPlainTranscriptsRef?.current.delete(tab.id);
       setTabs((current) => current.map((item) => item.id === tab.id ? { ...item, recording: false } : item));
       onWriteOperationLog("ssh_recording", "stopped", tab.sessionId || tab.id, "LOCAL recording buffer", JSON.stringify({ operationId: tab.id, recordingId: tab.id, sessionId: tab.sessionId, startedAt: tab.recordingStartedAt ? new Date(tab.recordingStartedAt).toISOString() : null, endedAt: new Date().toISOString(), rawBytes: tab.recordingRawBytes, commandCount: tab.recordingCommandCount, durationMs: tab.recordingStartedAt ? Date.now() - tab.recordingStartedAt : undefined }), "INFO");
       onNotify("Recording finalized. Save the log package before disconnecting.");

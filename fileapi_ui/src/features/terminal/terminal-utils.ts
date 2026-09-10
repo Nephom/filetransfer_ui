@@ -17,6 +17,77 @@ export const SSH_TAB_OUTPUT_CAP = 512 * 1024;
 export const stripAnsi = (value: string) =>
   value.replace(/[\u001B\u009B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007)|(?:(?:\d{1,4}(?:[;:][\d;]*)*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
 
+type RecordingParserState = "text" | "escape" | "csi" | "string";
+
+/** Removes terminal protocol bytes from the recording's plain transcript.
+ * The parser is stateful because SSH output can split one VT sequence across
+ * multiple Tauri events. This is intentionally separate from stripAnsi: the
+ * live terminal and prompt detection must keep their existing behavior. */
+export class RecordingPlainTranscript {
+  private state: RecordingParserState = "text";
+  private stringTerminatedByEscape = false;
+  private column = 0;
+
+  consume(value: string) {
+    let plain = "";
+    for (const character of value) {
+      const code = character.charCodeAt(0);
+      if (this.state === "escape") {
+        if (character === "[") this.state = "csi";
+        else if (character === "]" || character === "P" || character === "^" || character === "_") {
+          this.state = "string";
+          this.stringTerminatedByEscape = false;
+        } else this.state = "text";
+        continue;
+      }
+      if (this.state === "csi") {
+        if (code >= 0x40 && code <= 0x7e) this.state = "text";
+        continue;
+      }
+      if (this.state === "string") {
+        if (this.stringTerminatedByEscape) {
+          this.stringTerminatedByEscape = false;
+          if (character === "\\") this.state = "text";
+        } else if (code === 0x07) this.state = "text";
+        else if (code === 0x1b) this.stringTerminatedByEscape = true;
+        continue;
+      }
+      if (character === "\u001b") {
+        this.state = "escape";
+        continue;
+      }
+      if (code === 0x9b) {
+        this.state = "csi";
+        continue;
+      }
+      if (character === "\n") {
+        plain += character;
+        this.column = 0;
+        continue;
+      }
+      if (character === "\r") {
+        this.column = 0;
+        continue;
+      }
+      if (character === "\t") {
+        const spaces = 8 - (this.column % 8);
+        plain += " ".repeat(spaces);
+        this.column += spaces;
+        continue;
+      }
+      if (character === "\b") {
+        this.column = Math.max(0, this.column - 1);
+        continue;
+      }
+      if (code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f)) continue;
+      plain += character;
+      this.column += 1;
+    }
+    return plain;
+  }
+
+}
+
 export const normalizeTerminalPasteText = (value: string) =>
   value.replace(/\r\n?/g, "\n");
 

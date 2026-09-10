@@ -4,7 +4,7 @@ import type { Terminal } from "@xterm/xterm";
 import { useTerminalLifecycle } from "./useTerminalLifecycle";
 import { useSshEventBridge } from "./useSshEventBridge";
 import type { RecordingStats, SshTerminalTab } from "./terminal-contracts";
-import { appendSshTabOutput, resetTerminalConnection, SSH_SESSION_BOUNDARY_GUARD, stripAnsi, VT_SESSION_BOUNDARY_GUARD } from "./terminal-utils";
+import { appendSshTabOutput, resetTerminalConnection, SSH_SESSION_BOUNDARY_GUARD, stripAnsi, VT_SESSION_BOUNDARY_GUARD, type RecordingPlainTranscript } from "./terminal-utils";
 
 type NativeRefs = {
   tabsRef: MutableRefObject<SshTerminalTab[]>;
@@ -17,6 +17,7 @@ type NativeRefs = {
   connectingRef: MutableRefObject<boolean>;
   writeQueuesRef: MutableRefObject<Map<string, Promise<void>>>;
   recordingWriteQueuesRef: MutableRefObject<Map<string, Promise<void>>>;
+  recordingPlainTranscriptsRef?: MutableRefObject<Map<string, RecordingPlainTranscript>>;
   recordingRef: MutableRefObject<boolean>;
   secretPromptRef: MutableRefObject<boolean>;
   shellInputRef: MutableRefObject<string>;
@@ -40,7 +41,7 @@ export function useSshTerminal({
   enabled, activeTabId, activeSessionId, tabIds, bracketedPasteControlEnabled,
   setTabs, setConnected, setNotice, tabsRef, pendingRequestsRef, terminalsRef,
   hostRefsRef, activeTabIdRef, outputRef, sessionIdRef, connectingRef, writeQueuesRef,
-  recordingWriteQueuesRef, recordingRef, secretPromptRef, shellInputRef,
+  recordingWriteQueuesRef, recordingPlainTranscriptsRef, recordingRef, secretPromptRef, shellInputRef,
 }: Props) {
   // Issue #239 fix: every tab's Terminal is now live-mounted for the whole
   // life of the tab (see useTerminalLifecycle), so unlike before, a
@@ -62,7 +63,8 @@ export function useSshTerminal({
       if (tab.sessionId !== payload.sessionId) setTabs((current) => current.map((item) => item.id === tabId ? { ...item, sessionId: payload.sessionId, connected: true } : item));
       setTabs((current) => current.map((item) => item.id === tabId ? { ...item, output: appendSshTabOutput(item.output, data) } : item));
       if (tab.recording) {
-        const plainChunk = stripAnsi(data);
+        const parser = recordingPlainTranscriptsRef?.current.get(tabId);
+        const plainChunk = parser ? parser.consume(data) : stripAnsi(data);
         const previous = recordingWriteQueuesRef.current.get(tabId) || Promise.resolve();
         const next = previous.catch(() => undefined).then(() => invoke<RecordingStats>("append_ssh_recording", { tabId, rawChunk: data, plainChunk }).then((stats) => {
           setTabs((current) => current.map((item) => item.id === tabId ? { ...item, recordingRawBytes: stats.rawBytes, recordingPlainBytes: stats.plainBytes } : item));
@@ -89,6 +91,7 @@ export function useSshTerminal({
       // as literal control-string payload (see VT_SESSION_BOUNDARY_GUARD's
       // doc comment in main.tsx).
       resetTerminalConnection(terminalsRef.current.get(tabId));
+      recordingPlainTranscriptsRef?.current.delete(tabId);
       terminalsRef.current.get(tabId)?.write(`\n${payload.data}\n`);
       lastReportedSizeRef.current.delete(tabId);
       if (tabId === activeTabIdRef.current) {

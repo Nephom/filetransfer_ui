@@ -21,6 +21,20 @@ const key = (changes = {}) => ({
   ...changes,
 });
 
+test("recording plain transcript expands tabs and removes split VT sequences", () => {
+  const parser = new utils.RecordingPlainTranscript();
+  assert.equal(parser.consume("plat\tfre\u001b[1"), "plat    fre");
+  assert.equal(parser.consume("P u\u001b]0;title"), " u");
+  assert.equal(parser.consume("\u0007read\n"), "read\n");
+});
+
+test("recording plain transcript keeps raw recording behavior isolated", () => {
+  const parser = new utils.RecordingPlainTranscript();
+  assert.equal(parser.consume("one\r\ntwo\u001b[2"), "one\ntwo");
+  assert.equal(parser.consume("Kthree"), "three");
+  assert.equal(utils.stripAnsi("one\u001b[1Ptwo"), "onetwo");
+});
+
 // Small effect/ref runner: dependency changes clean up effects, not persistent refs.
 // The hook bodies, clipboard policy, VT parser, paste API and onData are production code.
 function hookRunner() {
