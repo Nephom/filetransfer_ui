@@ -4897,18 +4897,16 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               </div>
             </div>
           </div>
-          {selectedItems.length > 0 && (
-            <div className="remote-selection-status" aria-label="Selection status">
-              <span className="selection-count">
-                {selectedItems.length} selected
-              </span>
-            </div>
-          )}
-          {notice && (
-            <output className="notice transfer-notice" role="status">
-              {notice}
-            </output>
-          )}
+          <div className="remote-status-row" aria-label="Remote status">
+            <span className="selection-count" aria-live="polite">
+              {selectedItems.length > 0 ? `${selectedItems.length} selected` : ""}
+            </span>
+            {notice && (
+              <output className="notice transfer-notice" role="status" title={notice}>
+                {notice}
+              </output>
+            )}
+          </div>
           {shareUrl && (
             <div className="share-link">
               <label>
