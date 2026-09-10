@@ -9,11 +9,8 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $DesktopRoot = Join-Path $Root "fileapi_ui"
-$WebView2FixedRuntimeVersion = "151.0.4129.78"
-$WebView2FixedRuntimeUrl = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/355004fc-ebbc-42d3-b319-d43be39f8d39/Microsoft.WebView2.FixedVersionRuntime.151.0.4129.78.x64.cab"
-$WebView2FixedRuntimeSha256 = "d4c8864a764bc3ff015f7b644e1f9d022ba8a73ab470447398dda0cc9e75ab92"
 $WebView2FixedRuntimeAssetRoot = Join-Path $Root "build-assets\webview2"
-$WebView2FixedRuntimeArchive = Join-Path $WebView2FixedRuntimeAssetRoot "downloads\Microsoft.WebView2.FixedVersionRuntime.151.0.4129.78.x64.cab"
+$WebView2FixedRuntimeDownloadRoot = Join-Path $WebView2FixedRuntimeAssetRoot "downloads"
 $WebView2FixedRuntimeExtractRoot = Join-Path $WebView2FixedRuntimeAssetRoot "fixed\x64"
 $WebView2FixedRuntimeStagingRoot = Join-Path $DesktopRoot "src-tauri\webview2-fixed-runtime"
 
@@ -128,38 +125,32 @@ function Ensure-MsvcBuildTools {
 }
 
 function Ensure-WebView2FixedRuntime {
+    New-Item -ItemType Directory -Path $WebView2FixedRuntimeDownloadRoot -Force | Out-Null
+    $archives = @(Get-ChildItem -LiteralPath $WebView2FixedRuntimeDownloadRoot -Filter "*FixedVersionRuntime*x64*.cab" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending)
+    if ($archives.Count -eq 0) {
+        throw "No WebView2 Fixed Version CAB was found under '$WebView2FixedRuntimeDownloadRoot'. Download the x64 CAB into that directory before running the build."
+    }
+
+    $archive = $archives[0]
+    Write-Host "Using local WebView2 Fixed Version archive: $($archive.FullName)"
+    if ($archives.Count -gt 1) {
+        Write-Warning "Multiple WebView2 Fixed Version CAB files were found. Using the newest file: $($archive.Name)"
+    }
+
+    if (Test-Path -LiteralPath $WebView2FixedRuntimeExtractRoot) {
+        Remove-Item -LiteralPath $WebView2FixedRuntimeExtractRoot -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $WebView2FixedRuntimeExtractRoot -Force | Out-Null
+    Write-Host "Extracting WebView2 Fixed Version runtime..."
+    Invoke-Native "expand.exe" @("-F:*", $archive.FullName, $WebView2FixedRuntimeExtractRoot) | Out-Null
+
     $runtime = Get-ChildItem -LiteralPath $WebView2FixedRuntimeExtractRoot -Filter "msedgewebview2.exe" -File -Recurse -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $runtime) {
-        New-Item -ItemType Directory -Path (Split-Path -Parent $WebView2FixedRuntimeArchive) -Force | Out-Null
-        New-Item -ItemType Directory -Path $WebView2FixedRuntimeExtractRoot -Force | Out-Null
-        if (-not (Test-Path -LiteralPath $WebView2FixedRuntimeArchive)) {
-            Write-Host "Downloading WebView2 Fixed Version runtime once for future offline builds..."
-            $downloadArgs = @{
-                Uri = $WebView2FixedRuntimeUrl
-                OutFile = $WebView2FixedRuntimeArchive
-                UseBasicParsing = $true
-            }
-            if (-not [string]::IsNullOrWhiteSpace($Proxy)) { $downloadArgs.Proxy = $Proxy }
-            Invoke-WebRequest @downloadArgs
-        }
-        $archiveHash = (Get-FileHash -LiteralPath $WebView2FixedRuntimeArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($archiveHash -ne $WebView2FixedRuntimeSha256) {
-            throw "WebView2 Fixed Version archive hash mismatch. Expected $WebView2FixedRuntimeSha256, got $archiveHash. Delete '$WebView2FixedRuntimeArchive' and re-run the build."
-        }
-
-        Write-Host "Extracting WebView2 Fixed Version runtime..."
-        Invoke-Native "expand.exe" @("-F:*", $WebView2FixedRuntimeArchive, $WebView2FixedRuntimeExtractRoot) | Out-Null
-        $runtime = Get-ChildItem -LiteralPath $WebView2FixedRuntimeExtractRoot -Filter "msedgewebview2.exe" -File -Recurse -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if (-not $runtime) {
-            throw "WebView2 Fixed Version archive did not contain msedgewebview2.exe. Delete '$WebView2FixedRuntimeArchive' and re-run the build."
-        }
-        Write-Host "WebView2 Fixed Version runtime ready: $($runtime.Directory.FullName)"
+        throw "WebView2 Fixed Version archive '$($archive.Name)' did not contain msedgewebview2.exe."
     }
-    else {
-        Write-Host "Using local WebView2 Fixed Version runtime: $($runtime.Directory.FullName)"
-    }
+    Write-Host "WebView2 Fixed Version runtime ready: $($runtime.Directory.FullName)"
 
     if (Test-Path -LiteralPath $WebView2FixedRuntimeStagingRoot) {
         Remove-Item -LiteralPath $WebView2FixedRuntimeStagingRoot -Recurse -Force
