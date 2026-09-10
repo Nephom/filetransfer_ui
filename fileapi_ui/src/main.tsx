@@ -1226,6 +1226,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     x: number;
     y: number;
   } | null>(null);
+  const [contextMenuStyle, setContextMenuStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
   const accountControl = useRef<HTMLDivElement>(null);
   const locationControl = useRef<HTMLDivElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -1237,6 +1238,45 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const dragSourceRef = useRef<"local" | "remote" | "">("");
   const dragContextRef = useRef("");
   const noticeTimer = useRef<number | undefined>();
+
+  useEffect(() => {
+    if (!contextMenu) {
+      setContextMenuStyle({ visibility: "hidden" });
+      return undefined;
+    }
+
+    const repositionContextMenu = () => {
+      const menu = contextMenuRef.current;
+      if (!menu) return;
+
+      const menuRect = menu.getBoundingClientRect();
+      const edge = 8;
+      const spaceBelow = Math.max(1, window.innerHeight - contextMenu.y - edge);
+      const spaceAbove = Math.max(1, contextMenu.y - edge);
+      const opensBelow = menuRect.height <= spaceBelow || spaceBelow >= spaceAbove;
+      const availableHeight = opensBelow ? spaceBelow : spaceAbove;
+      const top = opensBelow
+        ? Math.min(contextMenu.y, window.innerHeight - edge - availableHeight)
+        : Math.max(edge, contextMenu.y - Math.min(menuRect.height, availableHeight));
+      const left = Math.max(edge, Math.min(contextMenu.x, window.innerWidth - menuRect.width - edge));
+
+      setContextMenuStyle({
+        left,
+        top,
+        maxHeight: availableHeight,
+        visibility: "visible",
+      });
+    };
+
+    const frame = window.requestAnimationFrame(repositionContextMenu);
+    window.addEventListener("resize", repositionContextMenu);
+    window.addEventListener("scroll", repositionContextMenu, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", repositionContextMenu);
+      window.removeEventListener("scroll", repositionContextMenu, true);
+    };
+  }, [contextMenu]);
   // Dedupes concurrent 401 responses: if several in-flight requests all
   // hit an expired token at once, only the first should trigger a real
   // POST /auth/login -- every other caller awaits that same in-flight
@@ -4297,6 +4337,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   event.preventDefault();
                   setActivePane("local");
                   if (!localSelected.includes(file.path)) setLocalSelected([file.path]);
+                  setContextMenuStyle({ visibility: "hidden" });
                   setContextMenu({ x: event.clientX, y: event.clientY });
                 }}
               >
@@ -4371,6 +4412,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 event.preventDefault();
                 setActivePane("local");
                 if (!localSelected.includes(file.path)) setLocalSelected([file.path]);
+                setContextMenuStyle({ visibility: "hidden" });
                 setContextMenu({ x: event.clientX, y: event.clientY });
               }}
             >
@@ -5032,6 +5074,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                       event.preventDefault();
                       if (!selected.includes(file.path))
                         setSelected([file.path]);
+                      setContextMenuStyle({ visibility: "hidden" });
                       setContextMenu({ x: event.clientX, y: event.clientY });
                     }}
                   >
@@ -5171,6 +5214,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                         event.preventDefault();
                         if (!selected.includes(file.path))
                           setSelected([file.path]);
+                        setContextMenuStyle({ visibility: "hidden" });
                         setContextMenu({ x: event.clientX, y: event.clientY });
                       }}
                     >
@@ -5235,7 +5279,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           className="context-menu"
           role="menu"
           aria-label="File actions"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          style={contextMenuStyle}
           onClick={(event) => event.stopPropagation()}
         >
           {splitMode && activePane === "local" ? (
