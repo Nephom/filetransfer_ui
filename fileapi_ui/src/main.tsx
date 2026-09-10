@@ -4896,12 +4896,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 {canSearchRemote && renderSearchControl()}
               </div>
             </div>
-            {selectedItems.length > 0 && (
+          </div>
+          {selectedItems.length > 0 && (
+            <div className="remote-selection-status" aria-label="Selection status">
               <span className="selection-count">
                 {selectedItems.length} selected
               </span>
-            )}
-          </div>
+            </div>
+          )}
           {notice && (
             <output className="notice transfer-notice" role="status">
               {notice}
