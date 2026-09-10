@@ -447,7 +447,8 @@ pub async fn rename_path(
         "started",
         &format!("SSH: {label}:{old_path}"),
         &new_path,
-        &serde_json::json!({"operationId": operation_id, "oldPath": old_path, "newPath": new_path}).to_string(),
+        &serde_json::json!({"operationId": operation_id, "oldPath": old_path, "newPath": new_path})
+            .to_string(),
     );
     ensure_connected(&profile).await?;
     let sessions = sftp_sessions().lock().await;
@@ -519,9 +520,22 @@ pub async fn upload_path(
 ) -> Result<String, String> {
     let operation_id = uuid::Uuid::new_v4().to_string();
     let started = std::time::Instant::now();
-    let byte_count = std::fs::metadata(&local_path).map(|metadata| if metadata.is_file() { metadata.len() } else { 0 }).unwrap_or(0);
+    let byte_count = std::fs::metadata(&local_path)
+        .map(|metadata| {
+            if metadata.is_file() {
+                metadata.len()
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0);
     crate::oplog::log("DEBUG", "upload_path", "started", &local_path, &remote_destination_folder, &serde_json::json!({"operationId": operation_id, "sourcePath": local_path, "destinationPath": remote_destination_folder, "fileCount": 1, "byteCount": byte_count, "collisionAttempt": 0}).to_string());
-    let result = upload_path_inner(profile, local_path.clone(), remote_destination_folder.clone()).await;
+    let result = upload_path_inner(
+        profile,
+        local_path.clone(),
+        remote_destination_folder.clone(),
+    )
+    .await;
     match &result {
         Ok(destination) => crate::oplog::log("INFO", "upload_path", "completed", &local_path, destination, &serde_json::json!({"operationId": operation_id, "sourcePath": local_path, "destinationPath": destination, "fileCount": 1, "byteCount": byte_count, "collisionAttempt": 0, "durationMs": started.elapsed().as_millis()}).to_string()),
         Err(error) => crate::oplog::log("ERROR", "upload_path", "failed", &local_path, &remote_destination_folder, &serde_json::json!({"operationId": operation_id, "sourcePath": local_path, "destinationPath": remote_destination_folder, "byteCount": byte_count, "collisionAttempt": 0, "durationMs": started.elapsed().as_millis(), "failureType": "sftp", "error": error}).to_string()),
@@ -644,7 +658,13 @@ pub async fn download_path(
     let operation_id = uuid::Uuid::new_v4().to_string();
     let started = std::time::Instant::now();
     crate::oplog::log("DEBUG", "download_path", "started", &remote_path, &local_destination_folder, &serde_json::json!({"operationId": operation_id, "sourcePath": remote_path, "destinationPath": local_destination_folder, "fileCount": 1, "byteCount": 0, "collisionAttempt": 0}).to_string());
-    let result = download_path_inner(profile, remote_path.clone(), is_directory, local_destination_folder.clone()).await;
+    let result = download_path_inner(
+        profile,
+        remote_path.clone(),
+        is_directory,
+        local_destination_folder.clone(),
+    )
+    .await;
     match &result {
         Ok(destination) => crate::oplog::log("INFO", "download_path", "completed", &remote_path, destination, &serde_json::json!({"operationId": operation_id, "sourcePath": remote_path, "destinationPath": destination, "fileCount": 1, "byteCount": std::fs::metadata(&destination).map(|metadata| metadata.len()).unwrap_or(0), "durationMs": started.elapsed().as_millis()}).to_string()),
         Err(error) => crate::oplog::log("ERROR", "download_path", "failed", &remote_path, &local_destination_folder, &serde_json::json!({"operationId": operation_id, "sourcePath": remote_path, "destinationPath": local_destination_folder, "byteCount": 0, "durationMs": started.elapsed().as_millis(), "failureType": "sftp", "error": error}).to_string()),

@@ -2466,6 +2466,7 @@ async fn proxmox_agent_download_file(
     session_id: String,
     transfer_id: String,
     remote_path: String,
+    remote_size: u64,
     destination_folder: String,
 ) -> Result<String, String> {
     proxmox::agent_download_file(
@@ -2474,6 +2475,7 @@ async fn proxmox_agent_download_file(
         session_id,
         transfer_id,
         remote_path,
+        remote_size,
         destination_folder,
     )
     .await
@@ -4127,7 +4129,8 @@ mod tests {
         with_temp_home(|home| {
             local_create_directory("created".into()).expect("HOME folder creation should work");
             fs::write(home.join("original.txt"), b"bytes").unwrap();
-            let renamed = local_rename_path("original.txt".into(), "renamed.txt".into()).expect("HOME rename should work");
+            let renamed = local_rename_path("original.txt".into(), "renamed.txt".into())
+                .expect("HOME rename should work");
             assert_eq!(renamed, "renamed.txt");
             assert!(home.join("renamed.txt").is_file());
             local_delete_path("renamed.txt".into(), false).expect("HOME delete should work");

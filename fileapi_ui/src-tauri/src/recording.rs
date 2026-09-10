@@ -484,9 +484,7 @@ fn chrono_now_iso() -> String {
         seconds_of_day % 60,
     );
     let (year, month, day) = civil_from_days(days as i64);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
 }
 
 /// Howard Hinnant's `civil_from_days`: converts a day count since the Unix
@@ -549,9 +547,15 @@ mod tests {
     // path -- exercised indirectly through `stats_of`'s byte counters and a
     // direct disk-size check below.
     fn raw_temp_path_bytes_on_disk(tab_id: &str) -> u64 {
-        let guard = super::recordings().lock().expect("recording registry lock should not be poisoned");
-        let entry = guard.get(tab_id).expect("a recording should be registered for this tab id in this test");
-        fs::metadata(&entry.raw_path).map(|metadata| metadata.len()).unwrap_or(0)
+        let guard = super::recordings()
+            .lock()
+            .expect("recording registry lock should not be poisoned");
+        let entry = guard
+            .get(tab_id)
+            .expect("a recording should be registered for this tab id in this test");
+        fs::metadata(&entry.raw_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
     }
 
     #[test]

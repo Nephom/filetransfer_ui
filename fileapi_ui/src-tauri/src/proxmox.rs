@@ -166,7 +166,8 @@ impl ServerCertVerifier for AcceptAnyCertificate {
 }
 
 static PENDING: OnceLock<Arc<Mutex<HashMap<String, PendingConnection>>>> = OnceLock::new();
-static DIRECT_PENDING: OnceLock<Arc<Mutex<HashMap<String, PendingDirectConnection>>>> = OnceLock::new();
+static DIRECT_PENDING: OnceLock<Arc<Mutex<HashMap<String, PendingDirectConnection>>>> =
+    OnceLock::new();
 static AUTH_SESSIONS: OnceLock<Arc<Mutex<HashMap<String, AuthSession>>>> = OnceLock::new();
 
 fn pending() -> &'static Arc<Mutex<HashMap<String, PendingConnection>>> {
@@ -314,7 +315,14 @@ pub async fn list_vms(entry: VncEntry, password: String) -> Result<Vec<VmSummary
     let operation_id = uuid::Uuid::new_v4().to_string();
     let started = std::time::Instant::now();
     let label = endpoint_label(&entry);
-    crate::oplog::log("DEBUG", "list_vms", "started", &label, "proxmox", &serde_json::json!({"operationId": operation_id}).to_string());
+    crate::oplog::log(
+        "DEBUG",
+        "list_vms",
+        "started",
+        &label,
+        "proxmox",
+        &serde_json::json!({"operationId": operation_id}).to_string(),
+    );
     let result = list_vms_inner(&entry, password).await;
     match &result {
         Ok(vms) => crate::oplog::log("INFO", "list_vms", "completed", &label, "proxmox", &serde_json::json!({"operationId": operation_id, "vmCount": vms.len(), "durationMs": started.elapsed().as_millis()}).to_string()),
@@ -773,17 +781,32 @@ async fn start_session_inner(entry: VncEntry, session_id: String) -> Result<VncC
 
 pub async fn start_direct(host: String, port: u16) -> Result<VncConnection, String> {
     let host = host.trim().to_string();
-    if host.is_empty() { return Err("Direct VNC host is required".to_string()); }
-    if port == 0 { return Err("Direct VNC port is invalid".to_string()); }
-    let listener = TcpListener::bind("localhost:0").await.map_err(|error| error.to_string())?;
+    if host.is_empty() {
+        return Err("Direct VNC host is required".to_string());
+    }
+    if port == 0 {
+        return Err("Direct VNC port is invalid".to_string());
+    }
+    let listener = TcpListener::bind("localhost:0")
+        .await
+        .map_err(|error| error.to_string())?;
     let address = listener.local_addr().map_err(|error| error.to_string())?;
     let id = uuid::Uuid::new_v4().to_string();
     let relay_token = uuid::Uuid::new_v4().to_string();
-    direct_pending().lock().await.insert(id.clone(), PendingDirectConnection { host, port, relay_token: relay_token.clone() });
+    direct_pending().lock().await.insert(
+        id.clone(),
+        PendingDirectConnection {
+            host,
+            port,
+            relay_token: relay_token.clone(),
+        },
+    );
     let connection_id = id.clone();
     let task_connection_id = connection_id.clone();
     tokio::spawn(async move {
-        if let Ok(Ok((stream, _))) = tokio::time::timeout(Duration::from_secs(30), listener.accept()).await {
+        if let Ok(Ok((stream, _))) =
+            tokio::time::timeout(Duration::from_secs(30), listener.accept()).await
+        {
             if let Some(connection) = direct_pending().lock().await.remove(&task_connection_id) {
                 let _ = direct_relay(stream, task_connection_id, connection).await;
             } else {
@@ -793,7 +816,15 @@ pub async fn start_direct(host: String, port: u16) -> Result<VncConnection, Stri
             let _ = direct_pending().lock().await.remove(&task_connection_id);
         }
     });
-    Ok(VncConnection { id, websocket_url: format!("ws://localhost:{}/vnc-direct/{}?token={relay_token}", address.port(), connection_id), password: String::new() })
+    Ok(VncConnection {
+        id,
+        websocket_url: format!(
+            "ws://localhost:{}/vnc-direct/{}?token={relay_token}",
+            address.port(),
+            connection_id
+        ),
+        password: String::new(),
+    })
 }
 
 pub async fn cancel_direct(connection_id: String) -> Result<(), String> {
@@ -801,26 +832,47 @@ pub async fn cancel_direct(connection_id: String) -> Result<(), String> {
     Ok(())
 }
 
-async fn direct_relay(stream: tokio::net::TcpStream, connection_id: String, connection: PendingDirectConnection) -> Result<(), String> {
+async fn direct_relay(
+    stream: tokio::net::TcpStream,
+    connection_id: String,
+    connection: PendingDirectConnection,
+) -> Result<(), String> {
     let expected_path = format!("/vnc-direct/{connection_id}");
     let expected_token = connection.relay_token.clone();
-    let browser: WebSocketStream<tokio::net::TcpStream> = accept_hdr_async(stream, move |request: &Request, response: Response| {
-        if valid_relay_request(request.uri(), &expected_path, &expected_token) { return Ok(response); }
-        let error: ErrorResponse = http::Response::builder().status(http::StatusCode::NOT_FOUND).body(Some("Not found".to_string())).expect("static WebSocket rejection response should build");
-        Err(error)
-    }).await.map_err(|error| error.to_string())?;
-    let remote = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(format!("{}:{}", connection.host, connection.port)))
-        .await.map_err(|_| "Direct VNC connection timed out".to_string())?
-        .map_err(|error| format!("Unable to connect to Direct VNC endpoint: {error}"))?;
+    let browser: WebSocketStream<tokio::net::TcpStream> =
+        accept_hdr_async(stream, move |request: &Request, response: Response| {
+            if valid_relay_request(request.uri(), &expected_path, &expected_token) {
+                return Ok(response);
+            }
+            let error: ErrorResponse = http::Response::builder()
+                .status(http::StatusCode::NOT_FOUND)
+                .body(Some("Not found".to_string()))
+                .expect("static WebSocket rejection response should build");
+            Err(error)
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    let remote = tokio::time::timeout(
+        Duration::from_secs(10),
+        TcpStream::connect(format!("{}:{}", connection.host, connection.port)),
+    )
+    .await
+    .map_err(|_| "Direct VNC connection timed out".to_string())?
+    .map_err(|error| format!("Unable to connect to Direct VNC endpoint: {error}"))?;
     let (mut browser_write, mut browser_read) = browser.split();
     let (mut remote_read, mut remote_write) = remote.into_split();
     let browser_to_remote = async {
         while let Some(message) = browser_read.next().await {
             match message.map_err(|error| error.to_string())? {
-                Message::Binary(bytes) => remote_write.write_all(&bytes).await.map_err(|error| error.to_string())?,
+                Message::Binary(bytes) => remote_write
+                    .write_all(&bytes)
+                    .await
+                    .map_err(|error| error.to_string())?,
                 Message::Close(_) => break,
                 Message::Ping(_) | Message::Pong(_) => {}
-                Message::Text(_) => return Err("Direct VNC received unexpected text data".to_string()),
+                Message::Text(_) => {
+                    return Err("Direct VNC received unexpected text data".to_string())
+                }
                 _ => {}
             }
         }
@@ -829,9 +881,17 @@ async fn direct_relay(stream: tokio::net::TcpStream, connection_id: String, conn
     let remote_to_browser = async {
         let mut buffer = [0_u8; 16 * 1024];
         loop {
-            let count = remote_read.read(&mut buffer).await.map_err(|error| error.to_string())?;
-            if count == 0 { break; }
-            browser_write.send(Message::Binary(buffer[..count].to_vec().into())).await.map_err(|error| error.to_string())?;
+            let count = remote_read
+                .read(&mut buffer)
+                .await
+                .map_err(|error| error.to_string())?;
+            if count == 0 {
+                break;
+            }
+            browser_write
+                .send(Message::Binary(buffer[..count].to_vec().into()))
+                .await
+                .map_err(|error| error.to_string())?;
         }
         Ok::<(), String>(())
     };
@@ -984,6 +1044,9 @@ fn valid_relay_request(uri: &http::Uri, expected_path: &str, expected_token: &st
 /// Maximum bytes read from the guest per `file-read` call. Kept well under
 /// the server's 16 MiB cap so download progress updates smoothly.
 const AGENT_READ_CHUNK_BYTES: u64 = 1024 * 1024;
+/// Maximum size supported by the legacy single-shot `file-read` fallback.
+/// Newer Proxmox versions use offset/count chunking instead.
+const AGENT_SINGLE_READ_LIMIT_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Maximum *raw* (pre-base64) bytes written per `file-write` call. Proxmox
 /// caps the `content` field at 60 KiB; base64 inflates by 4/3, so 44 KiB raw
@@ -1099,9 +1162,7 @@ struct AgentExecResult {
 /// (LXC has no equivalent endpoint).
 fn agent_base(entry: &VncEntry) -> Result<(u64, String), String> {
     if entry.guest_type != "qemu" {
-        return Err(
-            "QEMU Guest Agent file transfer is only available for qemu guests".to_string(),
-        );
+        return Err("QEMU Guest Agent file transfer is only available for qemu guests".to_string());
     }
     let vmid = entry
         .vmid
@@ -1215,9 +1276,14 @@ pub async fn agent_ping(entry: VncEntry, session_id: String) -> Result<(), Strin
             "agent",
             "",
         ),
-        Err(error) => {
-            crate::oplog::log("WARN", "proxmox_agent", "ping_failed", &label, "agent", error)
-        }
+        Err(error) => crate::oplog::log(
+            "WARN",
+            "proxmox_agent",
+            "ping_failed",
+            &label,
+            "agent",
+            error,
+        ),
     }
     result.map(|_| ())
 }
@@ -1786,6 +1852,14 @@ fn is_file_read_params_rejected_by_schema(error: &str) -> bool {
     error.contains("does not allow additional properties")
 }
 
+fn legacy_agent_download_limit_error(remote_path: &str, remote_size: u64) -> Option<String> {
+    (remote_size > AGENT_SINGLE_READ_LIMIT_BYTES).then(|| {
+        format!(
+            "Guest Agent download cannot read \"{remote_path}\" because this Proxmox version does not support chunked file reads and the file is larger than 16 MiB. Use Direct SFTP, Jump SFTP, or upgrade Proxmox VE."
+        )
+    })
+}
+
 /// Download a file from the guest via chunked `file-read` calls (the server
 /// caps each call at 16 MiB; this client loops with a smaller chunk size so
 /// download progress updates smoothly). EOF is detected the same way the
@@ -1805,6 +1879,7 @@ pub async fn agent_download_file(
     session_id: String,
     transfer_id: String,
     remote_path: String,
+    remote_size: u64,
     destination_folder: String,
 ) -> Result<String, String> {
     let operation_id = uuid::Uuid::new_v4().to_string();
@@ -1857,6 +1932,21 @@ pub async fn agent_download_file(
                     && offset == 0
                     && is_file_read_params_rejected_by_schema(&error)
                 {
+                    if let Some(message) =
+                        legacy_agent_download_limit_error(&remote_path, remote_size)
+                    {
+                        drop(file);
+                        let _ = std::fs::remove_file(&temporary);
+                        crate::oplog::log(
+                            "WARN",
+                            "proxmox_agent_download",
+                            "rejected_legacy_limit",
+                            &label,
+                            &remote_path,
+                            &serde_json::json!({"operationId": operation_id, "size": remote_size, "limit": AGENT_SINGLE_READ_LIMIT_BYTES, "error": message}).to_string(),
+                        );
+                        return Err(message);
+                    }
                     chunked_supported = false;
                     crate::oplog::log(
                         "DEBUG",
@@ -1864,7 +1954,8 @@ pub async fn agent_download_file(
                         "compat_mode_fallback",
                         &label,
                         &remote_path,
-                        &serde_json::json!({"operationId": operation_id, "error": error}).to_string(),
+                        &serde_json::json!({"operationId": operation_id, "error": error})
+                            .to_string(),
                     );
                     continue;
                 }
@@ -2023,7 +2114,11 @@ pub async fn agent_upload_file(
             mkdir_result.stderr.trim()
         ));
     }
-    let chunk_separator = if os_kind == GuestOsKind::Windows { '\\' } else { '/' };
+    let chunk_separator = if os_kind == GuestOsKind::Windows {
+        '\\'
+    } else {
+        '/'
+    };
     let mut file = std::fs::File::open(local).map_err(|error| error.to_string())?;
     let mut buffer = vec![0_u8; AGENT_WRITE_CHUNK_BYTES];
     let mut sent: u64 = 0;
@@ -2248,6 +2343,27 @@ mod tests {
     }
 
     #[test]
+    fn legacy_agent_download_rejects_files_over_single_read_limit() {
+        let error = legacy_agent_download_limit_error(
+            "C:/downloads/archive.cab",
+            AGENT_SINGLE_READ_LIMIT_BYTES + 1,
+        )
+        .expect("oversized legacy download should be rejected");
+        assert!(error.contains("does not support chunked file reads"));
+        assert!(error.contains("16 MiB"));
+    }
+
+    #[test]
+    fn legacy_agent_download_allows_files_at_or_below_single_read_limit() {
+        assert!(legacy_agent_download_limit_error("C:/downloads/file.txt", 0).is_none());
+        assert!(legacy_agent_download_limit_error(
+            "C:/downloads/file.txt",
+            AGENT_SINGLE_READ_LIMIT_BYTES
+        )
+        .is_none());
+    }
+
+    #[test]
     fn powershell_command_always_suppresses_progress_preference() {
         // Without this, PowerShell's module-autoload progress reporting
         // writes a CLIXML blob to stderr on a guest's first invocation,
@@ -2263,7 +2379,9 @@ mod tests {
             ]
         );
         let encoded = &command[4];
-        let bytes = BASE64.decode(encoded).expect("command should be valid base64");
+        let bytes = BASE64
+            .decode(encoded)
+            .expect("command should be valid base64");
         let units: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
@@ -2424,7 +2542,10 @@ mod tests {
     fn parse_windows_drive_output_trims_and_sorts_drive_letters() {
         let files = super::parse_windows_drive_output("D:\r\nC:\r\n\r\n");
         assert_eq!(
-            files.iter().map(|file| file.name.clone()).collect::<Vec<_>>(),
+            files
+                .iter()
+                .map(|file| file.name.clone())
+                .collect::<Vec<_>>(),
             vec!["C:".to_string(), "D:".to_string()],
         );
         assert!(files.iter().all(|file| file.is_directory));

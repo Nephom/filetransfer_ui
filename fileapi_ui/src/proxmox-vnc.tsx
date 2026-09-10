@@ -112,6 +112,7 @@ export const hostSshProfileId = (entryId: string) => `vncjump:${entryId}`;
 const DIRECT_REACHABILITY_TIMEOUT_MS = 2500;
 const JUMP_REACHABILITY_TIMEOUT_MS = 6000;
 const MAX_TRANSFER_RETRIES = 2;
+const GUEST_AGENT_SINGLE_READ_LIMIT_BYTES = 16 * 1024 * 1024;
 
 export const proxmoxHostFromBaseUrl = (baseUrl: string): string => {
   try { return new URL(baseUrl).hostname; } catch { return ""; }
@@ -831,6 +832,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
           sessionId: authSessions[nativeEntry.id],
           transferId: id,
           remotePath: item.path,
+          remoteSize: item.size,
           destinationFolder: destination,
         });
       } else {
@@ -862,6 +864,13 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     if (transferMode === "guest-agent" && items.some((item) => item.isDirectory)) {
       setTransferError("Folders can't be downloaded over the Guest Agent fallback (no directory API). Open the folder and download files individually, or use a reachable direct/jump SFTP connection.");
       return;
+    }
+    if (transferMode === "guest-agent") {
+      const oversized = items.find((item) => item.size > GUEST_AGENT_SINGLE_READ_LIMIT_BYTES);
+      if (oversized) {
+        setTransferError(`Guest Agent download is limited to 16 MiB on this fallback route. "${oversized.name}" is larger than the limit. Use Direct SFTP, Jump SFTP, or upgrade Proxmox VE to a version that supports chunked file reads.`);
+        return;
+      }
     }
     try {
       const destination = await invoke<string | null>("pick_local_directory", { path: "" });

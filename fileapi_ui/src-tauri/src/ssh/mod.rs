@@ -292,7 +292,13 @@ fn validate_profile(profile: &SshProfile) -> Result<(), String> {
             if jump_host.chars().any(char::is_whitespace) {
                 return Err("SSH jump host must not contain whitespace".to_string());
             }
-            if profile.jump_username.as_deref().unwrap_or("").trim().is_empty() {
+            if profile
+                .jump_username
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
+            {
                 return Err("SSH jump host username is required".to_string());
             }
             if profile
@@ -909,14 +915,7 @@ pub async fn check_transport_reachable(profile: SshProfile, timeout_ms: u64) -> 
     match tokio::time::timeout(timeout, connect_transport(&profile)).await {
         Ok(Ok(session)) => {
             session.disconnect_all().await;
-            crate::oplog::log(
-                "DEBUG",
-                "ssh_check_transport",
-                "reachable",
-                &label,
-                "",
-                "",
-            );
+            crate::oplog::log("DEBUG", "ssh_check_transport", "reachable", &label, "", "");
             true
         }
         Ok(Err(error)) => {
@@ -1014,7 +1013,8 @@ pub async fn connect(
     // would never resolve *or* reject, leaving the UI stuck on "Connecting…"
     // indefinitely even though sshd already logged an accepted authentication
     // for the session.
-    let channel = match tokio::time::timeout(CONNECT_TIMEOUT, session.channel_open_session()).await {
+    let channel = match tokio::time::timeout(CONNECT_TIMEOUT, session.channel_open_session()).await
+    {
         Ok(Ok(channel)) => channel,
         Ok(Err(error)) => {
             let message = error.to_string();
@@ -1022,7 +1022,10 @@ pub async fn connect(
             return Err(message);
         }
         Err(_) => {
-            let message = format!("Timed out opening the SSH channel after {} seconds.", CONNECT_TIMEOUT.as_secs());
+            let message = format!(
+                "Timed out opening the SSH channel after {} seconds.",
+                CONNECT_TIMEOUT.as_secs()
+            );
             crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "channel_open", "error": message}).to_string());
             return Err(message);
         }
@@ -1040,7 +1043,10 @@ pub async fn connect(
             return Err(message);
         }
         Err(_) => {
-            let message = format!("Timed out requesting a PTY after {} seconds.", CONNECT_TIMEOUT.as_secs());
+            let message = format!(
+                "Timed out requesting a PTY after {} seconds.",
+                CONNECT_TIMEOUT.as_secs()
+            );
             crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "pty_request", "error": message}).to_string());
             return Err(message);
         }
@@ -1053,7 +1059,10 @@ pub async fn connect(
             return Err(message);
         }
         Err(_) => {
-            let message = format!("Timed out requesting a shell after {} seconds.", CONNECT_TIMEOUT.as_secs());
+            let message = format!(
+                "Timed out requesting a shell after {} seconds.",
+                CONNECT_TIMEOUT.as_secs()
+            );
             crate::oplog::log("ERROR", "ssh_connect", "failed", &label, "terminal", &serde_json::json!({"operationId": operation_id, "requestId": request_id, "sessionId": session_id, "durationMs": started.elapsed().as_millis(), "failureType": "shell_request", "error": message}).to_string());
             return Err(message);
         }
@@ -1187,11 +1196,7 @@ pub async fn write(session_id: String, data: String) -> Result<(), String> {
             return Err(error);
         }
     };
-    match session
-        .write
-        .data(data.into_bytes().as_slice())
-        .await
-    {
+    match session.write.data(data.into_bytes().as_slice()).await {
         Ok(()) => {
             crate::oplog::log("INFO", "ssh_write", "completed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "byteCount": byte_count, "durationMs": started.elapsed().as_millis()}).to_string());
             Ok(())
@@ -1277,7 +1282,14 @@ pub async fn install_key(profile: SshProfile) -> Result<String, String> {
     let operation_id = uuid::Uuid::new_v4().to_string();
     let started = std::time::Instant::now();
     let label = profile_label(&profile);
-    crate::oplog::log("DEBUG", "ssh_install_key", "started", &label, "authorized_keys", &serde_json::json!({"operationId": operation_id}).to_string());
+    crate::oplog::log(
+        "DEBUG",
+        "ssh_install_key",
+        "started",
+        &label,
+        "authorized_keys",
+        &serde_json::json!({"operationId": operation_id}).to_string(),
+    );
     let result = install_key_inner(profile).await;
     match &result {
         Ok(path) => crate::oplog::log("INFO", "ssh_install_key", "completed", &label, path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis()}).to_string()),
