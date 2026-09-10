@@ -938,6 +938,8 @@ export function App() {
 }
 
 export function DesktopApp({ session, setSession, password, setPassword, busy, setBusy, notice, setNotice, refreshSessionToken, logoutSession, invalidateCredentials }: DesktopAppProps) {
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
   const [files, setFiles] = useState<FileItem[]>([]);
   const [localFiles, setLocalFiles] = useState<FileItem[]>([]);
   const [localPath, setLocalPath] = useState("");
@@ -1241,6 +1243,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // promise and reuses its result instead of firing its own extra login
   // request (#233).
   const tokenRefreshPromiseRef = useRef<Promise<string | null> | null>(null);
+  const transportRecoveryPromiseRef = useRef<Promise<boolean> | null>(null);
+  const remoteRecoveryCountRef = useRef(0);
   const refreshTokenOnce = () => {
     if (!tokenRefreshPromiseRef.current) {
       tokenRefreshPromiseRef.current = refreshSessionToken().finally(() => {
@@ -1248,6 +1252,29 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       });
     }
     return tokenRefreshPromiseRef.current;
+  };
+  const isTransportError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    return /10054|connection reset|connection (?:closed|aborted)|broken pipe|timed? ?out|network is unreachable|connection refused|dns|name or service not known/i.test(message);
+  };
+  const isSafeToRetry = (endpoint: string, init: RequestInit) => {
+    const method = (init.method || "GET").toUpperCase();
+    return ["GET", "HEAD", "OPTIONS"].includes(method) || endpoint === "/api/files/refresh-cache";
+  };
+  const recoverApiTransportOnce = () => {
+    if (!transportRecoveryPromiseRef.current) {
+      transportRecoveryPromiseRef.current = (async () => {
+        if (!sessionRef.current.nativeSessionId) return false;
+        await invoke("reset_api_session", { sessionId: sessionRef.current.nativeSessionId });
+        const refreshedToken = await refreshTokenOnce();
+        if (!refreshedToken) return false;
+        remoteRecoveryCountRef.current += 1;
+        return true;
+      })().catch(() => false).finally(() => {
+        transportRecoveryPromiseRef.current = null;
+      });
+    }
+    return transportRecoveryPromiseRef.current;
   };
   const locationsLoaded = useRef(false);
   const locationRefreshInProgress = useRef(false);
@@ -1652,7 +1679,21 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // if that refresh attempt itself fails or there is nothing saved to
   // refresh with.
   const api = async (endpoint: string, init: RequestInit = {}) => {
-    const response = await rawApiRequest(endpoint, init, session.token, session.locationId);
+    let response: ApiResponse;
+    try {
+      response = await rawApiRequest(endpoint, init, session.token, session.locationId);
+    } catch (error) {
+      if (!isTransportError(error) || !isRemoteCurrent()) throw error;
+      notify("REMOTE connection interrupted. Reconnecting...");
+      const recovered = await recoverApiTransportOnce();
+      if (!recovered || !isRemoteCurrent()) {
+        throw new Error("REMOTE API connection could not be restored. Check that the server is reachable.");
+      }
+      if (!isSafeToRetry(endpoint, init)) {
+        throw new Error("REMOTE connection was interrupted; the operation result is not confirmed. Press Refresh to check the current state.");
+      }
+      response = await rawApiRequest(endpoint, init, sessionRef.current.token, session.locationId);
+    }
     if (response.status !== 401 || endpoint.startsWith("/auth/")) return response;
     if (!isRemoteCurrent()) return response;
     const refreshedToken = await refreshTokenOnce();
@@ -1669,7 +1710,18 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   };
 
   const apiForLocation = async (endpoint: string, locationId: string) => {
-    const response = await rawApiRequest(endpoint, { method: "GET" }, session.token, locationId);
+    let response: ApiResponse;
+    try {
+      response = await rawApiRequest(endpoint, { method: "GET" }, session.token, locationId);
+    } catch (error) {
+      if (!isTransportError(error) || !isRemoteCurrent()) throw error;
+      notify("REMOTE connection interrupted. Reconnecting...");
+      const recovered = await recoverApiTransportOnce();
+      if (!recovered || !isRemoteCurrent()) {
+        throw new Error("REMOTE API connection could not be restored. Check that the server is reachable.");
+      }
+      response = await rawApiRequest(endpoint, { method: "GET" }, sessionRef.current.token, locationId);
+    }
     if (response.status !== 401) return response;
     if (!isRemoteCurrent()) return response;
     const refreshedToken = await refreshTokenOnce();
@@ -1777,6 +1829,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   const refreshRemoteFiles = async () => {
     const refreshPath = path;
+    const recoveryCountBefore = remoteRecoveryCountRef.current;
     if (remoteSshEntryId) {
       await Promise.all([loadLocations(), loadFiles(refreshPath)]);
       return;
@@ -1790,7 +1843,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     if (!cacheResponse.ok) throw new Error(await readError(cacheResponse));
 
     await Promise.all([loadLocations(), loadFiles(refreshPath)]);
+    if (remoteRecoveryCountRef.current !== recoveryCountBefore) {
+      notify("REMOTE reconnected and refreshed.");
+    } else {
+      notify("REMOTE refreshed.");
+    }
   };
+
+  const refreshActivePane = () =>
+    splitMode && activePane === "local" ? refreshLocalFiles() : refreshRemoteFiles();
 
   // Where "up" from `path` should go for the LOCAL pane. Non-elevated
   // sessions can enter other Windows drive roots, but HOME remains the only
@@ -4614,7 +4675,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 key: "refresh",
                 label: "Refresh",
                 disabled: busy,
-                onClick: () => void run(refreshRemoteFiles),
+                onClick: () => void run(refreshActivePane),
               },
             ]}
           />
@@ -4725,7 +4786,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             Split
           </button>
         </span>
-        {!commandBarOverflow && <button onClick={() => void run(refreshRemoteFiles)} disabled={busy}>Refresh</button>}
+        {!commandBarOverflow && <button onClick={() => void run(refreshActivePane)} disabled={busy}>Refresh</button>}
          <ContextPicker label={contextLabel} value={contextValue} groups={contextGroups} onSelect={selectContext} disabled={busy} />
       </nav>
        <div className={appMode === "location" ? `desktop-workspace${splitMode ? " split-workspace" : ""}${locationPaneCollapsed ? ` pane-collapse-${locationPaneCollapsed}` : ""}` : "mode-workspace"}>

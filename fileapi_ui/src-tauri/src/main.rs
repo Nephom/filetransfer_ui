@@ -520,6 +520,25 @@ fn clear_api_session(session_id: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn reset_api_session(session_id: String) -> Result<(), String> {
+    let session = API_SESSIONS
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(|| "Unknown or cleared API session".to_string())?;
+    // Keep the cookie jar so authentication can be renewed, but discard any
+    // pooled socket that may have been closed by the server or a proxy.
+    session
+        .clients
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clear();
+    Ok(())
+}
+
 fn request_client(
     url: &str,
     session_id: Option<&str>,
@@ -3837,6 +3856,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             create_api_session,
             clear_api_session,
+            reset_api_session,
             api_request,
             tcp_check_reachable,
             ssh_check_transport_reachable,
