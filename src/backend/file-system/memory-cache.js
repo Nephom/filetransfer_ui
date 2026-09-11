@@ -7,6 +7,8 @@ const fs = require('node:fs').promises;
 const { performance } = require('node:perf_hooks');
 const { assertSafePath, assertSafeTree, containsPath, pathError } = require('./path-safety');
 
+const preciseMtime = async (target) => (await fs.lstat(target, { bigint: true })).mtimeNs.toString();
+
 class RedisFileSystemCache extends EventEmitter {
   constructor(storagePath = './storage', options = {}) {
     super();
@@ -190,7 +192,7 @@ class RedisFileSystemCache extends EventEmitter {
       contents.push(data);
     }
     const stats = await fs.lstat(absolute);
-    return { absolute, contents, mtime: stats.mtimeMs, stats };
+    return { absolute, contents, mtime: stats.mtimeMs, mtimeToken: await preciseMtime(absolute), stats };
   }
 
   updateDirectoryCache(dirPath, recursive = false) {
@@ -214,7 +216,7 @@ class RedisFileSystemCache extends EventEmitter {
       try {
         const generation = this.snapshotGeneration;
         const timestamp = performance.now();
-        const { absolute, contents, mtime, stats } = await this._scan(dirPath);
+        const { absolute, contents, mtime, mtimeToken, stats } = await this._scan(dirPath);
         for (const entry of contents) Object.freeze(entry);
         Object.freeze(contents);
         if (this.redisClient?.isReady) {
@@ -246,7 +248,7 @@ class RedisFileSystemCache extends EventEmitter {
         if (generation === this.snapshotGeneration) {
           this.snapshotMetadata.set(contents, { timestamp, generation });
           this.directoryCache.set(absolute, contents);
-          this.directoryMtimes.set(absolute, mtime);
+          this.directoryMtimes.set(absolute, mtimeToken);
           this.updateHotCache(absolute, contents);
         }
         return contents;
@@ -263,13 +265,14 @@ class RedisFileSystemCache extends EventEmitter {
         const generation = this.snapshotGeneration;
         const absolute = await this._checked(dirPath, { allowMissing: false });
         const stats = await fs.lstat(absolute);
+        const mtimeToken = await preciseMtime(absolute);
         if (!stats.isDirectory()) throw pathError('ENOTDIR', 'Cached listing target is not a directory');
         const hot = this.getFromHotCache(absolute);
         const contents = hot || this.directoryCache.get(absolute);
         const metadata = contents && this.snapshotMetadata.get(contents);
         if (!metadata || generation !== this.snapshotGeneration || metadata.generation !== generation
           || performance.now() - metadata.timestamp >= this.cacheTtlMs
-          || this.directoryMtimes.get(absolute) !== stats.mtimeMs) return null;
+          || this.directoryMtimes.get(absolute) !== mtimeToken) return null;
         this.metrics[hot ? 'hotCacheHits' : 'memoryCacheHits']++;
         this.updateHotCache(absolute, contents);
         return contents;
