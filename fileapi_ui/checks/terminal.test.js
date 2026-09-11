@@ -464,14 +464,20 @@ test("left-button selection-copy and OSC52 set remain intact; OSC52 query never 
   const host = h.hostRefsRef.current.get("a");
   h.setSelection("old");
   host.fire("mousedown");
-  h.setSelection("  new selection\n\ttext");
   host.fire("mouseup");
+  // The host capture listener runs before xterm's document mouseup handler.
+  // Update the fake selection after the host event to model xterm finishing
+  // its selection before the deferred clipboard read.
+  h.setSelection("  new selection\n\ttext");
+  await h.settle();
   assert.deepEqual(h.copies, ["  new selection\n\ttext"]);
   host.fire("mousedown");
   host.fire("mouseup");
+  await h.settle();
   host.fire("mousedown", { button: 2 });
   h.setSelection("not a left selection");
   host.fire("mouseup", { button: 2 });
+  await h.settle();
   assert.equal(h.copies.length, 1);
   const text = "remote selection \u4e2d\u6587";
   h.terminal.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);

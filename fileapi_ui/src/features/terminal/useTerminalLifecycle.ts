@@ -310,11 +310,18 @@ export function useTerminalLifecycle({
         };
         const onMouseUp = (event: MouseEvent) => {
           if (event.button !== 0) return;
-          const selection = terminal.getSelection();
-          if (selection && selection !== selectionAtMouseDown) {
-            void copyTerminalText(selection).catch(() => undefined);
-          }
+          const selectionBeforeMouseDown = selectionAtMouseDown;
           selectionAtMouseDown = "";
+          // xterm.js completes its selection on a document-level mouseup
+          // listener. Defer the clipboard read until this event has finished
+          // propagating so the final selection, rather than the previous one,
+          // is copied.
+          queueMicrotask(() => {
+            const selection = terminal.getSelection();
+            if (selection && selection !== selectionBeforeMouseDown) {
+              void copyTerminalText(selection).catch(() => undefined);
+            }
+          });
         };
         // Right-click reads the real Windows/OS clipboard through the
         // privileged clipboard-manager plugin and pastes it, instead of
