@@ -10,6 +10,7 @@ use reqwest::{cookie::Jar, multipart, Client};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::io::{Read, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
@@ -25,6 +26,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 static CANCELLED_TRANSFER_IDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static API_CLIENTS: OnceLock<Mutex<HashMap<bool, Client>>> = OnceLock::new();
 static DOWNLOAD_CLIENTS: OnceLock<Mutex<HashMap<bool, Client>>> = OnceLock::new();
+static UPLOAD_CLIENTS: OnceLock<Mutex<HashMap<bool, Client>>> = OnceLock::new();
 static SESSION_COOKIE_JARS: OnceLock<Mutex<HashMap<bool, Arc<Jar>>>> = OnceLock::new();
 static API_SESSIONS: OnceLock<Mutex<HashMap<String, Arc<ApiSession>>>> = OnceLock::new();
 static UPLOAD_ATTEMPTS: OnceLock<Mutex<HashMap<String, Arc<UploadCancellation>>>> = OnceLock::new();
@@ -197,11 +199,16 @@ struct UploadProgressEvent {
 
 struct UploadProgressReader<R> {
     inner: R,
+    file_name: String,
     cancellation: Arc<UploadCancellation>,
     completed: Arc<AtomicU64>,
     emit: Arc<dyn Fn(u64) + Send + Sync>,
     last_emit: Instant,
+    timeout: Duration,
+    deadline: Option<Pin<Box<tokio::time::Sleep>>>,
 }
+
+const UPLOAD_FILE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 impl<R: AsyncRead + Unpin> AsyncRead for UploadProgressReader<R> {
     fn poll_read(
@@ -214,6 +221,21 @@ impl<R: AsyncRead + Unpin> AsyncRead for UploadProgressReader<R> {
             return Poll::Ready(Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
                 "Transfer cancelled",
+            )));
+        }
+        if self.deadline.is_none() {
+            self.deadline = Some(Box::pin(tokio::time::sleep(self.timeout)));
+        }
+        if let Poll::Ready(()) = self
+            .deadline
+            .as_mut()
+            .expect("upload file deadline must be initialized")
+            .as_mut()
+            .poll(cx)
+        {
+            return Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("Upload timed out for '{}'", self.file_name),
             )));
         }
         let before = buffer.filled().len();
@@ -443,7 +465,7 @@ struct ApiSession {
     origin: String,
     ignore_tls_errors: bool,
     jar: Arc<Jar>,
-    clients: Mutex<HashMap<bool, Client>>,
+    clients: Mutex<HashMap<(bool, bool), Client>>,
 }
 
 impl ApiSession {
@@ -456,7 +478,13 @@ impl ApiSession {
         })
     }
 
-    fn client(&self, url: &str, ignore_tls_errors: bool, download: bool) -> Result<Client, String> {
+    fn client(
+        &self,
+        url: &str,
+        ignore_tls_errors: bool,
+        download: bool,
+        upload: bool,
+    ) -> Result<Client, String> {
         if http_origin(url)? != self.origin {
             return Err("API session origin mismatch".to_string());
         }
@@ -464,12 +492,19 @@ impl ApiSession {
             return Err("API session TLS policy mismatch".to_string());
         }
         let mut clients = self.clients.lock().map_err(|error| error.to_string())?;
-        if let Some(client) = clients.get(&download) {
+        if let Some(client) = clients.get(&(download, upload)) {
             return Ok(client.clone());
         }
         let origin = self.origin.clone();
-        let mut builder = Client::builder()
-            .timeout(Duration::from_secs(if download { 300 } else { 30 }))
+        let mut builder = Client::builder();
+        builder = builder.timeout(if upload {
+            Duration::from_secs(24 * 60 * 60)
+        } else if download {
+            Duration::from_secs(300)
+        } else {
+            Duration::from_secs(30)
+        });
+        let mut builder = builder
             .cookie_provider(self.jar.clone())
             .danger_accept_invalid_certs(self.ignore_tls_errors)
             .danger_accept_invalid_hostnames(self.ignore_tls_errors)
@@ -488,7 +523,7 @@ impl ApiSession {
             builder = builder.no_gzip();
         }
         let client = builder.build().map_err(describe_error)?;
-        clients.insert(download, client.clone());
+        clients.insert((download, upload), client.clone());
         Ok(client)
     }
 }
@@ -544,6 +579,7 @@ fn request_client(
     session_id: Option<&str>,
     ignore_tls_errors: bool,
     download: bool,
+    upload: bool,
 ) -> Result<Client, String> {
     if let Some(id) = session_id {
         let session = API_SESSIONS
@@ -553,11 +589,13 @@ fn request_client(
             .get(id)
             .cloned()
             .ok_or_else(|| "Unknown or cleared API session".to_string())?;
-        return session.client(url, ignore_tls_errors, download);
+        return session.client(url, ignore_tls_errors, download, upload);
     }
     // Omitted handles retain the generic REST client behavior. An invalid
     // supplied handle must never fall through to these shared cookie jars.
-    if download {
+    if upload {
+        upload_client(ignore_tls_errors)
+    } else if download {
         download_client(ignore_tls_errors)
     } else {
         api_client(ignore_tls_errors)
@@ -601,6 +639,31 @@ fn download_client(ignore_tls_errors: bool) -> Result<Client, String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(300))
         .no_gzip()
+        .cookie_provider(jar)
+        .danger_accept_invalid_certs(ignore_tls_errors)
+        .danger_accept_invalid_hostnames(ignore_tls_errors)
+        .build()
+        .map_err(describe_error)?;
+    clients
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(ignore_tls_errors, client.clone());
+    Ok(client)
+}
+
+fn upload_client(ignore_tls_errors: bool) -> Result<Client, String> {
+    let clients = UPLOAD_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = clients.lock() {
+        if let Some(client) = cache.get(&ignore_tls_errors) {
+            return Ok(client.clone());
+        }
+    }
+    let jar = session_cookie_jar(ignore_tls_errors)?;
+    let client = Client::builder()
+        // Individual multipart readers enforce the ten-minute per-file limit.
+        // The request itself may contain many files, so this is only a generous
+        // fallback for callers that do not provide the file-count-aware limit.
+        .timeout(Duration::from_secs(24 * 60 * 60))
         .cookie_provider(jar)
         .danger_accept_invalid_certs(ignore_tls_errors)
         .danger_accept_invalid_hostnames(ignore_tls_errors)
@@ -675,7 +738,8 @@ async fn api_request(
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
     let request = apply_headers(
-        request_client(&url, session_id.as_deref(), ignore_tls_errors, false)?.request(method, url),
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, false, false)?
+            .request(method, url),
         headers,
     );
     let request = if let Some(body) = body {
@@ -1839,10 +1903,13 @@ async fn api_upload_paths(
 ) -> Result<ApiResponse, String> {
     // transferId identifies this dispatch attempt, not a reusable queue row.
     let attempt = UploadAttempt::start(transfer_id.clone())?;
-    let client = request_client(&url, session_id.as_deref(), ignore_tls_errors, false)?;
+    let client = request_client(&url, session_id.as_deref(), ignore_tls_errors, false, true)?;
     await_upload(&attempt.cancellation, async {
         validate_upload_sources(&expected_sources)?;
         let (files, directories) = collect_upload_paths(&paths)?;
+        let request_timeout = UPLOAD_FILE_TIMEOUT
+            .saturating_mul(files.len().max(1) as u32)
+            .saturating_add(Duration::from_secs(30));
         let total_size = files
             .iter()
             .map(|(file_path, _)| std::fs::metadata(file_path).map(|metadata| metadata.len()))
@@ -1879,10 +1946,13 @@ async fn api_upload_paths(
                 .map_err(|error| error.to_string())?;
             let reader = UploadProgressReader {
                 inner: file,
+                file_name: file_path.display().to_string(),
                 cancellation: attempt.cancellation.clone(),
                 completed: completed.clone(),
                 emit: emit.clone(),
                 last_emit: Instant::now() - std::time::Duration::from_secs(1),
+                timeout: UPLOAD_FILE_TIMEOUT,
+                deadline: None,
             };
             let stream = tokio_util::io::ReaderStream::new(reader);
             let part =
@@ -1894,7 +1964,10 @@ async fn api_upload_paths(
         if attempt.cancellation.is_cancelled() {
             return Err("Upload transport cancelled; server outcome is unconfirmed".to_string());
         }
-        let request = apply_headers(client.post(url).multipart(form), headers);
+        let request = apply_headers(
+            client.post(url).timeout(request_timeout).multipart(form),
+            headers,
+        );
         let response = response_from(request.send().await.map_err(describe_error)?).await?;
         // Source reads are transport progress, not proof of server acceptance.
         emit(completed.load(Ordering::Relaxed));
@@ -1925,7 +1998,8 @@ async fn download_to_disk(
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
     let request = apply_headers(
-        request_client(&url, session_id.as_deref(), ignore_tls_errors, true)?.request(method, url),
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, true, false)?
+            .request(method, url),
         headers,
     )
     .header(reqwest::header::ACCEPT_ENCODING, "identity");
@@ -2047,7 +2121,8 @@ async fn download_to_disk_at(
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
     let request = apply_headers(
-        request_client(&url, session_id.as_deref(), ignore_tls_errors, true)?.request(method, url),
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, true, false)?
+            .request(method, url),
         headers,
     )
     .header(reqwest::header::ACCEPT_ENCODING, "identity");
@@ -2117,7 +2192,8 @@ async fn download_to_drag_staging(
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
     let request = apply_headers(
-        request_client(&url, session_id.as_deref(), ignore_tls_errors, false)?.request(method, url),
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, false, false)?
+            .request(method, url),
         headers,
     );
     let request = if let Some(body) = body {
@@ -2184,7 +2260,8 @@ async fn download_to_drag_staging_at(
         .parse()
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
     let request = apply_headers(
-        request_client(&url, session_id.as_deref(), ignore_tls_errors, false)?.request(method, url),
+        request_client(&url, session_id.as_deref(), ignore_tls_errors, false, false)?
+            .request(method, url),
         headers,
     );
     let request = if let Some(body) = body {
@@ -3161,17 +3238,17 @@ mod native_session_tests {
             "http://example.com:8443/a",
         ] {
             assert_eq!(
-                session.client(url, true, false).unwrap_err(),
+                session.client(url, true, false, false).unwrap_err(),
                 "API session origin mismatch"
             );
         }
         assert_eq!(
             session
-                .client("https://example.com:8443/a", false, true)
+                .client("https://example.com:8443/a", false, true, false)
                 .unwrap_err(),
             "API session TLS policy mismatch"
         );
-        assert!(session.client("file:///tmp/a", true, false).is_err());
+        assert!(session.client("file:///tmp/a", true, false, false).is_err());
         assert!(session.clients.lock().unwrap().is_empty());
     }
 
@@ -3188,7 +3265,9 @@ mod native_session_tests {
         assert!(first.jar.cookies(&cross_port).is_some());
         assert!(second.jar.cookies(&cross_port).is_none());
         assert!(later_login.jar.cookies(&url).is_none());
-        assert!(first.client(cross_port.as_str(), false, false).is_err());
+        assert!(first
+            .client(cross_port.as_str(), false, false, false)
+            .is_err());
     }
 
     #[test]
@@ -3207,7 +3286,7 @@ mod native_session_tests {
         clear_api_session(id.clone()).unwrap();
         clear_api_session(id.clone()).unwrap();
         assert_eq!(
-            request_client("https://example.com", Some(&id), false, false).unwrap_err(),
+            request_client("https://example.com", Some(&id), false, false, false).unwrap_err(),
             "Unknown or cleared API session"
         );
         let new_id = create_api_session("https://example.com".into(), Some(false)).unwrap();
@@ -3232,16 +3311,16 @@ mod native_session_tests {
     async fn clients_are_cached_per_session_and_share_only_its_jar() {
         let session = ApiSession::new("https://example.com", false).unwrap();
         session
-            .client("https://example.com/login", false, false)
+            .client("https://example.com/login", false, false, false)
             .unwrap();
         session
-            .client("https://example.com/upload", false, false)
-            .unwrap();
-        assert_eq!(session.clients.lock().unwrap().len(), 1);
-        session
-            .client("https://example.com/download", false, true)
+            .client("https://example.com/upload", false, false, true)
             .unwrap();
         assert_eq!(session.clients.lock().unwrap().len(), 2);
+        session
+            .client("https://example.com/download", false, true, false)
+            .unwrap();
+        assert_eq!(session.clients.lock().unwrap().len(), 3);
         // The generic REST jar is separate, and clearing a native handle must
         // not remove it or an unrelated native session.
         let generic = session_cookie_jar(false).unwrap();
@@ -3363,10 +3442,13 @@ mod native_session_tests {
             let captured = events.clone();
             let mut reader = UploadProgressReader {
                 inner: bytes,
+                file_name: "test-file".to_string(),
                 cancellation: Arc::new(UploadCancellation::new()),
                 completed: count.clone(),
                 emit: Arc::new(move |count| captured.lock().unwrap().push(count)),
                 last_emit: Instant::now() - Duration::from_secs(1),
+                timeout: UPLOAD_FILE_TIMEOUT,
+                deadline: None,
             };
             reader.read_to_end(&mut Vec::new()).await.unwrap();
         }
@@ -3382,8 +3464,55 @@ mod native_session_tests {
         assert_eq!(zero["bytesTotal"], 0);
     }
 
-    #[test]
-    fn cancellation_wakes_a_pending_source_read_without_counting_bytes() {
+    #[tokio::test]
+    async fn upload_file_timeout_starts_when_that_file_is_read() {
+        let cancellation = Arc::new(UploadCancellation::new());
+        let mut reader = UploadProgressReader {
+            inner: b"file".as_slice(),
+            file_name: "delayed-file".to_string(),
+            cancellation,
+            completed: Arc::new(AtomicU64::new(0)),
+            emit: Arc::new(|_| {}),
+            last_emit: Instant::now(),
+            timeout: Duration::from_millis(10),
+            deadline: None,
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(reader.read_to_end(&mut Vec::new()).await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn upload_file_timeout_is_independent_for_each_reader() {
+        let make_reader = || {
+            let (reader, writer) = tokio::io::duplex(16);
+            (
+                UploadProgressReader {
+                    inner: reader,
+                    file_name: "stalled-file".to_string(),
+                    cancellation: Arc::new(UploadCancellation::new()),
+                    completed: Arc::new(AtomicU64::new(0)),
+                    emit: Arc::new(|_| {}),
+                    last_emit: Instant::now(),
+                    timeout: Duration::from_millis(10),
+                    deadline: None,
+                },
+                writer,
+            )
+        };
+        let (mut first, _first_writer) = make_reader();
+        assert!(matches!(
+            first.read(&mut [0; 1]).await,
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut
+        ));
+        let (mut second, _second_writer) = make_reader();
+        assert!(matches!(
+            second.read(&mut [0; 1]).await,
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_wakes_a_pending_source_read_without_counting_bytes() {
         struct WakeCount(AtomicU64);
         impl futures_util::task::ArcWake for WakeCount {
             fn wake_by_ref(arc_self: &Arc<Self>) {
@@ -3395,10 +3524,13 @@ mod native_session_tests {
         let count = Arc::new(AtomicU64::new(0));
         let mut reader = UploadProgressReader {
             inner: input,
+            file_name: "test-file".to_string(),
             cancellation: cancellation.clone(),
             completed: count.clone(),
             emit: Arc::new(|_| panic!("No bytes were read")),
             last_emit: Instant::now(),
+            timeout: UPLOAD_FILE_TIMEOUT,
+            deadline: None,
         };
         let wakes = Arc::new(WakeCount(AtomicU64::new(0)));
         let waker = futures_util::task::waker(wakes.clone());
@@ -3423,10 +3555,13 @@ mod native_session_tests {
         let cancellation = Arc::new(UploadCancellation::new());
         let mut reader = UploadProgressReader {
             inner: b"sixbytes".as_slice(),
+            file_name: "test-file".to_string(),
             cancellation: cancellation.clone(),
             completed: completed.clone(),
             emit: Arc::new(|_| {}),
             last_emit: Instant::now(),
+            timeout: UPLOAD_FILE_TIMEOUT,
+            deadline: None,
         };
         reader.read_exact(&mut [0; 2]).await.unwrap();
         let response = reqwest::Response::from(
@@ -3671,10 +3806,13 @@ mod native_session_tests {
                 let completed = Arc::new(AtomicU64::new(0));
                 let reader = UploadProgressReader {
                     inner: contents,
+                    file_name: filename.to_string(),
                     cancellation: Arc::new(UploadCancellation::new()),
                     completed: completed.clone(),
                     emit: Arc::new(|_| {}),
                     last_emit: Instant::now(),
+                    timeout: UPLOAD_FILE_TIMEOUT,
+                    deadline: None,
                 };
                 let part = multipart::Part::stream_with_length(
                     reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(reader)),
@@ -3692,7 +3830,7 @@ mod native_session_tests {
                 // session client, progress reader, multipart and response core
                 // against the actual backend parser without launching Tauri.
                 let request = apply_headers(
-                    request_client(&url, Some(&admin), false, false)
+                    request_client(&url, Some(&admin), false, false, true)
                         .unwrap()
                         .post(url)
                         .multipart(form),

@@ -2253,8 +2253,8 @@ Remove-Item -LiteralPath {staging} -Recurse -Force",
 mod tests {
     use super::{
         api_url, decode_agent_bytes, decode_exec_output, is_file_read_params_rejected_by_schema,
-        normalized_url, powershell_command, valid_relay_request, AgentExecStatusRaw,
-        AgentFileReadResponse, BASE64,
+        legacy_agent_download_limit_error, normalized_url, powershell_command, valid_relay_request,
+        AgentExecStatusRaw, AgentFileReadResponse, AGENT_SINGLE_READ_LIMIT_BYTES, BASE64,
     };
     use base64::Engine as _;
 
