@@ -211,8 +211,30 @@ impl client::Handler for ClientHandler {
         match known_hosts::verify_and_learn(&self.host, self.port, server_public_key) {
             Ok(known_hosts::HostKeyDecision::TrustedExisting)
             | Ok(known_hosts::HostKeyDecision::TrustedNew) => Ok(true),
-            Ok(known_hosts::HostKeyDecision::Mismatch) => Ok(false),
-            Err(_) => Ok(false),
+            Ok(known_hosts::HostKeyDecision::Replaced) => {
+                let label = format!("SSH@{}:{}", self.host, self.port);
+                crate::oplog::log(
+                    "WARN",
+                    "ssh_host_key",
+                    "replaced",
+                    &label,
+                    "terminal",
+                    "The stored SSH server key changed and was replaced automatically.",
+                );
+                Ok(true)
+            }
+            Err(error) => {
+                let label = format!("SSH@{}:{}", self.host, self.port);
+                crate::oplog::log(
+                    "ERROR",
+                    "ssh_host_key",
+                    "verification_failed",
+                    &label,
+                    "terminal",
+                    &error,
+                );
+                Ok(false)
+            }
         }
     }
 }
