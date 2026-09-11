@@ -755,7 +755,7 @@ export default function FileBrowser({ token, user, onLogout }) {
         });
         return new Blob(chunks);
     };
-    const download = (items = selectedItems) => {
+    const download = (items = selectedItems, requestedArchiveFormat = archiveFormat) => {
         if (!items.length) return;
         const isArchive = items.length > 1 || items[0].isDirectory;
         const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -763,13 +763,13 @@ export default function FileBrowser({ token, user, onLogout }) {
         const totalBytes = !isArchive ? Number(items[0].size) || null : null;
         enqueueTransfer({ id, label, status: 'queued', detail: 'Waiting to start', kind: 'download', finishedAt: null, progress: { completedBytes: 0, totalBytes, percentage: totalBytes ? 0 : null, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: 1, updatedAt: Date.now() } }, async (queueId, signal) => {
             const response = isArchive
-                ? await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath, format: archiveFormat }), signal })
+                ? await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath, format: requestedArchiveFormat }), signal })
                 : await fetch(`/api/files/download/${encodeURIComponent(items[0].path)}`, { headers: authHeaders, signal });
             if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || (isArchive ? 'Archive download failed.' : 'Download failed.'));
             const disposition = response.headers.get('Content-Disposition') || '';
             const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
             const blob = await streamResponse(queueId, response, Number(response.headers.get('Content-Length')) || totalBytes);
-            downloadBlob(blob, isArchive ? (match ? decodeURIComponent(match[1]) : `archive.${archiveFormat}`) : items[0].name);
+            downloadBlob(blob, isArchive ? (match ? decodeURIComponent(match[1]) : `archive.${requestedArchiveFormat}`) : items[0].name);
             return `Downloaded ${label}.`;
         });
     };
@@ -1246,7 +1246,7 @@ export default function FileBrowser({ token, user, onLogout }) {
                     if (downloadModeDraft === 'queue') { setModal(null); void enqueueQueueDownload(selectedItems); return; }
                     setArchiveFormat(downloadModeDraft);
                     setModal(null);
-                    void download(selectedItems);
+                    void download(selectedItems, downloadModeDraft);
                 }}>Start download</button>
                 <button type="button" onClick={() => setModal(null)}>Cancel</button>
             </div>

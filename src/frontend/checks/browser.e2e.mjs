@@ -83,6 +83,9 @@ const server = http.createServer(async (req, res) => {
             if (delayRefresh) await new Promise(resolve => setTimeout(resolve, 700));
             return json({ success: true });
         }
+        if (url.pathname === '/api/archive') {
+            return send(jsonBody?.format === 'tar.gz' ? Buffer.from([0x1f, 0x8b, 0x08, 0x00]) : Buffer.from([0x50, 0x4b, 0x03, 0x04]), jsonBody?.format === 'tar.gz' ? 'application/gzip' : 'application/zip');
+        }
         if (url.pathname === '/api/files/delete') {
             if (deletePartial && jsonBody.currentPath === 'b') return json({ deletedCount: 0, error: 'fixture delete failure' }, 500);
             return json({ deletedCount: jsonBody.items.length });
@@ -201,6 +204,24 @@ try {
     assert.ok(requests.slice(browserStart).filter(request => request.path.startsWith('/api/')).every(request => !request.headers.authorization), 'cookie requests omit Bearer null');
     report.checks.push('production cold load, baseline comparison, cookie-only auth, unchanged table styling');
 
+    await page.locator('.file-row').nth(0).click();
+    await page.locator('.file-row').nth(1).click({ modifiers: ['Control'] });
+    await page.getByRole('button', { name: 'Download', exact: true }).click();
+    await page.locator('input[name="downloadMode"]').nth(1).check();
+    await page.getByRole('button', { name: 'Start download', exact: true }).click();
+    await waitFor(() => requests.filter(request => request.path === '/api/archive').length >= 1, 'ZIP archive request was not sent');
+    assert.equal(requests.findLast(request => request.path === '/api/archive').body.format, 'zip');
+
+    await page.getByRole('button', { name: 'Download', exact: true }).click();
+    await page.locator('input[name="downloadMode"]').nth(0).check();
+    await page.getByRole('button', { name: 'Start download', exact: true }).click();
+    await waitFor(() => requests.filter(request => request.path === '/api/archive').length >= 2, 'tar.gz archive request was not sent');
+    assert.equal(requests.findLast(request => request.path === '/api/archive').body.format, 'tar.gz');
+    report.checks.push('archive format selection sends the confirmed ZIP and tar.gz formats');
+
+    await page.goto(`${origin}/`);
+    await page.locator('.file-row').first().waitFor();
+    await frames();
     await page.locator('.file-area').evaluate(area => { area.scrollTop = 50000; });
     await frames();
     const tableGeometry = await page.locator('.file-table').evaluate(table => {

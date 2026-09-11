@@ -616,6 +616,9 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     const archive = await send('/api/archive', { username: 'fixture-user', method: 'POST', body });
     status(archive, 200);
     assert.equal(archive.bytes.subarray(0, 4).toString('hex'), '504b0304');
+    const tarArchive = await send('/api/archive', { username: 'fixture-user', method: 'POST', body: { ...body, format: 'tar.gz' } });
+    status(tarArchive, 200);
+    assert.equal(tarArchive.bytes.subarray(0, 2).toString('hex'), '1f8b');
     accounts.get('fixture-user').locationPermissions.default = ['list'];
     for (const endpoint of ['/api/archive', '/api/files/flatten']) status(await send(endpoint, { username: 'fixture-user', method: 'POST', body }), 403);
     status(await send('/api/files/download/data.txt', { username: 'fixture-user' }), 403);
