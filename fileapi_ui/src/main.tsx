@@ -4572,7 +4572,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       <nav ref={setCommandbarElement} className="commandbar" aria-label={appMode === "rest" ? "REST API actions" : "File actions"}>
         {splitMode && (
           <span className="active-pane-indicator" title="New folder/Rename/Delete/View/Select all act on this pane">
-            Acting on: <strong>{activePane === "local" ? "LOCAL" : "REMOTE"}</strong>
+            <strong>{activePane === "local" ? "LOCAL" : "REMOTE"}</strong>
           </span>
         )}
         <button

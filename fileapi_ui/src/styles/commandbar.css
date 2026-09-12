@@ -9,24 +9,14 @@
 }
 
 .commandbar > button {
-  flex: 0 1 10ch;
-  min-width: 4.5ch;
-  max-width: 10ch;
-  min-height: var(--ui-button-height);
-  overflow: hidden;
-  padding-inline: clamp(6px, .75vw, 11px);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Auto desktop must expose the full action width to the overflow observer.
-   Otherwise flex-shrink and ellipsis hide the width that the observer needs
-   to decide when actions should move into More actions. */
-.explorer.ui-layout-desktop .commandbar > button {
   flex: 0 0 auto;
+  min-width: 0;
   max-width: none;
+  min-height: var(--ui-button-height);
   overflow: visible;
+  padding-inline: clamp(6px, .75vw, 11px);
   text-overflow: clip;
+  white-space: nowrap;
 }
 
 .explorer.ui-layout-desktop .commandbar > button.primary {
@@ -111,13 +101,12 @@
 }
 
 @media (max-width: 900px) {
-  .commandbar > button { flex-basis: 8ch; max-width: 8ch; }
   .commandbar .context-picker { min-width: 120px; max-width: 32vw; }
 }
 
 @media (max-width: 640px) {
   .commandbar { padding-inline: 6px; }
-  .commandbar > button { flex-basis: 6ch; max-width: 6ch; padding-inline: 5px; }
+  .commandbar > button { padding-inline: 5px; }
   .commandbar > button.primary { max-width: 8ch; }
   .commandbar .active-pane-indicator { max-width: 10ch; }
   .commandbar .context-picker { min-width: 110px; max-width: 36vw; }
