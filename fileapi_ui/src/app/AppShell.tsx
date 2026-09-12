@@ -7,5 +7,13 @@ type AppShellProps = {
 };
 
 export function AppShell({ className, style, children }: AppShellProps) {
-  return <main className={className} style={style}>{children}</main>;
+  return (
+    <main
+      className={className}
+      style={style}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      {children}
+    </main>
+  );
 }

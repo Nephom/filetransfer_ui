@@ -1239,6 +1239,18 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const dragContextRef = useRef("");
   const noticeTimer = useRef<number | undefined>();
 
+  const contextMenuPoint = (event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    const app = event.currentTarget.closest<HTMLElement>(".explorer");
+    if (!app) return null;
+    const bounds = app.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) return null;
+    return {
+      x: Math.max(bounds.left, Math.min(event.clientX, bounds.right)),
+      y: Math.max(bounds.top, Math.min(event.clientY, bounds.bottom)),
+    };
+  };
+
   useEffect(() => {
     if (!contextMenu) {
       setContextMenuStyle({ visibility: "hidden" });
@@ -1251,14 +1263,16 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
       const menuRect = menu.getBoundingClientRect();
       const edge = 8;
-      const spaceBelow = Math.max(1, window.innerHeight - contextMenu.y - edge);
-      const spaceAbove = Math.max(1, contextMenu.y - edge);
+      const app = menu.closest<HTMLElement>(".explorer");
+      const bounds = app?.getBoundingClientRect() || { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+      const spaceBelow = Math.max(1, bounds.bottom - contextMenu.y - edge);
+      const spaceAbove = Math.max(1, contextMenu.y - bounds.top - edge);
       const opensBelow = menuRect.height <= spaceBelow || spaceBelow >= spaceAbove;
       const availableHeight = opensBelow ? spaceBelow : spaceAbove;
       const top = opensBelow
-        ? Math.min(contextMenu.y, window.innerHeight - edge - availableHeight)
-        : Math.max(edge, contextMenu.y - Math.min(menuRect.height, availableHeight));
-      const left = Math.max(edge, Math.min(contextMenu.x, window.innerWidth - menuRect.width - edge));
+        ? Math.min(contextMenu.y, bounds.bottom - edge - availableHeight)
+        : Math.max(bounds.top + edge, contextMenu.y - Math.min(menuRect.height, availableHeight));
+      const left = Math.max(bounds.left + edge, Math.min(contextMenu.x, bounds.right - menuRect.width - edge));
 
       setContextMenuStyle({
         left,
@@ -4342,11 +4356,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   else openLocalViewer(file.path);
                 }}
                 onContextMenu={(event) => {
-                  event.preventDefault();
+                  const point = contextMenuPoint(event);
+                  if (!point) return;
                   setActivePane("local");
                   if (!localSelected.includes(file.path)) setLocalSelected([file.path]);
                   setContextMenuStyle({ visibility: "hidden" });
-                  setContextMenu({ x: event.clientX, y: event.clientY });
+                  setContextMenu(point);
                 }}
               >
                 <span className={`tile-icon ${file.isDirectory ? "glyph-folder" : "glyph-file"}`} aria-hidden="true" />
@@ -4417,11 +4432,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 else openLocalViewer(file.path);
               }}
               onContextMenu={(event) => {
-                event.preventDefault();
+                const point = contextMenuPoint(event);
+                if (!point) return;
                 setActivePane("local");
                 if (!localSelected.includes(file.path)) setLocalSelected([file.path]);
                 setContextMenuStyle({ visibility: "hidden" });
-                setContextMenu({ x: event.clientX, y: event.clientY });
+                setContextMenu(point);
               }}
             >
               <span className={file.isDirectory ? "glyph-folder" : "glyph-file"} aria-hidden="true" />
@@ -4445,18 +4461,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     commandbarRef.current = element;
     setCommandbarHost(element);
   }, []);
-  const [commandBarOverflow, setCommandBarOverflow] = useState(mobileLayout);
-  const commandBarOverflowRef = useRef(mobileLayout);
+  const [commandBarOverflow, setCommandBarOverflow] = useState(false);
+  const commandBarOverflowRef = useRef(false);
   const commandBarRequiredWidthRef = useRef<number | null>(null);
   useEffect(() => {
     const commandbar = commandbarRef.current;
     if (!commandbar) return undefined;
     const measure = () => {
-      if (mobileLayout) {
-        commandBarOverflowRef.current = true;
-        setCommandBarOverflow(true);
-        return;
-      }
       const actionButtons = Array.from(commandbar.querySelectorAll<HTMLButtonElement>(":scope > button"));
       if (commandBarOverflowRef.current && commandBarRequiredWidthRef.current !== null) {
         // This width was measured while every action was rendered, so it is
@@ -4478,9 +4489,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         + actionButtons.reduce((width, button) => width + button.scrollWidth, 0)
         + dividerWidth
         + (commandbar.children.length - 1) * gap;
-      const overflow = requiredWidth > commandbar.clientWidth + 1
-        || commandbar.scrollWidth > commandbar.clientWidth + 1
-        || actionButtons.some((button) => button.scrollWidth > button.clientWidth + 1);
+      // The intrinsic-width sum is the stable overflow signal. The flex
+      // container's scrollWidth and each button's clientWidth can describe
+      // intermediate flex layout states, which made a visually available
+      // toolbar collapse into More actions on first render.
+      const overflow = requiredWidth > commandbar.clientWidth + 1;
       commandBarOverflowRef.current = overflow;
       commandBarRequiredWidthRef.current = overflow ? requiredWidth : null;
       setCommandBarOverflow(overflow);
@@ -5079,11 +5092,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                         : download()
                     }
                     onContextMenu={(event) => {
-                      event.preventDefault();
+                      const point = contextMenuPoint(event);
+                      if (!point) return;
                       if (!selected.includes(file.path))
                         setSelected([file.path]);
                       setContextMenuStyle({ visibility: "hidden" });
-                      setContextMenu({ x: event.clientX, y: event.clientY });
+                      setContextMenu(point);
                     }}
                   >
                     <span className="tile-icon">
@@ -5219,11 +5233,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                           : download()
                       }
                       onContextMenu={(event) => {
-                        event.preventDefault();
+                        const point = contextMenuPoint(event);
+                        if (!point) return;
                         if (!selected.includes(file.path))
                           setSelected([file.path]);
                         setContextMenuStyle({ visibility: "hidden" });
-                        setContextMenu({ x: event.clientX, y: event.clientY });
+                        setContextMenu(point);
                       }}
                     >
                       <td>

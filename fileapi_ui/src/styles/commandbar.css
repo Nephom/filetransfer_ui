@@ -1,5 +1,8 @@
 /* Adaptive command toolbar: keep primary actions visible without a first-paint scrollbar. */
 .commandbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
   gap: clamp(2px, .35vw, 6px);
   min-width: 0;
   overflow: hidden;
@@ -38,9 +41,12 @@
 .commandbar > .divider { flex: 0 0 1px; margin-inline: clamp(2px, .25vw, 5px); }
 
 .commandbar .active-pane-indicator {
+  order: 3;
   flex: 0 1 auto;
   min-width: 0;
   max-width: 15ch;
+  margin-right: 0;
+  margin-left: var(--space-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -62,6 +68,7 @@
 }
 
 .commandbar .context-picker {
+  order: 2;
   flex: 1 1 clamp(170px, 18vw, 270px);
   min-width: clamp(110px, 14vw, 140px);
   max-width: clamp(220px, 24vw, 340px);
