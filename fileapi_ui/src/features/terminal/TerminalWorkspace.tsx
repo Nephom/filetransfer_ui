@@ -9,6 +9,7 @@ type TerminalWorkspaceGroup = TerminalWorkspaceSession;
 type Props = {
   open: boolean;
   height: number;
+  titlebarHeight: number;
   maximized: boolean;
   quickListOpen: boolean;
   tabs: TerminalTab[];
@@ -48,6 +49,7 @@ type Props = {
 export function TerminalWorkspace({
   open,
   height,
+  titlebarHeight,
   maximized,
   quickListOpen,
   tabs,
@@ -87,12 +89,13 @@ export function TerminalWorkspace({
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
-  return <>
+  return <div className="terminal-layer">
     {!open && <button className="terminal-restore" onClick={onRestore} aria-label="Restore terminal">
       Terminal <ChevronUpIcon size={12} />
     </button>}
-    <section className={`terminal-dock${maximized ? " terminal-maximized" : ""}${open ? "" : " terminal-collapsed"}`} style={{ height: open ? `${height}px` : "0px" }} aria-label="Terminal panel" aria-hidden={!open}>
-    <div className="terminal-resize-handle" onPointerDown={onResizeStart} role="separator" aria-label="Resize terminal" />
+    {open && maximized && <div className="terminal-resize-handle terminal-maximized-resize-handle" style={{ top: `${titlebarHeight}px` }} onPointerDown={onResizeStart} role="separator" aria-label="Resize terminal" />}
+    <section className={`terminal-dock${maximized ? " terminal-maximized" : ""}${open ? "" : " terminal-collapsed"}`} style={{ top: maximized ? `${titlebarHeight}px` : undefined, height: !open ? "0px" : maximized ? undefined : `${height}px` }} aria-label="Terminal panel" aria-hidden={!open}>
+    {!maximized && <div className="terminal-resize-handle" onPointerDown={onResizeStart} role="separator" aria-label="Resize terminal" />}
     <header className="terminal-header">
       <div className="terminal-tabs">
         <button className={quickListOpen ? "active" : ""} aria-pressed={quickListOpen} onClick={onToggleQuickList}>
@@ -197,5 +200,5 @@ export function TerminalWorkspace({
       </div>
     </div>
     </section>
-  </>;
+  </div>;
 }

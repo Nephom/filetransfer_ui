@@ -44,7 +44,7 @@ import type { SshProfile } from "./features/ssh/ssh-contracts";
 import type { SshTerminalTab } from "./features/terminal/terminal-contracts";
 import { appendSshTabOutput, makeSshTabId } from "./features/terminal/terminal-utils";
 import { useSshTerminal } from "./features/terminal/useSshTerminal";
-import { useSshTerminalState } from "./features/terminal/useSshTerminalState";
+import { terminalHeightBounds, terminalTitlebarHeight, useSshTerminalState } from "./features/terminal/useSshTerminalState";
 import { useSshTerminalActions } from "./features/terminal/useSshTerminalActions";
 import { formatSize } from "./format-utils";
 import { useDesktopSettings } from "./features/settings/useDesktopSettings";
@@ -1537,8 +1537,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   }, [splitMode]);
 
   useEffect(() => {
-    localStorage.setItem("fileapi-terminal-height", String(terminalHeight));
-  }, [terminalHeight]);
+    if (!terminalMaximized) localStorage.setItem("fileapi-terminal-height", String(terminalHeight));
+  }, [terminalHeight, terminalMaximized]);
 
   useEffect(() => {
     localStorage.setItem("fileapi-local-pane-width", String(localPaneWidth));
@@ -1583,9 +1583,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   }, []);
 
   useEffect(() => {
-    const maxHeight = Math.max(160, viewport.height - 180);
-    setTerminalHeight((current) => Math.min(current, maxHeight));
-  }, [viewport.height]);
+    const { min: minimumHeight, max: availableHeight } = terminalHeightBounds(viewport.height);
+    setTerminalHeight((current) => terminalMaximized
+      ? availableHeight
+      : Math.min(availableHeight, Math.max(minimumHeight, current)));
+  }, [viewport.height, terminalMaximized]);
 
   // T-206/T-207: localPaneWidth (Split mode's LOCAL pane) and
   // folderPaneWidth (non-split mode's REMOTE folder tree) were previously
@@ -1613,6 +1615,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   useSshTerminal({
     enabled: terminalOpen,
+    terminalLayoutKey: `${sshQuickListOpen}:${terminalMaximized}`,
     activeTabId: activeSshTabId,
     activeSessionId: sshTabs.find((tab) => tab.id === activeSshTabId)?.sessionId || "",
     tabIds: sshTabs.map((tab) => tab.id),
@@ -5643,6 +5646,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       <TerminalWorkspace
         open={terminalOpen}
         height={terminalHeight}
+        titlebarHeight={terminalTitlebarHeight()}
         maximized={terminalMaximized}
         quickListOpen={sshQuickListOpen}
         tabs={sshTabs}
@@ -5675,8 +5679,16 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         onOpenWorkspaceManager={() => { void openSessionsModal(); }}
         onOpenQueue={() => setQueueOpen(true)}
         onToggleMaximized={toggleTerminalMaximized}
-        onClose={() => setTerminalOpen(false)}
-        onRestore={() => setTerminalOpen(true)}
+        onClose={() => {
+          if (terminalMaximized) setTerminalHeight(previousTerminalHeightRef.current);
+          setTerminalMaximized(false);
+          setTerminalOpen(false);
+        }}
+        onRestore={() => {
+          setTerminalHeight(previousTerminalHeightRef.current);
+          setTerminalMaximized(false);
+          setTerminalOpen(true);
+        }}
       />
       {archiveFormatOpen && (
         <ArchiveFormatDialog

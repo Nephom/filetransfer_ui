@@ -1,10 +1,61 @@
 /* Explorer layout, part 5: the SSH terminal dock, tabs, quick list, and
  * profile selector. Split out of the former monolithic explorer-parity.css
  * (T-202 follow-up). See styles/layout/README.md. */
-.terminal-dock { position: relative; order: 10; flex: 0 0 auto; min-height: var(--terminal-min-height-mobile); display: flex; flex-direction: column; background: var(--color-bg); border-top: 1px solid var(--color-border); box-shadow: 0 -10px 25px rgba(0, 0, 0, .2); }
+.terminal-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  min-width: 0;
+  min-height: 0;
+  pointer-events: none;
+}
+.terminal-layer > .terminal-restore,
+.terminal-layer > .terminal-dock,
+.terminal-layer > .terminal-maximized-resize-handle { pointer-events: auto; }
+.terminal-dock { position: relative; flex: 0 0 auto; min-height: var(--terminal-min-height-mobile); display: flex; flex-direction: column; background: var(--color-bg); border-top: 1px solid var(--color-border); box-shadow: 0 -10px 25px rgba(0, 0, 0, .2); }
 .terminal-dock { z-index: 10; }
-.terminal-dock.terminal-collapsed { min-height: 0; border-top: 0; box-shadow: none; overflow: hidden; pointer-events: none; visibility: hidden; }
-.terminal-resize-handle { position: absolute; top: -4px; right: 0; left: 0; z-index: 2; height: var(--space-2); cursor: row-resize; }
+.terminal-dock.terminal-maximized {
+  position: absolute;
+  top: clamp(44px, calc(30px + 4vmin), 56px);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 100;
+  width: auto;
+  height: auto !important;
+  min-height: 0;
+  margin: 0;
+}
+.terminal-dock.terminal-collapsed {
+  position: relative;
+  inset: auto;
+  z-index: 10;
+  min-height: 0;
+  height: 0 !important;
+  border-top: 0;
+  box-shadow: none;
+  overflow: hidden;
+  pointer-events: none;
+  visibility: hidden;
+}
+.terminal-resize-handle { position: absolute; top: 0; right: 0; left: 0; z-index: 20; height: var(--space-2); border-radius: var(--space-1); background: color-mix(in srgb, var(--color-border) 70%, transparent); cursor: row-resize; opacity: .9; }
+.terminal-layer > .terminal-maximized-resize-handle {
+  position: fixed;
+  top: clamp(44px, calc(30px + 4vmin), 56px);
+  right: 0;
+  left: 0;
+  z-index: 120;
+  height: var(--space-2);
+  background: var(--color-primary);
+  box-shadow: 0 0 0 1px var(--color-primary), 0 0 12px color-mix(in srgb, var(--color-primary) 65%, transparent);
+  opacity: 1;
+  pointer-events: auto;
+  touch-action: none;
+}
 .terminal-resize-handle:hover { background: var(--color-primary); }
 .terminal-header { display: flex; align-items: center; min-height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-3); border-bottom: 1px solid var(--color-border); }
 .terminal-tabs, .terminal-actions { display: flex; align-items: center; gap: var(--space-2); }
@@ -30,7 +81,7 @@
 .ssh-tab-status.disconnected { background: var(--color-danger); box-shadow: 0 0 6px rgba(239, 98, 98, .65); }
 .ssh-tab .ssh-tab-close { min-width: var(--space-5); padding: var(--space-1) var(--space-2); border: 0; color: var(--color-text-muted); }
 .ssh-tab .ssh-tab-close:hover { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel)); }
-.terminal-content { display: flex; flex: 1; min-height: 0; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-3) var(--space-3); }
+.terminal-content { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-3) var(--space-3); }
 /* Issue #239: each SSH tab has its own permanently-mounted .xterm-host
  * (see TerminalWorkspace.tsx/useTerminalLifecycle) stacked on top of one
  * another inside this relatively-positioned frame -- switching tabs only
@@ -41,13 +92,13 @@
  * it becomes active again; `visibility: hidden` keeps its layout box (and
  * therefore its measured size) identical to the visible one the whole
  * time it's hidden. */
-.xterm-host-stack { position: relative; flex: 1; min-height: 0; overflow: hidden; padding: var(--space-2); background: var(--color-bg); border: 1px solid var(--color-border); }
+.xterm-host-stack { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; padding: var(--space-2); background: var(--color-bg); border: 1px solid var(--color-border); }
 .xterm-host { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 .xterm-host.active { visibility: visible; pointer-events: auto; }
 .xterm-host .xterm { height: 100%; }
 .xterm-host-empty { display: flex; align-items: center; justify-content: center; height: 100%; }
 .terminal-content { position: relative; }
-.terminal-body { display: flex; flex: 1; min-height: 0; }
+.terminal-body { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
 .ssh-quick-list { flex: 0 0 clamp(160px, 16vw, 200px); min-height: 0; overflow-y: auto; padding: var(--space-2) var(--space-2); border-right: 1px solid var(--color-border); background: var(--color-bg-panel); }
 .ssh-quick-list-heading { padding: var(--space-1) var(--space-2) var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-small); letter-spacing: .1em; font-weight: 700; text-transform: uppercase; }
 .ssh-quick-list-group { margin-bottom: var(--space-2); }

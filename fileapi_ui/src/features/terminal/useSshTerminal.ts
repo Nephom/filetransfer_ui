@@ -25,6 +25,7 @@ type NativeRefs = {
 
 type Props = NativeRefs & {
   enabled: boolean;
+  terminalLayoutKey: string;
   activeTabId: string;
   activeSessionId: string;
   tabIds: string[];
@@ -38,7 +39,7 @@ type Props = NativeRefs & {
  * Connection commands and tab CRUD remain in DesktopApp for this first
  * extraction because they also coordinate Workspace Manager state. */
 export function useSshTerminal({
-  enabled, activeTabId, activeSessionId, tabIds, bracketedPasteControlEnabled,
+  enabled, terminalLayoutKey, activeTabId, activeSessionId, tabIds, bracketedPasteControlEnabled,
   setTabs, setConnected, setNotice, tabsRef, pendingRequestsRef, terminalsRef,
   hostRefsRef, activeTabIdRef, outputRef, sessionIdRef, connectingRef, writeQueuesRef,
   recordingWriteQueuesRef, recordingPlainTranscriptsRef, recordingRef, secretPromptRef, shellInputRef,
@@ -103,6 +104,7 @@ export function useSshTerminal({
 
   useTerminalLifecycle({
     enabled,
+    layoutKey: terminalLayoutKey,
     tabIds,
     activeTabId,
     hostRefsRef,

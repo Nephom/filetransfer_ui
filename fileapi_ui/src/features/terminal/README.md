@@ -8,6 +8,8 @@ The Terminal feature is split into three layers:
 
 Workspace Manager, operation-log policy, Transfer Queue state, Viewer state, and SSH entry persistence remain app-level responsibilities in `main.tsx`. The Terminal feature communicates with those areas through callbacks and narrow data props; it does not call Workspace Manager state setters directly.
 
+The Terminal is mounted in its own fixed viewport layer, independently of Location, REST API, and VNC flex layouts. In its normal state it is anchored to the bottom of the window; when collapsed, only the bottom Restore bar remains. The Workspaces quick list can be collapsed to give the active xterm host the full terminal width. The active terminal is re-fitted and its remote PTY size is synchronized after that layout change. Terminal height resizing is clamped to the space below the application Titlebar; reaching that maximum opens the Terminal as an overlay below the Titlebar, covering the command bar, navigation, workspace, and status bar. The top resizebar remains available in the maximized overlay, so dragging it down restores a normal Terminal height.
+
 The Rust SSH IPC contract is unchanged.
 
 ## Clipboard: left-click copy, right-click paste, OSC 52

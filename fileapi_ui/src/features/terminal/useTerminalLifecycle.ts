@@ -150,6 +150,7 @@ type TerminalInstance = {
 // destroy/rebuild/replay cycle on the common tab-switch path.
 export function useTerminalLifecycle({
   enabled,
+  layoutKey,
   tabIds,
   activeTabId,
   hostRefsRef,
@@ -163,6 +164,7 @@ export function useTerminalLifecycle({
   onNotice,
 }: {
   enabled: boolean;
+  layoutKey: string;
   tabIds: string[];
   activeTabId: string;
   hostRefsRef: MutableRefObject<Map<string, HTMLDivElement>>;
@@ -478,6 +480,10 @@ export function useTerminalLifecycle({
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
-    return () => observer.disconnect();
-  }, [enabled, activeTabId, hostRefsRef]);
+    const frame = window.requestAnimationFrame(resize);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [enabled, activeTabId, hostRefsRef, layoutKey]);
 }
