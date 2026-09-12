@@ -66,6 +66,22 @@ The REST entry editor in `main.tsx` owns identity and TLS fields. Authentication
 
 `execute()` sends GET/POST/PATCH/DELETE requests from the raw request editor. POST, PATCH, and DELETE require a browser confirmation. JSON content type is added for bodies; DELETE has no body. `runRequest()` updates the response and URL/path, records GET history, and turns HTTP errors into a Redfish-aware error. It receives a `workflowId` so multi-step tools can correlate their debug records.
 
+## Operation log records
+
+Desktop operation logs are JSONL records written by the Tauri operation-log
+writer. Each record has a `timestamp` (ISO text from frontend workflows or
+Unix milliseconds from native events), `level`, `operation`, `status`, and the
+original structured fields. The LogView accepts both timestamp forms so older
+rotated files remain readable. `operationId` and `correlationId` are used for
+correlation and remain in the exported JSONL; the on-screen detail view omits
+only those implementation identifiers. SSH session records use `sessionId`
+and `tabId` for grouping. DEBUG retains every diagnostic event. Repeated
+non-DEBUG terminal events (`ssh_write`, `ssh_resize`, and `ssh_output`) from
+one session are summarized in the table while their original records remain
+available after expansion and export. Other operation types retain their
+existing operation-level grouping so separate user actions are not silently
+merged.
+
 Do not use `fetch()` directly from this component or concatenate untrusted discovered links without `resolveEntryResource()`. The native command is also responsible for TLS handling and byte transport.
 
 ## Authentication lifecycle

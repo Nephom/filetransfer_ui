@@ -113,7 +113,7 @@ fn sanitize(value: &str) -> String {
     {
         return "[REDACTED]".to_string();
     }
-    normalized.chars().take(256).collect()
+    normalized
 }
 fn is_secret_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
@@ -189,7 +189,7 @@ fn sanitize_urlish(value: &str) -> String {
     if !fragment.is_empty() {
         result.push_str("#[REDACTED]");
     }
-    result.chars().take(256).collect()
+    result
 }
 
 fn redact_detail_value(value: &mut serde_json::Value) {
@@ -249,7 +249,7 @@ fn sanitize_detail(value: &str) -> String {
         redact_detail_value(&mut parsed);
         let serialized =
             serde_json::to_string(&parsed).unwrap_or_else(|_| "[REDACTED]".to_string());
-        return serialized.chars().take(65_536).collect();
+        return serialized;
     }
     let lower = normalized.to_ascii_lowercase();
     if [
@@ -269,14 +269,14 @@ fn sanitize_detail(value: &str) -> String {
     {
         return "[REDACTED]".to_string();
     }
-    normalized.chars().take(65_536).collect()
+    normalized
 }
 
 fn timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs().to_string())
+        .map(|duration| duration.as_millis().to_string())
         .unwrap_or_else(|_| "0".to_string())
 }
 
@@ -473,6 +473,9 @@ pub fn log_structured(record: serde_json::Value) {
     }
     let mut record = record;
     if let Some(object) = record.as_object_mut() {
+        object
+            .entry("timestamp".to_string())
+            .or_insert_with(|| serde_json::Value::String(timestamp()));
         for key in [
             "level",
             "operation",
@@ -541,7 +544,7 @@ pub fn log_structured(record: serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{invalidate_cached_writer, log, set_config, write_line};
+    use super::{invalidate_cached_writer, log, set_config, timestamp, write_line};
     use std::fs;
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -638,6 +641,38 @@ mod tests {
             .expect("recording metadata should be written safely");
         assert!(content.contains("recording-1"));
         assert!(!content.contains("hidden-recording-secret"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn structured_records_get_real_millisecond_timestamps_without_cutting_detail() {
+        let _lock = TEST_LOCK
+            .lock()
+            .expect("logging test lock should not be poisoned");
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!("nfterm-oplog-timestamp-{suffix}"));
+        fs::create_dir_all(&directory).expect("temporary log directory should be created");
+        std::env::set_var("FILEAPI_DATA_DIR", &directory);
+        invalidate_cached_writer();
+        set_config(true, "INFO");
+        let detail = "message-without-truncation-".to_string() + &"x".repeat(400);
+        log("INFO", "test", "completed", "source", "destination", &detail);
+        let content = fs::read_to_string(directory.join("operations.log"))
+            .expect("operation log should be written");
+        let record: serde_json::Value = serde_json::from_str(content.trim())
+            .expect("operation log should contain valid JSON");
+        let saved_timestamp = record["timestamp"]
+            .as_str()
+            .expect("timestamp should be numeric text")
+            .parse::<u128>()
+            .expect("timestamp should be milliseconds since epoch");
+        assert!(saved_timestamp > 1_000_000_000_000);
+        assert_eq!(record["detail"].as_str(), Some(detail.as_str()));
+        assert!(timestamp().parse::<u128>().unwrap() >= saved_timestamp);
+        invalidate_cached_writer();
         let _ = fs::remove_dir_all(directory);
     }
 

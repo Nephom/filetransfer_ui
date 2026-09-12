@@ -20,35 +20,57 @@ const value = (record: OperationLogRecord, key: string, fallback = "") => {
 };
 
 const timestamp = (record: OperationLogRecord) => {
-  const numeric = Number(record.timestamp);
-  return Number.isFinite(numeric) ? numeric : 0;
+  const raw = record.timestamp;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw > 1_000_000_000_000 ? raw : raw * 1000;
+  if (typeof raw === "string" && raw.trim()) {
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric)) return numeric > 1_000_000_000_000 ? numeric : numeric * 1000;
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
 };
 
 const displayTime = (record: OperationLogRecord) => {
   const numeric = timestamp(record);
-  return numeric > 0 ? new Date(numeric * 1000).toLocaleString() : value(record, "timestamp", "-");
+  return numeric > 0 ? new Date(numeric).toLocaleString() : value(record, "timestamp", "-");
 };
 
 const operationName = (record: OperationLogRecord) => value(record, "operation", value(record, "event", "operation"));
-const result = (record: OperationLogRecord) => {
-  const errorMessage = value(record, "errorMessage");
-  if (errorMessage) return errorMessage;
-  const detail = value(record, "detail", "-");
-  try {
-    const parsed = JSON.parse(detail) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      const visible = { ...(parsed as Record<string, unknown>) };
-      delete visible.operationId;
-      delete visible.correlationId;
-      return JSON.stringify(visible);
-    }
-  } catch {
-    // Plain-text details are already redacted by the logging boundary.
+const hiddenKeys = new Set(["operationId", "correlationId"]);
+const displayValue = (input: unknown, key = ""): unknown => {
+  if (hiddenKeys.has(key)) return undefined;
+  if (Array.isArray(input)) return input.map((item) => displayValue(item));
+  if (input && typeof input === "object") {
+    return Object.fromEntries(Object.entries(input)
+      .map(([childKey, child]) => [childKey, displayValue(child, childKey)] as const)
+      .filter(([, child]) => child !== undefined));
   }
-  return detail.replace(/operationId\s*[=:]\s*[^,\s}]+/gi, "operationId=[hidden]");
+  return input;
 };
-const groupKey = (record: OperationLogRecord, index: number) =>
-  value(record, "operationId") || `${operationName(record)}:${value(record, "timestamp", String(index))}`;
+
+const result = (record: OperationLogRecord) => {
+  const detail = record.detail;
+  let parsedDetail: unknown = detail;
+  if (typeof detail === "string") {
+    try { parsedDetail = JSON.parse(detail); } catch { parsedDetail = detail; }
+  }
+  const visible = Object.fromEntries(Object.entries(record)
+    .filter(([key]) => !["timestamp", "level", "operation", "event", "status", "mode"].includes(key))
+    .map(([key, item]) => [key, key === "detail" ? parsedDetail : item] as const)) as OperationLogRecord;
+  const safe = displayValue(visible);
+  if (safe === undefined || (typeof safe === "object" && safe !== null && !Object.keys(safe).length)) return "-";
+  return typeof safe === "string" ? safe : JSON.stringify(safe, null, 2);
+};
+const groupKey = (record: OperationLogRecord, index: number) => {
+  const level = value(record, "level", "INFO").toUpperCase();
+  const terminalNoise = ["ssh_write", "ssh_resize", "ssh_output"].includes(operationName(record));
+  if (level !== "DEBUG" && terminalNoise) {
+    const session = value(record, "sessionId") || value(record, "tabId");
+    if (session) return `summary:${session}:${operationName(record)}:${value(record, "status")}:${value(record, "source")}:${value(record, "destination")}:${value(record, "failureType")}:${value(record, "errorMessage")}`;
+  }
+  return value(record, "operationId") || `${operationName(record)}:${value(record, "timestamp", String(index))}`;
+};
 
 const compareText = (left: string, right: string) => left.localeCompare(right, undefined, { sensitivity: "base" });
 
@@ -117,7 +139,7 @@ function LogTable({ records }: { records: OperationLogRecord[] }) {
               <span className={`log-level log-level-${value(group.last, "level", "INFO").toLowerCase()}`}>{value(group.last, "level", "INFO")}</span>
               <span>{value(group.last, "status", "-")}</span>
               <span>{group.records.length}</span>
-              <span className="log-result">{result(group.last)}</span>
+              <pre className="log-result">{result(group.last)}</pre>
             </button>
             {isExpanded && group.records.map((record, index) => (
               <div className="log-table-detail-row" role="row" key={`${group.key}-${index}`}>
@@ -126,7 +148,7 @@ function LogTable({ records }: { records: OperationLogRecord[] }) {
                 <span className={`log-level log-level-${value(record, "level", "INFO").toLowerCase()}`}>{value(record, "level", "INFO")}</span>
                 <span>{value(record, "status", "-")}</span>
                 <span>•</span>
-                <span className="log-result">{result(record)}</span>
+                <pre className="log-result">{result(record)}</pre>
               </div>
             ))}
           </div>

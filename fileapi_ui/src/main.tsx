@@ -2541,6 +2541,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const archiveName = detail.match(/(?:created|extracted)\s+([^\s.]+(?:\.[a-z0-9.]+)?)/i)?.[1];
     const sourceType = /\b(local|ssh|remote|api)\b/i.exec(sourceLabel)?.[1]?.toUpperCase();
     const destinationType = /\b(local|ssh|remote|api|external)\b/i.exec(destinationLabel)?.[1]?.toUpperCase();
+    const activeTab = sshTabs.find((tab) => tab.id === activeSshTabId);
     void invoke("append_structured_operation_log", {
       level,
       mode: "desktop",
@@ -2554,6 +2555,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       timestamp: new Date().toISOString(),
       operationId: structuredDetail.operationId || operationId,
       correlationId: crypto.randomUUID(),
+      ...(activeTab?.id ? { tabId: activeTab.id } : {}),
+      ...(activeTab?.sessionId ? { sessionId: activeTab.sessionId } : {}),
       ...(errorMessage ? { errorMessage } : {}),
       ...(structuredDetail.sourcePath === undefined ? { sourcePath: sourceLabel } : {}),
       ...(structuredDetail.destinationPath === undefined ? { destinationPath: destinationLabel } : {}),

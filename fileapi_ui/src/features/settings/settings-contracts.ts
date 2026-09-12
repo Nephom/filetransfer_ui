@@ -60,7 +60,7 @@ export const defaultDesktopSettings: DesktopSettings = {
   allowLegacySshAlgorithms: false,
   undoHistoryEnabled: true,
   operationLogEnabled: true,
-  operationLogLevel: "DEBUG",
+  operationLogLevel: "INFO",
   // 0 = server default (currently 1 day); the server also enforces its own
   // configured maximum (shareLinks.maxExpiration), so values here that
   // exceed it are rejected server-side with a clear error.

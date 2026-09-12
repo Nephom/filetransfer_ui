@@ -1220,7 +1220,7 @@ pub async fn write(session_id: String, data: String) -> Result<(), String> {
     };
     match session.write.data(data.into_bytes().as_slice()).await {
         Ok(()) => {
-            crate::oplog::log("INFO", "ssh_write", "completed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "byteCount": byte_count, "durationMs": started.elapsed().as_millis()}).to_string());
+            crate::oplog::log("DEBUG", "ssh_write", "completed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "byteCount": byte_count, "durationMs": started.elapsed().as_millis()}).to_string());
             Ok(())
         }
         Err(error) => {
