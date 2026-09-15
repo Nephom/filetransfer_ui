@@ -129,7 +129,15 @@ function desktop(handler = () => undefined) {
       "@tauri-apps/api/core": { invoke }, "@tauri-apps/api/event": { listen: async () => () => {} }, "@tauri-apps/api/path": { resolveResource: async () => "fake-icon" },
       "@tauri-apps/plugin-clipboard-manager": { readText: () => { throw new Error("Unexpected clipboard"); } },
     },
-    globals: { window, document: { getElementById: () => ({}) }, FormData: class { constructor(form) { this.form = form; } get(name) { return this.form[name]; } }, localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) } },
+    globals: {
+      window,
+      document: {
+        getElementById: () => ({}),
+        querySelector: (selector) => selector === ".titlebar" ? { getBoundingClientRect: () => ({ height: 56 }) } : null
+      },
+      FormData: class { constructor(form) { this.form = form; } get(name) { return this.form[name]; } },
+      localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) }
+    },
   });
   const props = {
     session: { host: "server.test", port: "9443", username: "admin", userId: 0, token: "cookie", nativeSessionId: "opaque-A", role: "admin", permissions: [], locationId: "A", saveUserInformation: false },

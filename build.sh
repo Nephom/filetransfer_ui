@@ -224,6 +224,10 @@ node_major() {
   node -p "process.versions.node.split('.')[0]" 2>/dev/null || true
 }
 
+node_version_supported() {
+  node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && (minor > 17 || (minor === 17 && patch >= 0))) ? 0 : 1)' 2>/dev/null
+}
+
 node_supports_env_file() {
   node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && minor >= 6) ? 0 : 1)' 2>/dev/null
 }
@@ -231,7 +235,7 @@ node_supports_env_file() {
 ensure_node() {
   local major
   major="$(node_major)"
-  if [[ "$major" =~ ^[0-9]+$ && "$major" -ge 20 ]] && node_supports_env_file; then
+  if [[ "$major" =~ ^[0-9]+$ && "$major" -ge 20 ]] && node_version_supported && node_supports_env_file; then
     return
   fi
 
@@ -248,7 +252,7 @@ ensure_node() {
     exit 1
   fi
   major="$(node_major)"
-  [[ "$major" =~ ^[0-9]+$ && "$major" -ge 20 ]] && node_supports_env_file || { echo "Node.js 20.6 or newer is required." >&2; exit 1; }
+  node_version_supported && node_supports_env_file || { echo "Node.js 20.17.0 or newer is required (Node.js 22 LTS is recommended)." >&2; exit 1; }
 }
 
 ensure_rust() {

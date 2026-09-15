@@ -148,7 +148,11 @@ async function harness(t, initial = {}) {
     } },
   };
   const globals = {
-    window: { confirm() { throw new Error("Unsafe Continue must not be offered"); }, requestAnimationFrame(fn) { fn(); } },
+    window: {
+      confirm() { throw new Error("Unsafe Continue must not be offered"); },
+      requestAnimationFrame(fn) { fn(); return 1; },
+      cancelAnimationFrame() {},
+    },
     ResizeObserver: class { observe() {} disconnect() {} },
     document: {
       body: { appendChild() {} },

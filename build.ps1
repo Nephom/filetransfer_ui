@@ -57,6 +57,33 @@ function Update-EnvironmentPath {
     $env:Path = ($entries | Select-Object -Unique) -join ";"
 }
 
+function Test-NodeVersion {
+    if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) { return $false }
+    $versionText = (& node --version 2>$null).Trim().TrimStart('v')
+    try {
+        return ([version]$versionText -ge [version]"20.17.0")
+    }
+    catch {
+        return $false
+    }
+}
+
+function Ensure-Node {
+    Update-EnvironmentPath
+    if (Test-NodeVersion -and (Get-Command "npm.cmd" -ErrorAction SilentlyContinue)) {
+        Write-Host "Node.js $(node --version) meets the minimum version 20.17.0."
+        return
+    }
+
+    Write-Host "Node.js 20.17.0 or newer is required; installing Node.js 22 LTS..."
+    Install-WingetPackage -Id "OpenJS.NodeJS.LTS"
+    Update-EnvironmentPath
+    if (-not (Test-NodeVersion) -or -not (Get-Command "npm.cmd" -ErrorAction SilentlyContinue)) {
+        throw "Node.js 20.17.0 or newer with npm is required. Re-run this script after installing Node.js 22 LTS."
+    }
+    Write-Host "Node.js $(node --version) is ready."
+}
+
 function Add-UserPathEntry {
     # Persist a directory onto the *User* PATH environment variable and make
     # it immediately visible to this process. Writing to the Machine scope
@@ -287,9 +314,7 @@ function Ensure-WindowsBuildTools {
     if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) {
         Install-WingetPackage -Id "Git.Git"
     }
-    if (-not (Get-Command "node" -ErrorAction SilentlyContinue) -or -not (Get-Command "npm.cmd" -ErrorAction SilentlyContinue)) {
-        Install-WingetPackage -Id "OpenJS.NodeJS.LTS"
-    }
+    Ensure-Node
     if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue) -or -not (Get-Command "rustc" -ErrorAction SilentlyContinue)) {
         Install-WingetPackage -Id "Rustlang.Rustup"
     }
