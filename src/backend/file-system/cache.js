@@ -195,7 +195,7 @@ class FileSystemCache {
       const sql = `
         SELECT name, relative_path as path, is_directory, size, modified_time
         FROM files 
-        WHERE name LIKE ? 
+        WHERE LOWER(name) LIKE LOWER(?)
         ORDER BY is_directory DESC, name ASC
       `;
       

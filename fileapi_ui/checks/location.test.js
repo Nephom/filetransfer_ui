@@ -435,6 +435,15 @@ test("stale search errors do not replace a newer result's notice", async () => {
   assert.equal(app.props.notice, "");
 });
 
+test("remote search normalizes case while retaining partial filename matching", async () => {
+  const app = desktop((_command, args) => args.url?.includes("/search?")
+    ? nativeJson({ files: [{ name: "startup.nsh", path: "startup.nsh", isDirectory: false, size: 1 }] })
+    : undefined);
+  app.search("Startup"); await tick();
+  assert.ok(app.calls.some((call) => call.args?.url?.includes("query=startup")));
+  assert.equal(nodes(app.render(), (node) => node.props?.["data-path"] === "startup.nsh").length, 1);
+});
+
 test("late SSH directory and tree replies cannot replace the API Location after switching back", async () => {
   const ssh = deferred();
   const app = desktop((command) => command === "ssh_list_directory" ? ssh.promise : undefined);

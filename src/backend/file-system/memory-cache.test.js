@@ -60,6 +60,7 @@ test('all cache key families isolate Locations, roots, search and statistics', a
   for (const root of roots) { await fs.mkdir(root); await fs.mkdir(path.join(root, 'nested')); }
   await fs.writeFile(path.join(roots[0], 'same.txt'), 'A');
   await fs.writeFile(path.join(roots[1], 'same.txt'), 'BBBB');
+  await fs.writeFile(path.join(roots[0], 'Startup.nsh'), 'startup');
   await fs.writeFile(path.join(roots[0], 'nested', 'star[*]?.txt'), 'literal');
   const database = new Map([['index:legacy:same.txt', 'legacy'], ['dir:legacy', 'legacy-dir'], ['password-reset:sentinel', 'secret']]);
   const a = makeCache(t, roots[0], 'a', database);
@@ -69,6 +70,7 @@ test('all cache key families isolate Locations, roots, search and statistics', a
   assert.notEqual(a.namespace, b.namespace);
   assert.equal((await a.searchFiles('same')).files[0].size, 1);
   assert.equal((await b.searchFiles('same')).files[0].size, 4);
+  assert.deepEqual((await a.searchFiles('startup')).files.map(file => file.name), ['Startup.nsh']);
   assert.equal((await a.searchFiles('[*]?')).files.length, 1);
   assert.equal((await a.searchFiles('*')).files.length, 1);
   assert.equal((await a.searchFiles('meta')).files.length, 0);

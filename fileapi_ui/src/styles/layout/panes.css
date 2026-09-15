@@ -45,7 +45,7 @@
 .content-heading > div { min-width: 0; flex: 1 1 auto; }
 .remote-navigation-row { display: flex; align-items: center; min-width: 0; gap: var(--space-3); }
 .remote-navigation-row .pane-breadcrumbs { flex: 1 1 auto; }
-.remote-navigation-row .search-control { flex: 0 1 290px; }
+.remote-navigation-row .search-control { flex: 0 0 290px; width: 290px; }
 .remote-navigation-row h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .local-pane-actions { display: flex; gap: var(--space-2); padding: 0 var(--space-3) var(--space-2); border-bottom: 1px solid var(--color-border); }
 .local-pane-actions button { padding: var(--space-1) var(--space-2); color: var(--color-text); background: var(--color-bg-panel); border-color: var(--color-border); }

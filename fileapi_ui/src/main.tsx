@@ -2847,7 +2847,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const generation = ++remoteGeneration.current;
     return run(async () => {
       try {
-        const query = search.trim();
+        const query = search.trim().toLocaleLowerCase();
         if (!query) {
           if (searching) await loadFiles(pathBeforeSearch);
           return;
