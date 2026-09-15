@@ -19,6 +19,12 @@ if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
   exit 1
 fi
 
+if ! npm run check:native --prefix "$ROOT_DIR"; then
+  echo "Native Node dependencies cannot be loaded by this machine's Node runtime." >&2
+  echo "Run ./build.sh install (or npm rebuild --prefix \"$ROOT_DIR\") on this machine; do not copy node_modules from another machine." >&2
+  exit 1
+fi
+
 if [[ -f "$PID_FILE" ]]; then
   PID="$(cat "$PID_FILE")"
   if pid_is_running "$PID"; then
@@ -49,5 +55,6 @@ if pid_is_running "$PID"; then
 else
   echo "Service failed to start. Check $LOG_FILE." >&2
   rm -f "$PID_FILE"
+  rm -f "$LOCK_FILE"
   exit 1
 fi

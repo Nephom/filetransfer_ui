@@ -279,7 +279,8 @@ ensure_rust() {
 install_server_node_dependencies() {
   npm ci --ignore-scripts --include=optional --include=dev --prefix "$ROOT_DIR"
   npm rebuild --foreground-scripts --prefix "$ROOT_DIR"
-  (cd "$ROOT_DIR" && node -e 'for (const name of ["bcrypt", "sqlite3", "unrs-resolver"]) require.resolve(name);')
+  npm run check:native --prefix "$ROOT_DIR"
+  (cd "$ROOT_DIR" && node -e 'require.resolve("unrs-resolver");')
   cmd_browser
 }
 
@@ -594,7 +595,17 @@ cmd_install() {
 }
 
 cmd_setup() {
-  node_supports_env_file || cmd_install
+  if ! node_supports_env_file; then
+    cmd_install
+  else
+    install_server_system_dependencies
+    if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! npm run check:native --prefix "$ROOT_DIR" >/dev/null 2>&1; then
+      echo "Setup: installing and rebuilding server dependencies for this machine..."
+      install_server_node_dependencies
+    else
+      echo "Setup: server native dependencies are valid for this Node runtime."
+    fi
+  fi
   setup_configuration
 }
 

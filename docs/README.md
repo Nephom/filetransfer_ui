@@ -102,6 +102,8 @@ Use the root `build.sh` for the server lifecycle on Alpine Linux or Ubuntu. On a
 
 Actual deployment values belong in ignored `.env` and `src/config.ini` files. Never put internal addresses, credentials, tokens, or certificates in documentation or GitHub discussions. Production Alpine systems should use `install`, `setup`, `upgrade`, and `start`; they do not run the desktop `build` command.
 
+Native Node modules such as `bcrypt` and `sqlite3` must be installed or rebuilt on the target machine. Do not copy `node_modules` between machines. `build.sh setup`, `build.sh install`, `build.sh upgrade`, and `start.sh` run a native dependency smoke check before continuing.
+
 ### 1. Authentication
 
 All API endpoints require JWT authentication:

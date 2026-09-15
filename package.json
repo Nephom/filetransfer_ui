@@ -9,6 +9,7 @@
     "test": "node --test --test-concurrency=1",
     "build:browser": "node scripts/build-browser.js",
     "check:browser": "node scripts/build-browser.js --check",
+    "check:native": "node scripts/check-native-dependencies.js",
     "test:browser:unit": "node --test src/frontend/checks/file-browser.test.js",
     "test:browser": "node src/frontend/checks/browser.e2e.mjs",
     "migrate:database": "node scripts/migrate-database.js"
