@@ -38,6 +38,196 @@ const GlobalStyles = () => {
                     outline-offset: 2px;
                 }
 
+                .ai-analysis-progress {
+                    position: relative;
+                    display: grid;
+                    grid-template-columns: 132px minmax(0, 1fr) auto;
+                    align-items: center;
+                    gap: 24px;
+                    min-height: 218px;
+                    padding: 28px;
+                    overflow: hidden;
+                    isolation: isolate;
+                    border: 1px solid rgba(103, 207, 255, 0.28);
+                    border-radius: 20px;
+                    background:
+                        radial-gradient(circle at 14% 50%, rgba(48, 201, 255, 0.18), transparent 28%),
+                        linear-gradient(135deg, rgba(6, 31, 54, 0.96), rgba(8, 17, 37, 0.98));
+                    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 18px 45px rgba(0, 0, 0, 0.28);
+                }
+                .ai-analysis-progress::before {
+                    position: absolute;
+                    inset: 0;
+                    z-index: -1;
+                    background: repeating-linear-gradient(0deg, transparent 0 7px, rgba(103, 207, 255, 0.035) 8px, transparent 9px);
+                    content: '';
+                    pointer-events: none;
+                }
+                .ai-analysis-visual {
+                    position: relative;
+                    width: 116px;
+                    height: 116px;
+                    margin: auto;
+                    border: 1px solid rgba(103, 207, 255, 0.18);
+                    border-radius: 50%;
+                    background: radial-gradient(circle, rgba(31, 161, 220, 0.2), rgba(2, 19, 39, 0.1) 55%, transparent 56%);
+                    box-shadow: 0 0 36px rgba(48, 201, 255, 0.16);
+                }
+                .ai-analysis-ring,
+                .ai-analysis-core,
+                .ai-analysis-node {
+                    position: absolute;
+                    display: block;
+                }
+                .ai-analysis-ring {
+                    inset: 9px;
+                    border: 1px solid rgba(141, 233, 255, 0.62);
+                    border-right-color: transparent;
+                    border-radius: 50%;
+                    animation: ai-analysis-spin 4s linear infinite;
+                }
+                .ai-analysis-ring-inner {
+                    inset: 24px;
+                    border-color: rgba(151, 126, 255, 0.78);
+                    border-left-color: transparent;
+                    animation-direction: reverse;
+                    animation-duration: 2.6s;
+                }
+                .ai-analysis-core {
+                    inset: 39px;
+                    border: 1px solid rgba(166, 243, 255, 0.72);
+                    border-radius: 50%;
+                    background: rgba(55, 198, 255, 0.18);
+                    box-shadow: 0 0 24px rgba(76, 216, 255, 0.8), inset 0 0 14px rgba(255, 255, 255, 0.28);
+                    animation: ai-analysis-breathe 2.2s ease-in-out infinite;
+                }
+                .ai-analysis-core span {
+                    position: absolute;
+                    inset: 11px;
+                    border-radius: 50%;
+                    background: #c8f7ff;
+                    box-shadow: 0 0 16px #6de5ff;
+                }
+                .ai-analysis-node {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 50%;
+                    background: #9cecff;
+                    box-shadow: 0 0 12px #55d8ff;
+                    animation: ai-analysis-node-pulse 1.8s ease-in-out infinite;
+                }
+                .ai-analysis-node-one { top: 5px; left: 55px; }
+                .ai-analysis-node-two { right: 8px; bottom: 28px; animation-delay: 0.55s; }
+                .ai-analysis-node-three { bottom: 10px; left: 23px; animation-delay: 1.05s; }
+                .ai-analysis-copy { min-width: 0; }
+                .ai-analysis-eyebrow {
+                    display: flex;
+                    align-items: center;
+                    gap: 7px;
+                    color: #8fe8ff;
+                    font-size: 10px;
+                    font-weight: 800;
+                    letter-spacing: 0.16em;
+                }
+                .ai-analysis-eyebrow > span:not(.ai-analysis-live-dot) { color: rgba(255, 255, 255, 0.34); }
+                .ai-analysis-live-dot {
+                    width: 7px;
+                    height: 7px;
+                    border-radius: 50%;
+                    background: #6cf1c4;
+                    box-shadow: 0 0 0 4px rgba(108, 241, 196, 0.1), 0 0 12px #6cf1c4;
+                    animation: ai-analysis-live 1.5s ease-in-out infinite;
+                }
+                .ai-analysis-copy h3 {
+                    margin: 10px 0 7px;
+                    color: #f2fbff;
+                    font-size: clamp(20px, 2.4vw, 27px);
+                    line-height: 1.12;
+                    letter-spacing: -0.02em;
+                }
+                .ai-analysis-phase,
+                .ai-analysis-source,
+                .ai-analysis-hint { margin: 0; }
+                .ai-analysis-phase {
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    color: #b9d9e6;
+                    font-size: 13px;
+                }
+                .ai-analysis-phase-marker {
+                    width: 6px;
+                    height: 6px;
+                    flex: 0 0 auto;
+                    border-radius: 50%;
+                    background: #8c7bff;
+                    box-shadow: 0 0 10px #8c7bff;
+                }
+                .ai-analysis-source {
+                    max-width: 100%;
+                    margin-top: 8px;
+                    overflow: hidden;
+                    color: rgba(231, 247, 255, 0.58);
+                    font-size: 12px;
+                    text-overflow: ellipsis;
+                    white-space: nowrap;
+                }
+                .ai-analysis-source strong { color: rgba(231, 247, 255, 0.86); font-weight: 600; }
+                .ai-analysis-scanline {
+                    position: relative;
+                    height: 3px;
+                    margin: 18px 0 11px;
+                    overflow: hidden;
+                    border-radius: 99px;
+                    background: rgba(116, 203, 238, 0.12);
+                }
+                .ai-analysis-scanline span {
+                    position: absolute;
+                    top: 0;
+                    left: -35%;
+                    width: 35%;
+                    height: 100%;
+                    border-radius: inherit;
+                    background: linear-gradient(90deg, transparent, #83edff, transparent);
+                    animation: ai-analysis-scan 1.8s ease-in-out infinite;
+                }
+                .ai-analysis-hint { color: rgba(231, 247, 255, 0.48); font-size: 11px; line-height: 1.45; }
+                .ai-analysis-cancel {
+                    align-self: end;
+                    min-width: 132px;
+                    padding: 10px 13px;
+                    border: 1px solid rgba(157, 219, 238, 0.25);
+                    border-radius: 10px;
+                    color: rgba(232, 249, 255, 0.74);
+                    background: rgba(255, 255, 255, 0.04);
+                    font-size: 12px;
+                    font-weight: 700;
+                    cursor: pointer;
+                }
+                .ai-analysis-cancel:hover { border-color: rgba(157, 219, 238, 0.58); color: #fff; background: rgba(103, 207, 255, 0.12); }
+                @keyframes ai-analysis-spin { to { transform: rotate(360deg); } }
+                @keyframes ai-analysis-breathe { 0%, 100% { transform: scale(0.92); opacity: 0.72; } 50% { transform: scale(1.08); opacity: 1; } }
+                @keyframes ai-analysis-node-pulse { 0%, 100% { transform: scale(0.65); opacity: 0.35; } 50% { transform: scale(1.35); opacity: 1; } }
+                @keyframes ai-analysis-live { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+                @keyframes ai-analysis-scan { from { transform: translateX(0); } to { transform: translateX(385%); } }
+                @media (max-width: 600px) {
+                    .ai-analysis-progress { grid-template-columns: 76px minmax(0, 1fr); gap: 16px; min-height: 0; padding: 20px; }
+                    .ai-analysis-visual { width: 70px; height: 70px; }
+                    .ai-analysis-ring { inset: 6px; }
+                    .ai-analysis-ring-inner { inset: 15px; }
+                    .ai-analysis-core { inset: 24px; }
+                    .ai-analysis-core span { inset: 6px; }
+                    .ai-analysis-node-one { top: 2px; left: 32px; }
+                    .ai-analysis-node-two { right: 2px; bottom: 17px; }
+                    .ai-analysis-node-three { bottom: 4px; left: 14px; }
+                    .ai-analysis-cancel { grid-column: 2; justify-self: start; align-self: auto; }
+                }
+                @media (prefers-reduced-motion: reduce) {
+                    .ai-analysis-ring, .ai-analysis-core, .ai-analysis-node, .ai-analysis-live-dot, .ai-analysis-scanline span { animation: none; }
+                    .ai-analysis-core, .ai-analysis-live-dot { opacity: 0.85; }
+                    .ai-analysis-scanline span { left: 0; width: 100%; opacity: 0.5; }
+                }
+
                 .share-links-dialog { display: grid; gap: 14px; max-height: 62vh; overflow: auto; }
                 .share-links-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
                 .share-links-toolbar p { margin: 0; color: rgba(255, 255, 255, 0.75); }
