@@ -58,6 +58,12 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
       section[name] = value;
     },
     async save() { saves++; await saveHook?.(); },
+    async updateAdminCredentials(credentials) {
+      for (const [key, value] of Object.entries(credentials)) {
+        const configKey = key === 'username' ? 'auth.username' : key === 'password' ? 'auth.password' : 'auth.passwordHashed';
+        this.set(configKey, value);
+      }
+    },
     // Stop accidental startup before its process.exit path; assertions below fail
     // the import regression while retaining normal fixture cleanup and TAP output.
     load() { forbiddenCalls.push('config.load'); return new Promise(() => {}); },

@@ -106,7 +106,7 @@ const publicErrorMessage = (error) => {
   return message;
 };
 
-const getRequestedLocationId = (req) => req.query?.locationId || req.body?.locationId || req.headers['x-location-id'];
+const getRequestedLocationId = (req) => req.query?.locationId || req.body?.locationId || req.headers?.['x-location-id'];
 const itemRelativePath = (item, currentPath = '') => {
   if (!item || typeof item.name !== 'string' || !item.name || /[\\/\x00-\x1f]/.test(item.name) || ['.', '..'].includes(item.name)) {
     throw Object.assign(new Error('Each item requires a basename'), { statusCode: 400 });
@@ -141,7 +141,7 @@ const getStorageContext = async (req, relativePath = '', capability = 'list', re
   const headerLocationId = getRequestedLocationId(req) || (locationManager.getLocation('default') ? 'default' : null);
   const targetLocationId = req.body?.targetLocationId || req.body?.destinationLocationId || headerLocationId;
   const revisions = [
-    headerLocationId === locationId ? req.headers['x-location-revision'] : undefined,
+    headerLocationId === locationId ? req.headers?.['x-location-revision'] : undefined,
     (req.body?.sourceLocationId || headerLocationId) === locationId ? req.body?.sourceLocationRevision : undefined,
     targetLocationId === locationId ? req.body?.targetLocationRevision : undefined
   ].filter(value => value !== undefined);
@@ -570,9 +570,7 @@ app.post('/auth/change-password', (req, res, next) => {
       }
 
       const hashedPassword = await bcrypt.hash(newPassword, 12);
-      configManager.set('auth.password', hashedPassword);
-      configManager.set('auth.passwordHashed', true);
-      await configManager.save();
+      await configManager.updateAdminCredentials({ password: hashedPassword, passwordHashed: true });
     } else {
       await userManager.changeOwnPassword(req.user.username, currentPassword, newPassword);
     }
@@ -749,27 +747,7 @@ app.post('/auth/reset-password', (req, res, next) => {
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
 
-    // Update config file
-    const configPath = './src/config.ini';
-    let configContent = await fs.readFile(configPath, 'utf8');
-
-    // Replace password line
-    configContent = configContent.replace(
-      /^password=.*$/m,
-      `password=${hashedPassword}`
-    );
-
-    // Add hash indicator
-    if (!configContent.includes('passwordHashed=true')) {
-      configContent += '\npasswordHashed=true';
-    } else {
-      configContent = configContent.replace(
-        /^passwordHashed=.*$/m,
-        'passwordHashed=true'
-      );
-    }
-
-    await fs.writeFile(configPath, configContent);
+    await configManager.updateAdminCredentials({ password: hashedPassword, passwordHashed: true });
 
     // Clear the used reset token from Redis
     await redisClient.del(redisKey);
@@ -1711,7 +1689,7 @@ app.post('/api/ai/analyze', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'A safe Location-relative file path is required' });
     }
     if (configManager.get('ai.enabled') !== true) return res.status(503).json({ error: 'AI analysis is not enabled' });
-    const context = await getStorageContext({ ...req, body: { ...(req.body || {}), locationId } }, relativePath, 'read', locationId);
+    const context = await getStorageContext(req, relativePath, 'read', locationId);
     const stat = await context.fileSystem.stat(context.targetPath);
     if (stat.isDirectory) return res.status(400).json({ error: 'Directories cannot be analyzed directly' });
     const config = configManager.get('ai');
@@ -1820,7 +1798,7 @@ app.put('/api/super/ai-config', requireStaffRole, configurationChange(async (req
 
 // Admin User Management Endpoints
 //
-// System roles: 'admin' (config.ini, full control), 'superuser' (manages
+// System roles: 'admin' (.env, full control), 'superuser' (manages
 // regular 'user' accounts and Permission Roles only), and 'user' (no admin
 // access). A superuser actor must never be able to view/create/modify/
 // delete an admin or superuser account, or grant the superuser role -
@@ -2265,8 +2243,8 @@ const ADMIN_CONFIG_SCHEMA = {
     autoGenerateCerts: { type: 'boolean', label: 'Auto-generate certificates', description: 'Generate local certificates when none are available.', requiresRestart: true }
   },
   auth: {
-    username: { type: 'string', label: 'Administrator username', description: 'The single system administrator account. Managed here instead of User Management.', requiresRestart: false },
-    password: { type: 'secret', label: 'Administrator password', description: 'Enter a new password to replace the current administrator password. The stored value is bcrypt-hashed.', requiresRestart: false, sensitive: true }
+    username: { type: 'string', label: 'Administrator username', description: 'The single system administrator account. Stored in the deployment .env file.', requiresRestart: false },
+    password: { type: 'secret', label: 'Administrator password', description: 'Enter a new password. It is bcrypt-hashed and stored in the deployment .env file.', requiresRestart: false, sensitive: true }
   }
 };
 
@@ -2337,7 +2315,7 @@ const getAdminConfig = () => ({
 });
 
 app.get('/api/admin/config/schema', requireAdmin, (req, res) => {
-  res.json({ schema: ADMIN_CONFIG_SCHEMA, source: './src/config.ini' });
+  res.json({ schema: ADMIN_CONFIG_SCHEMA, source: './.env' });
 });
 
 app.get('/api/admin/config', requireAdmin, async (req, res) => {
@@ -2347,7 +2325,7 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
       .flatMap(([section, fields]) => Object.entries(fields)
         .filter(([, metadata]) => metadata.requiresRestart)
         .map(([key]) => `${section}.${key}`));
-    res.json({ config, schema: ADMIN_CONFIG_SCHEMA, restartRequiredFields, source: './src/config.ini', success: true });
+    res.json({ config, schema: ADMIN_CONFIG_SCHEMA, restartRequiredFields, source: './.env', success: true });
   } catch (error) {
     systemLogger.logSystem('ERROR', `Failed to fetch config: ${error.message}`);
     res.status(500).json({ error: 'Failed to fetch configuration' });
@@ -2377,6 +2355,7 @@ app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) 
 
     const pending = [];
     const add = (key, value) => pending.push([key, value]);
+    const adminCredentialUpdates = {};
 
     if (auth) {
       if (auth.username !== undefined) {
@@ -2384,15 +2363,15 @@ app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) 
           throw new Error('auth.username must be 3-64 characters and contain only letters, numbers, dot, underscore, or hyphen');
         }
         if (await userManager.getUser(auth.username.trim())) throw new Error('auth.username must not match an existing regular account');
-        add('auth.username', auth.username.trim());
+        adminCredentialUpdates.username = auth.username.trim();
         updatedFields.push('auth.username');
       }
       if (auth.password !== undefined && auth.password !== '' && auth.password !== '[SET]') {
         if (typeof auth.password !== 'string' || auth.password.length < 6) {
           throw new Error('auth.password must be at least 6 characters long');
         }
-        add('auth.password', await bcrypt.hash(auth.password, 12));
-        add('auth.passwordHashed', true);
+        adminCredentialUpdates.password = await bcrypt.hash(auth.password, 12);
+        adminCredentialUpdates.passwordHashed = true;
         updatedFields.push('auth.password', 'auth.passwordHashed');
       }
     }
@@ -2541,6 +2520,9 @@ app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) 
 
     if (updatedFields.includes('fileSystem.locations') && runtimeChanging) {
       return res.status(409).json({ error: 'Storage reconfiguration is already in progress' });
+    }
+    if (Object.keys(adminCredentialUpdates).length) {
+      await configManager.updateAdminCredentials(adminCredentialUpdates);
     }
     const previous = pending.map(([key]) => [key, configManager.get(key)]);
     pending.forEach(([key, value]) => configManager.set(key, value));

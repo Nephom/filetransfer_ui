@@ -49,13 +49,6 @@ tempUploadCleanupIntervalHours=24
 # Use DEBUG temporarily when investigating a problem, then restart the service after changing it.
 level=INFO
 
-[auth]
-# Administrator account created during setup. Keep password and jwtSecret private.
-username=admin
-password=
-# Set true only when password already contains a supported password hash.
-passwordHashed=false
-
 [security]
 # Enable individual safeguards. false is suitable for a trusted local network; enable them for production use.
 enableRateLimit=false

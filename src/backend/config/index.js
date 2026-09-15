@@ -125,6 +125,10 @@ class ConfigManager {
       systemLogger.logSystem('WARN', 'No config file found, using defaults');
     }
 
+    // Admin credentials are deployment secrets and only come from .env.
+    // Ignore legacy auth values in config.ini so the two sources cannot drift.
+    delete fileConfig.auth;
+
     // Merge configurations with priority: env > file > defaults
     this.config = this._mergeConfig(this.defaults, fileConfig, envConfig);
 
@@ -536,12 +540,6 @@ class ConfigManager {
         iniContent += '# DEBUG, INFO, WARN, or ERROR. INFO hides verbose DEBUG entries.\n';
         iniContent += `level=${this.config.logging?.level || 'INFO'}\n\n`;
 
-        // [auth] section
-        iniContent += '[auth]\n';
-        iniContent += `username=${this.config.auth?.username || 'admin'}\n`;
-        iniContent += `password=${this.config.auth?.password ?? ''}\n`;
-        iniContent += `passwordHashed=${this.config.auth?.passwordHashed === true ? 'true' : 'false'}\n\n`;
-
         // [security] section
         iniContent += '[security]\n';
         iniContent += '# Security features (true/false)\n';
@@ -610,6 +608,38 @@ class ConfigManager {
       if (tempFile) await fs.rm(tempFile, { force: true }).catch(() => {});
       systemLogger.logSystem('ERROR', `Error saving configuration: ${error.message}`);
       throw new Error('Failed to save configuration');
+    }
+  }
+
+  /**
+   * Update deployment-managed Admin credentials in .env.
+   * @param {{username?: string, password?: string, passwordHashed?: boolean}} credentials
+   */
+  async updateAdminCredentials(credentials) {
+    const envPath = path.resolve(this.options.envFile || '.env');
+    let content = '';
+    try {
+      content = await fs.readFile(envPath, 'utf8');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+
+    const updates = Object.entries(credentials)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [`AUTH_${key.replace(/[A-Z]/g, letter => `_${letter}`).toUpperCase()}`, value]);
+    for (const [key, value] of updates) {
+      const serialized = JSON.stringify(String(value));
+      const expression = new RegExp(`^${key}=.*$`, 'm');
+      const line = `${key}=${serialized}`;
+      content = expression.test(content) ? content.replace(expression, line) : `${content}${content && !content.endsWith('\n') ? '\n' : ''}${line}\n`;
+      process.env[key] = String(value);
+    }
+
+    await fs.writeFile(envPath, content, { mode: 0o600 });
+    await fs.chmod(envPath, 0o600);
+    for (const [key, value] of updates) {
+      const configKey = key === 'AUTH_USERNAME' ? 'auth.username' : key === 'AUTH_PASSWORD' ? 'auth.password' : 'auth.passwordHashed';
+      this.set(configKey, key === 'AUTH_PASSWORD_HASHED' ? String(value).toLowerCase() === 'true' : value);
     }
   }
 }

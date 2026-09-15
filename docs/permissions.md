@@ -25,7 +25,7 @@ The UI disables these controls while a Permission Role is selected to make the e
 
 System Role is separate from file permissions:
 
-- `admin`: the single system administrator from `config.ini`; full administration access.
+- `admin`: the single system administrator from `.env`; full administration access.
 - `superuser`: can manage regular users and Permission Roles, but not admin or superuser accounts.
 - `user`: regular file access only.
 

@@ -141,7 +141,7 @@ const authenticate = async (req, res, next) => {
 
 /**
  * Resolve a decoded token's *current* system role and active status by
- * looking the account up again in config.ini (for the single admin) or
+ * looking the account up again in .env (for the single admin) or
  * users.json (for everyone else), instead of trusting the `role` claim
  * embedded in the JWT at login time. Tokens are valid for 24h, so without
  * this, an admin demoting a superuser to 'user' (or deactivating any

@@ -45,16 +45,16 @@ class UserManager {
     try {
       await this.loadUsers();
 
-      // Remove admin user from users.json if it exists (admin should only be in config.ini)
+      // Remove admin user from users.json if it exists (Admin is managed by .env)
       if (this.users.has('admin')) {
-        systemLogger.logSystem('INFO', 'Removing admin user from users.json (admin is managed by config.ini)');
+        systemLogger.logSystem('INFO', 'Removing admin user from users.json (admin is managed by .env)');
         this.users.delete('admin');
         await this.saveUsers();
       }
 
       // Also remove 'root' user if it exists (redundant admin account)
       if (this.users.has('root')) {
-        systemLogger.logSystem('INFO', 'Removing root user from users.json (use admin from config.ini instead)');
+        systemLogger.logSystem('INFO', 'Removing root user from users.json (use admin from .env instead)');
         this.users.delete('root');
         await this.saveUsers();
       }
@@ -114,12 +114,12 @@ class UserManager {
   }
 
   /**
-   * Create default admin user (DEPRECATED - admin is now in config.ini)
+   * Create default admin user (DEPRECATED - admin is now in .env)
    * This method is kept for backward compatibility but does nothing
    */
   async createDefaultAdmin() {
     systemLogger.logSystem('INFO', 'Note: Admin user is managed by config.ini, not users.json');
-    // Do nothing - admin is managed through config.ini
+    // Do nothing - Admin is managed through .env
   }
 
   /**
@@ -142,7 +142,7 @@ class UserManager {
     // Prevent creating admin or config username
     const configUsername = configManager.get('auth.username') || 'admin';
     if (username === configUsername || username === 'admin' || username === 'root') {
-      throw new Error(`Cannot create user '${username}' - this username is reserved for system admin (managed in config.ini)`);
+      throw new Error(`Cannot create user '${username}' - this username is reserved for system admin (managed in .env)`);
     }
 
     if (this.users.has(username)) {
@@ -159,7 +159,7 @@ class UserManager {
     // Note: only 'user' and 'superuser' may be stored in users.json; the
     // single system administrator always comes from config.ini.
     if (role === 'admin') {
-      throw new Error('Cannot create admin users through this interface. Admin is managed in config.ini');
+      throw new Error('Cannot create admin users through this interface. Admin is managed in .env');
     }
     if (!ASSIGNABLE_SYSTEM_ROLES.includes(role)) {
       throw new Error(`Invalid role '${role}'. Must be one of: ${ASSIGNABLE_SYSTEM_ROLES.join(', ')}`);
@@ -202,10 +202,10 @@ class UserManager {
       throw new Error('User manager not initialized');
     }
 
-    // Prevent updating admin user (managed in config.ini)
+    // Prevent updating the Admin user (managed in .env)
     const configUsername = configManager.get('auth.username') || 'admin';
     if (username === configUsername || username === 'admin') {
-      throw new Error('Cannot update admin user through this interface. Admin is managed in config.ini');
+      throw new Error('Cannot update admin user through this interface. Admin is managed in .env');
     }
 
     const user = this.users.get(username);
@@ -308,10 +308,10 @@ class UserManager {
       throw new Error('User manager not initialized');
     }
 
-    // Prevent deleting admin user (managed in config.ini)
+    // Prevent deleting the Admin user (managed in .env)
     const configUsername = configManager.get('auth.username') || 'admin';
     if (username === configUsername || username === 'admin' || username === 'root') {
-      throw new Error('Cannot delete admin user. Admin is managed in config.ini');
+      throw new Error('Cannot delete admin user. Admin is managed in .env');
     }
 
     const user = this.users.get(username);
@@ -327,7 +327,7 @@ class UserManager {
 
   /**
    * Get all users (without passwords)
-   * Includes the config admin user from config.ini
+   * Includes the deployment-managed Admin user from .env
    */
   async getAllUsers() {
     if (!this.initialized) {
@@ -342,7 +342,7 @@ class UserManager {
         return userResponse;
       });
 
-    // Add the config admin user
+    // Add the deployment-managed Admin user
     const configUsername = configManager.get('auth.username') || 'admin';
     const configAdmin = {
       id: 0,
@@ -388,7 +388,7 @@ class UserManager {
     if (typeof username !== 'string' || !username || typeof password !== 'string' || !password) return null;
     const configUsername = configManager.get('auth.username') || 'admin';
 
-    // If authenticating the admin user, use config.ini as the source of truth.
+    // If authenticating the admin user, use deployment environment credentials.
     if (username === configUsername) {
         const configPassword = configManager.get('auth.password');
         const passwordHashed = configManager.get('auth.passwordHashed');
@@ -401,7 +401,7 @@ class UserManager {
         }
 
         if (isValid) {
-            // Password is valid according to config.ini.
+            // Password is valid according to the deployment environment.
             // Return admin user WITHOUT saving to users.json
             const user = {
                 id: 0,
