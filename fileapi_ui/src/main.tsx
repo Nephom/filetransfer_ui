@@ -4538,7 +4538,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     });
   };
 
-  const openPrivatePage = async (destination: "/dashboard" | "/admin" | "/super") => {
+  const openPrivatePage = async (destination: "/admin" | "/super") => {
     setAccountOpen(false);
     try {
       const response = await api("/auth/browser-handoff", { method: "POST" });
@@ -4578,7 +4578,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           setAccountOpen((open) => !open);
         }}
         onOpenSessions={() => { setAccountOpen(false); openSessionsModal(); }}
-        onOpenDashboard={() => { void openPrivatePage("/dashboard"); }}
         onOpenAdminConsole={() => { void openPrivatePage("/admin"); }}
         onOpenSuperPanel={() => { void openPrivatePage("/super"); }}
         onOpenSettings={() => { setAccountOpen(false); setSettingsOpen(true); refreshStorageInfo(); }}

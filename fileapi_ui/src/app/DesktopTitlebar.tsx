@@ -15,7 +15,6 @@ type DesktopTitlebarProps = {
   onModeChange: (mode: "location" | "rest" | "vnc") => void;
   onAccountToggle: (event: React.MouseEvent<HTMLButtonElement>) => void;
   onOpenSessions: () => void;
-  onOpenDashboard: () => void;
   onOpenAdminConsole: () => void;
   onOpenSuperPanel: () => void;
   onOpenSettings: () => void;
@@ -37,7 +36,6 @@ export function DesktopTitlebar({
   onModeChange,
   onAccountToggle,
   onOpenSessions,
-  onOpenDashboard,
   onOpenAdminConsole,
   onOpenSuperPanel,
   onOpenSettings,
@@ -81,7 +79,6 @@ export function DesktopTitlebar({
                 <strong>{session.username}</strong>
                 <span>{roleDescription}</span>
               </div>
-              {session.role === "admin" || session.role === "superuser" ? <button role="menuitem" onClick={onOpenDashboard}>Dashboard</button> : null}
               {session.role === "admin" ? <button role="menuitem" onClick={onOpenAdminConsole}>Admin console</button> : null}
               {session.role === "superuser" ? <button role="menuitem" onClick={onOpenSuperPanel}>Super panel</button> : null}
               <button role="menuitem" onClick={onOpenSessions}>Workspace Manager</button>
