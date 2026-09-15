@@ -512,7 +512,7 @@ export default function FileBrowser({ token, user, onLogout }) {
             activeJob.timeout = window.setTimeout(() => {
                 controller.abort();
                 fetch(`/api/ai/analyze/${encodeURIComponent(activeJob.jobId)}/cancel`, { method: 'POST', headers: authHeaders }).catch(() => {});
-            }, 10 * 60 * 1000);
+            }, 4 * 60 * 60 * 1000);
             const poll = async () => {
                 if (controller.signal.aborted || aiJobRef.current !== activeJob) return;
                 const statusResponse = await fetch(`/api/ai/analyze/${encodeURIComponent(activeJob.jobId)}`, { headers: authHeaders, signal: controller.signal });

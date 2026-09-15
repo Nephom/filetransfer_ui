@@ -81,7 +81,7 @@ class ConfigManager {
         baseUrl: 'http://127.0.0.1:11434/v1',
         apiKey: '',
         model: 'llama3.2',
-        requestTimeoutMs: 600000,
+        requestTimeoutMs: 2 * 60 * 60 * 1000,
         contextWindowTokens: 32768,
         maxOutputTokens: 8192,
         maxInputBytes: 52428800,
@@ -570,7 +570,7 @@ class ConfigManager {
         iniContent += `baseUrl=${this.config.ai?.baseUrl || 'http://127.0.0.1:11434/v1'}\n`;
         iniContent += `apiKey=${this.config.ai?.apiKey || ''}\n`;
         iniContent += `model=${this.config.ai?.model || 'llama3.2'}\n`;
-        iniContent += `requestTimeoutMs=${this.config.ai?.requestTimeoutMs ?? 600000}\n`;
+        iniContent += `requestTimeoutMs=${this.config.ai?.requestTimeoutMs ?? 2 * 60 * 60 * 1000}\n`;
         iniContent += '# contextWindowTokens is fixed at 32768.\n';
         iniContent += `contextWindowTokens=32768\n`;
         iniContent += `maxOutputTokens=${this.config.ai?.maxOutputTokens ?? 8192}\n`;

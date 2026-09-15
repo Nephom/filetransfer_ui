@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 
 class AnalysisQueue {
-  constructor({ maxConcurrent = 1, maxQueued = 20, retentionMs = 10 * 60 * 1000, clock = Date } = {}) {
+  constructor({ maxConcurrent = 1, maxQueued = 20, retentionMs = 4 * 60 * 60 * 1000, clock = Date } = {}) {
     this.maxConcurrent = maxConcurrent;
     this.maxQueued = maxQueued;
     this.retentionMs = retentionMs;

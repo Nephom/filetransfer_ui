@@ -84,8 +84,8 @@ baseUrl=http://127.0.0.1:11434/v1
 # Keep secrets out of tracked files. Use AI_API_KEY in .env when possible.
 apiKey=
 model=llama3.2
-# Local LLM calls may be slow. This is ten minutes per request.
-requestTimeoutMs=600000
+# Local LLM calls may be slow. This is two hours per request.
+requestTimeoutMs=7200000
 # Fixed by the application; this value is not editable in the panels.
 contextWindowTokens=32768
 maxOutputTokens=8192

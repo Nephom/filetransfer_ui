@@ -1437,7 +1437,7 @@
             <div class="control-card"><label class="form-group">Maximum input bytes<input id="aiInput" class="form-control" type="number" min="1"></label><label class="form-group">Maximum archive files<input id="aiFiles" class="form-control" type="number" min="1"></label><label class="form-group">Maximum archive expansion bytes<input id="aiExpanded" class="form-control" type="number" min="1"></label><label class="form-group">Maximum chunk tokens<input id="aiChunk" class="form-control" type="number" min="100"></label></div>
         </div>
         <label class="form-group">System prompt<textarea id="aiPrompt" class="form-control" rows="8"></textarea></label>
-        <p style="opacity:.75;line-height:1.5;">Context window is fixed at 32768 tokens. Local LLM requests may wait up to ten minutes.</p>
+        <p style="opacity:.75;line-height:1.5;">Context window is fixed at 32768 tokens. Local LLM requests may run for up to two hours; queued jobs are retained for up to four hours.</p>
         <button class="btn" type="button" onclick="saveSuperAiSettings()">Save AI analysis settings</button>
     </section>
     <script>
@@ -1448,7 +1448,7 @@
             const config = data.config || {};
             document.getElementById('aiEnabled').checked = config.enabled === true;
             document.getElementById('aiModel').value = config.model || '';
-            document.getElementById('aiTimeout').value = config.requestTimeoutMs || 600000;
+            document.getElementById('aiTimeout').value = config.requestTimeoutMs || 2 * 60 * 60 * 1000;
             document.getElementById('aiOutput').value = config.maxOutputTokens || 8192;
             document.getElementById('aiInput').value = config.maxInputBytes || 52428800;
             document.getElementById('aiFiles').value = config.maxArchiveFiles || 2000;

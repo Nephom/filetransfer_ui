@@ -1782,7 +1782,7 @@ app.put('/api/settings', requireAdmin, configurationChange(async (req, res) => {
 const getSuperuserAiConfig = () => ({
   enabled: configManager.get('ai.enabled') === true,
   model: configManager.get('ai.model') || 'llama3.2',
-  requestTimeoutMs: configManager.get('ai.requestTimeoutMs') ?? 600000,
+  requestTimeoutMs: configManager.get('ai.requestTimeoutMs') ?? 2 * 60 * 60 * 1000,
   contextWindowTokens: 32768,
   maxOutputTokens: configManager.get('ai.maxOutputTokens') ?? 8192,
   maxInputBytes: configManager.get('ai.maxInputBytes') ?? 52428800,
@@ -1810,7 +1810,7 @@ app.put('/api/super/ai-config', requireStaffRole, configurationChange(async (req
       const value = Number(next[key]);
       const minimum = ['maxNestedArchiveDepth', 'chunkOverlapLines', 'maxRetries'].includes(key) ? 0 : 1;
       if (!Number.isSafeInteger(value) || value < minimum) return res.status(400).json({ error: `Invalid ai.${key}` });
-      if (key === 'requestTimeoutMs' && value > 1800000) return res.status(400).json({ error: 'requestTimeoutMs cannot exceed 1800000' });
+      if (key === 'requestTimeoutMs' && value > 2 * 60 * 60 * 1000) return res.status(400).json({ error: 'requestTimeoutMs cannot exceed 2 hours' });
       pending.push([`ai.${key}`, value]);
     }
     pending.forEach(([key, value]) => configManager.set(key, value));
@@ -2313,7 +2313,7 @@ const getAdminConfig = () => ({
     baseUrl: configManager.get('ai.baseUrl') ?? 'http://127.0.0.1:11434/v1',
     apiKey: configManager.get('ai.apiKey') ? '[SET]' : '',
     model: configManager.get('ai.model') ?? 'llama3.2',
-    requestTimeoutMs: configManager.get('ai.requestTimeoutMs') ?? 600000,
+  requestTimeoutMs: configManager.get('ai.requestTimeoutMs') ?? 2 * 60 * 60 * 1000,
     contextWindowTokens: 32768,
     maxOutputTokens: configManager.get('ai.maxOutputTokens') ?? 8192,
     maxInputBytes: configManager.get('ai.maxInputBytes') ?? 52428800,
@@ -2508,7 +2508,7 @@ app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) 
       if (ai.baseUrl !== undefined) { if (typeof ai.baseUrl !== 'string' || !/^https?:\/\//i.test(ai.baseUrl)) throw new Error('ai.baseUrl must be an HTTP(S) URL'); add('ai.baseUrl', ai.baseUrl.trim().replace(/\/$/, '')); updatedFields.push('ai.baseUrl'); }
       if (ai.apiKey !== undefined && ai.apiKey !== '[SET]') { if (typeof ai.apiKey !== 'string' || ai.apiKey.length > 4096) throw new Error('ai.apiKey is invalid'); add('ai.apiKey', ai.apiKey); updatedFields.push('ai.apiKey'); }
       if (ai.model !== undefined) { if (typeof ai.model !== 'string' || !ai.model.trim()) throw new Error('ai.model is required'); add('ai.model', ai.model.trim()); updatedFields.push('ai.model'); }
-      if (ai.requestTimeoutMs !== undefined) { add('ai.requestTimeoutMs', integer(ai.requestTimeoutMs, 'ai.requestTimeoutMs', 1000, 1800000)); updatedFields.push('ai.requestTimeoutMs'); }
+       if (ai.requestTimeoutMs !== undefined) { add('ai.requestTimeoutMs', integer(ai.requestTimeoutMs, 'ai.requestTimeoutMs', 1000, 2 * 60 * 60 * 1000)); updatedFields.push('ai.requestTimeoutMs'); }
       if (ai.contextWindowTokens !== undefined && Number(ai.contextWindowTokens) !== 32768) throw new Error('ai.contextWindowTokens is fixed at 32768');
       for (const key of ['maxOutputTokens', 'maxInputBytes', 'maxArchiveFiles', 'maxArchiveExpandedBytes', 'maxSingleExpandedFileBytes', 'maxNestedArchiveDepth', 'maxChunkTokens', 'chunkOverlapLines', 'maxRetries']) {
         if (ai[key] !== undefined) {
