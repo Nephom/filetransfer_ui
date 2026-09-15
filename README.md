@@ -4,7 +4,7 @@
 
 本專案包含兩個產品面：上方是提供瀏覽器使用的 WebUI，下方是獨立的 nFterm Desktop App。兩者共用 API server 與權限模型，但執行環境、檔案能力與使用方式不同。
 
-## WebUI 3.4.0-RC1
+## WebUI 3.4.0-RC2
 
 WebUI 是瀏覽器版檔案管理介面，提供：
 
