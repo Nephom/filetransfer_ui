@@ -8,7 +8,7 @@ function timeoutSignal(timeoutMs, signal) {
   return { signal: controller.signal, cleanup: () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); } };
 }
 
-async function complete({ config, userPrompt, systemPrompt = DEFAULT_SYSTEM_PROMPT, signal }) {
+async function complete({ config, userPrompt, systemPrompt = DEFAULT_SYSTEM_PROMPT, signal, maxOutputTokens = config.maxOutputTokens }) {
   const baseUrl = String(config.baseUrl).replace(/\/$/, '');
   const timed = timeoutSignal(config.requestTimeoutMs, signal);
   try {
@@ -20,7 +20,7 @@ async function complete({ config, userPrompt, systemPrompt = DEFAULT_SYSTEM_PROM
         model: config.model,
         messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
         temperature: 0.1,
-        max_tokens: config.maxOutputTokens,
+        max_tokens: maxOutputTokens,
         ...(String(config.provider).toLowerCase() === 'ollama' ? { options: { num_ctx: 32768 } } : {})
       })
     });

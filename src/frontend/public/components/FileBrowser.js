@@ -529,7 +529,10 @@ export default function FileBrowser({ token, user, onLogout }) {
                 if (statusData.status === 'cancelled') throw Object.assign(new Error('AI analysis was cancelled.'), { name: 'AbortError' });
                 const phase = statusData.status === 'queued'
                     ? `Waiting in queue${statusData.position ? ` · position ${statusData.position}` : ''}`
-                    : statusData.status === 'cancelling' ? 'Cancelling analysis...' : 'Analyzing file...';
+                    : statusData.status === 'cancelling' ? 'Cancelling analysis...'
+                        : statusData.progress?.phase === 'scan' ? 'Extracting archive...'
+                            : statusData.progress?.phase === 'aggregate' ? 'Building bounded summaries...'
+                                : statusData.progress?.phase === 'summary' ? 'Writing final report...' : 'Analyzing file...';
                 setAiAnalysis(current => ({ ...(current || {}), status: statusData.status, phase, progress: statusData.progress }));
                 window.setTimeout(() => void poll().catch(handlePollError), 1000);
             };
@@ -1361,7 +1364,7 @@ export default function FileBrowser({ token, user, onLogout }) {
                  <button className="ai-analysis-cancel" type="button" onClick={cancelAiAnalysis} disabled={aiAnalysis.status === 'cancelling'}>{aiAnalysis.status === 'cancelling' ? 'Cancelling...' : 'Cancel analysis'}</button>
               </section>}
              {aiAnalysis?.status === 'error' && <div className="notice error-notice" role="alert"><strong>AI analysis failed</strong><p>{aiAnalysis.error}</p><button type="button" onClick={() => void analyzeSelectedFile()}>Retry</button></div>}
-              {aiAnalysis?.status === 'complete' && <div className="ai-analysis-result" role="region" aria-label="AI analysis response"><p className="muted ai-analysis-result-meta">Source: {aiAnalysis.source} · Model: {aiAnalysis.metadata?.model || '--'}</p><pre className="ai-analysis-response">{aiAnalysis.result}</pre><div className="modal-actions"><button type="button" className="confirm" onClick={() => setModal(null)}>Close</button></div></div>}
+               {aiAnalysis?.status === 'complete' && <div className="ai-analysis-result" role="region" aria-label="AI analysis response"><p className="muted ai-analysis-result-meta">Source: {aiAnalysis.source} · Model: {aiAnalysis.metadata?.model || '--'}</p>{aiAnalysis.metadata?.coverage && <p className="muted ai-analysis-result-meta">Analyzed {aiAnalysis.metadata.coverage.analyzedEntries} entries · {aiAnalysis.metadata.coverage.analyzedChunks} chunks · {aiAnalysis.metadata.coverage.aggregationLevels} bounded summary level{aiAnalysis.metadata.coverage.aggregationLevels === 1 ? '' : 's'}</p>}{aiAnalysis.metadata?.coverage?.incomplete && <div className="notice error-notice"><strong>Analysis is incomplete</strong><p>Some source data was not included in the final report.</p></div>}<pre className="ai-analysis-response">{aiAnalysis.result}</pre><div className="modal-actions"><button type="button" className="confirm" onClick={() => setModal(null)}>Close</button></div></div>}
            </Dialog>}
      </div>;
 };

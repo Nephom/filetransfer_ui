@@ -8,6 +8,7 @@ const { splitText } = require('./chunker');
 const { extractArchive, safeEntry } = require('./archive-reader');
 const { DEFAULT_SYSTEM_PROMPT, analysisContext } = require('./prompt');
 const { AnalysisQueue } = require('./analysis-queue');
+const { chunkOptions, contextInputBudget, groupByTokenBudget } = require('./analysis-job');
 
 test('keeps the fixed prompt neutral for complete and partial logs', () => {
   assert.match(DEFAULT_SYSTEM_PROMPT, /完整檔案/);
@@ -20,6 +21,19 @@ test('splits text into bounded chunks with source line metadata', () => {
   assert.ok(chunks.length > 1);
   assert.equal(chunks[0].lineStart, 1);
   assert.ok(chunks.every(chunk => chunk.tokenCount <= 100));
+});
+
+test('maps configured chunk limits into the actual chunker options and reserves output context', () => {
+  const config = { contextWindowTokens: 32768, maxOutputTokens: 8192, maxChunkTokens: 12000, chunkOverlapLines: 17 };
+  assert.deepEqual(chunkOptions(config), { maxTokens: 12000, overlapLines: 17 });
+  assert.equal(contextInputBudget(config), 22576);
+  assert.deepEqual(groupByTokenBudget([{ id: 'a' }, { id: 'b' }], 10000).length, 1);
+});
+
+test('bounds an individual oversized summary item before grouping', () => {
+  const groups = groupByTokenBudget([{ source: 'large.log', analysis: { summary: 'x'.repeat(10000) } }], 100);
+  assert.equal(groups.length, 1);
+  assert.ok(groups[0][0].truncated);
 });
 
 test('rejects unsafe archive paths', () => {
