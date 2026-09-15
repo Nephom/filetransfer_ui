@@ -273,6 +273,14 @@ class RedisFileSystemCache extends EventEmitter {
         if (!metadata || generation !== this.snapshotGeneration || metadata.generation !== generation
           || performance.now() - metadata.timestamp >= this.cacheTtlMs
           || this.directoryMtimes.get(absolute) !== mtimeToken) return null;
+        for (const entry of contents) {
+          try {
+            await this._checked(path.join(absolute, entry.name), { allowMissing: false });
+          } catch (error) {
+            if (error.code === 'ENOENT') return null;
+            throw error;
+          }
+        }
         this.metrics[hot ? 'hotCacheHits' : 'memoryCacheHits']++;
         this.updateHotCache(absolute, contents);
         return contents;
