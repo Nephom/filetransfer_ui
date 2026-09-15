@@ -205,6 +205,7 @@ const GlobalStyles = () => {
                     cursor: pointer;
                 }
                 .ai-analysis-cancel:hover { border-color: rgba(157, 219, 238, 0.58); color: #fff; background: rgba(103, 207, 255, 0.12); }
+                .ai-analysis-cancel:disabled { cursor: wait; opacity: 0.65; }
                 @keyframes ai-analysis-spin { to { transform: rotate(360deg); } }
                 @keyframes ai-analysis-breathe { 0%, 100% { transform: scale(0.92); opacity: 0.72; } 50% { transform: scale(1.08); opacity: 1; } }
                 @keyframes ai-analysis-node-pulse { 0%, 100% { transform: scale(0.65); opacity: 0.35; } 50% { transform: scale(1.35); opacity: 1; } }

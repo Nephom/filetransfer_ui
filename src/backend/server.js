@@ -39,6 +39,7 @@ const { withOperationLocks } = require('./file-system/operation-locks');
 const { assertSafeTree, assertTransferPaths } = require('./file-system/path-safety');
 const { publicDirectory, checkBrowserBuild } = require('../../scripts/build-browser');
 const { analyzePath } = require('./ai/analysis-job');
+const { AnalysisQueue } = require('./ai/analysis-queue');
 const { DEFAULT_SYSTEM_PROMPT } = require('./ai/prompt');
 
 
@@ -62,6 +63,7 @@ const initializingFileSystems = new Map();
 const storageRequests = new Set();
 let runtimeChanging = false;
 let configurationWrites = Promise.resolve();
+const aiAnalysisQueue = new AnalysisQueue();
 const configurationChange = handler => (req, res, next) => {
   const job = configurationWrites.then(() => handler(req, res));
   configurationWrites = job.catch(() => {});
@@ -1694,19 +1696,41 @@ app.post('/api/ai/analyze', authenticate, async (req, res) => {
     if (stat.isDirectory) return res.status(400).json({ error: 'Directories cannot be analyzed directly' });
     const config = configManager.get('ai');
     if (!config.baseUrl || !config.model) return res.status(503).json({ error: 'AI endpoint or model is not configured' });
-    const result = await analyzePath({
-      filePath: context.targetPath,
+    const owner = req.user?.username || req.user?.id;
+    const job = aiAnalysisQueue.enqueue({
+      owner,
       source: relativePath,
-      config,
-      signal: req.signal,
-      onProgress: progress => systemLogger.logSystem('DEBUG', `AI analysis ${JSON.stringify({ user: req.user?.username, ...progress })}`)
+      run: ({ signal, onProgress }) => analyzePath({
+        filePath: context.targetPath,
+        source: relativePath,
+        config,
+        signal,
+        onProgress: progress => {
+          onProgress(progress);
+          systemLogger.logSystem('DEBUG', `AI analysis ${JSON.stringify({ user: owner, ...progress })}`);
+        }
+      })
     });
-    res.json({ success: true, ...result, locationId: context.locationId, path: relativePath });
+    res.status(202).json({ success: true, ...job, locationId: context.locationId, path: relativePath });
   } catch (error) {
     const status = error.statusCode || (error.code === 'ENOENT' ? 404 : 500);
     systemLogger.logSystem(status >= 500 ? 'ERROR' : 'WARN', `AI analysis failed: ${error.message}`);
     res.status(status).json({ error: error.message || 'AI analysis failed', code: error.code || 'AI_ERROR' });
   }
+});
+
+app.get('/api/ai/analyze/:jobId', authenticate, (req, res) => {
+  const owner = req.user?.username || req.user?.id;
+  const job = aiAnalysisQueue.get(req.params.jobId, owner);
+  if (!job) return res.status(404).json({ error: 'AI analysis job not found' });
+  return res.json({ success: true, ...job });
+});
+
+app.post('/api/ai/analyze/:jobId/cancel', authenticate, (req, res) => {
+  const owner = req.user?.username || req.user?.id;
+  const job = aiAnalysisQueue.cancel(req.params.jobId, owner);
+  if (!job) return res.status(404).json({ error: 'AI analysis job not found' });
+  return res.json({ success: true, ...job });
 });
 
 // Settings API endpoints
@@ -3139,6 +3163,8 @@ async function gracefulShutdown() {
       clearInterval(tempUploadCleanupInterval);
       tempUploadCleanupInterval = null;
     }
+
+    aiAnalysisQueue.close();
 
     // Close HTTP server
     if (httpServerInstance) {

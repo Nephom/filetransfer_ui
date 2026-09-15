@@ -4,9 +4,12 @@ import { chromium } from "playwright";
 
 const indexSource = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../public/components/app.js", import.meta.url), "utf8");
+const fileBrowserSource = readFileSync(new URL("../public/components/FileBrowser.js", import.meta.url), "utf8");
 const styles = indexSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
 assert.ok(styles, "public index styles are present");
 assert.match(appSource, /<GlobalStyles\s*\/>/, "application mounts the shared loading styles");
+assert.match(fileBrowserSource, /\/api\/ai\/analyze\/\$\{encodeURIComponent\(activeJob\.jobId\)\}/, "AI analysis polls queued jobs");
+assert.match(fileBrowserSource, /Waiting in queue/, "AI loading card reports queue position");
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage();
@@ -22,8 +25,8 @@ try {
                 <span class="ai-analysis-node ai-analysis-node-two"></span>
                 <span class="ai-analysis-node ai-analysis-node-three"></span>
             </div>
-            <div class="ai-analysis-copy"><div class="ai-analysis-eyebrow"><span class="ai-analysis-live-dot"></span>LOCAL LLM</div>
-                <h3>Reading the file</h3><p class="ai-analysis-phase">Preparing file...</p>
+             <div class="ai-analysis-copy"><div class="ai-analysis-eyebrow"><span class="ai-analysis-live-dot"></span>LOCAL LLM · QUEUED</div>
+                 <h3>Waiting for the model</h3><p class="ai-analysis-phase">Waiting in queue · position 2</p>
                 <p class="ai-analysis-source">Analyzing <strong>server.log</strong></p><div class="ai-analysis-scanline"><span></span></div>
             </div><button class="ai-analysis-cancel">Cancel analysis</button>
         </section></body></html>`);

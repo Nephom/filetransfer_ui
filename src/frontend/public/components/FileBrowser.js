@@ -157,6 +157,7 @@ export default function FileBrowser({ token, user, onLogout }) {
     const [error, setError] = React.useState('');
     const [aiAnalysis, setAiAnalysis] = React.useState(null);
     const aiAbortRef = React.useRef(null);
+    const aiJobRef = React.useRef(null);
     const [modal, setModal] = React.useState(null);
     const [context, setContext] = React.useState(null);
     const [createdShareLinks, setCreatedShareLinks] = React.useState(null);
@@ -419,6 +420,14 @@ export default function FileBrowser({ token, user, onLogout }) {
     }, []);
     React.useEffect(() => () => {
         aiAbortRef.current?.abort();
+        const activeAiJob = aiJobRef.current;
+        if (activeAiJob?.jobId) {
+            fetch(`/api/ai/analyze/${encodeURIComponent(activeAiJob.jobId)}/cancel`, {
+                method: 'POST', headers: authHeaders, keepalive: true
+            }).catch(() => {});
+        }
+        if (activeAiJob?.timeout) window.clearTimeout(activeAiJob.timeout);
+        aiJobRef.current = null;
         window.clearTimeout(dragExpandTimer.current);
         window.clearTimeout(notificationTimer.current);
         queueRetryTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -478,34 +487,74 @@ export default function FileBrowser({ token, user, onLogout }) {
         const item = selectedItems.length === 1 ? selectedItems[0] : null;
         if (!item || item.isDirectory || !hasCapability('read')) return;
         aiAbortRef.current?.abort();
+        const previousJob = aiJobRef.current;
+        if (previousJob?.jobId) {
+            fetch(`/api/ai/analyze/${encodeURIComponent(previousJob.jobId)}/cancel`, { method: 'POST', headers: authHeaders }).catch(() => {});
+        }
+        if (previousJob?.timeout) window.clearTimeout(previousJob.timeout);
         const controller = new AbortController();
         aiAbortRef.current = controller;
         const startedAt = Date.now();
+        const activeJob = { controller, jobId: null, timeout: null };
+        aiJobRef.current = activeJob;
         setModal('ai');
-        setAiAnalysis({ status: 'running', phase: 'Preparing file...', startedAt, source: item.name, result: '', error: '' });
+        setAiAnalysis({ status: 'queued', phase: 'Submitting to the analysis queue...', startedAt, source: item.name, result: '', error: '' });
         try {
-            const timeout = window.setTimeout(() => controller.abort(), 10 * 60 * 1000);
             const response = await fetch('/api/ai/analyze', {
                 method: 'POST',
                 headers: { ...authHeaders, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ locationId, path: pathForItem(item) }),
                 signal: controller.signal
             });
-            window.clearTimeout(timeout);
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(data.error || 'AI analysis failed.');
-            setAiAnalysis({ status: 'complete', phase: 'Analysis complete', startedAt, source: item.name, result: data.result || '', metadata: data, error: '' });
+            activeJob.jobId = data.jobId;
+            activeJob.timeout = window.setTimeout(() => {
+                controller.abort();
+                fetch(`/api/ai/analyze/${encodeURIComponent(activeJob.jobId)}/cancel`, { method: 'POST', headers: authHeaders }).catch(() => {});
+            }, 10 * 60 * 1000);
+            const poll = async () => {
+                if (controller.signal.aborted || aiJobRef.current !== activeJob) return;
+                const statusResponse = await fetch(`/api/ai/analyze/${encodeURIComponent(activeJob.jobId)}`, { headers: authHeaders, signal: controller.signal });
+                const statusData = await statusResponse.json().catch(() => ({}));
+                if (!statusResponse.ok) throw new Error(statusData.error || 'Unable to read AI analysis status.');
+                if (aiJobRef.current !== activeJob) return;
+                if (statusData.status === 'complete') {
+                    window.clearTimeout(activeJob.timeout);
+                    aiJobRef.current = null;
+                    setAiAnalysis({ status: 'complete', phase: 'Analysis complete', startedAt, source: item.name, result: statusData.result?.result || '', metadata: statusData.result || {}, error: '' });
+                    return;
+                }
+                if (statusData.status === 'failed') throw new Error(statusData.error?.message || 'AI analysis failed.');
+                if (statusData.status === 'cancelled') throw Object.assign(new Error('AI analysis was cancelled.'), { name: 'AbortError' });
+                const phase = statusData.status === 'queued'
+                    ? `Waiting in queue${statusData.position ? ` · position ${statusData.position}` : ''}`
+                    : statusData.status === 'cancelling' ? 'Cancelling analysis...' : 'Analyzing file...';
+                setAiAnalysis(current => ({ ...(current || {}), status: statusData.status, phase, progress: statusData.progress }));
+                window.setTimeout(() => void poll().catch(handlePollError), 1000);
+            };
+            const handlePollError = (pollError) => {
+                if (aiJobRef.current !== activeJob) return;
+                window.clearTimeout(activeJob.timeout);
+                const message = pollError.name === 'AbortError' ? 'AI analysis was cancelled or timed out.' : pollError.message;
+                setAiAnalysis(current => ({ ...(current || {}), status: 'error', phase: 'Analysis failed', error: message }));
+            };
+            await poll();
         } catch (requestError) {
             const message = requestError.name === 'AbortError' ? 'AI analysis was cancelled or timed out.' : requestError.message;
-            setAiAnalysis(current => ({ ...(current || {}), status: 'error', phase: 'Analysis failed', error: message }));
+            if (aiJobRef.current === activeJob) setAiAnalysis(current => ({ ...(current || {}), status: 'error', phase: 'Analysis failed', error: message }));
         } finally {
             if (aiAbortRef.current === controller) aiAbortRef.current = null;
         }
     };
 
     const cancelAiAnalysis = () => {
-        aiAbortRef.current?.abort();
+        const activeJob = aiJobRef.current;
+        activeJob?.controller.abort();
+        if (activeJob?.jobId) fetch(`/api/ai/analyze/${encodeURIComponent(activeJob.jobId)}/cancel`, { method: 'POST', headers: authHeaders }).catch(() => {});
+        if (activeJob?.timeout) window.clearTimeout(activeJob.timeout);
         aiAbortRef.current = null;
+        aiJobRef.current = null;
         setAiAnalysis(current => current ? { ...current, status: 'error', phase: 'Cancelled', error: 'AI analysis was cancelled.' } : current);
     };
 
@@ -1291,8 +1340,8 @@ export default function FileBrowser({ token, user, onLogout }) {
         </Dialog>}
          {modal === 'shareLinks' && <Dialog title="Share Links" onClose={() => setModal(null)}><div className="share-links-dialog"><div className="share-links-toolbar"><p>Links created by {user.username}.</p><button type="button" onClick={loadShareLinks} disabled={shareLinksLoading}>{shareLinksLoading ? 'Refreshing...' : 'Refresh'}</button></div>{shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : <div className="share-link-groups">{shareLinkGroups.map((group) => <section className="share-link-group" key={group.key}><div className="share-link-group-heading"><h3>{group.label}</h3><span>{group.links.length}</span>{group.key === 'revoked' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteRevokedShareLink(link.shareToken)))}>Clear all revoked</button>}{group.key === 'expired' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteExpiredShareLink(link.shareToken)))}>Clear all expired</button>}</div><div className="share-links-list">{group.links.map((link) => { const secureUrl = shareLinkUrl(link, 'secure'); const directUrl = shareLinkUrl(link, 'direct'); const status = shareLinkStatus(link); return <article className="share-link-card" key={link.shareToken}><div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div><small>Location: {link.locationId || '--'} · Created: {formatDate(link.createdAt)}</small><small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : ' / unlimited'} · Expires: {link.expiresAt ? formatDate(link.expiresAt) : 'never'}</small><label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.target.select()} /></label>{directUrl && <label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.target.select()} /></label>}<div className="modal-actions">{status === 'Active' && <><button type="button" onClick={() => void copyShareLink(link, 'secure')}>Copy secure</button>{directUrl && <button type="button" onClick={() => void copyShareLink(link, 'direct')}>Copy direct</button>}<button type="button" className="danger" onClick={() => void revokeShareLink(link.shareToken)}>Revoke</button></>}{status === 'Revoked' && <button type="button" onClick={() => void deleteRevokedShareLink(link.shareToken)}>Clear revoked</button>}{status === 'Expired' && <button type="button" onClick={() => void deleteExpiredShareLink(link.shareToken)}>Clear expired</button>}</div></article>; })}</div></section>)}</div>}</div></Dialog>}
           {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue ({queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length} active)</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No transfers in history.</p> : <><strong>Active</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['queued', 'running', 'retrying', 'needs_user_action'].includes(item.status)).map(renderQueueItem)}</ul>{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <><strong>History</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['completed', 'failed', 'cancelled'].includes(item.status)).map(renderQueueItem)}</ul></>}</>}{queueItems.some((item) => item.status === 'completed') && <button type="button" onClick={() => clearQueueStatus('completed')}>Clear completed</button>}{queueItems.some((item) => item.status === 'failed') && <button type="button" onClick={() => clearQueueStatus('failed')}>Clear failed</button>}{queueItems.some((item) => item.status === 'cancelled') && <button type="button" onClick={() => clearQueueStatus('cancelled')}>Clear cancelled</button>}{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <button type="button" onClick={clearQueueHistory}>Clear history</button>}</div>}
-            {modal === 'ai' && <Dialog title="AI Log analysis" className="ai-analysis-modal" onClose={() => { if (aiAnalysis?.status === 'running') cancelAiAnalysis(); setModal(null); }}>
-              {aiAnalysis?.status === 'running' && <section className="ai-analysis-progress" role="status" aria-live="polite" aria-label="Local LLM analysis in progress">
+             {modal === 'ai' && <Dialog title="AI Log analysis" className="ai-analysis-modal" onClose={() => { if (['queued', 'running', 'cancelling'].includes(aiAnalysis?.status)) cancelAiAnalysis(); setModal(null); }}>
+               {['queued', 'running', 'cancelling'].includes(aiAnalysis?.status) && <section className="ai-analysis-progress" role="status" aria-live="polite" aria-label="Local LLM analysis in progress">
                 <div className="ai-analysis-visual" aria-hidden="true">
                   <span className="ai-analysis-ring ai-analysis-ring-outer" />
                   <span className="ai-analysis-ring ai-analysis-ring-inner" />
@@ -1302,14 +1351,14 @@ export default function FileBrowser({ token, user, onLogout }) {
                   <span className="ai-analysis-node ai-analysis-node-three" />
                 </div>
                 <div className="ai-analysis-copy">
-                  <div className="ai-analysis-eyebrow"><span className="ai-analysis-live-dot" />LOCAL LLM <span>·</span> PROCESSING</div>
-                  <h3>Reading the file</h3>
+                   <div className="ai-analysis-eyebrow"><span className="ai-analysis-live-dot" />LOCAL LLM <span>·</span> {aiAnalysis.status === 'queued' ? 'QUEUED' : 'PROCESSING'}</div>
+                   <h3>{aiAnalysis.status === 'queued' ? 'Waiting for the model' : 'Reading the file'}</h3>
                   <p className="ai-analysis-phase"><span className="ai-analysis-phase-marker" />{aiAnalysis.phase}</p>
                   <p className="ai-analysis-source" title={aiAnalysis.source}>Analyzing <strong>{aiAnalysis.source}</strong></p>
                   <div className="ai-analysis-scanline" aria-hidden="true"><span /></div>
                   <p className="ai-analysis-hint">The local model is working privately on this file. This can take a few minutes.</p>
                 </div>
-                <button className="ai-analysis-cancel" type="button" onClick={cancelAiAnalysis}>Cancel analysis</button>
+                 <button className="ai-analysis-cancel" type="button" onClick={cancelAiAnalysis} disabled={aiAnalysis.status === 'cancelling'}>{aiAnalysis.status === 'cancelling' ? 'Cancelling...' : 'Cancel analysis'}</button>
               </section>}
              {aiAnalysis?.status === 'error' && <div className="notice error-notice" role="alert"><strong>AI analysis failed</strong><p>{aiAnalysis.error}</p><button type="button" onClick={() => void analyzeSelectedFile()}>Retry</button></div>}
               {aiAnalysis?.status === 'complete' && <div className="ai-analysis-result" role="region" aria-label="AI analysis response"><p className="muted ai-analysis-result-meta">Source: {aiAnalysis.source} · Model: {aiAnalysis.metadata?.model || '--'}</p><pre className="ai-analysis-response">{aiAnalysis.result}</pre><div className="modal-actions"><button type="button" className="confirm" onClick={() => setModal(null)}>Close</button></div></div>}

@@ -3,8 +3,11 @@ import { readFileSync } from "node:fs";
 import { chromium } from "playwright";
 
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+const fileBrowserSource = readFileSync(new URL("../public/components/FileBrowser.js", import.meta.url), "utf8");
 const styles = html.match(/<style>([\s\S]*?)<\/style>/)?.[1];
 assert.ok(styles, "public index styles are present");
+assert.match(fileBrowserSource, /statusData\.result\?\.result/, "completed queue jobs populate the response pane");
+assert.match(fileBrowserSource, /\/api\/ai\/analyze\/\$\{encodeURIComponent\(activeJob\.jobId\)\}\/cancel/, "response flow can cancel the active queue job");
 
 const longResponse = Array.from({ length: 80 }, (_, index) =>
     `${index + 1}. ${"A detailed local model response with a very long token sequence ".repeat(8)}`
