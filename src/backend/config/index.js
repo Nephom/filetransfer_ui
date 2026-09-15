@@ -73,6 +73,26 @@ class ConfigManager {
         allowPasswordProtection: true,
         cleanupInterval: 86400, // daily
         maxDownloadsDefault: 0 // 0 = unlimited
+      },
+
+      ai: {
+        enabled: false,
+        provider: 'ollama',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        apiKey: '',
+        model: 'llama3.2',
+        requestTimeoutMs: 600000,
+        contextWindowTokens: 32768,
+        maxOutputTokens: 8192,
+        maxInputBytes: 52428800,
+        maxArchiveFiles: 2000,
+        maxArchiveExpandedBytes: 1073741824,
+        maxSingleExpandedFileBytes: 104857600,
+        maxNestedArchiveDepth: 2,
+        maxChunkTokens: 22000,
+        chunkOverlapLines: 200,
+        maxRetries: 2,
+        systemPrompt: '你是一名資深測試與除錯工程師，熟悉硬體、韌體、作業系統、驅動程式、網路、儲存裝置與應用軟體。請根據使用者提供的 Log 或相關檔案內容進行嚴謹分析。你可能會收到完整檔案，也可能只會收到同一份檔案的一部分；請依據本次實際提供的內容進行判斷，不要假設未提供的內容。請擷取重要事件、保留可追溯證據、依時間順序整理、區分事實與推論、排序可能根因、提出可執行的驗證步驟，並明確說明分析範圍、信心程度與缺少的資料。請使用繁體中文輸出。'
       }
     };
 
@@ -258,6 +278,23 @@ class ConfigManager {
       env.security.jwtSecret = process.env.JWT_SECRET;
     }
 
+    if (process.env.AI_ENABLED !== undefined) {
+      env.ai = env.ai || {};
+      env.ai.enabled = process.env.AI_ENABLED.toLowerCase() === 'true';
+    }
+    for (const [name, key] of [['AI_PROVIDER', 'provider'], ['AI_BASE_URL', 'baseUrl'], ['AI_MODEL', 'model'], ['AI_API_KEY', 'apiKey']]) {
+      if (process.env[name] !== undefined) {
+        env.ai = env.ai || {};
+        env.ai[key] = process.env[name];
+      }
+    }
+    for (const [name, key] of [['AI_REQUEST_TIMEOUT_MS', 'requestTimeoutMs'], ['AI_MAX_OUTPUT_TOKENS', 'maxOutputTokens']]) {
+      if (process.env[name] !== undefined) {
+        env.ai = env.ai || {};
+        env.ai[key] = parseInt(process.env[name], 10);
+      }
+    }
+
     if (process.env.SSL_HTTPS_PORT || process.env.HTTPS_PORT) {
       env.ssl = env.ssl || {};
       env.ssl.httpsPort = parseInt(process.env.SSL_HTTPS_PORT || process.env.HTTPS_PORT);
@@ -364,6 +401,18 @@ class ConfigManager {
         throw new Error('shareLinks.maxDownloadsDefault must be non-negative (0 = unlimited)');
       }
     }
+
+    const ai = this.config.ai;
+    if (!ai || !['ollama', 'vllm', 'omlx', 'openai', 'custom'].includes(String(ai.provider).toLowerCase())) {
+      throw new Error('ai.provider must be ollama, vllm, omlx, openai, or custom');
+    }
+    if (typeof ai.baseUrl !== 'string' || !/^https?:\/\//i.test(ai.baseUrl)) throw new Error('ai.baseUrl must be an HTTP(S) URL');
+    for (const [key, minimum] of [['requestTimeoutMs', 1000], ['maxOutputTokens', 1], ['maxInputBytes', 1], ['maxArchiveFiles', 1], ['maxArchiveExpandedBytes', 1], ['maxSingleExpandedFileBytes', 1], ['maxChunkTokens', 100], ['maxRetries', 0]]) {
+      if (!Number.isSafeInteger(ai[key]) || ai[key] < minimum) throw new Error(`ai.${key} must be a valid integer`);
+    }
+    if (ai.contextWindowTokens !== 32768) throw new Error('ai.contextWindowTokens is fixed at 32768');
+    if (!Number.isSafeInteger(ai.maxNestedArchiveDepth) || ai.maxNestedArchiveDepth < 0 || ai.maxNestedArchiveDepth > 5) throw new Error('ai.maxNestedArchiveDepth must be between 0 and 5');
+    if (!Number.isSafeInteger(ai.chunkOverlapLines) || ai.chunkOverlapLines < 0) throw new Error('ai.chunkOverlapLines must be non-negative');
 
     // Validate file system storage path exists
     try {
@@ -516,6 +565,26 @@ class ConfigManager {
         iniContent += `allowPasswordProtection=${this.config.shareLinks?.allowPasswordProtection === true ? 'true' : 'false'}\n`;
         iniContent += `cleanupInterval=${this.config.shareLinks?.cleanupInterval ?? 86400}\n`;
         iniContent += `maxDownloadsDefault=${this.config.shareLinks?.maxDownloadsDefault ?? 0}\n\n`;
+
+        iniContent += '[ai]\n';
+        iniContent += `enabled=${this.config.ai?.enabled === true ? 'true' : 'false'}\n`;
+        iniContent += `provider=${this.config.ai?.provider || 'ollama'}\n`;
+        iniContent += `baseUrl=${this.config.ai?.baseUrl || 'http://127.0.0.1:11434/v1'}\n`;
+        iniContent += `apiKey=${this.config.ai?.apiKey || ''}\n`;
+        iniContent += `model=${this.config.ai?.model || 'llama3.2'}\n`;
+        iniContent += `requestTimeoutMs=${this.config.ai?.requestTimeoutMs ?? 600000}\n`;
+        iniContent += '# contextWindowTokens is fixed at 32768.\n';
+        iniContent += `contextWindowTokens=32768\n`;
+        iniContent += `maxOutputTokens=${this.config.ai?.maxOutputTokens ?? 8192}\n`;
+        iniContent += `maxInputBytes=${this.config.ai?.maxInputBytes ?? 52428800}\n`;
+        iniContent += `maxArchiveFiles=${this.config.ai?.maxArchiveFiles ?? 2000}\n`;
+        iniContent += `maxArchiveExpandedBytes=${this.config.ai?.maxArchiveExpandedBytes ?? 1073741824}\n`;
+        iniContent += `maxSingleExpandedFileBytes=${this.config.ai?.maxSingleExpandedFileBytes ?? 104857600}\n`;
+        iniContent += `maxNestedArchiveDepth=${this.config.ai?.maxNestedArchiveDepth ?? 2}\n`;
+        iniContent += `maxChunkTokens=${this.config.ai?.maxChunkTokens ?? 22000}\n`;
+        iniContent += `chunkOverlapLines=${this.config.ai?.chunkOverlapLines ?? 200}\n`;
+        iniContent += `maxRetries=${this.config.ai?.maxRetries ?? 2}\n`;
+        iniContent += `systemPrompt=${this.config.ai?.systemPrompt || ''}\n\n`;
 
         // [ssl] section
         iniContent += '[ssl]\n';

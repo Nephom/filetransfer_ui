@@ -1134,9 +1134,9 @@
             const sectionTitles = {
                 server: '🖥️ Server', fileSystem: '📁 File System', locations: '🗂️ Server Locations',
                 maintenance: '🧹 Maintenance', logging: '📋 Logging', security: '🔒 Security',
-                shareLinks: '🔗 Share Links', ssl: '🔐 SSL/TLS', auth: '👤 Administrator'
+                shareLinks: '🔗 Share Links', ai: '🧠 AI Log Analysis', ssl: '🔐 SSL/TLS', auth: '👤 Administrator'
             };
-            const sectionOrder = ['server', 'fileSystem', 'locations', 'maintenance', 'logging', 'security', 'shareLinks', 'ssl', 'auth'];
+            const sectionOrder = ['server', 'fileSystem', 'locations', 'maintenance', 'logging', 'security', 'shareLinks', 'ai', 'ssl', 'auth'];
 
             sectionOrder.forEach(section => {
                 const values = config[section];
@@ -1163,9 +1163,11 @@
                         if (metadata.type === 'boolean') {
                             html += `<div class="checkbox-group"><input type="checkbox" id="${inputId}" name="${fieldName}" ${value === true ? 'checked' : ''}><label for="${inputId}" style="margin:0;cursor:pointer;">${label}</label></div>`;
                         } else if (metadata.type === 'enum') {
-                            html += `<select id="${inputId}" name="${fieldName}" class="form-control">${(metadata.options || []).map(option => `<option value="${escapeHtml(option)}" ${String(value).toUpperCase() === option ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}</select>`;
+                            html += `<select id="${inputId}" name="${fieldName}" class="form-control">${(metadata.options || []).map(option => `<option value="${escapeHtml(option)}" ${String(value).toLowerCase() === String(option).toLowerCase() ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}</select>`;
                         } else if (metadata.type === 'secret') {
                             html += `<input type="password" id="${inputId}" name="${fieldName}" class="form-control" value="" placeholder="${escapeHtml(value === '[SET]' ? 'Configured; enter a new value to replace it' : 'Generated at startup')}">`;
+                        } else if (metadata.type === 'textarea') {
+                            html += `<textarea id="${inputId}" name="${fieldName}" class="form-control" rows="8">${escapeHtml(value)}</textarea>`;
                         } else {
                             const inputType = metadata.type === 'integer' ? 'number' : 'text';
                              html += `<input type="${inputType}" id="${inputId}" name="${fieldName}" class="form-control" value="${escapeHtml(value)}" ${inputType === 'number' ? 'step="1"' : ''}>`;

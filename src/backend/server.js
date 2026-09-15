@@ -38,6 +38,8 @@ const { clearSessionCookie, getSessionToken, setSessionCookie } = require('./aut
 const { withOperationLocks } = require('./file-system/operation-locks');
 const { assertSafeTree, assertTransferPaths } = require('./file-system/path-safety');
 const { publicDirectory, checkBrowserBuild } = require('../../scripts/build-browser');
+const { analyzePath } = require('./ai/analysis-job');
+const { DEFAULT_SYSTEM_PROMPT } = require('./ai/prompt');
 
 
 
@@ -1702,6 +1704,33 @@ app.post('/api/files/flatten', authenticate, async (req, res) => {
 
 // UploadAPI owns progress and cancellation routes and their ownership checks.
 
+app.post('/api/ai/analyze', authenticate, async (req, res) => {
+  try {
+    const { path: relativePath, locationId } = req.body || {};
+    if (typeof relativePath !== 'string' || !relativePath || relativePath.includes('..') || path.posix.isAbsolute(relativePath)) {
+      return res.status(400).json({ error: 'A safe Location-relative file path is required' });
+    }
+    if (configManager.get('ai.enabled') !== true) return res.status(503).json({ error: 'AI analysis is not enabled' });
+    const context = await getStorageContext({ ...req, body: { ...(req.body || {}), locationId } }, relativePath, 'read', locationId);
+    const stat = await context.fileSystem.stat(context.targetPath);
+    if (stat.isDirectory) return res.status(400).json({ error: 'Directories cannot be analyzed directly' });
+    const config = configManager.get('ai');
+    if (!config.baseUrl || !config.model) return res.status(503).json({ error: 'AI endpoint or model is not configured' });
+    const result = await analyzePath({
+      filePath: context.targetPath,
+      source: relativePath,
+      config,
+      signal: req.signal,
+      onProgress: progress => systemLogger.logSystem('DEBUG', `AI analysis ${JSON.stringify({ user: req.user?.username, ...progress })}`)
+    });
+    res.json({ success: true, ...result, locationId: context.locationId, path: relativePath });
+  } catch (error) {
+    const status = error.statusCode || (error.code === 'ENOENT' ? 404 : 500);
+    systemLogger.logSystem(status >= 500 ? 'ERROR' : 'WARN', `AI analysis failed: ${error.message}`);
+    res.status(status).json({ error: error.message || 'AI analysis failed', code: error.code || 'AI_ERROR' });
+  }
+});
+
 // Settings API endpoints
 app.get('/api/settings', authenticate, async (req, res) => {
   try {
@@ -1746,6 +1775,47 @@ app.put('/api/settings', requireAdmin, configurationChange(async (req, res) => {
     systemLogger.logSystem('ERROR', `Settings save error: ${error.message}`);
     res.status(500).json({ error: 'Failed to save settings' });
   }
+}));
+
+const getSuperuserAiConfig = () => ({
+  enabled: configManager.get('ai.enabled') === true,
+  model: configManager.get('ai.model') || 'llama3.2',
+  requestTimeoutMs: configManager.get('ai.requestTimeoutMs') ?? 600000,
+  contextWindowTokens: 32768,
+  maxOutputTokens: configManager.get('ai.maxOutputTokens') ?? 8192,
+  maxInputBytes: configManager.get('ai.maxInputBytes') ?? 52428800,
+  maxArchiveFiles: configManager.get('ai.maxArchiveFiles') ?? 2000,
+  maxArchiveExpandedBytes: configManager.get('ai.maxArchiveExpandedBytes') ?? 1073741824,
+  maxSingleExpandedFileBytes: configManager.get('ai.maxSingleExpandedFileBytes') ?? 104857600,
+  maxNestedArchiveDepth: configManager.get('ai.maxNestedArchiveDepth') ?? 2,
+  maxChunkTokens: configManager.get('ai.maxChunkTokens') ?? 22000,
+  chunkOverlapLines: configManager.get('ai.chunkOverlapLines') ?? 200,
+  maxRetries: configManager.get('ai.maxRetries') ?? 2,
+  systemPrompt: configManager.get('ai.systemPrompt') || DEFAULT_SYSTEM_PROMPT
+});
+
+app.get('/api/super/ai-config', requireStaffRole, (req, res) => res.json({ config: getSuperuserAiConfig(), success: true }));
+app.put('/api/super/ai-config', requireStaffRole, configurationChange(async (req, res) => {
+  try {
+    if (Object.keys(req.body || {}).some(key => ['baseUrl', 'apiKey', 'provider'].includes(key))) return res.status(403).json({ error: 'Only an administrator can change the AI provider or API key' });
+    const current = getSuperuserAiConfig();
+    const next = { ...current, ...(req.body || {}) };
+    if (next.contextWindowTokens !== 32768) return res.status(400).json({ error: 'contextWindowTokens is fixed at 32768' });
+    if (typeof next.enabled !== 'boolean' || typeof next.model !== 'string' || !next.model.trim()) return res.status(400).json({ error: 'Invalid AI settings' });
+    const numeric = ['requestTimeoutMs', 'maxOutputTokens', 'maxInputBytes', 'maxArchiveFiles', 'maxArchiveExpandedBytes', 'maxSingleExpandedFileBytes', 'maxNestedArchiveDepth', 'maxChunkTokens', 'chunkOverlapLines', 'maxRetries'];
+    const pending = [['ai.enabled', next.enabled], ['ai.model', next.model.trim()], ['ai.systemPrompt', String(next.systemPrompt || '')]];
+    for (const key of numeric) {
+      const value = Number(next[key]);
+      const minimum = ['maxNestedArchiveDepth', 'chunkOverlapLines', 'maxRetries'].includes(key) ? 0 : 1;
+      if (!Number.isSafeInteger(value) || value < minimum) return res.status(400).json({ error: `Invalid ai.${key}` });
+      if (key === 'requestTimeoutMs' && value > 1800000) return res.status(400).json({ error: 'requestTimeoutMs cannot exceed 1800000' });
+      pending.push([`ai.${key}`, value]);
+    }
+    pending.forEach(([key, value]) => configManager.set(key, value));
+    await configManager.save();
+    systemLogger.logSystem('INFO', `AI behavior settings updated by ${req.user.username}`);
+    res.json({ success: true, config: getSuperuserAiConfig() });
+  } catch (error) { res.status(400).json({ error: error.message }); }
 }));
 
 // Admin User Management Endpoints
@@ -2170,6 +2240,25 @@ const ADMIN_CONFIG_SCHEMA = {
     cleanupInterval: { type: 'integer', label: 'Cleanup interval (seconds)', description: 'How often expired share links are removed.', example: '86400', requiresRestart: false },
     maxDownloadsDefault: { type: 'integer', label: 'Default maximum downloads', description: 'Default download limit. 0 means unlimited.', example: '0', requiresRestart: false }
   },
+  ai: {
+    enabled: { type: 'boolean', label: 'Enable AI analysis', description: 'Allow users with Location read permission to analyze files.', requiresRestart: false },
+    provider: { type: 'enum', label: 'AI provider', description: 'OpenAI-compatible provider.', options: ['ollama', 'vllm', 'omlx', 'openai', 'custom'], requiresRestart: false },
+    baseUrl: { type: 'url', label: 'AI API URL', description: 'OpenAI-compatible API base URL. Admin only.', requiresRestart: false, sensitive: true },
+    apiKey: { type: 'secret', label: 'AI API key', description: 'Stored server-side and never returned.', requiresRestart: false, sensitive: true },
+    model: { type: 'string', label: 'AI model', description: 'Model name sent to the provider.', requiresRestart: false },
+    requestTimeoutMs: { type: 'integer', label: 'Request timeout (ms)', description: 'Long timeout for local LLM inference.', requiresRestart: false },
+    contextWindowTokens: { type: 'integer', label: 'Context window', description: 'Fixed at 32768 tokens.', requiresRestart: false },
+    maxOutputTokens: { type: 'integer', label: 'Maximum output tokens', description: 'Maximum response size.', requiresRestart: false },
+    maxInputBytes: { type: 'integer', label: 'Maximum input bytes', description: 'Maximum direct text file size.', requiresRestart: false },
+    maxArchiveFiles: { type: 'integer', label: 'Maximum archive files', description: 'Maximum entries inspected in an archive.', requiresRestart: false },
+    maxArchiveExpandedBytes: { type: 'integer', label: 'Maximum expanded archive bytes', description: 'Archive bomb protection limit.', requiresRestart: false },
+    maxSingleExpandedFileBytes: { type: 'integer', label: 'Maximum expanded file bytes', description: 'Per-entry archive limit.', requiresRestart: false },
+    maxNestedArchiveDepth: { type: 'integer', label: 'Maximum nested archive depth', description: 'Nested archive protection limit.', requiresRestart: false },
+    maxChunkTokens: { type: 'integer', label: 'Maximum chunk tokens', description: 'Input budget for each analysis request.', requiresRestart: false },
+    chunkOverlapLines: { type: 'integer', label: 'Chunk overlap lines', description: 'Lines repeated at chunk boundaries.', requiresRestart: false },
+    maxRetries: { type: 'integer', label: 'Chunk retries', description: 'Retries after an AI request failure.', requiresRestart: false },
+    systemPrompt: { type: 'textarea', label: 'System prompt', description: 'Prompt used for Log analysis. Superusers may also edit this field.', requiresRestart: false }
+  },
   ssl: {
     httpsPort: { type: 'integer', label: 'HTTPS port', description: 'HTTPS listener port when certificates are configured. Requires a service restart.', example: '9443', requiresRestart: true },
     enableHttpsRedirect: { type: 'boolean', label: 'Redirect HTTP to HTTPS', description: 'Redirect HTTP requests when HTTPS is available.', requiresRestart: true },
@@ -2216,6 +2305,26 @@ const getAdminConfig = () => ({
     cleanupInterval: configManager.get('shareLinks.cleanupInterval') ?? 86400,
     maxDownloadsDefault: configManager.get('shareLinks.maxDownloadsDefault') ?? 0
   },
+  ai: {
+    enabled: configManager.get('ai.enabled') === true,
+    provider: configManager.get('ai.provider') ?? 'ollama',
+    baseUrl: configManager.get('ai.baseUrl') ?? 'http://127.0.0.1:11434/v1',
+    apiKey: configManager.get('ai.apiKey') ? '[SET]' : '',
+    model: configManager.get('ai.model') ?? 'llama3.2',
+    requestTimeoutMs: configManager.get('ai.requestTimeoutMs') ?? 600000,
+    contextWindowTokens: 32768,
+    maxOutputTokens: configManager.get('ai.maxOutputTokens') ?? 8192,
+    maxInputBytes: configManager.get('ai.maxInputBytes') ?? 52428800,
+    maxArchiveFiles: configManager.get('ai.maxArchiveFiles') ?? 2000,
+    maxArchiveExpandedBytes: configManager.get('ai.maxArchiveExpandedBytes') ?? 1073741824,
+    maxSingleExpandedFileBytes: configManager.get('ai.maxSingleExpandedFileBytes') ?? 104857600,
+    maxNestedArchiveDepth: configManager.get('ai.maxNestedArchiveDepth') ?? 2,
+    maxChunkTokens: configManager.get('ai.maxChunkTokens') ?? 22000,
+    chunkOverlapLines: configManager.get('ai.chunkOverlapLines') ?? 200,
+    maxRetries: configManager.get('ai.maxRetries') ?? 2,
+    systemPrompt: configManager.get('ai.systemPrompt') || DEFAULT_SYSTEM_PROMPT,
+    apiKeyManagedByEnvironment: Boolean(process.env.AI_API_KEY)
+  },
   ssl: {
     httpsPort: configManager.get('ssl.httpsPort') ?? 9443,
     enableHttpsRedirect: configManager.get('ssl.enableHttpsRedirect') !== false,
@@ -2247,7 +2356,7 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
 
 app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) => {
   try {
-    const { server, fileSystem, locations, maintenance, logging, security, shareLinks, ssl, auth } = req.body;
+    const { server, fileSystem, locations, maintenance, logging, security, shareLinks, ai, ssl, auth } = req.body;
     const updatedFields = [];
 
     const integer = (value, label, minimum = 1, maximum = Number.MAX_SAFE_INTEGER) => {
@@ -2386,6 +2495,26 @@ app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) 
         add('shareLinks.maxDownloadsDefault', maxDownloads);
         updatedFields.push('shareLinks.maxDownloadsDefault');
       }
+    }
+
+    if (ai) {
+      const provider = String(ai.provider || configManager.get('ai.provider')).toLowerCase();
+      if (!['ollama', 'vllm', 'omlx', 'openai', 'custom'].includes(provider)) throw new Error('ai.provider is invalid');
+      if (ai.enabled !== undefined) { if (typeof ai.enabled !== 'boolean') throw new Error('ai.enabled must be boolean'); add('ai.enabled', ai.enabled); updatedFields.push('ai.enabled'); }
+      if (ai.provider !== undefined) { add('ai.provider', provider); updatedFields.push('ai.provider'); }
+      if (ai.baseUrl !== undefined) { if (typeof ai.baseUrl !== 'string' || !/^https?:\/\//i.test(ai.baseUrl)) throw new Error('ai.baseUrl must be an HTTP(S) URL'); add('ai.baseUrl', ai.baseUrl.trim().replace(/\/$/, '')); updatedFields.push('ai.baseUrl'); }
+      if (ai.apiKey !== undefined && ai.apiKey !== '[SET]') { if (typeof ai.apiKey !== 'string' || ai.apiKey.length > 4096) throw new Error('ai.apiKey is invalid'); add('ai.apiKey', ai.apiKey); updatedFields.push('ai.apiKey'); }
+      if (ai.model !== undefined) { if (typeof ai.model !== 'string' || !ai.model.trim()) throw new Error('ai.model is required'); add('ai.model', ai.model.trim()); updatedFields.push('ai.model'); }
+      if (ai.requestTimeoutMs !== undefined) { add('ai.requestTimeoutMs', integer(ai.requestTimeoutMs, 'ai.requestTimeoutMs', 1000, 1800000)); updatedFields.push('ai.requestTimeoutMs'); }
+      if (ai.contextWindowTokens !== undefined && Number(ai.contextWindowTokens) !== 32768) throw new Error('ai.contextWindowTokens is fixed at 32768');
+      for (const key of ['maxOutputTokens', 'maxInputBytes', 'maxArchiveFiles', 'maxArchiveExpandedBytes', 'maxSingleExpandedFileBytes', 'maxNestedArchiveDepth', 'maxChunkTokens', 'chunkOverlapLines', 'maxRetries']) {
+        if (ai[key] !== undefined) {
+          const minimum = ['maxNestedArchiveDepth', 'chunkOverlapLines', 'maxRetries'].includes(key) ? 0 : 1;
+          add(`ai.${key}`, integer(ai[key], `ai.${key}`, minimum));
+          updatedFields.push(`ai.${key}`);
+        }
+      }
+      if (ai.systemPrompt !== undefined) { if (typeof ai.systemPrompt !== 'string' || ai.systemPrompt.length > 20000) throw new Error('ai.systemPrompt is invalid'); add('ai.systemPrompt', ai.systemPrompt); updatedFields.push('ai.systemPrompt'); }
     }
 
     if (ssl) {

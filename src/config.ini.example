@@ -81,6 +81,32 @@ cleanupInterval=86400
 # Default download limit for a share link. 0 means unlimited downloads.
 maxDownloadsDefault=0
 
+[ai]
+# AI analysis is disabled until an OpenAI-compatible endpoint is configured.
+enabled=false
+# Supported values: ollama, vllm, omlx, openai, custom.
+provider=ollama
+# Ollama, vLLM and omlx commonly expose an OpenAI-compatible /v1 endpoint.
+baseUrl=http://127.0.0.1:11434/v1
+# Keep secrets out of tracked files. Use AI_API_KEY in .env when possible.
+apiKey=
+model=llama3.2
+# Local LLM calls may be slow. This is ten minutes per request.
+requestTimeoutMs=600000
+# Fixed by the application; this value is not editable in the panels.
+contextWindowTokens=32768
+maxOutputTokens=8192
+maxInputBytes=52428800
+maxArchiveFiles=2000
+maxArchiveExpandedBytes=1073741824
+maxSingleExpandedFileBytes=104857600
+maxNestedArchiveDepth=2
+maxChunkTokens=22000
+chunkOverlapLines=200
+maxRetries=2
+# The application supplies the complete structured prompt by default.
+systemPrompt=
+
 [ssl]
 # HTTPS port used when certificates are available. Restart after changing it.
 httpsPort=9443

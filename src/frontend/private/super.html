@@ -1428,5 +1428,45 @@
             fetchStats();
         });
     </script>
+    <section class="glass-panel" id="aiSettingsPanel" style="margin-top:30px;">
+        <h2>AI Log Analysis</h2>
+        <p style="opacity:.85;line-height:1.5;">Configure analysis behavior. The AI endpoint and API key are administrator-only settings.</p>
+        <div id="aiSettingsMessage" role="status" style="margin:12px 0;"></div>
+        <div class="panel-grid">
+            <div class="control-card"><label class="form-group"><span>Enable AI analysis</span><input id="aiEnabled" type="checkbox"></label><label class="form-group">Model<input id="aiModel" class="form-control"></label><label class="form-group">Request timeout (ms)<input id="aiTimeout" class="form-control" type="number" min="1000" max="1800000"></label><label class="form-group">Maximum output tokens<input id="aiOutput" class="form-control" type="number" min="1"></label></div>
+            <div class="control-card"><label class="form-group">Maximum input bytes<input id="aiInput" class="form-control" type="number" min="1"></label><label class="form-group">Maximum archive files<input id="aiFiles" class="form-control" type="number" min="1"></label><label class="form-group">Maximum archive expansion bytes<input id="aiExpanded" class="form-control" type="number" min="1"></label><label class="form-group">Maximum chunk tokens<input id="aiChunk" class="form-control" type="number" min="100"></label></div>
+        </div>
+        <label class="form-group">System prompt<textarea id="aiPrompt" class="form-control" rows="8"></textarea></label>
+        <p style="opacity:.75;line-height:1.5;">Context window is fixed at 32768 tokens. Local LLM requests may wait up to ten minutes.</p>
+        <button class="btn" type="button" onclick="saveSuperAiSettings()">Save AI analysis settings</button>
+    </section>
+    <script>
+        async function loadSuperAiSettings() {
+            const response = await fetch('/api/super/ai-config', { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
+            if (!response.ok) return;
+            const data = await response.json();
+            const config = data.config || {};
+            document.getElementById('aiEnabled').checked = config.enabled === true;
+            document.getElementById('aiModel').value = config.model || '';
+            document.getElementById('aiTimeout').value = config.requestTimeoutMs || 600000;
+            document.getElementById('aiOutput').value = config.maxOutputTokens || 8192;
+            document.getElementById('aiInput').value = config.maxInputBytes || 52428800;
+            document.getElementById('aiFiles').value = config.maxArchiveFiles || 2000;
+            document.getElementById('aiExpanded').value = config.maxArchiveExpandedBytes || 1073741824;
+            document.getElementById('aiChunk').value = config.maxChunkTokens || 22000;
+            document.getElementById('aiPrompt').value = config.systemPrompt || '';
+        }
+        async function saveSuperAiSettings() {
+            const message = document.getElementById('aiSettingsMessage');
+            message.textContent = 'Saving...';
+            const body = { enabled: document.getElementById('aiEnabled').checked, model: document.getElementById('aiModel').value, requestTimeoutMs: Number(document.getElementById('aiTimeout').value), maxOutputTokens: Number(document.getElementById('aiOutput').value), maxInputBytes: Number(document.getElementById('aiInput').value), maxArchiveFiles: Number(document.getElementById('aiFiles').value), maxArchiveExpandedBytes: Number(document.getElementById('aiExpanded').value), maxChunkTokens: Number(document.getElementById('aiChunk').value), systemPrompt: document.getElementById('aiPrompt').value, contextWindowTokens: 32768 };
+            try {
+                const response = await fetch('/api/super/ai-config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` }, body: JSON.stringify(body) });
+                const data = await response.json().catch(() => ({}));
+                message.textContent = response.ok ? 'AI settings saved.' : (data.error || 'Unable to save AI settings.');
+            } catch (error) { message.textContent = `Unable to save AI settings: ${error.message}`; }
+        }
+        loadSuperAiSettings().catch(error => { document.getElementById('aiSettingsMessage').textContent = `Unable to load AI settings: ${error.message}`; });
+    </script>
 </body>
 </html>
