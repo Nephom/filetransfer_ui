@@ -283,3 +283,16 @@ Request-derived user operations are stored in `logs/{IPv4-with-underscores}.log`
 ## Error Handling
 
 Use the HTTP status first, then display the response's `error.message`, `error`, or `message` field. Upload-specific structured codes are documented in [error-codes.md](./error-codes.md). Do not assume every older endpoint returns identical error shapes.
+
+## Performance Dashboard
+
+| Method | Endpoint | Access | Success |
+|---|---|---|---|
+| GET | `/dashboard` | Page shell; the page verifies the current session | Standalone staff performance Dashboard |
+| GET | `/api/admin/metrics` | `admin` or `superuser` | In-memory request latency, error, recent request, and Location cache snapshot |
+
+The metrics endpoint intentionally sits outside `/api/files`. It does not run
+the file-operation rate limiter, does not enter the storage request gate, and
+does not scan Redis keys. The Dashboard polls it every five seconds and only
+draws a trend line after two real snapshots have been received. A process
+restart resets the in-memory counters and starts a new measurement baseline.

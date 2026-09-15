@@ -452,6 +452,15 @@ class RedisFileSystemCache extends EventEmitter {
       return { isIndexing: this.isIndexing, progress: { ...this.indexProgress }, lastIndex: this.lastIndex && { ...this.lastIndex }, periodicIndexing: !!this.indexingInterval };
     });
   }
+  getMetricsSnapshot() {
+    return {
+      initialized: this.initialized,
+      activeDirectories: this.activeDirs.size,
+      isPolling: !!this.rootPollingInterval,
+      isIndexing: this.isIndexing,
+      cacheMetrics: { ...this.metrics }
+    };
+  }
   getCacheInfo() {
     return this._run(async () => {
       let count = 0;

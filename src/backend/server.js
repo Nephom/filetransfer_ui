@@ -28,6 +28,7 @@ const transferProgress = require('./transfer/progress');
 const { authenticate, setJwtSecret, requireAdmin, requireStaffRole, resolveCurrentAccount } = require('./middleware/auth');
 const { initializeSecurity } = require('./middleware/security');
 const { createLogger, systemLogger } = require('./utils/logger');
+const { PerformanceMetrics } = require('./utils/performance-metrics');
 const certificateManager = require('./ssl/certificate-manager');
 const sanManager = require('./ssl/san-manager');
 const pidManager = require('./utils/pid-manager');
@@ -64,6 +65,7 @@ const storageRequests = new Set();
 let runtimeChanging = false;
 let configurationWrites = Promise.resolve();
 const aiAnalysisQueue = new AnalysisQueue();
+const performanceMetrics = new PerformanceMetrics();
 const configurationChange = handler => (req, res, next) => {
   const job = configurationWrites.then(() => handler(req, res));
   configurationWrites = job.catch(() => {});
@@ -85,6 +87,11 @@ const getLocationFileSystem = async (location) => {
   }
   return initializingFileSystems.get(location.id);
 };
+
+const getPerformanceCacheSnapshots = () => [...locationFileSystems.entries()].map(([locationId, fileSystem]) => ({
+  locationId,
+  ...(fileSystem.cache?.getMetricsSnapshot ? fileSystem.cache.getMetricsSnapshot() : {})
+}));
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const publicLocationLabel = (location) => `${location.displayName} (${location.id})`;
@@ -296,6 +303,12 @@ app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 app.use((req, res, next) => securityMiddleware ? securityMiddleware.validateInput(req, res, next) : next());
 app.use((req, res, next) => {
+  if (!req.path.startsWith('/api/')) return next();
+  const startedAt = performanceMetrics.start();
+  res.once('finish', () => performanceMetrics.record(req, res, startedAt));
+  next();
+});
+app.use((req, res, next) => {
   if (securityMiddleware && /^\/api\/(?:files|upload|folders|archive)(?:\/|$)/.test(req.path)) {
     return securityMiddleware.fileLimiter(req, res, next);
   }
@@ -404,6 +417,7 @@ const sendPrivatePage = (fileName) => (req, res) => {
 // Admin-only console: system configuration, SSL, cache, service restart,
 // server log, plus everything requireStaffRole also allows.
 app.get('/admin', sendPrivatePage('admin.html'));
+app.get('/dashboard', sendPrivatePage('dashboard.html'));
 
 // Superuser console: user (non-admin/superuser) account management and
 // Permission Role management only - no config/SSL/cache/log/service
@@ -417,6 +431,16 @@ app.get('/', (req, res) => {
 app.get('/api/version', (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.json(getVersion());
+});
+
+// Low-cost operational snapshot for the standalone staff Dashboard. This endpoint
+// intentionally does not use the /api/files middleware or scan Redis keys.
+app.get('/api/admin/metrics', requireStaffRole, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.json({
+    success: true,
+    metrics: performanceMetrics.getSnapshot({ cache: getPerformanceCacheSnapshots() })
+  });
 });
 
 // Server log endpoint (for admin panel)
@@ -533,7 +557,9 @@ app.get('/auth/browser-handoff/:code', async (req, res) => {
       return res.status(401).send('This account can no longer open the console.');
     }
   } catch { return res.status(401).send('This browser sign-in session has expired.'); }
-  const destination = req.query.destination === '/super' ? '/super' : '/admin';
+  const destination = ['/admin', '/super', '/dashboard'].includes(req.query.destination)
+    ? req.query.destination
+    : '/admin';
   res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
   setSessionCookie(req, res, handoff.token);
   res.redirect(303, destination);
@@ -1155,6 +1181,7 @@ app.get('/api/files', authenticate, async (req, res) => {
     res.setHeader('Cache-Control', `private, max-age=${cacheMaxAge}`);
     res.setHeader('X-Response-Time', `${totalRequestTime}ms`);
     res.setHeader('X-Cache-Time', `${cacheOperationTime}ms`);
+    res.setHeader('Server-Timing', `total;dur=${totalRequestTime}, cache;dur=${cacheOperationTime}`);
 
     res.json(response);
   } catch (error) {

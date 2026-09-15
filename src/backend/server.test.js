@@ -270,7 +270,7 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
 
   await t.test('E05 complete private shells do not require runtime or configuration initialization', async () => {
     assert.equal(instances.length, 0);
-    for (const name of ['admin', 'super']) {
+    for (const name of ['admin', 'super', 'dashboard']) {
       const response = await send(`/${name}`, { username: null });
       status(response, 200);
       assert.deepEqual(response.bytes, await fs.readFile(path.join(__dirname, '../frontend/private', `${name}.html`)));
@@ -316,6 +316,38 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     status(await send('/api/admin/config', { headers: { authorization: `Bearer ${token('fixture-user', { role: 'admin' })}` } }), 403);
     status(await send('/auth/verify', { method: 'POST', headers: { authorization: `Bearer ${token('fixture-admin', { id: '0' })}` } }), 401);
     assert.equal(saves, 0);
+  });
+
+  await t.test('E05 performance Dashboard is staff-only and returns a low-cost snapshot', async () => {
+    await fixture();
+    const listing = await send('/api/files');
+    status(listing, 200);
+    assert.match(listing.headers['server-timing'], /total;dur=/);
+    assert.match(listing.headers['server-timing'], /cache;dur=/);
+    status(await send('/api/admin/metrics', { username: 'fixture-user' }), 403);
+    const admin = await send('/api/admin/metrics');
+    status(admin, 200);
+    assert.equal(admin.body.success, true);
+    assert.equal(typeof admin.body.metrics.sampledAt, 'string');
+    assert.equal(Array.isArray(admin.body.metrics.recentSamples), true);
+    const staff = await send('/api/admin/metrics', { username: 'fixture-staff' });
+    status(staff, 200);
+    assert.equal(staff.body.success, true);
+    safe(admin);
+    safe(staff);
+  });
+
+  await t.test('E05 browser handoff accepts Dashboard only for current staff accounts', async () => {
+    await fixture();
+    status(await send('/auth/browser-handoff', { username: 'fixture-user', method: 'POST' }), 403);
+    const handoff = await send('/auth/browser-handoff', { method: 'POST' });
+    status(handoff, 200);
+    const code = new URL(`http://fixture${handoff.body.url}`).pathname.split('/').pop();
+    const opened = await send(`/auth/browser-handoff/${encodeURIComponent(code)}?destination=%2Fdashboard`, { username: null });
+    status(opened, 303);
+    assert.equal(opened.headers.location, '/dashboard');
+    assert.match(opened.headers['set-cookie'][0], /HttpOnly/i);
+    status(await send(`/auth/browser-handoff/${encodeURIComponent(code)}?destination=%2Fdashboard`, { username: null }), 410);
   });
 
   await t.test('E01 settings reject invalid booleans without mutation and refresh security before routes', async () => {
@@ -458,6 +490,7 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     try {
       status(await send('/api/settings', { method: 'PUT', body: { enableRateLimit: true } }), 200);
       for (let i = 0; i < 50; i++) status(await send('/api/files/cache-stats'), 200);
+      status(await send('/api/admin/metrics'), 200);
       const rejected = await send('/api/files');
       status(rejected, 429);
       assert.match(rejected.body.error, /Too many file operations/);

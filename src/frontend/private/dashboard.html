@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Performance Dashboard - LAB File Manager</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #09111f; color: #e6edf7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 10% 0%, #19365b, transparent 38%), #09111f; }
+    main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 48px; }
+    header { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 24px; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: clamp(1.7rem, 3vw, 2.5rem); letter-spacing: -0.04em; }
+    h2 { font-size: 1rem; margin-bottom: 16px; }
+    .muted { color: #91a4bf; font-size: .88rem; }
+    .toolbar { display: flex; align-items: center; gap: 10px; }
+    button { border: 1px solid #314b6c; border-radius: 8px; padding: 9px 13px; background: #12253e; color: #e6edf7; cursor: pointer; font: inherit; }
+    button:hover { background: #1b3658; }
+    .panel { background: rgba(15, 30, 51, .88); border: 1px solid #213a5b; border-radius: 14px; padding: 20px; box-shadow: 0 14px 38px rgba(0,0,0,.18); }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .metric { min-height: 102px; }
+    .metric strong { display: block; margin-top: 12px; font-size: 1.8rem; letter-spacing: -.04em; }
+    .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+    .chart-wrap { min-height: 270px; position: relative; }
+    svg { display: block; width: 100%; height: 210px; margin-top: 12px; overflow: visible; }
+    .chart-grid { stroke: #294260; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .chart-line { fill: none; stroke: #62d8b4; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+    .chart-dot { fill: #d9fff3; stroke: #62d8b4; stroke-width: 2; vector-effect: non-scaling-stroke; }
+    .chart-empty { position: absolute; inset: 106px 0 auto; text-align: center; color: #91a4bf; }
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #213a5b; white-space: nowrap; }
+    th { color: #91a4bf; font-weight: 600; }
+    .status-ok { color: #62d8b4; }
+    .status-error { color: #ff9f9f; }
+    .notice { margin-bottom: 16px; color: #ffb7b7; }
+    @media (max-width: 760px) { main { width: min(100% - 20px, 620px); padding-top: 18px; } header { display: block; } .toolbar { margin-top: 14px; } .grid, .charts { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 480px) { .grid, .charts { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><p class="muted">STAFF OPERATIONS</p><h1>Performance Dashboard</h1><p class="muted" id="updated">Waiting for the first measurement...</p></div>
+      <div class="toolbar"><button type="button" id="refresh">Refresh</button><button type="button" id="logout">Log out</button></div>
+    </header>
+    <p class="notice" id="notice" hidden></p>
+    <section class="grid" aria-label="Current metrics">
+      <article class="panel metric"><span class="muted">Requests / second</span><strong id="request-rate">--</strong></article>
+      <article class="panel metric"><span class="muted">Average latency</span><strong id="average-latency">--</strong></article>
+      <article class="panel metric"><span class="muted">P95 latency</span><strong id="p95-latency">--</strong></article>
+      <article class="panel metric"><span class="muted">Error rate</span><strong id="error-rate">--</strong></article>
+    </section>
+    <section class="charts">
+      <article class="panel chart-wrap"><h2>Request rate</h2><svg id="request-chart" viewBox="0 0 600 210" role="img" aria-label="Request rate over time"></svg><p class="chart-empty" id="request-empty">Collecting at least two 5-second samples...</p></article>
+      <article class="panel chart-wrap"><h2>Average latency</h2><svg id="latency-chart" viewBox="0 0 600 210" role="img" aria-label="Average latency over time"></svg><p class="chart-empty" id="latency-empty">Collecting at least two 5-second samples...</p></article>
+    </section>
+    <section class="panel"><h2>Cache snapshots</h2><div class="table-scroll"><table><thead><tr><th>Location</th><th>Scans</th><th>Misses</th><th>Hot hits</th><th>Memory hits</th><th>Redis errors</th><th>Indexing</th></tr></thead><tbody id="cache-table"><tr><td colspan="7" class="muted">Waiting for data...</td></tr></tbody></table></div></section>
+    <section class="panel" style="margin-top:16px"><h2>Recent API requests</h2><div class="table-scroll"><table><thead><tr><th>Time</th><th>Method</th><th>Route</th><th>Status</th><th>Duration</th></tr></thead><tbody id="request-table"><tr><td colspan="5" class="muted">Waiting for data...</td></tr></tbody></table></div></section>
+  </main>
+  <script>
+    const state = { points: [], previousTotal: null, previousAt: null, timer: null };
+    const $ = id => document.getElementById(id);
+    const text = (id, value) => { $(id).textContent = value; };
+    const formatMs = value => value == null ? '--' : `${Number(value).toFixed(1)} ms`;
+    const formatRate = value => value == null ? '--' : `${Number(value).toFixed(2)} /s`;
+    const formatPercent = value => `${(Number(value || 0) * 100).toFixed(2)}%`;
+    const escapeHtml = value => String(value).replace(/[&<>'"]/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
+
+    function smoothPath(points, width, height, max) {
+      const left = 12, right = width - 12, top = 12, bottom = height - 18;
+      const x = index => points.length === 1 ? (left + right) / 2 : left + (right - left) * index / (points.length - 1);
+      const y = value => bottom - (Math.max(0, value) / Math.max(max, 0.001)) * (bottom - top);
+      const coordinates = points.map((point, index) => [x(index), y(point.value)]);
+      if (coordinates.length < 2) return '';
+      let path = `M ${coordinates[0][0]} ${coordinates[0][1]}`;
+      for (let index = 1; index < coordinates.length; index++) {
+        const [previousX, previousY] = coordinates[index - 1];
+        const [currentX, currentY] = coordinates[index];
+        const midpoint = (previousX + currentX) / 2;
+        path += ` C ${midpoint} ${previousY}, ${midpoint} ${currentY}, ${currentX} ${currentY}`;
+      }
+      return path;
+    }
+
+    function drawChart(svgId, emptyId, points, color) {
+      const svg = $(svgId);
+      const empty = $(emptyId);
+      svg.innerHTML = '';
+      if (points.length < 2) { empty.hidden = false; return; }
+      empty.hidden = true;
+      const width = 600, height = 210, max = Math.max(...points.map(point => point.value), 0.001);
+      [0.25, 0.5, 0.75].forEach(ratio => {
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', '12'); line.setAttribute('x2', '588'); line.setAttribute('y1', String(192 - ratio * 180)); line.setAttribute('y2', String(192 - ratio * 180)); line.setAttribute('class', 'chart-grid'); svg.appendChild(line);
+      });
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', smoothPath(points, width, height, max)); path.setAttribute('class', 'chart-line'); path.style.stroke = color; svg.appendChild(path);
+      points.forEach((point, index) => {
+        const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        const x = points.length === 1 ? 300 : 12 + 576 * index / (points.length - 1);
+        const y = 192 - (Math.max(0, point.value) / max) * 180;
+        dot.setAttribute('cx', String(x)); dot.setAttribute('cy', String(y)); dot.setAttribute('r', '4'); dot.setAttribute('class', 'chart-dot'); dot.style.stroke = color; svg.appendChild(dot);
+      });
+    }
+
+    function render(snapshot) {
+      const now = Date.parse(snapshot.sampledAt);
+      let rate = null;
+      if (state.previousTotal !== null && state.previousAt !== null && now > state.previousAt) {
+        rate = Math.max(0, snapshot.totalRequests - state.previousTotal) / ((now - state.previousAt) / 1000);
+      } else {
+        const observedSeconds = Math.max(1, Math.min(snapshot.uptimeSeconds, snapshot.windowMs / 1000));
+        rate = snapshot.windowRequests / observedSeconds;
+      }
+      state.previousTotal = snapshot.totalRequests; state.previousAt = now;
+      const point = { timestamp: now, rate, latency: snapshot.latencyMs.average };
+      state.points.push(point); if (state.points.length > 60) state.points.shift();
+      text('request-rate', formatRate(rate)); text('average-latency', formatMs(snapshot.latencyMs.average)); text('p95-latency', formatMs(snapshot.latencyMs.p95)); text('error-rate', formatPercent(snapshot.errorRate));
+      text('updated', `Updated ${new Date(now).toLocaleTimeString()} · ${snapshot.windowRequests} requests in the last ${Math.round(snapshot.windowMs / 60000)} minutes`);
+      drawChart('request-chart', 'request-empty', state.points.filter(point => point.rate !== null).map(point => ({ value: point.rate })), '#62d8b4');
+      drawChart('latency-chart', 'latency-empty', state.points.filter(point => point.latency !== null).map(point => ({ value: point.latency })), '#7eb7ff');
+      $('cache-table').innerHTML = (snapshot.cache || []).map(item => { const metrics = item.cacheMetrics || {}; return `<tr><td>${escapeHtml(item.locationId)}</td><td>${metrics.directoryScans || 0}</td><td>${metrics.cacheMisses || 0}</td><td>${metrics.hotCacheHits || 0}</td><td>${metrics.memoryCacheHits || 0}</td><td>${metrics.redisErrors || 0}</td><td class="${item.isIndexing ? 'status-error' : 'status-ok'}">${item.isIndexing ? 'yes' : 'no'}</td></tr>`; }).join('') || '<tr><td colspan="7" class="muted">No initialized Location cache</td></tr>';
+      $('request-table').innerHTML = (snapshot.recentSamples || []).slice(-20).reverse().map(sample => `<tr><td>${escapeHtml(new Date(sample.timestamp).toLocaleTimeString())}</td><td>${escapeHtml(sample.method)}</td><td>${escapeHtml(sample.route)}</td><td class="${sample.status >= 400 ? 'status-error' : 'status-ok'}">${sample.status}</td><td>${formatMs(sample.durationMs)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No API requests measured yet</td></tr>';
+    }
+
+    async function load() {
+      try {
+        const response = await fetch('/api/admin/metrics', { credentials: 'same-origin', cache: 'no-store' });
+        if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? 'Staff privileges are required.' : `Metrics request failed (${response.status})`);
+        render((await response.json()).metrics);
+        $('notice').hidden = true;
+      } catch (error) { $('notice').textContent = error.message; $('notice').hidden = false; }
+    }
+
+    async function authenticate() {
+      const response = await fetch('/auth/verify', { method: 'POST', credentials: 'same-origin', cache: 'no-store' });
+      if (!response.ok) throw new Error('Your session has expired.');
+      const data = await response.json();
+      if (!['admin', 'superuser'].includes(data.user?.role)) throw new Error('Staff privileges are required.');
+    }
+
+    $('refresh').addEventListener('click', () => void load());
+    $('logout').addEventListener('click', async () => { await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {}); window.location.assign('/'); });
+    authenticate().then(() => { void load(); state.timer = window.setInterval(() => { if (!document.hidden) void load(); }, 5000); }).catch(error => { $('notice').textContent = error.message; $('notice').hidden = false; window.setTimeout(() => window.location.assign('/'), 1800); });
+  </script>
+</body>
+</html>

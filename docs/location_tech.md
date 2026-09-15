@@ -240,3 +240,14 @@ Offline locked cargo check and all 14 native session tests pass. The new `fileap
 `fileapi_ui/checks/local-path-layout.e2e.mjs` passes 24 production-CSS fixture cases in Auto/Large. At LOCAL pane widths 220/300/450px, path-bar widths are 194.406/274.406/424.406px with preserved left alignment and a 6.4px right gutter. REMOTE geometry and LOCAL appearance are unchanged. The rule is scoped to `.local-pane-heading .pane-breadcrumbs`; it uses existing tokens documented in `css_tokens.md`. These checks do not represent a full native window or prove untested viewport behavior.
 
 Windows/Linux/NFS runtime, real production restart/deployment, and live Tauri command dispatch remain untested. See the [final report](./review-remediation.md#final-report) for every PlanID and the independent-review disposition.
+
+## Staff Performance Dashboard
+
+The account menu exposes a separate `/dashboard` page to `admin` and
+`superuser` accounts. It is not embedded in either private management panel.
+The page reads `/api/admin/metrics`, which is a low-cost in-memory snapshot
+endpoint outside the file-operation middleware. It does not trigger a
+directory scan or Redis key scan. The browser samples the endpoint every five
+seconds, calculates counter deltas using the returned timestamps, and waits
+for two real samples before drawing a smoothed SVG line. Missing samples are
+not replaced with fabricated values.
