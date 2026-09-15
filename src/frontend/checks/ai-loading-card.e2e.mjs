@@ -23,7 +23,7 @@ try {
                 <span class="ai-analysis-node ai-analysis-node-three"></span>
             </div>
             <div class="ai-analysis-copy"><div class="ai-analysis-eyebrow"><span class="ai-analysis-live-dot"></span>LOCAL LLM</div>
-                <h3>Reading the file signal</h3><p class="ai-analysis-phase">Preparing file...</p>
+                <h3>Reading the file</h3><p class="ai-analysis-phase">Preparing file...</p>
                 <p class="ai-analysis-source">Analyzing <strong>server.log</strong></p><div class="ai-analysis-scanline"><span></span></div>
             </div><button class="ai-analysis-cancel">Cancel analysis</button>
         </section></body></html>`);

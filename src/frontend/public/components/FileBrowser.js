@@ -1303,7 +1303,7 @@ export default function FileBrowser({ token, user, onLogout }) {
                 </div>
                 <div className="ai-analysis-copy">
                   <div className="ai-analysis-eyebrow"><span className="ai-analysis-live-dot" />LOCAL LLM <span>·</span> PROCESSING</div>
-                  <h3>Reading the file signal</h3>
+                  <h3>Reading the file</h3>
                   <p className="ai-analysis-phase"><span className="ai-analysis-phase-marker" />{aiAnalysis.phase}</p>
                   <p className="ai-analysis-source" title={aiAnalysis.source}>Analyzing <strong>{aiAnalysis.source}</strong></p>
                   <div className="ai-analysis-scanline" aria-hidden="true"><span /></div>
