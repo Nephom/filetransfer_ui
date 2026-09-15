@@ -45,6 +45,8 @@ export function DesktopTitlebar({
     ...(restEnabled ? [{ id: "rest", label: "REST API" }] : []),
     ...(vncEnabled ? [{ id: "vnc", label: "VNC" }] : []),
   ];
+  const roleLabel = session.role === "admin" ? "Admin" : session.role === "superuser" ? "Superuser" : "User";
+  const roleDescription = session.role === "admin" ? "System administrator" : session.role === "superuser" ? "Superuser" : "Standard user";
   return (
     <header className="titlebar">
       <div className="titlebar-brand">
@@ -64,14 +66,14 @@ export function DesktopTitlebar({
         <div className="account-control" ref={accountControl}>
           <button className="account" onClick={onAccountToggle} aria-expanded={accountOpen} aria-haspopup="menu">
             {session.username}
-            <span className="account-role">{session.role === "admin" ? "Admin" : "User"}</span>
+            <span className="account-role">{roleLabel}</span>
             <span className="account-chevron"><ChevronDownIcon size={12} /></span>
           </button>
           {accountOpen && createPortal(
             <div className="account-menu" style={accountMenuStyle} role="menu" aria-label="Account menu">
               <div className="account-summary">
                 <strong>{session.username}</strong>
-                <span>{session.role === "admin" ? "System administrator" : "Standard user"}</span>
+                <span>{roleDescription}</span>
               </div>
               <button role="menuitem" onClick={onOpenSessions}>Workspace Manager</button>
               <button role="menuitem" onClick={onOpenSettings}>Settings</button>
