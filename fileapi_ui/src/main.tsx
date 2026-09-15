@@ -4538,21 +4538,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     });
   };
 
-  const openPrivatePage = async (destination: "/admin" | "/super") => {
-    setAccountOpen(false);
-    try {
-      const response = await api("/auth/browser-handoff", { method: "POST" });
-      if (!response.ok) throw new Error(await readError(response));
-      const data = await response.json() as { url?: string };
-      if (!data.url) throw new Error("The server did not return a browser handoff URL.");
-      const target = new URL(`${data.url}?destination=${encodeURIComponent(destination)}`, serverUrl(session)).toString();
-      const opened = window.open(target, "_blank", "noopener,noreferrer");
-      if (!opened) window.location.assign(target);
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    }
-  };
-
   const exportOperationLog = () => {
     const content = operationLogRecords.map((record) => JSON.stringify(record)).join("\n");
     void invoke<string | null>("save_text_file", { name: "nfterm-operations.jsonl", content })
@@ -4578,8 +4563,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           setAccountOpen((open) => !open);
         }}
         onOpenSessions={() => { setAccountOpen(false); openSessionsModal(); }}
-        onOpenAdminConsole={() => { void openPrivatePage("/admin"); }}
-        onOpenSuperPanel={() => { void openPrivatePage("/super"); }}
         onOpenSettings={() => { setAccountOpen(false); setSettingsOpen(true); refreshStorageInfo(); }}
         onChangePassword={() => { setAccountOpen(false); setChangePasswordOpen(true); }}
         onOpenLogView={openLogView}
