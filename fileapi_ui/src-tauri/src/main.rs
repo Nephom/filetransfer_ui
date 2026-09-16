@@ -329,6 +329,13 @@ struct LocalDirectoryChildren {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct LocalTransferResult {
+    path: String,
+    moved: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct OperationStorageInfo {
     history_path: String,
     log_path: String,
@@ -1587,6 +1594,40 @@ fn resolve_local_new_path(path: &str) -> Result<PathBuf, String> {
     Ok(parent.join(name))
 }
 
+fn copy_local_entry(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(source).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err("Symbolic links are not supported in local transfers".to_string());
+    }
+    if metadata.is_dir() {
+        std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+        let mut entries = std::fs::read_dir(source)
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            copy_local_entry(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+    } else if metadata.is_file() {
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        std::fs::copy(source, destination).map_err(|error| error.to_string())?;
+    } else {
+        return Err("Only regular files and directories are supported".to_string());
+    }
+    Ok(())
+}
+
+fn local_transfer_display_path(path: &Path) -> Result<String, String> {
+    let home = canonicalize(local_home()?)?;
+    Ok(path
+        .strip_prefix(&home)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/")))
+}
+
 #[tauri::command]
 fn local_create_directory(path: String) -> Result<(), String> {
     let resolved = resolve_local_new_path(&path)?;
@@ -1622,6 +1663,62 @@ fn local_rename_path(old_path: String, new_path: String) -> Result<String, Strin
         .strip_prefix(canonicalize(local_home()?)?)
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| new_resolved.display().to_string().replace('\\', "/")))
+}
+
+#[tauri::command]
+fn local_transfer_path(old_path: String, new_path: String) -> Result<LocalTransferResult, String> {
+    let source = resolve_local_read_entry(&old_path)?;
+    let source_can_write = resolve_local_transfer_path(&old_path).is_ok();
+    let mut destination = resolve_local_new_path(&new_path)?;
+    if source == destination || destination.starts_with(&source) {
+        return Err("Transfer paths must not be equal or contain one another".to_string());
+    }
+    if destination.exists() {
+        let name = destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "Invalid local path".to_string())?
+            .to_string();
+        let parent = destination
+            .parent()
+            .ok_or_else(|| "Invalid local path".to_string())?
+            .to_path_buf();
+        let mut attempt = 1;
+        loop {
+            let candidate = parent.join(dedupe_candidate_name(&name, attempt));
+            if !candidate.exists() {
+                destination = candidate;
+                break;
+            }
+            attempt += 1;
+        }
+    }
+
+    if source_can_write && std::fs::rename(&source, &destination).is_ok() {
+        return Ok(LocalTransferResult {
+            path: local_transfer_display_path(&destination)?,
+            moved: true,
+        });
+    }
+
+    copy_local_entry(&source, &destination)?;
+    let moved = if source_can_write {
+        if std::fs::metadata(&source)
+            .map_err(|error| error.to_string())?
+            .is_dir()
+        {
+            std::fs::remove_dir_all(&source).map_err(|error| error.to_string())?;
+        } else {
+            std::fs::remove_file(&source).map_err(|error| error.to_string())?;
+        }
+        true
+    } else {
+        false
+    };
+    Ok(LocalTransferResult {
+        path: local_transfer_display_path(&destination)?,
+        moved,
+    })
 }
 
 #[tauri::command]
@@ -4009,6 +4106,7 @@ fn main() {
             local_list_directories,
             local_create_directory,
             local_rename_path,
+            local_transfer_path,
             local_delete_path,
             is_local_elevated,
             list_local_roots,
@@ -4091,9 +4189,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize, dedupe_candidate_name, is_local_read_scope, is_within_home_or_elevated,
+        canonicalize, dedupe_candidate_name, is_elevated, is_local_read_scope, is_within_home_or_elevated,
         local_create_directory, local_delete_path, local_display_path, local_list_directory,
-        local_rename_path, local_roots, resolve_local_download_destination,
+        local_rename_path, local_roots, local_transfer_path, resolve_local_download_destination,
         resolve_local_download_file, resolve_local_new_path, resolve_local_read_entry,
         resolve_local_read_path, resolve_local_transfer_path, UploadProgressEvent,
     };
@@ -4274,6 +4372,44 @@ mod tests {
             local_delete_path("renamed.txt".into(), false).expect("HOME delete should work");
             assert!(!home.join("renamed.txt").exists());
             assert!(local_create_directory("../outside".into()).is_err());
+        });
+    }
+
+    #[test]
+    fn local_transfer_copies_read_only_scope_and_moves_home_scope() {
+        with_temp_home(|home| {
+            let external = home.parent().unwrap().join("nfterm-local-transfer-source");
+            fs::create_dir_all(external.join("nested")).unwrap();
+            fs::write(external.join("nested/source.txt"), b"external bytes").unwrap();
+            let source_writable = is_within_home_or_elevated(
+                &canonicalize(&external).unwrap(),
+                &canonicalize(home).unwrap(),
+                is_elevated(),
+            );
+
+            let external_source = external.to_string_lossy().to_string();
+            let copied = local_transfer_path(external_source, "copied".into())
+                .expect("read-only local source should be copied");
+            assert_eq!(copied.moved, source_writable);
+            assert_eq!(external.join("nested/source.txt").is_file(), !source_writable);
+            assert_eq!(fs::read(home.join("copied/nested/source.txt")).unwrap(), b"external bytes");
+
+            let home_source = home.join("home-source.txt");
+            let home_destination = home.join("moved/home-source.txt");
+            fs::write(&home_source, b"home bytes").unwrap();
+            fs::create_dir_all(home_destination.parent().unwrap()).unwrap();
+            assert!(home_source.exists(), "home source should exist before transfer: {}", home_source.display());
+            let moved = local_transfer_path(
+                home_source.to_string_lossy().to_string(),
+                home_destination.to_string_lossy().to_string(),
+            )
+                .expect("HOME source should be moved");
+            assert!(moved.moved);
+            assert!(!home_source.exists());
+            assert_eq!(fs::read(home_destination).unwrap(), b"home bytes");
+            assert!(local_transfer_path("moved".into(), "moved/child".into()).is_err());
+
+            let _ = fs::remove_dir_all(external);
         });
     }
 

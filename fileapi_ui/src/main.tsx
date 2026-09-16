@@ -3105,14 +3105,23 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // same-named item by auto-appending "_(n)".
   const moveLocalItems = (items: FileItem[], destination: string) =>
     run(async () => {
+      let movedCount = 0;
+      let copiedCount = 0;
       for (const item of items) {
         const newPath = joinLocalPath(destination, item.name);
-        const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
-        recordUndoableMove({ source: "local", oldPath: item.path, newPath: finalPath });
+        const result = await invoke<{ path: string; moved: boolean }>("local_transfer_path", { oldPath: item.path, newPath });
+        if (result.moved) {
+          movedCount++;
+          recordUndoableMove({ source: "local", oldPath: item.path, newPath: result.path });
+        } else {
+          copiedCount++;
+        }
       }
       await loadLocalFiles(localPath);
-      writeOperationLog("move", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${destination || ""}`, `Moved ${items.length} item(s) locally.`);
-      notify(`Moved ${items.length} item${items.length === 1 ? "" : "s"}.`);
+      if (destination !== localPath) void loadLocalTreeChildren(destination, true);
+      const detail = `${movedCount} moved, ${copiedCount} copied locally.`;
+      writeOperationLog("move", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${destination || ""}`, detail);
+      notify(detail);
     });
 
   const beginDrag = (event: React.DragEvent, file: FileItem) => {
@@ -4093,9 +4102,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       <div
         className={`tree-node ${localPath === node.path ? "active" : ""} ${dropTarget === node.path ? "drop-target" : ""}`}
         onDragOver={(event) => {
-          if (dragSourceRef.current === "remote" && canDragRemoteToLocal && dragItemsRef.current.length) {
+          const localDrop = dragSourceRef.current === "local" && !localReadOnly && isValidMoveTarget(dragItemsRef.current, node.path);
+          const remoteDrop = dragSourceRef.current === "remote" && canDragRemoteToLocal;
+          if ((localDrop || remoteDrop) && dragItemsRef.current.length) {
             event.preventDefault();
-            event.dataTransfer.dropEffect = "copy";
+            event.dataTransfer.dropEffect = localDrop ? "move" : "copy";
             setDropTarget(node.path);
             scheduleLocalTreeExpand(node);
             handleDragAutoScroll(event, localFolderTreeRef.current);
@@ -4110,13 +4121,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           window.clearTimeout(dragExpandTimerRef.current);
         }}
         onDropCapture={(event) => {
-          if (dragSourceRef.current === "remote" && canDragRemoteToLocal) {
+          const source = dragSourceRef.current;
+          if ((source === "remote" && canDragRemoteToLocal) || (source === "local" && !localReadOnly)) {
             event.preventDefault();
             event.stopPropagation();
             stopDragAutoScroll();
-            setDropTarget(null);
             const items = dragItemsRef.current;
-            downloadRemoteItemsToLocal(items, node.path);
+            finishDrag();
+            if (source === "remote") downloadRemoteItemsToLocal(items, node.path);
+            else void moveLocalItems(items, node.path);
           }
         }}
       >
