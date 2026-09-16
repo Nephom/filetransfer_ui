@@ -109,6 +109,26 @@ try {
       }
     }
   }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body>
+    <section class="desktop-content"><div class="content-heading"><div>
+      <div class="remote-navigation-row">
+        <h1 id="search-title">Search results for "a"</h1>
+        <div class="search-control"><input class="search" placeholder="Search"></div>
+      </div>
+    </div></div></section></body></html>`);
+  const searchGeometry = [];
+  for (const title of ["a", "medium search phrase", "a very long search phrase that must be truncated inside the heading area"]) {
+    await page.locator("#search-title").evaluate((element, value) => { element.textContent = `Search results for "${value}"`; }, title);
+    searchGeometry.push(await page.locator(".search-control").evaluate((element) => {
+      const { x, right, width } = element.getBoundingClientRect();
+      return { x, right, width };
+    }));
+  }
+  const fixedSearch = searchGeometry[0];
+  for (const geometry of searchGeometry.slice(1)) {
+    assert.deepEqual(geometry, fixedSearch, "search control stays fixed while result title length changes");
+  }
   console.table(metrics);
   console.log(`PASS: ${metrics.length} LOCAL layout cases; REMOTE geometry and LOCAL appearance unchanged.`);
 } finally {
