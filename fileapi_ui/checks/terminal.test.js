@@ -97,8 +97,10 @@ const makeTab = (id) => ({
 async function harness(t, initial = {}) {
   const hooks = hookRunner();
   const calls = [], notices = [], copies = [], reads = [], pastes = [], writes = [], actions = [];
-  const instances = [];
+  const instances = [], focused = [];
   let selection = "", selectedTextarea, clipboard = "clipboard", picker = "";
+  const documentListeners = new Map();
+  const windowListeners = new Map();
   let bridge, connectResult = "new-session", disconnectResult;
   class Terminal extends RealTerminal {
     constructor(options) { super(options); instances.push(this); }
@@ -106,7 +108,7 @@ async function harness(t, initial = {}) {
       // xterm's paste API only needs a textarea to clear. All VT/input code stays real.
       this._core.textarea = { value: "" };
     }
-    focus() {}
+    focus() { focused.push(this); }
     getSelection() { return selection; }
     attachCustomKeyEventHandler(handler) { this.keyHandler = handler; }
     paste(text) { pastes.push(text); super.paste(text); }
@@ -152,12 +154,16 @@ async function harness(t, initial = {}) {
       confirm() { throw new Error("Unsafe Continue must not be offered"); },
       requestAnimationFrame(fn) { fn(); return 1; },
       cancelAnimationFrame() {},
+      addEventListener(type, callback) { windowListeners.set(type, callback); },
+      removeEventListener(type, callback) { if (windowListeners.get(type) === callback) windowListeners.delete(type); },
     },
     ResizeObserver: class { observe() {} disconnect() {} },
     document: {
       body: { appendChild() {} },
       createElement() { return { style: {}, setAttribute() {}, select() { selectedTextarea = this; }, remove() {} }; },
       execCommand(command) { assert.equal(command, "copy"); copies.push(selectedTextarea.value); return true; },
+      addEventListener(type, callback, capture) { assert.equal(capture, true); documentListeners.set(type, callback); },
+      removeEventListener(type, callback, capture) { assert.equal(capture, true); if (documentListeners.get(type) === callback) documentListeners.delete(type); },
     },
     navigator: {},
   };
@@ -166,7 +172,7 @@ async function harness(t, initial = {}) {
   const lifecycle = loadTypeScript("features/terminal/useTerminalLifecycle.ts", { mocks, globals });
   const actionState = { destination: "old", nameOpen: false, name: "" };
   const api = {
-    props, tabsRef, terminalsRef, hostRefsRef, calls, notices, copies, reads, pastes, instances, actionState,
+     props, tabsRef, terminalsRef, hostRefsRef, calls, notices, copies, reads, pastes, instances, focused, actionState,
     get bridge() { return bridge; },
     get terminal() { return terminalsRef.current.get(props.activeTabId); },
     get sent() { return calls.filter((call) => call.command === "ssh_write"); },
@@ -193,6 +199,16 @@ async function harness(t, initial = {}) {
     },
     native(text, id = props.activeTabId) {
       return hostRefsRef.current.get(id).fire("paste", { clipboardData: text === undefined ? undefined : { getData(type) { assert.equal(type, "text/plain"); return text; } } });
+    },
+    documentMouseup(changes = {}) {
+      const event = { button: 0, ...changes };
+      documentListeners.get("mouseup")?.(event);
+      return event;
+    },
+    windowEvent(type, changes = {}) {
+      const event = { ...changes };
+      windowListeners.get(type)?.(event);
+      return event;
     },
     rightClick(id = props.activeTabId) { return hostRefsRef.current.get(id).fire("contextmenu", { button: 2 }); },
     actions() {
@@ -384,6 +400,13 @@ test("surviving handlers work after collapse, create, delete and reorder", async
   assert.equal(h.instances.length, 3);
 });
 
+test("selecting a tab focuses that tab's xterm instance", async (t) => {
+  const h = await harness(t);
+  const target = h.tabsRef.current[1];
+  h.actions().selectSshTab(target);
+  assert.equal(h.focused.at(-1), h.instances[1]);
+});
+
 test("stale reads are cancelled after context changes, without poisoning later pastes", async (t) => {
   const h = await harness(t);
   for (const transition of [
@@ -490,6 +513,57 @@ test("left-button selection-copy and OSC52 set remain intact; OSC52 query never 
   assert.deepEqual(h.copies, ["  new selection\n\ttext", text]);
   assert.equal(h.reads.length, 0);
   assert.equal(h.sent.length, 0);
+});
+
+test("selection-copy finishes when the pointer is released outside the terminal host", async (t) => {
+  const h = await harness(t);
+  const host = h.hostRefsRef.current.get("a");
+  h.setSelection("old");
+  host.fire("mousedown");
+  h.documentMouseup();
+  h.setSelection("  multiple lines\nsecond line");
+  await h.settle();
+  assert.deepEqual(h.copies, ["  multiple lines\nsecond line"]);
+
+  // A non-left button must never finish a left-button selection session.
+  host.fire("mousedown", { button: 2 });
+  h.setSelection("right click selection");
+  h.documentMouseup({ button: 2 });
+  await h.settle();
+  assert.deepEqual(h.copies, ["  multiple lines\nsecond line"]);
+
+  host.fire("mousedown");
+  host.fire("mousedown", { button: 1 });
+  h.setSelection("middle click selection");
+  h.documentMouseup();
+  await h.settle();
+  assert.deepEqual(h.copies, ["  multiple lines\nsecond line"]);
+});
+
+test("selection-copy is cancelled when the originating tab is no longer active", async (t) => {
+  const h = await harness(t);
+  const host = h.hostRefsRef.current.get("a");
+  h.setSelection("old");
+  host.fire("mousedown");
+  h.render({ activeTabId: "b" });
+  h.documentMouseup();
+  h.setSelection("stale selection");
+  await h.settle();
+  assert.equal(h.copies.length, 0);
+});
+
+test("selection-copy is cancelled by window blur or pointer cancellation", async (t) => {
+  for (const cancelEvent of ["blur", "pointercancel"]) {
+    const h = await harness(t);
+    const host = h.hostRefsRef.current.get("a");
+    h.setSelection("old");
+    host.fire("mousedown");
+    h.windowEvent(cancelEvent);
+    h.documentMouseup();
+    h.setSelection("cancelled selection");
+    await h.settle();
+    assert.equal(h.copies.length, 0, cancelEvent);
+  }
 });
 
 test("real xterm replay retains DEC 2004; only connection boundaries reset it", async (t) => {

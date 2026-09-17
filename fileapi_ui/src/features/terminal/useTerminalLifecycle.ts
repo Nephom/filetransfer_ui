@@ -305,25 +305,49 @@ export function useTerminalLifecycle({
           if (text !== undefined) pasteText(text);
         };
         let selectionAtMouseDown = "";
-        const onMouseDown = (event: MouseEvent) => {
-          if (event.button !== 0) return;
-          selectionAtMouseDown = terminal.getSelection();
-          terminal.focus();
-        };
-        const onMouseUp = (event: MouseEvent) => {
-          if (event.button !== 0) return;
-          const selectionBeforeMouseDown = selectionAtMouseDown;
+        let selectionInProgress = false;
+        const clearSelectionTracking = () => {
+          if (!selectionInProgress) return;
+          selectionInProgress = false;
+          document.removeEventListener("mouseup", onDocumentMouseUp, true);
+          window.removeEventListener("blur", cancelSelectionTracking);
+          window.removeEventListener("pointercancel", cancelSelectionTracking);
           selectionAtMouseDown = "";
+        };
+        const finishSelection = (event: MouseEvent) => {
+          if (event.button !== 0 || !selectionInProgress) return;
+          const selectionBeforeMouseDown = selectionAtMouseDown;
+          clearSelectionTracking();
           // xterm.js completes its selection on a document-level mouseup
           // listener. Defer the clipboard read until this event has finished
           // propagating so the final selection, rather than the previous one,
-          // is copied.
+          // is copied. The originating tab remains the only tab that can
+          // finish this selection session.
           queueMicrotask(() => {
+            if (activeTabIdRef.current !== tabId || instanceDisposed) return;
             const selection = terminal.getSelection();
             if (selection && selection !== selectionBeforeMouseDown) {
               void copyTerminalText(selection).catch(() => undefined);
             }
           });
+        };
+        const onDocumentMouseUp = (event: MouseEvent) => finishSelection(event);
+        const cancelSelectionTracking = () => clearSelectionTracking();
+        const onMouseDown = (event: MouseEvent) => {
+          if (event.button !== 0) {
+            clearSelectionTracking();
+            return;
+          }
+          clearSelectionTracking();
+          selectionAtMouseDown = terminal.getSelection();
+          selectionInProgress = true;
+          document.addEventListener("mouseup", onDocumentMouseUp, true);
+          window.addEventListener("blur", cancelSelectionTracking);
+          window.addEventListener("pointercancel", cancelSelectionTracking);
+          terminal.focus();
+        };
+        const onMouseUp = (event: MouseEvent) => {
+          finishSelection(event);
         };
         // Right-click reads the real Windows/OS clipboard through the
         // privileged clipboard-manager plugin and pastes it, instead of
@@ -354,6 +378,7 @@ export function useTerminalLifecycle({
           currentHost.removeEventListener("mousedown", onMouseDown, true);
           currentHost.removeEventListener("mouseup", onMouseUp, true);
           currentHost.removeEventListener("contextmenu", onContextMenu, true);
+          clearSelectionTracking();
           const instance = instancesRef.current.get(tabId);
           // `terminal.dispose()` already disposes every addon it still has
           // loaded, but the WebGL addon may have already disposed *itself*
