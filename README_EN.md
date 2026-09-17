@@ -4,7 +4,7 @@
 
 This repository contains two product surfaces: the browser-based WebUI and the nFterm Desktop App. They share the API server and permission model, but their execution environments and local-file capabilities are different.
 
-## WebUI 3.4.0-RC1
+## WebUI 3.4.0-RC2
 
 The WebUI is the browser file-management product. It provides:
 
