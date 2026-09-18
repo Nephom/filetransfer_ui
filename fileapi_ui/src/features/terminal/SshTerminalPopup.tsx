@@ -91,7 +91,12 @@ export function SshTerminalPopup() {
     onData: (_tabId, data) => {
       const currentSessionId = sessionIdRef.current;
       if (!currentSessionId) return;
-      const next = writeQueueRef.current.catch(() => undefined).then(() => invoke<void>("ssh_write", { sessionId: currentSessionId, data }));
+      const next = writeQueueRef.current
+        .catch(() => undefined)
+        .then(() => invoke<void>("ssh_write", { sessionId: currentSessionId, data }))
+        .catch((error) => {
+          setStatus(`Terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
       writeQueueRef.current = next.catch(() => undefined);
     },
     onResize: (_tabId, cols, rows) => {
@@ -142,11 +147,14 @@ export function SshTerminalPopup() {
     });
     const disconnect = () => {
       const id = sessionIdRef.current;
-      if (disconnectStartedRef.current || !id) return;
+      if (disconnectStartedRef.current) return;
       disconnectStartedRef.current = true;
-      void invoke("ssh_disconnect", { sessionId: id }).catch(() => undefined);
+      if (id) void invoke("ssh_disconnect", { sessionId: id }).catch(() => undefined);
     };
-    const unlistenClose = currentWindow.onCloseRequested(() => disconnect());
+    const unlistenClose = currentWindow.onCloseRequested(() => {
+      disconnect();
+      void currentWindow.destroy();
+    });
     return () => {
       active = false;
       delete pendingRequestsRef.current[requestId];
@@ -160,6 +168,10 @@ export function SshTerminalPopup() {
       <h1>{title}</h1>
       <span>{status}</span>
     </header>
-    <div className="ssh-terminal-popup-host" ref={setHost} />
+    <div
+      className="ssh-terminal-popup-host"
+      ref={setHost}
+      onMouseDown={() => terminalsRef.current.get(tabId)?.focus()}
+    />
   </main>;
 }
