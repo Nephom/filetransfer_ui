@@ -71,9 +71,9 @@
 :where(.explorer) .ssh-quick-list-heading,
 :where(.explorer) .ssh-quick-list-group-label { color: var(--color-text-muted); }
 :where(.explorer) .ssh-quick-list-entry { color: var(--color-text); }
-:where(.explorer) .ssh-quick-list-entry:hover,
-:where(.explorer) .ssh-quick-list-entry.active { background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel-strong)); }
-:where(.explorer) .ssh-quick-list-entry.active { box-shadow: inset 2px 0 var(--color-primary); }
+:where(.explorer) .ssh-quick-list-entry-row:hover,
+:where(.explorer) .ssh-quick-list-entry-row.active { background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel-strong)); }
+:where(.explorer) .ssh-quick-list-entry-row.active { box-shadow: inset 2px 0 var(--color-primary); }
 :where(.explorer) .terminal-inline-note,
 :where(.explorer) .terminal-placeholder { color: var(--color-text-muted); }
 :where(.explorer) .palette-select,

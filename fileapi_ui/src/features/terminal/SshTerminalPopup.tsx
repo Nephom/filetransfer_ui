@@ -1,23 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { emit } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
 import { useSshEventBridge, type SshEventPayload } from "./useSshEventBridge";
 import { useTerminalLifecycle } from "./useTerminalLifecycle";
-import { VT_SESSION_BOUNDARY_GUARD } from "./terminal-utils";
+import { VT_SESSION_BOUNDARY_GUARD, appendSshTabOutput } from "./terminal-utils";
+import type { SshProfile } from "../ssh/ssh-contracts";
 import type { SshTerminalTab } from "./terminal-contracts";
-
-type PopupState = {
-  tabId: string;
-  sessionId: string;
-  output: string;
-};
 
 const popupQuery = () => {
   const query = new URLSearchParams(window.location.search);
+  let profile: SshProfile | null = null;
+  try {
+    profile = JSON.parse(query.get("profile") || "null") as SshProfile | null;
+  } catch {
+    profile = null;
+  }
   return {
-    tabId: query.get("tabId") || "",
-    sessionId: query.get("sessionId") || "",
+    tabId: `popup-${crypto.randomUUID()}`,
+    profile,
     title: query.get("title") || "SSH Terminal",
   };
 };
@@ -27,17 +27,19 @@ export function isSshTerminalPopup() {
 }
 
 export function SshTerminalPopup() {
-  const { tabId, sessionId, title } = popupQuery();
+  const [popup] = useState(popupQuery);
+  const { tabId, profile, title } = popup;
   const [status, setStatus] = useState("Connecting to terminal…");
+  const [sessionId, setSessionId] = useState("");
   const [host, setHost] = useState<HTMLDivElement | null>(null);
   const hostRefsRef = useRef(new Map<string, HTMLDivElement>());
   const tabsRef = useRef<SshTerminalTab[]>([{
     id: tabId,
     title,
     workspaceId: "",
-    sshEntryId: "",
-    sessionId,
-    connected: true,
+    sshEntryId: profile?.id || "",
+    sessionId: "",
+    connected: false,
     output: "",
     recording: false,
     recordingStartedAt: null,
@@ -48,10 +50,11 @@ export function SshTerminalPopup() {
   }]);
   const pendingRequestsRef = useRef<Record<string, string>>({});
   const terminalsRef = useRef(new Map());
-  const initialOutputRef = useRef("");
-  const initialOutputAppliedRef = useRef(false);
+  const outputRef = useRef("");
+  const sessionIdRef = useRef("");
+  const requestIdRef = useRef("");
   const writeQueueRef = useRef(Promise.resolve());
-  const closeNotifiedRef = useRef(false);
+  const disconnectStartedRef = useRef(false);
 
   if (host) hostRefsRef.current.set(tabId, host);
   else hostRefsRef.current.delete(tabId);
@@ -60,43 +63,41 @@ export function SshTerminalPopup() {
     tabsRef,
     pendingRequestsRef,
     onOutput: (_resolvedTabId, payload: SshEventPayload) => {
-      if (payload.sessionId !== sessionId) return;
+      if (payload.sessionId !== sessionIdRef.current && payload.requestId !== requestIdRef.current) return;
+      outputRef.current = appendSshTabOutput(outputRef.current, payload.data);
+      tabsRef.current[0].output = outputRef.current;
       terminalsRef.current.get(tabId)?.write(payload.data);
       setStatus("Connected");
     },
     onExit: (_resolvedTabId, payload: SshEventPayload) => {
-      if (payload.sessionId !== sessionId) return;
+      if (payload.sessionId !== sessionIdRef.current) return;
       setStatus(payload.data || "SSH session ended.");
+      sessionIdRef.current = "";
+      setSessionId("");
     },
   });
 
   useTerminalLifecycle({
     enabled: Boolean(tabId && sessionId),
-    layoutKey: `${title}:${Boolean(host)}`,
+    layoutKey: `${title}:${Boolean(host)}:${Boolean(sessionId)}`,
     tabIds: [tabId],
     activeTabId: tabId,
     hostRefsRef,
     terminalsRef,
     boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
     bracketedPasteControlEnabled: true,
-    getPasteSessionId: () => sessionId,
-    getInitialOutput: () => {
-      const output = initialOutputRef.current;
-      if (output) initialOutputAppliedRef.current = true;
-      return output;
-    },
-    onTerminalReady: () => {
-      if (initialOutputAppliedRef.current || !initialOutputRef.current) return;
-      terminalsRef.current.get(tabId)?.write(`${initialOutputRef.current}${VT_SESSION_BOUNDARY_GUARD}`);
-      initialOutputAppliedRef.current = true;
-      setStatus("Connected");
-    },
+    getPasteSessionId: () => sessionIdRef.current,
+    getInitialOutput: () => outputRef.current,
     onData: (_tabId, data) => {
-      const next = writeQueueRef.current.catch(() => undefined).then(() => invoke<void>("ssh_write", { sessionId, data }));
+      const currentSessionId = sessionIdRef.current;
+      if (!currentSessionId) return;
+      const next = writeQueueRef.current.catch(() => undefined).then(() => invoke<void>("ssh_write", { sessionId: currentSessionId, data }));
       writeQueueRef.current = next.catch(() => undefined);
     },
     onResize: (_tabId, cols, rows) => {
-      void invoke("ssh_resize", { sessionId, cols, rows }).catch((error) => {
+      const currentSessionId = sessionIdRef.current;
+      if (!currentSessionId) return;
+      void invoke("ssh_resize", { sessionId: currentSessionId, cols, rows }).catch((error) => {
         setStatus(`Terminal resize failed: ${error instanceof Error ? error.message : String(error)}`);
       });
     },
@@ -104,36 +105,55 @@ export function SshTerminalPopup() {
   });
 
   useEffect(() => {
-    if (!tabId || !sessionId) {
-      setStatus("Invalid SSH terminal window parameters.");
-      return undefined;
-    }
     const currentWindow = getCurrentWebviewWindow();
     document.title = title;
     void currentWindow.setTitle(title);
+    if (!profile) {
+      setStatus("Invalid SSH entry parameters.");
+      return undefined;
+    }
+    const requestId = `${tabId}-connect`;
+    requestIdRef.current = requestId;
+    pendingRequestsRef.current[requestId] = tabId;
     let active = true;
-    const unlistenState = currentWindow.listen<PopupState>("ssh-popup-state", (event) => {
-      if (!active || event.payload.tabId !== tabId || event.payload.sessionId !== sessionId) return;
-      initialOutputRef.current = event.payload.output;
-      const terminal = terminalsRef.current.get(tabId);
-      if (terminal && !initialOutputAppliedRef.current) {
-        terminal.write(`${event.payload.output}${VT_SESSION_BOUNDARY_GUARD}`);
-        initialOutputAppliedRef.current = true;
+    void invoke<string>("ssh_connect", {
+      profile: {
+        id: profile.id,
+        name: profile.name,
+        host: profile.host,
+        port: profile.port,
+        username: profile.username,
+        privateKeyPath: profile.privateKeyPath || null,
+      },
+      requestId,
+    }).then((id) => {
+      if (!active) {
+        void invoke("ssh_disconnect", { sessionId: id }).catch(() => undefined);
+        return;
       }
+      sessionIdRef.current = id;
+      tabsRef.current[0].sessionId = id;
+      tabsRef.current[0].connected = true;
+      setSessionId(id);
       setStatus("Connected");
+    }).catch((error) => {
+      if (active) setStatus(`SSH connection failed: ${error instanceof Error ? error.message : String(error)}`);
+      delete pendingRequestsRef.current[requestId];
     });
-    const unlistenClose = currentWindow.onCloseRequested(() => {
-      if (closeNotifiedRef.current) return;
-      closeNotifiedRef.current = true;
-      void emit("ssh-popup-closed", { tabId, label: currentWindow.label });
-    });
-    void emit("ssh-popup-ready", { tabId, sessionId, label: currentWindow.label });
+    const disconnect = () => {
+      const id = sessionIdRef.current;
+      if (disconnectStartedRef.current || !id) return;
+      disconnectStartedRef.current = true;
+      void invoke("ssh_disconnect", { sessionId: id }).catch(() => undefined);
+    };
+    const unlistenClose = currentWindow.onCloseRequested(() => disconnect());
     return () => {
       active = false;
-      void unlistenState.then((dispose) => dispose());
+      delete pendingRequestsRef.current[requestId];
       void unlistenClose.then((dispose) => dispose());
+      disconnect();
     };
-  }, [sessionId, tabId, title]);
+  }, [profile, tabId, title]);
 
   return <main className="ssh-terminal-popup" aria-label={title}>
     <header className="ssh-terminal-popup-header">

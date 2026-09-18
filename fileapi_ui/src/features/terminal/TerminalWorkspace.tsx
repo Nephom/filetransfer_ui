@@ -27,12 +27,12 @@ type Props = {
   onToggleQuickList: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
   onSelectTab: (tab: TerminalTab) => void;
-  onOpenInNewWindow: (tab: TerminalTab) => void;
   onCopySession: (tab: TerminalTab) => void;
   onReorderTabs: (draggedId: string, targetId: string) => void;
   onCloseTab: (tabId: string) => void;
   onCreateTab: () => void;
   onQuickConnect: (workspaceId: string, entryId: string) => void;
+  onOpenEntryInNewWindow: (workspaceId: string, entryId: string) => void;
   onSelectWorkspace: (id: string) => void;
   onConnect: () => void;
   onDisconnect: () => void;
@@ -69,12 +69,12 @@ export function TerminalWorkspace({
   onToggleQuickList,
   onResizeStart,
   onSelectTab,
-  onOpenInNewWindow,
   onCopySession,
   onReorderTabs,
   onCloseTab,
   onCreateTab,
   onQuickConnect,
+  onOpenEntryInNewWindow,
   onSelectWorkspace,
   onConnect,
   onDisconnect,
@@ -183,10 +183,19 @@ export function TerminalWorkspace({
           {workspace.sshEntries.map((entry) => {
             const entryConnected = tabs.some((tab) => tab.workspaceId === workspace.id && tab.sshEntryId === entry.id && tab.connected);
             const isActive = activeTab?.workspaceId === workspace.id && activeTab?.sshEntryId === entry.id;
-            return <button type="button" key={entry.id} className={`ssh-quick-list-entry ${isActive ? "active" : ""}`} onClick={() => onQuickConnect(workspace.id, entry.id)}>
-              <span className={`ssh-tab-status ${entryConnected ? "connected" : "disconnected"}`} aria-hidden="true" />
-              {entry.name}
-            </button>;
+            return <div className={`ssh-quick-list-entry-row ${isActive ? "active" : ""}`} key={entry.id}>
+              <button type="button" className="ssh-quick-list-entry" onClick={() => onQuickConnect(workspace.id, entry.id)}>
+                <span className={`ssh-tab-status ${entryConnected ? "connected" : "disconnected"}`} aria-hidden="true" />
+                {entry.name}
+              </button>
+              <button
+                type="button"
+                className="ssh-quick-list-entry-popup"
+                aria-label={`Open ${entry.name} in new window`}
+                title="Open in New Window"
+                onClick={() => onOpenEntryInNewWindow(workspace.id, entry.id)}
+              >↗</button>
+            </div>;
           })}
         </div>)}
       </aside>}
@@ -230,12 +239,6 @@ export function TerminalWorkspace({
       style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
       onClick={(event) => event.stopPropagation()}
     >
-      <button type="button" role="menuitem" onClick={() => {
-        setContextMenu(null);
-        onOpenInNewWindow(contextMenu.tab);
-      }}>
-        Open in New Window
-      </button>
       <button type="button" role="menuitem" onClick={() => {
         setContextMenu(null);
         onCopySession(contextMenu.tab);

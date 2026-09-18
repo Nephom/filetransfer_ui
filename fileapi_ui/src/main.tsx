@@ -2,7 +2,6 @@ import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useStat
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { resolveResource } from "@tauri-apps/api/path";
 import {
@@ -43,7 +42,6 @@ import { isMobileViewport } from "./styles/breakpoints";
 import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
 import { isSshTerminalPopup, SshTerminalPopup } from "./features/terminal/SshTerminalPopup";
 import type { SshProfile } from "./features/ssh/ssh-contracts";
-import type { SshTerminalTab } from "./features/terminal/terminal-contracts";
 import { appendSshTabOutput, makeSshTabId } from "./features/terminal/terminal-utils";
 import { useSshTerminal } from "./features/terminal/useSshTerminal";
 import { terminalHeightBounds, terminalTitlebarHeight, useSshTerminalState } from "./features/terminal/useSshTerminalState";
@@ -976,11 +974,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [path, setPath] = useState("");
   const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
-  const closeSshPopup = async (label: string) => {
-    const popup = await WebviewWindow.getByLabel(label);
-    if (popup) await popup.close();
-  };
-
   const {
     shareUrl, setShareUrl,
     shareLinksOpen, setShareLinksOpen,
@@ -1520,40 +1513,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   useEffect(() => {
     sshTabsRef.current = sshTabs;
   }, [sshTabs]);
-
-  useEffect(() => {
-    let active = true;
-    const ready = listen<{ tabId: string; sessionId: string; label: string }>("ssh-popup-ready", (event) => {
-      if (!active) return;
-      const tab = sshTabsRef.current.find((item) => item.id === event.payload.tabId);
-      if (!tab || tab.sessionId !== event.payload.sessionId) return;
-      void emitTo(event.payload.label, "ssh-popup-state", {
-        tabId: tab.id,
-        sessionId: tab.sessionId,
-        output: tab.output,
-      });
-    });
-    const closed = listen<{ tabId: string; label: string }>("ssh-popup-closed", (event) => {
-      if (!active) return;
-      setSshTabs((current) => current.map((tab) => tab.id !== event.payload.tabId || tab.popupLabel !== event.payload.label
-        ? tab
-        : { ...tab, detached: false, popupLabel: undefined }));
-    });
-    return () => {
-      active = false;
-      void ready.then((dispose) => dispose());
-      void closed.then((dispose) => dispose());
-    };
-  }, [setSshTabs]);
-
-  useEffect(() => {
-    return () => {
-      for (const tab of sshTabsRef.current) {
-        if (tab.popupLabel) void WebviewWindow.getByLabel(tab.popupLabel).then((popup) => popup?.close());
-        if (tab.sessionId) void invoke("ssh_disconnect", { sessionId: tab.sessionId });
-      }
-    };
-  }, []);
 
   useEffect(() => {
     activeSshTabIdRef.current = activeSshTabId;
@@ -2519,7 +2478,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     setSelectedEntryId: setSelectedSshEntryId,
     setSshProfileId,
     setTerminalOpen,
-    closeSshPopup,
     loadSshProfileDraft,
     onOpenWorkspaceManager: () => openSessionsModal(),
     onNotify: notify,
@@ -2535,26 +2493,27 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     setSaveLogNameOpen,
   });
 
-  const openSshTerminalWindow = async (tab: SshTerminalTab) => {
-    if (!tab.sessionId) {
-      setNotice("Connect the SSH tab before opening it in a new window.");
+  const openSshEntryInNewWindow = async (workspaceId: string, entryId: string) => {
+    const workspace = managedSessions.find((item) => item.id === workspaceId);
+    const entry = workspace?.sshEntries.find((item) => item.id === entryId);
+    if (!entry) {
+      setNotice("The selected SSH entry is no longer available.");
       return;
     }
-    const existingLabel = tab.popupLabel || `ssh-popup-${tab.id}`;
-    const existing = await WebviewWindow.getByLabel(existingLabel);
-    if (existing) {
-      await existing.show();
-      await existing.setFocus();
-      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, detached: true, popupLabel: existingLabel }));
-      return;
-    }
-    const workspace = managedSessions.find((item) => item.id === tab.workspaceId);
-    const entry = workspace?.sshEntries.find((item) => item.id === tab.sshEntryId);
-    const title = entry?.name || tab.title || `${entry?.username || "SSH"}@${entry?.host || "Terminal"}`;
+    const title = entry.name || `${entry.username}@${entry.host}`;
+    const profile = {
+      id: entry.id,
+      name: entry.name,
+      host: entry.host,
+      port: entry.port,
+      username: entry.username,
+      privateKeyPath: entry.privateKeyPath || null,
+    };
+    const label = `ssh-entry-popup-${entry.id}-${crypto.randomUUID()}`;
     const url = new URL(window.location.href);
-    url.search = new URLSearchParams({ sshPopup: "1", tabId: tab.id, sessionId: tab.sessionId, title }).toString();
+    url.search = new URLSearchParams({ sshPopup: "1", title, profile: JSON.stringify(profile) }).toString();
     url.hash = "";
-    const popup = new WebviewWindow(existingLabel, {
+    const popup = new WebviewWindow(label, {
       url: url.toString(),
       title,
       width: 1000,
@@ -2565,10 +2524,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       center: true,
     });
     popup.once("tauri://error", (event) => {
-      setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, detached: false, popupLabel: undefined }));
       setNotice(`Unable to open SSH terminal window: ${String(event.payload)}`);
     });
-    setSshTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, detached: true, popupLabel: existingLabel }));
   };
 
   const installSshKey = () => {
@@ -5768,12 +5725,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         onToggleQuickList={() => setSshQuickListOpen((open) => !open)}
         onResizeStart={beginTerminalResize}
         onSelectTab={selectSshTab}
-        onOpenInNewWindow={(tab) => { void openSshTerminalWindow(tab); }}
-        onCopySession={copySshSession}
+         onCopySession={copySshSession}
         onReorderTabs={reorderSshTabs}
         onCloseTab={closeSshTab}
         onCreateTab={() => { createSshTab(); }}
-        onQuickConnect={quickConnectSsh}
+         onQuickConnect={quickConnectSsh}
+         onOpenEntryInNewWindow={(workspaceId, entryId) => { void openSshEntryInNewWindow(workspaceId, entryId); }}
         onSelectWorkspace={selectWorkspaceSession}
         onConnect={connectSsh}
         onDisconnect={disconnectSsh}

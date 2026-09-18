@@ -108,9 +108,12 @@
 .ssh-quick-list-heading { padding: var(--space-1) var(--space-2) var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-small); letter-spacing: .1em; font-weight: 700; text-transform: uppercase; }
 .ssh-quick-list-group { margin-bottom: var(--space-2); }
 .ssh-quick-list-group-label { display: block; padding: var(--space-1) var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-small); font-weight: 600; }
-.ssh-quick-list-entry { display: flex; align-items: center; width: 100%; padding: var(--space-2) var(--space-2); border: 0; border-radius: 4px; background: transparent; color: var(--color-text); text-align: left; cursor: pointer; }
-.ssh-quick-list-entry:hover { background: var(--color-bg-panel); }
-.ssh-quick-list-entry.active { background: var(--color-bg-panel); box-shadow: inset 2px 0 var(--color-primary); }
+.ssh-quick-list-entry-row { display: flex; align-items: stretch; border-radius: 4px; }
+.ssh-quick-list-entry-row:hover, .ssh-quick-list-entry-row.active { background: var(--color-bg-panel); }
+.ssh-quick-list-entry { display: flex; align-items: center; flex: 1 1 auto; min-width: 0; padding: var(--space-2) var(--space-2); border: 0; border-radius: 4px; background: transparent; color: var(--color-text); text-align: left; cursor: pointer; }
+.ssh-quick-list-entry-popup { flex: 0 0 auto; width: 30px; padding: var(--space-1); border: 0; border-radius: 0 4px 4px 0; background: transparent; color: var(--color-text-muted); cursor: pointer; }
+.ssh-quick-list-entry-popup:hover, .ssh-quick-list-entry-popup:focus-visible { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, transparent); outline: 0; }
+.ssh-quick-list-entry-row.active { box-shadow: inset 2px 0 var(--color-primary); }
 .terminal-maximized .terminal-resize-handle { background: var(--color-border); }
 .terminal-placeholder { align-items: flex-start; justify-content: center; color: var(--color-text-muted); }
 .terminal-placeholder p { margin: 0; }
