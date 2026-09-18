@@ -28,6 +28,7 @@ type Props = {
   onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
   onSelectTab: (tab: TerminalTab) => void;
   onOpenInNewWindow: (tab: TerminalTab) => void;
+  onCopySession: (tab: TerminalTab) => void;
   onReorderTabs: (draggedId: string, targetId: string) => void;
   onCloseTab: (tabId: string) => void;
   onCreateTab: () => void;
@@ -69,6 +70,7 @@ export function TerminalWorkspace({
   onResizeStart,
   onSelectTab,
   onOpenInNewWindow,
+  onCopySession,
   onReorderTabs,
   onCloseTab,
   onCreateTab,
@@ -233,6 +235,12 @@ export function TerminalWorkspace({
         onOpenInNewWindow(contextMenu.tab);
       }}>
         Open in New Window
+      </button>
+      <button type="button" role="menuitem" onClick={() => {
+        setContextMenu(null);
+        onCopySession(contextMenu.tab);
+      }}>
+        Copy Session
       </button>
     </div>}
   </div>;

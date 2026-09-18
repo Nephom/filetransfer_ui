@@ -657,6 +657,20 @@ test("disconnect failure cancels stale reads, but does not claim the live sessio
   assert.equal(h.sent[0].args.data, "still connected");
 });
 
+test("copy session creates a new tab for the same SSH entry and connects independently", async (t) => {
+  const h = await harness(t);
+  const source = h.tabsRef.current[0];
+  h.actions().copySshSession(source);
+  await h.finishActions();
+  const copied = h.tabsRef.current[h.tabsRef.current.length - 1];
+  assert.ok(copied);
+  assert.notEqual(copied.id, source.id);
+  assert.equal(copied.workspaceId, source.workspaceId);
+  assert.equal(copied.sshEntryId, source.sshEntryId);
+  assert.equal(copied.sessionId, "new-session");
+  assert.equal(h.calls.filter((call) => call.command === "ssh_connect").length, 1);
+});
+
 test("Save Log picker always starts at HOME; empty HOME selection is not cancellation", async (t) => {
   const h = await harness(t);
   for (const selected of [null, "", "logs", ""]) {

@@ -2489,6 +2489,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     performSshConnect,
     cancelSshConnect,
     quickConnectSsh,
+    copySshSession,
     reorderSshTabs,
     connectSsh,
     disconnectSsh,
@@ -5765,6 +5766,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         onResizeStart={beginTerminalResize}
         onSelectTab={selectSshTab}
         onOpenInNewWindow={(tab) => { void openSshTerminalWindow(tab); }}
+        onCopySession={copySshSession}
         onReorderTabs={reorderSshTabs}
         onCloseTab={closeSshTab}
         onCreateTab={() => { createSshTab(); }}

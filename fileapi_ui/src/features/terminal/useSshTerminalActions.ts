@@ -222,6 +222,18 @@ export function useSshTerminalActions({
     if (tabId) performSshConnect(tabId, profile);
   };
 
+  const copySshSession = (sourceTab: SshTerminalTab) => {
+    const workspace = workspaces.find((item) => item.id === sourceTab.workspaceId);
+    const profile = workspace?.sshEntries.find((item) => item.id === sourceTab.sshEntryId);
+    if (!workspace || !profile) {
+      onOpenWorkspaceManager();
+      onSetNotice("The SSH entry for this tab is no longer available.");
+      return;
+    }
+    const tabId = createSshTab(sourceTab.workspaceId, sourceTab.sshEntryId);
+    if (tabId) performSshConnect(tabId, profile);
+  };
+
   const reorderSshTabs = (draggedId: string, targetId: string) => {
     setTabs((current) => {
       const from = current.findIndex((item) => item.id === draggedId);
@@ -363,6 +375,7 @@ export function useSshTerminalActions({
     performSshConnect,
     cancelSshConnect,
     quickConnectSsh,
+    copySshSession,
     reorderSshTabs,
     connectSsh,
     disconnectSsh,
