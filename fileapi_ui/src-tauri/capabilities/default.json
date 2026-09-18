@@ -5,6 +5,7 @@
   "windows": ["main", "*"],
   "permissions": [
     "core:default",
+    "core:window:allow-destroy",
     "core:webview:allow-create-webview-window",
     "core:event:default",
     "drag:default",

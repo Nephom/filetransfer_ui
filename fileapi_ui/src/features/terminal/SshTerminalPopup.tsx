@@ -54,7 +54,31 @@ export function SshTerminalPopup() {
   const sessionIdRef = useRef("");
   const requestIdRef = useRef("");
   const writeQueueRef = useRef(Promise.resolve());
-  const disconnectStartedRef = useRef(false);
+  const closePromiseRef = useRef<Promise<void> | null>(null);
+  const currentWindow = getCurrentWebviewWindow();
+
+  const closePopup = () => {
+    if (closePromiseRef.current) return closePromiseRef.current;
+    const id = sessionIdRef.current;
+    sessionIdRef.current = "";
+    tabsRef.current[0].sessionId = "";
+    tabsRef.current[0].connected = false;
+    const disconnect = id
+      ? invoke("ssh_disconnect", { sessionId: id }).catch((error) => {
+        setStatus(`SSH disconnect failed: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      : Promise.resolve();
+    const closing = disconnect
+      .then(() => currentWindow.destroy())
+      .catch((error) => {
+        setStatus(`Unable to close SSH window: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        closePromiseRef.current = null;
+      });
+    closePromiseRef.current = closing;
+    return closing;
+  };
 
   if (host) hostRefsRef.current.set(tabId, host);
   else hostRefsRef.current.delete(tabId);
@@ -72,8 +96,7 @@ export function SshTerminalPopup() {
     onExit: (_resolvedTabId, payload: SshEventPayload) => {
       if (payload.sessionId !== sessionIdRef.current) return;
       setStatus(payload.data || "SSH session ended.");
-      sessionIdRef.current = "";
-      setSessionId("");
+      void closePopup();
     },
   });
 
@@ -110,7 +133,6 @@ export function SshTerminalPopup() {
   });
 
   useEffect(() => {
-    const currentWindow = getCurrentWebviewWindow();
     document.title = title;
     void currentWindow.setTitle(title);
     if (!profile) {
@@ -145,21 +167,15 @@ export function SshTerminalPopup() {
       if (active) setStatus(`SSH connection failed: ${error instanceof Error ? error.message : String(error)}`);
       delete pendingRequestsRef.current[requestId];
     });
-    const disconnect = () => {
-      const id = sessionIdRef.current;
-      if (disconnectStartedRef.current) return;
-      disconnectStartedRef.current = true;
-      if (id) void invoke("ssh_disconnect", { sessionId: id }).catch(() => undefined);
-    };
-    const unlistenClose = currentWindow.onCloseRequested(() => {
-      disconnect();
-      void currentWindow.destroy();
+    const unlistenClose = currentWindow.onCloseRequested(async (event) => {
+      event.preventDefault();
+      await closePopup();
     });
     return () => {
       active = false;
       delete pendingRequestsRef.current[requestId];
       void unlistenClose.then((dispose) => dispose());
-      disconnect();
+      void closePopup();
     };
   }, [profile, tabId, title]);
 
