@@ -25,7 +25,6 @@ type Props = {
   setSelectedEntryId: (id: string) => void;
   setSshProfileId: (id: string) => void;
   setTerminalOpen: (open: boolean) => void;
-  closeSshPopup?: (label: string) => Promise<void>;
   loadSshProfileDraft: (profile: SshProfile | undefined) => void;
   onOpenWorkspaceManager: (workspaceId?: string) => void;
   onNotify: (message: string, duration?: number) => void;
@@ -49,7 +48,6 @@ export function useSshTerminalActions({
   tabs, setTabs, activeTabId, setActiveTabId, terminalInstancesRef, connectAttemptRef,
   pendingRequestsRef, connectingRef, recordingWriteQueuesRef, recordingPlainTranscriptsRef, workspaces, workspaceId,
   setWorkspaceId, selectedEntryId, setSelectedEntryId, setSshProfileId, setTerminalOpen,
-  closeSshPopup,
   loadSshProfileDraft, onOpenWorkspaceManager, onNotify, onSetNotice, run, onWriteOperationLog,
   describeError, saveLogNameDraft, setSaveLogNameDraft, saveLogDestinationPath,
   setSaveLogDestinationPath, saveLogNameOpen, setSaveLogNameOpen,
@@ -99,7 +97,6 @@ export function useSshTerminalActions({
     resetTerminalConnection(terminalInstancesRef.current.get(tabId));
     recordingPlainTranscriptsRef?.current.delete(tabId);
     void run(async () => {
-      if (tab.popupLabel) await closeSshPopup?.(tab.popupLabel).catch((error) => onSetNotice(`Unable to close SSH terminal window: ${String(error)}`));
       if (tab.sessionId) await invoke("ssh_disconnect", { sessionId: tab.sessionId });
       // Sweep any pendingRequestsRef entries left mapped to this tab (see
       // the comment in performSshConnect's success path for why they're
@@ -264,10 +261,9 @@ export function useSshTerminalActions({
     if (!tab?.sessionId) return;
     resetTerminalConnection(terminalInstancesRef.current.get(tab.id));
     void run(async () => {
-      if (tab.popupLabel) await closeSshPopup?.(tab.popupLabel).catch((error) => onSetNotice(`Unable to close SSH terminal window: ${String(error)}`));
       await invoke("ssh_disconnect", { sessionId: tab.sessionId });
       resetTerminalConnection(terminalInstancesRef.current.get(tab.id));
-      setTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, connected: false, sessionId: "", detached: false, popupLabel: undefined, output: appendSshTabOutput(item.output, `${SSH_SESSION_BOUNDARY_GUARD}\nDisconnected.\n`), recording: false }));
+      setTabs((current) => current.map((item) => item.id !== tab.id ? item : { ...item, connected: false, sessionId: "", output: appendSshTabOutput(item.output, `${SSH_SESSION_BOUNDARY_GUARD}\nDisconnected.\n`), recording: false }));
       connectingRef.current = false;
     });
   };

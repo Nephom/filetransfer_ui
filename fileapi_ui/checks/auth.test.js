@@ -29,13 +29,14 @@ function harness(handler = () => undefined) {
       "react-dom": { createPortal: jsx },
       "@tauri-apps/api/core": { invoke },
       "@tauri-apps/api/event": { listen: async () => () => {} },
+      "@tauri-apps/api/webviewWindow": { WebviewWindow: class {} },
       "@tauri-apps/api/path": { resolveResource: async () => "fake-icon" },
       "@tauri-apps/plugin-clipboard-manager": { readText: () => { throw new Error("Unexpected clipboard access"); } },
     },
     globals: {
       document: { getElementById: () => ({}) },
       localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
-      window: { innerWidth: 1280, innerHeight: 800 },
+      window: { innerWidth: 1280, innerHeight: 800, location: { search: "", href: "http://localhost/" } },
     },
   });
   const render = () => driver.render(App).props;

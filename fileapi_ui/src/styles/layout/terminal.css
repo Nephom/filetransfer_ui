@@ -99,7 +99,6 @@
 .xterm-host-stack { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; padding: var(--space-2); background: var(--color-bg); border: 1px solid var(--color-border); }
 .xterm-host { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 .xterm-host.active { visibility: visible; pointer-events: auto; }
-.xterm-host.detached { pointer-events: none; opacity: .55; }
 .xterm-host .xterm { height: 100%; }
 .xterm-host-empty { display: flex; align-items: center; justify-content: center; height: 100%; }
 .terminal-content { position: relative; }
@@ -122,9 +121,13 @@
 .ssh-terminal-popup { display: flex; flex-direction: column; width: 100vw; height: 100vh; min-width: 0; min-height: 0; color: var(--color-text); background: var(--color-bg); }
 .ssh-terminal-popup-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-3); border-bottom: 1px solid var(--color-border); }
 .ssh-terminal-popup-header h1 { min-width: 0; margin: 0; overflow: hidden; font-size: var(--font-size-base); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.ssh-terminal-popup-header span { flex: 0 0 auto; color: var(--color-text-muted); font-size: var(--font-size-small); }
+.ssh-terminal-popup-header-status { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
+.ssh-terminal-popup-header-status > span { flex: 0 1 auto; overflow: hidden; color: var(--color-text-muted); font-size: var(--font-size-small); text-overflow: ellipsis; white-space: nowrap; }
+.ssh-terminal-popup-header-status > button { flex: 0 0 auto; }
+.ssh-popup-record.recording { color: var(--color-text); background: var(--color-danger); box-shadow: 0 0 12px color-mix(in srgb, var(--color-danger) 55%, transparent); }
 .ssh-terminal-popup-host { flex: 1 1 auto; min-width: 0; min-height: 0; padding: var(--space-3); background: #020a12; }
 .ssh-terminal-popup-host .xterm { width: 100%; height: 100%; }
+.ssh-popup-saved-logs { flex: 0 0 auto; padding: var(--space-2) var(--space-3); overflow-wrap: anywhere; color: var(--color-primary); font-size: var(--font-size-small); }
 .ssh-controls { display: flex; align-items: end; gap: var(--space-1); flex-wrap: wrap; }
 .ssh-controls .palette-select-control, .ssh-controls > button { width: 92px; min-width: 92px; box-sizing: border-box; }
 .ssh-controls .palette-select { padding: var(--space-1) var(--space-2); font-size: var(--font-size-small); }

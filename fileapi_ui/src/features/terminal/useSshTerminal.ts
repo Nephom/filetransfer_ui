@@ -76,7 +76,7 @@ export function useSshTerminal({
       // whether it is currently the active/visible one -- every open tab's
       // terminal now stays correct in real time instead of only the active
       // tab's shared instance (see useTerminalLifecycle).
-      if (!tab.detached) terminalsRef.current.get(tabId)?.write(data);
+      terminalsRef.current.get(tabId)?.write(data);
       if (tabId === activeTabIdRef.current) {
         outputRef.current = appendSshTabOutput(outputRef.current, data);
         const promptText = stripAnsi(outputRef.current.slice(-240)).replace(/\r/g, "").trimEnd();
@@ -93,6 +93,8 @@ export function useSshTerminal({
       // doc comment in main.tsx).
       resetTerminalConnection(terminalsRef.current.get(tabId));
       recordingPlainTranscriptsRef?.current.delete(tabId);
+      shellInputRef.current = "";
+      secretPromptRef.current = false;
       terminalsRef.current.get(tabId)?.write(`\n${payload.data}\n`);
       lastReportedSizeRef.current.delete(tabId);
       if (tabId === activeTabIdRef.current) {
@@ -113,13 +115,13 @@ export function useSshTerminal({
     bracketedPasteControlEnabled,
     getPasteSessionId: (tabId) => {
       const tab = tabsRef.current.find((item) => item.id === tabId);
-      return tab?.connected && !tab.connecting && !tab.detached ? tab.sessionId : "";
+      return tab?.connected && !tab.connecting ? tab.sessionId : "";
     },
     onNotice: setNotice,
     getInitialOutput: (tabId) => tabsRef.current.find((item) => item.id === tabId)?.output || "",
     onResize: (tabId, cols, rows) => {
       const tab = tabsRef.current.find((item) => item.id === tabId);
-      if (!tab?.sessionId || tab.detached) return;
+      if (!tab?.sessionId) return;
       const last = lastReportedSizeRef.current.get(tabId);
       if (last && last.cols === cols && last.rows === rows) return;
       lastReportedSizeRef.current.set(tabId, { cols, rows });
@@ -129,7 +131,7 @@ export function useSshTerminal({
     },
     onData: (tabId, data) => {
       const tab = tabsRef.current.find((item) => item.id === tabId);
-      if (!tab?.sessionId || tab.detached) return;
+      if (!tab?.sessionId) return;
       const previous = writeQueuesRef.current.get(tab.sessionId) || Promise.resolve();
       const next = previous.catch(() => undefined).then(() => invoke<void>("ssh_write", { sessionId: tab.sessionId, data }));
       writeQueuesRef.current.set(tab.sessionId, next.catch(() => undefined));
@@ -161,8 +163,6 @@ export function useSshTerminal({
   // returns and absolute cursor movement (for example apt's progress bar).
   useEffect(() => {
     if (!activeSessionId) return;
-    const activeTab = tabsRef.current.find((tab) => tab.id === activeTabId);
-    if (activeTab?.detached) return;
     const terminal = terminalsRef.current.get(activeTabId);
     if (!terminal) return;
     const last = lastReportedSizeRef.current.get(activeTabId);

@@ -121,12 +121,12 @@ function desktop(handler = () => undefined) {
     if (command === "api_request" && /\/api\/files(?:\?|\/(rename|delete|move|paste)$)/.test(args.url)) return nativeJson({ success: true, files: [], currentPath: "" });
     throw new Error(`Unexpected native invocation: ${command}`);
   };
-  const window = { innerWidth: 1280, innerHeight: 800, setTimeout: () => 1, clearTimeout() {}, confirm: () => true, prompt: () => "renamed" };
+   const window = { innerWidth: 1280, innerHeight: 800, location: { search: "", href: "http://localhost/" }, setTimeout: () => 1, clearTimeout() {}, confirm: () => true, prompt: () => "renamed" };
   const { DesktopApp } = loadTypeScript("main.tsx", {
     importMeta: { env: {} },
     mocks: {
       react: driver.react, "react/jsx-runtime": { jsx, jsxs: jsx }, "react-dom/client": { createRoot: () => ({ render() {} }) }, "react-dom": { createPortal: jsx },
-      "@tauri-apps/api/core": { invoke }, "@tauri-apps/api/event": { listen: async () => () => {} }, "@tauri-apps/api/path": { resolveResource: async () => "fake-icon" },
+      "@tauri-apps/api/core": { invoke }, "@tauri-apps/api/event": { listen: async () => () => {} }, "@tauri-apps/api/webviewWindow": { WebviewWindow: class {} }, "@tauri-apps/api/path": { resolveResource: async () => "fake-icon" },
       "@tauri-apps/plugin-clipboard-manager": { readText: () => { throw new Error("Unexpected clipboard"); } },
     },
     globals: {

@@ -147,6 +147,8 @@ async function harness(t, initial = {}) {
       if (command === "ssh_connect") return connectResult;
       if (command === "ssh_disconnect") return disconnectResult;
       if (command === "save_ssh_logs") return { raw: "raw", plain: "plain", commands: "commands", metadata: "metadata" };
+      if (command === "append_ssh_recording") return { rawBytes: 20, plainBytes: 18, commandCount: 0 };
+      if (command === "append_ssh_recording_command") return { rawBytes: 20, plainBytes: 18, commandCount: 1 };
     } },
   };
   const globals = {
@@ -671,14 +673,17 @@ test("copy session creates a new tab for the same SSH entry and connects indepen
   assert.equal(h.calls.filter((call) => call.command === "ssh_connect").length, 1);
 });
 
-test("detached SSH output is not written to the main-window terminal", async (t) => {
+test("recording output is appended through the disk-backed recording command", async (t) => {
   const h = await harness(t);
-  h.tabsRef.current[0].detached = true;
-  const writesBefore = h.writes.length;
-  h.bridge.onOutput("a", { sessionId: "a-session", requestId: "popup", data: "popup-owned output" });
+  h.tabsRef.current[0].recording = true;
+  h.props.recordingRef.current = true;
+  h.bridge.onOutput("a", { sessionId: "a-session", requestId: "recording", data: "recorded output" });
   await h.settle();
-  assert.equal(h.writes.length, writesBefore);
-  assert.match(h.tabsRef.current[0].output, /popup-owned output/);
+  const recordingCall = h.calls.find(({ command }) => command === "append_ssh_recording");
+  assert.ok(recordingCall);
+  assert.equal(recordingCall.args.tabId, "a");
+  assert.equal(recordingCall.args.rawChunk, "recorded output");
+  assert.equal(recordingCall.args.plainChunk, "recorded output");
 });
 
 test("Save Log picker always starts at HOME; empty HOME selection is not cancellation", async (t) => {

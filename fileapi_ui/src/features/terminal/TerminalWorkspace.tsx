@@ -218,7 +218,7 @@ export function TerminalWorkspace({
               <div
                 key={tab.id}
                 ref={(el) => registerHostRef(tab.id, el)}
-                className={`xterm-host${tab.id === activeTabId ? " active" : ""}${tab.detached ? " detached" : ""}`}
+                className={`xterm-host${tab.id === activeTabId ? " active" : ""}`}
                 aria-label="SSH terminal"
                 aria-hidden={tab.id === activeTabId ? undefined : true}
               />

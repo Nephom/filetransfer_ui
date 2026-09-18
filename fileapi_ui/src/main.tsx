@@ -1624,10 +1624,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     terminalLayoutKey: `${sshQuickListOpen}:${terminalMaximized}`,
     activeTabId: activeSshTabId,
     activeSessionId: sshTabs.find((tab) => tab.id === activeSshTabId)?.sessionId || "",
-    // A detached tab is rendered by its native popup. Removing it from the
-    // main-window lifecycle makes the popup the sole xterm/WebGL/resize owner
-    // for that SSH session until the popup closes.
-    tabIds: sshTabs.filter((tab) => !tab.detached).map((tab) => tab.id),
+    tabIds: sshTabs.map((tab) => tab.id),
     bracketedPasteControlEnabled: desktopSettings.bracketedPasteControlEnabled,
     setTabs: setSshTabs,
     setConnected: setSshConnected,
