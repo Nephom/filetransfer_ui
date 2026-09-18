@@ -49,7 +49,9 @@ export function SshTerminalPopup() {
   const pendingRequestsRef = useRef<Record<string, string>>({});
   const terminalsRef = useRef(new Map());
   const initialOutputRef = useRef("");
+  const initialOutputAppliedRef = useRef(false);
   const writeQueueRef = useRef(Promise.resolve());
+  const closeNotifiedRef = useRef(false);
 
   if (host) hostRefsRef.current.set(tabId, host);
   else hostRefsRef.current.delete(tabId);
@@ -78,7 +80,17 @@ export function SshTerminalPopup() {
     boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
     bracketedPasteControlEnabled: true,
     getPasteSessionId: () => sessionId,
-    getInitialOutput: () => initialOutputRef.current,
+    getInitialOutput: () => {
+      const output = initialOutputRef.current;
+      if (output) initialOutputAppliedRef.current = true;
+      return output;
+    },
+    onTerminalReady: () => {
+      if (initialOutputAppliedRef.current || !initialOutputRef.current) return;
+      terminalsRef.current.get(tabId)?.write(`${initialOutputRef.current}${VT_SESSION_BOUNDARY_GUARD}`);
+      initialOutputAppliedRef.current = true;
+      setStatus("Connected");
+    },
     onData: (_tabId, data) => {
       const next = writeQueueRef.current.catch(() => undefined).then(() => invoke<void>("ssh_write", { sessionId, data }));
       writeQueueRef.current = next.catch(() => undefined);
@@ -103,10 +115,16 @@ export function SshTerminalPopup() {
     const unlistenState = currentWindow.listen<PopupState>("ssh-popup-state", (event) => {
       if (!active || event.payload.tabId !== tabId || event.payload.sessionId !== sessionId) return;
       initialOutputRef.current = event.payload.output;
-      terminalsRef.current.get(tabId)?.write(`${event.payload.output}${VT_SESSION_BOUNDARY_GUARD}`);
+      const terminal = terminalsRef.current.get(tabId);
+      if (terminal && !initialOutputAppliedRef.current) {
+        terminal.write(`${event.payload.output}${VT_SESSION_BOUNDARY_GUARD}`);
+        initialOutputAppliedRef.current = true;
+      }
       setStatus("Connected");
     });
     const unlistenClose = currentWindow.onCloseRequested(() => {
+      if (closeNotifiedRef.current) return;
+      closeNotifiedRef.current = true;
       void emit("ssh-popup-closed", { tabId, label: currentWindow.label });
     });
     void emit("ssh-popup-ready", { tabId, sessionId, label: currentWindow.label });

@@ -172,7 +172,7 @@ async function harness(t, initial = {}) {
   const lifecycle = loadTypeScript("features/terminal/useTerminalLifecycle.ts", { mocks, globals });
   const actionState = { destination: "old", nameOpen: false, name: "" };
   const api = {
-     props, tabsRef, terminalsRef, hostRefsRef, calls, notices, copies, reads, pastes, instances, focused, actionState,
+     props, tabsRef, terminalsRef, hostRefsRef, calls, notices, copies, reads, pastes, writes, instances, focused, actionState,
     get bridge() { return bridge; },
     get terminal() { return terminalsRef.current.get(props.activeTabId); },
     get sent() { return calls.filter((call) => call.command === "ssh_write"); },
@@ -669,6 +669,16 @@ test("copy session creates a new tab for the same SSH entry and connects indepen
   assert.equal(copied.sshEntryId, source.sshEntryId);
   assert.equal(copied.sessionId, "new-session");
   assert.equal(h.calls.filter((call) => call.command === "ssh_connect").length, 1);
+});
+
+test("detached SSH output is not written to the main-window terminal", async (t) => {
+  const h = await harness(t);
+  h.tabsRef.current[0].detached = true;
+  const writesBefore = h.writes.length;
+  h.bridge.onOutput("a", { sessionId: "a-session", requestId: "popup", data: "popup-owned output" });
+  await h.settle();
+  assert.equal(h.writes.length, writesBefore);
+  assert.match(h.tabsRef.current[0].output, /popup-owned output/);
 });
 
 test("Save Log picker always starts at HOME; empty HOME selection is not cancellation", async (t) => {

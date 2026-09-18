@@ -162,6 +162,7 @@ export function useTerminalLifecycle({
   onData,
   onResize,
   onNotice,
+  onTerminalReady,
 }: {
   enabled: boolean;
   layoutKey: string;
@@ -181,10 +182,12 @@ export function useTerminalLifecycle({
   onData: (tabId: string, data: string) => void;
   onResize: (tabId: string, cols: number, rows: number) => void;
   onNotice: (message: string) => void;
+  onTerminalReady?: (tabId: string) => void;
 }) {
   const dataRef = useRef(onData);
   const resizeRef = useRef(onResize);
   const noticeRef = useRef(onNotice);
+  const terminalReadyRef = useRef(onTerminalReady);
   const seedRef = useRef(getInitialOutput);
   const bracketedPasteRef = useRef(bracketedPasteControlEnabled);
   const activeTabIdRef = useRef(activeTabId);
@@ -198,6 +201,7 @@ export function useTerminalLifecycle({
   dataRef.current = onData;
   resizeRef.current = onResize;
   noticeRef.current = onNotice;
+  terminalReadyRef.current = onTerminalReady;
   seedRef.current = getInitialOutput;
   bracketedPasteRef.current = bracketedPasteControlEnabled;
   activeTabIdRef.current = activeTabId;
@@ -415,6 +419,7 @@ export function useTerminalLifecycle({
           }
         };
         const seed = seedRef.current(tabId);
+        const notifyTerminalReady = () => terminalReadyRef.current?.(tabId);
         if (seed) {
           // A tab that already has history (the dock was collapsed and
           // reopened, or output arrived before the panel was ever opened)
@@ -423,9 +428,13 @@ export function useTerminalLifecycle({
           // deferred until *after* this write's callback fires, so it can
           // never race the still-in-flight VT parse of the replayed bytes
           // the way the old per-switch replay did.
-          terminal.write(`${seed}${boundaryGuard}`, activateIfCurrent);
+          terminal.write(`${seed}${boundaryGuard}`, () => {
+            activateIfCurrent();
+            notifyTerminalReady();
+          });
         } else {
           activateIfCurrent();
+          notifyTerminalReady();
         }
       });
     };
