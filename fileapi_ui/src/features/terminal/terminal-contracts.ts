@@ -15,6 +15,8 @@ export type SshTerminalTab = {
   recordingPlainBytes: number;
   recordingCommandCount: number;
   savedLogPaths: string[];
+  detached?: boolean;
+  popupLabel?: string;
 };
 
 export type RecordingStats = {

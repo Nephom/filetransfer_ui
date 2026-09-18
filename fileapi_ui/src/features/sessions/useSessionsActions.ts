@@ -32,6 +32,7 @@ export type UseSessionsActionsParams = {
   sshProfileDraft: SshProfileDraft;
   setSshProfileDraft: React.Dispatch<React.SetStateAction<SshProfileDraft>>;
   setSshPasswordSaved: React.Dispatch<React.SetStateAction<boolean>>;
+  setSshEntrySaving: React.Dispatch<React.SetStateAction<boolean>>;
   sshEntryDraftId: string;
   setSshEntryDraftId: React.Dispatch<React.SetStateAction<string>>;
   setSshEntryDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -75,6 +76,7 @@ export function useSessionsActions({
   selectedSshEntryId, setSelectedSshEntryId,
   sshProfileDraft, setSshProfileDraft,
   setSshPasswordSaved,
+  setSshEntrySaving,
   sshEntryDraftId, setSshEntryDraftId,
   setSshEntryDialogOpen,
   restEntryDraft, setRestEntryDraft, setRestEntryDialogOpen,
@@ -149,7 +151,10 @@ export function useSessionsActions({
     if (profile?.id) {
       void invoke<boolean>("ssh_has_password", { entryId: profile.id })
         .then(setSshPasswordSaved)
-        .catch(() => setSshPasswordSaved(false));
+        .catch((error) => {
+          setSshPasswordSaved(false);
+          setNotice(error instanceof Error ? error.message : String(error));
+        });
     }
   };
 
@@ -217,22 +222,37 @@ export function useSessionsActions({
     setSshEntryDialogOpen(true);
   };
 
-  const saveSshEntry = () => {
+  const saveSshEntry = async () => {
+    setSshEntrySaving(true);
     const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
     const name = sshProfileDraft.name.trim();
     const host = sshProfileDraft.host.trim();
     const username = sshProfileDraft.username.trim();
     const port = Number(sshProfileDraft.port);
     if (!workspace) {
+      setSshEntrySaving?.(false);
       setSessionFormError("Save the Workspace name first, then add an SSH entry to it.");
       return;
     }
     if (!name || !host || !username || !Number.isInteger(port) || port < 1 || port > 65535) {
+      setSshEntrySaving?.(false);
       setSessionFormError("Connection name, host, username, and a valid port are required.");
       return;
     }
     const wasEditing = Boolean(sshProfileDraft.id);
     const entry: SshProfile = { id: sshProfileDraft.id || makeSshTabId(), name, host, port, username, privateKeyPath: sshProfileDraft.privateKeyPath.trim() };
+    const password = sshProfileDraft.password;
+    if (password) {
+      try {
+        await invoke<void>("ssh_save_password", { entryId: entry.id, password });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        setSessionFormError(`Unable to save the SSH password: ${detail}`);
+        setNotice(detail);
+        setSshEntrySaving?.(false);
+        return;
+      }
+    }
     setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : {
       ...item,
       sshEntries: item.sshEntries.some((candidate) => candidate.id === entry.id)
@@ -247,17 +267,12 @@ export function useSessionsActions({
     // one -- either way, Save returns to the Workspace.
     setSelectedSshEntryId(entry.id);
     setSshProfileId(entry.id);
-    const password = sshProfileDraft.password;
     setSshEntryDraftId("");
     setSshProfileDraft({ id: "", name: "", host: "", port: "22", username: "", privateKeyPath: "", password: "" });
-    setSshPasswordSaved(false);
+    setSshPasswordSaved(Boolean(password));
     setSessionFormError("");
     setSshEntryDialogOpen(false);
-    if (password) {
-      void invoke("ssh_save_password", { entryId: entry.id, password })
-        .then(() => setSshPasswordSaved(true))
-        .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
-    }
+    setSshEntrySaving?.(false);
     notify(`${wasEditing ? "Updated" : "Added"} SSH entry: ${entry.name}`);
   };
 

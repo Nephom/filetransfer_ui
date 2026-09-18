@@ -113,13 +113,13 @@ export function useSshTerminal({
     bracketedPasteControlEnabled,
     getPasteSessionId: (tabId) => {
       const tab = tabsRef.current.find((item) => item.id === tabId);
-      return tab?.connected && !tab.connecting ? tab.sessionId : "";
+      return tab?.connected && !tab.connecting && !tab.detached ? tab.sessionId : "";
     },
     onNotice: setNotice,
     getInitialOutput: (tabId) => tabsRef.current.find((item) => item.id === tabId)?.output || "",
     onResize: (tabId, cols, rows) => {
       const tab = tabsRef.current.find((item) => item.id === tabId);
-      if (!tab?.sessionId) return;
+      if (!tab?.sessionId || tab.detached) return;
       const last = lastReportedSizeRef.current.get(tabId);
       if (last && last.cols === cols && last.rows === rows) return;
       lastReportedSizeRef.current.set(tabId, { cols, rows });
@@ -129,7 +129,7 @@ export function useSshTerminal({
     },
     onData: (tabId, data) => {
       const tab = tabsRef.current.find((item) => item.id === tabId);
-      if (!tab?.sessionId) return;
+      if (!tab?.sessionId || tab.detached) return;
       const previous = writeQueuesRef.current.get(tab.sessionId) || Promise.resolve();
       const next = previous.catch(() => undefined).then(() => invoke<void>("ssh_write", { sessionId: tab.sessionId, data }));
       writeQueuesRef.current.set(tab.sessionId, next.catch(() => undefined));

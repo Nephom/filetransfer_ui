@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { ChevronDownIcon, CloseIcon, CollapseIcon, ExpandIcon, ChevronUpIcon } from "../../ui/icons";
 import { Dropdown } from "../../ui/Dropdown";
 import type { SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
@@ -27,6 +27,7 @@ type Props = {
   onToggleQuickList: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
   onSelectTab: (tab: TerminalTab) => void;
+  onOpenInNewWindow: (tab: TerminalTab) => void;
   onReorderTabs: (draggedId: string, targetId: string) => void;
   onCloseTab: (tabId: string) => void;
   onCreateTab: () => void;
@@ -67,6 +68,7 @@ export function TerminalWorkspace({
   onToggleQuickList,
   onResizeStart,
   onSelectTab,
+  onOpenInNewWindow,
   onReorderTabs,
   onCloseTab,
   onCreateTab,
@@ -88,6 +90,21 @@ export function TerminalWorkspace({
   const draggedTabIdRef = useRef<string | null>(null);
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ tab: TerminalTab; x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return undefined;
+    const close = () => setContextMenu(null);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
 
   return <div className="terminal-layer">
     {!open && <button className="terminal-restore" onClick={onRestore} aria-label="Restore terminal">
@@ -106,6 +123,11 @@ export function TerminalWorkspace({
             className={`ssh-tab ${tab.id === activeTabId ? "active" : ""}${tab.id === draggedTabId ? " dragging" : ""}${tab.id === dropTargetId ? " drop-target" : ""}`}
             key={tab.id}
             draggable
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setContextMenu({ tab, x: event.clientX, y: event.clientY });
+            }}
             onDragStart={(event) => {
               draggedTabIdRef.current = tab.id;
               setDraggedTabId(tab.id);
@@ -185,7 +207,7 @@ export function TerminalWorkspace({
               <div
                 key={tab.id}
                 ref={(el) => registerHostRef(tab.id, el)}
-                className={`xterm-host${tab.id === activeTabId ? " active" : ""}`}
+                className={`xterm-host${tab.id === activeTabId ? " active" : ""}${tab.detached ? " detached" : ""}`}
                 aria-label="SSH terminal"
                 aria-hidden={tab.id === activeTabId ? undefined : true}
               />
@@ -200,5 +222,18 @@ export function TerminalWorkspace({
       </div>
     </div>
     </section>
+    {contextMenu && <div
+      className="terminal-context-menu"
+      role="menu"
+      style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+      onClick={(event) => event.stopPropagation()}
+    >
+      <button type="button" role="menuitem" onClick={() => {
+        setContextMenu(null);
+        onOpenInNewWindow(contextMenu.tab);
+      }}>
+        Open in New Window
+      </button>
+    </div>}
   </div>;
 }

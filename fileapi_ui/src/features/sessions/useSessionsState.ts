@@ -76,6 +76,7 @@ export function useSessionsState() {
   const [selectedSshEntryId, setSelectedSshEntryId] = useState("");
   const [sshProfileDraft, setSshProfileDraft] = useState<SshProfileDraft>(emptySshProfileDraft());
   const [sshPasswordSaved, setSshPasswordSaved] = useState(false);
+  const [sshEntrySaving, setSshEntrySaving] = useState(false);
   const [sshEntryDraftId, setSshEntryDraftId] = useState("");
   // Host SSH credentials remain entry-scoped. VM SSH credentials are edited
   // in Connection Controls after a VM is selected.
@@ -176,6 +177,7 @@ export function useSessionsState() {
     selectedSshEntryId, setSelectedSshEntryId,
     sshProfileDraft, setSshProfileDraft,
     sshPasswordSaved, setSshPasswordSaved,
+    sshEntrySaving, setSshEntrySaving,
     sshEntryDraftId, setSshEntryDraftId,
     hostSshPasswordDraft, setHostSshPasswordDraft,
     hostSshPasswordSaved, setHostSshPasswordSaved,
