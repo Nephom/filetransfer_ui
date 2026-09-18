@@ -1691,7 +1691,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         setAccountOpen(false);
       if (!locationControl.current?.contains(event.target as Node))
         setLocationMenuOpen(false);
-      if (!(event.target as HTMLElement).closest(".context-menu, .account-menu, .context-picker-popover"))
+      if (!(event.target as HTMLElement).closest(".context-menu, .terminal-context-menu, .account-menu, .context-picker-popover"))
         setContextMenu(null);
     };
     window.addEventListener("click", closeAccountMenu);

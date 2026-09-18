@@ -15,7 +15,8 @@
 }
 .terminal-layer > .terminal-restore,
 .terminal-layer > .terminal-dock,
-.terminal-layer > .terminal-maximized-resize-handle { pointer-events: auto; }
+.terminal-layer > .terminal-maximized-resize-handle,
+.terminal-layer > .terminal-context-menu { pointer-events: auto; }
 .terminal-dock { position: relative; flex: 0 0 auto; min-height: var(--terminal-min-height-mobile); display: flex; flex-direction: column; background: var(--color-bg); border-top: 1px solid var(--color-border); box-shadow: 0 -10px 25px rgba(0, 0, 0, .2); }
 .terminal-dock { z-index: 10; }
 .terminal-dock.terminal-maximized {
