@@ -193,7 +193,7 @@ export function SshTerminalPopup() {
     onResize: (_tabId, cols, rows) => {
       const currentSessionId = sessionIdRef.current;
       if (!currentSessionId) return;
-      void invoke("ssh_resize", { sessionId: currentSessionId, cols, rows }).catch((error) => {
+      void invoke("ssh_resize", { sessionId: currentSessionId, entryName: profile?.name || title, source: "SSH popup", cols, rows }).catch((error) => {
         setStatus(`Terminal resize failed: ${error instanceof Error ? error.message : String(error)}`);
       });
     },

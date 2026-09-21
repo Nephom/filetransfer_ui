@@ -38,36 +38,66 @@ const displayTime = (record: OperationLogRecord) => {
 
 const operationName = (record: OperationLogRecord) => value(record, "operation", value(record, "event", "operation"));
 const hiddenKeys = new Set(["operationId", "correlationId"]);
-const displayValue = (input: unknown, key = ""): unknown => {
-  if (hiddenKeys.has(key)) return undefined;
-  if (Array.isArray(input)) return input.map((item) => displayValue(item));
-  if (input && typeof input === "object") {
-    return Object.fromEntries(Object.entries(input)
-      .map(([childKey, child]) => [childKey, displayValue(child, childKey)] as const)
-      .filter(([, child]) => child !== undefined));
-  }
-  return input;
+const parseDetail = (record: OperationLogRecord) => {
+  if (typeof record.detail !== "string") return record.detail;
+  try { return JSON.parse(record.detail); } catch { return record.detail; }
 };
 
-const result = (record: OperationLogRecord) => {
-  const detail = record.detail;
-  let parsedDetail: unknown = detail;
-  if (typeof detail === "string") {
-    try { parsedDetail = JSON.parse(detail); } catch { parsedDetail = detail; }
+const label = (key: string) => key
+  .replace(/([a-z])([A-Z])/g, "$1 $2")
+  .replace(/^./, (character) => character.toUpperCase());
+
+const readableValue = (input: unknown): string => {
+  if (input === undefined || input === null || input === "") return "-";
+  if (Array.isArray(input)) return input.map(readableValue).join(", ");
+  if (typeof input === "object") {
+    return Object.entries(input as Record<string, unknown>)
+      .filter(([key]) => !hiddenKeys.has(key))
+      .map(([key, value]) => `${label(key)}: ${readableValue(value)}`)
+      .join("; ");
   }
-  const visible = Object.fromEntries(Object.entries(record)
-    .filter(([key]) => !["timestamp", "level", "operation", "event", "status", "mode"].includes(key))
-    .map(([key, item]) => [key, key === "detail" ? parsedDetail : item] as const)) as OperationLogRecord;
-  const safe = displayValue(visible);
-  if (safe === undefined || (typeof safe === "object" && safe !== null && !Object.keys(safe).length)) return "-";
-  return typeof safe === "string" ? safe : JSON.stringify(safe, null, 2);
+  return String(input);
+};
+
+const fields = (record: OperationLogRecord) => {
+  const detail = parseDetail(record);
+  const merged: OperationLogRecord = {
+    ...record,
+    ...(detail && typeof detail === "object" && !Array.isArray(detail) ? detail as OperationLogRecord : {}),
+  };
+  const keys = [
+    "entryName", "source", "destination", "cols", "rows", "byteCount", "durationMs",
+    "vmCount", "filePath", "target", "phase", "failureType", "errorMessage", "error",
+    "message", "rawBytes", "commandCount", "recoverable", "needsUserAction",
+  ];
+  return keys
+    .filter((key) => merged[key] !== undefined && !hiddenKeys.has(key))
+    .map((key) => `${label(key)}: ${readableValue(merged[key])}`);
+};
+
+const resizeResult = (records: OperationLogRecord[], compact: boolean) => {
+  const latest = records[records.length - 1];
+  const entry = value(latest, "entryName", "Unnamed SSH entry");
+  const source = value(latest, "source", "SSH terminal");
+  const size = `${value(latest, "cols", "?")} × ${value(latest, "rows", "?")}`;
+  if (compact && records.length > 1) return `${entry} · ${records.length} resize events · Latest size: ${size} · Source: ${source}`;
+  return `Entry: ${entry} · Size: ${size} · Source: ${source}`;
+};
+
+const result = (records: OperationLogRecord[], compact = false) => {
+  const latest = records[records.length - 1];
+  if (operationName(latest) === "ssh_resize") return resizeResult(records, compact);
+  const readable = fields(latest);
+  if (!readable.length) return records.length > 1 ? `${records.length} events` : "-";
+  if (compact && records.length > 1) return `${records.length} events · Latest: ${readable.join(" · ")}`;
+  return readable.join(" · ");
 };
 const groupKey = (record: OperationLogRecord, index: number) => {
   const level = value(record, "level", "INFO").toUpperCase();
   const terminalNoise = ["ssh_write", "ssh_resize", "ssh_output"].includes(operationName(record));
   if (level !== "DEBUG" && terminalNoise) {
     const session = value(record, "sessionId") || value(record, "tabId");
-    if (session) return `summary:${session}:${operationName(record)}:${value(record, "status")}:${value(record, "source")}:${value(record, "destination")}:${value(record, "failureType")}:${value(record, "errorMessage")}`;
+    if (session) return `summary:${session}:${operationName(record)}:${value(record, "entryName")}:${value(record, "status")}:${value(record, "source")}:${value(record, "destination")}:${value(record, "failureType")}:${value(record, "errorMessage")}`;
   }
   return value(record, "operationId") || `${operationName(record)}:${value(record, "timestamp", String(index))}`;
 };
@@ -118,7 +148,7 @@ function LogTable({ records }: { records: OperationLogRecord[] }) {
         <button type="button" role="columnheader" onClick={() => sortBy("level")}>Level{sortLabel("level")}</button>
         <button type="button" role="columnheader" onClick={() => sortBy("status")}>Status{sortLabel("status")}</button>
         <span role="columnheader">Events</span>
-        <span role="columnheader">Result</span>
+        <span role="columnheader">Details</span>
       </div>
       {groups.map((group) => {
         const isExpanded = expanded.has(group.key);
@@ -139,7 +169,7 @@ function LogTable({ records }: { records: OperationLogRecord[] }) {
               <span className={`log-level log-level-${value(group.last, "level", "INFO").toLowerCase()}`}>{value(group.last, "level", "INFO")}</span>
               <span>{value(group.last, "status", "-")}</span>
               <span>{group.records.length}</span>
-              <pre className="log-result">{result(group.last)}</pre>
+              <pre className="log-result">{result(group.records, true)}</pre>
             </button>
             {isExpanded && group.records.map((record, index) => (
               <div className="log-table-detail-row" role="row" key={`${group.key}-${index}`}>
@@ -148,7 +178,7 @@ function LogTable({ records }: { records: OperationLogRecord[] }) {
                 <span className={`log-level log-level-${value(record, "level", "INFO").toLowerCase()}`}>{value(record, "level", "INFO")}</span>
                 <span>{value(record, "status", "-")}</span>
                 <span>•</span>
-                <pre className="log-result">{result(record)}</pre>
+                <pre className="log-result">{result([record])}</pre>
               </div>
             ))}
           </div>
@@ -182,7 +212,7 @@ export function LogView({ records, onClose, onExport, modalStyle, onDragStart }:
         <header className="log-view-heading modal-drag-handle">
           <div>
             <h2 id="log-view-title">LogView</h2>
-            <p>Grouped operation events. Operation IDs are hidden.</p>
+            <p>Grouped operation events with readable results. Internal IDs remain in exported logs.</p>
           </div>
           <div className="log-view-heading-actions">
             <button type="button" className="log-view-export" onClick={onExport}>Export log</button>

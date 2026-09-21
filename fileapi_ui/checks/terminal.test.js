@@ -98,6 +98,7 @@ async function harness(t, initial = {}) {
   const hooks = hookRunner();
   const calls = [], notices = [], copies = [], reads = [], pastes = [], writes = [], actions = [];
   const instances = [], focused = [];
+  const fitCalls = [];
   let selection = "", selectedTextarea, clipboard = "clipboard", picker = "";
   const documentListeners = new Map();
   const windowListeners = new Map();
@@ -118,7 +119,7 @@ async function harness(t, initial = {}) {
       super.write(text, () => { callback?.(); done.resolve(); });
     }
   }
-  class FitAddon { activate() {} fit() {} dispose() {} }
+  class FitAddon { activate() {} fit() { fitCalls.push(true); } dispose() {} }
   class WebglAddon { activate() {} onContextLoss() {} dispose() {} }
   const tabsRef = ref(initial.tabs || [makeTab("a"), makeTab("b")]);
   const terminalsRef = ref(new Map());
@@ -174,7 +175,7 @@ async function harness(t, initial = {}) {
   const lifecycle = loadTypeScript("features/terminal/useTerminalLifecycle.ts", { mocks, globals });
   const actionState = { destination: "old", nameOpen: false, name: "" };
   const api = {
-     props, tabsRef, terminalsRef, hostRefsRef, calls, notices, copies, reads, pastes, writes, instances, focused, actionState,
+     props, tabsRef, terminalsRef, hostRefsRef, calls, notices, copies, reads, pastes, writes, instances, focused, fitCalls, actionState,
     get bridge() { return bridge; },
     get terminal() { return terminalsRef.current.get(props.activeTabId); },
     get sent() { return calls.filter((call) => call.command === "ssh_write"); },
@@ -540,6 +541,18 @@ test("selection-copy finishes when the pointer is released outside the terminal 
   h.documentMouseup();
   await h.settle();
   assert.deepEqual(h.copies, ["  multiple lines\nsecond line"]);
+});
+
+test("native window resize re-fits xterm and reports the new PTY size", async (t) => {
+  const h = await harness(t);
+  const fitCallsBefore = h.fitCalls.length;
+  const resizeCallsBefore = h.calls.filter(({ command }) => command === "ssh_resize").length;
+  h.terminal.resize(h.terminal.cols + 1, h.terminal.rows + 1);
+
+  h.windowEvent("resize");
+
+  assert.ok(h.fitCalls.length > fitCallsBefore);
+  assert.ok(h.calls.filter(({ command }) => command === "ssh_resize").length > resizeCallsBefore);
 });
 
 test("selection-copy is cancelled when the originating tab is no longer active", async (t) => {

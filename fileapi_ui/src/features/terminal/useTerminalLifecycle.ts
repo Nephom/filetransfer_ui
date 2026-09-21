@@ -496,18 +496,24 @@ export function useTerminalLifecycle({
   // the whole time it is hidden.
   useEffect(() => {
     if (!enabled || !activeTabId) return undefined;
-    const instance = instancesRef.current.get(activeTabId);
     const host = hostRefsRef.current.get(activeTabId);
-    if (!instance || !host) return undefined;
+    if (!host) return undefined;
     const resize = () => {
+      const instance = instancesRef.current.get(activeTabId);
+      if (!instance) return;
       instance.fit.fit();
       resizeRef.current(activeTabId, instance.terminal.cols, instance.terminal.rows);
     };
+    // Native Tauri window maximize/restore can resize the WebView without
+    // producing a host ResizeObserver notification. Keep xterm and the PTY
+    // in sync with the WebView viewport as well.
+    window.addEventListener("resize", resize);
     const observer = new ResizeObserver(resize);
     observer.observe(host);
     const frame = window.requestAnimationFrame(resize);
     return () => {
       window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", resize);
       observer.disconnect();
     };
   }, [enabled, activeTabId, hostRefsRef, layoutKey]);

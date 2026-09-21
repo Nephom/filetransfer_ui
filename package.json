@@ -1,6 +1,6 @@
 {
   "name": "filetransfer-ui",
-  "version": "3.4.0",
+  "version": "3.4.1",
   "description": "Web-based file transfer interface with futuristic design",
   "main": "src/backend/server.js",
   "scripts": {
