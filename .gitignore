@@ -1,4 +1,6 @@
 # System files
+.agents/
+.agents/**
 .DS_Store
 CLAUDE.md
 AGENTS.md
