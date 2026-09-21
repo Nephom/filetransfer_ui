@@ -1231,12 +1231,31 @@ pub async fn write(session_id: String, data: String) -> Result<(), String> {
     }
 }
 
-pub async fn resize(session_id: String, cols: u16, rows: u16) -> Result<(), String> {
+pub async fn resize(
+    session_id: String,
+    entry_name: String,
+    source: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
     let operation_id = uuid::Uuid::new_v4().to_string();
     let started = std::time::Instant::now();
-    crate::oplog::log("DEBUG", "ssh_resize", "started", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows}).to_string());
+    let detail = |extra: serde_json::Value| {
+        let mut record = serde_json::json!({
+            "operationId": operation_id,
+            "sessionId": session_id,
+            "entryName": entry_name,
+            "cols": cols,
+            "rows": rows,
+        });
+        if let (Some(target), Some(values)) = (record.as_object_mut(), extra.as_object()) {
+            target.extend(values.iter().map(|(key, value)| (key.clone(), value.clone())));
+        }
+        record.to_string()
+    };
+    crate::oplog::log("DEBUG", "ssh_resize", "started", &source, "", &detail(serde_json::json!({})));
     if cols == 0 || rows == 0 {
-        crate::oplog::log("ERROR", "ssh_resize", "failed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows, "durationMs": started.elapsed().as_millis(), "failureType": "validation", "error": "SSH terminal size must be greater than zero"}).to_string());
+        crate::oplog::log("ERROR", "ssh_resize", "failed", &source, "", &detail(serde_json::json!({"durationMs": started.elapsed().as_millis(), "failureType": "validation", "error": "SSH terminal size must be greater than zero"})));
         return Err("SSH terminal size must be greater than zero".to_string());
     }
     let sessions = sessions().lock().await;
@@ -1246,7 +1265,7 @@ pub async fn resize(session_id: String, cols: u16, rows: u16) -> Result<(), Stri
     let session = match session {
         Ok(session) => session,
         Err(error) => {
-            crate::oplog::log("ERROR", "ssh_resize", "failed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows, "durationMs": started.elapsed().as_millis(), "failureType": "missing_session", "error": error}).to_string());
+            crate::oplog::log("ERROR", "ssh_resize", "failed", &source, "", &detail(serde_json::json!({"durationMs": started.elapsed().as_millis(), "failureType": "missing_session", "error": error})));
             return Err(error);
         }
     };
@@ -1256,12 +1275,12 @@ pub async fn resize(session_id: String, cols: u16, rows: u16) -> Result<(), Stri
         .await
     {
         Ok(()) => {
-            crate::oplog::log("INFO", "ssh_resize", "completed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows, "durationMs": started.elapsed().as_millis()}).to_string());
+            crate::oplog::log("INFO", "ssh_resize", "completed", &source, "", &detail(serde_json::json!({"durationMs": started.elapsed().as_millis()})));
             Ok(())
         }
         Err(error) => {
             let message = error.to_string();
-            crate::oplog::log("ERROR", "ssh_resize", "failed", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "cols": cols, "rows": rows, "durationMs": started.elapsed().as_millis(), "failureType": "channel_resize", "error": message}).to_string());
+            crate::oplog::log("ERROR", "ssh_resize", "failed", &source, "", &detail(serde_json::json!({"durationMs": started.elapsed().as_millis(), "failureType": "channel_resize", "error": message})));
             Err(message)
         }
     }

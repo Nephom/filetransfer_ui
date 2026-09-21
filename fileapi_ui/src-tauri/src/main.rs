@@ -2497,8 +2497,14 @@ async fn ssh_write(session_id: String, data: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn ssh_resize(session_id: String, cols: u16, rows: u16) -> Result<(), String> {
-    ssh::resize(session_id, cols, rows).await
+async fn ssh_resize(
+    session_id: String,
+    entry_name: String,
+    source: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    ssh::resize(session_id, entry_name, source, cols, rows).await
 }
 
 #[tauri::command]
