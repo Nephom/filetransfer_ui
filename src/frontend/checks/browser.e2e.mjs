@@ -546,6 +546,26 @@ try {
     report.checks.push('same-ID root revision: capture headers for scoped actions, clear stale files/selection/dialogs, ignore old share completion, reject old revision, read-only metadata refresh');
     assert.deepEqual(errors, [], 'browser app has no uncaught errors');
 
+    await page.locator('.account').click();
+    await page.locator('.account-menu select[aria-label="Interface style"]').selectOption('pane');
+    await page.locator('.pane-location-list button').first().waitFor();
+    const paneLocations = page.locator('.pane-location-list button');
+    await paneLocations.nth(0).click(); await paneLocations.nth(0).click();
+    await paneLocations.nth(1).click(); await paneLocations.nth(1).click();
+    await page.locator('.pane-window').nth(3).waitFor();
+    const paneWindows = page.locator('.pane-window');
+    await paneWindows.nth(1).locator('.pane-view-switch button', { hasText: 'Grid' }).evaluate((button) => button.click());
+    await paneWindows.nth(2).locator('.pane-view-switch button', { hasText: 'Grid' }).evaluate((button) => button.click());
+    await paneWindows.nth(3).locator('.pane-view-switch button', { hasText: 'Details' }).evaluate((button) => button.click());
+    await paneWindows.nth(3).locator('button[aria-label="Close window"]').click();
+    await page.locator('.pane-window').nth(2).locator('button[aria-label="Close window"]').click();
+    await page.locator('.pane-window').nth(0).locator('button[aria-label="Close window"]').click();
+    await page.locator('.pane-window').nth(0).locator('button[aria-label="Close window"]').click();
+    await paneLocations.nth(0).click();
+    await page.locator('.pane-window').first().locator('.pane-view-switch button.active').waitFor();
+    assert.equal(await page.locator('.pane-window').first().locator('.pane-view-switch button.active').textContent(), 'Grid');
+    report.checks.push('pane style switch, independent floating windows, Details/Grid view, and last-closed view persistence');
+
     for (const role of ['admin', 'superuser']) {
         const privateContext = await browser.newContext();
         await privateContext.addCookies([{ name: 'fixtureRole', value: role, url: origin, httpOnly: true }]);

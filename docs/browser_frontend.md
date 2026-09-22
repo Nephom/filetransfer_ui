@@ -2,9 +2,15 @@
 
 ## Active Sources
 
-The browser application uses React and ReactDOM **18.3.1**, compiled by esbuild in production mode. The active entry is `src/frontend/public/app.js`. Its graph includes `components/FileBrowser.js`, `components/VirtualFileList.js`, `components/LoginForm.js`, and `queue/store.js`. Other legacy browser implementations and the development React/Babel files are not bundled or copied to the public build.
+The browser application uses React and ReactDOM **18.3.1**, compiled by esbuild in production mode. The active entry is `src/frontend/public/app.js`. Its graph includes `components/FileBrowser.js`, `components/PaneWorkspace.js`, `components/PaneFileWindow.js`, `components/PaneTools.js`, `components/pane-workspace-utils.js`, `components/VirtualFileList.js`, `components/LoginForm.js`, and `queue/store.js`. Other legacy browser implementations and the development React/Babel files are not bundled or copied to the public build.
 
 `src/frontend/public/index.html` remains the style and HTML template. The build replaces its `__BROWSER_ENTRY__` marker with the hashed bundle URL. `share.html` and `favicon.ico` are copied without rewriting them. Private `admin.html` and `super.html` remain under `src/frontend/private`, outside the generated static root. Their authenticated routes remain the backend's responsibility.
+
+## Interface Styles
+
+The account menu exposes two interface styles. **Classical Style** is the default and preserves the original single-directory browser. **Pane Style** uses the same authenticated API surface in an independent Location card, floating-window, and tool-card layout.
+
+Pane windows keep their own Location, path, files, search query, selection, and captured Location revision. The pane actions use the production file, paste, delete, rename, share, download, folder, and upload endpoints; preview-only data is not used. A pane can use `Details` or `Grid` view. The `pane-file-view-mode` local-storage value is written when a pane closes, so the last closed pane determines the initial view of the next pane, regardless of Location.
 
 ## Build And Startup
 
@@ -134,3 +140,8 @@ Parent/general independent reviews found configuration-write and early-disconnec
 | P43 | E01-E03 | src/frontend/checks/file-browser.test.js | Complete | 10 tests pass with installation gate enabled |
 | P44 | E01-E04 | src/frontend/checks/browser.e2e.mjs | Complete | 14 Chromium scenario groups pass |
 | P51 | E01-E03 | docs/browser_frontend.md | Complete | Final commands, measurements/review and limitations documented; not built |
+| P52 | E01-E12 | src/frontend/public/components/FileBrowser.js | Complete | Classical/Pane style switch, production actions, active-window routing and English UI pass |
+| P53 | E01-E08 | src/frontend/public/index.html | Complete | Pane layout, floating windows, tools, Details/Grid controls and responsive CSS pass |
+| P54 | E01-E06 | src/frontend/checks/browser.e2e.mjs | Complete | Classical regression and four-window last-closed view persistence pass |
+| P55 | E01-E02 | docs/browser_frontend.md | Complete | Pane architecture, API ownership and view persistence documented |
+| P57 | E01 | RELEASE_DATE | Complete | Updated to 2026-09-23 |

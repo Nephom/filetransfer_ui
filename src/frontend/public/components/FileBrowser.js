@@ -1,6 +1,7 @@
 import React from 'react';
 import WebQueueStore from '../queue/store.js';
 import VirtualFileList from './VirtualFileList.js';
+import PaneWorkspace from './PaneWorkspace.js';
 
 const formatSize = (size) => {
     if (!size) return size === 0 ? '0 B' : '--';
@@ -168,6 +169,7 @@ export default function FileBrowser({ token, user, onLogout }) {
     const [dropTarget, setDropTarget] = React.useState(null);
     const [fileDropTarget, setFileDropTarget] = React.useState(null);
     const [viewMode, setViewMode] = React.useState(() => localStorage.getItem('file-view-mode') || 'details');
+    const [interfaceStyle, setInterfaceStyle] = React.useState(() => localStorage.getItem('interface-style') || 'classical');
     const [archiveFormat, setArchiveFormat] = React.useState(() => localStorage.getItem('archive-format') || 'tar.gz');
     const [sortKey, setSortKey] = React.useState('name');
     const [sortDirection, setSortDirection] = React.useState('asc');
@@ -445,6 +447,7 @@ export default function FileBrowser({ token, user, onLogout }) {
     }, []);
     React.useEffect(() => { localStorage.setItem('file-view-mode', viewMode); }, [viewMode]);
     React.useEffect(() => { localStorage.setItem('archive-format', archiveFormat); }, [archiveFormat]);
+    React.useEffect(() => { localStorage.setItem('interface-style', interfaceStyle); }, [interfaceStyle]);
 
     const activeLocation = locations.find((location) => location.id === locationId);
     const hasCapability = (capability) => activeLocation?.capabilities?.includes(capability) === true;
@@ -1263,7 +1266,7 @@ export default function FileBrowser({ token, user, onLogout }) {
         } catch (requestError) { setError(requestError.message); }
     };
     const crumbs = currentPath ? currentPath.split('/').filter(Boolean) : [];
-    const openContext = (event, file) => { event.preventDefault(); event.stopPropagation(); setSelected((items) => items.includes(itemKey(file)) ? items : [itemKey(file)]); setContext({ x: event.clientX, y: event.clientY }); };
+    const openContext = (event, file) => { event.preventDefault(); event.stopPropagation(); if (event.ctrlKey || event.metaKey) { const key = itemKey(file); setSelected((items) => items.includes(key) ? items : [...items, key]); return; } setSelected((items) => items.includes(itemKey(file)) ? items : [itemKey(file)]); setContext({ x: event.clientX, y: event.clientY }); };
     const action = (fn) => { setContext(null); fn(); };
 
     const renderFileItem = (file) => {
@@ -1305,8 +1308,12 @@ export default function FileBrowser({ token, user, onLogout }) {
        };
        const renderQueueItem = (item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span>{item.detail}</span>{item.progress && <small>{formatSize(item.progress.completedBytes)}{item.progress.totalBytes == null ? '' : ` / ${formatSize(item.progress.totalBytes)}`}{item.progress.percentage == null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}{['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}{['failed', 'needs_user_action'].includes(item.status) && queueJobsRef.current.has(item.id) && <button type="button" onClick={() => retryQueueItem(item.id)}>{item.batchId ? 'Reconcile' : 'Retry'}</button>}{['completed', 'failed', 'cancelled'].includes(item.status) && <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>}</li>;
 
-     return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>
-               <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountRef}><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}{user.role !== 'admin' && <button onClick={() => { setAccountOpen(false); setModal('password'); }}>Change password</button>}<hr /><button className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
+      if (interfaceStyle === 'pane') {
+          return <PaneWorkspace token={token} user={user} onLogout={onLogout} onStyleChange={setInterfaceStyle} />;
+      }
+
+      return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>
+                <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountRef}><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}{user.role !== 'admin' && <button onClick={() => { setAccountOpen(false); setModal('password'); }}>Change password</button>}<label className="style-menu-item" onClick={(event) => event.stopPropagation()}>Style settings<select aria-label="Interface style" value={interfaceStyle} onChange={(event) => setInterfaceStyle(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><hr /><button className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
          <nav className="commandbar">
              <button className="primary" disabled={!hasCapability('upload')} onClick={() => inputRef.current.click()}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} />
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
