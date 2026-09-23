@@ -554,6 +554,16 @@ try {
     await paneLocations.nth(1).click(); await paneLocations.nth(1).click();
     await page.locator('.pane-window').nth(3).waitFor();
     const paneWindows = page.locator('.pane-window');
+    const draggablePane = paneWindows.nth(3);
+    const beforeDrag = await draggablePane.boundingBox();
+    const titlebar = draggablePane.locator('.pane-window-titlebar');
+    const titlebarBox = await titlebar.boundingBox();
+    await page.mouse.move(titlebarBox.x + 30, titlebarBox.y + 18);
+    await page.mouse.down();
+    await page.mouse.move(titlebarBox.x + 110, titlebarBox.y + 58);
+    await page.mouse.up();
+    const afterDrag = await draggablePane.boundingBox();
+    assert.ok(afterDrag.x !== beforeDrag.x || afterDrag.y !== beforeDrag.y, 'pane titlebar drag moves the window');
     await paneWindows.nth(1).locator('.pane-view-switch button', { hasText: 'Grid' }).evaluate((button) => button.click());
     await paneWindows.nth(2).locator('.pane-view-switch button', { hasText: 'Grid' }).evaluate((button) => button.click());
     await paneWindows.nth(3).locator('.pane-view-switch button', { hasText: 'Details' }).evaluate((button) => button.click());

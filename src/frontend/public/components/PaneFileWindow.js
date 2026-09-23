@@ -1,10 +1,39 @@
 import React from 'react';
 import { formatPaneSize, paneItemKey } from './pane-workspace-utils.js';
 
-export default function PaneFileWindow({ window: pane, location, active, selectedItems, onFocus, onClose, onAction, onModeChange, onQueryChange, onLoadFiles, onChoose, onDrop }) {
+export default function PaneFileWindow({ window: pane, location, active, selectedItems, onFocus, onClose, onAction, onModeChange, onQueryChange, onLoadFiles, onChoose, onDrop, onMove }) {
     const run = (action) => { void onAction(pane.id, action); };
-    return <article className={`pane-window ${active ? 'is-active' : ''}`} style={{ zIndex: pane.z }} onPointerDown={() => onFocus(pane.id)} onContextMenu={(event) => event.preventDefault()}>
-        <header className="pane-window-titlebar">
+    const dragRef = React.useRef(null);
+    const onTitlePointerDown = (event) => {
+        if (event.target.closest('button')) return;
+        if (dragRef.current) return;
+        const windowElement = event.currentTarget.closest('.pane-window');
+        const layer = windowElement?.parentElement;
+        if (!windowElement || !layer) return;
+        event.preventDefault();
+        onFocus(pane.id);
+        const windowRect = windowElement.getBoundingClientRect();
+        const layerRect = layer.getBoundingClientRect();
+        dragRef.current = { pointerId: event.pointerId, offsetX: event.clientX - windowRect.left, offsetY: event.clientY - windowRect.top, layerRect };
+        event.currentTarget.setPointerCapture(event.pointerId);
+    };
+    const onTitlePointerMove = (event) => {
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const windowElement = event.currentTarget.closest('.pane-window');
+        if (!windowElement) return;
+        const left = Math.max(0, Math.min(drag.layerRect.width - windowElement.offsetWidth, event.clientX - drag.layerRect.left - drag.offsetX));
+        const top = Math.max(0, Math.min(drag.layerRect.height - windowElement.offsetHeight, event.clientY - drag.layerRect.top - drag.offsetY));
+        onMove(pane.id, left, top);
+    };
+    const onTitlePointerUp = (event) => {
+        if (dragRef.current?.pointerId !== event.pointerId) return;
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+        dragRef.current = null;
+    };
+    React.useEffect(() => () => { dragRef.current = null; }, []);
+    return <article className={`pane-window ${active ? 'is-active' : ''}`} style={{ zIndex: pane.z, ...(pane.position ? { left: `${pane.position.left}px`, top: `${pane.position.top}px` } : {}) }} onPointerDown={() => onFocus(pane.id)} onContextMenu={(event) => event.preventDefault()}>
+        <header className="pane-window-titlebar" onPointerDown={onTitlePointerDown} onPointerMove={onTitlePointerMove} onPointerUp={onTitlePointerUp}>
             <div><span className="folder-icon" aria-hidden="true">▰</span><strong>{location?.displayName || pane.locationId}</strong><small>{active ? 'ACTIVE' : 'Remote API'}</small></div>
             <button type="button" onClick={() => onClose(pane.id)} aria-label="Close window">×</button>
         </header>
