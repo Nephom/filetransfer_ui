@@ -25,6 +25,7 @@ function checkBrowserBuild(directory = publicDirectory) {
         if (fs.readdirSync(directory).some(name => !allowed.has(name))) throw new Error('unexpected public asset');
         const index = fs.readFileSync(path.join(directory, 'index.html'), 'utf8');
         if (!index.includes(`src="/${manifest.entry}"`) || /text\/babel|react\.development|__BROWSER_ENTRY__/.test(index)) throw new Error('invalid index');
+        if (!fs.readFileSync(path.join(directory, manifest.entry), 'utf8').includes('filetransfer-ui-pane-background')) throw new Error('stale browser entry');
         return manifest;
     } catch (error) {
         throw new Error(`Browser build is missing or invalid (${error.message}). Run npm run build:browser.`);

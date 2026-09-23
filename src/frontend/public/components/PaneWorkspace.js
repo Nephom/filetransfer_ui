@@ -245,6 +245,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
             setCustomBackground({ url: objectUrl, blob: file, name: file.name, width: image.naturalWidth, height: image.naturalHeight, size: file.size });
             setBackgroundScale(1);
             setBackgroundPosition(centeredBackgroundPosition());
+            closeAccountMenu();
             setBackgroundEditorOpen(true);
             announce(`${file.name} is now the background.`);
         };

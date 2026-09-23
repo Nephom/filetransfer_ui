@@ -662,6 +662,7 @@ try {
     await page.getByRole('button', { name: 'Style settings', exact: true }).click();
     await backgroundInput.setInputFiles({ name: 'background.png', mimeType: 'image/png', buffer: backgroundFixture });
     await page.locator('[data-background-editor]').waitFor();
+    await page.locator('.pane-account-menu').waitFor({ state: 'detached' });
     const backgroundLayer = page.locator('.pane-custom-background');
     const initialBackground = await page.locator('.pane-explorer').evaluate((root) => {
         const layer = root.querySelector('.pane-custom-background');
