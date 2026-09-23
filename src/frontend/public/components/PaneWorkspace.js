@@ -3,6 +3,15 @@ import PaneFileWindow from './PaneFileWindow.js';
 import PaneTools from './PaneTools.js';
 import { normalisePanePath, paneHeaders, paneItemKey, paneViewModeKey } from './pane-workspace-utils.js';
 
+const BACKGROUND_MAX_FILE_SIZE = 5 * 1024 * 1024;
+const BACKGROUND_MIN_SCALE = 0.5;
+const BACKGROUND_MAX_SCALE = 2;
+const BACKGROUND_SCALE_STEP = 0.1;
+const BACKGROUND_POSITION_STEP = 10;
+const clamp = (value, minimum, maximum) => Math.min(Math.max(value, minimum), maximum);
+const roundScale = (value) => Math.round(value * 100) / 100;
+const centeredBackgroundPosition = () => ({ x: 50, y: 50 });
+
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
 export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) {
@@ -12,13 +21,18 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
     const [accountOpen, setAccountOpen] = React.useState(false);
     const [styleSettingsOpen, setStyleSettingsOpen] = React.useState(false);
     const [theme, setTheme] = React.useState(() => localStorage.getItem('pane-background-theme') || 'default');
-    const [customBackgroundUrl, setCustomBackgroundUrl] = React.useState('');
+    const [customBackground, setCustomBackground] = React.useState(null);
+    const [backgroundEditorOpen, setBackgroundEditorOpen] = React.useState(false);
+    const [backgroundScale, setBackgroundScale] = React.useState(1);
+    const [backgroundPosition, setBackgroundPosition] = React.useState(centeredBackgroundPosition());
     const [nextId, setNextId] = React.useState(1);
     const [toast, setToast] = React.useState('');
     const [clipboard, setClipboard] = React.useState(null);
     const [contextMenu, setContextMenu] = React.useState(null);
     const fileInput = React.useRef(null);
     const backgroundInput = React.useRef(null);
+    const backgroundLoadRef = React.useRef(0);
+    const pendingBackgroundUrlRef = React.useRef('');
     const windowsRef = React.useRef(windows);
     windowsRef.current = windows;
     const activeWindow = windows.find((pane) => pane.id === activeId && !pane.minimized);
@@ -147,17 +161,67 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
     }, [windows, activeId]);
     React.useEffect(() => { if (!accountOpen) setStyleSettingsOpen(false); }, [accountOpen]);
     React.useEffect(() => { localStorage.setItem('pane-background-theme', theme); }, [theme]);
-    React.useEffect(() => () => { if (customBackgroundUrl) URL.revokeObjectURL(customBackgroundUrl); }, [customBackgroundUrl]);
+    React.useEffect(() => () => {
+        if (customBackground?.url) URL.revokeObjectURL(customBackground.url);
+        if (pendingBackgroundUrlRef.current) URL.revokeObjectURL(pendingBackgroundUrlRef.current);
+    }, [customBackground]);
     const selectBackground = (event) => {
         const [file] = event.target.files || [];
         event.target.value = '';
         if (!file || !file.type.startsWith('image/')) return announce('Choose an image file.');
-        if (file.size > 5 * 1024 * 1024) return announce('Background image must be 5MB or smaller.');
-        if (customBackgroundUrl) URL.revokeObjectURL(customBackgroundUrl);
-        setCustomBackgroundUrl(URL.createObjectURL(file));
-        announce(`${file.name} is now the background.`);
+        if (file.size > BACKGROUND_MAX_FILE_SIZE) return announce('Background image must be 5MB or smaller.');
+        const objectUrl = URL.createObjectURL(file);
+        const loadId = backgroundLoadRef.current + 1;
+        backgroundLoadRef.current = loadId;
+        if (pendingBackgroundUrlRef.current) URL.revokeObjectURL(pendingBackgroundUrlRef.current);
+        pendingBackgroundUrlRef.current = objectUrl;
+        const image = new Image();
+        image.onload = () => {
+            if (loadId !== backgroundLoadRef.current) {
+                URL.revokeObjectURL(objectUrl);
+                return;
+            }
+            pendingBackgroundUrlRef.current = '';
+            setCustomBackground({ url: objectUrl, name: file.name, width: image.naturalWidth, height: image.naturalHeight, size: file.size });
+            setBackgroundScale(1);
+            setBackgroundPosition(centeredBackgroundPosition());
+            setBackgroundEditorOpen(true);
+            announce(`${file.name} is now the background.`);
+        };
+        image.onerror = () => {
+            if (loadId !== backgroundLoadRef.current) {
+                URL.revokeObjectURL(objectUrl);
+                return;
+            }
+            pendingBackgroundUrlRef.current = '';
+            URL.revokeObjectURL(objectUrl);
+            announce('The background image could not be loaded.');
+        };
+        image.src = objectUrl;
     };
-    return <div className="pane-explorer" data-theme={theme} style={customBackgroundUrl ? { '--pane-custom-background': `url("${customBackgroundUrl}")` } : undefined} onContextMenu={(event) => event.preventDefault()}>
-        <header className="pane-titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control"><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu pane-account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}<button type="button" className="style-settings-trigger" aria-expanded={styleSettingsOpen} onClick={() => setStyleSettingsOpen((open) => !open)}>Style settings <span aria-hidden="true">⌄</span></button>{styleSettingsOpen && <div className="pane-account-style"><h2>Interface style</h2><p>Choose the central workspace appearance.</p><label>Interface mode<select aria-label="Interface style" value="pane" onChange={(event) => onStyleChange(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><label>Central background<select aria-label="Central background" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="default">Default Gradient</option><option value="circuit">Dark Circuit</option><option value="space">Deep Space</option><option value="ocean">Ocean Signal</option><option value="aurora">Aurora Tech</option><option value="neon">Soft Neon</option><option value="light">Clean Light</option></select></label><button type="button" className="pane-background-button" onClick={() => backgroundInput.current?.click()}>▧ Choose background image</button><input ref={backgroundInput} className="pane-hidden-file" type="file" accept="image/*" onChange={selectBackground} />{customBackgroundUrl && <button type="button" className="pane-reset-background" onClick={() => { URL.revokeObjectURL(customBackgroundUrl); setCustomBackgroundUrl(''); }}>Use default background</button>}</div>}<hr /><button type="button" className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
+    const moveBackground = (axis, direction) => setBackgroundPosition((current) => ({ ...current, [axis]: clamp(current[axis] + direction * BACKGROUND_POSITION_STEP, 0, 100) }));
+    const centerBackground = () => setBackgroundPosition(centeredBackgroundPosition());
+    const changeBackgroundScale = (direction) => setBackgroundScale((current) => clamp(roundScale(current + direction * BACKGROUND_SCALE_STEP), BACKGROUND_MIN_SCALE, BACKGROUND_MAX_SCALE));
+    const resetBackgroundPlacement = () => { setBackgroundScale(1); setBackgroundPosition(centeredBackgroundPosition()); };
+    const clearBackground = () => {
+        backgroundLoadRef.current += 1;
+        if (pendingBackgroundUrlRef.current) {
+            URL.revokeObjectURL(pendingBackgroundUrlRef.current);
+            pendingBackgroundUrlRef.current = '';
+        }
+        setCustomBackground(null);
+        setBackgroundEditorOpen(false);
+        resetBackgroundPlacement();
+        announce('Using the default background.');
+    };
+    const backgroundStyle = customBackground ? {
+        '--pane-background-image': `url("${customBackground.url}")`,
+        '--pane-background-scale': backgroundScale,
+        '--pane-background-position': `${backgroundPosition.x}% ${backgroundPosition.y}%`
+    } : undefined;
+    return <div className={`pane-explorer${customBackground ? ' has-custom-background' : ''}`} data-theme={theme} style={backgroundStyle} onContextMenu={(event) => event.preventDefault()}>
+        {customBackground && <div className="pane-custom-background" aria-hidden="true" />}
+        <header className="pane-titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control"><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu pane-account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}<button type="button" className="style-settings-trigger" aria-expanded={styleSettingsOpen} onClick={() => setStyleSettingsOpen((open) => !open)}>Style settings <span aria-hidden="true">⌄</span></button>{styleSettingsOpen && <div className="pane-account-style"><h2>Interface style</h2><p>Choose the central workspace appearance.</p><label>Interface mode<select aria-label="Interface style" value="pane" onChange={(event) => onStyleChange(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><label>Central background<select aria-label="Central background" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="default">Default Gradient</option><option value="circuit">Dark Circuit</option><option value="space">Deep Space</option><option value="ocean">Ocean Signal</option><option value="aurora">Aurora Tech</option><option value="neon">Soft Neon</option><option value="light">Clean Light</option></select></label><button type="button" className="pane-background-button" onClick={() => backgroundInput.current?.click()}>▧ Choose background image</button>{customBackground && <button type="button" className="pane-background-edit-button" onClick={() => setBackgroundEditorOpen(true)}>▣ Edit background placement</button>}<input ref={backgroundInput} className="pane-hidden-file" type="file" accept="image/*" onChange={selectBackground} />{customBackground && <button type="button" className="pane-reset-background" onClick={clearBackground}>Use default background</button>}</div>}<hr /><button type="button" className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
+        {customBackground && backgroundEditorOpen && <aside className="pane-background-editor" data-background-editor aria-label="Background image placement"><div className="pane-background-editor-header"><div><span className="pane-background-eyebrow">BACKGROUND PLACEMENT</span><strong title={customBackground.name}>{customBackground.name}</strong></div><button type="button" className="pane-background-close" onClick={() => setBackgroundEditorOpen(false)} aria-label="Close background editor" title="Close background editor">×</button></div><div className="pane-background-meta"><span>{customBackground.width} × {customBackground.height}px</span><span>{Math.round(customBackground.size / 1024)} KB</span></div><div className="pane-background-section"><span className="pane-background-label">Position</span><div className="pane-background-position-controls"><span /><button type="button" onClick={() => moveBackground('y', -1)} disabled={backgroundPosition.y <= 0} aria-label="Move background up" title="Move background up">↑</button><span /><button type="button" onClick={() => moveBackground('x', -1)} disabled={backgroundPosition.x <= 0} aria-label="Move background left" title="Move background left">←</button><button type="button" className="is-center" onClick={centerBackground} aria-label="Center background" title="Center background">◎</button><button type="button" onClick={() => moveBackground('x', 1)} disabled={backgroundPosition.x >= 100} aria-label="Move background right" title="Move background right">→</button><span /><button type="button" onClick={() => moveBackground('y', 1)} disabled={backgroundPosition.y >= 100} aria-label="Move background down" title="Move background down">↓</button><span /></div></div><div className="pane-background-section"><span className="pane-background-label">Scale</span><div className="pane-background-scale-controls"><button type="button" onClick={() => changeBackgroundScale(-1)} disabled={backgroundScale <= BACKGROUND_MIN_SCALE} aria-label="Shrink background" title="Shrink background">-</button><output aria-label="Background scale">{Math.round(backgroundScale * 100)}%</output><button type="button" onClick={() => changeBackgroundScale(1)} disabled={backgroundScale >= BACKGROUND_MAX_SCALE} aria-label="Expand background" title="Expand background">+</button></div></div><div className="pane-background-editor-actions"><button type="button" onClick={resetBackgroundPlacement}>Reset placement</button><button type="button" className="danger" onClick={clearBackground}>Remove image</button></div></aside>}
         <main className="pane-workspace"><aside className="pane-side pane-locations"><div className="pane-heading">LOCATIONS</div><div className="pane-location-list">{locations.map((location) => <button type="button" key={location.id} className={windows.some((pane) => pane.locationId === location.id) ? 'is-open' : ''} onClick={() => openWindow(location.id)} onContextMenu={(event) => showLocationContextMenu(event, location.id)}><span className="folder-icon" aria-hidden="true">▰</span><span><strong>{location.displayName || location.id}</strong><small>{location.status || 'online'}</small></span></button>)}</div></aside><section className="pane-center"><div className="pane-window-layer">{windows.map((pane) => <PaneFileWindow key={pane.id} window={pane} location={locationFor(pane.locationId)} active={activeId === pane.id && !pane.minimized} selectedItems={selectedItems(pane)} onFocus={focusWindow} onClose={closeWindow} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximizeWindow} onAction={runAction} onModeChange={(id, mode) => patchWindow(id, { mode })} onQueryChange={(id, query) => patchWindow(id, { query })} onLoadFiles={loadFiles} onChoose={choose} onDrop={handleDrop} onMove={moveWindow} onContextMenu={showWindowContextMenu} />)}</div>{windows.some((pane) => pane.minimized) && <div className="pane-minimized-dock" aria-label="Minimized windows">{windows.filter((pane) => pane.minimized).map((pane) => <div className="pane-minimized-item" data-window-id={pane.id} key={pane.id}><button type="button" className="pane-minimized-restore" onClick={() => restoreWindow(pane.id)} aria-label={`Restore ${locationFor(pane.locationId)?.displayName || pane.locationId}`} title="點擊還原">{locationFor(pane.locationId)?.displayName || pane.locationId}</button><button type="button" className="pane-minimized-close" onClick={() => closeWindow(pane.id)} aria-label={`Close minimized ${locationFor(pane.locationId)?.displayName || pane.locationId}`} title="Close window">×</button></div>)}</div>}{!windows.length && <div className="pane-empty-state"><strong>Open a Location</strong><span>Each Location opens as an independent floating file explorer.</span></div>}</section><PaneTools active={activeWindow} onUpload={() => fileInput.current?.click()} onAction={(action) => activeId && void runAction(activeId, action)} /></main><input ref={fileInput} type="file" multiple hidden onChange={upload} /><footer className="pane-statusbar"><span>{windows.length} open window{windows.length === 1 ? '' : 's'}</span><span>{activeWindow ? `Active: ${locationFor(activeWindow.locationId)?.displayName || activeWindow.locationId}` : 'Open a Location to begin'}</span></footer>{contextMenu && <div className="pane-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>{contextMenu.type === 'location' ? <button type="button" onClick={() => { openWindow(contextMenu.locationId); closeContextMenu(); }}>Open new window</button> : <>{[['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh']].map(([action, label]) => <button type="button" key={action} onClick={() => { void runAction(contextMenu.windowId, action); closeContextMenu(); }}>{label}</button>)}</>}</div>}{toast && <div className="pane-toast" role="status">{toast}</div>}</div>;
 }

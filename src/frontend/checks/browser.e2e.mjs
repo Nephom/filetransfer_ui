@@ -655,6 +655,76 @@ try {
     await page.locator('.pane-account-menu').waitFor({ state: 'detached' });
     report.checks.push('pane style switch, independent floating windows, Details/Grid view, maximize/minimize/restore dock, and Account Panel settings persistence');
 
+    const backgroundInput = page.locator('input[type="file"][accept="image/*"]');
+    assert.equal(await page.locator('[data-background-editor]').count(), 0, 'background editor stays hidden before an image is selected');
+    const backgroundFixture = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
+    await page.locator('.account').click();
+    await page.getByRole('button', { name: 'Style settings', exact: true }).click();
+    await backgroundInput.setInputFiles({ name: 'background.png', mimeType: 'image/png', buffer: backgroundFixture });
+    await page.locator('[data-background-editor]').waitFor();
+    const backgroundLayer = page.locator('.pane-custom-background');
+    const initialBackground = await page.locator('.pane-explorer').evaluate((root) => {
+        const layer = root.querySelector('.pane-custom-background');
+        const style = getComputedStyle(layer);
+        return {
+            image: style.backgroundImage,
+            transform: style.transform,
+            scale: root.style.getPropertyValue('--pane-background-scale').trim(),
+            position: root.style.getPropertyValue('--pane-background-position').trim()
+        };
+    });
+    assert.match(initialBackground.image, /blob:/, 'selected image is applied to the real background layer');
+    assert.equal(initialBackground.scale, '1');
+    assert.equal(initialBackground.position, '50% 50%');
+    await page.getByRole('status').filter({ hasText: 'background.png is now the background.' }).waitFor();
+    assert.equal(await page.getByRole('status').filter({ hasText: 'background.png is now the background.' }).count(), 1);
+    await page.getByRole('button', { name: 'Move background right' }).click();
+    assert.equal(await page.locator('.pane-explorer').evaluate((root) => root.style.getPropertyValue('--pane-background-position').trim()), '60% 50%');
+    await page.getByRole('button', { name: 'Center background' }).click();
+    assert.equal(await page.locator('.pane-explorer').evaluate((root) => root.style.getPropertyValue('--pane-background-position').trim()), '50% 50%');
+    await page.getByRole('button', { name: 'Expand background' }).click();
+    await page.waitForFunction(() => {
+        const transform = getComputedStyle(document.querySelector('.pane-custom-background')).transform;
+        const scale = Number(transform.match(/^matrix(?:3d)?\(([^,]+)/)?.[1]);
+        return Math.abs(scale - 1.1) < 0.01;
+    });
+    const expandedBackground = await page.locator('.pane-explorer').evaluate((root) => ({ scale: root.style.getPropertyValue('--pane-background-scale').trim(), transform: getComputedStyle(root.querySelector('.pane-custom-background')).transform }));
+    assert.equal(expandedBackground.scale, '1.1');
+    assert.notEqual(expandedBackground.transform, initialBackground.transform, 'expanding changes the rendered image transform');
+    const backgroundScaleOutput = page.locator('output[aria-label="Background scale"]');
+    assert.equal(await backgroundScaleOutput.textContent(), '110%');
+    await page.getByRole('button', { name: 'Shrink background' }).click();
+    assert.equal(await backgroundScaleOutput.textContent(), '100%');
+    for (let index = 0; index < 5; index++) await page.getByRole('button', { name: 'Shrink background' }).click();
+    assert.equal(await backgroundScaleOutput.textContent(), '50%');
+    assert.equal(await page.getByRole('button', { name: 'Shrink background' }).isDisabled(), true, 'shrink stops at the minimum scale');
+    for (let index = 0; index < 15; index++) await page.getByRole('button', { name: 'Expand background' }).click();
+    assert.equal(await backgroundScaleOutput.textContent(), '200%');
+    assert.equal(await page.getByRole('button', { name: 'Expand background' }).isDisabled(), true, 'expand stops at the maximum scale');
+    await page.getByRole('button', { name: 'Reset placement', exact: true }).click();
+    assert.equal(await backgroundScaleOutput.textContent(), '100%');
+    assert.equal(await page.locator('.pane-explorer').evaluate((root) => root.style.getPropertyValue('--pane-background-position').trim()), '50% 50%');
+    await page.getByRole('button', { name: 'Close background editor', exact: true }).click();
+    assert.equal(await page.locator('[data-background-editor]').count(), 0, 'closing hides the editor without removing the background');
+    await page.locator('.account').click();
+    await page.getByRole('button', { name: 'Style settings', exact: true }).click();
+    await page.locator('.pane-background-edit-button').click();
+    await page.locator('[data-background-editor]').waitFor();
+    const existingImage = await page.locator('.pane-explorer').evaluate((root) => root.style.getPropertyValue('--pane-background-image').trim());
+    await backgroundInput.setInputFiles({ name: 'too-large.jpg', mimeType: 'image/jpeg', buffer: Buffer.alloc(5 * 1024 * 1024 + 1) });
+    await page.waitForFunction(() => document.querySelector('.pane-toast')?.textContent.includes('5MB'));
+    assert.equal(await page.locator('.pane-explorer').evaluate((root) => root.style.getPropertyValue('--pane-background-image').trim()), existingImage, 'oversized image does not replace the current background');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await frames();
+    const editorGeometry = await page.locator('[data-background-editor]').boundingBox();
+    assert.ok(editorGeometry.x >= 0 && editorGeometry.x + editorGeometry.width <= 390, `background editor stays inside the narrow viewport: ${JSON.stringify(editorGeometry)}`);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'background editor does not create horizontal overflow');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByRole('button', { name: 'Remove image', exact: true }).click();
+    await page.locator('[data-background-editor]').waitFor({ state: 'detached' });
+    assert.equal(await backgroundLayer.count(), 0, 'removing the image restores the default background layer');
+    report.checks.push('background editor appears only after a valid image, applies blob imagery, moves and scales the real layer, enforces 5 MiB, and remains responsive');
+
     for (const role of ['admin', 'superuser']) {
         const privateContext = await browser.newContext();
         await privateContext.addCookies([{ name: 'fixtureRole', value: role, url: origin, httpOnly: true }]);
