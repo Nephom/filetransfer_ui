@@ -61,6 +61,49 @@ const MIGRATIONS = [
         )
       `);
     }
+  },
+  {
+    id: '005-create-ssh-terminal-storage',
+    description: 'Create user-owned SSH targets and host-key audit storage.',
+    async up(db) {
+      await db.run(`
+        CREATE TABLE IF NOT EXISTS user_ssh_targets (
+          id TEXT PRIMARY KEY,
+          userId TEXT NOT NULL,
+          displayName TEXT NOT NULL,
+          host TEXT NOT NULL,
+          port INTEGER NOT NULL DEFAULT 22,
+          username TEXT NOT NULL,
+          authType TEXT NOT NULL,
+          encryptedPrivateKey TEXT,
+          encryptedPassword TEXT,
+          encryptedPassphrase TEXT,
+          hostKeyType TEXT,
+          hostKeyData TEXT,
+          hostKeyFingerprint TEXT,
+          createdAt INTEGER NOT NULL,
+          updatedAt INTEGER NOT NULL,
+          lastConnectedAt INTEGER
+        )
+      `);
+      await db.run('CREATE INDEX IF NOT EXISTS idx_ssh_targets_user ON user_ssh_targets(userId)');
+      await db.run('CREATE INDEX IF NOT EXISTS idx_ssh_targets_user_host ON user_ssh_targets(userId, host, port)');
+      await db.run(`
+        CREATE TABLE IF NOT EXISTS terminal_audit_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          eventType TEXT NOT NULL,
+          userId TEXT NOT NULL,
+          targetId TEXT NOT NULL,
+          host TEXT NOT NULL,
+          port INTEGER NOT NULL,
+          oldFingerprint TEXT,
+          newFingerprint TEXT,
+          createdAt INTEGER NOT NULL
+        )
+      `);
+      await db.run('CREATE INDEX IF NOT EXISTS idx_terminal_audit_target ON terminal_audit_events(targetId, createdAt)');
+      await db.run('CREATE INDEX IF NOT EXISTS idx_terminal_audit_user ON terminal_audit_events(userId, createdAt)');
+    }
   }
 ];
 

@@ -43,6 +43,12 @@ const { publicDirectory, checkBrowserBuild } = require('../../scripts/build-brow
 const { analyzePath } = require('./ai/analysis-job');
 const { AnalysisQueue } = require('./ai/analysis-queue');
 const { DEFAULT_SYSTEM_PROMPT } = require('./ai/prompt');
+const { SecretStore } = require('./terminal/secret-store');
+const { HostKeyStore } = require('./terminal/host-key-store');
+const { TargetStore } = require('./terminal/target-store');
+const { SshSessionManager } = require('./terminal/ssh-session');
+const { createTerminalTargetRouter } = require('./api/terminal-targets');
+const { createTerminalSessionRouter, createTerminalWebSocketGateway } = require('./api/terminal-session');
 
 
 
@@ -67,6 +73,12 @@ let runtimeChanging = false;
 let configurationWrites = Promise.resolve();
 const aiAnalysisQueue = new AnalysisQueue();
 const performanceMetrics = new PerformanceMetrics();
+const terminalTargetStore = new TargetStore({ db: database, secretStore: new SecretStore() });
+const terminalHostKeyStore = new HostKeyStore({ db: database });
+const terminalSessionManager = new SshSessionManager({ targetStore: terminalTargetStore, hostKeyStore: terminalHostKeyStore });
+const terminalWebSocketGateway = createTerminalWebSocketGateway({ sessionManager: terminalSessionManager });
+const terminalTargetRoutes = createTerminalTargetRouter({ targetStore: terminalTargetStore, sessionManager: terminalSessionManager });
+const terminalSessionRoutes = createTerminalSessionRouter({ sessionManager: terminalSessionManager });
 const configurationChange = handler => (req, res, next) => {
   const job = configurationWrites.then(() => handler(req, res));
   configurationWrites = job.catch(() => {});
@@ -374,6 +386,8 @@ const configureLocationRuntime = async () => {
 // Other share routes require authentication via middleware
 app.use('/api', shareRoutes);
 app.use('/api', backgroundRoutes);
+app.use('/api', terminalTargetRoutes);
+app.use('/api', terminalSessionRoutes);
 
 // SSL management routes (admin only)
 app.use('/api', sslRoutes);
@@ -2752,6 +2766,8 @@ app.post('/api/admin/service/restart', requireAdmin, async (req, res) => {
         console.log('\n🔄 Service restart requested by admin...');
 
         // Close servers gracefully
+        await terminalSessionManager.closeAll();
+        terminalWebSocketGateway.close();
         if (httpsServerInstance) {
           await new Promise((resolve) => {
             httpsServerInstance.close(() => {
@@ -3047,6 +3063,7 @@ async function startServer() {
     httpServer.headersTimeout = 36000000; // 10 hours
 
     await listenOnHost(httpServer, port, host);
+    terminalWebSocketGateway.attachServer(httpsServer || httpServer);
     {
       console.log(`\n🌐 File Transfer API is now running!`);
       console.log('='.repeat(50));
@@ -3194,6 +3211,8 @@ async function gracefulShutdown() {
     }
 
     aiAnalysisQueue.close();
+    await terminalSessionManager.closeAll();
+    terminalWebSocketGateway.close();
 
     // Close HTTP server
     if (httpServerInstance) {
@@ -3234,6 +3253,8 @@ async function gracefulShutdown() {
 app.locals.configureLocationRuntime = configureLocationRuntime;
 app.locals.refreshSecurity = refreshSecurity;
 app.locals.listenOnHost = listenOnHost;
+app.locals.terminalSessionManager = terminalSessionManager;
+app.locals.terminalTargetStore = terminalTargetStore;
 
 if (require.main === module) {
   installProcessHandlers();

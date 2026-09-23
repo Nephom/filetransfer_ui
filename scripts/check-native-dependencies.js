@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const dependencies = ['bcrypt', 'sqlite3'];
+const dependencies = ['bcrypt', 'sqlite3', 'ssh2', 'ws'];
 
 for (const dependency of dependencies) {
   try {

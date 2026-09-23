@@ -284,7 +284,7 @@ install_server_node_dependencies() {
   npm ci --ignore-scripts --include=optional --include=dev --prefix "$ROOT_DIR"
   npm rebuild --foreground-scripts --prefix "$ROOT_DIR"
   npm run check:native --prefix "$ROOT_DIR"
-  (cd "$ROOT_DIR" && node -e 'require.resolve("unrs-resolver");')
+  (cd "$ROOT_DIR" && node -e 'for (const name of ["unrs-resolver", "ssh2", "ws"]) require.resolve(name);')
   cmd_browser
 }
 
@@ -539,6 +539,11 @@ setup_configuration() {
 
   if [[ -f "$ROOT_DIR/.env" ]]; then
     echo "Existing .env retained; no deployment values were overwritten."
+    if [[ -z "$(read_env_value "$ROOT_DIR/.env" SSH_TARGET_ENCRYPTION_KEY)" ]]; then
+      upsert_env SSH_TARGET_ENCRYPTION_KEY "$(generate_secret)"
+      chmod 600 "$ROOT_DIR/.env"
+      echo "Generated the missing SSH target encryption key in .env."
+    fi
     return
   fi
 
@@ -561,6 +566,7 @@ setup_configuration() {
   upsert_env SSL_HTTPS_PORT "$https_port"
   upsert_env SSL_AUTO_GENERATE_CERTS "true"
   upsert_env JWT_SECRET "$secret"
+  upsert_env SSH_TARGET_ENCRYPTION_KEY "$(generate_secret)"
   mkdir -p "$storage"
 
   if [[ -n "$server_host" ]]; then

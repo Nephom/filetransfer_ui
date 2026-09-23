@@ -1,7 +1,8 @@
 import React from 'react';
 
-const tools = [['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh'], ['select-all', 'Select All']];
+const tools = [['terminal', 'Terminal'], ['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh'], ['select-all', 'Select All']];
 const iconPaths = {
+    terminal: <path d="M4 5h16v14H4zM7 9l3 3-3 3m5 0h4" />,
     upload: <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 14v5h16v-5" />,
     'new-folder': <path d="M3.5 6.5h6l2 2h9v10h-17zM12 11v5m-2.5-2.5h5" />,
     rename: <path d="m14 5 5 5M4 20l3.7-.8L19.5 7.4a2.1 2.1 0 0 0-3-3L4.7 16.2z" />,
@@ -14,6 +15,6 @@ const iconPaths = {
     'select-all': <><rect x="4" y="4" width="16" height="16" rx="2" /><path d="m8 12 2.5 2.5L16 9" /></>
 };
 
-export default function PaneTools({ active, onUpload, onAction }) {
-    return <aside className="pane-side pane-tools"><div className="pane-heading">TOOLS</div><div className="pane-tool-grid">{tools.map(([action, label]) => <button type="button" aria-label={`Pane ${label}`} key={action} onClick={() => action === 'upload' ? onUpload() : onAction(action)} disabled={!active}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{iconPaths[action]}</svg><strong>{label}</strong></button>)}</div></aside>;
+export default function PaneTools({ active, onUpload, onAction, onOpenTerminal }) {
+    return <aside className="pane-side pane-tools"><div className="pane-heading">TOOLS</div><div className="pane-tool-grid">{tools.map(([action, label]) => <button type="button" aria-label={`Pane ${label}`} key={action} onClick={() => action === 'terminal' ? onOpenTerminal() : action === 'upload' ? onUpload() : onAction(action)} disabled={action !== 'terminal' && !active}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{iconPaths[action]}</svg><strong>{label}</strong></button>)}</div></aside>;
 }
