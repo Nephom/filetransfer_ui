@@ -41,6 +41,7 @@ let delayRefresh = false;
 let deletePartial = false;
 let reserveDelay = 0;
 let authenticated = true;
+const userBackgrounds = new Map();
 const baselineAssets = new Map();
 function original(name) {
     if (!baselineAssets.has(name)) baselineAssets.set(name, execFileSync('git', ['show', `${baselineRef}:src/frontend/public/${name}`], { cwd: root, maxBuffer: 10 * 1024 * 1024 }));
@@ -53,6 +54,7 @@ const server = http.createServer(async (req, res) => {
         for await (const chunk of req) chunks.push(chunk);
         const body = Buffer.concat(chunks).toString();
         const jsonBody = req.headers['content-type']?.includes('application/json') && body ? JSON.parse(body) : null;
+        const fixtureUserId = req.headers.cookie?.includes('fixtureUserB=1') ? 'fixture-user-b' : 'fixture-user-a';
         requests.push({ path: url.pathname, query: url.search, method: req.method, body: jsonBody, raw: body, headers: req.headers });
         const json = (value, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); };
         const send = (bytes, type) => { res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-store' }); res.end(bytes); };
@@ -67,11 +69,16 @@ const server = http.createServer(async (req, res) => {
         }
         if (url.pathname === '/auth/verify') {
             const role = req.headers.cookie?.includes('fixtureRole=admin') || req.headers.authorization === 'Bearer fixture-admin' ? 'admin' : req.headers.cookie?.includes('fixtureRole=superuser') || req.headers.authorization === 'Bearer fixture-superuser' ? 'superuser' : 'user';
-            return json({ user: { id: `fixture-${role}`, username: 'fixture', role } }, authenticated ? 200 : 401);
+            return json({ user: { id: fixtureUserId, username: fixtureUserId, role } }, authenticated ? 200 : 401);
         }
         if (url.pathname === '/auth/login') { authenticated = true; return json({ user: { id: 'fixture-user', username: 'fixture', role: 'user' } }); }
         if (url.pathname === '/auth/logout') { authenticated = false; return json({ success: true }); }
         if (url.pathname === '/api/version') return json({ display: 'fixture version' });
+        if (url.pathname === '/api/user/background') {
+            if (req.method === 'GET') return json({ background: userBackgrounds.get(fixtureUserId) || null });
+            if (req.method === 'PUT') { userBackgrounds.set(fixtureUserId, jsonBody); return json({ success: true }); }
+            if (req.method === 'DELETE') { const deleted = userBackgrounds.delete(fixtureUserId); return json({ success: true, deleted }); }
+        }
         if (url.pathname === '/api/locations') return json({ locations: availableLocations });
         if (url.pathname === '/api/files') return json({ currentPath: url.searchParams.get('path') || '', files: requestedLocation?.revision === 'A-root-2' ? [{ name: 'replacement-root.txt', path: 'replacement-root.txt', size: 4 }] : req.headers['x-location-id'] === 'B' ? [{ name: 'B-only.txt', path: 'B-only.txt', size: 8 }] : records });
         if (url.pathname === '/api/files/search') {
@@ -170,6 +177,18 @@ try {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     const frames = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const measurePaneTypography = async (selectorEntries) => page.evaluate((entries) => Object.fromEntries(entries.map(([name, selector]) => {
+        const element = document.querySelector(selector);
+        return [name, element ? parseFloat(getComputedStyle(element).fontSize) : null];
+    })), selectorEntries);
+    const assertResponsiveTypography = (narrow, desktop, large, label) => {
+        for (const [name, desktopSize] of Object.entries(desktop)) {
+            assert.equal(typeof narrow[name], 'number', `${label} ${name} exists at narrow viewport`);
+            assert.equal(typeof large[name], 'number', `${label} ${name} exists at large viewport`);
+            assert.ok(narrow[name] < desktopSize, `${label} ${name} grows from narrow to desktop: ${narrow[name]} < ${desktopSize}`);
+            assert.ok(desktopSize < large[name], `${label} ${name} grows from desktop to large: ${desktopSize} < ${large[name]}`);
+        }
+    };
     async function loadMetrics(route) {
         const start = performance.now();
         await page.goto(`${origin}${route}`);
@@ -585,14 +604,28 @@ try {
     await paneLocations.nth(0).click();
     await page.locator('.pane-window').first().locator('.pane-view-switch button.active').waitFor();
     assert.equal(await page.locator('.pane-window').first().locator('.pane-view-switch button.active').textContent(), 'Grid');
-    await page.setViewportSize({ width: 1440, height: 900 });
-    const desktopPaneFont = await page.locator('.pane-explorer').evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
-    const desktopPaneHeadingFont = await page.locator('.pane-window-titlebar strong').first().evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+    const corePaneTypography = [
+        ['root', '.pane-explorer'],
+        ['sectionLabel', '.pane-heading'],
+        ['windowTitle', '.pane-window-titlebar strong'],
+        ['windowMeta', '.pane-window-titlebar small'],
+        ['toolbar', '.pane-window-toolbar button'],
+        ['location', '.pane-location-list strong'],
+        ['locationMeta', '.pane-location-list small'],
+        ['fileContent', '.pane-files'],
+        ['toolLabel', '.pane-tool-grid button strong'],
+        ['status', '.pane-statusbar']
+    ];
     await page.setViewportSize({ width: 390, height: 844 });
-    const narrowPaneFont = await page.locator('.pane-explorer').evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
-    const narrowPaneHeadingFont = await page.locator('.pane-window-titlebar strong').first().evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
-    assert.ok(narrowPaneFont < desktopPaneFont, 'Pane Style typography scales down at narrow resolutions');
-    assert.ok(narrowPaneHeadingFont < desktopPaneHeadingFont, 'Pane Style child typography scales down at narrow resolutions');
+    await frames();
+    const narrowCorePaneTypography = await measurePaneTypography(corePaneTypography);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await frames();
+    const desktopCorePaneTypography = await measurePaneTypography(corePaneTypography);
+    await page.setViewportSize({ width: 2560, height: 1440 });
+    await frames();
+    const largeCorePaneTypography = await measurePaneTypography(corePaneTypography);
+    assertResponsiveTypography(narrowCorePaneTypography, desktopCorePaneTypography, largeCorePaneTypography, 'Pane Style core typography');
     await page.setViewportSize({ width: 1440, height: 900 });
     for (let index = 0; index < 6; index++) await paneLocations.nth(index % 2).click();
     const managedPaneWindows = page.locator('.pane-window');
@@ -643,6 +676,26 @@ try {
     await page.locator('.account').click();
     const styleSettings = page.getByRole('button', { name: 'Style settings', exact: true });
     await styleSettings.click();
+    const accountPaneTypography = [
+        ['accountSummary', '.pane-account-menu .account-summary strong'],
+        ['accountSummaryMeta', '.pane-account-menu .account-summary span'],
+        ['styleButton', '.pane-account-menu .style-settings-trigger'],
+        ['styleHeading', '.pane-account-style h2'],
+        ['styleDescription', '.pane-account-style p'],
+        ['styleLabel', '.pane-account-style label'],
+        ['styleSelect', '.pane-account-style select']
+    ];
+    await page.setViewportSize({ width: 390, height: 844 });
+    await frames();
+    const narrowAccountPaneTypography = await measurePaneTypography(accountPaneTypography);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await frames();
+    const desktopAccountPaneTypography = await measurePaneTypography(accountPaneTypography);
+    await page.setViewportSize({ width: 2560, height: 1440 });
+    await frames();
+    const largeAccountPaneTypography = await measurePaneTypography(accountPaneTypography);
+    assertResponsiveTypography(narrowAccountPaneTypography, desktopAccountPaneTypography, largeAccountPaneTypography, 'Pane Style Account Panel typography');
+    await page.setViewportSize({ width: 1440, height: 900 });
     assert.equal(await page.locator('.pane-account-menu').count(), 1, 'Account Panel stays open when Style settings expands');
     assert.equal(await styleSettings.getAttribute('aria-expanded'), 'true');
     await styleSettings.click();
@@ -663,6 +716,26 @@ try {
     await backgroundInput.setInputFiles({ name: 'background.png', mimeType: 'image/png', buffer: backgroundFixture });
     await page.locator('[data-background-editor]').waitFor();
     await page.locator('.pane-account-menu').waitFor({ state: 'detached' });
+    const backgroundEditorTypography = [
+        ['eyebrow', '.pane-background-eyebrow'],
+        ['imageName', '.pane-background-editor-header strong'],
+        ['metadata', '.pane-background-meta'],
+        ['sectionLabel', '.pane-background-label'],
+        ['placementControl', '.pane-background-position-controls button'],
+        ['scaleOutput', '.pane-background-scale-controls output'],
+        ['editorAction', '.pane-background-editor-actions button']
+    ];
+    await page.setViewportSize({ width: 390, height: 844 });
+    await frames();
+    const narrowBackgroundEditorTypography = await measurePaneTypography(backgroundEditorTypography);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await frames();
+    const desktopBackgroundEditorTypography = await measurePaneTypography(backgroundEditorTypography);
+    await page.setViewportSize({ width: 2560, height: 1440 });
+    await frames();
+    const largeBackgroundEditorTypography = await measurePaneTypography(backgroundEditorTypography);
+    assertResponsiveTypography(narrowBackgroundEditorTypography, desktopBackgroundEditorTypography, largeBackgroundEditorTypography, 'Pane Style Background editor typography');
+    await page.setViewportSize({ width: 1440, height: 900 });
     const backgroundLayer = page.locator('.pane-custom-background');
     const initialBackground = await page.locator('.pane-explorer').evaluate((root) => {
         const layer = root.querySelector('.pane-custom-background');
@@ -717,26 +790,18 @@ try {
     assert.equal(await page.locator('.pane-explorer').evaluate((root) => root.style.getPropertyValue('--pane-background-image').trim()), existingImage, 'oversized image does not replace the current background');
     await page.getByRole('button', { name: 'Move background right' }).click();
     await page.getByRole('button', { name: 'Expand background' }).click();
-    await page.waitForFunction(() => new Promise((resolve) => {
-        const request = indexedDB.open('filetransfer-ui-pane-background', 1);
-        request.onerror = () => resolve(false);
-        request.onsuccess = () => {
-            const database = request.result;
-            const get = database.transaction('backgrounds', 'readonly').objectStore('backgrounds').get('current');
-            get.onerror = () => { database.close(); resolve(false); };
-            get.onsuccess = () => {
-                const record = get.result;
-                database.close();
-                resolve(record?.scale === 1.1 && record?.position?.x === 60);
-            };
-        };
-    }), undefined, { timeout: 5000 });
     await page.setViewportSize({ width: 390, height: 844 });
     await frames();
     const editorGeometry = await page.locator('[data-background-editor]').boundingBox();
     assert.ok(editorGeometry.x >= 0 && editorGeometry.x + editorGeometry.width <= 390, `background editor stays inside the narrow viewport: ${JSON.stringify(editorGeometry)}`);
     const viewportOverflow = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth, bodyScrollWidth: document.body.scrollWidth }));
     assert.equal(viewportOverflow.scrollWidth <= viewportOverflow.viewportWidth, true, `background editor does not create horizontal overflow: ${JSON.stringify(viewportOverflow)}`);
+    const saveResponse = page.waitForResponse(response => response.url().endsWith('/api/user/background') && response.request().method() === 'PUT');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    assert.equal((await saveResponse).status(), 200, 'Save writes the background to the backend');
+    await page.locator('[data-background-editor]').waitFor({ state: 'detached' });
+    await page.getByRole('status').filter({ hasText: 'Background placement saved.' }).waitFor();
+    assert.equal(requests.findLast(request => request.path === '/api/user/background' && request.method === 'PUT').body.position.x, 60, 'Save writes the current background position to the backend');
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.reload();
     await page.locator('.pane-location-list button').first().waitFor();
@@ -750,6 +815,29 @@ try {
     assert.equal(restoredBackground.scale, '1.1');
     assert.equal(restoredBackground.position, '60% 50%');
     assert.equal(await page.locator('[data-background-editor]').count(), 0, 'restored background does not force the editor open');
+    await context.addCookies([{ name: 'fixtureUserB', value: '1', url: origin }]);
+    await page.reload();
+    await page.locator('.pane-location-list button').first().waitFor();
+    assert.equal(await page.locator('.pane-custom-background').count(), 0, 'a second user does not inherit the first user background');
+    await page.locator('.account').click();
+    await page.getByRole('button', { name: 'Style settings', exact: true }).click();
+    await backgroundInput.setInputFiles({ name: 'background-b.png', mimeType: 'image/png', buffer: backgroundFixture });
+    await page.locator('[data-background-editor]').waitFor();
+    const userBSaveResponse = page.waitForResponse(response => response.url().endsWith('/api/user/background') && response.request().method() === 'PUT');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    assert.equal((await userBSaveResponse).status(), 200);
+    await page.locator('[data-background-editor]').waitFor({ state: 'detached' });
+    await page.getByRole('status').filter({ hasText: 'Background placement saved.' }).waitFor();
+    await context.addCookies([{ name: 'fixtureUserB', value: '0', url: origin }]);
+    await page.reload();
+    await page.locator('.pane-location-list button').first().waitFor();
+    await page.locator('.pane-custom-background').waitFor();
+    const userARestoredAfterSwitch = await page.locator('.pane-explorer').evaluate((root) => ({
+        scale: root.style.getPropertyValue('--pane-background-scale').trim(),
+        position: root.style.getPropertyValue('--pane-background-position').trim()
+    }));
+    assert.equal(userARestoredAfterSwitch.scale, '1.1', 'switching users preserves User A background scale');
+    assert.equal(userARestoredAfterSwitch.position, '60% 50%', 'switching users preserves User A background position');
     await page.locator('.account').click();
     await page.getByRole('button', { name: 'Style settings', exact: true }).click();
     await page.locator('.pane-background-edit-button').click();
@@ -757,7 +845,7 @@ try {
     await page.getByRole('button', { name: 'Remove image', exact: true }).click();
     await page.locator('[data-background-editor]').waitFor({ state: 'detached' });
     assert.equal(await backgroundLayer.count(), 0, 'removing the image restores the default background layer');
-    report.checks.push('background editor appears only after a valid image, applies blob imagery, moves and scales the real layer, enforces 5 MiB, and remains responsive');
+    report.checks.push('background editor appears only after a valid image, applies backend user-scoped blob imagery, isolates User A/User B, moves and scales the real layer, explicitly saves placement, enforces 5 MiB, and remains responsive');
 
     for (const role of ['admin', 'superuser']) {
         const privateContext = await browser.newContext();

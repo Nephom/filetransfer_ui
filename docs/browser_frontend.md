@@ -14,6 +14,8 @@ Pane windows keep their own Location, path, files, search query, selection, capt
 
 The Pane Style Account Panel keeps its menu mounted while Style settings are expanded or collapsed. Clicks inside the menu are excluded from the outside-click handler, while clicks outside the menu still close it.
 
+Pane Style custom backgrounds are user-owned backend data. `GET /api/user/background`, `PUT /api/user/background`, and `DELETE /api/user/background` authenticate the request and scope the SQLite record to `req.user.id`; the image Blob, MIME type, dimensions, scale, and position are stored in `user_pane_backgrounds`. The browser reloads the same user's background on every device that uses the account. The old browser-local `filetransfer-ui-pane-background` IndexedDB database is deleted by the new client and is not migrated.
+
 ## Build And Startup
 
 ```sh

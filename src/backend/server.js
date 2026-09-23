@@ -19,6 +19,7 @@ const userManager = require('./auth/user-manager');
 const RoleManager = require('./auth/role-manager');
 const UploadAPI = require('./api/upload.js');
 const shareRoutes = require('./api/share');
+const backgroundRoutes = require('./api/background');
 const sslRoutes = require('./api/ssl');
 const database = require('./database/db');
 const shareManager = require('./auth/share-manager');
@@ -372,6 +373,7 @@ const configureLocationRuntime = async () => {
 // Share routes - /api/share/:token/download does NOT require authentication
 // Other share routes require authentication via middleware
 app.use('/api', shareRoutes);
+app.use('/api', backgroundRoutes);
 
 // SSL management routes (admin only)
 app.use('/api', sslRoutes);

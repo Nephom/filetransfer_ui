@@ -1,51 +1,71 @@
-const DATABASE_NAME = 'filetransfer-ui-pane-background';
-const DATABASE_VERSION = 1;
-const STORE_NAME = 'backgrounds';
-const RECORD_KEY = 'current';
+const LEGACY_DATABASE_NAME = 'filetransfer-ui-pane-background';
 
-const storageSupported = () => typeof indexedDB !== 'undefined';
-
-const openDatabase = () => new Promise((resolve, reject) => {
-    if (!storageSupported()) return resolve(null);
-    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
-    request.onupgradeneeded = () => {
-        if (!request.result.objectStoreNames.contains(STORE_NAME)) request.result.createObjectStore(STORE_NAME);
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('Unable to open background storage.'));
+export const clearLegacyPaneBackgroundStorage = () => new Promise((resolve) => {
+    if (typeof indexedDB === 'undefined') return resolve(false);
+    const request = indexedDB.deleteDatabase(LEGACY_DATABASE_NAME);
+    request.onsuccess = () => resolve(true);
+    request.onerror = () => resolve(false);
+    request.onblocked = () => resolve(false);
 });
 
-export const loadPaneBackground = async () => {
-    const database = await openDatabase();
-    if (!database) return null;
-    return new Promise((resolve, reject) => {
-        const transaction = database.transaction(STORE_NAME, 'readonly');
-        const request = transaction.objectStore(STORE_NAME).get(RECORD_KEY);
-        request.onsuccess = () => { database.close(); resolve(request.result || null); };
-        request.onerror = () => { database.close(); reject(request.error || new Error('Unable to read background storage.')); };
-    });
+const headersFor = (token) => ({
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    'Content-Type': 'application/json'
+});
+
+const base64ToBlob = (data, mimeType) => {
+    const binary = atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return new Blob([bytes], { type: mimeType });
 };
 
-export const savePaneBackground = async (record) => {
-    const database = await openDatabase();
-    if (!database) return false;
-    return new Promise((resolve, reject) => {
-        const transaction = database.transaction(STORE_NAME, 'readwrite');
-        transaction.objectStore(STORE_NAME).put(record, RECORD_KEY);
-        transaction.oncomplete = () => { database.close(); resolve(true); };
-        transaction.onerror = () => { database.close(); reject(transaction.error || new Error('Unable to save background storage.')); };
-        transaction.onabort = () => { database.close(); reject(transaction.error || new Error('Unable to save background storage.')); };
-    });
+const blobToBase64 = (blob) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',', 2)[1] || '');
+    reader.onerror = () => reject(reader.error || new Error('Unable to read background image.'));
+    reader.readAsDataURL(blob);
+});
+
+export const loadPaneBackground = async (token) => {
+    const response = await fetch('/api/user/background', { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+    if (!response.ok) throw new Error('Unable to load background image.');
+    const { background } = await response.json();
+    if (!background?.data || !background.mimeType) return null;
+    return {
+        blob: base64ToBlob(background.data, background.mimeType),
+        name: background.name,
+        width: background.width,
+        height: background.height,
+        size: background.size,
+        scale: background.scale,
+        position: background.position
+    };
 };
 
-export const deletePaneBackground = async () => {
-    const database = await openDatabase();
-    if (!database) return false;
-    return new Promise((resolve, reject) => {
-        const transaction = database.transaction(STORE_NAME, 'readwrite');
-        transaction.objectStore(STORE_NAME).delete(RECORD_KEY);
-        transaction.oncomplete = () => { database.close(); resolve(true); };
-        transaction.onerror = () => { database.close(); reject(transaction.error || new Error('Unable to clear background storage.')); };
-        transaction.onabort = () => { database.close(); reject(transaction.error || new Error('Unable to clear background storage.')); };
+export const savePaneBackground = async (record, token) => {
+    const response = await fetch('/api/user/background', {
+        method: 'PUT',
+        headers: headersFor(token),
+        body: JSON.stringify({
+            data: await blobToBase64(record.blob),
+            mimeType: record.blob.type,
+            name: record.name,
+            width: record.width,
+            height: record.height,
+            scale: record.scale,
+            position: record.position
+        })
     });
+    if (!response.ok) throw new Error('Unable to save background image.');
+    return true;
+};
+
+export const deletePaneBackground = async (token) => {
+    const response = await fetch('/api/user/background', {
+        method: 'DELETE',
+        headers: headersFor(token)
+    });
+    if (!response.ok) throw new Error('Unable to remove background image.');
+    return true;
 };

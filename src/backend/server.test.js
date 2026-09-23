@@ -126,7 +126,21 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
   mock('./file-system', { EnhancedMemoryFileSystem: FixtureFileSystem });
   mock('./api/upload', FixtureUploadAPI);
   mock('../../scripts/build-browser', { publicDirectory, checkBrowserBuild: (...args) => buildCheck(...args) });
-  const database = { initialize: forbidden('database.initialize'), close: forbidden('database.close') };
+  const backgroundRows = new Map();
+  const database = {
+    initialize: forbidden('database.initialize'),
+    close: forbidden('database.close'),
+    async get(sql, [userId]) { return sql.includes('user_pane_backgrounds') ? backgroundRows.get(String(userId)) : undefined; },
+    async run(sql, params = []) {
+      if (sql.includes('INSERT OR REPLACE INTO user_pane_backgrounds')) {
+        const [userId, image, mimeType, name, width, height, size, scale, positionX, positionY, updatedAt] = params;
+        backgroundRows.set(String(userId), { image, mimeType, name, width, height, size, scale, positionX, positionY, updatedAt });
+        return { changes: 1 };
+      }
+      if (sql.includes('DELETE FROM user_pane_backgrounds')) return { changes: backgroundRows.delete(String(params[0])) ? 1 : 0 };
+      return { changes: 0 };
+    }
+  };
   const pidManager = { acquireLock: forbidden('pid.acquireLock'), releaseLock: forbidden('pid.releaseLock') };
   mock('./database/db', database);
   mock('./utils/pid-manager', pidManager);
@@ -180,6 +194,7 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     ].map(([name, user]) => [name, { ...user, locationPermissions: { default: ['all'], alias: ['all'], other: ['all'] } }]));
     saves = 0;
     saveHook = null;
+    backgroundRows.clear();
     if (app) {
       await app.locals.configureLocationRuntime();
       await app.locals.refreshSecurity();
@@ -316,6 +331,38 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     status(await send('/api/admin/config', { headers: { authorization: `Bearer ${token('fixture-user', { role: 'admin' })}` } }), 403);
     status(await send('/auth/verify', { method: 'POST', headers: { authorization: `Bearer ${token('fixture-admin', { id: '0' })}` } }), 401);
     assert.equal(saves, 0);
+  });
+
+  await t.test('user backgrounds are authenticated, isolated by user ID, and removable without cross-user access', async () => {
+    await fixture();
+    const userLogin = await send('/auth/login', { username: null, method: 'POST', body: { username: 'fixture-user', password } });
+    const staffLogin = await send('/auth/login', { username: null, method: 'POST', body: { username: 'fixture-staff', password } });
+    const userCookie = userLogin.headers['set-cookie'][0].split(';')[0];
+    const staffCookie = staffLogin.headers['set-cookie'][0].split(';')[0];
+    const background = {
+      data: Buffer.from('fixture-image').toString('base64'),
+      mimeType: 'image/png',
+      name: 'user-a.png',
+      width: 640,
+      height: 480,
+      scale: 1.1,
+      position: { x: 60, y: 50 }
+    };
+    status(await send('/api/user/background', { username: null, method: 'PUT', headers: { cookie: userCookie }, body: { ...background, mimeType: 'text/plain' } }), 400);
+    status(await send('/api/user/background', { username: null, method: 'PUT', headers: { cookie: userCookie }, body: background }), 200);
+    const own = await send('/api/user/background', { username: null, headers: { cookie: userCookie } });
+    status(own, 200);
+    assert.equal(own.body.background.name, 'user-a.png');
+    assert.equal(own.body.background.size, Buffer.from('fixture-image').length);
+    assert.deepEqual(own.body.background.position, { x: 60, y: 50 });
+    const other = await send('/api/user/background', { username: null, headers: { cookie: staffCookie } });
+    status(other, 200);
+    assert.equal(other.body.background, null);
+    const otherDelete = await send('/api/user/background', { username: null, method: 'DELETE', headers: { cookie: staffCookie } });
+    status(otherDelete, 200);
+    assert.equal(otherDelete.body.deleted, false);
+    assert.equal((await send('/api/user/background', { username: null, headers: { cookie: userCookie } })).body.background.name, 'user-a.png');
+    status(await send('/api/user/background', { username: null }), 401);
   });
 
   await t.test('E05 performance Dashboard is staff-only and returns a low-cost snapshot', async () => {

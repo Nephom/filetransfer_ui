@@ -40,6 +40,27 @@ const MIGRATIONS = [
       await db.run('CREATE INDEX IF NOT EXISTS idx_expires_active ON share_links(expiresAt, isActive)');
       await db.run('CREATE INDEX IF NOT EXISTS idx_share_location ON share_links(locationId)');
     }
+  },
+  {
+    id: '004-create-user-pane-backgrounds',
+    description: 'Create user-owned Pane Style background image storage.',
+    async up(db) {
+      await db.run(`
+        CREATE TABLE IF NOT EXISTS user_pane_backgrounds (
+          userId TEXT PRIMARY KEY,
+          image BLOB NOT NULL,
+          mimeType TEXT NOT NULL,
+          name TEXT NOT NULL,
+          width INTEGER NOT NULL,
+          height INTEGER NOT NULL,
+          size INTEGER NOT NULL,
+          scale REAL NOT NULL,
+          positionX REAL NOT NULL,
+          positionY REAL NOT NULL,
+          updatedAt INTEGER NOT NULL
+        )
+      `);
+    }
   }
 ];
 
