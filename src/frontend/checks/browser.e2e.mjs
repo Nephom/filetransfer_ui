@@ -714,12 +714,45 @@ try {
     await backgroundInput.setInputFiles({ name: 'too-large.jpg', mimeType: 'image/jpeg', buffer: Buffer.alloc(5 * 1024 * 1024 + 1) });
     await page.waitForFunction(() => document.querySelector('.pane-toast')?.textContent.includes('5MB'));
     assert.equal(await page.locator('.pane-explorer').evaluate((root) => root.style.getPropertyValue('--pane-background-image').trim()), existingImage, 'oversized image does not replace the current background');
+    await page.getByRole('button', { name: 'Move background right' }).click();
+    await page.getByRole('button', { name: 'Expand background' }).click();
+    await page.waitForFunction(() => new Promise((resolve) => {
+        const request = indexedDB.open('filetransfer-ui-pane-background', 1);
+        request.onerror = () => resolve(false);
+        request.onsuccess = () => {
+            const database = request.result;
+            const get = database.transaction('backgrounds', 'readonly').objectStore('backgrounds').get('current');
+            get.onerror = () => { database.close(); resolve(false); };
+            get.onsuccess = () => {
+                const record = get.result;
+                database.close();
+                resolve(record?.scale === 1.1 && record?.position?.x === 60);
+            };
+        };
+    }), undefined, { timeout: 5000 });
     await page.setViewportSize({ width: 390, height: 844 });
     await frames();
     const editorGeometry = await page.locator('[data-background-editor]').boundingBox();
     assert.ok(editorGeometry.x >= 0 && editorGeometry.x + editorGeometry.width <= 390, `background editor stays inside the narrow viewport: ${JSON.stringify(editorGeometry)}`);
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'background editor does not create horizontal overflow');
+    const viewportOverflow = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth, bodyScrollWidth: document.body.scrollWidth }));
+    assert.equal(viewportOverflow.scrollWidth <= viewportOverflow.viewportWidth, true, `background editor does not create horizontal overflow: ${JSON.stringify(viewportOverflow)}`);
     await page.setViewportSize({ width: 1440, height: 900 });
+    await page.reload();
+    await page.locator('.pane-location-list button').first().waitFor();
+    await page.locator('.pane-custom-background').waitFor();
+    const restoredBackground = await page.locator('.pane-explorer').evaluate((root) => ({
+        image: root.style.getPropertyValue('--pane-background-image').trim(),
+        scale: root.style.getPropertyValue('--pane-background-scale').trim(),
+        position: root.style.getPropertyValue('--pane-background-position').trim()
+    }));
+    assert.match(restoredBackground.image, /blob:/, 'stored background image is restored after reload');
+    assert.equal(restoredBackground.scale, '1.1');
+    assert.equal(restoredBackground.position, '60% 50%');
+    assert.equal(await page.locator('[data-background-editor]').count(), 0, 'restored background does not force the editor open');
+    await page.locator('.account').click();
+    await page.getByRole('button', { name: 'Style settings', exact: true }).click();
+    await page.locator('.pane-background-edit-button').click();
+    await page.locator('[data-background-editor]').waitFor();
     await page.getByRole('button', { name: 'Remove image', exact: true }).click();
     await page.locator('[data-background-editor]').waitFor({ state: 'detached' });
     assert.equal(await backgroundLayer.count(), 0, 'removing the image restores the default background layer');

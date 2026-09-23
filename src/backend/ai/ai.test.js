@@ -10,6 +10,16 @@ const { DEFAULT_SYSTEM_PROMPT, analysisContext } = require('./prompt');
 const { AnalysisQueue } = require('./analysis-queue');
 const { chunkOptions, contextInputBudget, groupByTokenBudget } = require('./analysis-job');
 
+const waitFor = (predicate, message) => new Promise((resolve, reject) => {
+  const deadline = Date.now() + 2000;
+  const check = () => {
+    if (predicate()) return resolve();
+    if (Date.now() >= deadline) return reject(new Error(message));
+    setTimeout(check, 10);
+  };
+  check();
+});
+
 test('keeps the fixed prompt neutral for complete and partial logs', () => {
   assert.match(DEFAULT_SYSTEM_PROMPT, /完整檔案/);
   assert.match(analysisContext({ source: 'x.log', complete: true }), /完整檔案：是/);
@@ -75,7 +85,7 @@ test('runs AI jobs in FIFO order with one active worker', async () => {
     maximumActive = Math.max(maximumActive, active);
     return run(name);
   }}));
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => order.length === 3, `AI queue did not complete all jobs: ${order.length}/3`);
   assert.deepEqual(order, ['first', 'second', 'third']);
   assert.equal(maximumActive, 1);
   assert.equal(queue.get(jobs[2].jobId, 'tester').status, 'complete');
@@ -95,7 +105,7 @@ test('cancels queued and running AI jobs and rejects a full queue', async () => 
   assert.equal(queue.cancel(queued.jobId, 'tester').status, 'cancelled');
   assert.equal(queue.get(queued.jobId, 'tester').status, 'cancelled');
   assert.equal(queue.cancel(running.jobId, 'tester').status, 'cancelling');
-  await new Promise((resolve) => setTimeout(resolve, 80));
+  await waitFor(() => queue.get(running.jobId, 'tester').status === 'cancelled', 'running AI job did not settle as cancelled');
   assert.equal(queue.get(running.jobId, 'tester').status, 'cancelled');
   release?.();
   queue.close();

@@ -97,6 +97,14 @@ test('shell entrypoints parse and check browser assets before restart kill', () 
     assert.doesNotMatch(restart, /npm run build:browser/);
 });
 
+test('upgrade backend test gate excludes fileapi_ui desktop checks', () => {
+    const root = path.resolve(__dirname, '../../..');
+    const build = fs.readFileSync(path.join(root, 'build.sh'), 'utf8');
+    assert.match(build, /find "\$ROOT_DIR\/src" -type f -name '\*\.test\.js'/);
+    assert.match(build, /desktop checks under fileapi_ui\/checks out of this gate/);
+    assert.doesNotMatch(build, /find "\$ROOT_DIR\/fileapi_ui"/);
+});
+
 test('failed compilation leaves the prior browser build ready', async () => {
     const previous = checkBrowserBuild();
     const load = Module._load;

@@ -1,6 +1,7 @@
 import React from 'react';
 import PaneFileWindow from './PaneFileWindow.js';
 import PaneTools from './PaneTools.js';
+import { deletePaneBackground, loadPaneBackground, savePaneBackground } from './pane-background-storage.js';
 import { normalisePanePath, paneHeaders, paneItemKey, paneViewModeKey } from './pane-workspace-utils.js';
 
 const BACKGROUND_MAX_FILE_SIZE = 5 * 1024 * 1024;
@@ -11,6 +12,9 @@ const BACKGROUND_POSITION_STEP = 10;
 const clamp = (value, minimum, maximum) => Math.min(Math.max(value, minimum), maximum);
 const roundScale = (value) => Math.round(value * 100) / 100;
 const centeredBackgroundPosition = () => ({ x: 50, y: 50 });
+const normaliseBackgroundCoordinate = (value) => { const numeric = Number(value); return Number.isFinite(numeric) ? numeric : 50; };
+const normaliseBackgroundPosition = (position) => ({ x: clamp(normaliseBackgroundCoordinate(position?.x), 0, 100), y: clamp(normaliseBackgroundCoordinate(position?.y), 0, 100) });
+const normaliseBackgroundScale = (scale) => clamp(roundScale(Number(scale) || 1), BACKGROUND_MIN_SCALE, BACKGROUND_MAX_SCALE);
 
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
@@ -25,6 +29,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
     const [backgroundEditorOpen, setBackgroundEditorOpen] = React.useState(false);
     const [backgroundScale, setBackgroundScale] = React.useState(1);
     const [backgroundPosition, setBackgroundPosition] = React.useState(centeredBackgroundPosition());
+    const [backgroundStorageReady, setBackgroundStorageReady] = React.useState(false);
     const [nextId, setNextId] = React.useState(1);
     const [toast, setToast] = React.useState('');
     const [clipboard, setClipboard] = React.useState(null);
@@ -33,6 +38,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
     const backgroundInput = React.useRef(null);
     const backgroundLoadRef = React.useRef(0);
     const pendingBackgroundUrlRef = React.useRef('');
+    const backgroundPersistenceRef = React.useRef(Promise.resolve());
     const windowsRef = React.useRef(windows);
     windowsRef.current = windows;
     const activeWindow = windows.find((pane) => pane.id === activeId && !pane.minimized);
@@ -161,6 +167,60 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
     }, [windows, activeId]);
     React.useEffect(() => { if (!accountOpen) setStyleSettingsOpen(false); }, [accountOpen]);
     React.useEffect(() => { localStorage.setItem('pane-background-theme', theme); }, [theme]);
+    React.useEffect(() => {
+        let active = true;
+        let restoredUrl = '';
+        const loadId = backgroundLoadRef.current;
+        loadPaneBackground().then((record) => {
+            if (!active) return;
+            if (!record?.blob || !(record.blob instanceof Blob)) {
+                setBackgroundStorageReady(true);
+                return;
+            }
+            restoredUrl = URL.createObjectURL(record.blob);
+            const image = new Image();
+            image.onload = () => {
+                if (!active || loadId !== backgroundLoadRef.current) {
+                    URL.revokeObjectURL(restoredUrl);
+                    restoredUrl = '';
+                    if (active) setBackgroundStorageReady(true);
+                    return;
+                }
+                setCustomBackground({ url: restoredUrl, blob: record.blob, name: record.name || 'Background image', width: image.naturalWidth, height: image.naturalHeight, size: record.size || record.blob.size });
+                setBackgroundScale(normaliseBackgroundScale(record.scale));
+                setBackgroundPosition(normaliseBackgroundPosition(record.position));
+                setBackgroundStorageReady(true);
+            };
+            image.onerror = () => {
+                URL.revokeObjectURL(restoredUrl);
+                restoredUrl = '';
+                setBackgroundStorageReady(true);
+            };
+            image.src = restoredUrl;
+        }).catch(() => {
+            if (active) setBackgroundStorageReady(true);
+        });
+        return () => {
+            active = false;
+            if (restoredUrl) URL.revokeObjectURL(restoredUrl);
+        };
+    }, []);
+    React.useEffect(() => {
+        if (!backgroundStorageReady || !customBackground?.blob) return;
+        const record = {
+            blob: customBackground.blob,
+            name: customBackground.name,
+            width: customBackground.width,
+            height: customBackground.height,
+            size: customBackground.size,
+            scale: backgroundScale,
+            position: backgroundPosition
+        };
+        backgroundPersistenceRef.current = backgroundPersistenceRef.current
+            .catch(() => {})
+            .then(() => savePaneBackground(record))
+            .catch(() => {});
+    }, [backgroundStorageReady, customBackground, backgroundScale, backgroundPosition]);
     React.useEffect(() => () => {
         if (customBackground?.url) URL.revokeObjectURL(customBackground.url);
         if (pendingBackgroundUrlRef.current) URL.revokeObjectURL(pendingBackgroundUrlRef.current);
@@ -182,7 +242,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
                 return;
             }
             pendingBackgroundUrlRef.current = '';
-            setCustomBackground({ url: objectUrl, name: file.name, width: image.naturalWidth, height: image.naturalHeight, size: file.size });
+            setCustomBackground({ url: objectUrl, blob: file, name: file.name, width: image.naturalWidth, height: image.naturalHeight, size: file.size });
             setBackgroundScale(1);
             setBackgroundPosition(centeredBackgroundPosition());
             setBackgroundEditorOpen(true);
@@ -212,6 +272,10 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
         setCustomBackground(null);
         setBackgroundEditorOpen(false);
         resetBackgroundPlacement();
+        backgroundPersistenceRef.current = backgroundPersistenceRef.current
+            .catch(() => {})
+            .then(() => deletePaneBackground())
+            .catch(() => {});
         announce('Using the default background.');
     };
     const backgroundStyle = customBackground ? {
