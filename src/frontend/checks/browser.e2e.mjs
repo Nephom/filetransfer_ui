@@ -626,8 +626,12 @@ try {
     const dockBox = await page.locator('.pane-minimized-dock').boundingBox();
     assert.ok(dockBox.x < 1440 / 2 && dockBox.y > 0, 'minimized dock stays at the lower left');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'minimized dock does not create horizontal overflow');
+    const dockSurface = await page.locator('.pane-minimized-dock').evaluate((dock) => { const style = getComputedStyle(dock); return { borders: [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth], background: style.backgroundColor, shadow: style.boxShadow }; });
+    assert.deepEqual(dockSurface, { borders: ['0px', '0px', '0px', '0px'], background: 'rgba(0, 0, 0, 0)', shadow: 'none' }, 'minimized dock has no outer frame');
     const managedPaneId = await managedPane.getAttribute('data-window-id');
     const managedDockItem = page.locator(`.pane-minimized-item[data-window-id="${managedPaneId}"]`);
+    const restoreButton = managedDockItem.locator('.pane-minimized-restore');
+    assert.equal(await restoreButton.getAttribute('title'), '點擊還原', 'restore button has a native tooltip');
     await managedDockItem.locator('.pane-minimized-restore').click();
     await managedPane.waitFor({ state: 'visible' });
     assert.equal(await managedPane.locator('.pane-window-navigation input').inputValue(), 'preserved-query', 'restore preserves pane state');
