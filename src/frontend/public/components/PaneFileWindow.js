@@ -1,7 +1,7 @@
 import React from 'react';
 import { formatPaneSize, paneItemKey } from './pane-workspace-utils.js';
 
-export default function PaneFileWindow({ window: pane, location, active, selectedItems, onFocus, onClose, onAction, onModeChange, onQueryChange, onLoadFiles, onChoose, onDrop, onMove }) {
+export default function PaneFileWindow({ window: pane, location, active, selectedItems, onFocus, onClose, onAction, onModeChange, onQueryChange, onLoadFiles, onChoose, onDrop, onMove, onContextMenu }) {
     const run = (action) => { void onAction(pane.id, action); };
     const dragRef = React.useRef(null);
     const onTitlePointerDown = (event) => {
@@ -32,19 +32,12 @@ export default function PaneFileWindow({ window: pane, location, active, selecte
         dragRef.current = null;
     };
     React.useEffect(() => () => { dragRef.current = null; }, []);
-    return <article className={`pane-window ${active ? 'is-active' : ''}`} style={{ zIndex: pane.z, ...(pane.position ? { left: `${pane.position.left}px`, top: `${pane.position.top}px` } : {}) }} onPointerDown={() => onFocus(pane.id)} onContextMenu={(event) => event.preventDefault()}>
+    return <article className={`pane-window ${active ? 'is-active' : ''}`} style={{ zIndex: pane.z, ...(pane.position ? { left: `${pane.position.left}px`, top: `${pane.position.top}px` } : {}) }} onPointerDown={() => onFocus(pane.id)} onContextMenu={(event) => onContextMenu(event, pane.id)}>
         <header className="pane-window-titlebar" onPointerDown={onTitlePointerDown} onPointerMove={onTitlePointerMove} onPointerUp={onTitlePointerUp}>
             <div><span className="folder-icon" aria-hidden="true">▰</span><strong>{location?.displayName || pane.locationId}</strong><small>{active ? 'ACTIVE' : 'Remote API'}</small></div>
             <button type="button" onClick={() => onClose(pane.id)} aria-label="Close window">×</button>
         </header>
-        <div className="pane-window-toolbar">
-            <button type="button" onClick={() => run('refresh')}>Refresh</button>
-            <button type="button" onClick={() => run('upload')} disabled={!active}>Upload</button>
-            <button type="button" onClick={() => run('new-folder')}>New Folder</button>
-            <button type="button" aria-label="Pane Download" onClick={() => run('download')} disabled={!selectedItems.length}>Download</button>
-            <button type="button" onClick={() => run('delete')} disabled={!selectedItems.length}>Delete</button>
-            <span className="pane-view-switch"><button type="button" className={pane.mode === 'details' ? 'active' : ''} onClick={() => onModeChange(pane.id, 'details')}>Details</button><button type="button" className={pane.mode === 'grid' ? 'active' : ''} onClick={() => onModeChange(pane.id, 'grid')}>Grid</button></span>
-        </div>
+        <div className="pane-window-toolbar"><span className="pane-view-switch"><button type="button" className={pane.mode === 'details' ? 'active' : ''} onClick={() => onModeChange(pane.id, 'details')}>Details</button><button type="button" className={pane.mode === 'grid' ? 'active' : ''} onClick={() => onModeChange(pane.id, 'grid')}>Grid</button></span></div>
         <div className="pane-window-navigation"><button type="button" onClick={() => onLoadFiles(pane.id, pane.path.split('/').slice(0, -1).join('/'))} disabled={!pane.path}>↑</button><span>/{pane.path}</span><input value={pane.query} placeholder="Search this directory" onChange={(event) => onQueryChange(pane.id, event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') onLoadFiles(pane.id, pane.path, pane.query.trim()); if (event.key === 'Escape') onLoadFiles(pane.id, pane.path); }} /></div>
         {pane.error && <div className="pane-error" role="alert">{pane.error}</div>}
         <div className={`pane-files ${pane.mode}`} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; }} onDrop={(event) => onDrop(event, pane.id)}>

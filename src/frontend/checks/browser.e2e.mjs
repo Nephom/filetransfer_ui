@@ -554,6 +554,17 @@ try {
     await paneLocations.nth(1).click(); await paneLocations.nth(1).click();
     await page.locator('.pane-window').nth(3).waitFor();
     const paneWindows = page.locator('.pane-window');
+    await paneLocations.nth(0).click({ button: 'right' });
+    assert.equal(await page.locator('.pane-context-menu').count(), 1);
+    assert.deepEqual(await page.locator('.pane-context-menu button').allTextContents(), ['Open new window']);
+    await page.locator('.pane-context-menu button').click();
+    await paneWindows.nth(4).waitFor();
+    await paneWindows.nth(4).locator('button[aria-label="Close window"]').click();
+    await paneWindows.nth(0).click({ button: 'right' });
+    assert.equal(await page.locator('.pane-context-menu button').count(), 9);
+    await page.locator('.pane-context-menu button').filter({ hasText: 'Refresh' }).click();
+    assert.equal(await page.locator('.pane-context-menu').count(), 0);
+    assert.ok(await page.locator('.pane-tool-grid button').first().isEnabled(), 'right-side tools are clickable with an active pane');
     const draggablePane = paneWindows.nth(3);
     const beforeDrag = await draggablePane.boundingBox();
     const titlebar = draggablePane.locator('.pane-window-titlebar');
