@@ -3041,6 +3041,55 @@ fn edit_local_file(path: String) -> Result<(), String> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalTerminalKind {
+    WindowsTerminal,
+    CommandPrompt,
+}
+
+fn parse_local_terminal_kind(kind: &str) -> Result<LocalTerminalKind, String> {
+    match kind {
+        "windowsTerminal" => Ok(LocalTerminalKind::WindowsTerminal),
+        "cmd" => Ok(LocalTerminalKind::CommandPrompt),
+        _ => Err(
+            "Unsupported local terminal. Choose Windows Terminal or Command Prompt.".to_string(),
+        ),
+    }
+}
+
+#[tauri::command]
+fn open_local_terminal(kind: String, path: String) -> Result<(), String> {
+    let kind = parse_local_terminal_kind(&kind)?;
+    let (_, directory) = resolve_local_read_path(&path)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = match kind {
+            LocalTerminalKind::WindowsTerminal => {
+                let mut command = std::process::Command::new("wt.exe");
+                command.arg("-d").arg(&directory);
+                command
+            }
+            LocalTerminalKind::CommandPrompt => {
+                let mut command = std::process::Command::new("cmd.exe");
+                command.arg("/K");
+                command
+            }
+        };
+        command
+            .current_dir(&directory)
+            .spawn()
+            .map(|_| ())
+            .map_err(|error| format!("Unable to start the local terminal: {error}"))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (kind, directory);
+        Err("Windows Terminal and Command Prompt are only available on Windows.".to_string())
+    }
+}
+
 #[tauri::command]
 fn operation_storage_info() -> Result<OperationStorageInfo, String> {
     let (history_path, log_path) = operation_paths()?;
@@ -4123,6 +4172,7 @@ fn main() {
             hash_upload_paths,
             api_upload_paths,
             open_local_file,
+            open_local_terminal,
             cancel_transfer,
             download_to_disk,
             download_to_disk_at,
@@ -4195,11 +4245,12 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize, dedupe_candidate_name, is_elevated, is_local_read_scope, is_within_home_or_elevated,
-        local_create_directory, local_delete_path, local_display_path, local_list_directory,
-        local_rename_path, local_roots, local_transfer_path, resolve_local_download_destination,
-        resolve_local_download_file, resolve_local_new_path, resolve_local_read_entry,
-        resolve_local_read_path, resolve_local_transfer_path, UploadProgressEvent,
+        canonicalize, dedupe_candidate_name, is_elevated, is_local_read_scope,
+        is_within_home_or_elevated, local_create_directory, local_delete_path, local_display_path,
+        local_list_directory, local_rename_path, local_roots, local_transfer_path,
+        parse_local_terminal_kind, resolve_local_download_destination, resolve_local_download_file,
+        resolve_local_new_path, resolve_local_read_entry, resolve_local_read_path,
+        resolve_local_transfer_path, LocalTerminalKind, UploadProgressEvent,
     };
     use std::fs;
     use std::sync::Mutex;
@@ -4209,6 +4260,20 @@ mod tests {
     // so they can't stomp on each other when cargo runs tests in parallel
     // threads (same pattern as oplog::tests::TEST_LOCK).
     static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn local_terminal_kind_is_restricted_to_the_two_supported_launchers() {
+        assert_eq!(
+            parse_local_terminal_kind("windowsTerminal"),
+            Ok(LocalTerminalKind::WindowsTerminal)
+        );
+        assert_eq!(
+            parse_local_terminal_kind("cmd"),
+            Ok(LocalTerminalKind::CommandPrompt)
+        );
+        assert!(parse_local_terminal_kind("powershell").is_err());
+        assert!(parse_local_terminal_kind("notepad.exe").is_err());
+    }
 
     fn with_temp_home<T>(run: impl FnOnce(&std::path::Path) -> T) -> T {
         let _lock = HOME_ENV_LOCK

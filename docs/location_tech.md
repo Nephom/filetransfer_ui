@@ -128,6 +128,25 @@ SSH profiles live inside managed Workspaces. A connected SSH terminal tab is als
 
 Switching away from an SSH browse source clears the source id and reloads the API Location. SSH transfers retain the profile id and use SFTP-native operations; they do not send `X-Location-ID`.
 
+### Local terminal launch cards
+
+The Terminal header keeps two small local-launch cards between the `Workspaces`
+button and the SSH tabs: Windows Terminal and Command Prompt. They are
+shortcuts, not Workspace Entries, so they do not enter `ManagedSession`, local
+storage, SSH password handling, or SSH tab lifecycle. Each card has an
+accessible label and a native `title` tip. The frontend sends only the fixed
+terminal kind and the current LOCAL pane path to `open_local_terminal`.
+
+Rust resolves the path with the same read-only LOCAL directory resolver used by
+the file browser. An empty path means HOME; `..`, missing directories, files,
+and paths outside the existing LOCAL read policy are rejected before process
+creation. On Windows, `windowsTerminal` starts `wt.exe -d <path>` and `cmd`
+starts `cmd.exe /K` with the resolved directory as its process working
+directory. No arbitrary executable or command string is accepted. Windows
+Terminal may open a new tab rather than a new window according to the user's
+Windows Terminal settings. Non-Windows builds return an explicit unsupported
+platform error.
+
 ### Terminal paste contract
 
 Each tab keeps its xterm instance through dock collapse and tab changes. Instance disposal is separate from cancellation of asynchronous creation. Pending clipboard reads also capture the active paste context, session ID, and connection-boundary token: switching away and back, reconnecting, closing, or collapsing cannot deliver an old clipboard result into a new context.
@@ -224,6 +243,7 @@ components and therefore apply wherever those components are rendered.
 |---|---|
 | Auth/API | `create_api_session`, `clear_api_session`, `api_request`, `rest_*_secret` |
 | LOCAL | `local_list_directory`, `local_list_directories`, `local_home_path`, `list_local_roots`, `is_local_elevated` |
+| Local terminal | `open_local_terminal` |
 | Upload/download | `pick_upload_files`, `pick_local_directory`, `inspect_upload_paths`, `api_upload_paths`, `download_to_disk`, `download_to_disk_at` |
 | SSH | `ssh_list_directory`, `ssh_upload_path`, `ssh_download_path`, drag-staging commands, SSH secret commands |
 | Logs/history | `read_operation_logs`, clear/read/write operation and undo commands |

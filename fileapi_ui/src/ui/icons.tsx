@@ -85,6 +85,25 @@ export function CollapseIcon({ size, className }: IconProps) {
   );
 }
 
+export function WindowsTerminalIcon({ size, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="2.25" y="2.5" width="11.5" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.35" />
+      <path d="M2.75 5.5H13.25" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M4.5 8L6.15 9.45L4.5 10.9M7.8 10.9H11.2" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function CommandPromptIcon({ size, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M3 4.25L7 8L3 11.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.5 11.5H13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 // Warning triangle for status badges (replaces the standalone "⚠" glyph).
 export function WarningIcon({ size, className }: IconProps) {
   return (
@@ -134,4 +153,3 @@ export function MoreIcon({ size, className }: IconProps) {
     </svg>
   );
 }
-

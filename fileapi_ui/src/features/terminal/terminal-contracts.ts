@@ -1,5 +1,7 @@
 import type { SshProfile } from "../ssh/ssh-contracts";
 
+export type LocalTerminalKind = "windowsTerminal" | "cmd";
+
 export type SshTerminalTab = {
   id: string;
   title: string;

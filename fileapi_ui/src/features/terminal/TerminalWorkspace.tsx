@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ChevronDownIcon, CloseIcon, CollapseIcon, ExpandIcon, ChevronUpIcon } from "../../ui/icons";
+import { ChevronDownIcon, CloseIcon, CollapseIcon, ExpandIcon, ChevronUpIcon, WindowsTerminalIcon, CommandPromptIcon } from "../../ui/icons";
 import { Dropdown } from "../../ui/Dropdown";
-import type { SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
+import type { LocalTerminalKind, SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
 
 type TerminalTab = SshTerminalTab;
 type TerminalWorkspaceGroup = TerminalWorkspaceSession;
@@ -25,6 +25,7 @@ type Props = {
   activeQueueCount: number;
   registerHostRef: (tabId: string, el: HTMLDivElement | null) => void;
   onToggleQuickList: () => void;
+  onOpenLocalTerminal: (kind: LocalTerminalKind) => void;
   onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
   onSelectTab: (tab: TerminalTab) => void;
   onCopySession: (tab: TerminalTab) => void;
@@ -67,6 +68,7 @@ export function TerminalWorkspace({
   activeQueueCount,
   registerHostRef,
   onToggleQuickList,
+  onOpenLocalTerminal,
   onResizeStart,
   onSelectTab,
   onCopySession,
@@ -119,6 +121,24 @@ export function TerminalWorkspace({
       <div className="terminal-tabs">
         <button className={quickListOpen ? "active" : ""} aria-pressed={quickListOpen} onClick={onToggleQuickList}>
           Workspaces
+        </button>
+        <button
+          type="button"
+          className="local-terminal-card"
+          aria-label="Open Windows Terminal in the current LOCAL folder"
+          title="Open Windows Terminal in the current LOCAL folder"
+          onClick={() => onOpenLocalTerminal("windowsTerminal")}
+        >
+          <WindowsTerminalIcon size={14} />
+        </button>
+        <button
+          type="button"
+          className="local-terminal-card"
+          aria-label="Open Command Prompt in the current LOCAL folder"
+          title="Open Command Prompt in the current LOCAL folder"
+          onClick={() => onOpenLocalTerminal("cmd")}
+        >
+          <CommandPromptIcon size={14} />
         </button>
         {tabs.map((tab) => (
           <span

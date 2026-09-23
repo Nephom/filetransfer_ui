@@ -42,6 +42,7 @@ import { isMobileViewport } from "./styles/breakpoints";
 import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
 import { isSshTerminalPopup, SshTerminalPopup } from "./features/terminal/SshTerminalPopup";
 import type { SshProfile } from "./features/ssh/ssh-contracts";
+import type { LocalTerminalKind } from "./features/terminal/terminal-contracts";
 import { appendSshTabOutput, makeSshTabId } from "./features/terminal/terminal-utils";
 import { useSshTerminal } from "./features/terminal/useSshTerminal";
 import { terminalHeightBounds, terminalTitlebarHeight, useSshTerminalState } from "./features/terminal/useSshTerminalState";
@@ -2522,6 +2523,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     });
     popup.once("tauri://error", (event) => {
       setNotice(`Unable to open SSH terminal window: ${String(event.payload)}`);
+    });
+  };
+
+  const openLocalTerminal = (kind: LocalTerminalKind) => {
+    const label = kind === "windowsTerminal" ? "Windows Terminal" : "Command Prompt";
+    void run(async () => {
+      await invoke("open_local_terminal", { kind, path: localPath });
+      notify(`${label} opened in LOCAL: ${localPath ? `~/${localPath}` : "~"}`);
     });
   };
 
@@ -5720,14 +5729,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         activeQueueCount={transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length}
         registerHostRef={registerSshTerminalHostRef}
         onToggleQuickList={() => setSshQuickListOpen((open) => !open)}
+        onOpenLocalTerminal={openLocalTerminal}
         onResizeStart={beginTerminalResize}
         onSelectTab={selectSshTab}
-         onCopySession={copySshSession}
+        onCopySession={copySshSession}
         onReorderTabs={reorderSshTabs}
         onCloseTab={closeSshTab}
         onCreateTab={() => { createSshTab(); }}
-         onQuickConnect={quickConnectSsh}
-         onOpenEntryInNewWindow={(workspaceId, entryId) => { void openSshEntryInNewWindow(workspaceId, entryId); }}
+        onQuickConnect={quickConnectSsh}
+        onOpenEntryInNewWindow={(workspaceId, entryId) => { void openSshEntryInNewWindow(workspaceId, entryId); }}
         onSelectWorkspace={selectWorkspaceSession}
         onConnect={connectSsh}
         onDisconnect={disconnectSsh}
