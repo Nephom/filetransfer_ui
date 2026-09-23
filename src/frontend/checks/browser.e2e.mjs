@@ -574,6 +574,15 @@ try {
     await paneLocations.nth(0).click();
     await page.locator('.pane-window').first().locator('.pane-view-switch button.active').waitFor();
     assert.equal(await page.locator('.pane-window').first().locator('.pane-view-switch button.active').textContent(), 'Grid');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const desktopPaneFont = await page.locator('.pane-explorer').evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+    const desktopPaneHeadingFont = await page.locator('.pane-window-titlebar strong').first().evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+    await page.setViewportSize({ width: 390, height: 844 });
+    const narrowPaneFont = await page.locator('.pane-explorer').evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+    const narrowPaneHeadingFont = await page.locator('.pane-window-titlebar strong').first().evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+    assert.ok(narrowPaneFont < desktopPaneFont, 'Pane Style typography scales down at narrow resolutions');
+    assert.ok(narrowPaneHeadingFont < desktopPaneHeadingFont, 'Pane Style child typography scales down at narrow resolutions');
+    await page.setViewportSize({ width: 1440, height: 900 });
     report.checks.push('pane style switch, independent floating windows, Details/Grid view, and last-closed view persistence');
 
     for (const role of ['admin', 'superuser']) {
