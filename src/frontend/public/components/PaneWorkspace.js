@@ -3,7 +3,7 @@ import PaneFileWindow from './PaneFileWindow.js';
 import PaneTools from './PaneTools.js';
 import { normalisePanePath, paneHeaders, paneItemKey, paneViewModeKey } from './pane-workspace-utils.js';
 
-const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', z });
+const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
 export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) {
     const [locations, setLocations] = React.useState([]);
@@ -21,7 +21,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
     const backgroundInput = React.useRef(null);
     const windowsRef = React.useRef(windows);
     windowsRef.current = windows;
-    const activeWindow = windows.find((pane) => pane.id === activeId);
+    const activeWindow = windows.find((pane) => pane.id === activeId && !pane.minimized);
     const locationFor = (id) => locations.find((location) => location.id === id);
     const announce = (message) => { setToast(message); window.setTimeout(() => setToast(''), 3000); };
     const openPrivateConsole = async (destination) => {
@@ -62,7 +62,28 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
         setWindows((current) => current.filter((item) => item.id !== id));
         setActiveId((current) => current === id ? null : current);
     };
-    const focusWindow = (id) => { setActiveId(id); setWindows((current) => current.map((pane) => ({ ...pane, z: pane.id === id ? Math.max(...current.map((item) => item.z), 0) + 1 : pane.z }))); };
+    const focusWindow = (id) => {
+        const pane = windows.find((item) => item.id === id);
+        if (!pane || pane.minimized) return;
+        setActiveId(id);
+        setWindows((current) => current.map((item) => ({ ...item, z: item.id === id ? Math.max(...current.map((entry) => entry.z), 0) + 1 : item.z })));
+    };
+    const minimizeWindow = (id) => {
+        setWindows((current) => current.map((pane) => pane.id === id ? { ...pane, minimized: true } : pane));
+    };
+    const restoreWindow = (id) => {
+        setWindows((current) => {
+            const nextZ = Math.max(...current.map((pane) => pane.z), 0) + 1;
+            return current.map((pane) => pane.id === id ? { ...pane, minimized: false, z: nextZ } : pane);
+        });
+        setActiveId(id);
+    };
+    const toggleMaximizeWindow = (id) => {
+        const pane = windowsRef.current.find((item) => item.id === id);
+        if (!pane || pane.minimized) return;
+        setWindows((current) => current.map((item) => item.id === id ? { ...item, maximized: !item.maximized } : item));
+        setActiveId(id);
+    };
     const choose = (id, key, event) => {
         const pane = windows.find((item) => item.id === id); if (!pane) return;
         const selected = event.ctrlKey || event.metaKey ? (pane.selected.includes(key) ? pane.selected.filter((item) => item !== key) : [...pane.selected, key]) : [key];
@@ -97,6 +118,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
     const showLocationContextMenu = (event, locationId) => { event.preventDefault(); event.stopPropagation(); setContextMenu({ type: 'location', x: event.clientX, y: event.clientY, locationId }); };
     const showWindowContextMenu = (event, windowId) => { event.preventDefault(); event.stopPropagation(); setContextMenu({ type: 'window', x: event.clientX, y: event.clientY, windowId }); };
     const closeContextMenu = () => setContextMenu(null);
+    const closeAccountMenu = () => { setAccountOpen(false); setStyleSettingsOpen(false); };
     const upload = async (event) => {
         const pane = activeWindow; const location = locationFor(pane?.locationId); const files = Array.from(event.target.files || []); event.target.value = '';
         if (!pane || !location || !files.length) return;
@@ -118,7 +140,12 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
         if (pending) setClipboard(null);
     };
     React.useEffect(() => { fetch('/api/locations', { headers: token ? { Authorization: `Bearer ${token}` } : {} }).then((response) => response.json()).then((data) => setLocations((data.locations || []).filter((location) => location?.id))).catch(() => announce('Unable to load Locations.')); }, [token]);
-    React.useEffect(() => { const close = () => { setAccountOpen(false); setContextMenu(null); }; window.addEventListener('click', close); return () => window.removeEventListener('click', close); }, []);
+    React.useEffect(() => { const close = (event) => { if (event.target.closest?.('.pane-account-menu, .account')) return; closeAccountMenu(); setContextMenu(null); }; window.addEventListener('click', close); return () => window.removeEventListener('click', close); }, []);
+    React.useEffect(() => {
+        const active = windows.find((pane) => pane.id === activeId);
+        if (activeId && (!active || active.minimized)) setActiveId(windows.filter((pane) => !pane.minimized).sort((left, right) => right.z - left.z)[0]?.id || null);
+    }, [windows, activeId]);
+    React.useEffect(() => { if (!accountOpen) setStyleSettingsOpen(false); }, [accountOpen]);
     React.useEffect(() => { localStorage.setItem('pane-background-theme', theme); }, [theme]);
     React.useEffect(() => () => { if (customBackgroundUrl) URL.revokeObjectURL(customBackgroundUrl); }, [customBackgroundUrl]);
     const selectBackground = (event) => {
@@ -132,5 +159,5 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
     };
     return <div className="pane-explorer" data-theme={theme} style={customBackgroundUrl ? { '--pane-custom-background': `url("${customBackgroundUrl}")` } : undefined} onContextMenu={(event) => event.preventDefault()}>
         <header className="pane-titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control"><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu pane-account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}<button type="button" className="style-settings-trigger" aria-expanded={styleSettingsOpen} onClick={() => setStyleSettingsOpen((open) => !open)}>Style settings <span aria-hidden="true">⌄</span></button>{styleSettingsOpen && <div className="pane-account-style"><h2>Interface style</h2><p>Choose the central workspace appearance.</p><label>Interface mode<select aria-label="Interface style" value="pane" onChange={(event) => onStyleChange(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><label>Central background<select aria-label="Central background" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="default">Default Gradient</option><option value="circuit">Dark Circuit</option><option value="space">Deep Space</option><option value="ocean">Ocean Signal</option><option value="aurora">Aurora Tech</option><option value="neon">Soft Neon</option><option value="light">Clean Light</option></select></label><button type="button" className="pane-background-button" onClick={() => backgroundInput.current?.click()}>▧ Choose background image</button><input ref={backgroundInput} className="pane-hidden-file" type="file" accept="image/*" onChange={selectBackground} />{customBackgroundUrl && <button type="button" className="pane-reset-background" onClick={() => { URL.revokeObjectURL(customBackgroundUrl); setCustomBackgroundUrl(''); }}>Use default background</button>}</div>}<hr /><button type="button" className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
-        <main className="pane-workspace"><aside className="pane-side pane-locations"><div className="pane-heading">LOCATIONS</div><div className="pane-location-list">{locations.map((location) => <button type="button" key={location.id} className={windows.some((pane) => pane.locationId === location.id) ? 'is-open' : ''} onClick={() => openWindow(location.id)} onContextMenu={(event) => showLocationContextMenu(event, location.id)}><span className="folder-icon" aria-hidden="true">▰</span><span><strong>{location.displayName || location.id}</strong><small>{location.status || 'online'}</small></span></button>)}</div></aside><section className="pane-center"><div className="pane-window-layer">{windows.map((pane) => <PaneFileWindow key={pane.id} window={pane} location={locationFor(pane.locationId)} active={activeId === pane.id} selectedItems={selectedItems(pane)} onFocus={focusWindow} onClose={closeWindow} onAction={runAction} onModeChange={(id, mode) => patchWindow(id, { mode })} onQueryChange={(id, query) => patchWindow(id, { query })} onLoadFiles={loadFiles} onChoose={choose} onDrop={handleDrop} onMove={moveWindow} onContextMenu={showWindowContextMenu} />)}</div>{!windows.length && <div className="pane-empty-state"><strong>Open a Location</strong><span>Each Location opens as an independent floating file explorer.</span></div>}</section><PaneTools active={activeWindow} onUpload={() => fileInput.current?.click()} onAction={(action) => activeId && void runAction(activeId, action)} /></main><input ref={fileInput} type="file" multiple hidden onChange={upload} /><footer className="pane-statusbar"><span>{windows.length} open window{windows.length === 1 ? '' : 's'}</span><span>{activeWindow ? `Active: ${locationFor(activeWindow.locationId)?.displayName || activeWindow.locationId}` : 'Open a Location to begin'}</span></footer>{contextMenu && <div className="pane-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>{contextMenu.type === 'location' ? <button type="button" onClick={() => { openWindow(contextMenu.locationId); closeContextMenu(); }}>Open new window</button> : <>{[['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh']].map(([action, label]) => <button type="button" key={action} onClick={() => { void runAction(contextMenu.windowId, action); closeContextMenu(); }}>{label}</button>)}</>}</div>}{toast && <div className="pane-toast" role="status">{toast}</div>}</div>;
+        <main className="pane-workspace"><aside className="pane-side pane-locations"><div className="pane-heading">LOCATIONS</div><div className="pane-location-list">{locations.map((location) => <button type="button" key={location.id} className={windows.some((pane) => pane.locationId === location.id) ? 'is-open' : ''} onClick={() => openWindow(location.id)} onContextMenu={(event) => showLocationContextMenu(event, location.id)}><span className="folder-icon" aria-hidden="true">▰</span><span><strong>{location.displayName || location.id}</strong><small>{location.status || 'online'}</small></span></button>)}</div></aside><section className="pane-center"><div className="pane-window-layer">{windows.map((pane) => <PaneFileWindow key={pane.id} window={pane} location={locationFor(pane.locationId)} active={activeId === pane.id && !pane.minimized} selectedItems={selectedItems(pane)} onFocus={focusWindow} onClose={closeWindow} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximizeWindow} onAction={runAction} onModeChange={(id, mode) => patchWindow(id, { mode })} onQueryChange={(id, query) => patchWindow(id, { query })} onLoadFiles={loadFiles} onChoose={choose} onDrop={handleDrop} onMove={moveWindow} onContextMenu={showWindowContextMenu} />)}</div>{windows.some((pane) => pane.minimized) && <div className="pane-minimized-dock" aria-label="Minimized windows">{windows.filter((pane) => pane.minimized).map((pane) => <div className="pane-minimized-item" data-window-id={pane.id} key={pane.id}><button type="button" className="pane-minimized-restore" onClick={() => restoreWindow(pane.id)} aria-label={`Restore ${locationFor(pane.locationId)?.displayName || pane.locationId}`} title="Restore window">{locationFor(pane.locationId)?.displayName || pane.locationId}</button><button type="button" className="pane-minimized-close" onClick={() => closeWindow(pane.id)} aria-label={`Close minimized ${locationFor(pane.locationId)?.displayName || pane.locationId}`} title="Close window">×</button></div>)}</div>}{!windows.length && <div className="pane-empty-state"><strong>Open a Location</strong><span>Each Location opens as an independent floating file explorer.</span></div>}</section><PaneTools active={activeWindow} onUpload={() => fileInput.current?.click()} onAction={(action) => activeId && void runAction(activeId, action)} /></main><input ref={fileInput} type="file" multiple hidden onChange={upload} /><footer className="pane-statusbar"><span>{windows.length} open window{windows.length === 1 ? '' : 's'}</span><span>{activeWindow ? `Active: ${locationFor(activeWindow.locationId)?.displayName || activeWindow.locationId}` : 'Open a Location to begin'}</span></footer>{contextMenu && <div className="pane-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>{contextMenu.type === 'location' ? <button type="button" onClick={() => { openWindow(contextMenu.locationId); closeContextMenu(); }}>Open new window</button> : <>{[['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh']].map(([action, label]) => <button type="button" key={action} onClick={() => { void runAction(contextMenu.windowId, action); closeContextMenu(); }}>{label}</button>)}</>}</div>}{toast && <div className="pane-toast" role="status">{toast}</div>}</div>;
 }

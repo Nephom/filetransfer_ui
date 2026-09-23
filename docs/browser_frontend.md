@@ -10,7 +10,9 @@ The browser application uses React and ReactDOM **18.3.1**, compiled by esbuild 
 
 The account menu exposes two interface styles. **Classical Style** is the default and preserves the original single-directory browser. **Pane Style** uses the same authenticated API surface in an independent Location card, floating-window, and tool-card layout.
 
-Pane windows keep their own Location, path, files, search query, selection, and captured Location revision. The pane actions use the production file, paste, delete, rename, share, download, folder, and upload endpoints; preview-only data is not used. A pane can use `Details` or `Grid` view. The `pane-file-view-mode` local-storage value is written when a pane closes, so the last closed pane determines the initial view of the next pane, regardless of Location.
+Pane windows keep their own Location, path, files, search query, selection, captured Location revision, minimized state, and maximized state. The pane actions use the production file, paste, delete, rename, share, download, folder, and upload endpoints; preview-only data is not used. A pane can use `Details` or `Grid` view. The titlebar provides Minimize, Maximize/Restore, and Close controls. Minimized panes remain in the workspace state and appear in a left-bottom dock that wraps into additional rows when necessary; restoring a pane keeps its content, query, selection, and position. The `pane-file-view-mode` local-storage value is written when a pane closes, so the last closed pane determines the initial view of the next pane, regardless of Location.
+
+The Pane Style Account Panel keeps its menu mounted while Style settings are expanded or collapsed. Clicks inside the menu are excluded from the outside-click handler, while clicks outside the menu still close it.
 
 ## Build And Startup
 
@@ -86,7 +88,7 @@ Set `PLAYWRIGHT_BROWSERS_PATH` for verification machines that keep binaries outs
 
 Unit tests cover action identities, sorting, request generations, geometry bounds, missing/tampered readiness, side-effect-free imports without dev dependencies, shell syntax/ordering, failed-build preservation, and a real test-owned process that remains alive when restart assets are missing. Browser E2E uses only a test-owned listener bound to `127.0.0.1`, in-memory records/batches, synthetic credentials, and isolated browser contexts. That browser harness does not import the production server. Separate P36 and P27/P69 tests exercise actual backend handlers with persistent-service replacements; none read production configuration, databases, logs, or storage.
 
-Chromium checks include original admin/super XSS payloads and exact encoded account edit targets; the generated share page's POST password, duplicate-submit guard, cleared input, and absent referrer; full-path delete/rename; late search/refresh/error/session responses; Location revocation; measured table/grid spacers; keyboard/offscreen selection and native drag/drop; desktop/narrow resize; cancellation during reservation, active transport and accepted processing; and lost-response reconciliation without re-upload.
+Chromium checks include original admin/super XSS payloads and exact encoded account edit targets; the generated share page's POST password, duplicate-submit guard, cleared input, and absent referrer; full-path delete/rename; late search/refresh/error/session responses; Location revocation; measured table/grid spacers; keyboard/offscreen selection and native drag/drop; desktop/narrow resize; Pane window maximize/minimize/restore state, multi-row lower-left dock geometry, and Account Panel settings persistence; cancellation during reservation, active transport and accepted processing; and lost-response reconciliation without re-upload.
 
 ### Recorded Measurements
 
@@ -110,7 +112,7 @@ The browser task does not establish screenshot pixel parity, Firefox/WebKit beha
 
 Independent Pi/Haiku browser review found a trailing grid-gap error in virtual scroll clamping and uncancelled Location polling. Both were corrected, with regression checks and session-owned AbortControllers. A scoped browser follow-up reported no material client findings; that is not an all-tools/all-platforms clearance. A preliminary diff-only objection treated top-level imports after declarations as invalid JavaScript; the production build was valid, and imports were moved to the top for clarity.
 
-Earlier optional installation verification (`BROWSER_INSTALL_CHECK=1 npm run test:browser:unit`) passed 10 tests with zero failures/skips. This remains isolated install evidence, not another count to add to the final suite. RELEASE_DATE remains 2026-09-09 and VERSION remains 3.4.0. No commit or push was made.
+Earlier optional installation verification (`BROWSER_INSTALL_CHECK=1 npm run test:browser:unit`) passed 10 tests with zero failures/skips. This remains isolated install evidence, not another count to add to the final suite. The current `RELEASE_DATE` is 2026-09-23 and `VERSION` is 3.4.1. The Browser Pane minimize/maximize/restore and Account Panel follow-up is included in the verification below.
 
 Final verification on 2026-09-09, supplied by the parent/user and reconciled in this documentation-only pass:
 
@@ -145,3 +147,8 @@ Parent/general independent reviews found configuration-write and early-disconnec
 | P54 | E01-E06 | src/frontend/checks/browser.e2e.mjs | Complete | Classical regression and four-window last-closed view persistence pass |
 | P55 | E01-E02 | docs/browser_frontend.md | Complete | Pane architecture, API ownership and view persistence documented |
 | P57 | E01 | RELEASE_DATE | Complete | Updated to 2026-09-23 |
+| P58 | E01-E03 | src/frontend/public/components/PaneFileWindow.js | Complete | Minimize, Maximize/Restore, Close controls and stable window identity pass Chromium checks |
+| P59 | E01-E07 | src/frontend/public/components/PaneWorkspace.js | Complete | Pane state preservation, active routing, lower-left dock, and Account Panel event isolation pass Chromium checks |
+| P60 | E01-E06 | src/frontend/public/index.html | Complete | Pane control styling, maximized geometry, multi-row dock, and responsive overflow checks pass |
+| P61 | E01-E07 | src/frontend/checks/browser.e2e.mjs | Complete | Browser E2E passes with maximize/minimize/restore, dock wrapping, responsive, and Account Panel regressions |
+| P62 | E01-E03 | docs/browser_frontend.md | Complete | Browser Pane behavior, verification scope, version, and release date documented |
