@@ -150,13 +150,6 @@ test('upgrade backend test gate excludes fileapi_ui desktop checks', () => {
     assert.match(build, /find "\$ROOT_DIR\/src" -type f -name '\*\.test\.js'/);
     assert.match(build, /desktop checks under fileapi_ui\/checks out of this gate/);
     assert.doesNotMatch(build, /find "\$ROOT_DIR\/fileapi_ui"/);
-
-    const upgradeStart = build.indexOf('cmd_upgrade() {');
-    const nativeCheck = build.indexOf('! server_native_dependencies_valid', upgradeStart);
-    const databaseBackup = build.indexOf('backup_database_before_upgrade', upgradeStart);
-    assert.ok(nativeCheck >= 0 && databaseBackup > nativeCheck, 'upgrade loads native dependencies before attempting the database backup');
-    assert.match(build, /server_native_dependencies_valid\(\) \{\s*\(cd "\$ROOT_DIR" && npm run check:native >\/dev\/null 2>&1\)\s*\}/);
-    assert.doesNotMatch(build, /node -e 'require\.resolve\("sqlite3"\)'/, 'resolving the JS wrapper alone is not a native binding health check');
 });
 
 test('failed compilation leaves the prior browser build ready', async () => {

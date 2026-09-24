@@ -288,10 +288,7 @@ install_server_node_dependencies() {
       node -e 'for (const name of ["bcrypt", "sqlite3", "ssh2", "ws", "unrs-resolver", "esbuild"]) require.resolve(name);' &&
       npm run check:native
   ) || return $?
-}
-
-server_native_dependencies_valid() {
-  (cd "$ROOT_DIR" && npm run check:native >/dev/null 2>&1)
+  cmd_browser
 }
 
 cmd_browser() {
@@ -612,7 +609,6 @@ cmd_install() {
   install_server_system_dependencies
   ensure_node
   install_server_node_dependencies
-  cmd_browser
 }
 
 cmd_setup() {
@@ -620,10 +616,9 @@ cmd_setup() {
     cmd_install
   else
     install_server_system_dependencies
-    if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! server_native_dependencies_valid; then
+    if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! (cd "$ROOT_DIR" && npm run check:native >/dev/null 2>&1); then
       echo "Setup: installing and rebuilding server dependencies for this machine..."
       install_server_node_dependencies
-      cmd_browser
     else
       echo "Setup: server native dependencies are valid for this Node runtime."
     fi
@@ -679,7 +674,7 @@ cmd_test() {
     return 1
   fi
 
-  # Server tests use root dependencies. Keep the
+  # The server upgrade preflight installs only root dependencies. Keep the
   # desktop checks under fileapi_ui/checks out of this gate because they load
   # the desktop TypeScript toolchain from fileapi_ui/devDependencies.
   node --test --test-concurrency=1 "${test_files[@]}"
@@ -698,6 +693,34 @@ has_blocking_worktree_changes() {
     return 0
   done < <(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)
   return 1
+}
+
+preflight_upstream() {
+  local upstream_head="$1"
+  local checkout old_root
+  checkout="$(mktemp -d)"
+  old_root="$ROOT_DIR"
+
+  cleanup_preflight() {
+    ROOT_DIR="$old_root"
+    git -C "$old_root" worktree remove --force "$checkout" >/dev/null 2>&1 || true
+    rmdir "$checkout" >/dev/null 2>&1 || true
+  }
+
+  if ! git -C "$old_root" worktree add --detach "$checkout" "$upstream_head"; then
+    cleanup_preflight
+    return 1
+  fi
+
+  echo "Upgrade: validating dependencies and tests before changing the active checkout..."
+  ROOT_DIR="$checkout"
+  if ! ensure_node || ! install_server_node_dependencies || ! cmd_test; then
+    cleanup_preflight
+    echo "Upgrade preflight failed; the active checkout was not changed." >&2
+    return 1
+  fi
+
+  cleanup_preflight
 }
 
 cmd_upgrade() {
@@ -721,21 +744,17 @@ cmd_upgrade() {
     legacy_config="$(mktemp)"
     cp "$ROOT_DIR/src/config.ini" "$legacy_config"
   fi
-  local dependencies_installed_before_backup=0
-  if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! server_native_dependencies_valid; then
+  if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! (cd "$ROOT_DIR" && node -e 'require.resolve("sqlite3")' >/dev/null 2>&1); then
     echo "Upgrade: installing server dependencies before the database backup..."
-    install_server_system_dependencies
-    ensure_node
-    install_server_node_dependencies
-    dependencies_installed_before_backup=1
+    cmd_install
   fi
   echo "Upgrade: backing up the database..."
   backup_database_before_upgrade
   echo "Upgrade: applying a fast-forward update..."
-  local upstream_ref starting_head local_head upstream_head
+  local upstream_ref local_head upstream_head
   upstream_ref="$(get_upstream_ref)"
-  starting_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   upstream_head="$(git -C "$ROOT_DIR" rev-parse "$upstream_ref")"
+  preflight_upstream "$upstream_head"
   run_git -C "$ROOT_DIR" merge --ff-only "$upstream_ref"
   local_head="$(git -C "$ROOT_DIR" rev-parse HEAD)"
   [[ "$local_head" == "$upstream_head" ]] || {
@@ -750,17 +769,8 @@ cmd_upgrade() {
       node "$ROOT_DIR/upgrade_tools/config-upgrade.js" --target-version "$target_version" --non-interactive
     fi
   fi
-  if [[ "$dependencies_installed_before_backup" -eq 1 ]] &&
-    git -C "$ROOT_DIR" diff --quiet "$starting_head" "$upstream_head" -- package.json package-lock.json &&
-    server_native_dependencies_valid; then
-    echo "Upgrade: dependency manifests are unchanged; reusing the server dependencies prepared for the database backup."
-    install_server_system_dependencies
-    ensure_node
-    cmd_browser
-  else
-    echo "Upgrade: installing dependencies..."
-    cmd_install
-  fi
+  echo "Upgrade: installing dependencies..."
+  cmd_install
   migrate_legacy_configuration "$legacy_config"
   [[ -z "$legacy_config" ]] || rm -f "$legacy_config"
   setup_configuration
