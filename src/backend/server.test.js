@@ -680,6 +680,91 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     await assert.rejects(fs.stat(path.join(f.root, 'only.txt')), { code: 'ENOENT' });
   });
 
+  await t.test('P251 opt-in paste stream reports each actual result and keeps the default JSON contract', async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.root, 'moved.txt'), 'move this');
+    await fs.writeFile(path.join(f.root, 'io-failure.txt'), 'retain this source');
+    const streamed = await send('/api/files/paste', {
+      method: 'POST',
+      headers: { accept: 'text/event-stream' },
+      body: {
+        items: [
+          { name: 'moved.txt', path: 'moved.txt', sourceLocationId: 'default' },
+          { name: 'io-failure.txt', path: 'io-failure.txt', sourceLocationId: 'default' }
+        ],
+        operation: 'cut',
+        targetPath: '',
+        sourceLocationId: 'default',
+        targetLocationId: 'other'
+      }
+    });
+    status(streamed, 200);
+    assert.match(streamed.headers['content-type'], /^text\/event-stream/);
+    const events = streamed.bytes.toString('utf8').trim().split(/\r?\n\r?\n/).map(block => {
+      const dataLine = block.split(/\r?\n/).find(line => line.startsWith('data: '));
+      return {
+        event: /^event: (.+)$/m.exec(block)?.[1],
+        data: JSON.parse(dataLine.slice('data: '.length))
+      };
+    });
+    assert.deepEqual(events.map(({ event }) => event), [
+      'start', 'item-start', 'item-result', 'item-start', 'item-result', 'complete'
+    ]);
+    assert.deepEqual(events[0].data, {
+      totalItems: 2,
+      operation: 'cut',
+      currentName: 'moved.txt',
+      completedItems: 0,
+      failedItems: 0,
+      resolvedItems: 0,
+      remainingItems: 2,
+      status: 'preparing'
+    });
+    assert.deepEqual([
+      events[2].data.currentName,
+      events[2].data.result.success,
+      events[2].data.completedItems,
+      events[2].data.failedItems,
+      events[2].data.remainingItems
+    ], ['moved.txt', true, 1, 0, 1]);
+    assert.deepEqual([
+      events[4].data.currentName,
+      events[4].data.result.success,
+      events[4].data.result.copied,
+      events[4].data.completedItems,
+      events[4].data.failedItems,
+      events[4].data.remainingItems
+    ], ['io-failure.txt', false, true, 1, 1, 0]);
+    assert.equal(events[5].data.status, 'partial');
+    assert.deepEqual([
+      events[5].data.currentName,
+      events[5].data.completedItems,
+      events[5].data.failedItems,
+      events[5].data.remainingItems,
+      events[5].data.results.length,
+      events[5].data.results[0].name
+    ], ['io-failure.txt', 1, 1, 0, 1, 'io-failure.txt']);
+    assert.equal(await fs.readFile(path.join(f.other, 'moved.txt'), 'utf8'), 'move this');
+    await assert.rejects(fs.stat(path.join(f.root, 'moved.txt')), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(f.other, 'io-failure.txt'), 'utf8'), 'retain this source');
+    assert.equal(await fs.readFile(path.join(f.root, 'io-failure.txt'), 'utf8'), 'retain this source');
+
+    await fs.writeFile(path.join(f.root, 'legacy.json-contract.txt'), 'legacy');
+    const legacy = await send('/api/files/paste', {
+      method: 'POST',
+      body: {
+        items: [{ name: 'legacy.json-contract.txt', path: 'legacy.json-contract.txt', sourceLocationId: 'default' }],
+        operation: 'copy',
+        targetPath: '',
+        sourceLocationId: 'default',
+        targetLocationId: 'other'
+      }
+    });
+    status(legacy, 200);
+    assert.match(legacy.headers['content-type'], /^application\/json/);
+    assert.equal(legacy.body.success, true);
+  });
+
   await t.test('E04 subtree copy is rejected before creating a recursive destination', async () => {
     const f = await fixture();
     await fs.mkdir(path.join(f.root, 'tree'));

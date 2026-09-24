@@ -29,19 +29,39 @@ export const usePaneMenuPosition = (menu, offsetX = 0) => {
             const element = menuRef.current;
             if (!element) return;
             const rectangle = element.getBoundingClientRect();
-            const left = Math.min(Math.max(8, menu.x + offsetX), Math.max(8, window.innerWidth - rectangle.width - 8));
-            const top = Math.min(Math.max(8, menu.y), Math.max(8, window.innerHeight - rectangle.height - 8));
-            setPosition({ left, top });
+            const visibleViewport = window.visualViewport;
+            const viewport = {
+                left: visibleViewport?.offsetLeft || 0,
+                top: visibleViewport?.offsetTop || 0,
+                width: visibleViewport?.width || document.documentElement.clientWidth || window.innerWidth,
+                height: visibleViewport?.height || document.documentElement.clientHeight || window.innerHeight
+            };
+            const edge = 8;
+            const maxWidth = Math.max(1, viewport.width - edge * 2);
+            const maxHeight = Math.max(1, viewport.height - edge * 2);
+            const renderedWidth = Math.min(rectangle.width, maxWidth);
+            const renderedHeight = Math.min(rectangle.height, maxHeight);
+            const minLeft = viewport.left + edge;
+            const minTop = viewport.top + edge;
+            const maxLeft = Math.max(minLeft, viewport.left + viewport.width - renderedWidth - edge);
+            const maxTop = Math.max(minTop, viewport.top + viewport.height - renderedHeight - edge);
+            const left = Math.min(Math.max(minLeft, menu.x + offsetX), maxLeft);
+            const top = Math.min(Math.max(minTop, menu.y), maxTop);
+            setPosition({ left, top, maxWidth, maxHeight });
         };
 
         updatePosition();
         window.addEventListener('resize', updatePosition);
+        window.addEventListener('scroll', updatePosition, true);
         window.visualViewport?.addEventListener('resize', updatePosition);
+        window.visualViewport?.addEventListener('scroll', updatePosition);
         const observer = window.ResizeObserver ? new ResizeObserver(updatePosition) : null;
         if (observer && menuRef.current) observer.observe(menuRef.current);
         return () => {
             window.removeEventListener('resize', updatePosition);
+            window.removeEventListener('scroll', updatePosition, true);
             window.visualViewport?.removeEventListener('resize', updatePosition);
+            window.visualViewport?.removeEventListener('scroll', updatePosition);
             observer?.disconnect();
         };
     }, [menu, offsetX]);

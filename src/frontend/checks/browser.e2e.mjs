@@ -104,7 +104,41 @@ const server = http.createServer(async (req, res) => {
         }
         if (url.pathname === '/api/files/rename') return json({ success: true });
         if (url.pathname === '/api/files/paste') {
-            const results = jsonBody.items.map((item, index) => ({ name: item.name, path: item.path, sourceLocationId: item.sourceLocationId, success: pasteMode === 'success' || (pasteMode === 'partial' && index === 0), ...(pasteMode === 'partial' && index === 1 ? { copied: true, error: 'fixture source cleanup failed' } : {}) }));
+            const results = jsonBody.items.map((item, index) => {
+                const success = pasteMode === 'success' || (pasteMode === 'partial' && index === 0);
+                return { name: item.name, path: item.path, sourceLocationId: item.sourceLocationId, success,
+                    ...(!success ? { error: pasteMode === 'partial' && index === 1 ? 'fixture source cleanup failed' : 'fixture move failed' } : {}),
+                    ...(pasteMode === 'partial' && index === 1 ? { copied: true } : {}) };
+            });
+            if (req.headers.accept?.split(',').some(value => value.trim().startsWith('text/event-stream'))) {
+                res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform' });
+                const emit = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+                const totalItems = results.length;
+                if (pasteMode === 'unknown') {
+                    emit('start', { totalItems, operation: jsonBody.operation, currentName: results[0]?.name || '', completedItems: 0, failedItems: 0, resolvedItems: 0, remainingItems: totalItems, status: 'preparing' });
+                    if (pasteDelay) await new Promise(resolve => setTimeout(resolve, pasteDelay));
+                    emit('error', { success: false, status: 'failed', error: 'fixture transfer outcome is unconfirmed', results: [], totalItems, completedItems: 0, failedItems: 0, resolvedItems: 0, remainingItems: totalItems });
+                    res.end();
+                    return;
+                }
+                const resolved = [];
+                let completedItems = 0;
+                let failedItems = 0;
+                emit('start', { totalItems, operation: jsonBody.operation, currentName: results[0]?.name || '', completedItems, failedItems, resolvedItems: 0, remainingItems: totalItems, status: 'preparing' });
+                for (let index = 0; index < results.length; index++) {
+                    const result = results[index];
+                    emit('item-start', { currentName: result.name, itemIndex: index + 1, totalItems, completedItems, failedItems, resolvedItems: resolved.length, remainingItems: totalItems - resolved.length, status: 'running' });
+                    if (pasteDelay) await new Promise(resolve => setTimeout(resolve, pasteDelay));
+                    resolved.push(result);
+                    if (result.success) completedItems++;
+                    else failedItems++;
+                    emit('item-result', { currentName: result.name, itemIndex: index + 1, totalItems, result, completedItems, failedItems, resolvedItems: resolved.length, remainingItems: totalItems - resolved.length, status: result.success ? 'completed' : 'failed' });
+                }
+                const success = resolved.every(result => result.success);
+                emit('complete', { success, status: success ? 'completed' : completedItems > 0 ? 'partial' : 'failed', message: `${completedItems} item(s) moved successfully`, ...(success ? {} : { error: 'One or more paste items failed' }), currentName: resolved.at(-1)?.name || '', results: resolved.filter(result => result.success === false).slice(0, 50), totalItems, completedItems, failedItems, resolvedItems: resolved.length, remainingItems: totalItems - resolved.length });
+                res.end();
+                return;
+            }
             if (pasteDelay) await new Promise(resolve => setTimeout(resolve, pasteDelay));
             if (pasteMode === 'unknown') return json({ success: false, results: results.slice(0, 1) }, 500);
             return json({ success: pasteMode === 'success', results }, pasteMode === 'success' ? 200 : pasteMode === 'partial' ? 207 : 500);
@@ -651,6 +685,8 @@ try {
     report.checks.push('same-ID root revision: capture headers for scoped actions, clear stale files/selection/dialogs, ignore old share completion, reject old revision, read-only metadata refresh');
     assert.deepEqual(errors, [], 'browser app has no uncaught errors');
 
+    // Restore the multi-item fixture before Pane opens its own Location snapshot.
+    availableLocations = locations;
     await page.locator('.account').click();
     await page.locator('.account-menu select[aria-label="Interface style"]').selectOption('pane');
     await page.locator('.pane-location-list button').first().waitFor();
@@ -687,12 +723,66 @@ try {
     const terminalPane = page.locator('.pane-terminal-window').last();
     await terminalPane.waitFor();
     const terminalId = await terminalPane.getAttribute('data-window-id');
-    await terminalPane.dispatchEvent('contextmenu', { bubbles: true, button: 2, clientX: 387, clientY: 837 });
     const boundedTerminalMenu = page.locator('.pane-terminal-context-menu');
+    const visibleTerminalBox = () => terminalPane.evaluate(element => {
+        const rectangle = element.getBoundingClientRect();
+        const visible = { left: Math.max(0, rectangle.left), top: Math.max(0, rectangle.top), right: Math.min(window.innerWidth, rectangle.right), bottom: Math.min(window.innerHeight, rectangle.bottom) };
+        for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+            const style = getComputedStyle(ancestor);
+            const clip = ancestor.getBoundingClientRect();
+            if (style.overflowX !== 'visible') {
+                visible.left = Math.max(visible.left, clip.left);
+                visible.right = Math.min(visible.right, clip.right);
+            }
+            if (style.overflowY !== 'visible') {
+                visible.top = Math.max(visible.top, clip.top);
+                visible.bottom = Math.min(visible.bottom, clip.bottom);
+            }
+        }
+        return visible;
+    });
+    const terminalVisibleRect = await visibleTerminalBox();
+    const terminalEdgeX = (terminalVisibleRect.left + terminalVisibleRect.right) / 2;
+    const terminalEdgeY = Math.min(842, terminalVisibleRect.bottom - 2);
+    assert.ok(terminalEdgeX >= terminalVisibleRect.left && terminalEdgeY >= terminalVisibleRect.top, 'terminal pane has a visible region for a real context click');
+    await page.mouse.click(terminalEdgeX, terminalEdgeY, { button: 'right' });
     await boundedTerminalMenu.waitFor();
     const boundedTerminalMenuBox = await boundedTerminalMenu.boundingBox();
     assert.ok(boundedTerminalMenuBox.x >= 0 && boundedTerminalMenuBox.y >= 0 && boundedTerminalMenuBox.x + boundedTerminalMenuBox.width <= 390 && boundedTerminalMenuBox.y + boundedTerminalMenuBox.height <= 844, `terminal context menu stays inside the narrow viewport: ${JSON.stringify(boundedTerminalMenuBox)}`);
     await boundedTerminalMenu.getByRole('button', { name: 'Copy', exact: true }).dispatchEvent('click', { bubbles: true });
+    await terminalPane.evaluate(element => element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 387, clientY: 837, view: window })));
+    await boundedTerminalMenu.waitFor();
+    const terminalViewportEdgeBox = await boundedTerminalMenu.boundingBox();
+    assert.ok(terminalViewportEdgeBox.x >= 0 && terminalViewportEdgeBox.y >= 0 && terminalViewportEdgeBox.x + terminalViewportEdgeBox.width <= 390 && terminalViewportEdgeBox.y + terminalViewportEdgeBox.height <= 844, `terminal context menu clamps an edge event into the viewport: ${JSON.stringify(terminalViewportEdgeBox)}`);
+    await boundedTerminalMenu.getByRole('button', { name: 'Copy', exact: true }).dispatchEvent('click', { bubbles: true });
+
+    await page.setViewportSize({ width: 390, height: 120 });
+    await frames();
+    const shortViewportTerminalRect = await visibleTerminalBox();
+    const shortViewportClickX = (shortViewportTerminalRect.left + shortViewportTerminalRect.right) / 2;
+    const shortViewportClickY = Math.min(118, shortViewportTerminalRect.bottom - 2);
+    assert.ok(shortViewportClickX >= shortViewportTerminalRect.left && shortViewportClickY >= shortViewportTerminalRect.top, 'terminal pane intersects the short viewport for a real context click');
+    await page.mouse.click(shortViewportClickX, shortViewportClickY, { button: 'right' });
+    await boundedTerminalMenu.waitFor();
+    const shortViewportBounds = await page.evaluate(() => {
+        const visible = window.visualViewport;
+        const left = visible?.offsetLeft || 0;
+        const top = visible?.offsetTop || 0;
+        return {
+            left,
+            top,
+            right: left + (visible?.width || window.innerWidth),
+            bottom: top + (visible?.height || window.innerHeight)
+        };
+    });
+    const shortViewportMenuBox = await boundedTerminalMenu.boundingBox();
+    assert.ok(shortViewportMenuBox.x >= shortViewportBounds.left && shortViewportMenuBox.y >= shortViewportBounds.top && shortViewportMenuBox.x + shortViewportMenuBox.width <= shortViewportBounds.right && shortViewportMenuBox.y + shortViewportMenuBox.height <= shortViewportBounds.bottom, `terminal context menu stays inside the visible viewport: ${JSON.stringify({ shortViewportMenuBox, shortViewportBounds })}`);
+    const shortMenuDimensions = await boundedTerminalMenu.evaluate(element => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight, maxHeight: getComputedStyle(element).maxHeight }));
+    assert.ok(shortMenuDimensions.clientHeight <= 104 && shortMenuDimensions.scrollHeight > shortMenuDimensions.clientHeight, `terminal menu constrains and scrolls its contents in a short viewport: ${JSON.stringify(shortMenuDimensions)}`);
+    await page.mouse.click(5, 5);
+    await boundedTerminalMenu.waitFor({ state: 'detached' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await frames();
 
     const zFileBeforeFocus = page.locator('.pane-window:not(.pane-terminal-window)').last();
     await paneLocations.nth(1).click();
@@ -801,6 +891,51 @@ try {
     assert.equal(await managedPane.locator('.pane-window-navigation input').inputValue(), 'preserved-query', 'restore preserves pane state');
     const panePositionAfterRestore = await managedPane.boundingBox();
     assert.ok(Math.abs(panePositionAfterRestore.x - panePositionBeforeMinimize.x) < 2 && Math.abs(panePositionAfterRestore.y - panePositionBeforeMinimize.y) < 2, 'restore preserves pane position');
+    const sourceDockItem = page.locator('.pane-minimized-item').filter({ hasText: 'Location A' }).first();
+    await sourceDockItem.locator('.pane-minimized-restore').click();
+    const paneSource = page.locator('.pane-window:not(.pane-terminal-window):not(.is-minimized)').filter({ hasText: 'Location A' }).first();
+    const paneDestination = page.locator('.pane-window:not(.pane-terminal-window):not(.is-minimized)').filter({ hasText: 'Location B' }).first();
+    await paneSource.locator('.pane-file-tile').nth(1).waitFor();
+    const dispatchPaneDrop = async (firstIndex, secondIndex) => {
+        const rows = paneSource.locator('.pane-file-tile');
+        await rows.nth(firstIndex).dispatchEvent('click');
+        await rows.nth(secondIndex).dispatchEvent('click', { ctrlKey: true });
+        assert.equal(await paneSource.locator('.pane-file-tile.selected').count(), 2, 'Pane selection includes both transfer items');
+        const destinationFiles = await paneDestination.locator('.pane-files').elementHandle();
+        await rows.nth(firstIndex).evaluate((row, target) => {
+            const dataTransfer = new DataTransfer();
+            row.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }));
+            target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+        }, destinationFiles);
+    };
+    pasteMode = 'success';
+    pasteDelay = 500;
+    await dispatchPaneDrop(0, 1);
+    const paneTransfer = page.locator('.pane-transfer-cover');
+    await paneTransfer.waitFor();
+    assert.equal(await paneTransfer.locator('.pane-transfer-current strong').textContent(), 'file0.txt');
+    assert.equal(await paneTransfer.locator('.pane-transfer-counts strong').textContent(), '0 of 2 items moved');
+    await paneTransfer.locator('.pane-transfer-current strong').filter({ hasText: 'file1.txt' }).waitFor();
+    await paneTransfer.getByText('1 of 2 items moved', { exact: true }).waitFor();
+    await paneTransfer.getByText('1 remaining', { exact: true }).waitFor();
+    await page.waitForFunction(() => document.querySelector('.pane-transfer-cover')?.dataset.status === 'completed');
+    await paneTransfer.waitFor({ state: 'detached', timeout: 5000 });
+    pasteMode = 'partial';
+    pasteDelay = 220;
+    await dispatchPaneDrop(2, 3);
+    await page.waitForFunction(() => document.querySelector('.pane-transfer-cover')?.dataset.status === 'partial');
+    assert.match(await page.locator('.pane-transfer-counts').innerText(), /1 of 2 items moved/);
+    assert.match(await page.locator('.pane-transfer-counts').innerText(), /0 remaining/);
+    assert.match(await page.locator('.pane-transfer-errors').innerText(), /fixture source cleanup failed/);
+    await page.waitForTimeout(1900);
+    assert.equal(await page.locator('.pane-transfer-cover').count(), 1, 'failed transfer remains open after the success auto-close interval');
+    await page.locator('.pane-transfer-actions button').click();
+    await page.locator('.pane-transfer-cover').waitFor({ state: 'detached' });
+    pasteMode = 'success';
+    pasteDelay = 0;
+    await paneSource.locator('button[aria-label="Close window"]').click();
+    await managedPane.dispatchEvent('pointerdown', { bubbles: true, pointerId: 1 });
+    report.checks.push('Pane transfer streams actual item names and counts, auto-closes full success, and preserves partial failure details');
     uploadMode = 'running';
     await page.getByRole('button', { name: 'Pane Upload', exact: true }).click();
     await page.locator('.pane-explorer input[type="file"]').setInputFiles({ name: 'pane-upload.txt', mimeType: 'text/plain', buffer: Buffer.from('pane upload') });

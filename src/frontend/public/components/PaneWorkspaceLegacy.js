@@ -10,12 +10,75 @@ const BACKGROUND_MIN_SCALE = 0.5;
 const BACKGROUND_MAX_SCALE = 2;
 const BACKGROUND_SCALE_STEP = 0.1;
 const BACKGROUND_POSITION_STEP = 10;
+const PASTE_PROGRESS_READ_TIMEOUT_MS = 45_000; // Allow three missed 15-second server heartbeats.
+const PANE_TRANSFER_FAILURE_PREVIEW_LIMIT = 50; // Keep retained failure details bounded for large batches.
 const clamp = (value, minimum, maximum) => Math.min(Math.max(value, minimum), maximum);
 const roundScale = (value) => Math.round(value * 100) / 100;
 const centeredBackgroundPosition = () => ({ x: 50, y: 50 });
 const normaliseBackgroundCoordinate = (value) => { const numeric = Number(value); return Number.isFinite(numeric) ? numeric : 50; };
 const normaliseBackgroundPosition = (position) => ({ x: clamp(normaliseBackgroundCoordinate(position?.x), 0, 100), y: clamp(normaliseBackgroundCoordinate(position?.y), 0, 100) });
 const normaliseBackgroundScale = (scale) => clamp(roundScale(Number(scale) || 1), BACKGROUND_MIN_SCALE, BACKGROUND_MAX_SCALE);
+const consumePasteProgressStream = async (response, onEvent) => {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('The transfer progress stream is unavailable.');
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let terminalEvent = null;
+    const dispatch = (block) => {
+        let event = 'message';
+        const data = [];
+        for (const line of block.split(/\r?\n/)) {
+            if (!line || line.startsWith(':')) continue;
+            const separator = line.indexOf(':');
+            const field = separator < 0 ? line : line.slice(0, separator);
+            const value = separator < 0 ? '' : line.slice(separator + 1).replace(/^ /, '');
+            if (field === 'event') event = value;
+            if (field === 'data') data.push(value);
+        }
+        if (!data.length) return;
+        let payload;
+        try {
+            payload = JSON.parse(data.join('\n'));
+        } catch (error) {
+            throw new Error(`Invalid transfer progress data: ${error.message}`);
+        }
+        onEvent(event, payload);
+        if (event === 'complete' || event === 'error') terminalEvent = { event, payload };
+    };
+    try {
+        while (true) {
+            let timeout;
+            let read;
+            try {
+                read = await Promise.race([
+                    reader.read(),
+                    new Promise((resolve, reject) => {
+                        timeout = window.setTimeout(() => reject(new Error('Transfer progress was inactive for too long.')), PASTE_PROGRESS_READ_TIMEOUT_MS);
+                    })
+                ]);
+            } finally {
+                if (timeout !== undefined) window.clearTimeout(timeout);
+            }
+            const { done, value } = read;
+            buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+            let separator = buffer.match(/\r?\n\r?\n/);
+            while (separator) {
+                const index = separator.index;
+                const block = buffer.slice(0, index);
+                buffer = buffer.slice(index + separator[0].length);
+                dispatch(block);
+                separator = buffer.match(/\r?\n\r?\n/);
+            }
+            if (done) break;
+        }
+    } catch (error) {
+        await reader.cancel(error).catch(() => {});
+        throw error;
+    }
+    if (buffer.trim()) dispatch(buffer);
+    if (!terminalEvent) throw new Error('The transfer progress stream ended before its final status.');
+    return terminalEvent;
+};
 
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
@@ -35,6 +98,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const [nextId, setNextId] = React.useState(1);
     const [nextTerminalId, setNextTerminalId] = React.useState(1);
     const [toast, setToast] = React.useState('');
+    const [transferProgress, setTransferProgress] = React.useState(null);
     const [clipboard, setClipboard] = React.useState(null);
     const [contextMenu, setContextMenu] = React.useState(null);
     const menuPosition = usePaneMenuPosition(contextMenu);
@@ -44,6 +108,10 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const backgroundLoadRef = React.useRef(0);
     const pendingBackgroundUrlRef = React.useRef('');
     const backgroundPersistenceRef = React.useRef(Promise.resolve());
+    const transferSequenceRef = React.useRef(0);
+    const transferRunningRef = React.useRef(false);
+    const transferDismissTimerRef = React.useRef(null);
+    const transferMountedRef = React.useRef(true);
     const windowsRef = React.useRef(windows);
     windowsRef.current = windows;
     const terminalWindowsRef = React.useRef(terminalWindows);
@@ -51,6 +119,22 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const activeWindow = windows.find((pane) => pane.id === activeId && !pane.minimized);
     const locationFor = (id) => locations.find((location) => location.id === id);
     const announce = (message) => { setToast(message); window.setTimeout(() => setToast(''), 3000); };
+    const clearTransferDismissTimer = () => {
+        if (transferDismissTimerRef.current !== null) window.clearTimeout(transferDismissTimerRef.current);
+        transferDismissTimerRef.current = null;
+    };
+    const dismissTransferProgress = () => {
+        clearTransferDismissTimer();
+        setTransferProgress((current) => current?.status === 'running' ? current : null);
+    };
+    React.useEffect(() => {
+        transferMountedRef.current = true;
+        return () => {
+            transferMountedRef.current = false;
+            transferRunningRef.current = false;
+            clearTransferDismissTimer();
+        };
+    }, []);
     const openPrivateConsole = async (destination) => {
         try {
             const response = await fetch('/auth/browser-handoff', { method: 'POST', headers: token ? { Authorization: `Bearer ${token}` } : {} });
@@ -171,11 +255,111 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const moveItems = async (sourceId, destinationId, items, operation = 'cut') => {
         const source = windows.find((pane) => pane.id === sourceId); const destination = windows.find((pane) => pane.id === destinationId);
         const sourceLocation = locationFor(source?.locationId); const destinationLocation = locationFor(destination?.locationId);
-        if (!source || !destination || sourceId === destinationId || !sourceLocation || !destinationLocation) return;
-        const response = await fetch('/api/files/paste', { method: 'POST', headers: { ...paneHeaders(token, sourceLocation), 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map((item) => ({ name: item.name, isDirectory: item.isDirectory, path: normalisePanePath(item.path || `${source.path}/${item.name}`), sourceLocationId: source.locationId })), operation, sourceLocationId: source.locationId, sourceLocationRevision: sourceLocation.revision, targetLocationId: destination.locationId, targetLocationRevision: destinationLocation.revision, targetPath: destination.path }) });
-        if (!response.ok) throw new Error('Move or copy failed.');
-        announce(`${operation === 'cut' ? 'Moved' : 'Copied'} ${items.length} item${items.length === 1 ? '' : 's'}.`);
-        await Promise.all([loadFiles(sourceId, source.path, source.query), loadFiles(destinationId, destination.path, destination.query)]);
+        if (!source || !destination || sourceId === destinationId || !sourceLocation || !destinationLocation || !items.length || transferRunningRef.current) return;
+        clearTransferDismissTimer();
+        transferRunningRef.current = true;
+        const transferId = ++transferSequenceRef.current;
+        const totalItems = items.length;
+        const operationLabel = operation === 'cut' ? 'Move' : 'Copy';
+        setTransferProgress({
+            id: transferId,
+            operation,
+            status: 'running',
+            phase: 'preparing',
+            currentName: items[0].name,
+            totalItems,
+            completedItems: 0,
+            failedItems: 0,
+            resolvedItems: 0,
+            remainingItems: totalItems,
+            failures: [],
+            message: `Preparing to ${operation === 'cut' ? 'move' : 'copy'} items...`
+        });
+        const updateProgress = (patch) => {
+            if (!transferMountedRef.current) return;
+            setTransferProgress((current) => current?.id === transferId ? { ...current, ...patch } : current);
+        };
+        const finishProgress = (status, data) => {
+            if (!transferMountedRef.current) return;
+            clearTransferDismissTimer();
+            updateProgress({
+                ...data,
+                status,
+                phase: 'finished',
+                currentName: data.currentName || data.results?.at(-1)?.name || items[0].name
+            });
+            if (status === 'completed') {
+                transferDismissTimerRef.current = window.setTimeout(() => {
+                    setTransferProgress((current) => current?.id === transferId ? null : current);
+                    transferDismissTimerRef.current = null;
+                }, 1800);
+            }
+        };
+        try {
+            const response = await fetch('/api/files/paste', {
+                method: 'POST',
+                headers: { ...paneHeaders(token, sourceLocation), 'Accept': 'text/event-stream', 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items: items.map((item) => ({ name: item.name, isDirectory: item.isDirectory, path: normalisePanePath(item.path || `${source.path}/${item.name}`), sourceLocationId: source.locationId })), operation, sourceLocationId: source.locationId, sourceLocationRevision: sourceLocation.revision, targetLocationId: destination.locationId, targetLocationRevision: destinationLocation.revision, targetPath: destination.path })
+            });
+            let finalData;
+            let finalEvent = 'complete';
+            if (response.ok && response.headers.get('content-type')?.includes('text/event-stream')) {
+                const terminal = await consumePasteProgressStream(response, (event, data) => {
+                    if (event === 'start') {
+                        updateProgress({ ...data, phase: 'preparing', status: 'running' });
+                    } else if (event === 'item-start') {
+                        updateProgress({ ...data, phase: 'transferring', status: 'running' });
+                    } else if (event === 'item-result') {
+                        setTransferProgress((current) => {
+                            if (!transferMountedRef.current || current?.id !== transferId) return current;
+                            const previousFailures = (current.failures || []).filter((result) => result.itemIndex !== data.itemIndex);
+                            const failures = data.result?.success === false
+                                ? [...previousFailures, { ...data.result, itemIndex: data.itemIndex }].slice(0, PANE_TRANSFER_FAILURE_PREVIEW_LIMIT)
+                                : previousFailures;
+                            return { ...current, ...data, failures, phase: 'transferring', status: 'running' };
+                        });
+                    }
+                });
+                finalEvent = terminal.event;
+                finalData = terminal.payload;
+            } else {
+                finalData = await response.json();
+                if (!response.ok && !finalData.error) finalData.error = `${operationLabel} request failed (${response.status}).`;
+            }
+            const results = Array.isArray(finalData.results) ? finalData.results : [];
+            const failures = results.filter((result) => result?.success === false).slice(0, PANE_TRANSFER_FAILURE_PREVIEW_LIMIT);
+            const completedItems = Number.isInteger(finalData.completedItems) ? finalData.completedItems : results.filter((result) => result?.success === true).length;
+            const failedItems = Number.isInteger(finalData.failedItems) ? finalData.failedItems : results.filter((result) => result?.success === false).length;
+            const resolvedItems = Number.isInteger(finalData.resolvedItems) ? finalData.resolvedItems : results.length;
+            const remainingItems = Number.isInteger(finalData.remainingItems) ? finalData.remainingItems : Math.max(0, totalItems - resolvedItems);
+            // Only a successful terminal event and HTTP response may auto-dismiss the panel.
+            const succeeded = finalEvent === 'complete' && finalData.success === true && response.ok;
+            const status = succeeded ? 'completed' : (finalData.status === 'partial' || completedItems > 0 ? 'partial' : 'failed');
+            finishProgress(status, {
+                currentName: results.at(-1)?.name,
+                totalItems,
+                completedItems,
+                failedItems,
+                resolvedItems,
+                remainingItems,
+                failures,
+                message: status === 'completed'
+                    ? `${operationLabel} complete.`
+                    : finalData.error || finalData.message || `${operationLabel} did not complete. Check the source and destination Locations before retrying.`
+            });
+            if (completedItems > 0 && transferMountedRef.current) {
+                await Promise.all([loadFiles(sourceId, source.path, source.query), loadFiles(destinationId, destination.path, destination.query)]);
+            }
+        } catch (error) {
+            clearTransferDismissTimer();
+            updateProgress({
+                status: 'unconfirmed',
+                phase: 'finished',
+                message: `${operationLabel} outcome is unconfirmed: ${error.message}. Check both Locations before retrying.`
+            });
+        } finally {
+            transferRunningRef.current = false;
+        }
     };
     const runAction = async (id, action) => {
         const pane = windows.find((item) => item.id === id); const location = locationFor(pane?.locationId); const items = pane ? selectedItems(pane) : [];
@@ -368,6 +552,10 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         '--pane-background-scale': backgroundScale,
         '--pane-background-position': `${backgroundPosition.x}% ${backgroundPosition.y}%`
     } : undefined;
+    const transferVerb = transferProgress?.operation === 'copy' ? 'copy' : 'move';
+    const transferTotal = Math.max(0, Number(transferProgress?.totalItems) || 0);
+    const transferResolved = Math.min(transferTotal, Math.max(0, Number(transferProgress?.resolvedItems) || 0));
+    const transferPercent = transferTotal ? transferResolved / transferTotal * 100 : 0;
     return <div className={`pane-explorer${customBackground ? ' has-custom-background' : ''}`} data-theme={theme} style={backgroundStyle} onContextMenu={(event) => event.preventDefault()}>
         {customBackground && <div className="pane-custom-background" aria-hidden="true" />}
         <header className="pane-titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control"><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu pane-account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}<button type="button" className="style-settings-trigger" aria-expanded={styleSettingsOpen} onClick={() => setStyleSettingsOpen((open) => !open)}>Style settings <span aria-hidden="true">⌄</span></button>{styleSettingsOpen && <div className="pane-account-style"><h2>Interface style</h2><p>Choose the central workspace appearance.</p><label>Interface mode<select aria-label="Interface style" value="pane" onChange={(event) => onStyleChange(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><label>Central background<select aria-label="Central background" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="default">Default Gradient</option><option value="circuit">Dark Circuit</option><option value="space">Deep Space</option><option value="ocean">Ocean Signal</option><option value="aurora">Aurora Tech</option><option value="neon">Soft Neon</option><option value="light">Clean Light</option></select></label><button type="button" className="pane-background-button" onClick={() => backgroundInput.current?.click()}>▧ Choose background image</button>{customBackground && <button type="button" className="pane-background-edit-button" onClick={() => setBackgroundEditorOpen(true)}>▣ Edit background placement</button>}<input ref={backgroundInput} className="pane-hidden-file" type="file" accept="image/*" onChange={selectBackground} />{customBackground && <button type="button" className="pane-reset-background" onClick={clearBackground}>Use default background</button>}</div>}<hr /><button type="button" className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
@@ -388,6 +576,33 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             <PaneTools active={activeWindow} onUpload={() => fileInput.current?.click()} onAction={(action) => activeId && void runAction(activeId, action)} onOpenTerminal={openTerminalWindow} />
         </main>
         <input ref={fileInput} type="file" multiple hidden onChange={upload} />
+        {transferProgress && <div className="pane-transfer-cover" data-status={transferProgress.status}>
+            <section className="pane-transfer-panel" role="dialog" aria-modal={transferProgress.status === 'running' ? 'true' : 'false'} aria-labelledby="pane-transfer-title" aria-describedby="pane-transfer-message">
+                <header className="pane-transfer-header">
+                    <div><span className="pane-transfer-eyebrow">FILE TRANSFER</span><h2 id="pane-transfer-title">{transferVerb === 'move' ? 'Move items' : 'Copy items'}</h2></div>
+                    <span className="pane-transfer-indicator" aria-hidden="true">{transferProgress.status === 'completed' ? '✓' : transferProgress.status === 'running' ? '↻' : '!'}</span>
+                </header>
+                <div className="pane-transfer-current">
+                    <span>{transferProgress.status === 'running' ? transferProgress.phase === 'preparing' ? 'Preparing transfer' : `${transferVerb === 'move' ? 'Moving' : 'Copying'} now` : 'Last item'}</span>
+                    <strong title={transferProgress.currentName || ''}>{transferProgress.currentName || 'Selected items'}</strong>
+                </div>
+                <div className="pane-transfer-progress" role="progressbar" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax={transferTotal} aria-valuenow={transferResolved} aria-valuetext={`${transferProgress.completedItems || 0} completed, ${transferProgress.remainingItems || 0} remaining`}>
+                    <span style={{ width: `${transferPercent}%` }} />
+                    {transferProgress.status === 'running' && <span className="pane-transfer-scan" aria-hidden="true" />}
+                </div>
+                <div className="pane-transfer-counts">
+                    <strong>{transferProgress.completedItems || 0} of {transferTotal} items {transferVerb === 'move' ? 'moved' : 'copied'}</strong>
+                    <span>{transferProgress.remainingItems || 0} remaining</span>
+                    {transferProgress.failedItems > 0 && <span className="pane-transfer-failed-count">{transferProgress.failedItems} failed</span>}
+                </div>
+                <p id="pane-transfer-message" className="pane-transfer-message" role="status" aria-live="polite">{transferProgress.message}</p>
+                {(transferProgress.failures || []).length > 0 && <ul className="pane-transfer-errors" aria-label="Failed items">
+                    {(transferProgress.failures || []).map((result, index) => <li key={`${result.path || result.name}-${index}`}><strong>{result.name || result.path}</strong><span>{result.error || 'The item could not be transferred.'}</span></li>)}
+                </ul>}
+                {transferProgress.failedItems > (transferProgress.failures || []).length && <p className="pane-transfer-message">Showing {transferProgress.failures.length} of {transferProgress.failedItems} failed items.</p>}
+                {transferProgress.status !== 'running' && <div className="pane-transfer-actions"><button type="button" onClick={dismissTransferProgress}>Close</button></div>}
+            </section>
+        </div>}
         {transferQueue.some(item => item.kind === 'upload') && <aside className="pane-upload-queue" aria-label="API upload queue">
             <strong>API Uploads</strong>
             {transferQueue.filter(item => item.kind === 'upload').slice(-8).map(item => <article className={`pane-upload-queue-item queue-status-${item.status}`} key={item.id}>

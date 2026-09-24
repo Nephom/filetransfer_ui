@@ -1470,11 +1470,66 @@ app.post('/api/files/move', authenticate, async (req, res) => {
 app.post('/api/files/paste', authenticate, async (req, res) => {
   const processedItems = [];
   const results = [];
+  let completedItems = 0;
+  let failedItems = 0;
+  // Keep the streamed terminal payload bounded; per-item events already report all outcomes.
+  const progressFailurePreviewLimit = 50;
+  const wantsProgressStream = req.get('Accept')?.split(',').some(value => value.trim().startsWith('text/event-stream'));
+  let progressStreamStarted = false;
+  let progressHeartbeatTimer = null;
+  const stopProgressHeartbeat = () => {
+    if (progressHeartbeatTimer !== null) clearInterval(progressHeartbeatTimer);
+    progressHeartbeatTimer = null;
+  };
+  const endProgressStream = () => {
+    stopProgressHeartbeat();
+    if (!res.writableEnded) res.end();
+  };
+  const startProgressStream = () => {
+    if (!wantsProgressStream || progressStreamStarted) return;
+    progressStreamStarted = true;
+    res.status(200).set({
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no'
+    });
+    res.flushHeaders();
+    progressHeartbeatTimer = setInterval(() => {
+      if (res.writableEnded || res.destroyed) {
+        stopProgressHeartbeat();
+        return;
+      }
+      // Keep long-running folder transfers alive through idle-timeout proxies.
+      res.write(': keep-alive\n\n');
+    }, 15_000);
+    progressHeartbeatTimer.unref?.();
+    res.once('close', stopProgressHeartbeat);
+  };
+  const sendProgressEvent = (event, data) => {
+    if (!wantsProgressStream || res.writableEnded || res.destroyed) return;
+    startProgressStream();
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
   try {
     const { items, operation, targetPath, sourceLocationId, targetLocationId, destinationLocationId } = req.body;
 
     if (!Array.isArray(items) || items.length === 0 || !['copy', 'cut'].includes(operation)) {
       return res.status(400).json({ success: false, error: 'A non-empty items array and copy or cut operation are required', processedItems, results });
+    }
+
+    if (wantsProgressStream) {
+      startProgressStream();
+      sendProgressEvent('start', {
+        totalItems: items.length,
+        operation,
+        currentName: typeof items[0]?.name === 'string' ? items[0].name : '',
+        completedItems: 0,
+        failedItems: 0,
+        resolvedItems: 0,
+        remainingItems: items.length,
+        status: 'preparing'
+      });
     }
 
     const pasteCapability = operation === 'copy' ? 'copy' : 'move';
@@ -1530,7 +1585,18 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
       }
 
       await withOperationLocks(treePaths, async () => {
-        for (const { item, sourcePath, destinationPath, sourceContext, destinationContext } of operands) {
+        for (let itemIndex = 0; itemIndex < operands.length; itemIndex++) {
+          const { item, sourcePath, destinationPath, sourceContext, destinationContext } = operands[itemIndex];
+          sendProgressEvent('item-start', {
+            currentName: item.name,
+            itemIndex: itemIndex + 1,
+            totalItems: operands.length,
+            completedItems,
+            failedItems,
+            resolvedItems: results.length,
+            remainingItems: operands.length - results.length,
+            status: 'running'
+          });
           let copied = false;
           try {
             if (operation === 'copy' || sourceContext.locationId !== destinationContext.locationId) {
@@ -1542,8 +1608,10 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
             }
             processedItems.push(item.name);
             results.push({ name: item.name, path: sourcePath, sourceLocationId: sourceContext.locationId, success: true });
+            completedItems++;
           } catch (error) {
             results.push({ name: item.name, path: sourcePath, sourceLocationId: sourceContext.locationId, success: false, copied, error: publicErrorMessage(error) });
+            failedItems++;
           } finally {
             await refreshDirectoryCache(targetContext.targetPath, 'refresh_after_paste', req, targetContext.fileSystem).catch(() => {});
             if (operation === 'cut') {
@@ -1553,22 +1621,68 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
           systemLogger.logFileOperation(pasteCapability, destinationPath, results[results.length - 1].success, req, {
             source: sourceContext.targetPath, target: destinationContext.targetPath
           });
+          sendProgressEvent('item-result', {
+            currentName: item.name,
+            itemIndex: itemIndex + 1,
+            totalItems: operands.length,
+            result: results[results.length - 1],
+            completedItems,
+            failedItems,
+            resolvedItems: results.length,
+            remainingItems: operands.length - results.length,
+            status: results[results.length - 1].success ? 'completed' : 'failed'
+          });
         }
       });
     });
 
     const success = results.every(item => item.success);
-    res.status(success ? 200 : processedItems.length ? 207 : 500).json({
+    const responseBody = {
       success,
       locationId: targetContext.locationId,
       message: `${processedItems.length} item(s) ${operation === 'copy' ? 'copied' : 'moved'} successfully`,
       ...(success ? {} : { error: 'One or more paste items failed' }),
       processedItems,
       results
-    });
+    };
+    if (wantsProgressStream) {
+      sendProgressEvent('complete', {
+        success,
+        locationId: targetContext.locationId,
+        message: responseBody.message,
+        ...(success ? {} : { error: responseBody.error }),
+        currentName: results.at(-1)?.name || '',
+        results: results.filter(item => item.success === false).slice(0, progressFailurePreviewLimit),
+        status: success ? 'completed' : completedItems > 0 ? 'partial' : 'failed',
+        totalItems: items.length,
+        completedItems,
+        failedItems,
+        resolvedItems: results.length,
+        remainingItems: items.length - results.length
+      });
+      return endProgressStream();
+    }
+    res.status(success ? 200 : processedItems.length ? 207 : 500).json(responseBody);
   } catch (error) {
     systemLogger.logFileOperation(req.body?.operation === 'copy' ? 'copy' : 'move', req.body?.targetPath || '/', false, req, { error: error.message });
-    res.status(error.statusCode || (error.code === 'ENOENT' ? 404 : 500)).json({ success: false, error: publicErrorMessage(error), processedItems, results });
+    const message = publicErrorMessage(error);
+    if (wantsProgressStream && progressStreamStarted) {
+      const totalItems = Array.isArray(req.body?.items) ? req.body.items.length : results.length;
+      sendProgressEvent('error', {
+        success: false,
+        status: completedItems > 0 ? 'partial' : 'failed',
+        error: message,
+        currentName: results.at(-1)?.name || req.body?.items?.[0]?.name || '',
+        results: results.filter(item => item.success === false).slice(0, progressFailurePreviewLimit),
+        totalItems,
+        completedItems,
+        failedItems,
+        resolvedItems: results.length,
+        remainingItems: Math.max(0, totalItems - results.length)
+      });
+      return endProgressStream();
+    }
+    res.status(error.statusCode || (error.code === 'ENOENT' ? 404 : 500)).json({ success: false, error: message, processedItems, results });
   }
 });
 

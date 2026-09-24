@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { Terminal } from '@xterm/xterm';
 import { usePaneMenuPosition } from './pane-workspace-utils.js';
 
@@ -28,6 +29,7 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     const [editingId, setEditingId] = React.useState(null);
     const [form, setForm] = React.useState(emptyForm);
     const [menu, setMenu] = React.useState(null);
+    const [menuThemeStyle, setMenuThemeStyle] = React.useState({});
     const menuPosition = usePaneMenuPosition(menu);
     const terminalContainer = React.useRef(null);
     const terminalRef = React.useRef(null);
@@ -380,6 +382,22 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     };
 
     React.useEffect(() => { void fetchTargets(); }, [fetchTargets]);
+    React.useLayoutEffect(() => {
+        if (!menu) {
+            setMenuThemeStyle({});
+            return;
+        }
+        const themeRoot = terminalContainer.current?.closest('.pane-explorer');
+        if (!themeRoot) return;
+        const theme = window.getComputedStyle(themeRoot);
+        const controlFontSize = theme.getPropertyValue('--pane-control-font-size').trim();
+        setMenuThemeStyle({
+            '--pane-accent': theme.getPropertyValue('--pane-accent').trim(),
+            '--pane-line-strong': theme.getPropertyValue('--pane-line-strong').trim(),
+            '--pane-text': theme.getPropertyValue('--pane-text').trim(),
+            '--pane-small-font-size': controlFontSize || theme.getPropertyValue('--pane-small-font-size').trim()
+        });
+    }, [menu]);
     React.useEffect(() => {
         const closeMenu = (event) => {
             if (event.target.closest?.('.pane-context-menu')) return;
@@ -422,6 +440,10 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         };
     }, [clearReconnect, copySelection, fitTerminal, pasteClipboard, token]);
 
+    const contextMenuPortal = menu && typeof document !== 'undefined' && document.body
+        ? createPortal(<div ref={menuPosition.ref} className="pane-context-menu pane-terminal-context-menu" style={{ ...menuPosition.style, ...menuThemeStyle, zIndex: 10000 }} onClick={event => event.stopPropagation()}><button type="button" onClick={() => { setMenu(null); void copySelection(); }}>Copy</button><button type="button" onClick={() => { setMenu(null); void pasteClipboard(); }}>Paste</button><button type="button" onClick={() => { setMenu(null); pasteSelected(); }}>Paste selected</button><button type="button" onClick={() => { setMenu(null); terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button></div>, document.body)
+        : null;
+
     return <article data-window-id={pane.id} className={`pane-window pane-terminal-window ${active ? 'is-active' : ''} ${pane.minimized ? 'is-minimized' : ''} ${pane.maximized ? 'is-maximized' : ''}`} style={{ zIndex: pane.z, ...(pane.position ? { left: `${pane.position.left}px`, top: `${pane.position.top}px` } : {}) }} onPointerDown={() => onFocus(pane.id)} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY }); }}>
         <header className="pane-window-titlebar" onPointerDown={externalOnTitlePointerDown || onTitlePointerDown} onPointerMove={externalOnTitlePointerMove || onTitlePointerMove} onPointerUp={externalOnTitlePointerUp || onTitlePointerUp}>
             <div><span className="terminal-icon" aria-hidden="true">&gt;_</span><strong>{selectedTarget?.displayName || 'SSH Terminal'}</strong><small>{statusLabel(sshStatus)}{selectedTarget ? ` · ${selectedTarget.host}` : ''}</small></div>
@@ -432,6 +454,6 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         <div className="pane-terminal-clipboard"><button type="button" onClick={() => void copySelection()}>Copy</button><button type="button" onClick={() => void pasteClipboard()}>Paste</button><button type="button" onClick={pasteSelected}>Paste selected</button><button type="button" onClick={() => { terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button><span className={`pane-terminal-transport ${transportStatus}`}>{statusLabel(sshStatus)}</span></div>
         {error && <div className="pane-error" role="alert">{error}</div>}
         <div className="pane-terminal-output" ref={terminalContainer} />
-         {menu && <div ref={menuPosition.ref} className="pane-context-menu pane-terminal-context-menu" style={menuPosition.style} onClick={event => event.stopPropagation()}><button type="button" onClick={() => { setMenu(null); void copySelection(); }}>Copy</button><button type="button" onClick={() => { setMenu(null); void pasteClipboard(); }}>Paste</button><button type="button" onClick={() => { setMenu(null); pasteSelected(); }}>Paste selected</button><button type="button" onClick={() => { setMenu(null); terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button></div>}
+         {contextMenuPortal}
     </article>;
 }
