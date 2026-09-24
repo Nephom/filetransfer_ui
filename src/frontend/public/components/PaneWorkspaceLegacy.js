@@ -19,7 +19,7 @@ const normaliseBackgroundScale = (scale) => clamp(roundScale(Number(scale) || 1)
 
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
-export default function PaneWorkspace({ token, user, onLogout, onStyleChange, onActivateTerminal }) {
+export default function PaneWorkspace({ token, user, onLogout, onStyleChange, onOpenTerminal }) {
     const [locations, setLocations] = React.useState([]);
     const [windows, setWindows] = React.useState([]);
     const [terminalWindows, setTerminalWindows] = React.useState([]);
@@ -99,6 +99,11 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, on
         setTerminalWindows((current) => current.filter((item) => item.id !== id));
         setActiveId((current) => current === id ? null : current);
     };
+    const restoreTerminalWindow = (id) => {
+        const z = nextZIndex();
+        setTerminalWindows((current) => current.map((pane) => pane.id === id ? { ...pane, minimized: false, z } : pane));
+        setActiveId(id);
+    };
     const focusWindow = (id) => {
         const pane = [...windowsRef.current, ...terminalWindowsRef.current].find((item) => item.id === id);
         if (!pane || pane.minimized) return;
@@ -106,9 +111,6 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, on
         const z = nextZIndex();
         setWindows((current) => current.map((item) => item.id === id ? { ...item, z } : item));
         setTerminalWindows((current) => current.map((item) => item.id === id ? { ...item, z } : item));
-        if (id.startsWith('terminal-') && onActivateTerminal) {
-            onActivateTerminal(id);
-        }
     };
     const minimizeWindow = (id) => {
         setWindows((current) => current.map((pane) => pane.id === id ? { ...pane, minimized: true } : pane));
