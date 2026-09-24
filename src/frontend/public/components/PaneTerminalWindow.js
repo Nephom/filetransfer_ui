@@ -143,10 +143,11 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
             }
             if (event.data instanceof Blob) {
                 const arrayBuffer = await event.data.arrayBuffer();
-                console.log('[Terminal] Writing Blob data to terminal, size:', arrayBuffer.byteLength);
+                console.log('[Terminal] Writing Blob data to terminal, size:', arrayBuffer.byteLength, 'first bytes:', new Uint8Array(arrayBuffer).slice(0, 50));
                 terminalRef.current?.write(new Uint8Array(arrayBuffer));
             } else {
-                console.log('[Terminal] Writing raw data to terminal');
+                const dataStr = typeof event.data === 'string' ? event.data : String(event.data);
+                console.log('[Terminal] Writing raw data to terminal, length:', dataStr.length, 'preview:', dataStr.substring(0, 100));
                 terminalRef.current?.write(event.data);
             }
         };
