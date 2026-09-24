@@ -4,8 +4,8 @@ const KEY_ENVIRONMENT_VARIABLE = 'SSH_TARGET_ENCRYPTION_KEY';
 const SECRET_VERSION = 1;
 
 const encryptionKeyError = () => Object.assign(
-  new Error(`Set ${KEY_ENVIRONMENT_VARIABLE} to a 32-byte hex or base64 key before storing SSH credentials.`),
-  { code: 'SSH_ENCRYPTION_KEY_MISSING', statusCode: 503 }
+    new Error(`SSH encryption key (${KEY_ENVIRONMENT_VARIABLE}) is not configured. Please set it to a 32-byte hex or base64 key.`),
+    { code: 'SSH_ENCRYPTION_KEY_MISSING', statusCode: 400 }
 );
 
 const resolveEncryptionKey = (value = process.env[KEY_ENVIRONMENT_VARIABLE]) => {

@@ -271,7 +271,19 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         try {
             const response = await fetch(editingId ? `/api/terminal/targets/${encodeURIComponent(editingId)}` : '/api/terminal/targets', { method: editingId ? 'PUT' : 'POST', headers: { ...authHeaders(token), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const data = await response.json().catch(() => ({}));
-            if (!response.ok) throw new Error(data.error || 'Unable to save SSH target.');
+            if (!response.ok) {
+                const errorMessage = data.error || 'Unable to save SSH target.';
+                if (errorMessage.includes('encryption key') || errorMessage.includes('SSH_TARGET_ENCRYPTION_KEY')) {
+                    setError('Server configuration error: SSH encryption key is not configured. Please contact your administrator to set the SSH_TARGET_ENCRYPTION_KEY environment variable.');
+                } else if (errorMessage.includes('private key is required')) {
+                    setError('Private key is required for private-key authentication. Please enter your private key content.');
+                } else if (errorMessage.includes('password is required')) {
+                    setError('Password is required for password authentication. Please enter your password.');
+                } else {
+                    setError(errorMessage);
+                }
+                return;
+            }
             await fetchTargets();
             if (data.target?.id) setTargetId(data.target.id);
             setFormOpen(false);
