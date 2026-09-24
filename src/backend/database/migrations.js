@@ -104,6 +104,85 @@ const MIGRATIONS = [
       await db.run('CREATE INDEX IF NOT EXISTS idx_terminal_audit_target ON terminal_audit_events(targetId, createdAt)');
       await db.run('CREATE INDEX IF NOT EXISTS idx_terminal_audit_user ON terminal_audit_events(userId, createdAt)');
     }
+  },
+  {
+    id: '006-create-resumable-upload-sessions',
+    description: 'Persist owner-bound resumable API upload sessions and verified file offsets.',
+    async up(db) {
+      await db.run(`
+        CREATE TABLE IF NOT EXISTS upload_sessions (
+          sessionId TEXT PRIMARY KEY,
+          ownerIdType TEXT NOT NULL CHECK(ownerIdType IN ('number', 'string')),
+          ownerId TEXT NOT NULL,
+          username TEXT NOT NULL,
+          locationId TEXT NOT NULL,
+          locationRevision TEXT NOT NULL,
+          destinationPath TEXT NOT NULL,
+          clientAttemptId TEXT NOT NULL,
+          chunkSize INTEGER NOT NULL,
+          expectedFileCount INTEGER NOT NULL,
+          expectedDirectoryCount INTEGER NOT NULL,
+          totalSize INTEGER NOT NULL DEFAULT 0,
+          uploadedSize INTEGER NOT NULL DEFAULT 0,
+          manifestComplete INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL,
+          createdAt INTEGER NOT NULL,
+          updatedAt INTEGER NOT NULL,
+          expiresAt INTEGER NOT NULL
+        )
+      `);
+      await db.run(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_upload_sessions_attempt
+        ON upload_sessions(ownerIdType, ownerId, username, clientAttemptId)
+      `);
+      await db.run(`
+        CREATE INDEX IF NOT EXISTS idx_upload_sessions_owner_status
+        ON upload_sessions(ownerIdType, ownerId, username, status, expiresAt)
+      `);
+      await db.run(`
+        CREATE TABLE IF NOT EXISTS upload_session_files (
+          fileId TEXT PRIMARY KEY,
+          sessionId TEXT NOT NULL REFERENCES upload_sessions(sessionId) ON DELETE CASCADE,
+          fileIndex INTEGER NOT NULL,
+          relativePath TEXT NOT NULL,
+          collisionKey TEXT NOT NULL,
+          fileName TEXT NOT NULL,
+          size INTEGER NOT NULL,
+          chunkHashes TEXT NOT NULL,
+          manifestHash TEXT NOT NULL,
+          uploadedOffset INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending',
+          publishPath TEXT,
+          publishTempPath TEXT,
+          createdAt INTEGER NOT NULL,
+          updatedAt INTEGER NOT NULL,
+          UNIQUE(sessionId, fileIndex)
+        )
+      `);
+      await db.run('CREATE INDEX IF NOT EXISTS idx_upload_session_files_session ON upload_session_files(sessionId, fileIndex)');
+      await db.run('CREATE INDEX IF NOT EXISTS idx_upload_session_files_collision ON upload_session_files(sessionId, collisionKey, fileIndex, status)');
+      await db.run(`
+        CREATE TABLE IF NOT EXISTS upload_session_directories (
+          sessionId TEXT NOT NULL REFERENCES upload_sessions(sessionId) ON DELETE CASCADE,
+          directoryIndex INTEGER NOT NULL,
+          relativePath TEXT NOT NULL,
+          PRIMARY KEY(sessionId, directoryIndex)
+        )
+      `);
+      await db.run(`
+        CREATE TABLE IF NOT EXISTS upload_session_manifest_pages (
+          sessionId TEXT NOT NULL REFERENCES upload_sessions(sessionId) ON DELETE CASCADE,
+          pageIndex INTEGER NOT NULL,
+          fileOffset INTEGER NOT NULL,
+          directoryOffset INTEGER NOT NULL,
+          fileCount INTEGER NOT NULL,
+          directoryCount INTEGER NOT NULL,
+          contentBytes INTEGER NOT NULL,
+          contentHash TEXT NOT NULL,
+          PRIMARY KEY(sessionId, pageIndex)
+        )
+      `);
+    }
   }
 ];
 

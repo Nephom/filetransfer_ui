@@ -31,6 +31,12 @@ tempUploadRetentionDays=7
 # The cleanup also runs once during service startup. Minimum: 1. Default: 24.
 tempUploadCleanupIntervalHours=24
 
+[transfer]
+# Resumable API uploads retain incomplete sessions for 4 hours.
+# Chunk size in bytes; valid range is 1 MiB to 64 MiB. 8388608 = 8 MiB.
+chunkSize=8388608
+enableResume=true
+
 [locations]
 # Optional JSON array of server-side Locations. These paths are on the server, not on the user's computer.
 # For NFS, mount the share first and set rootPath to the mounted directory.

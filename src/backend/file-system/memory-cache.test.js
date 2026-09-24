@@ -94,6 +94,16 @@ test('all cache key families isolate Locations, roots, search and statistics', a
   assert.equal(database.get('password-reset:sentinel'), 'secret');
 });
 
+test('resumable publication temporary files never appear in Location directory listings', async t => {
+  const root = await fixture(t);
+  await fs.writeFile(path.join(root, '.nfterm-upload-session-file.tmp'), 'private staged output');
+  await fs.writeFile(path.join(root, 'visible.txt'), 'visible');
+  const cache = makeCache(t, root, 'resumable-filter', new Map());
+  await cache.initialize();
+  const entries = await cache.getDirectoryContents(root);
+  assert.deepEqual(entries.map(entry => entry.name), ['visible.txt']);
+});
+
 test('cold root changes preserve old namespaces and stale results are checked against disk', async t => {
   let now = 0;
   t.mock.method(performance, 'now', () => now);

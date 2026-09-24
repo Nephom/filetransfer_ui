@@ -6,11 +6,14 @@ export type TransferQueueItem = {
   id: string;
   operationId?: string;
   serverBatchId?: string;
+  serverSessionId?: string;
   clientAttemptId?: string;
   serverOrigin?: string;
   ownerId?: number | string;
   locationRevision?: string;
-  uploadOutcome?: "reserved" | "accepted" | "reconcile" | "settled";
+  uploadOutcome?: "reserved" | "accepted" | "reconcile" | "resumable" | "settled";
+  uploadChildCount?: number;
+  uploadActiveChildren?: number;
   cancellationRequested?: boolean;
   label: string;
   kind: "upload" | "download" | "download-set";
@@ -70,8 +73,10 @@ export const readPersistedQueue = (): TransferQueueItem[] => {
           ...withOperationId,
           status: "needs_user_action",
           errorCategory: "unknown",
-          ...(item.serverBatchId ? { uploadOutcome: "reconcile" as const } : {}),
-          detail: item.serverBatchId
+          ...(item.serverSessionId ? { uploadOutcome: "resumable" as const } : item.serverBatchId ? { uploadOutcome: "reconcile" as const } : {}),
+          detail: item.serverSessionId
+            ? "Upload interrupted. Resume only the unfinished files and byte ranges; completed files are kept."
+            : item.serverBatchId
             ? "Server upload outcome is unconfirmed. Reconcile the original batch; do not re-upload."
             : requiresRequeue
             ? "Transfer was interrupted when nFterm closed. Re-add it to authenticate again."

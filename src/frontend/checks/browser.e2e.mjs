@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -33,6 +34,9 @@ let pasteDelay = 0;
 let shareDelay = 0;
 const requests = [];
 const batches = new Map();
+const uploadManifestHash = (size, chunkHashes) => createHash('sha256')
+    .update(Buffer.concat([...chunkHashes.map(hash => Buffer.from(hash, 'hex')), Buffer.from(String(size))]))
+    .digest('hex');
 let uploadMode = 'running';
 let progressFailures = 0;
 let settleCancellation = false;
@@ -52,7 +56,8 @@ const server = http.createServer(async (req, res) => {
         const url = new URL(req.url, 'http://127.0.0.1');
         const chunks = [];
         for await (const chunk of req) chunks.push(chunk);
-        const body = Buffer.concat(chunks).toString();
+        const rawBody = Buffer.concat(chunks);
+        const body = rawBody.toString();
         const jsonBody = req.headers['content-type']?.includes('application/json') && body ? JSON.parse(body) : null;
         const fixtureUserId = req.headers.cookie?.includes('fixtureUserB=1') ? 'fixture-user-b' : 'fixture-user-a';
         requests.push({ path: url.pathname, query: url.search, method: req.method, body: jsonBody, raw: body, headers: req.headers });
@@ -109,38 +114,104 @@ const server = http.createServer(async (req, res) => {
             if (shareDelay) await new Promise(resolve => setTimeout(resolve, shareDelay));
             return json({ success: true, data: { ...fixtureShare, fullUrl: `http://${req.headers.host}${fixtureShare.shareUrl}`, directDownloadFullUrl: `http://${req.headers.host}${fixtureShare.directDownloadUrl}` } });
         }
-        if (url.pathname === '/api/upload/batches') {
-            const batchId = `fixture-batch-${batches.size + 1}`;
-            const batch = { batchId, status: 'reserved', phase: 'reserved', locationId: req.headers['x-location-id'], expiresAt: Date.now() + 60000, totalSize: 12, totalSizeKnown: true, transferredSize: 0, progress: 0, successCount: 0, failedCount: 0, cancelledCount: 0, pendingCount: 1, uploads: 0, cancelCalls: 0 };
-            batches.set(batchId, batch);
-            if (reserveDelay) await new Promise(resolve => setTimeout(resolve, reserveDelay));
-            return json(batch, 201);
+        if (url.pathname === '/api/upload/sessions/config' && req.method === 'GET') return json({ chunkSize: 8 * 1024 * 1024 });
+        if (url.pathname === '/api/upload/sessions' && req.method === 'GET') {
+            return json({ sessions: [...batches.values()].filter(session => !['completed', 'cancelled', 'failed'].includes(session.status)) });
         }
-        if (url.pathname === '/api/upload/multiple') {
-            const batch = batches.get(req.headers['x-upload-batch-id']);
-            assert.ok(batch, 'upload must reserve first');
-            assert.equal(req.headers['x-location-id'], batch.locationId);
-            batch.uploads++;
-            batch.status = 'processing'; batch.phase = 'writing'; batch.transferredSize = 5; batch.progress = 5 / 12 * 100;
+        if (url.pathname === '/api/upload/sessions' && req.method === 'POST') {
+            const existing = [...batches.values()].find(session => session.clientAttemptId === jsonBody.clientAttemptId && !['completed', 'cancelled', 'failed'].includes(session.status));
+            if (existing) return json(existing, 200);
+            const sessionId = `fixture-session-${batches.size + 1}`;
+            const session = { sessionId, status: 'manifest', phase: 'manifest', locationId: req.headers['x-location-id'], path: jsonBody.path,
+                clientAttemptId: jsonBody.clientAttemptId, chunkSize: jsonBody.chunkSize || 8 * 1024 * 1024,
+                expectedFileCount: jsonBody.fileCount, expectedDirectoryCount: jsonBody.directoryCount,
+                totalSize: 0, uploadedSize: 0, manifestComplete: false, expiresAt: Date.now() + 4 * 60 * 60 * 1000,
+                files: [], directories: [], uploads: 0, cancelCalls: 0 };
+            batches.set(sessionId, session);
+            if (reserveDelay) await new Promise(resolve => setTimeout(resolve, reserveDelay));
+            return json(session, 201);
+        }
+        if (url.pathname === '/api/upload/sessions' && req.method === 'GET') {
+            return json({ sessions: [...batches.values()].filter(session => !['completed', 'cancelled', 'failed'].includes(session.status)) });
+        }
+        const manifestPage = url.pathname.match(/^\/api\/upload\/sessions\/([^/]+)\/manifest\/pages\/(\d+)$/);
+        if (manifestPage && req.method === 'POST') {
+            const session = batches.get(manifestPage[1]);
+            assert.ok(session, 'manifest page must belong to a reserved session');
+            session.files.push(...jsonBody.files.map((file, index) => ({ ...file, manifestHash: uploadManifestHash(file.size, file.chunkHashes), index: jsonBody.fileOffset + index, uploadedOffset: 0, status: 'pending' })));
+            session.directories.push(...jsonBody.directories);
+            return json({ success: true }, 201);
+        }
+        const sessionMatch = url.pathname.match(/^\/api\/upload\/sessions\/([^/]+)$/);
+        if (sessionMatch && req.method === 'GET') {
+            const session = batches.get(sessionMatch[1]);
+            assert.ok(session, 'known upload session');
+            assert.equal(req.headers['x-location-id'], session.locationId);
+            if (session.cancelCalls && settleCancellation) session.status = 'cancelled';
+            const offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit') || 100);
+            const directoryOffset = Number(url.searchParams.get('directoryOffset') || 0);
+            const files = session.files.slice(offset, offset + limit), directories = session.directories.slice(directoryOffset, directoryOffset + limit);
+            return json({ session, files, nextOffset: offset + files.length < session.files.length ? offset + files.length : null,
+                directories, nextDirectoryOffset: directoryOffset + directories.length < session.directories.length ? directoryOffset + directories.length : null });
+        }
+        const manifestComplete = url.pathname.match(/^\/api\/upload\/sessions\/([^/]+)\/manifest\/complete$/);
+        if (manifestComplete && req.method === 'POST') {
+            const session = batches.get(manifestComplete[1]);
+            session.manifestComplete = true; session.status = 'uploading';
+            session.totalSize = session.files.reduce((sum, file) => sum + file.size, 0);
+            return json(session);
+        }
+        const chunkRoute = url.pathname.match(/^\/api\/upload\/sessions\/([^/]+)\/files\/([^/]+)\/chunks$/);
+        if (chunkRoute && req.method === 'PUT') {
+            const session = batches.get(chunkRoute[1]);
+            const file = session?.files.find(candidate => candidate.fileId === chunkRoute[2]);
+            assert.ok(file, 'chunk belongs to an upload manifest file');
+            const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(req.headers['content-range'] || '');
+            assert.ok(range, 'chunk uses an explicit byte range');
+            const start = Number(range[1]), end = Number(range[2]);
+            if (start !== file.uploadedOffset) return json({ expectedOffset: file.uploadedOffset, error: { message: 'offset mismatch' } }, 409);
+            assert.equal(Number(range[3]), file.size);
+            assert.equal(createHash('sha256').update(rawBody).digest('hex'), req.headers['x-chunk-sha256']);
+            const chunkIndex = Math.floor(start / session.chunkSize);
+            assert.equal(req.headers['x-chunk-sha256'], file.chunkHashes[chunkIndex]);
+            assert.equal(rawBody.length, end - start + 1);
+            file.uploadedOffset = end + 1;
+            session.uploadedSize = session.files.reduce((sum, current) => sum + current.uploadedOffset, 0);
+            session.transferredSize = session.uploadedSize;
+            session.uploads += 1;
             if (uploadMode === 'lost') {
-                // Lose the acceptance body after headers, not an idle keep-alive socket
-                // (Chromium can transparently replay the latter below the application).
-                res.writeHead(202, { 'Content-Type': 'application/json', 'Content-Length': '100' });
-                res.write('{"batchId":');
+                uploadMode = 'running';
+                res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '100' });
+                res.write('{"uploadedOffset":');
                 setTimeout(() => res.destroy(), 10);
                 return;
             }
             if (uploadMode === 'held') await new Promise(resolve => setTimeout(resolve, 1500));
-            return json({ batchId: batch.batchId }, 202);
+            return json({ fileId: file.fileId, uploadedOffset: file.uploadedOffset, size: file.size, status: 'uploading' });
         }
-        if (url.pathname.startsWith('/api/progress/batch/')) {
-            const batch = batches.get(url.pathname.split('/')[4]);
-            assert.ok(batch, 'known reserved batch');
-            assert.equal(req.headers['x-location-id'], batch.locationId);
-            if (url.pathname.endsWith('/cancel')) { batch.cancelCalls++; batch.status = 'cancelling'; batch.phase = 'cancelling'; return json(batch, 202); }
-            if (progressFailures > 0) { progressFailures--; return json({ error: 'fixture progress outage' }, 503); }
-            if (batch.cancelCalls && settleCancellation) { batch.status = 'cancelled'; batch.phase = 'cancelled'; batch.cancelledCount = 1; batch.pendingCount = 0; }
-            return json(batch);
+        const fileComplete = url.pathname.match(/^\/api\/upload\/sessions\/([^/]+)\/files\/([^/]+)\/complete$/);
+        if (fileComplete && req.method === 'POST') {
+            const session = batches.get(fileComplete[1]);
+            const file = session?.files.find(candidate => candidate.fileId === fileComplete[2]);
+            assert.ok(file, 'file completion belongs to a manifest entry');
+            assert.equal(file.uploadedOffset, file.size);
+            file.status = 'completed';
+            return json({ fileId: file.fileId, status: 'completed', uploadedOffset: file.size, size: file.size, path: file.path });
+        }
+        const sessionComplete = url.pathname.match(/^\/api\/upload\/sessions\/([^/]+)\/complete$/);
+        if (sessionComplete && req.method === 'POST') {
+            const session = batches.get(sessionComplete[1]);
+            assert.ok(session.files.every(file => file.status === 'completed'));
+            session.status = 'completed';
+            return json({ sessionId: session.sessionId, status: 'completed' });
+        }
+        const sessionCancel = url.pathname.match(/^\/api\/upload\/sessions\/([^/]+)\/cancel$/);
+        if (sessionCancel && req.method === 'POST') {
+            const session = batches.get(sessionCancel[1]);
+            assert.ok(session, 'known session must be cancelled');
+            session.cancelCalls += 1; session.status = 'cancelling';
+            if (settleCancellation) session.status = 'cancelled';
+            return json(session, session.status === 'cancelling' ? 202 : 200);
         }
         if (url.pathname === '/api/admin/users') return json({ users: [fixtureUser], stats: {} });
         if (url.pathname.startsWith('/api/admin/users/')) return json({ user: fixtureUser, success: true });
@@ -358,8 +429,15 @@ try {
     await page.getByRole('button', { name: 'Location A', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent.includes('10000 items'));
 
-    await page.locator('input[type="file"]').setInputFiles({ name: 'fixture.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
+    uploadMode = 'held';
+    await page.locator('input[type="file"]').first().setInputFiles({ name: 'fixture.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
     await waitFor(() => batches.size === 1 && [...batches.values()][0].uploads === 1, 'reserved upload dispatched');
+    const uploadOptionsIndex = requests.findIndex(request => request.path === '/api/upload/sessions/config' && request.method === 'GET');
+    const uploadReservationIndex = requests.findIndex(request => request.path === '/api/upload/sessions' && request.method === 'POST');
+    const uploadManifestIndex = requests.findIndex(request => request.path.endsWith('/manifest/pages/0') && request.method === 'POST');
+    assert.ok(uploadOptionsIndex >= 0 && uploadOptionsIndex < uploadReservationIndex && uploadReservationIndex < uploadManifestIndex,
+        'chunk options and source preparation precede session reservation; manifest pages follow it');
+    assert.equal(requests[uploadReservationIndex].body.chunkSize, 8 * 1024 * 1024);
     await page.getByRole('button', { name: 'Location B', exact: true }).click();
     await page.locator('.queue-panel-item button').filter({ hasText: /^Cancel$/ }).click();
     await waitFor(() => [...batches.values()][0].cancelCalls === 1, 'separate backend cancellation request');
@@ -368,32 +446,40 @@ try {
     assert.equal(await page.locator('.queue-status-cancelled').count(), 0);
     settleCancellation = true;
     await page.locator('.queue-status-cancelled').waitFor();
-    assert.match(await page.locator('.queue-status-cancelled').innerText(), /0 completed, 0 failed, 1 cancelled/);
+    assert.match(await page.locator('.queue-status-cancelled').innerText(), /completed files are kept/i);
     assert.match(await page.locator('.file-row').first().innerText(), /B-only/);
     assert.equal([...batches.values()][0].uploads, 1);
-    assert.equal([...batches.values()][0].transferredSize, 5);
-    report.checks.push('reservation header, captured upload Location, separate cancel fetch, 202 versus settlement, measured partial bytes');
+    assert.equal([...batches.values()][0].uploadedSize, 12);
+    report.checks.push('durable upload session, captured upload Location, chunk offset, separate cancel fetch, 202 versus settlement');
 
-    uploadMode = 'lost'; progressFailures = 5;
-    await page.locator('input[type="file"]').setInputFiles({ name: 'lost.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
-    await page.locator('.queue-status-needs_user_action').waitFor();
+    const sessionsBeforeCollisionPreflight = batches.size;
+    const requestsBeforeCollisionPreflight = requests.length;
+    await page.locator('input[type="file"]').first().setInputFiles(Array.from({ length: 501 }, () => ({
+        name: 'same-target.txt', mimeType: 'text/plain', buffer: Buffer.alloc(0)
+    })));
+    await page.locator('.queue-status-needs_user_action').filter({ hasText: 'Upload 501 files' }).waitFor();
+    assert.equal(batches.size, sessionsBeforeCollisionPreflight, 'an oversized same-target group is rejected before session creation');
+    assert.equal(requests.slice(requestsBeforeCollisionPreflight).some(request => request.path === '/api/upload/sessions' && request.method === 'POST'), false);
+    report.checks.push('oversized same-destination groups fail preflight without creating an unusable resumable session');
+
+    uploadMode = 'lost';
+    await page.locator('input[type="file"]').first().setInputFiles({ name: 'lost.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
+    await waitFor(() => [...batches.values()][1]?.status === 'completed', 'lost chunk response reconciled by offset');
     const lost = [...batches.values()][1];
     assert.equal(lost.uploads, 1);
-    lost.status = 'completed'; lost.phase = 'completed'; lost.transferredSize = 12; lost.progress = 100; lost.successCount = 1; lost.pendingCount = 0;
-    await page.locator('.queue-status-needs_user_action button').filter({ hasText: 'Reconcile' }).click();
-    await page.locator('.queue-status-completed').waitFor();
+    assert.equal(lost.files[0].uploadedOffset, 12);
     assert.equal(lost.uploads, 1);
-    report.checks.push('lost acceptance and polling outage reconcile existing batch, no duplicate upload on manual retry');
+    report.checks.push('lost chunk response resumes from the server checkpoint without retransmitting accepted bytes');
 
     reserveDelay = 600;
-    await page.locator('input[type="file"]').setInputFiles({ name: 'reserve-cancel.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
+    await page.locator('input[type="file"]').first().setInputFiles({ name: 'reserve-cancel.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
     await waitFor(() => batches.size === 3, 'reservation is in flight');
     await page.locator('.queue-status-running button').filter({ hasText: /^Cancel$/ }).click();
     await waitFor(() => [...batches.values()][2].cancelCalls > 0, 'cancel after reservation response');
     await page.waitForFunction(() => document.querySelectorAll('.queue-status-cancelled').length === 2);
     assert.equal([...batches.values()][2].uploads, 0);
     reserveDelay = 0; uploadMode = 'held';
-    await page.locator('input[type="file"]').setInputFiles({ name: 'transport-cancel.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
+    await page.locator('input[type="file"]').first().setInputFiles({ name: 'transport-cancel.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
     await waitFor(() => batches.size === 4 && [...batches.values()][3].uploads === 1, 'upload acceptance is in flight');
     await page.locator('.queue-status-running button').filter({ hasText: /^Cancel$/ }).click();
     await page.waitForFunction(() => document.querySelectorAll('.queue-status-cancelled').length === 3);
@@ -715,6 +801,12 @@ try {
     assert.equal(await managedPane.locator('.pane-window-navigation input').inputValue(), 'preserved-query', 'restore preserves pane state');
     const panePositionAfterRestore = await managedPane.boundingBox();
     assert.ok(Math.abs(panePositionAfterRestore.x - panePositionBeforeMinimize.x) < 2 && Math.abs(panePositionAfterRestore.y - panePositionBeforeMinimize.y) < 2, 'restore preserves pane position');
+    uploadMode = 'running';
+    await page.getByRole('button', { name: 'Pane Upload', exact: true }).click();
+    await page.locator('.pane-explorer input[type="file"]').setInputFiles({ name: 'pane-upload.txt', mimeType: 'text/plain', buffer: Buffer.from('pane upload') });
+    await waitFor(() => batches.size === 5 && [...batches.values()][4].status === 'completed', 'Pane API upload uses the resumable session queue');
+    assert.equal([...batches.values()][4].uploads, 1);
+    report.checks.push('Pane Style upload shares resumable API sessions, chunk integrity, and Transfer Queue completion');
     await managedPane.locator('button[aria-label="Close window"]').click();
     while (await page.locator('.pane-minimized-item').count()) await page.locator('.pane-minimized-item').last().locator('.pane-minimized-close').click();
     await page.locator('.pane-minimized-dock').waitFor({ state: 'detached' });

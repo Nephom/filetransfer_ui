@@ -2,6 +2,7 @@ import React from 'react';
 import WebQueueStore from '../queue/store.js';
 import VirtualFileList from './VirtualFileList.js';
 import PaneWorkspace from './PaneWorkspace.js';
+import { buildBrowserManifestPages, buildBrowserUploadManifest, inferBrowserUploadDirectories, planBrowserUploadChildren, rebindBrowserUploadManifest } from '../upload-batching.js';
 
 const formatSize = (size) => {
     if (!size) return size === 0 ? '0 B' : '--';
@@ -178,6 +179,8 @@ export default function FileBrowser({ token, user, onLogout }) {
     const [queueOpen, setQueueOpen] = React.useState(false);
     const [accountOpen, setAccountOpen] = React.useState(false);
     const inputRef = React.useRef(null);
+    const resumeDirectoryInputRef = React.useRef(null);
+    const resumeTargetRef = React.useRef(null);
     const accountRef = React.useRef(null);
     const dragExpandTimer = React.useRef(null);
     const notificationTimer = React.useRef(null);
@@ -235,6 +238,50 @@ export default function FileBrowser({ token, user, onLogout }) {
     const sortedIndices = React.useMemo(() => new Map(sortedFiles.map((file, index) => [itemKey(file), index])), [sortedFiles]);
     const selectedItems = React.useMemo(() => files.filter(file => selectedSet.has(itemKey(file))), [files, selectedSet]);
     const pathForItem = (item) => normalisePath(item.path || (currentPath ? `${currentPath}/${item.name}` : item.name));
+
+    React.useEffect(() => {
+        let active = true;
+        fetch('/api/upload/sessions', { headers: headersForLocation('') })
+            .then(response => response.ok ? response.json() : Promise.reject(new Error('Unable to restore upload sessions.')))
+            .then(data => {
+                if (!active || !sessionRef.current.active) return;
+                const existingIds = new Set(queueItemsRef.current.map(item => item.serverSessionId).filter(Boolean));
+                const restored = (data.sessions || []).filter(session => session?.sessionId && !existingIds.has(session.sessionId))
+                    .map(session => {
+                        const status = session.status === 'completed' ? 'completed'
+                            : session.status === 'cancelled' ? 'cancelled'
+                                : session.status === 'failed' ? 'failed' : 'needs_user_action';
+                        return {
+                            id: `resume-${session.sessionId}`, serverSessionId: session.sessionId,
+                            clientAttemptId: session.clientAttemptId,
+                            serverOrigin: window.location.origin, ownerId: user.id,
+                            expectedFileCount: session.expectedFileCount,
+                            expectedDirectoryCount: session.expectedDirectoryCount,
+                            label: `Resume ${session.expectedFileCount} file(s)`, kind: 'upload', paths: [],
+                            destinationPath: session.path || '', locationId: session.locationId,
+                            locationName: locations.find(location => location.id === session.locationId)?.displayName || session.locationId,
+                            status,
+                            detail: status === 'completed' ? 'Server reports this upload session completed.'
+                                : status === 'cancelled' ? 'Upload session was cancelled; completed files remain in the Location.'
+                                    : status === 'failed' ? 'Upload session failed; inspect the Location before starting a replacement.'
+                                        : 'Select the original files or folder to verify and resume unfinished ranges.',
+                            progress: { completedBytes: session.uploadedSize || 0, totalBytes: session.totalSize,
+                                percentage: session.totalSize ? (session.uploadedSize || 0) / session.totalSize * 100
+                                    : status === 'completed' ? 100 : null,
+                                bytesPerSecond: null, etaSeconds: null, completedItems: status === 'completed' ? session.expectedFileCount : 0,
+                                totalItems: session.expectedFileCount, updatedAt: Date.now() },
+                        };
+                    });
+                if (restored.length) {
+                    const next = [...queueItemsRef.current, ...restored];
+                    queueItemsRef.current = next;
+                    setQueueItems(next);
+                    setQueueOpen(true);
+                }
+            })
+            .catch(() => {});
+        return () => { active = false; };
+    }, [token, user.id]);
 
     const loadLocations = async () => {
         if (locationRefreshInProgress.current) return;
@@ -438,7 +485,9 @@ export default function FileBrowser({ token, user, onLogout }) {
         queueAbortControllersRef.current.clear();
         queueJobsRef.current.clear();
         uploadAttemptsRef.current.forEach(attempt => {
-            if (attempt.batchId && !attempt.terminal) {
+            if (attempt.sessionId && !attempt.terminal) {
+                void fetch(`/api/upload/sessions/${encodeURIComponent(attempt.sessionId)}/cancel`, { method: 'POST', headers: attempt.headers, keepalive: true }).catch(() => {});
+            } else if (attempt.batchId && !attempt.terminal) {
                 void fetch(`/api/progress/batch/${encodeURIComponent(attempt.batchId)}/cancel`, { method: 'POST', headers: attempt.headers, keepalive: true }).catch(() => {});
             }
             attempt.control.abort();
@@ -916,6 +965,7 @@ export default function FileBrowser({ token, user, onLogout }) {
             const attempt = uploadAttemptsRef.current.get(id);
             if (attempt) attempt.cancelRequested = true;
             updateQueueItem(id, { detail: 'Cancellation requested; waiting for server settlement.' });
+            void attempt?.cancel?.().catch(() => undefined);
             return;
         }
         const retryTimer = queueRetryTimersRef.current.get(id);
@@ -954,48 +1004,6 @@ export default function FileBrowser({ token, user, onLogout }) {
         queueItemsRef.current = next;
         setQueueItems(next);
     };
-    const uploadFormData = (queueId, data, attempt, signal) => new Promise((resolve, reject) => {
-        if (signal.aborted) { reject(new Error('Upload transport cancelled.')); return; }
-        const request = new XMLHttpRequest();
-        request.open('POST', '/api/upload/multiple');
-        Object.entries({ ...attempt.headers, 'X-Upload-Batch-ID': attempt.batchId }).forEach(([name, value]) => request.setRequestHeader(name, value));
-        const samples = [];
-        request.upload.onprogress = (event) => {
-            if (!event.lengthComputable) {
-                updateQueueItem(queueId, { detail: 'Uploading file data... total size is being determined.' });
-                return;
-            }
-            const now = Date.now();
-            samples.push({ bytes: event.loaded, at: now });
-            while (samples.length > 1 && now - samples[0].at > 3000) samples.shift();
-            const oldest = samples[0];
-            const bytesPerSecond = oldest && now > oldest.at
-                ? (event.loaded - oldest.bytes) / ((now - oldest.at) / 1000)
-                : null;
-            const eta = bytesPerSecond ? Math.max(0, (event.total - event.loaded) / bytesPerSecond) : null;
-            const percentage = event.total > 0 ? event.loaded / event.total * 100 : null;
-            updateQueueItem(queueId, {
-                detail: `Sending request body ${formatSize(event.loaded)} / ${formatSize(event.total)}${percentage === null ? '' : ` (${Math.round(percentage)}%)`}${bytesPerSecond ? ` · ${formatRate(bytesPerSecond)}` : ''}`,
-                transportProgress: { completedBytes: event.loaded, totalBytes: event.total, percentage, bytesPerSecond, etaSeconds: eta, updatedAt: now }
-            });
-        };
-        const abort = () => request.abort();
-        signal?.addEventListener('abort', abort, { once: true });
-        request.onerror = () => { signal?.removeEventListener('abort', abort); reject(new Error('Upload network request failed.')); };
-        request.onabort = () => { signal?.removeEventListener('abort', abort); reject(new Error('Upload request was cancelled.')); };
-        request.onload = () => {
-            signal?.removeEventListener('abort', abort);
-            let result = {};
-            try { result = JSON.parse(request.responseText || '{}'); } catch { /* handled as an API error below */ }
-            if (request.status < 200 || request.status >= 300) {
-                reject(new Error(result.error?.message || result.error || 'Upload failed.'));
-                return;
-            }
-            resolve(result);
-        };
-        request.send(data);
-    });
-
     const startDownload = () => {
         if (!selectedItems.length) return;
         const isArchive = selectedItems.length > 1 || selectedItems[0].isDirectory;
@@ -1126,111 +1134,460 @@ export default function FileBrowser({ token, user, onLogout }) {
             if (!response.ok) { const data = await response.json(); throw new Error(data.error || 'Rename complete.'); } setModal(null); showSuccess('Rename complete.'); loadFiles(currentPath); loadTreeChildren(locationId, '', true);
         } catch (requestError) { if (current()) setError(requestError.message); }
     };
-    const uploadFiles = async (items, directories = []) => {
-        if (!items.length && !directories.length) return;
-        const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const fetchUploadSession = async (sessionId, attempt) => {
+        let offset = 0, directoryOffset = 0, current = null;
+        const files = [], directories = [];
+        do {
+            const page = await fetch(`/api/upload/sessions/${encodeURIComponent(sessionId)}?offset=${offset}&directoryOffset=${directoryOffset}&limit=100`, {
+                headers: attempt.headers, signal: attempt.control.signal
+            });
+            const data = await page.json().catch(() => ({}));
+            if (!page.ok) throw new Error(data.error?.message || data.error || `Unable to read upload session (${page.status}).`);
+            current = data;
+            files.push(...(data.files || []));
+            directories.push(...(data.directories || []));
+            offset = data.nextOffset ?? data.session.expectedFileCount;
+            directoryOffset = data.nextDirectoryOffset ?? data.session.expectedDirectoryCount;
+        } while (offset < current.session.expectedFileCount || directoryOffset < current.session.expectedDirectoryCount);
+        if (!current?.session) throw new Error('Invalid upload session response.');
+        return { session: current.session, files, directories };
+    };
+
+    const controlFetchForUpload = async (url, attempt, options = {}) => {
+        if (!attempt.session.active) throw new Error('Upload session ended.');
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        const timer = window.setTimeout(abort, 30000);
+        attempt.control.signal.addEventListener('abort', abort, { once: true });
+        if (attempt.control.signal.aborted) abort();
+        try {
+            const response = await fetch(url, { ...options, headers: { ...attempt.headers, ...options.headers }, signal: controller.signal });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw Object.assign(new Error(data.error?.message || data.error || `Upload control request failed (${response.status}).`), {
+                status: response.status, retryAfterMs: data.retryAfterMs,
+            });
+            return data;
+        } finally {
+            window.clearTimeout(timer);
+            attempt.control.signal.removeEventListener('abort', abort);
+        }
+    };
+
+    const uploadFiles = (items, directories = [], existingItem = null, uploadContext = {}) => {
+        if (!items.length && !directories.length && !existingItem) return;
+        const id = existingItem?.id || `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const targetPath = existingItem?.destinationPath ?? uploadContext.path ?? currentPath;
+        const targetLocationId = existingItem?.locationId ?? uploadContext.locationId ?? locationId;
         const totalBytes = items.reduce((sum, item) => sum + (Number(item.file.size) || 0), 0);
-        const attempt = { path: currentPath, locationId, headers: { ...authHeaders }, session: sessionRef.current, control: new AbortController(), current: requestGate.current.capture(), batchId: null, sent: false, terminal: false, cancelRequested: false };
+        const previousAttempt = uploadAttemptsRef.current.get(id);
+        if (existingItem && (existingItem.serverOrigin !== window.location.origin || existingItem.ownerId !== user.id)) {
+            setError('Resume requires the original server and account. Sign in to the original account first.');
+            return;
+        }
+        const attempt = {
+            path: targetPath, locationId: targetLocationId, headers: headersForLocation(targetLocationId),
+            session: sessionRef.current, control: new AbortController(), current: requestGate.current.capture(),
+            sessionId: existingItem?.serverSessionId || null, cancelRequested: false, cancelPromise: null,
+            clientAttemptId: existingItem?.clientAttemptId || id, terminal: false, ownerId: user.id,
+            onComplete: uploadContext.onComplete || previousAttempt?.onComplete,
+            refreshMain: !(uploadContext.onComplete || previousAttempt?.onComplete),
+        };
+        previousAttempt?.control.abort();
         uploadAttemptsRef.current.set(id, attempt);
-        enqueueTransfer({
-            id,
+        const queueItem = existingItem || {
+            id, clientAttemptId: id, serverOrigin: window.location.origin, ownerId: user.id,
+            locationRevision: locations.find(location => location.id === targetLocationId)?.revision,
+            expectedDirectoryCount: directories.length,
             label: `Upload ${items.length} file${items.length === 1 ? '' : 's'}`,
-            status: 'queued',
-            detail: 'Waiting to start',
-            kind: 'upload',
-            finishedAt: null,
-            progress: { completedBytes: 0, totalBytes, percentage: totalBytes ? 0 : null, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: items.length, updatedAt: Date.now() }
-        }, async (queueId, signal) => {
-            const controlFetch = async (url, options = {}) => {
-                if (!attempt.session.active) throw new Error('Upload session ended.');
-                const controller = new AbortController();
-                const abort = () => controller.abort();
-                const timer = window.setTimeout(abort, 10000);
-                attempt.control.signal.addEventListener('abort', abort, { once: true });
-                if (attempt.control.signal.aborted) abort();
-                try {
-                    const response = await fetch(url, { ...options, headers: { ...attempt.headers, ...options.headers }, signal: controller.signal });
-                    const data = await response.json();
-                    if (!response.ok) throw new Error(data.error?.message || data.error || `Upload control request failed (${response.status}).`);
-                    return data;
-                } finally {
-                    window.clearTimeout(timer);
-                    attempt.control.signal.removeEventListener('abort', abort);
+            kind: 'upload', paths: [], destinationPath: targetPath, locationId: targetLocationId,
+            locationName: uploadContext.locationName || locations.find(location => location.id === targetLocationId)?.displayName || targetLocationId,
+            status: 'queued', detail: 'Waiting to start', finishedAt: null,
+            progress: { completedBytes: 0, totalBytes, percentage: totalBytes ? 0 : null,
+                bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: items.length, updatedAt: Date.now() }
+        };
+        const job = (queueId, signal) => runBrowserUploadSession(queueId, items, directories, attempt, signal);
+        if (existingItem) {
+            queueJobsRef.current.set(id, job);
+            updateQueueItem(id, { status: 'queued', detail: 'Verifying selected files against the saved upload session.', finishedAt: null });
+            void runNextQueueItem();
+        } else enqueueTransfer(queueItem, job);
+    };
+
+    const beginResumeUpload = (item, onComplete) => {
+        if (!item.serverSessionId || item.serverOrigin !== window.location.origin || item.ownerId !== user.id) {
+            setError('Resume requires the original server and account. Sign in to the original account first.');
+            return;
+        }
+        if (item.expectedFileCount === 0) {
+            uploadFiles([], [], item, { onComplete });
+            return;
+        }
+        resumeTargetRef.current = { item, onComplete };
+        if (item.expectedDirectoryCount > 0) resumeDirectoryInputRef.current?.click();
+        else inputRef.current?.click();
+    };
+
+    const runBrowserUploadSession = async (queueId, items, directories, attempt, signal) => {
+        const totalBytes = items.reduce((sum, item) => sum + (Number(item.file.size) || 0), 0);
+        const directoryManifest = inferBrowserUploadDirectories(items, directories);
+        const offsets = new Map();
+        const statuses = new Map();
+        const activeChunks = new Map();
+        const failures = [];
+        let sessionInfo;
+        const updateProgress = () => {
+            const completedBytes = Math.min(totalBytes, [...offsets.values()].reduce((sum, value) => sum + value, 0)
+                + [...activeChunks.values()].reduce((sum, value) => sum + value, 0));
+            const completedItems = [...statuses.values()].filter(status => status === 'completed').length;
+            const now = Date.now();
+            updateQueueItem(queueId, {
+                progress: { completedBytes, totalBytes, percentage: totalBytes ? completedBytes / totalBytes * 100 : null,
+                    bytesPerSecond: null, etaSeconds: null, completedItems, totalItems: items.length, updatedAt: now }
+            });
+        };
+        const readSnapshot = async sessionId => fetchUploadSession(sessionId, attempt);
+        const cancelRemote = () => {
+            if (attempt.cancelPromise) return attempt.cancelPromise;
+            attempt.cancelPromise = (async () => {
+                if (!attempt.sessionId && attempt.createStarted) {
+                    const recovered = await controlFetchForUpload('/api/upload/sessions', attempt, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ path: attempt.path, clientAttemptId: attempt.clientAttemptId,
+                            chunkSize: attempt.chunkSize, fileCount: attempt.fileCount, directoryCount: attempt.directoryCount })
+                    });
+                    attempt.sessionId = recovered.sessionId;
+                    updateQueueItem(attempt.queueId, { sessionId: recovered.sessionId, serverSessionId: recovered.sessionId });
+                }
+                if (!attempt.sessionId) return null;
+                return controlFetchForUpload(`/api/upload/sessions/${encodeURIComponent(attempt.sessionId)}/cancel`, attempt, { method: 'POST' });
+            })();
+            return attempt.cancelPromise;
+        };
+        attempt.cancel = () => cancelRemote();
+        const settleCancellation = async () => {
+            if (!attempt.sessionId && !attempt.createStarted) {
+                attempt.terminal = true;
+                return { status: 'cancelled', detail: 'Upload cancelled before reserving a server session.' };
+            }
+            try { await cancelRemote(); } catch {}
+            for (let poll = 0; poll < 60 && attempt.session.active; poll += 1) {
+                const snapshot = attempt.sessionId ? await readSnapshot(attempt.sessionId).catch(() => null) : null;
+                if (snapshot?.session.status === 'completed' || (snapshot && snapshot.files.length === snapshot.session.expectedFileCount && snapshot.files.every(file => file.status === 'completed'))) {
+                    attempt.terminal = true;
+                    return { status: 'completed', detail: 'The server completed the upload before cancellation settled.' };
+                }
+                if (snapshot?.session.status === 'cancelled') {
+                    attempt.terminal = true;
+                    return { status: 'cancelled', detail: 'Upload cancelled. Completed files are kept; unfinished bytes remain resumable until expiry.' };
+                }
+                if (!snapshot || ['failed', 'expired'].includes(snapshot.session.status)) break;
+                await new Promise(resolve => window.setTimeout(resolve, 1000));
+            }
+            return { status: 'needs_user_action', detail: 'Cancellation outcome is unconfirmed. Check the same session before resuming.' };
+        };
+
+        const sendChunk = (session, file, offset) => new Promise((resolve, reject) => {
+            if (signal.aborted) { reject(new Error('Upload transport cancelled.')); return; }
+            const chunkIndex = Math.floor(offset / session.chunkSize);
+            const chunkHash = file.chunkHashes[chunkIndex];
+            const length = Math.min(session.chunkSize, file.size - offset);
+            if (!chunkHash || length <= 0) { reject(new Error(`Invalid resumable chunk for ${file.path}.`)); return; }
+            const request = new XMLHttpRequest();
+            request.open('PUT', `/api/upload/sessions/${encodeURIComponent(session.sessionId)}/files/${encodeURIComponent(file.fileId)}/chunks`);
+            Object.entries(attempt.headers).forEach(([name, value]) => request.setRequestHeader(name, value));
+            request.setRequestHeader('Content-Type', 'application/octet-stream');
+            request.setRequestHeader('Content-Range', `bytes ${offset}-${offset + length - 1}/${file.size}`);
+            request.setRequestHeader('X-Chunk-SHA256', chunkHash);
+            request.timeout = 10 * 60 * 1000;
+            const abort = () => request.abort();
+            signal.addEventListener('abort', abort, { once: true });
+            request.upload.onprogress = event => {
+                if (!event.lengthComputable) return;
+                activeChunks.set(file.fileId, Math.min(length, event.loaded));
+                updateProgress();
+                updateQueueItem(queueId, { detail: `Sending ${file.path}: ${formatSize(offset + Math.min(length, event.loaded))} / ${formatSize(file.size)}. Up to 2 child batches run concurrently; parallel uploads may use more resources and can be less efficient.` });
+            };
+            const cleanup = () => { signal.removeEventListener('abort', abort); activeChunks.delete(file.fileId); updateProgress(); };
+            request.onerror = () => { cleanup(); reject(new Error('Upload chunk network request failed.')); };
+            request.ontimeout = () => { cleanup(); reject(new Error('Upload chunk request timed out.')); };
+            request.onabort = () => { cleanup(); reject(new Error('Upload chunk request was cancelled.')); };
+            request.onload = () => {
+                let body = {};
+                try { body = JSON.parse(request.responseText || '{}'); } catch {}
+                if (request.status >= 200 && request.status < 300) {
+                    if (Number.isSafeInteger(body.uploadedOffset) && body.uploadedOffset >= offset && body.uploadedOffset <= file.size) {
+                        offsets.set(file.fileId, body.uploadedOffset);
+                        statuses.set(file.fileId, body.status || 'uploading');
+                    }
+                    cleanup();
+                    resolve({ status: request.status, body });
+                } else {
+                    cleanup();
+                    reject(Object.assign(new Error(body.error?.message || body.error || `Upload chunk failed (HTTP ${request.status}).`), { status: request.status, expectedOffset: body.expectedOffset }));
                 }
             };
-            if (!attempt.batchId) {
-                const reservation = await controlFetch('/api/upload/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: attempt.path, clientAttemptId: id }) });
-                if (!reservation.batchId || reservation.locationId !== attempt.locationId) throw new Error('Invalid upload reservation. No files were sent.');
-                attempt.batchId = reservation.batchId;
-                updateQueueItem(queueId, { batchId: attempt.batchId, locationId: attempt.locationId });
-            }
-            if (signal.aborted) attempt.cancelRequested = true;
-            if (!attempt.sent && !attempt.cancelRequested) {
-                const data = new FormData();
-                items.forEach(({ file, relativePath }) => {
-                    data.append('files', file, file.name);
-                    data.append('filePaths[]', relativePath);
-                });
-                directories.forEach(directory => data.append('directoryPaths[]', directory));
-                data.append('path', attempt.path);
-                // Once dispatched, even a lost acceptance response must be reconciled, never resent.
-                attempt.sent = true;
-                try { await uploadFormData(queueId, data, attempt, signal); }
-                catch { updateQueueItem(queueId, { detail: 'Transport ended; checking the reserved server batch.' }); }
-            }
-            let failures = 0;
-            let cancelSent = false;
-            for (let poll = 0; poll < 600; poll++) {
-                if (!attempt.session.active) throw new Error('Upload session ended.');
-                if (signal.aborted) attempt.cancelRequested = true;
-                try {
-                    if (attempt.cancelRequested && !cancelSent) {
-                        await controlFetch(`/api/progress/batch/${encodeURIComponent(attempt.batchId)}/cancel`, { method: 'POST' });
-                        cancelSent = true;
-                    }
-                    const progress = await controlFetch(`/api/progress/batch/${encodeURIComponent(attempt.batchId)}`);
-                    failures = 0;
-                    const detail = `${progress.phase || progress.status}: ${progress.successCount || 0} completed, ${progress.failedCount || 0} failed, ${progress.cancelledCount || 0} cancelled, ${progress.pendingCount || 0} pending.`;
-                    updateQueueItem(queueId, {
-                        detail: attempt.cancelRequested ? `Cancellation requested. ${detail}` : detail,
-                        progress: { completedBytes: progress.transferredSize, totalBytes: progress.totalSizeKnown ? progress.totalSize : null, percentage: progress.totalSizeKnown ? progress.progress : null, bytesPerSecond: null, etaSeconds: null, completedItems: progress.successCount, totalItems: (progress.successCount || 0) + (progress.failedCount || 0) + (progress.cancelledCount || 0) + (progress.pendingCount || 0), updatedAt: Date.now() }
-                    });
-                    if (['completed', 'failed', 'partial_fail', 'cancelled', 'expired'].includes(progress.status)) {
-                        attempt.terminal = true;
-                        if (attempt.current()) { loadFiles(attempt.path, attempt.locationId); loadTreeChildren(attempt.locationId, '', true); }
-                        return { status: progress.status === 'completed' ? 'completed' : progress.status === 'cancelled' ? 'cancelled' : 'failed', detail };
-                    }
-                } catch (error) {
-                    if (++failures >= 5 || !attempt.session.active) throw new Error(`Server outcome unconfirmed: ${error.message} Retry checks batch ${attempt.batchId}; it does not resend files.`);
-                    updateQueueItem(queueId, { detail: 'Server outcome unconfirmed; retrying batch control only.' });
-                }
-                await new Promise((resolve, reject) => {
-                    const abort = () => { window.clearTimeout(timer); reject(new Error('Upload session ended.')); };
-                    const timer = window.setTimeout(() => { attempt.control.signal.removeEventListener('abort', abort); resolve(); }, 1000);
-                    attempt.control.signal.addEventListener('abort', abort, { once: true });
-                    if (attempt.control.signal.aborted) abort();
-                });
-            }
-            throw new Error(`Server outcome unconfirmed. Retry checks batch ${attempt.batchId}; it does not resend files.`);
+            request.send(file.file.slice(offset, offset + length));
         });
+
+        const getRemoteFile = async file => {
+            const response = await controlFetchForUpload(`/api/upload/sessions/${encodeURIComponent(attempt.sessionId)}?offset=${file.index}&directoryOffset=0&limit=1`, attempt);
+            const remote = response.files?.find(entry => entry.fileId === file.fileId);
+            if (!remote) throw new Error(`Upload session no longer contains ${file.path}.`);
+            statuses.set(file.fileId, remote.status);
+            offsets.set(file.fileId, remote.uploadedOffset);
+            return remote;
+        };
+
+        const uploadFile = async (session, file, currentAttempt) => {
+            let remote = await getRemoteFile(file);
+            if (remote.status === 'completed') return;
+            let offset = remote.uploadedOffset;
+            while (offset < file.size) {
+                if (signal.aborted || attempt.cancelRequested) return;
+                try {
+                    const accepted = await sendChunk(session, file, offset);
+                    const nextOffset = Number(accepted.body.uploadedOffset);
+                    if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset || nextOffset > file.size) throw new Error('Server did not advance the upload checkpoint.');
+                    offset = nextOffset;
+                    offsets.set(file.fileId, offset);
+                    updateProgress();
+                } catch (error) {
+                    if (signal.aborted || attempt.cancelRequested) return;
+                    if ([400, 403, 404, 410, 413, 507].includes(error.status)) throw error;
+                    const refreshed = await getRemoteFile(file);
+                    if (refreshed.status === 'completed') return;
+                    if (refreshed.uploadedOffset > offset) { offset = refreshed.uploadedOffset; updateProgress(); continue; }
+                    currentAttempt.retries = (currentAttempt.retries || 0) + 1;
+                    if (currentAttempt.retries > 3) throw error;
+                    await new Promise(resolve => window.setTimeout(resolve, Math.min(30000, 1000 * (2 ** currentAttempt.retries))));
+                }
+            }
+            if (signal.aborted || attempt.cancelRequested) return;
+            let completed;
+            for (let retry = 0; retry < 50; retry += 1) {
+                try {
+                    completed = await controlFetchForUpload(`/api/upload/sessions/${encodeURIComponent(session.sessionId)}/files/${encodeURIComponent(file.fileId)}/complete`, attempt, { method: 'POST' });
+                    break;
+                } catch (error) {
+                    const delay = error.status === 409 ? error.retryAfterMs : null;
+                    if (!delay || retry === 49) throw error;
+                    await new Promise(resolve => window.setTimeout(resolve, Math.min(1000, delay)));
+                }
+            }
+            statuses.set(file.fileId, completed.status);
+            offsets.set(file.fileId, file.size);
+            updateProgress();
+        };
+
+        try {
+            updateQueueItem(queueId, { detail: attempt.sessionId ? 'Checking unfinished upload ranges...' : 'Preparing resumable upload manifest...' });
+            if (!attempt.session.active) throw new Error('Upload session ended.');
+            if (signal.aborted) attempt.cancelRequested = true;
+            let existingSessionId = attempt.sessionId;
+            if (!existingSessionId && attempt.clientAttemptId) {
+                const listed = await controlFetchForUpload('/api/upload/sessions', attempt);
+                const matching = listed.sessions?.find(candidate => candidate.clientAttemptId === attempt.clientAttemptId &&
+                    candidate.locationId === attempt.locationId && candidate.path === attempt.path);
+                if (matching) {
+                    existingSessionId = matching.sessionId;
+                    attempt.sessionId = matching.sessionId;
+                    updateQueueItem(queueId, { sessionId: matching.sessionId, serverSessionId: matching.sessionId });
+                }
+            }
+            if (existingSessionId) {
+                const snapshot = await readSnapshot(existingSessionId);
+                sessionInfo = snapshot.session;
+                if (sessionInfo.locationId !== attempt.locationId || sessionInfo.path !== attempt.path) {
+                    throw new Error('The unfinished upload belongs to a different Location or destination.');
+                }
+                if (sessionInfo.status === 'completed') {
+                    attempt.terminal = true;
+                    return { status: 'completed', detail: 'The server reports this upload is already complete.' };
+                }
+                if (['cancelled', 'cancelling', 'expired', 'failed'].includes(sessionInfo.status)) throw new Error(`The upload session is ${sessionInfo.status} and cannot resume.`);
+                if (!sessionInfo.manifestComplete) {
+                    await controlFetchForUpload(`/api/upload/sessions/${encodeURIComponent(existingSessionId)}/cancel`, attempt, { method: 'POST' });
+                    attempt.sessionId = null;
+                    attempt.clientAttemptId = `${queueId}-restart-${Date.now()}`;
+                    updateQueueItem(queueId, { sessionId: undefined, serverSessionId: undefined, clientAttemptId: attempt.clientAttemptId });
+                    sessionInfo = undefined;
+                } else {
+                    const manifest = await buildBrowserUploadManifest(items, directories, sessionInfo.chunkSize, signal);
+                    if (manifest.files.length !== sessionInfo.expectedFileCount || manifest.directories.length !== sessionInfo.expectedDirectoryCount ||
+                        manifest.directories.some((directory, index) => snapshot.directories[index] !== directory)) {
+                        throw new Error('Selected file and directory inventory does not match the unfinished upload.');
+                    }
+                    planBrowserUploadChildren(manifest.files, 500);
+                    if (signal.aborted || attempt.cancelRequested) return await settleCancellation();
+                    const files = rebindBrowserUploadManifest(manifest.files, snapshot.files);
+                    await executeChildren(queueId, files, sessionInfo, snapshot.files, attempt, signal, uploadFile, updateProgress, statuses, offsets, failures);
+                    return signal.aborted || attempt.cancelRequested
+                        ? await settleCancellation()
+                        : await settleBrowserSession(queueId, attempt, sessionInfo, failures, updateProgress);
+                }
+            }
+
+            const options = await controlFetchForUpload('/api/upload/sessions/config', attempt);
+            const chunkSize = options.chunkSize;
+            if (!Number.isSafeInteger(chunkSize) || chunkSize < 1024 * 1024 || chunkSize > 64 * 1024 * 1024) {
+                throw new Error('The server returned an unsupported upload chunk size.');
+            }
+            const manifest = await buildBrowserUploadManifest(items, directoryManifest, chunkSize, signal);
+            if (signal.aborted || attempt.cancelRequested) return await settleCancellation();
+            if (manifest.files.length !== items.length) throw new Error('Selected file inventory changed while preparing the checksum manifest.');
+            const pages = buildBrowserManifestPages(manifest.files, manifest.directories);
+            planBrowserUploadChildren(manifest.files, 500);
+            if (signal.aborted || attempt.cancelRequested) return await settleCancellation();
+
+            const createId = attempt.clientAttemptId || `${queueId}-${Date.now()}`;
+            attempt.clientAttemptId = createId;
+            attempt.fileCount = manifest.files.length;
+            attempt.directoryCount = manifest.directories.length;
+            attempt.chunkSize = chunkSize;
+            attempt.createStarted = true;
+            attempt.queueId = queueId;
+            updateQueueItem(queueId, { clientAttemptId: createId, serverOrigin: window.location.origin, ownerId: user.id });
+            sessionInfo = await controlFetchForUpload('/api/upload/sessions', attempt, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: attempt.path, clientAttemptId: createId, chunkSize,
+                    fileCount: manifest.files.length, directoryCount: manifest.directories.length }) });
+            if (!sessionInfo?.sessionId || sessionInfo.locationId !== attempt.locationId || sessionInfo.path !== attempt.path || sessionInfo.chunkSize !== chunkSize) {
+                throw new Error('Invalid resumable upload session response.');
+            }
+            attempt.sessionId = sessionInfo.sessionId;
+            updateQueueItem(queueId, { sessionId: sessionInfo.sessionId, serverSessionId: sessionInfo.sessionId,
+                expectedFileCount: sessionInfo.expectedFileCount, expectedDirectoryCount: sessionInfo.expectedDirectoryCount,
+                uploadOutcome: 'resumable' });
+            if (sessionInfo.status === 'completed') {
+                attempt.terminal = true;
+                return { status: 'completed', detail: 'The original resumable upload session already completed.' };
+            }
+            if (['cancelled', 'cancelling', 'failed', 'expired'].includes(sessionInfo.status)) {
+                throw new Error(`The original upload session is ${sessionInfo.status} and cannot be resent.`);
+            }
+            if (signal.aborted || attempt.cancelRequested) return await settleCancellation();
+
+            if (sessionInfo.manifestComplete) {
+                const snapshot = await readSnapshot(sessionInfo.sessionId);
+                if (snapshot.files.length !== manifest.files.length || snapshot.directories.length !== manifest.directories.length ||
+                    manifest.directories.some((directory, index) => snapshot.directories[index] !== directory)) {
+                    throw new Error('The original upload manifest does not match the selected source.');
+                }
+                const files = rebindBrowserUploadManifest(manifest.files, snapshot.files);
+                await executeChildren(queueId, files, snapshot.session, snapshot.files, attempt, signal, uploadFile, updateProgress, statuses, offsets, failures);
+                return signal.aborted || attempt.cancelRequested
+                    ? await settleCancellation()
+                    : await settleBrowserSession(queueId, attempt, snapshot.session, failures, updateProgress);
+            }
+            for (const page of pages) {
+                if (signal.aborted) { attempt.cancelRequested = true; break; }
+                await controlFetchForUpload(`/api/upload/sessions/${encodeURIComponent(sessionInfo.sessionId)}/manifest/pages/${page.pageIndex}`, attempt, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ fileOffset: page.fileOffset, directoryOffset: page.directoryOffset, files: page.files, directories: page.directories })
+                });
+            }
+            if (attempt.cancelRequested || signal.aborted) {
+                return await settleCancellation();
+            }
+            await controlFetchForUpload(`/api/upload/sessions/${encodeURIComponent(sessionInfo.sessionId)}/manifest/complete`, attempt, { method: 'POST' });
+            const snapshot = await readSnapshot(sessionInfo.sessionId);
+            const files = rebindBrowserUploadManifest(manifest.files, snapshot.files);
+            if (manifest.directories.some((directory, index) => snapshot.directories[index] !== directory)) throw new Error('Server upload directory manifest does not match.');
+            await executeChildren(queueId, files, snapshot.session, snapshot.files, attempt, signal, uploadFile, updateProgress, statuses, offsets, failures);
+            return signal.aborted || attempt.cancelRequested
+                ? await settleCancellation()
+                : await settleBrowserSession(queueId, attempt, snapshot.session, failures, updateProgress);
+        } catch (error) {
+            if (attempt.cancelRequested || signal.aborted) {
+                return await settleCancellation();
+            }
+            throw error;
+        } finally {
+            if (attempt.terminal) { attempt.control.abort(); uploadAttemptsRef.current.delete(queueId); }
+        }
+    };
+
+    const executeChildren = async (queueId, files, session, remoteFiles, attempt, signal, uploadFile, updateProgress, statuses, offsets, failures) => {
+        const children = planBrowserUploadChildren(files, 500);
+        remoteFiles.forEach(file => { statuses.set(file.fileId, file.status); offsets.set(file.fileId, file.uploadedOffset); });
+        updateProgress();
+        let next = 0, active = 0;
+        const worker = async () => {
+            while (next < children.length && !signal.aborted && !attempt.cancelRequested) {
+                const index = next++;
+                active += 1;
+                updateQueueItem(queueId, { detail: `Uploading child ${index + 1}/${children.length}. Up to 2 child batches run concurrently; parallel uploads may use more resources and can be less efficient.` });
+                try {
+                    for (const file of children[index]) {
+                        if (signal.aborted || attempt.cancelRequested) return;
+                        try { await uploadFile(session, file, {}); }
+                        catch (error) { failures.push(`${file.path}: ${error.message}`); }
+                    }
+                } finally { active -= 1; }
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(2, children.length) }, () => worker()));
+        if (signal.aborted || attempt.cancelRequested) return;
+        updateQueueItem(queueId, { detail: `Finished ${children.length} child batch(es); reconciling actual server state.` });
+        return { active };
+    };
+
+    const settleBrowserSession = async (queueId, attempt, initialSession, failures, updateProgress) => {
+        const snapshot = await fetchUploadSession(attempt.sessionId, attempt);
+        const completedCount = snapshot.files.filter(file => file.status === 'completed').length;
+        const totalBytes = snapshot.session.totalSize;
+        const transferred = snapshot.files.reduce((sum, file) => sum + file.uploadedOffset, 0);
+        const progress = { completedBytes: transferred, totalBytes, percentage: totalBytes ? Math.min(100, transferred / totalBytes * 100) : (snapshot.session.status === 'completed' ? 100 : 0),
+            bytesPerSecond: null, etaSeconds: null, completedItems: completedCount, totalItems: snapshot.session.expectedFileCount, updatedAt: Date.now() };
+        updateQueueItem(queueId, { progress });
+        if (completedCount === snapshot.session.expectedFileCount && snapshot.session.manifestComplete) {
+            const result = await controlFetchForUpload(`/api/upload/sessions/${encodeURIComponent(attempt.sessionId)}/complete`, attempt, { method: 'POST' });
+            attempt.terminal = true;
+            if (totalBytes === 0) progress.percentage = 100;
+            updateQueueItem(queueId, { progress });
+            if (attempt.onComplete) attempt.onComplete();
+            else if (attempt.refreshMain && attempt.current()) { loadFiles(attempt.path, attempt.locationId); loadTreeChildren(attempt.locationId, '', true); }
+            return { status: 'completed', detail: `${completedCount} file(s) completed. ${result.status || 'Server verified each file.'}` };
+        }
+        updateQueueItem(queueId, { uploadOutcome: 'resumable' });
+        return { status: 'needs_user_action', detail: `${completedCount}/${snapshot.session.expectedFileCount} files completed. ${failures[0] || 'Resume continues only unfinished files and byte ranges.'}` };
     };
 
     const confirmUpload = async (upload) => {
         if (!upload.files.length && !upload.directories.length) return;
-        const answer = window.confirm(`Upload ${upload.files.length} file${upload.files.length === 1 ? '' : 's'} and ${upload.directories.length} folder${upload.directories.length === 1 ? '' : 's'} to ${currentPath ? `/${currentPath}` : '/'}?`);
+        const warning = upload.files.length > 500
+            ? '\n\nLarge uploads are split into child batches. Up to 2 batches can run concurrently; this may use more system/storage resources and can reduce overall efficiency.'
+            : '';
+        const answer = window.confirm(`Upload ${upload.files.length} file${upload.files.length === 1 ? '' : 's'} and ${upload.directories.length} folder${upload.directories.length === 1 ? '' : 's'} to ${currentPath ? `/${currentPath}` : '/'}?${warning}`);
         if (answer) await uploadFiles(upload.files, upload.directories);
     };
 
     const upload = async (event) => {
         const uploadItems = Array.from(event.target.files || []).map((file) => ({ file, relativePath: file.webkitRelativePath || file.name }));
         event.target.value = '';
+        const resumeTarget = resumeTargetRef.current;
+        resumeTargetRef.current = null;
+        if (resumeTarget) {
+            if (!uploadItems.length && resumeTarget.item.expectedFileCount > 0) return;
+            uploadFiles(uploadItems, [], resumeTarget.item, { onComplete: resumeTarget.onComplete });
+            return;
+        }
+        if (uploadItems.length > 500 && !window.confirm(
+            `Upload ${uploadItems.length} files in child batches with up to 2 concurrent requests? Parallel upload may use more system/storage resources and can reduce overall efficiency.`
+        )) return;
         await uploadFiles(uploadItems);
     };
 
     const handleExternalDrop = async (event) => {
         if (!Array.from(event.dataTransfer.types || []).includes('Files') || dragItems.length) return;
         event.preventDefault(); event.stopPropagation();
-        await confirmUpload(await collectDroppedUpload(event.dataTransfer));
+        const upload = await collectDroppedUpload(event.dataTransfer);
+        const resumeTarget = resumeTargetRef.current;
+        if (resumeTarget) {
+            resumeTargetRef.current = null;
+            uploadFiles(upload.files, upload.directories, resumeTarget.item, { onComplete: resumeTarget.onComplete });
+            return;
+        }
+        await confirmUpload(upload);
     };
 
     const handleExternalDragOver = (event) => {
@@ -1306,16 +1663,22 @@ export default function FileBrowser({ token, user, onLogout }) {
           if (!tree || !tree.loaded) return <span className="tree-loading">Loading folders...</span>;
           return <div className="tree-children">{tree.children.map((node) => <FolderTree key={node.path} node={node} currentPath={requestedLocationId === locationId ? currentPath : ''} dragItems={dragItems} dropTarget={dropTarget} onToggle={(child) => toggleFolder(requestedLocationId, child)} onNavigate={(path) => selectLocation(requestedLocationId, path)} onDragOver={(event, child) => { if (isValidMoveTarget(dragItems, child.path, requestedLocationId)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(child.path); scheduleTreeExpand(requestedLocationId, child); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, child) => { event.preventDefault(); endDrag(); moveItems(dragItems, child.path, requestedLocationId); }} />)}</div>;
        };
-       const renderQueueItem = (item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span>{item.detail}</span>{item.progress && <small>{formatSize(item.progress.completedBytes)}{item.progress.totalBytes == null ? '' : ` / ${formatSize(item.progress.totalBytes)}`}{item.progress.percentage == null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}{['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}{['failed', 'needs_user_action'].includes(item.status) && queueJobsRef.current.has(item.id) && <button type="button" onClick={() => retryQueueItem(item.id)}>{item.batchId ? 'Reconcile' : 'Retry'}</button>}{['completed', 'failed', 'cancelled'].includes(item.status) && <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>}</li>;
+        const renderQueueItem = (item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span role="status" aria-live="polite">{item.detail}</span>{item.progress && <small>{formatSize(item.progress.completedBytes)}{item.progress.totalBytes == null ? '' : ` / ${formatSize(item.progress.totalBytes)}`}{item.progress.percentage == null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}{['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}{item.kind === 'upload' && item.serverSessionId && item.status === 'needs_user_action' && <button type="button" onClick={() => beginResumeUpload(item)}>Resume</button>}{['failed', 'needs_user_action'].includes(item.status) && !item.serverSessionId && queueJobsRef.current.has(item.id) && <button type="button" onClick={() => retryQueueItem(item.id)}>{item.batchId ? 'Reconcile' : 'Retry'}</button>}{['completed', 'failed', 'cancelled'].includes(item.status) && <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>}</li>;
 
-      if (interfaceStyle === 'pane') {
-          return <PaneWorkspace token={token} user={user} onLogout={onLogout} onStyleChange={setInterfaceStyle} />;
-      }
+       if (interfaceStyle === 'pane') {
+           return <>
+               <input ref={inputRef} type="file" multiple hidden onChange={upload} />
+               <input ref={resumeDirectoryInputRef} type="file" multiple webkitdirectory="" hidden onChange={upload} />
+               <PaneWorkspace token={token} user={user} onLogout={onLogout} onStyleChange={setInterfaceStyle}
+                   transferQueue={queueItems} onCancelUpload={cancelQueueItem} onResumeUpload={beginResumeUpload}
+                   onUploadFiles={(items, directories, uploadContext, onComplete) => uploadFiles(items, directories, null, { ...uploadContext, onComplete })} />
+           </>;
+       }
 
       return <div className="explorer" onContextMenu={(event) => event.preventDefault()}>
                 <header className="titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control" ref={accountRef}><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}{user.role !== 'admin' && <button onClick={() => { setAccountOpen(false); setModal('password'); }}>Change password</button>}<label className="style-menu-item" onClick={(event) => event.stopPropagation()}>Style settings<select aria-label="Interface style" value={interfaceStyle} onChange={(event) => setInterfaceStyle(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><hr /><button className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
          <nav className="commandbar">
-             <button className="primary" disabled={!hasCapability('upload')} onClick={() => inputRef.current.click()}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} />
+              <button className="primary" disabled={!hasCapability('upload')} onClick={() => { resumeTargetRef.current = null; inputRef.current.click(); }}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} /><input ref={resumeDirectoryInputRef} type="file" multiple webkitdirectory="" hidden onChange={upload} />
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
               <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={startDownload}>{downloading ? 'Preparing download...' : 'Download'}</button><button className="optional" onClick={() => setQueueOpen((open) => !open)}>Transfer Queue{queueItems.some((item) => ['queued', 'running', 'retrying'].includes(item.status)) ? ` (${queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length})` : ''}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
               <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setCreatedShareLinks(null); setModal('share'); }}>Share</button><button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('read')} onClick={() => void analyzeSelectedFile()}>AI analyze</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />

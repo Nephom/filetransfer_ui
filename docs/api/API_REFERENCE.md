@@ -56,12 +56,22 @@ not claim revocation of every previously issued JWT; clients must sign in again.
 
 ## Upload and Progress
 
-Use `POST /api/upload/multiple` for all new client uploads. It streams the multipart body and is the supported large-file path.
+Use the resumable upload-session routes for new built-in Browser and Desktop clients. Legacy multipart upload remains supported for older integrations.
 
 | Method | Endpoint | Request | Success |
 |---|---|---|---|
 | POST | `/api/upload/batches` | JSON `{ "path": "relative/directory" }`, optional `clientAttemptId` string; use `""` for root | `201`, `{ batchId, status: "reserved", locationId, expiresAt }` |
 | POST | `/api/upload/multiple` | Multipart `files`, optional matching `filePaths[]`, `directoryPaths[]`, and `path`; optional `X-Upload-Batch-ID` reservation header | `202` for validated file batches; `200` for directory-only work, with `batchId` |
+| GET | `/api/upload/sessions/config` | Authenticated options lookup before source hashing | `200`, `{ chunkSize }` |
+| POST | `/api/upload/sessions` | JSON `{ path, clientAttemptId, fileCount, directoryCount }`, optional matching `chunkSize`, plus Location/revision headers | `201` new session; `200` idempotent same-attempt recovery; stale chunk size `409` |
+| POST | `/api/upload/sessions/:sessionId/manifest/pages/:pageIndex` | Ordered page of up to 50 file entries and 50 directory paths; file entries include one SHA-256 per chunk | `201`, accepted page |
+| POST | `/api/upload/sessions/:sessionId/manifest/complete` | Seal the complete manifest and create declared directories | `200`, durable manifest state |
+| PUT | `/api/upload/sessions/:sessionId/files/:fileId/chunks` | Raw octet-stream; requires exact `Content-Range` and `X-Chunk-SHA256` | `200`, new `uploadedOffset`; offset conflict `409` includes `expectedOffset` |
+| POST | `/api/upload/sessions/:sessionId/files/:fileId/complete` | Verify staged chunks and publish one file idempotently | `200`, completed file and actual Location-relative path |
+| POST | `/api/upload/sessions/:sessionId/complete` | Settle the parent after every file completes | `200`, session completed |
+| GET | `/api/upload/sessions` | Current owner's accessible unexpired sessions | `200`, session summaries/outcomes |
+| GET | `/api/upload/sessions/:sessionId?offset=&limit=&directoryOffset=` | Paginated file manifest/checkpoints and directory manifest | `200`, durable offsets/status |
+| POST | `/api/upload/sessions/:sessionId/cancel` | Stop unfinished files/chunks; committed outputs remain | `200`, settled session status |
 | POST | `/api/upload/single-progress` | One multipart `file`, optional `fileName`, optional `path` | `202`, `{ "transferId" }` |
 | GET | `/api/progress/:transferId` | Captured owner/Location authentication | Safe transfer status and measured byte counters |
 | GET | `/api/progress/batch/:batchId` | Captured owner/Location authentication | Safe batch status, counters, and child records |
@@ -71,7 +81,8 @@ Use `POST /api/upload/multiple` for all new client uploads. It streams the multi
 These routes are implemented by `UploadAPI` mounted at `/api`, with current
 Location/permission/cache dependencies. Obsolete inline progress handlers are
 removed. CORS allows credentials and the Authorization, Content-Type,
-X-Location-ID, X-Location-Revision, and X-Upload-Batch-ID headers.
+X-Location-ID, X-Location-Revision, X-Upload-Batch-ID, Content-Range, and
+X-Chunk-SHA256 headers.
 Progress/cancel responses use `Cache-Control: no-store`, `200` normally, or
 `202` while still `cancelling`. Cancellation requests are idempotent; neither
 `202` nor client transport abort confirms cleanup. Completion may win the race,
@@ -112,12 +123,21 @@ byte counters are not padded to a declared total. At inventory completion,
 During intake the inventory/total may still be unknown. See
 [progress.md](./progress.md) for full transfer/batch schemas and safe errors.
 
-Progress records are in-memory telemetry, not durable transfer sessions.
+Legacy `TransferManager` progress records are in-memory telemetry, not durable
+transfer sessions. The separate upload session routes persist manifest and chunk
+checkpoints in SQLite for four hours.
 Clients should poll only while an operation is active and must tolerate a
 terminal record disappearing after the server retention window. Client Queue
 history cleanup and server progress cleanup are separate concerns.
 
-`filePaths[]` preserves folder hierarchy. Each value must correspond to a submitted `files` part and must be relative to the selected local folder. Terminal batch states are `completed`, `partial_fail`, `failed`, `cancelled`, and `expired`. Keep the reserved batch ID if acceptance or polling fails. Retry/reconcile the original record, not the multipart upload. See [upload.md](./upload.md) for preserved legacy routes, file/metadata limits, exclusive filename allocation, and owned cleanup.
+`filePaths[]` preserves folder hierarchy for legacy multipart clients. The legacy
+multipart request remains limited to 1,000 files; built-in clients split larger
+inventories into 500-file child groups with at most two active groups. Sort order is
+destination-relative UTF-8 path order, with same-target files kept in order. On a
+resumable session, retry/reconcile the same session and continue from measured
+offsets; do not replay completed files. See [upload.md](./upload.md) and
+[progress.md](./progress.md) for limits, checksums, retention, safe errors, and
+publication guarantees.
 
 ## Downloads and Archives
 

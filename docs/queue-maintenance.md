@@ -17,25 +17,28 @@
 
 ## Lifecycle Rules
 
-The only automatic retries are bounded network, timeout and transient server
-failures. Authentication, permission, conflict, missing source, changed source
-and unavailable destination errors require a user decision. A browser download
-without File System Access API is a normal browser download, not resumable.
+API upload chunk retries are bounded and idempotent: after a lost response, query
+the same session and continue from its stored offset. Authentication, permission,
+conflict, missing source, changed source, checksum mismatch and unavailable
+destination errors require a user decision. A browser download without File System
+Access API is a normal browser download, not resumable.
 
-`paused` and `needs_user_action` are coordination states, not promises of
-resume support. If a client process disappears, persisted active items are
-restored as `needs_user_action`. They must not be reported as completed or
-silently resumed; the safe behavior is a new full transfer after explicit
-cleanup or a user decision. Sensitive request headers, bodies, and download
-URLs must not be persisted.
+`needs_user_action` is a coordination state until the user explicitly resumes the
+same API upload session. Completed files remain complete; only unfinished files and
+byte ranges are sent. Sessions expire four hours after creation. Browser clients ask
+the user to reselect sources after reload and verify chunk checksums. Desktop clients
+reopen captured paths and verify them before continuing. Other restored transfers
+must not be reported as completed or silently rebound to new credentials. Sensitive
+request headers, bodies, and download URLs must not be persisted.
 
 ## Cleanup
 
 Use `removeQueueItem` only for terminal client items. Active items must be
 cancelled first. The client retains completed/cancelled history for 24 hours
 and failed history for 7 days, bounded by the documented per-state counts.
-Server progress records are independent in-memory diagnostics and are pruned
-by `TransferManager.cleanup()` without removing active records.
+Legacy batch progress records are independent in-memory diagnostics and are pruned
+by `TransferManager.cleanup()`. Resumable upload manifests and offsets are persisted
+in SQLite; expired staging is removed by the resumable-session cleanup task.
 
 ## Public Shares
 

@@ -8,6 +8,7 @@ const { performance } = require('node:perf_hooks');
 const { assertSafePath, assertSafeTree, containsPath, pathError } = require('./path-safety');
 
 const preciseMtime = async (target) => (await fs.lstat(target, { bigint: true })).mtimeNs.toString();
+const isIgnoredName = (name, ignored) => ignored.includes(name) || name.startsWith('.nfterm-upload-');
 
 class RedisFileSystemCache extends EventEmitter {
   constructor(storagePath = './storage', options = {}) {
@@ -186,7 +187,7 @@ class RedisFileSystemCache extends EventEmitter {
       // Check links even when the name is excluded from the search index.
       const fullPath = await this._checked(path.join(absolute, name), { allowMissing: false });
       const stats = await fs.lstat(fullPath);
-      if (ignored.includes(name)) continue;
+      if (isIgnoredName(name, ignored)) continue;
       const data = { path: fullPath, name, size: stats.size, modified: stats.mtimeMs, isDirectory: stats.isDirectory() };
       if (!data.isDirectory) data.hash = `${stats.size}-${stats.mtimeMs}`;
       contents.push(data);
@@ -206,7 +207,7 @@ class RedisFileSystemCache extends EventEmitter {
         // Preflight the selected subtree once, not the entire Location or each
         // descendant tree again. Normal file mutations only scan their parents.
         for (const entry of entries) {
-          if (!entry.stats.isDirectory() || path.relative(absolute, entry.path).split(path.sep).some(name => ignored.includes(name))) continue;
+          if (!entry.stats.isDirectory() || path.relative(absolute, entry.path).split(path.sep).some(name => isIgnoredName(name, ignored))) continue;
           const current = await this.updateDirectoryCache(entry.path);
           if (entry.path === absolute) contents = current;
         }
@@ -421,7 +422,7 @@ class RedisFileSystemCache extends EventEmitter {
         await this._deleteKeys('mtime');
         for (const { path: absolute, stats } of entries) {
           const relative = path.relative(this.storagePath, absolute);
-          if (relative.split(path.sep).some(component => ignored.includes(component))) continue;
+          if (relative.split(path.sep).some(component => isIgnoredName(component, ignored))) continue;
           if (stats.isDirectory() && this.redisClient?.isReady) await this.redisClient.set(this.key('mtime', relative), String(stats.mtimeMs));
           if (!relative) continue;
           const record = { path: relative, name: path.basename(absolute), size: stats.size, modified: stats.mtimeMs, isDirectory: stats.isDirectory() };

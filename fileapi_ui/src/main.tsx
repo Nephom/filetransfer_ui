@@ -3466,7 +3466,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         paths,
       });
       const accepted = await requestConfirmation(
-        `Upload ${summary.files} file${summary.files === 1 ? "" : "s"} and ${summary.directories} folder${summary.directories === 1 ? "" : "s"} to ${path ? `/${path}` : "/"}?`,
+        `Upload ${summary.files} file${summary.files === 1 ? "" : "s"} and ${summary.directories} folder${summary.directories === 1 ? "" : "s"} to ${path ? `/${path}` : "/"}?${summary.files > 500 ? "\n\nLarge uploads are split into child batches. Up to 2 batches can run concurrently; this may use more system/storage resources and can reduce overall efficiency." : ""}`,
         "Confirm upload",
       );
       if (!accepted) return;
@@ -3717,6 +3717,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       const summary = await invoke<UploadSummary>("inspect_upload_paths", {
         paths: items.map((item) => item.path),
       });
+      if (summary.files > 500) {
+        const confirmed = await requestConfirmation(
+          `Drag upload ${summary.files} files and ${summary.directories} folders to ${destination || "/"}? Up to 2 child batches can run concurrently; this may use more system/storage resources and can reduce overall efficiency.`,
+          "Confirm parallel API upload",
+        );
+        if (!confirmed) return;
+      }
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
       const queueItem: TransferQueueItem = {
         id,

@@ -185,6 +185,7 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
         { id: 'alias', displayName: 'Alias', rootPath: root },
         { id: 'other', displayName: 'Other', rootPath: other }
       ] },
+      transfer: { chunkSize: 8 * 1024 * 1024, enableResume: true },
       shareLinks: { defaultExpiration: 3600, maxExpiration: 86400 }
     };
     accounts = new Map([
@@ -417,6 +418,25 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     assert.ok(response.headers['content-security-policy']);
     status(await send('/api/files', { method: 'POST', body: { path: 'blocked.txt', content: '<script>fixture</script>' } }), 400);
     await assert.rejects(fs.stat(path.join(f.root, 'blocked.txt')), { code: 'ENOENT' });
+  });
+
+  await t.test('resumable upload settings expose the chunk bound and validate live updates', async () => {
+    await fixture();
+    const schema = await send('/api/admin/config/schema');
+    status(schema, 200);
+    assert.equal(schema.body.schema.transfer.chunkSize.example, '8388608');
+    assert.equal(schema.body.schema.transfer.enableResume.type, 'boolean');
+    const current = await send('/api/admin/config');
+    status(current, 200);
+    assert.deepEqual(current.body.config.transfer, { chunkSize: 8 * 1024 * 1024, enableResume: true });
+    const before = structuredClone(config.transfer);
+    status(await send('/api/admin/config', { method: 'PUT', body: { transfer: { chunkSize: 1024 } } }), 400);
+    assert.deepEqual(config.transfer, before);
+    const updated = await send('/api/admin/config', { method: 'PUT', body: { transfer: { chunkSize: 16 * 1024 * 1024, enableResume: false } } });
+    status(updated, 200);
+    assert.equal(config.transfer.chunkSize, 16 * 1024 * 1024);
+    assert.equal(config.transfer.enableResume, false);
+    assert.deepEqual(updated.body.updatedFields.sort(), ['transfer.chunkSize', 'transfer.enableResume']);
   });
 
   await t.test('E02 admin Location updates close old caches and reject stale revisions immediately', async () => {

@@ -14,6 +14,7 @@ import type { QueueScheduler } from "../../queue/scheduler";
 import type { QueueStore } from "../../queue/store";
 import { formatSize } from "../../format-utils";
 import { downloadPath } from "../../path-utils";
+import { buildManifestPages, planUploadChildren, rebindUploadManifest, type UploadManifestFile, type UploadSessionFile } from "../../queue/upload-plan";
 import type { FileItem } from "../../file-item-contracts";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import type { TransferQueueItem } from "./queue-contracts";
@@ -28,6 +29,41 @@ type ApiLikeResponse = {
   json: () => Promise<unknown>;
 };
 type NativeApiResponse = { status: number; body: number[]; headers?: [string, string][] };
+type UploadSourceSnapshot = { path: string; size: number; modified: number };
+type UploadSummary = { files: number; directories: number; totalSize: number; sources: UploadSourceSnapshot[] };
+type ResumableUploadSession = {
+  sessionId: string; clientAttemptId: string; locationId: string; path: string; chunkSize: number;
+  expectedFileCount: number; expectedDirectoryCount: number; totalSize: number;
+  uploadedSize: number; manifestComplete: boolean; status: string; expiresAt: number;
+};
+type ResumableSessionPage = {
+  session: ResumableUploadSession; files: UploadSessionFile[]; nextOffset: number | null;
+  directories: string[]; nextDirectoryOffset: number | null;
+};
+
+class UploadChildSemaphore {
+  private active = 0;
+  private waiters: Array<(release: () => void) => void> = [];
+
+  acquire() {
+    if (this.active < 2) {
+      this.active += 1;
+      return Promise.resolve(this.makeRelease());
+    }
+    return new Promise<() => void>((resolve) => this.waiters.push(resolve));
+  }
+
+  private makeRelease() {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = this.waiters.shift();
+      if (next) next(this.makeRelease());
+      else this.active -= 1;
+    };
+  }
+}
 
 export type UseTransferQueueActionsParams = {
   run: (action: () => Promise<void>) => Promise<void>;
@@ -90,8 +126,10 @@ export function useTransferQueueActions({
   const contexts = useRef(new Map<string, {
     origin: string; sessionId?: string; headers: [string, string][]; ignoreTlsErrors: boolean;
     ownerId?: number | null; locationId: string; locationRevision?: string;
-    batchId?: string; attemptId?: string; cancel?: () => Promise<void>;
+    batchId?: string; uploadSessionId?: string; attemptId?: string; cancel?: () => Promise<void>;
   }>());
+  const activeChunkTransfers = useRef(new Map<string, { itemId: string; fileId: string; bytesCompleted: number }>());
+  const uploadChildSemaphore = useRef(new UploadChildSemaphore());
   const alive = useRef(true);
   const waits = useRef(new Map<number, () => void>());
   useEffect(() => {
@@ -196,6 +234,9 @@ export function useTransferQueueActions({
     if (current.kind === "upload" && !current.sshEntryId && context) {
       updateQueueItem(id, { cancellationRequested: true, detail: "Cancellation requested. Waiting for the server outcome." });
       void invoke("cancel_transfer", { transferId: context.attemptId || id }).catch(() => undefined);
+      for (const [transferId, active] of activeChunkTransfers.current) {
+        if (active.itemId === id) void invoke("cancel_transfer", { transferId }).catch(() => undefined);
+      }
       void context.cancel?.();
       return;
     }
@@ -263,10 +304,11 @@ export function useTransferQueueActions({
     }
   };
 
-  const executeQueuedUpload = async (item: TransferQueueItem) => {
+  const executeQueuedLegacyUpload = async (item: TransferQueueItem) => {
     const context = captureContext(item);
     const attemptId = crypto.randomUUID();
     context.attemptId = attemptId;
+    let clientAttemptId = item.clientAttemptId || attemptId;
     const isCurrent = () => alive.current && context.attemptId === attemptId;
     updateQueueItem(item.id, { status: "running", detail: item.serverBatchId ? "Reconciling server upload..." : "Preparing upload..." });
     let unlistenProgress: (() => void) | undefined;
@@ -385,6 +427,441 @@ export function useTransferQueueActions({
       context.cancel = undefined;
     }
   };
+
+  const executeQueuedResumableUpload = async (item: TransferQueueItem) => {
+    const context = captureContext(item);
+    const attemptId = crypto.randomUUID();
+    context.attemptId = attemptId;
+    let clientAttemptId = item.clientAttemptId || attemptId;
+    if (item.serverOrigin && item.serverOrigin !== context.origin) throw new Error("The original upload server is unavailable. Re-add the transfer.");
+    if (item.ownerId !== undefined && item.ownerId !== context.ownerId) throw new Error("Sign in as the original upload owner to resume this session.");
+    if (item.locationRevision && context.locationRevision && item.locationRevision !== context.locationRevision) {
+      throw new Error("The upload Location changed. Review the existing session before starting a new upload.");
+    }
+
+    const isCurrent = () => alive.current && context.attemptId === attemptId;
+    const nativeChunkIds = new Set<string>();
+    let unlistenProgress: (() => void) | undefined;
+    let session: ResumableUploadSession | undefined;
+    let sessionFiles: UploadSessionFile[] = [];
+    let sourceManifest: UploadManifestFile[] = [];
+    let totalBytes = 0;
+    const offsets = new Map<string, number>();
+    const fileStates = new Map<string, string>();
+    const failures: string[] = [];
+
+    const request = async (endpoint: string, method = "GET", body?: unknown) => {
+      if (!context.sessionId) throw new Error("The original native API session is unavailable. Sign in and resume explicitly.");
+      const raw = await invoke<NativeApiResponse>("api_request", {
+        url: `${context.origin}${endpoint}`, method,
+        headers: [...context.headers, ...(body === undefined ? [] : [["Content-Type", "application/json"]])],
+        body: body === undefined ? undefined : Array.from(new TextEncoder().encode(JSON.stringify(body))),
+        ignoreTlsErrors: context.ignoreTlsErrors, sessionId: context.sessionId,
+      });
+      const text = new TextDecoder().decode(new Uint8Array(raw.body));
+      let parsed: any = {};
+      try { parsed = JSON.parse(text || "{}"); } catch { /* converted to a safe API error below */ }
+      if (raw.status < 200 || raw.status >= 300) {
+        throw Object.assign(new Error(parsed.error?.message || `Upload server request failed (HTTP ${raw.status}).`), {
+          status: raw.status, expectedOffset: parsed.expectedOffset, retryAfterMs: parsed.retryAfterMs,
+        });
+      }
+      return parsed;
+    };
+    context.cancel = async () => {
+      if (!context.uploadSessionId || !isCurrent()) return;
+      for (const transferId of nativeChunkIds) void invoke("cancel_transfer", { transferId }).catch(() => undefined);
+      try { await request(`/api/upload/sessions/${encodeURIComponent(context.uploadSessionId)}/cancel`, "POST"); }
+      catch { updateQueueItem(item.id, { uploadOutcome: "resumable", detail: "Server cancellation is unconfirmed; the same session can be reconciled." }); }
+    };
+
+    const readSession = async (sessionId: string) => {
+      let fileOffset = 0, directoryOffset = 0;
+      let first = true;
+      let current: ResumableSessionPage | undefined;
+      const files: UploadSessionFile[] = [], directories: string[] = [];
+      while (first || fileOffset < (current?.session.expectedFileCount || 0) || directoryOffset < (current?.session.expectedDirectoryCount || 0)) {
+        first = false;
+        const page = await request(`/api/upload/sessions/${encodeURIComponent(sessionId)}?offset=${fileOffset}&directoryOffset=${directoryOffset}&limit=100`) as ResumableSessionPage;
+        current = page;
+        files.push(...page.files);
+        directories.push(...(page.directories || []));
+        fileOffset = page.nextOffset ?? page.session.expectedFileCount;
+        directoryOffset = page.nextDirectoryOffset ?? page.session.expectedDirectoryCount;
+      }
+      if (!current) throw new Error("Invalid upload session response.");
+      return { session: current.session, files, directories };
+    };
+
+    const uploadRequest = async (file: UploadManifestFile, offset: number) => {
+      if (!context.sessionId || !session) throw new Error("Upload session is unavailable.");
+      const chunkIndex = Math.floor(offset / session.chunkSize);
+      const expectedHash = file.chunkHashes[chunkIndex];
+      if (!expectedHash) throw new Error(`Upload manifest is missing a chunk checksum for ${file.path}.`);
+      const length = Math.min(session.chunkSize, file.size - offset);
+      const transferId = crypto.randomUUID();
+      nativeChunkIds.add(transferId);
+      activeChunkTransfers.current.set(transferId, { itemId: item.id, fileId: file.fileId, bytesCompleted: 0 });
+      try {
+        const response = await invoke<NativeApiResponse>("api_upload_chunk", {
+          transferId, url: `${context.origin}/api/upload/sessions/${encodeURIComponent(session.sessionId)}/files/${encodeURIComponent(file.fileId)}/chunks`,
+          headers: context.headers, filePath: file.sourcePath, offset, totalSize: file.size,
+          chunkSize: session.chunkSize, expectedModified: file.modified, expectedHash,
+          ignoreTlsErrors: context.ignoreTlsErrors, sessionId: context.sessionId,
+        });
+        if (response.status >= 200 && response.status < 300) {
+          const body = JSON.parse(new TextDecoder().decode(new Uint8Array(response.body)) || "{}");
+          if (Number.isSafeInteger(body.uploadedOffset) && body.uploadedOffset >= offset && body.uploadedOffset <= file.size) {
+            offsets.set(file.fileId, body.uploadedOffset);
+            updateAggregateProgress();
+          }
+        }
+        return response;
+      } finally {
+        nativeChunkIds.delete(transferId);
+        activeChunkTransfers.current.delete(transferId);
+      }
+    };
+
+    const refreshFile = async (file: UploadManifestFile) => {
+      const page = await request(`/api/upload/sessions/${encodeURIComponent(session!.sessionId)}?offset=${fileStatesIndex.get(file.fileId) || 0}&directoryOffset=0&limit=1`) as ResumableSessionPage;
+      const latest = page.files.find(candidate => candidate.fileId === file.fileId);
+      if (!latest) throw new Error(`Upload session no longer contains ${file.path}.`);
+      fileStates.set(file.fileId, latest.status);
+      offsets.set(file.fileId, latest.uploadedOffset);
+      return latest;
+    };
+
+    const fileStatesIndex = new Map<string, number>();
+    const updateAggregateProgress = () => {
+      const confirmedBytes = [...offsets.values()].reduce((sum, value) => sum + value, 0);
+      const activeBytes = [...activeChunkTransfers.current.values()]
+        .filter(value => value.itemId === item.id)
+        .reduce((sum, value) => sum + value.bytesCompleted, 0);
+      const completedItems = [...fileStates.values()].filter(status => status === "completed").length;
+      const progress = updateQueueProgress(item.id, Math.min(totalBytes, confirmedBytes + activeBytes), totalBytes,
+        completedItems, sourceManifest.length);
+      updateQueueItem(item.id, { progress });
+      return progress;
+    };
+
+    const uploadFile = async (file: UploadManifestFile) => {
+      let remote = await refreshFile(file);
+      if (remote.status === "completed") { updateAggregateProgress(); return; }
+      let offset = remote.uploadedOffset;
+      for (let retry = 0; offset < file.size;) {
+        if (!isCurrent() || isQueueItemCancelled(item.id)) return;
+        const chunkBytes = Math.min(session!.chunkSize, file.size - offset);
+        try {
+          const response = await uploadRequest(file, offset);
+          const responseText = new TextDecoder().decode(new Uint8Array(response.body));
+          let body: any = {};
+          try { body = JSON.parse(responseText || "{}"); } catch { /* handled as failed upload below */ }
+          if (response.status >= 200 && response.status < 300) {
+            offset = Number(body.uploadedOffset);
+            if (!Number.isSafeInteger(offset) || offset <= 0 || offset > file.size) throw new Error("Invalid upload offset response.");
+            offsets.set(file.fileId, offset);
+            retry = 0;
+            updateAggregateProgress();
+            continue;
+          }
+          if (response.status === 409) {
+            remote = await refreshFile(file);
+            if (remote.status === "completed") { updateAggregateProgress(); return; }
+            if (remote.uploadedOffset > offset) { offset = remote.uploadedOffset; retry = 0; continue; }
+          }
+          throw Object.assign(new Error(body.error?.message || `Upload chunk failed (HTTP ${response.status}).`), { status: response.status });
+        } catch (error) {
+          if (!isCurrent() || isQueueItemCancelled(item.id)) return;
+          if ((error as { status?: number }).status === 400 || (error as { status?: number }).status === 403 ||
+              (error as { status?: number }).status === 404 || (error as { status?: number }).status === 410 ||
+              (error as { status?: number }).status === 413 || (error as { status?: number }).status === 507) throw error;
+          remote = await refreshFile(file);
+          if (remote.status === "completed") { updateAggregateProgress(); return; }
+          if (remote.uploadedOffset > offset) { offset = remote.uploadedOffset; retry = 0; continue; }
+          if (++retry > 3) throw error;
+          updateQueueItem(item.id, { detail: `Retrying ${file.path} from byte ${offset} (${retry}/3).` });
+          await wait(retryDelayMs(retry));
+        }
+        if (chunkBytes <= 0) throw new Error(`Invalid remaining upload size for ${file.path}.`);
+      }
+      if (isQueueItemCancelled(item.id)) return;
+      let completed: any;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        try {
+          completed = await request(`/api/upload/sessions/${encodeURIComponent(session!.sessionId)}/files/${encodeURIComponent(file.fileId)}/complete`, "POST");
+          break;
+        } catch (error) {
+          const delay = (error as { status?: number; retryAfterMs?: number }).status === 409
+            ? (error as { retryAfterMs?: number }).retryAfterMs : undefined;
+          if (!delay || attempt === 49) throw error;
+          await wait(Math.min(1000, delay));
+        }
+      }
+      if (completed.status !== "completed" || completed.uploadedOffset !== file.size) throw new Error(`Server did not finalize ${file.path}.`);
+      fileStates.set(file.fileId, "completed");
+      offsets.set(file.fileId, file.size);
+      updateAggregateProgress();
+    };
+
+    context.cancel = async () => {
+      if (!context.uploadSessionId || !isCurrent()) return;
+      for (const transferId of nativeChunkIds) void invoke("cancel_transfer", { transferId }).catch(() => undefined);
+      try { await request(`/api/upload/sessions/${encodeURIComponent(context.uploadSessionId)}/cancel`, "POST"); }
+      catch { updateQueueItem(item.id, { uploadOutcome: "resumable", detail: "Server cancellation is unconfirmed; resume checks the same session." }); }
+    };
+
+    try {
+      updateQueueItem(item.id, { status: "running", detail: item.serverSessionId ? "Checking unfinished upload ranges..." : "Preparing resumable API upload..." });
+      if (!context.sessionId) throw new Error("The original native API session is unavailable. Sign in to the original account and resume explicitly.");
+      let preloadedSnapshot: Awaited<ReturnType<typeof readSession>> | undefined;
+      if (!context.uploadSessionId && item.serverSessionId) context.uploadSessionId = item.serverSessionId;
+      if (!context.uploadSessionId && item.clientAttemptId) {
+        try {
+          const listed = await request("/api/upload/sessions") as { sessions?: ResumableUploadSession[] };
+          const matching = listed.sessions?.find(candidate => candidate.clientAttemptId === item.clientAttemptId &&
+            candidate.locationId === item.locationId && candidate.path === item.destinationPath);
+          if (matching) context.uploadSessionId = matching.sessionId;
+        } catch { /* A repeated clientAttemptId remains idempotent if the list request is unavailable. */ }
+      }
+      if (context.uploadSessionId) {
+        preloadedSnapshot = await readSession(context.uploadSessionId);
+        updateQueueItem(item.id, { serverSessionId: context.uploadSessionId });
+        if (preloadedSnapshot.session.status === "completed") {
+          const completedBytes = preloadedSnapshot.session.totalSize;
+          const progress = updateQueueProgress(item.id, completedBytes, completedBytes,
+            preloadedSnapshot.session.expectedFileCount, preloadedSnapshot.session.expectedFileCount);
+          if (completedBytes === 0) progress.percentage = 100;
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", progress,
+            detail: "Resumable upload already completed on the server." });
+          return;
+        }
+      }
+      const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths: item.paths });
+      let sessionInfo: ResumableUploadSession | undefined;
+      let existingFiles: UploadSessionFile[] = [];
+      let existingDirectories: string[] = [];
+      if (context.uploadSessionId) {
+        const snapshot = preloadedSnapshot || await readSession(context.uploadSessionId);
+        sessionInfo = snapshot.session;
+        existingFiles = snapshot.files;
+        existingDirectories = snapshot.directories;
+        if (sessionInfo.status === "completed") {
+          updateQueueProgress(item.id, sessionInfo.totalSize, sessionInfo.totalSize, sessionInfo.expectedFileCount, sessionInfo.expectedFileCount);
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: "Resumable upload already completed on the server." });
+          return;
+        }
+        if (["cancelled", "cancelling", "failed", "expired"].includes(sessionInfo.status)) {
+          throw new Error(`The server upload session is ${sessionInfo.status}; it cannot be resumed.`);
+        }
+        if (!sessionInfo.manifestComplete) {
+          const abandonedSessionId = context.uploadSessionId!;
+          await request(`/api/upload/sessions/${encodeURIComponent(abandonedSessionId)}/cancel`, "POST");
+          context.uploadSessionId = undefined;
+          clientAttemptId = crypto.randomUUID();
+          updateQueueItem(item.id, { serverSessionId: undefined, clientAttemptId, uploadOutcome: undefined });
+          sessionInfo = undefined;
+          existingFiles = [];
+          existingDirectories = [];
+        } else if (sessionInfo.locationId !== context.locationId || sessionInfo.path !== item.destinationPath) {
+          throw new Error("The unfinished upload belongs to a different Location or destination.");
+        }
+      }
+
+      let chunkSize = sessionInfo?.chunkSize;
+      if (!chunkSize) {
+        const options = await request("/api/upload/sessions/config") as { chunkSize?: number };
+        chunkSize = options.chunkSize;
+      }
+      if (typeof chunkSize !== "number" || !Number.isSafeInteger(chunkSize) || chunkSize < 1024 * 1024 || chunkSize > 64 * 1024 * 1024) {
+        throw new Error("The server returned an unsupported upload chunk size.");
+      }
+      if (isQueueItemCancelled(item.id)) {
+        updateQueueItem(item.id, { status: "cancelled", detail: "Cancelled before upload session creation." });
+        return;
+      }
+      const manifest = await invoke<{ files: UploadManifestFile[]; directories: string[]; totalSize: number }>(
+        "build_api_upload_manifest", { paths: item.paths, expectedSources: summary.sources, chunkSize },
+      );
+      if (manifest.files.length !== summary.files || manifest.directories.length !== summary.directories || manifest.totalSize !== summary.totalSize) {
+        throw new Error("Upload source inventory changed while creating its checksum manifest.");
+      }
+      const manifestPages = buildManifestPages(manifest.files, manifest.directories);
+      planUploadChildren(manifest.files, 500);
+      if (isQueueItemCancelled(item.id)) {
+        updateQueueItem(item.id, { status: "cancelled", detail: "Cancelled before upload session creation." });
+        return;
+      }
+      sourceManifest = manifest.files;
+      totalBytes = manifest.totalSize;
+
+      if (!context.uploadSessionId) {
+        updateQueueItem(item.id, { clientAttemptId, serverOrigin: context.origin, ownerId: context.ownerId ?? undefined,
+          locationRevision: context.locationRevision, uploadOutcome: "reserved" });
+        const created = await request("/api/upload/sessions", "POST", {
+          path: item.destinationPath, clientAttemptId, chunkSize,
+          fileCount: summary.files, directoryCount: summary.directories,
+        }) as ResumableUploadSession;
+        if (created.locationId !== context.locationId || created.path !== item.destinationPath || created.chunkSize !== chunkSize) {
+          throw new Error("Upload session target or chunk size did not match the prepared manifest.");
+        }
+        if (created.status === "completed") {
+          updateQueueProgress(item.id, created.totalSize, created.totalSize, created.expectedFileCount, created.expectedFileCount);
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: "The original resumable upload session already completed." });
+          return;
+        }
+        if (["cancelled", "cancelling", "failed", "expired"].includes(created.status)) {
+          throw new Error(`The original upload session is ${created.status} and cannot be resent.`);
+        }
+        context.uploadSessionId = created.sessionId;
+        sessionInfo = created;
+        updateQueueItem(item.id, {
+          serverSessionId: created.sessionId, clientAttemptId,
+          serverOrigin: context.origin, ownerId: context.ownerId ?? undefined,
+          locationRevision: context.locationRevision, uploadOutcome: "resumable",
+        });
+        if (isQueueItemCancelled(item.id)) {
+          await context.cancel?.();
+          updateQueueItem(item.id, { status: "cancelled", detail: "Cancelled before the upload manifest or file bytes were sent." });
+          return;
+        }
+      }
+
+      if (!sessionInfo) throw new Error("Upload session response is missing.");
+      session = sessionInfo;
+      if (!sessionInfo.manifestComplete) {
+        for (const page of manifestPages) {
+          if (isQueueItemCancelled(item.id)) return;
+          await request(`/api/upload/sessions/${encodeURIComponent(context.uploadSessionId!)}/manifest/pages/${page.pageIndex}`, "POST", {
+            fileOffset: page.fileOffset, directoryOffset: page.directoryOffset,
+            files: page.files.map(({ fileId, path: relativePath, name, size, chunkHashes }) => ({ fileId, path: relativePath, name, size, chunkHashes })),
+            directories: page.directories,
+          });
+        }
+        sessionInfo = await request(`/api/upload/sessions/${encodeURIComponent(context.uploadSessionId!)}/manifest/complete`, "POST") as ResumableUploadSession;
+        const snapshot = await readSession(context.uploadSessionId!);
+        sessionInfo = snapshot.session;
+        existingFiles = snapshot.files;
+        existingDirectories = snapshot.directories;
+      }
+
+      if (existingFiles.length === 0) {
+        const snapshot = await readSession(context.uploadSessionId!);
+        existingFiles = snapshot.files;
+        existingDirectories = snapshot.directories;
+        sessionInfo = snapshot.session;
+      }
+      if (sessionInfo.expectedFileCount !== manifest.files.length || sessionInfo.expectedDirectoryCount !== manifest.directories.length ||
+          manifest.directories.some((directory, index) => existingDirectories[index] !== directory)) {
+        throw new Error("The selected upload source no longer matches the server manifest.");
+      }
+      const files = rebindUploadManifest(manifest.files, existingFiles);
+      for (const remote of existingFiles) {
+        offsets.set(remote.fileId, remote.uploadedOffset);
+        fileStates.set(remote.fileId, remote.status);
+        fileStatesIndex.set(remote.fileId, remote.index);
+      }
+      for (const file of files) {
+        if (!fileStatesIndex.has(file.fileId)) throw new Error(`Upload session is missing ${file.path}.`);
+      }
+      updateQueueItem(item.id, {
+        uploadOutcome: "resumable", uploadChildCount: planUploadChildren(files).length,
+        uploadActiveChildren: 0,
+        detail: "Resumable API upload: up to 2 child batches run concurrently. Parallel uploads may use more resources and can be less efficient.",
+        progress: initialQueueProgress(files.length, totalBytes),
+      });
+      unlistenProgress = await listen<{ transferId: string; bytesCompleted: number; bytesTotal: number }>("upload-progress", event => {
+        const active = activeChunkTransfers.current.get(event.payload.transferId);
+        if (!active || active.itemId !== item.id || !isCurrent() || isQueueItemCancelled(item.id)) return;
+        active.bytesCompleted = Math.max(0, Math.min(event.payload.bytesCompleted, event.payload.bytesTotal));
+        updateAggregateProgress();
+      });
+      updateAggregateProgress();
+
+      const children = planUploadChildren(files, 500);
+      let nextChild = 0;
+      let activeChildren = 0;
+      const worker = async () => {
+        while (nextChild < children.length && !isQueueItemCancelled(item.id)) {
+          const childIndex = nextChild++;
+          const release = await uploadChildSemaphore.current.acquire();
+          if (isQueueItemCancelled(item.id)) { release(); return; }
+          activeChildren += 1;
+          updateQueueItem(item.id, { uploadActiveChildren: activeChildren,
+            detail: `Uploading child ${childIndex + 1}/${children.length}. Up to 2 child batches run concurrently; parallel uploads may use more resources and can be less efficient.` });
+          try {
+            for (const file of children[childIndex]) {
+              if (isQueueItemCancelled(item.id)) return;
+              try { await uploadFile(file); }
+              catch (error) { failures.push(`${file.path}: ${describeError(error)}`); }
+            }
+          } finally {
+            activeChildren -= 1;
+            updateQueueItem(item.id, { uploadActiveChildren: activeChildren });
+            release();
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(2, children.length) }, () => worker()));
+      if (isQueueItemCancelled(item.id)) {
+        let cancelledSnapshot: Awaited<ReturnType<typeof readSession>>;
+        try { cancelledSnapshot = await readSession(context.uploadSessionId!); }
+        catch (error) {
+          updateQueueItem(item.id, { status: "needs_user_action", uploadOutcome: "resumable",
+            detail: `Cancellation outcome is unconfirmed. Check the same session before resuming. ${describeError(error)}` });
+          return;
+        }
+        const serverCompleted = cancelledSnapshot.session.status === "completed" ||
+          (cancelledSnapshot.session.status === "uploading" && cancelledSnapshot.files.length === cancelledSnapshot.session.expectedFileCount &&
+            cancelledSnapshot.files.every(file => file.status === "completed"));
+        if (serverCompleted) {
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: "The server completed the upload before cancellation settled." });
+        } else if (cancelledSnapshot.session.status === "cancelled") {
+          updateQueueItem(item.id, { status: "cancelled", uploadOutcome: "resumable", detail: "Upload cancelled. Completed files are kept; unfinished files can be resumed." });
+        } else {
+          updateQueueItem(item.id, { status: "needs_user_action", uploadOutcome: "resumable",
+            detail: "Server cancellation is unconfirmed. Check the same session before resuming unfinished files." });
+        }
+        return;
+      }
+      const finalSnapshot = await readSession(context.uploadSessionId!);
+      const completeFiles = finalSnapshot.files.filter(file => file.status === "completed").length;
+      const allFilesComplete = completeFiles === finalSnapshot.session.expectedFileCount;
+      if (allFilesComplete && finalSnapshot.session.manifestComplete) {
+        await request(`/api/upload/sessions/${encodeURIComponent(context.uploadSessionId!)}/complete`, "POST");
+        if (context.locationId === session.locationId && item.destinationPath === path) await loadFiles(path).catch(() => undefined);
+        const finalProgress = updateQueueProgress(item.id, totalBytes, totalBytes, completeFiles, finalSnapshot.files.length);
+        if (totalBytes === 0) finalProgress.percentage = 100;
+        updateQueueItem(item.id, {
+          status: "completed", uploadOutcome: "settled", uploadActiveChildren: 0,
+          progress: finalProgress,
+          detail: `Uploaded ${completeFiles} file(s); all completed files were verified by the server.`,
+        });
+      } else {
+        const detail = failures.length
+          ? `${completeFiles}/${finalSnapshot.session.expectedFileCount} files completed. ${failures[0]} Resume continues only unfinished files and byte ranges.`
+          : `${completeFiles}/${finalSnapshot.session.expectedFileCount} files completed. Resume continues only unfinished files and byte ranges.`;
+        updateQueueItem(item.id, { status: "needs_user_action", uploadOutcome: "resumable", uploadActiveChildren: 0, detail });
+      }
+    } catch (error) {
+      if (!isCurrent()) return;
+      const detail = context.uploadSessionId
+        ? `Upload session retained. Retry resumes unfinished files and byte ranges only. ${describeError(error)}`
+        : describeError(error);
+      updateQueueItem(item.id, { status: isQueueItemCancelled(item.id) ? "cancelled" : "needs_user_action",
+        uploadOutcome: context.uploadSessionId ? "resumable" : undefined, uploadActiveChildren: 0, detail });
+    } finally {
+      unlistenProgress?.();
+      for (const [transferId, active] of activeChunkTransfers.current) {
+        if (active.itemId === item.id) activeChunkTransfers.current.delete(transferId);
+      }
+      context.cancel = undefined;
+    }
+  };
+
+  const executeQueuedUpload = (item: TransferQueueItem) => item.serverBatchId && !item.serverSessionId
+    ? executeQueuedLegacyUpload(item)
+    : executeQueuedResumableUpload(item);
 
   const executeQueuedDownload = async (item: TransferQueueItem) => {
     if (!alive.current || isQueueItemCancelled(item.id)) return;
@@ -554,9 +1031,31 @@ export function useTransferQueueActions({
   const runQueuedSshDownload = (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => runOnce(item.id, () => executeQueuedSshDownload(item, profile, items));
 
   const retryDesktopQueueItem = (item: TransferQueueItem) => {
-    const context = contexts.current.get(item.id);
-    if (!item.sshEntryId && (!context || context.sessionId !== session.nativeSessionId || context.origin !== serverUrl() || context.ownerId !== session.userId)) {
-      setNotice(item.serverBatchId ? "The original upload session is unavailable. Server outcome is unconfirmed; do not re-upload automatically." : "The original transfer session is unavailable. Re-add the transfer to authenticate again.");
+    let context = contexts.current.get(item.id);
+    const origin = serverUrl();
+    const explicitUploadRecovery = Boolean((item.serverSessionId || item.clientAttemptId) && session.nativeSessionId &&
+      item.serverOrigin === origin && item.ownerId === session.userId && item.locationId === session.locationId &&
+      (!item.locationRevision || !session.locationRevision || item.locationRevision === session.locationRevision));
+    if (!item.sshEntryId && explicitUploadRecovery &&
+        (!context || context.sessionId !== session.nativeSessionId || context.origin !== origin)) {
+      context = {
+        origin,
+        sessionId: session.nativeSessionId,
+        headers: locationHeaders({ ...session, locationId: item.locationId }),
+        ignoreTlsErrors: session.ignoreTlsErrors,
+        ownerId: session.userId,
+        locationId: item.locationId,
+        locationRevision: session.locationRevision,
+        uploadSessionId: item.serverSessionId,
+      };
+      contexts.current.set(item.id, context);
+    }
+    if (!item.sshEntryId && (!context || context.sessionId !== session.nativeSessionId || context.origin !== origin || context.ownerId !== session.userId)) {
+      setNotice(item.serverSessionId || item.clientAttemptId
+        ? "Resume requires the original server, account, Location, and a fresh local source verification."
+        : item.serverBatchId
+          ? "The original upload session is unavailable. Server outcome is unconfirmed; do not re-upload automatically."
+          : "The original transfer session is unavailable. Re-add the transfer to authenticate again.");
       return;
     }
     if (item.kind === "upload" && item.uploadOutcome === "settled") {
@@ -747,7 +1246,7 @@ export function useTransferQueueActions({
         <span>{item.locationName}</span>
         <code>{item.destinationPath || "/"}</code>
       </div>
-      <div className="queue-item-detail">{item.detail}</div>
+      <div className="queue-item-detail" role="status" aria-live="polite">{item.detail}</div>
       {item.progress && (["running", "queued", "retrying"].includes(item.status)) && (
         <div className="queue-item-progress"><small>{item.progress.completedBytes ? `${formatSize(item.progress.completedBytes)}${item.progress.totalBytes ? ` / ${formatSize(item.progress.totalBytes)}` : ""}` : "Waiting for transfer data"}{formatQueueProgress(item.progress)}</small></div>
       )}
@@ -757,7 +1256,7 @@ export function useTransferQueueActions({
         )}
         {(item.status === "failed" || item.status === "needs_user_action") &&
           (item.kind !== "download" || Boolean(item.sshEntryId) || Boolean(item.downloadUrl)) && (
-          <button type="button" onClick={() => retryDesktopQueueItem(item)}>Retry</button>
+          <button type="button" onClick={() => retryDesktopQueueItem(item)}>{item.serverSessionId ? "Resume" : "Retry"}</button>
         )}
         {(["completed", "failed", "cancelled", "needs_user_action"].includes(item.status)) && (
           <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>

@@ -24,6 +24,8 @@ const sslRoutes = require('./api/ssl');
 const database = require('./database/db');
 const shareManager = require('./auth/share-manager');
 const bulkUserJobManager = require('./auth/bulk-user-job');
+const { UploadSessionStore } = require('./transfer/upload-session-store');
+const { ResumableUploadManager } = require('./transfer/resumable-upload');
 const { transferManager } = require('./transfer');
 const transferProgress = require('./transfer/progress');
 const { authenticate, setJwtSecret, requireAdmin, requireStaffRole, resolveCurrentAccount } = require('./middleware/auth');
@@ -214,6 +216,7 @@ const userActiveDirectories = new Map(); // Track active directory per user
 let httpServerInstance = null;
 let httpsServerInstance = null;
 let tempUploadCleanupInterval = null;
+let resumableUploadCleanupInterval = null;
 const browserHandoffs = new Map();
 const scheduleTempCleanup = () => {
   if (tempUploadCleanupInterval) clearInterval(tempUploadCleanupInterval);
@@ -221,6 +224,15 @@ const scheduleTempCleanup = () => {
     uploadApi.cleanupTempUploads(configManager.get('maintenance.tempUploadRetentionDays')).catch(() => {});
   }, configManager.get('maintenance.tempUploadCleanupIntervalHours') * 60 * 60 * 1000);
   tempUploadCleanupInterval.unref?.();
+};
+const scheduleResumableUploadCleanup = () => {
+  if (resumableUploadCleanupInterval) clearInterval(resumableUploadCleanupInterval);
+  resumableUploadCleanupInterval = setInterval(() => {
+    uploadApi.cleanupResumableSessions().catch(error => {
+      systemLogger.logSystem('WARN', `Resumable upload cleanup failed: ${error.message}`);
+    });
+  }, 5 * 60 * 1000);
+  resumableUploadCleanupInterval.unref?.();
 };
 const resetTokenClient = async () => {
   if (runtimeChanging) throw Object.assign(new Error('Storage configuration is changing'), { statusCode: 503 });
@@ -309,7 +321,7 @@ app.use(cors({
   credentials: true,
   origin: true,
   exposedHeaders: ['Authorization'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Location-ID', 'X-Location-Revision', 'X-Upload-Batch-ID']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Location-ID', 'X-Location-Revision', 'X-Upload-Batch-ID', 'Content-Range', 'X-Chunk-SHA256']
 }));
 // Increase JSON body limit to 100MB for large file metadata
 app.use(express.json({ limit: '100mb' }));
@@ -2258,6 +2270,10 @@ const ADMIN_CONFIG_SCHEMA = {
   fileSystem: {
     maxFileSize: { type: 'integer', label: 'Maximum file size (bytes)', description: 'Maximum accepted upload size in bytes.', example: '10737418240', requiresRestart: true }
   },
+  transfer: {
+    chunkSize: { type: 'integer', label: 'Resumable upload chunk size (bytes)', description: 'Chunk size used by resumable API uploads. Valid range: 1 MiB to 64 MiB.', example: '8388608', requiresRestart: false },
+    enableResume: { type: 'boolean', label: 'Enable resumable API uploads', description: 'Allow authenticated clients to resume unfinished upload sessions for up to four hours.', requiresRestart: false }
+  },
   locations: {
     definitions: { type: 'locations', label: 'Server Locations', description: 'Server-side roots. Set storageType to nfs for mount presence checks; mount the share first and enter the mounted directory. Changes apply immediately.', example: '[{"id":"team-a","displayName":"Team A","rootPath":"/mnt/nfs/team-a","storageType":"nfs","enabled":true,"readOnly":false,"order":10}]', requiresRestart: false }
   },
@@ -2322,6 +2338,10 @@ const getAdminConfig = () => ({
   },
   fileSystem: {
     maxFileSize: configManager.get('fileSystem.maxFileSize') ?? 1024 * 1024 * 10000
+  },
+  transfer: {
+    chunkSize: configManager.get('transfer.chunkSize') ?? 8 * 1024 * 1024,
+    enableResume: configManager.get('transfer.enableResume') !== false
   },
   locations: locationManager
     ? locationManager.getLocations({ includeDisabled: true }).map(({ id, displayName, rootPath, storageType, enabled, readOnly, order }) => ({ id, displayName, rootPath, storageType, enabled, readOnly, order }))
@@ -2401,7 +2421,7 @@ app.get('/api/admin/config', requireAdmin, async (req, res) => {
 
 app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) => {
   try {
-    const { server, fileSystem, locations, maintenance, logging, security, shareLinks, ai, ssl, auth } = req.body;
+    const { server, fileSystem, locations, maintenance, transfer, logging, security, shareLinks, ai, ssl, auth } = req.body;
     const updatedFields = [];
 
     const integer = (value, label, minimum = 1, maximum = Number.MAX_SAFE_INTEGER) => {
@@ -2462,6 +2482,18 @@ app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) 
       if (fileSystem.maxFileSize !== undefined) {
         add('fileSystem.maxFileSize', integer(fileSystem.maxFileSize, 'fileSystem.maxFileSize'));
         updatedFields.push('fileSystem.maxFileSize');
+      }
+    }
+
+    if (transfer) {
+      if (transfer.chunkSize !== undefined) {
+        add('transfer.chunkSize', integer(transfer.chunkSize, 'transfer.chunkSize', 1024 * 1024, 64 * 1024 * 1024));
+        updatedFields.push('transfer.chunkSize');
+      }
+      if (transfer.enableResume !== undefined) {
+        if (typeof transfer.enableResume !== 'boolean') throw new Error('transfer.enableResume must be true or false');
+        add('transfer.enableResume', transfer.enableResume);
+        updatedFields.push('transfer.enableResume');
       }
     }
 
@@ -2910,6 +2942,14 @@ async function startServer() {
     await database.initialize();
     systemLogger.logSystem('INFO', 'Database initialized successfully');
 
+    const resumableUploads = new ResumableUploadManager({
+      store: new UploadSessionStore({ db: database }),
+      tempDir: uploadApi.tempDir,
+      fsImpl: fsSync
+    });
+    await resumableUploads.initialize();
+    uploadApi.setResumableUploads(resumableUploads);
+
     // Initialize security middleware with configuration
     refreshSecurity();
 
@@ -2944,6 +2984,7 @@ async function startServer() {
 
     await runTempUploadCleanup();
     scheduleTempCleanup();
+    scheduleResumableUploadCleanup();
     systemLogger.logSystem('INFO', `TEMP UPLOAD CLEANUP SCHEDULER - RetentionDays: ${tempUploadRetentionDays}, IntervalHours: ${tempUploadCleanupIntervalHours}`);
 
     const transferCleanupInterval = 15 * 60 * 1000;
@@ -3208,6 +3249,10 @@ async function gracefulShutdown() {
     if (tempUploadCleanupInterval) {
       clearInterval(tempUploadCleanupInterval);
       tempUploadCleanupInterval = null;
+    }
+    if (resumableUploadCleanupInterval) {
+      clearInterval(resumableUploadCleanupInterval);
+      resumableUploadCleanupInterval = null;
     }
 
     aiAnalysisQueue.close();

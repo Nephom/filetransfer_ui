@@ -7,12 +7,17 @@ const { PassThrough } = require('node:stream');
 const { once } = require('node:events');
 const { createRequire, wrap } = require('node:module');
 const { runInThisContext } = require('node:vm');
+const { createHash, randomUUID } = require('node:crypto');
+const sqlite3 = require('sqlite3').verbose();
 const jwt = require('jsonwebtoken');
 const express = require('express');
 const UploadAPI = require('./upload');
 const { TransferManager } = require('../transfer');
 const LocationManager = require('../location/location-manager');
 const { withOperationLocks } = require('../file-system/operation-locks');
+const { runMigrations } = require('../database/migrations');
+const { UploadSessionStore, SESSION_TTL_MS } = require('../transfer/upload-session-store');
+const { ResumableUploadManager } = require('../transfer/resumable-upload');
 
 const tmp = path.join(require('node:os').tmpdir(), 'opencode');
 const boundary = 'upload-test-boundary';
@@ -52,12 +57,14 @@ async function fixture(t, options = {}) {
     if (this.hook) await this.hook(user, id, capability);
     if (!this.allowed) throw Object.assign(new Error('secret permission detail'), { statusCode: 403 });
   } };
-  const config = { maxFileSize: 1024, enableFileUploadSecurity: false };
+  const config = { maxFileSize: 1024, enableFileUploadSecurity: false, chunkSize: 1024 * 1024, enableResume: true };
   let authCalls = 0;
   const api = new UploadAPI({
     transferManager: manager, tempDir: path.join(base, 'staging'), logger: { logSystem() {} },
     getConfig: key => key === 'fileSystem.maxFileSize' ? config.maxFileSize :
-      key === 'security.enableFileUploadSecurity' ? config.enableFileUploadSecurity : undefined,
+      key === 'security.enableFileUploadSecurity' ? config.enableFileUploadSecurity :
+      key === 'transfer.chunkSize' ? config.chunkSize :
+      key === 'transfer.enableResume' ? config.enableResume : undefined,
     authenticate(req, res, next) {
       authCalls++;
       const username = req.headers.authorization?.replace('Bearer ', '') || req.headers.cookie?.replace('session=', '');
@@ -115,6 +122,33 @@ async function fixture(t, options = {}) {
     await fs.promises.rm(base, { recursive: true, force: true });
   });
   return { base, root, manager, api, config, permissions, locations, open, send, upload, reserve, poll, settled, authCalls: () => authCalls };
+}
+
+const sqliteAdapter = raw => ({
+  run(sql, params = []) {
+    return new Promise((resolve, reject) => raw.run(sql, params, function (error) {
+      if (error) reject(error);
+      else resolve({ lastID: this.lastID, changes: this.changes });
+    }));
+  },
+  get(sql, params = []) {
+    return new Promise((resolve, reject) => raw.get(sql, params, (error, row) => error ? reject(error) : resolve(row)));
+  },
+  all(sql, params = []) {
+    return new Promise((resolve, reject) => raw.all(sql, params, (error, rows) => error ? reject(error) : resolve(rows)));
+  }
+});
+
+async function enableResumableFixture(t, fixture, now = Date.now) {
+  const raw = new sqlite3.Database(':memory:');
+  const db = sqliteAdapter(raw);
+  await runMigrations(db);
+  const store = new UploadSessionStore({ db, now });
+  const resumable = new ResumableUploadManager({ store, tempDir: fixture.api.tempDir, fsImpl: fs, now });
+  await resumable.initialize();
+  fixture.api.setResumableUploads(resumable);
+  t.after(() => new Promise((resolve, reject) => raw.close(error => error ? reject(error) : resolve())));
+  return { store, resumable, db };
 }
 
 test('constructor/import do not initialize filesystem, accounts, logs, or live configuration', async t => {
@@ -250,6 +284,25 @@ test('exclusive same-name uploads preserve every output and established tar.gz c
   assert.deepEqual(contents.sort(), ['first', 'second', 'third']);
 });
 
+test('server publishes files by normalized destination path and keeps stable order for collisions', async t => {
+  const f = await fixture(t);
+  const published = [];
+  const originalPublish = f.api._publish.bind(f.api);
+  f.api._publish = async (item, ...args) => {
+    published.push(path.relative(f.root, item.destination).split(path.sep).join('/'));
+    return originalPublish(item, ...args);
+  };
+  const result = await f.upload([
+    file('z.bin', 'last'), file('a.bin', 'first'),
+    { name: 'filePaths[]', value: 'z.bin' }, { name: 'filePaths[]', value: 'a.bin' }
+  ]);
+  assert.equal(result.status, 202);
+  assert.equal((await f.settled(result.body.batchId)).status, 'completed');
+  assert.deepEqual(published, ['a.bin', 'z.bin']);
+  assert.equal(await fs.promises.readFile(path.join(f.root, 'a.bin'), 'utf8'), 'first');
+  assert.equal(await fs.promises.readFile(path.join(f.root, 'z.bin'), 'utf8'), 'last');
+});
+
 test('wx collision retry never unlinks a competing output; failures remove only their owned partial output', async t => {
   const f = await fixture(t);
   const realOpen = fs.promises.open.bind(fs.promises);
@@ -353,7 +406,7 @@ test('active publication cancellation destroys streams, retains committed files,
     active.write('ab');
     return active;
   } };
-  const response = await f.upload([file('committed'), file('active'), file('pending')]);
+  const response = await f.upload([file('a-committed'), file('b-active'), file('c-pending')]);
   const id = response.body.batchId;
   await until(() => active);
   const result = await f.send(`/progress/batch/${id}/cancel`);
@@ -361,7 +414,7 @@ test('active publication cancellation destroys streams, retains committed files,
   assert.equal(result.body.successCount, 1);
   assert.equal(result.body.cancelledCount, 2);
   assert.equal(active.destroyed, true);
-  assert.deepEqual(await fs.promises.readdir(f.root), ['committed']);
+  assert.deepEqual(await fs.promises.readdir(f.root), ['a-committed']);
   assert.deepEqual(await fs.promises.readdir(f.api.tempDir), []);
 });
 
@@ -782,4 +835,198 @@ test('enabled extension security accepts real streamed files above 100 MiB under
   assert.equal(batch.status, 'completed');
   assert.equal(batch.transferredSize, f.config.maxFileSize);
   assert.equal((await fs.promises.stat(path.join(f.root, 'large.bin'))).size, f.config.maxFileSize);
+});
+
+test('resumable upload options provide the configured chunk size and reject stale manifest sizes before reservation', async t => {
+  const f = await fixture(t);
+  await enableResumableFixture(t, f);
+  const options = await f.send('/upload/sessions/config', '', auth, 'GET');
+  assert.equal(options.status, 200);
+  assert.equal(options.body.chunkSize, f.config.chunkSize);
+  assert.equal(options.headers['cache-control'], 'no-store');
+
+  const jsonHeaders = { ...auth, 'content-type': 'application/json' };
+  const stale = await f.send('/upload/sessions', JSON.stringify({
+    path: '', clientAttemptId: 'stale-chunk-size', chunkSize: f.config.chunkSize * 2, fileCount: 1, directoryCount: 0
+  }), jsonHeaders);
+  assert.equal(stale.status, 409);
+  assert.deepEqual((await f.send('/upload/sessions', '', auth, 'GET')).body.sessions, []);
+
+  f.config.enableResume = false;
+  assert.equal((await f.send('/upload/sessions/config', '', auth, 'GET')).status, 404);
+});
+
+test('resumable API session resumes an unfinished file after manager restart and never republishes completed output', async t => {
+  const f = await fixture(t);
+  const { store, resumable } = await enableResumableFixture(t, f);
+  const contents = Buffer.alloc(1024 * 1024 + 17, 0x61);
+  f.config.maxFileSize = contents.length;
+  const chunkSize = f.config.chunkSize;
+  const chunkHashes = [contents.subarray(0, chunkSize), contents.subarray(chunkSize)]
+    .map(chunk => createHash('sha256').update(chunk).digest('hex'));
+  const jsonHeaders = { ...auth, 'content-type': 'application/json' };
+  const reservation = await f.send('/upload/sessions', JSON.stringify({
+    path: '', clientAttemptId: 'resume-api-test', fileCount: 1, directoryCount: 1
+  }), jsonHeaders);
+  assert.equal(reservation.status, 201);
+  assert.equal(reservation.body.expiresInMs, SESSION_TTL_MS);
+  const sessionId = reservation.body.sessionId;
+  const fileId = randomUUID();
+  const manifest = await f.send(`/upload/sessions/${sessionId}/manifest/pages/0`, JSON.stringify({
+    fileOffset: 0, directoryOffset: 0,
+    files: [{ fileId, path: 'nested/large.bin', name: 'large.bin', size: contents.length, chunkHashes }],
+    directories: ['nested']
+  }), jsonHeaders);
+  assert.equal(manifest.status, 201);
+  assert.equal((await f.send(`/upload/sessions/${sessionId}/manifest/complete`, '')).status, 200);
+  const manifestStatus = await f.send(`/upload/sessions/${sessionId}?offset=0&limit=1`, '', auth, 'GET');
+  const expectedManifestHash = createHash('sha256')
+    .update(Buffer.concat([...chunkHashes.map(hash => Buffer.from(hash, 'hex')), Buffer.from(String(contents.length))]))
+    .digest('hex');
+  assert.equal(manifestStatus.body.files[0].manifestHash, expectedManifestHash);
+
+  const first = contents.subarray(0, chunkSize);
+  const corruptChunk = await f.send(`/upload/sessions/${sessionId}/files/${fileId}/chunks`, first, {
+    ...auth, 'content-type': 'application/octet-stream', 'content-length': String(first.length),
+    'content-range': `bytes 0-${first.length - 1}/${contents.length}`, 'x-chunk-sha256': 'f'.repeat(64)
+  }, 'PUT');
+  assert.equal(corruptChunk.status, 400);
+  assert.equal((await store.getFile(sessionId, fileId)).uploadedOffset, 0);
+  const firstChunk = await f.send(`/upload/sessions/${sessionId}/files/${fileId}/chunks`, first, {
+    ...auth, 'content-type': 'application/octet-stream', 'content-length': String(first.length),
+    'content-range': `bytes 0-${first.length - 1}/${contents.length}`, 'x-chunk-sha256': chunkHashes[0]
+  }, 'PUT');
+  assert.equal(firstChunk.status, 200);
+  assert.equal(firstChunk.body.uploadedOffset, chunkSize);
+  const stale = await f.send(`/upload/sessions/${sessionId}/files/${fileId}/chunks`, first, {
+    ...auth, 'content-type': 'application/octet-stream', 'content-length': String(first.length),
+    'content-range': `bytes 0-${first.length - 1}/${contents.length}`, 'x-chunk-sha256': chunkHashes[0]
+  }, 'PUT');
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.expectedOffset, chunkSize);
+  assert.equal((await f.send(`/upload/sessions/${sessionId}`, '', { ...auth, authorization: 'Bearer bob' }, 'GET')).status, 404);
+
+  const stagedFile = resumable._filePath(sessionId, fileId);
+  await fs.promises.appendFile(stagedFile, Buffer.from('uncheckpointed tail'));
+  const restarted = new ResumableUploadManager({ store, tempDir: f.api.tempDir, fsImpl: fs });
+  await restarted.initialize();
+  f.api.setResumableUploads(restarted);
+  assert.equal((await fs.promises.stat(stagedFile)).size, chunkSize, 'restart truncates bytes beyond the durable checkpoint');
+  const rest = contents.subarray(chunkSize);
+  const resumed = await f.send(`/upload/sessions/${sessionId}/files/${fileId}/chunks`, rest, {
+    ...auth, 'content-type': 'application/octet-stream', 'content-length': String(rest.length),
+    'content-range': `bytes ${chunkSize}-${contents.length - 1}/${contents.length}`, 'x-chunk-sha256': chunkHashes[1]
+  }, 'PUT');
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.uploadedOffset, contents.length);
+
+  const published = await f.send(`/upload/sessions/${sessionId}/files/${fileId}/complete`);
+  assert.equal(published.status, 200);
+  assert.equal(published.body.path, 'nested/large.bin');
+  const replay = await f.send(`/upload/sessions/${sessionId}/files/${fileId}/complete`);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.path, published.body.path);
+  assert.deepEqual(await fs.promises.readFile(path.join(f.root, 'nested', 'large.bin')), contents);
+  const completed = await f.send(`/upload/sessions/${sessionId}/complete`);
+  assert.equal(completed.body.status, 'completed');
+  assert.deepEqual(await fs.promises.readdir(path.join(f.root, 'nested')), ['large.bin']);
+});
+
+test('unfinished resumable sessions expire after exactly four hours and remove owned staging', async t => {
+  const f = await fixture(t);
+  let now = 1000;
+  const { store, resumable } = await enableResumableFixture(t, f, () => now);
+  const jsonHeaders = { ...auth, 'content-type': 'application/json' };
+  const created = await f.send('/upload/sessions', JSON.stringify({
+    path: '', clientAttemptId: 'expire-api-test', fileCount: 1, directoryCount: 0
+  }), jsonHeaders);
+  const sessionId = created.body.sessionId;
+  const fileId = randomUUID();
+  const manifest = await f.send(`/upload/sessions/${sessionId}/manifest/pages/0`, JSON.stringify({
+    fileOffset: 0, directoryOffset: 0,
+    files: [{ fileId, path: 'empty.bin', name: 'empty.bin', size: 0, chunkHashes: [] }], directories: []
+  }), jsonHeaders);
+  assert.equal(manifest.status, 201);
+  await f.send(`/upload/sessions/${sessionId}/manifest/complete`, '');
+  const staging = resumable._filePath(sessionId, fileId);
+  assert.equal(fs.existsSync(staging), true);
+  now += SESSION_TTL_MS;
+  assert.equal((await f.send(`/upload/sessions/${sessionId}`, '', auth, 'GET')).status, 410);
+  now++;
+  assert.deepEqual(await resumable.cleanupExpired(), { removed: 1 });
+  assert.equal(await store.get(sessionId), undefined);
+  assert.equal(fs.existsSync(path.dirname(path.dirname(staging))), false);
+});
+
+test('resumable files with one destination finalize in manifest order despite independent requests', async t => {
+  const f = await fixture(t);
+  await enableResumableFixture(t, f);
+  const files = [
+    { fileId: randomUUID(), contents: Buffer.from('first') },
+    { fileId: randomUUID(), contents: Buffer.from('second') }
+  ];
+  const jsonHeaders = { ...auth, 'content-type': 'application/json' };
+  const created = await f.send('/upload/sessions', JSON.stringify({
+    path: '', clientAttemptId: 'collision-order-test', fileCount: 2, directoryCount: 0
+  }), jsonHeaders);
+  const sessionId = created.body.sessionId;
+  const manifest = await f.send(`/upload/sessions/${sessionId}/manifest/pages/0`, JSON.stringify({
+    fileOffset: 0, directoryOffset: 0,
+    files: files.map(({ fileId, contents }) => ({ fileId, path: 'same.txt', name: 'same.txt', size: contents.length,
+      chunkHashes: [createHash('sha256').update(contents).digest('hex')] })),
+    directories: []
+  }), jsonHeaders);
+  assert.equal(manifest.status, 201);
+  await f.send(`/upload/sessions/${sessionId}/manifest/complete`, '');
+  for (const file of files) {
+    const digest = createHash('sha256').update(file.contents).digest('hex');
+    const uploaded = await f.send(`/upload/sessions/${sessionId}/files/${file.fileId}/chunks`, file.contents, {
+      ...auth, 'content-type': 'application/octet-stream', 'content-length': String(file.contents.length),
+      'content-range': `bytes 0-${file.contents.length - 1}/${file.contents.length}`, 'x-chunk-sha256': digest
+    }, 'PUT');
+    assert.equal(uploaded.status, 200);
+  }
+  assert.equal((await f.send(`/upload/sessions/${sessionId}/files/${files[1].fileId}/complete`)).status, 409);
+  const first = await f.send(`/upload/sessions/${sessionId}/files/${files[0].fileId}/complete`);
+  const second = await f.send(`/upload/sessions/${sessionId}/files/${files[1].fileId}/complete`);
+  assert.equal(first.body.path, 'same.txt');
+  assert.equal(second.body.path, 'same_(1).txt');
+  assert.equal((await f.send(`/upload/sessions/${sessionId}/complete`)).body.status, 'completed');
+  assert.equal(await fs.promises.readFile(path.join(f.root, 'same.txt'), 'utf8'), 'first');
+  assert.equal(await fs.promises.readFile(path.join(f.root, 'same_(1).txt'), 'utf8'), 'second');
+});
+
+test('resumable chunk cancellation waits for the active stream and removes only session staging', async t => {
+  const f = await fixture(t);
+  const { resumable } = await enableResumableFixture(t, f);
+  const contents = Buffer.alloc(f.config.chunkSize, 0x62);
+  f.config.maxFileSize = contents.length;
+  const hash = createHash('sha256').update(contents).digest('hex');
+  const jsonHeaders = { ...auth, 'content-type': 'application/json' };
+  const created = await f.send('/upload/sessions', JSON.stringify({
+    path: '', clientAttemptId: 'cancel-resume-api-test', fileCount: 1, directoryCount: 0
+  }), jsonHeaders);
+  const sessionId = created.body.sessionId;
+  const fileId = randomUUID();
+  await f.send(`/upload/sessions/${sessionId}/manifest/pages/0`, JSON.stringify({
+    fileOffset: 0, directoryOffset: 0,
+    files: [{ fileId, path: 'cancel.bin', name: 'cancel.bin', size: contents.length, chunkHashes: [hash] }],
+    directories: []
+  }), jsonHeaders);
+  await f.send(`/upload/sessions/${sessionId}/manifest/complete`, '');
+
+  const exchange = f.open(`/upload/sessions/${sessionId}/files/${fileId}/chunks`, {
+    ...auth, 'content-type': 'application/octet-stream', 'content-length': String(contents.length),
+    'content-range': `bytes 0-${contents.length - 1}/${contents.length}`, 'x-chunk-sha256': hash
+  }, 'PUT');
+  exchange.response.catch(() => {});
+  exchange.request.write(contents.subarray(0, 4096));
+  await until(() => resumable.activeOperations.get(sessionId)?.size === 1);
+  const cancellation = await f.send(`/upload/sessions/${sessionId}/cancel`);
+  assert.equal(cancellation.status, 200);
+  assert.equal(cancellation.body.status, 'cancelled');
+  await Promise.allSettled([exchange.response]);
+  assert.equal(resumable.activeOperations.has(sessionId), false);
+  assert.equal(fs.existsSync(path.join(f.api.tempDir, 'resumable', sessionId)), false);
+  assert.deepEqual(await fs.promises.readdir(f.root), []);
 });

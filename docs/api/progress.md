@@ -1,8 +1,8 @@
 # Upload Progress And Cancellation
 
-Progress records are in-memory upload diagnostics, not durable or resumable jobs.
-Use the batch ID from [batch reservation](./upload.md) before sending multipart
-bytes. Keep that ID even when upload acceptance or a progress response is lost.
+Legacy multipart batch progress records remain in-memory diagnostics. The resumable
+session API in [upload.md](./upload.md) persists owner-bound manifests and byte
+offsets in SQLite so unfinished files can continue after a server restart.
 
 ## Routes And Authorization
 
@@ -12,6 +12,9 @@ bytes. Keep that ID even when upload acceptance or a progress response is lost.
 | `GET` | `/api/progress/:transferId` | Safe single-transfer record |
 | `POST` | `/api/progress/batch/:batchId/cancel` | Actual batch state after cancellation settlement |
 | `POST` | `/api/progress/:transferId/cancel` | Actual transfer state after cancellation settlement |
+| `GET` | `/api/upload/sessions` | Unexpired sessions owned by the authenticated account and accessible at their Locations, including terminal outcomes |
+| `GET` | `/api/upload/sessions/:sessionId?offset=&limit=&directoryOffset=` | Session summary and paginated file offsets/status |
+| `POST` | `/api/upload/sessions/:sessionId/cancel` | Session cancellation after active chunk/publication work settles |
 
 Every request authenticates the current account using a session cookie or Bearer
 token. Both account ID and username must match the stored owner. The stored
@@ -54,6 +57,12 @@ been registered and every child's size is measured.
 or cancellation. It is not a disk-flush or publication acknowledgement. During
 processing, received/staged bytes are not counted a second time as files are copied
 to their destinations. Completion never pads a counter to a declared total.
+
+For resumable sessions, `uploadedSize` is calculated from durable per-file offsets.
+Each file reports its actual `uploadedOffset` and `status`; this is the byte boundary
+the client uses to continue. A completed file remains completed if another file in
+the same session is incomplete. Chunk checksums are verified before advancing the
+offset, and staged chunks are rechecked before publication.
 
 For a known nonzero total, `progress = transferredSize / totalSize * 100`, rounded
 and capped at 100. Unknown totals have numeric progress `0`. Known zero-byte work
@@ -183,5 +192,9 @@ Terminal records become eligible for removal after the default 24-hour retention
 window; actual removal depends on the server cleanup schedule. Active records are
 not failed or removed because they stop emitting progress. Active batch children
 and privately registered workers stay retained until settlement. Client queue
-history cleanup is independent. A server process restart loses these records and
-does not imply resumability or confirmation of an unknown outcome.
+history cleanup is independent. A server restart loses these legacy batch records,
+so their unknown outcomes still require reconciliation. Resumable sessions use a
+separate SQLite manifest/checkpoint store: incomplete sessions expire four hours
+after creation, and polling never extends that deadline. Resume rechecks the source
+manifest, skips completed files, and sends only missing byte ranges. Expiration
+removes session staging but never removes already published files.

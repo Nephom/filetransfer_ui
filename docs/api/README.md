@@ -76,42 +76,83 @@ const pollInterval = setInterval(async () => {
 }, 1000);
 ```
 
-### 2. Multi-File Upload
+### 2. Resumable Multi-File Upload
+
+New Browser and Desktop clients use the durable upload-session protocol. The
+session manifest contains each destination-relative file path, size, and a SHA-256
+digest for every chunk. The full request schemas and paging rules are in
+[upload.md](./upload.md).
 
 ```javascript
-// Step 1: Initiate batch upload
-const formData = new FormData();
-files.forEach(file => {
-  formData.append('files', file);
-});
-formData.append('path', 'uploads/images');
-
-const uploadResponse = await fetch('/api/upload/multiple', {
+const headers = { 'Content-Type': 'application/json', 'X-Location-ID': 'default' };
+const requestJson = async (url, options = {}) => {
+  const response = await fetch(url, { ...options, headers: { ...headers, ...options.headers } });
+  const body = await response.json();
+  if (!response.ok) throw Object.assign(new Error(body.error?.message || 'Upload request failed'), { status: response.status, body });
+  return body;
+};
+const { chunkSize } = await requestJson('/api/upload/sessions/config');
+const chunkHashes = [];
+for (let offset = 0; offset < file.size; offset += chunkSize) {
+  const chunk = await file.slice(offset, Math.min(file.size, offset + chunkSize)).arrayBuffer();
+  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', chunk));
+  chunkHashes.push(Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join(''));
+}
+// Hash and validate the complete source manifest before starting the session TTL.
+const fileId = crypto.randomUUID();
+const clientAttemptId = crypto.randomUUID();
+const session = await requestJson('/api/upload/sessions', {
   method: 'POST',
-  headers: {
-    'Authorization': 'Bearer YOUR_JWT_TOKEN'
-  },
-  body: formData
+  body: JSON.stringify({ path: 'uploads/images', clientAttemptId, chunkSize, fileCount: 1, directoryCount: 0 }),
 });
+await requestJson(`/api/upload/sessions/${session.sessionId}/manifest/pages/0`, {
+  method: 'POST',
+  body: JSON.stringify({ fileOffset: 0, directoryOffset: 0, directories: [], files: [
+    { fileId, path: file.webkitRelativePath || file.name, name: file.name, size: file.size, chunkHashes }
+  ] }),
+});
+await requestJson(`/api/upload/sessions/${session.sessionId}/manifest/complete`, { method: 'POST' });
 
-const { batchId } = await uploadResponse.json();
-
-// Step 2: Poll for batch progress
-const pollInterval = setInterval(async () => {
-  const progressResponse = await fetch(`/api/progress/batch/${batchId}`, {
-    headers: { 'Authorization': 'Bearer YOUR_JWT_TOKEN' }
-  });
-
-  const batch = await progressResponse.json();
-  console.log(`Batch: ${batch.successCount}/${batch.totalFiles} completed`);
-  console.log(`Progress: ${batch.progress}%`);
-
-  if (['completed', 'partial_fail', 'failed'].includes(batch.status)) {
-    clearInterval(pollInterval);
-    console.log('Batch upload finished:', batch.status);
+const readFileState = async () => {
+  const page = await requestJson(`/api/upload/sessions/${session.sessionId}?offset=0&limit=1`);
+  return page.files[0];
+};
+let { uploadedOffset, status } = await readFileState();
+if (status !== 'completed') {
+  let retries = 0;
+  while (uploadedOffset < file.size) {
+    const index = Math.floor(uploadedOffset / chunkSize);
+    const chunk = file.slice(uploadedOffset, Math.min(file.size, uploadedOffset + chunkSize));
+    const digest = chunkHashes[index];
+    try {
+      const accepted = await requestJson(`/api/upload/sessions/${session.sessionId}/files/${fileId}/chunks`, {
+        method: 'PUT', headers: {
+          'Content-Range': `bytes ${uploadedOffset}-${uploadedOffset + chunk.size - 1}/${file.size}`,
+          'X-Chunk-SHA256': digest, 'Content-Type': 'application/octet-stream',
+        }, body: chunk,
+      });
+      uploadedOffset = accepted.uploadedOffset;
+      retries = 0;
+    } catch (error) {
+      // Reconcile the durable server checkpoint; never guess or replay the whole file.
+      const latest = await readFileState();
+      if (latest.uploadedOffset > uploadedOffset) { uploadedOffset = latest.uploadedOffset; continue; }
+      if ([400, 403, 404, 410, 413].includes(error.status) || ++retries > 3) throw error;
+      await new Promise(resolve => setTimeout(resolve, Math.min(30000, 1000 * 2 ** retries)));
+    }
+    ({ uploadedOffset, status } = await readFileState());
+    if (status === 'completed') break;
   }
-}, 1000);
+  if (status !== 'completed') await requestJson(`/api/upload/sessions/${session.sessionId}/files/${fileId}/complete`, { method: 'POST' });
+}
+await requestJson(`/api/upload/sessions/${session.sessionId}/complete`, { method: 'POST' });
 ```
+
+The built-in clients group at most 500 files per child and run no more than two
+children at once. A child/session retry skips completed files and resumes each
+unfinished file at the server's verified offset. Browser clients must reselect
+their local sources after page reload; credentials and `File` objects are not
+persisted.
 
 ---
 
@@ -121,11 +162,20 @@ const pollInterval = setInterval(async () => {
 
 | Endpoint | Method | Description | Response |
 |----------|--------|-------------|----------|
+| `/api/upload/sessions` | POST | Create or recover a durable resumable API upload session | `{ sessionId, chunkSize, expiresAt }` |
+| `/api/upload/sessions/:sessionId/manifest/pages/:pageIndex` | POST | Register sorted files, directories, sizes, and chunk checksums | Manifest page status |
+| `/api/upload/sessions/:sessionId/manifest/complete` | POST | Seal manifest and create folders | Session status |
+| `/api/upload/sessions/:sessionId/files/:fileId/chunks` | PUT | Upload one checksummed byte range | `{ uploadedOffset }` |
+| `/api/upload/sessions/:sessionId/files/:fileId/complete` | POST | Verify and publish one file idempotently | Completed file record |
+| `/api/upload/sessions/:sessionId/complete` | POST | Settle a complete parent session | Session status |
+| `/api/upload/sessions/:sessionId/cancel` | POST | Cancel unfinished chunks/files | Settled session status |
 | `/api/upload/single-progress` | POST | Upload single file with progress | `{ transferId }` |
 | `/api/upload/multiple` | POST | Upload multiple files in batch | `{ batchId }` |
 | `/api/upload` | POST | Legacy upload (no progress tracking) | File metadata |
 
-For all new clients, use `/api/upload/multiple`. It is the supported streaming route for both single and multiple uploads.
+New Browser/Desktop clients use resumable sessions and checksum-verified chunks. Legacy
+multipart clients may continue using `/api/upload/multiple`; a single multipart
+request remains limited to 1,000 files.
 
 ### Progress Tracking Endpoints
 
@@ -133,12 +183,14 @@ For all new clients, use `/api/upload/multiple`. It is the supported streaming r
 |----------|--------|-------------|----------|
 | `/api/progress/:transferId` | GET | Get single transfer progress | Transfer status |
 | `/api/progress/batch/:batchId` | GET | Get batch progress | Batch status |
+| `/api/upload/sessions` | GET | List accessible unexpired sessions for the current account | Session summaries/outcomes |
+| `/api/upload/sessions/:sessionId?offset=&limit=&directoryOffset=` | GET | Read a resumable manifest page and authoritative offsets | Session/file status |
 
 ---
 
 ## Authentication
 
-All endpoints require JWT authentication via the `Authorization` header:
+Authenticated endpoints accept the HttpOnly session cookie or a Bearer token:
 
 ```
 Authorization: Bearer <your_jwt_token>
@@ -243,48 +295,52 @@ localStorage.setItem('token', token);
 └─────────────┘       Show success message
 ```
 
-### Multi-File Batch Upload Workflow
+### Resumable Multi-File Upload Workflow
 
 ```
 ┌─────────────┐
 │   Client    │
 └──────┬──────┘
        │
-       │ POST /api/upload/multiple
-       │ (FormData with multiple files)
+       │ POST /api/upload/sessions
+       │ { path, clientAttemptId, fileCount, directoryCount }
        ▼
 ┌──────────────┐
-│   Server     │──────► Create batchId
-└──────┬───────┘       Create transfers for each file
-       │               Process files in background
-       │ 202 Accepted
-       │ { batchId: "uuid" }
+│   Server     │──────► Persist owner/Location-bound session
+└──────┬───────┘       Return sessionId and chunkSize
+       │
+       │ POST manifest pages, then manifest/complete
        ▼
 ┌─────────────┐
 │   Client    │
 └──────┬──────┘
        │
-       │ GET /api/progress/batch/:batchId
-       │ (Poll every 1 second)
+       │ PUT file chunks
+       │ Content-Range + X-Chunk-SHA256
        ▼
 ┌──────────────┐
-│   Server     │──────► Calculate batch statistics
-└──────┬───────┘       { successCount: 7, totalFiles: 10, progress: 70% }
+│   Server     │──────► Verify chunk checksum and offset
+└──────┬───────┘       Persist staged bytes and checkpoint
        │
-       │ 200 OK
-       │ { batch stats, files array, ... }
+       │ GET /api/upload/sessions/:sessionId
+       │ Reconcile durable offsets after lost response
        ▼
 ┌─────────────┐
-│   Client    │──────► Update UI with batch progress
-└──────┬──────┘       Show individual file statuses
+│   Client    │──────► Continue only unfinished byte ranges
+└──────┬──────┘       Skip completed files
        │
-       │ (When all files processed)
+       │ POST file complete, then session complete
        ▼
 ┌─────────────┐
-│   Client    │──────► Stop polling
-└─────────────┘       Show completion status
-                      (completed/partial_fail/failed)
+│   Server     │──────► Reverify chunks and publish idempotently
+└─────────────┘       Keep already committed files
 ```
+
+Built-in clients sort by destination-relative path, group no more than 500 files
+per child, and limit the whole client Queue to two active children. Same-target
+collision groups are kept together and finalized in manifest order. Parallel
+upload can use more resources and may reduce efficiency; the UI warns before a
+large transfer starts.
 
 ---
 
@@ -304,7 +360,7 @@ interface Transfer {
 }
 ```
 
-### Batch Object
+### Legacy Batch Object
 
 ```typescript
 interface Batch {
@@ -320,6 +376,26 @@ interface Batch {
   files: FileProgress[];   // Array of individual file progress
 }
 ```
+
+### Resumable Upload Session
+
+```typescript
+interface UploadSessionFile {
+  fileId: string;
+  index: number;
+  path: string;             // Location-relative destination path
+  name: string;
+  size: number;
+  chunkSize: number;
+  manifestHash: string;     // SHA-256 of ordered chunk hashes and file size
+  uploadedOffset: number;   // Durable verified byte boundary
+  status: 'pending' | 'uploading' | 'publishing' | 'completed';
+}
+```
+
+The parent session expires four hours after creation. Its SQLite checkpoints survive
+server restart; destination files that have already completed remain in place after
+session expiry.
 
 ### File Progress Object
 

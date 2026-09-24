@@ -1,6 +1,6 @@
 # nFterm Desktop Architecture
 
-This document describes the supported architecture of the nFterm 3.4.0
+This document describes the supported architecture of the nFterm 4.0.0
 desktop client. It is an implementation contract for maintainers, not a local
 development runbook.
 
@@ -81,8 +81,12 @@ failure categories.
 
 Queue metadata is persisted for visibility across application restarts. Active
 items from a previous process are restored as `needs_user_action`; they are not
-reported as completed and are not silently resumed. Sensitive request headers,
-bodies, and download URLs are excluded from persistence. A restored API
+reported as completed or silently resumed. A resumable API upload can be continued
+only after explicit user action under the same server, account, and Location; the
+client obtains the active chunk size, reopens source paths, verifies and preflights
+chunk manifests before starting a session, skips completed files, and continues only
+missing byte ranges. Sensitive request headers, bodies, native
+session handles, and download URLs are excluded from persistence. A restored API
 download that lacks its runtime request credentials must be added again.
 
 Automatic retry is bounded and limited to network, timeout, and transient

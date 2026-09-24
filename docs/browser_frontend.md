@@ -68,13 +68,13 @@ The original colors, fonts, icons, row/card styling, toolbar, dialogs, and narro
 
 ## Upload Lifecycle
 
-Each queued upload captures its session, Location, headers, target path, and request context. It reserves with `POST /api/upload/batches` and `{ path, clientAttemptId }`, then sends `X-Upload-Batch-ID` with the multipart upload. Cookie requests omit Authorization rather than sending `Bearer null`.
+Each queued API upload captures its server origin, account, Location, revision, and target. It reads the active chunk size, hashes and preflights the selected sources, then creates a durable `POST /api/upload/sessions` manifest, sends bounded manifest pages, and PUTs each raw chunk with `Content-Range` and `X-Chunk-SHA256`. Hashing occurs before the four-hour session lifetime starts. The server stores verified chunk offsets in SQLite. Legacy clients can continue to use multipart endpoints.
 
-Transport byte counters include multipart framing and are displayed separately from file progress. Server progress uses the numeric `transferredSize`, `totalSize`, `progress`, and `totalSizeKnown` fields, with actual phase/status and success/failed/cancelled/pending counts. Zero-byte and unknown totals are not replaced with fabricated completion counters.
+Browser XHR upload progress reports actual chunk-body bytes; server `uploadedOffset` is the resume checkpoint. The Queue aggregates confirmed offsets and active chunk bytes separately from file completion. Zero-byte sessions reach 100% only after the server reports completion.
 
-Cancelling aborts the transport but retains a separate live control fetch for `POST /api/progress/batch/:batchId/cancel` and progress polling. HTTP 202 means cancellation is requested, not settled. Only terminal progress marks a queue item cancelled/completed/failed, including already committed files and completion-won races. Control requests have bounded timers that are cleared after settlement.
+Large uploads are split into child batches of at most 500 files, with a maximum of two active children. A confirmation warning explains the possible increase in resource usage and reduced efficiency. Same-destination files stay in one ordered collision group. Cancelling aborts active chunk transports and separately requests server-session cancellation; completed files are retained and a completion race may win.
 
-After dispatch, a lost acceptance or polling response never triggers another upload. Control requests retry; after repeated failure the queue shows an unconfirmed outcome. **Reconcile** checks the same batch ID without sending files again. Cancellation before the reservation response waits for the known ID and sends no file bytes. Session teardown aborts local requests and attempts a best-effort cancellation; a closed tab cannot guarantee server cancellation. Batch retention/expiry and owner authorization are backend responsibilities, and updated clients require the coordinated backend.
+After a lost chunk response, the client reads the same session's authoritative offset before continuing. Completed files are skipped. If the page reloads, active server sessions are listed in the Queue; the user must reselect the original files/folder, and the client checks the manifest hashes before resuming. Browser `File` objects and credentials are never persisted. Sessions expire four hours after creation. Session owner, permissions, Location and revision checks are enforced by the backend on each request.
 
 ## Verification
 
@@ -90,7 +90,7 @@ Set `PLAYWRIGHT_BROWSERS_PATH` for verification machines that keep binaries outs
 
 Unit tests cover action identities, sorting, request generations, geometry bounds, missing/tampered readiness, side-effect-free imports without dev dependencies, shell syntax/ordering, failed-build preservation, and a real test-owned process that remains alive when restart assets are missing. Browser E2E uses only a test-owned listener bound to `127.0.0.1`, in-memory records/batches, synthetic credentials, and isolated browser contexts. That browser harness does not import the production server. Separate P36 and P27/P69 tests exercise actual backend handlers with persistent-service replacements; none read production configuration, databases, logs, or storage.
 
-Chromium checks include original admin/super XSS payloads and exact encoded account edit targets; the generated share page's POST password, duplicate-submit guard, cleared input, and absent referrer; full-path delete/rename; late search/refresh/error/session responses; Location revocation; measured table/grid spacers; keyboard/offscreen selection and native drag/drop; desktop/narrow resize; Pane window maximize/minimize/restore state, multi-row lower-left dock geometry, and Account Panel settings persistence; cancellation during reservation, active transport and accepted processing; and lost-response reconciliation without re-upload.
+Chromium checks include original admin/super XSS payloads and exact encoded account edit targets; the generated share page's POST password, duplicate-submit guard, cleared input, and absent referrer; full-path delete/rename; late search/refresh/error/session responses; Location revocation; measured table/grid spacers; keyboard/offscreen selection and native drag/drop; desktop/narrow resize; Pane window maximize/minimize/restore state, multi-row lower-left dock geometry, and Account Panel settings persistence; session creation, chunk offset verification, parallel-cancellation settlement, Pane queue integration, and lost chunk-response continuation without retransmitting accepted bytes.
 
 ### Recorded Measurements
 
@@ -114,7 +114,7 @@ The browser task does not establish screenshot pixel parity, Firefox/WebKit beha
 
 Independent Pi/Haiku browser review found a trailing grid-gap error in virtual scroll clamping and uncancelled Location polling. Both were corrected, with regression checks and session-owned AbortControllers. A scoped browser follow-up reported no material client findings; that is not an all-tools/all-platforms clearance. A preliminary diff-only objection treated top-level imports after declarations as invalid JavaScript; the production build was valid, and imports were moved to the top for clarity.
 
-Earlier optional installation verification (`BROWSER_INSTALL_CHECK=1 npm run test:browser:unit`) passed 10 tests with zero failures/skips. This remains isolated install evidence, not another count to add to the final suite. The current `RELEASE_DATE` is 2026-09-23 and `VERSION` is 3.4.1. The Browser Pane minimize/maximize/restore and Account Panel follow-up is included in the verification below.
+Earlier optional installation verification (`BROWSER_INSTALL_CHECK=1 npm run test:browser:unit`) passed 10 tests with zero failures/skips. This remains isolated install evidence, not another count to add to the final suite. The current `RELEASE_DATE` is 2026-09-24 and `VERSION` is 4.0.0. The Browser Pane minimize/maximize/restore and Account Panel follow-up is included in the verification below.
 
 Final verification on 2026-09-09, supplied by the parent/user and reconciled in this documentation-only pass:
 

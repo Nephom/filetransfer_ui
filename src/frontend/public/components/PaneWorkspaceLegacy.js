@@ -19,7 +19,7 @@ const normaliseBackgroundScale = (scale) => clamp(roundScale(Number(scale) || 1)
 
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
-export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) {
+export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onUploadFiles }) {
     const [locations, setLocations] = React.useState([]);
     const [windows, setWindows] = React.useState([]);
     const [terminalWindows, setTerminalWindows] = React.useState([]);
@@ -201,14 +201,16 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
     const upload = async (event) => {
         const pane = activeWindow; const location = locationFor(pane?.locationId); const files = Array.from(event.target.files || []); event.target.value = '';
         if (!pane || !location || !files.length) return;
-        const headers = paneHeaders(token, location);
-        const reservation = await fetch('/api/upload/batches', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ path: pane.path, clientAttemptId: `pane-${Date.now()}-${Math.random().toString(16).slice(2)}` }) });
-        const reservationData = await reservation.json().catch(() => ({}));
-        if (!reservation.ok || !reservationData.batchId) { patchWindow(pane.id, { error: reservationData.error || 'Upload reservation failed.' }); return; }
-        const form = new FormData(); files.forEach((file) => form.append('files', file, file.name)); form.append('path', pane.path);
-        const response = await fetch('/api/upload/multiple', { method: 'POST', headers: { ...headers, 'X-Upload-Batch-ID': reservationData.batchId }, body: form });
-        if (!response.ok) { patchWindow(pane.id, { error: 'Upload failed.' }); return; }
-        announce('Upload submitted.'); await loadFiles(pane.id, pane.path, pane.query);
+        const warning = files.length > 500
+            ? '\n\nLarge uploads are split into child batches. Up to 2 batches can run concurrently; this may use more system/storage resources and can reduce overall efficiency.'
+            : '';
+        if (!window.confirm(`Upload ${files.length} file${files.length === 1 ? '' : 's'} to ${pane.path ? `/${pane.path}` : '/'}?${warning}`)) return;
+        if (typeof onUploadFiles !== 'function') { patchWindow(pane.id, { error: 'Resumable API upload queue is unavailable.' }); return; }
+        const items = files.map((file) => ({ file, relativePath: file.webkitRelativePath || file.name }));
+        onUploadFiles(items, [], {
+            path: pane.path, locationId: pane.locationId, locationName: location.displayName || location.id,
+        }, () => loadFiles(pane.id, pane.path, pane.query));
+        announce('Resumable upload added to the Transfer Queue.');
     };
     const handleDrop = (event, destinationId) => {
         let payload; try { payload = JSON.parse(event.dataTransfer.getData('application/x-pane-file') || '{}'); } catch { return; }
@@ -386,6 +388,18 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
             <PaneTools active={activeWindow} onUpload={() => fileInput.current?.click()} onAction={(action) => activeId && void runAction(activeId, action)} onOpenTerminal={openTerminalWindow} />
         </main>
         <input ref={fileInput} type="file" multiple hidden onChange={upload} />
+        {transferQueue.some(item => item.kind === 'upload') && <aside className="pane-upload-queue" aria-label="API upload queue">
+            <strong>API Uploads</strong>
+            {transferQueue.filter(item => item.kind === 'upload').slice(-8).map(item => <article className={`pane-upload-queue-item queue-status-${item.status}`} key={item.id}>
+                <span><b>{item.label}</b><small role="status" aria-live="polite">{item.detail}</small></span>
+                {item.progress && <small>{item.progress.totalBytes ? `${Math.round(item.progress.completedBytes / item.progress.totalBytes * 100)}% · ` : ''}{item.progress.completedItems || 0}/{item.progress.totalItems || 0} files</small>}
+                {['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => onCancelUpload?.(item.id)}>Cancel</button>}
+                {item.serverSessionId && item.status === 'needs_user_action' && <button type="button" onClick={() => {
+                    const pane = windowsRef.current.find(candidate => candidate.locationId === item.locationId) || activeWindow;
+                    onResumeUpload?.(item, pane ? () => loadFiles(pane.id, pane.path, pane.query) : undefined);
+                }}>Resume</button>}
+            </article>)}
+        </aside>}
         <footer className="pane-statusbar"><span>{windows.length} open window{windows.length === 1 ? '' : 's'}</span><span>{activeWindow ? `Active: ${locationFor(activeWindow.locationId)?.displayName || activeWindow.locationId}` : 'Open a Location to begin'}</span></footer>
         {contextMenu && <div ref={menuPosition.ref} className="pane-context-menu" style={menuPosition.style} onClick={(event) => event.stopPropagation()}>{contextMenu.type === 'location' ? <button type="button" onClick={() => { openWindow(contextMenu.locationId); closeContextMenu(); }}>Open new window</button> : <>{[['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh']].map(([action, label]) => <button type="button" key={action} onClick={() => { void runAction(contextMenu.windowId, action); closeContextMenu(); }}>{label}</button>)}</>}</div>}
         {toast && <div className="pane-toast" role="status">{toast}</div>}

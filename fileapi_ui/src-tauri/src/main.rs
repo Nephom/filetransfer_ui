@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::io::{Read, Write};
+use std::io::{Read, SeekFrom, Write};
 #[cfg(target_os = "windows")]
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
-use tokio::io::{AsyncRead, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, ReadBuf};
 
 static CANCELLED_TRANSFER_IDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static API_CLIENTS: OnceLock<Mutex<HashMap<bool, Client>>> = OnceLock::new();
@@ -269,6 +269,27 @@ struct UploadSource {
     modified: u128,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct UploadManifestFile {
+    file_id: String,
+    source_path: String,
+    path: String,
+    name: String,
+    size: u64,
+    modified: u128,
+    chunk_hashes: Vec<String>,
+    manifest_hash: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadManifest {
+    files: Vec<UploadManifestFile>,
+    directories: Vec<String>,
+    total_size: u64,
+}
+
 fn upload_source_snapshot(path: &Path) -> Result<UploadSource, String> {
     let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
     let modified = metadata
@@ -282,6 +303,22 @@ fn upload_source_snapshot(path: &Path) -> Result<UploadSource, String> {
         size: metadata.len(),
         modified,
     })
+}
+
+fn upload_manifest_hash(size: u64, chunk_hashes: &[String]) -> Result<String, String> {
+    let mut digest = Sha256::new();
+    for hash in chunk_hashes {
+        if hash.len() != 64 || !hash.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+            return Err("Invalid upload chunk hash in manifest".to_string());
+        }
+        for pair in hash.as_bytes().chunks_exact(2) {
+            let digits = std::str::from_utf8(pair).map_err(|error| error.to_string())?;
+            let byte = u8::from_str_radix(digits, 16).map_err(|error| error.to_string())?;
+            digest.update([byte]);
+        }
+    }
+    digest.update(size.to_string().as_bytes());
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn validate_upload_sources(expected: &[UploadSource]) -> Result<(), String> {
@@ -1945,7 +1982,9 @@ fn local_list_directories(path: String) -> Result<LocalDirectoryChildren, String
 
 #[tauri::command]
 fn inspect_upload_paths(paths: Vec<String>) -> Result<UploadSummary, String> {
-    let (files, directories) = collect_upload_paths(&paths)?;
+    let (files, mut directories) = collect_upload_paths(&paths)?;
+    directories.sort();
+    directories.dedup();
     let sources = files
         .iter()
         .map(|(path, _)| upload_source_snapshot(path))
@@ -1957,6 +1996,108 @@ fn inspect_upload_paths(paths: Vec<String>) -> Result<UploadSummary, String> {
         total_size,
         sources,
     })
+}
+
+fn build_upload_manifest(
+    paths: &[String],
+    expected_sources: &[UploadSource],
+    chunk_size: u64,
+) -> Result<UploadManifest, String> {
+    if !(1024 * 1024..=64 * 1024 * 1024).contains(&chunk_size) {
+        return Err("Upload chunk size must be between 1 MiB and 64 MiB".to_string());
+    }
+    validate_upload_sources(expected_sources)?;
+    let (mut local_files, mut directories) = collect_upload_paths(paths)?;
+    if local_files.len() != expected_sources.len() {
+        return Err("Upload source inventory changed after it was queued".to_string());
+    }
+    local_files.sort_by(|left, right| left.1.cmp(&right.1));
+    directories.sort();
+    directories.dedup();
+
+    let buffer_size = usize::try_from(chunk_size)
+        .map_err(|_| "Upload chunk size is not supported on this platform".to_string())?;
+    let mut files = Vec::with_capacity(local_files.len());
+    let mut total_size = 0_u64;
+    for (source_path, relative_path) in local_files {
+        let before = upload_source_snapshot(&source_path)?;
+        let mut input = std::fs::File::open(&source_path).map_err(|error| {
+            format!(
+                "Unable to read upload source '{}': {error}",
+                source_path.display()
+            )
+        })?;
+        let mut buffer = vec![0_u8; buffer_size];
+        let mut chunk_hashes = Vec::new();
+        let mut measured = 0_u64;
+        loop {
+            let mut filled = 0_usize;
+            while filled < buffer.len() {
+                let read = input.read(&mut buffer[filled..]).map_err(|error| {
+                    format!(
+                        "Unable to hash upload source '{}': {error}",
+                        source_path.display()
+                    )
+                })?;
+                if read == 0 {
+                    break;
+                }
+                filled += read;
+            }
+            if filled == 0 {
+                break;
+            }
+            measured = measured
+                .checked_add(filled as u64)
+                .ok_or_else(|| "Upload size exceeds supported range".to_string())?;
+            chunk_hashes.push(format!("{:x}", Sha256::digest(&buffer[..filled])));
+            if filled < buffer.len() {
+                break;
+            }
+        }
+        let after = upload_source_snapshot(&source_path)?;
+        if before.size != measured || before.size != after.size || before.modified != after.modified
+        {
+            return Err(format!(
+                "Upload source changed while preparing: {}",
+                source_path.display()
+            ));
+        }
+        total_size = total_size
+            .checked_add(before.size)
+            .ok_or_else(|| "Upload total exceeds supported range".to_string())?;
+        let name = source_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "Upload path contains a non-UTF-8 filename".to_string())?
+            .to_string();
+        let manifest_hash = upload_manifest_hash(before.size, &chunk_hashes)?;
+        files.push(UploadManifestFile {
+            file_id: uuid::Uuid::new_v4().to_string(),
+            source_path: source_path.to_string_lossy().to_string(),
+            path: relative_path,
+            name,
+            size: before.size,
+            modified: before.modified,
+            chunk_hashes,
+            manifest_hash,
+        });
+    }
+    validate_upload_sources(expected_sources)?;
+    Ok(UploadManifest {
+        files,
+        directories,
+        total_size,
+    })
+}
+
+#[tauri::command]
+fn build_api_upload_manifest(
+    paths: Vec<String>,
+    expected_sources: Vec<UploadSource>,
+    chunk_size: u64,
+) -> Result<UploadManifest, String> {
+    build_upload_manifest(&paths, &expected_sources, chunk_size)
 }
 
 #[tauri::command]
@@ -2067,6 +2208,90 @@ async fn api_upload_paths(
         );
         let response = response_from(request.send().await.map_err(describe_error)?).await?;
         // Source reads are transport progress, not proof of server acceptance.
+        emit(completed.load(Ordering::Relaxed));
+        Ok(response)
+    })
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn api_upload_chunk(
+    app: tauri::AppHandle,
+    transfer_id: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    file_path: String,
+    offset: u64,
+    total_size: u64,
+    chunk_size: u64,
+    expected_modified: u128,
+    expected_hash: String,
+    ignore_tls_errors: bool,
+    session_id: Option<String>,
+) -> Result<ApiResponse, String> {
+    let attempt = UploadAttempt::start(transfer_id.clone())?;
+    if !(1024 * 1024..=64 * 1024 * 1024).contains(&chunk_size)
+        || offset >= total_size
+        || offset % chunk_size != 0
+        || !expected_hash.as_bytes().iter().all(u8::is_ascii_hexdigit)
+        || expected_hash.len() != 64
+    {
+        return Err("Invalid resumable upload chunk request".to_string());
+    }
+    let path = PathBuf::from(&file_path);
+    let snapshot = upload_source_snapshot(&path)?;
+    if snapshot.size != total_size || snapshot.modified != expected_modified {
+        return Err(format!("Upload source changed before resume: {file_path}"));
+    }
+    let length = chunk_size.min(total_size - offset);
+    let mut file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|error| error.to_string())?;
+    file.seek(SeekFrom::Start(offset))
+        .await
+        .map_err(|error| error.to_string())?;
+    let completed = Arc::new(AtomicU64::new(0));
+    let emit: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |bytes_completed| {
+        let _ = app.emit(
+            "upload-progress",
+            UploadProgressEvent {
+                transfer_id: transfer_id.clone(),
+                bytes_completed,
+                bytes_total: length,
+            },
+        );
+    });
+    emit(0);
+    let reader = UploadProgressReader {
+        inner: file.take(length),
+        file_name: file_path,
+        cancellation: attempt.cancellation.clone(),
+        completed: completed.clone(),
+        emit: emit.clone(),
+        last_emit: Instant::now() - Duration::from_secs(1),
+        timeout: UPLOAD_FILE_TIMEOUT,
+        deadline: None,
+    };
+    let stream = tokio_util::io::ReaderStream::new(reader);
+    let body = reqwest::Body::wrap_stream(stream);
+    let client = request_client(&url, session_id.as_deref(), ignore_tls_errors, false, true)?;
+    let request = apply_headers(
+        client
+            .put(&url)
+            .header("Content-Type", "application/octet-stream")
+            .header("Content-Length", length)
+            .header(
+                "Content-Range",
+                format!("bytes {}-{}/{}", offset, offset + length - 1, total_size),
+            )
+            .header("X-Chunk-SHA256", expected_hash)
+            .timeout(UPLOAD_FILE_TIMEOUT)
+            .body(body),
+        headers,
+    );
+    await_upload(&attempt.cancellation, async {
+        let response = response_from(request.send().await.map_err(describe_error)?).await?;
         emit(completed.load(Ordering::Relaxed));
         Ok(response)
     })
@@ -4169,8 +4394,10 @@ fn main() {
             local_compress_paths,
             local_extract_archive,
             inspect_upload_paths,
+            build_api_upload_manifest,
             hash_upload_paths,
             api_upload_paths,
+            api_upload_chunk,
             open_local_file,
             open_local_terminal,
             cancel_transfer,
@@ -4250,7 +4477,7 @@ mod tests {
         local_list_directory, local_rename_path, local_roots, local_transfer_path,
         parse_local_terminal_kind, resolve_local_download_destination, resolve_local_download_file,
         resolve_local_new_path, resolve_local_read_entry, resolve_local_read_path,
-        resolve_local_transfer_path, LocalTerminalKind, UploadProgressEvent,
+        resolve_local_transfer_path, upload_manifest_hash, LocalTerminalKind, UploadProgressEvent,
     };
     use std::fs;
     use std::sync::Mutex;
@@ -4273,6 +4500,19 @@ mod tests {
         );
         assert!(parse_local_terminal_kind("powershell").is_err());
         assert!(parse_local_terminal_kind("notepad.exe").is_err());
+    }
+
+    #[test]
+    fn upload_manifest_digest_matches_the_browser_hash_contract() {
+        assert_eq!(
+            upload_manifest_hash(
+                3,
+                &["ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into()]
+            )
+            .unwrap(),
+            "7776d946f7888be8d8ab2ef503e8be0423c27b8d790d7ff1f1e94b7a3989d699"
+        );
+        assert!(upload_manifest_hash(3, &["bad".into()]).is_err());
     }
 
     fn with_temp_home<T>(run: impl FnOnce(&std::path::Path) -> T) -> T {
@@ -4462,19 +4702,29 @@ mod tests {
             let copied = local_transfer_path(external_source, "copied".into())
                 .expect("read-only local source should be copied");
             assert_eq!(copied.moved, source_writable);
-            assert_eq!(external.join("nested/source.txt").is_file(), !source_writable);
-            assert_eq!(fs::read(home.join("copied/nested/source.txt")).unwrap(), b"external bytes");
+            assert_eq!(
+                external.join("nested/source.txt").is_file(),
+                !source_writable
+            );
+            assert_eq!(
+                fs::read(home.join("copied/nested/source.txt")).unwrap(),
+                b"external bytes"
+            );
 
             let home_source = home.join("home-source.txt");
             let home_destination = home.join("moved/home-source.txt");
             fs::write(&home_source, b"home bytes").unwrap();
             fs::create_dir_all(home_destination.parent().unwrap()).unwrap();
-            assert!(home_source.exists(), "home source should exist before transfer: {}", home_source.display());
+            assert!(
+                home_source.exists(),
+                "home source should exist before transfer: {}",
+                home_source.display()
+            );
             let moved = local_transfer_path(
                 home_source.to_string_lossy().to_string(),
                 home_destination.to_string_lossy().to_string(),
             )
-                .expect("HOME source should be moved");
+            .expect("HOME source should be moved");
             assert!(moved.moved);
             assert!(!home_source.exists());
             assert_eq!(fs::read(home_destination).unwrap(), b"home bytes");

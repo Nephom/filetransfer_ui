@@ -289,13 +289,15 @@ Server configuration is managed in `src/backend/config/`:
 
 ### Common Issues
 
-**Upload fails with error 301**
-- Check that Content-Length header is set
-- Verify file object is valid
+**Upload fails with error 413**
+- Check the configured per-file limit and the number/metadata limits of a legacy multipart request.
+- Resumable sessions split large file sets into bounded manifest pages and chunks.
 
-**Upload fails with error 304**
-- Filename contains illegal characters
-- Sanitize filename before upload
+**Upload fails with error 507**
+- Check free space on the upload staging volume and destination Location.
+
+**A chunk response is lost**
+- Read the session's `uploadedOffset` and continue from that checkpoint. Do not resend the whole file.
 
 **Upload fails with error 401**
 - Server disk is full

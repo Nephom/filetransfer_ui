@@ -18,6 +18,53 @@ function loadSource(relative) {
 }
 const { deleteGroups, sortFiles, createRequestGate } = loadSource('../public/components/FileBrowser.js');
 const { virtualRange } = loadSource('../public/components/VirtualFileList.js');
+const { buildBrowserUploadManifest, buildBrowserManifestPages, planBrowserUploadChildren, rebindBrowserUploadManifest, sha256FallbackHex } = loadSource('../public/upload-batching.js');
+
+test('browser upload manifest hashes chunks, sorts UTF-8 paths, and preserves empty directories', async () => {
+    const a = Object.assign(new Blob(['abc']), { name: 'a.txt', lastModified: 1 });
+    const z = Object.assign(new Blob(['']), { name: 'z.txt', lastModified: 2 });
+    const manifest = await buildBrowserUploadManifest([
+        { file: z, relativePath: 'folder/z.txt' }, { file: a, relativePath: 'folder/a.txt' }
+    ], ['folder/empty', 'folder'], 1024 * 1024);
+    assert.deepEqual(manifest.files.map(file => file.path), ['folder/a.txt', 'folder/z.txt']);
+    assert.equal(manifest.totalSize, 3);
+    assert.equal(manifest.files[0].chunkHashes[0], 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    assert.equal(manifest.files[0].manifestHash, '7776d946f7888be8d8ab2ef503e8be0423c27b8d790d7ff1f1e94b7a3989d699');
+    assert.deepEqual(manifest.files[1].chunkHashes, []);
+    assert.deepEqual(manifest.directories, ['folder', 'folder/empty']);
+    assert.equal(sha256FallbackHex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+
+test('browser manifest hashing honors cancellation before reserving a server session', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const file = Object.assign(new Blob(['data']), { name: 'cancel.txt', lastModified: 1 });
+    await assert.rejects(
+        buildBrowserUploadManifest([{ file, relativePath: 'cancel.txt' }], [], 1024 * 1024, controller.signal),
+        error => error.name === 'AbortError'
+    );
+});
+
+test('browser child planning caps count and keeps exact destination collisions together', () => {
+    const files = Array.from({ length: 1001 }, (_, index) => ({ fileId: String(index), path: `file-${String(index).padStart(4, '0')}` }));
+    const children = planBrowserUploadChildren(files, 500);
+    assert.deepEqual(children.map(child => child.length), [500, 500, 1]);
+    const collision = planBrowserUploadChildren([
+        { fileId: 'z', path: 'z.txt' }, { fileId: 'same-1', path: 'a.txt' }, { fileId: 'same-2', path: 'a.txt' }
+    ], 2);
+    assert.deepEqual(collision.map(child => child.map(file => file.fileId)), [['same-1', 'same-2'], ['z']]);
+    assert.throws(() => planBrowserUploadChildren(Array.from({ length: 501 }, (_, index) => ({ fileId: String(index), path: 'same.txt' })), 500), /same.txt/);
+});
+
+test('browser manifest pages rebind unfinished source files to persisted server IDs', async () => {
+    const file = Object.assign(new Blob(['abc']), { name: 'a.txt', lastModified: 10 });
+    const manifest = await buildBrowserUploadManifest([{ file, relativePath: 'a.txt' }], [], 1024 * 1024);
+    const pages = buildBrowserManifestPages(manifest.files, ['d1', 'd2'], 1);
+    assert.deepEqual(pages.map(page => [page.fileOffset, page.directoryOffset]), [[0, 0], [1, 1]]);
+    const rebound = rebindBrowserUploadManifest(manifest.files, [{ ...manifest.files[0], fileId: 'server-file', index: 0, chunkSize: 1024 * 1024, uploadedOffset: 2, status: 'uploading' }]);
+    assert.equal(rebound[0].fileId, 'server-file');
+    assert.throws(() => rebindBrowserUploadManifest([{ ...manifest.files[0], chunkHashes: ['f'.repeat(64)] }], []), /source does not match/);
+});
 
 test('delete identities retain full paths and group legacy payloads by actual parent', () => {
     assert.deepEqual(deleteGroups([

@@ -58,27 +58,31 @@ is not terminal: if the server committed the work first, completion can win.
 
 ### API Upload Attempts
 
-The approved browser/desktop contract and server wiring are implemented. Final
-verification passes 261 Node tests with no failures/skips, including 94 desktop
-checks and all 30 server tests. The desktop TypeScript/Vite build also passes.
-Fourteen native session tests pass, including actual backend cookie login,
-multipart upload, cancellation, byte/download integrity, ownership, revision,
-and logout checks through production native transport. Desktop hooks still use
-explicit native mocks; the new fixture does not launch Tauri or dispatch the
-AppHandle-dependent api_upload_paths command. See the
-[final report](./review-remediation.md#final-report) for exact boundaries.
+New API uploads use one durable parent session per Queue item:
 
-1. Capture the server origin, authenticated session, owner, Location, and destination before sending files. Desktop keeps the native session handle and request credentials in a private runtime map, not persisted Queue metadata.
-2. Reserve with `POST /api/upload/batches`, using `{ path, clientAttemptId }`. Retain the returned batch ID before native/browser multipart dispatch. Send it as `X-Upload-Batch-ID` to `POST /api/upload/multiple`.
-3. Poll `GET /api/progress/batch/:batchId` using the captured context. A lost upload response or failed progress request requires reconciliation of that batch, not another multipart upload.
-4. Request cancellation through a separate `POST /api/progress/batch/:batchId/cancel` control request. Abort local transport where supported, but do not report server cancellation until the server reports settlement. `202`/`cancelling` is still unconfirmed.
-5. Retain committed files and report the returned completed/failed/cancelled counts. `completed` may win a cancellation race; a failed cleanup is not confirmed cancellation.
+1. Capture server origin, account, Location, revision, and destination. Credentials
+   and native session handles stay in runtime memory and are never persisted.
+2. Read `/api/upload/sessions/config`, hash and preflight the source manifest,
+   including the child limit, before starting the four-hour session lifetime.
+3. Create `POST /api/upload/sessions`, register ordered manifest pages with per-chunk
+   SHA-256 values, then seal the manifest before sending bytes.
+4. Split files into children of at most 500. Keep same-normalized-destination files
+   together and in stable manifest order. Run no more than two child batches at once.
+   The UI warns that parallel work can use more resources and may reduce efficiency.
+5. Upload each file with bounded chunks, `Content-Range`, and `X-Chunk-SHA256`. A lost
+   response reads the same session checkpoint and continues at `uploadedOffset`.
+   Completed files are skipped; only unfinished files and ranges are resumed.
+6. On restart, the user explicitly resumes under the same owner/server/Location.
+   Desktop reopens local paths and recomputes hashes. Browser asks the user to
+   reselect sources because `File` objects are not persisted across reloads.
+7. Cancellation settles through the server session. Already committed files remain;
+   completion may win the cancellation race. Incomplete sessions expire after four
+   hours.
 
-Desktop moves an unconfirmed outcome to `needs_user_action` with
-`uploadOutcome: "reconcile"`. With the original runtime session still available,
-manual Retry checks the original batch without resending its files. After
-restart or loss of that session, do not silently bind the old attempt to new
-credentials or re-upload it. Review the server outcome and storage first.
+Legacy Queue items with `serverBatchId` retain their original behavior: reconcile the
+same in-memory batch without resending multipart data. They are not converted to
+byte-range sessions. See the [legacy remediation report](./review-remediation.md#final-report)
+for the boundaries of its historical verification run.
 
 The browser and desktop executors retain their separate scheduling and UI
 implementations. SSH/SFTP and ordinary downloads do not acquire this server
@@ -152,12 +156,11 @@ proof that publication or cleanup has finished.
 | Unknown partial data | Clean owned partial output and require user decision |
 | User cancellation | Abort where supported and clean owned temporary data |
 
-The queue does not implement chunk resume or checksum manifests. Without a
-verifiable checkpoint, the safe fallback is a controlled full retransfer after
-cleanup, never an undocumented append or a claim of resume support.
-For an accepted or possibly accepted API upload, the original batch must first
-be reconciled. The generic network retry rule does not authorize a duplicate
-upload, including after a `404` poll or server restart.
+API upload sessions use verified chunk checksums and durable offsets. A client must
+reconcile the same session after a lost response and may only send bytes from the
+offset returned by the server. Do not append by assumption or resend completed
+files. If the four-hour session expires, or its owner/Location/source manifest no
+longer matches, inspect the destination before creating a new upload.
 
 ## History Cleanup
 

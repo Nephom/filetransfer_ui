@@ -52,7 +52,7 @@ class ConfigManager {
       // Transfer configuration
       transfer: {
         maxConcurrentTransfers: 3,
-        chunkSize: 1024 * 1024, // 1MB chunks
+        chunkSize: 8 * 1024 * 1024, // 8 MiB resumable API upload chunks
         enableResume: true
       },
 
@@ -249,6 +249,15 @@ class ConfigManager {
       env.fileSystem.maxFileSize = parseInt(process.env.MAX_FILE_SIZE);
     }
 
+    if (process.env.UPLOAD_CHUNK_SIZE !== undefined) {
+      env.transfer = env.transfer || {};
+      env.transfer.chunkSize = parseInt(process.env.UPLOAD_CHUNK_SIZE, 10);
+    }
+    if (process.env.UPLOAD_RESUME_ENABLED !== undefined) {
+      env.transfer = env.transfer || {};
+      env.transfer.enableResume = process.env.UPLOAD_RESUME_ENABLED.toLowerCase() === 'true';
+    }
+
     // Server config
     if (process.env.SERVER_PORT) {
       env.server = env.server || {};
@@ -365,8 +374,12 @@ class ConfigManager {
       throw new Error('maxConcurrentTransfers must be positive');
     }
 
-    if (this.config.transfer.chunkSize <= 0) {
-      throw new Error('chunkSize must be positive');
+    if (!Number.isSafeInteger(this.config.transfer.chunkSize) ||
+        this.config.transfer.chunkSize < 1024 * 1024 || this.config.transfer.chunkSize > 64 * 1024 * 1024) {
+      throw new Error('transfer.chunkSize must be between 1 MiB and 64 MiB');
+    }
+    if (typeof this.config.transfer.enableResume !== 'boolean') {
+      throw new Error('transfer.enableResume must be a boolean');
     }
 
     if (!Number.isInteger(this.config.maintenance.tempUploadRetentionDays) || this.config.maintenance.tempUploadRetentionDays < 1) {
@@ -534,6 +547,11 @@ class ConfigManager {
         iniContent += `tempUploadRetentionDays=${this.config.maintenance?.tempUploadRetentionDays || 7}\n`;
         iniContent += '# Run the temporary-upload cleanup at this interval, in hours.\n';
         iniContent += `tempUploadCleanupIntervalHours=${this.config.maintenance?.tempUploadCleanupIntervalHours || 24}\n\n`;
+
+        iniContent += '[transfer]\n';
+        iniContent += '# Resumable API upload chunk size in bytes. Range: 1048576-67108864.\n';
+        iniContent += `chunkSize=${this.config.transfer?.chunkSize ?? 8 * 1024 * 1024}\n`;
+        iniContent += `enableResume=${this.config.transfer?.enableResume === false ? 'false' : 'true'}\n\n`;
 
         // [logging] section
         iniContent += '[logging]\n';
