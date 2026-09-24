@@ -16,7 +16,7 @@ const statusLabel = status => ({
 
 const emptyForm = { displayName: '', host: '', port: '22', username: '', authType: 'private-key', privateKey: '', password: '', passphrase: '' };
 
-export default function PaneTerminalWindow({ window: pane, token, active, onFocus, onClose, onMinimize, onToggleMaximize, onMove, onUpdateZ }) {
+export default function PaneTerminalWindow({ window: pane, token, active, onFocus, onClose, onMinimize, onToggleMaximize, onMove, onUpdateZ, onTitlePointerDown: externalOnTitlePointerDown, onTitlePointerMove: externalOnTitlePointerMove, onTitlePointerUp: externalOnTitlePointerUp }) {
     const [targets, setTargets] = React.useState([]);
     const [targetId, setTargetId] = React.useState(pane.targetId || '');
     const [sshStatus, setSshStatus] = React.useState('disconnected');
@@ -421,7 +421,7 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     }, [clearReconnect, copySelection, fitTerminal, pasteClipboard, token]);
 
     return <article data-window-id={pane.id} className={`pane-window pane-terminal-window ${active ? 'is-active' : ''} ${pane.minimized ? 'is-minimized' : ''} ${pane.maximized ? 'is-maximized' : ''}`} style={{ zIndex: pane.z, ...(pane.position ? { left: `${pane.position.left}px`, top: `${pane.position.top}px` } : {}) }} onPointerDown={() => { onFocus(pane.id); if (onUpdateZ) onUpdateZ(pane.id, pane.z + 1); }} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY }); }}>
-        <header className="pane-window-titlebar" onPointerDown={onTitlePointerDown} onPointerMove={onTitlePointerMove} onPointerUp={onTitlePointerUp}>
+        <header className="pane-window-titlebar" onPointerDown={externalOnTitlePointerDown || onTitlePointerDown} onPointerMove={externalOnTitlePointerMove || onTitlePointerMove} onPointerUp={externalOnTitlePointerUp || onTitlePointerUp}>
             <div><span className="terminal-icon" aria-hidden="true">&gt;_</span><strong>{selectedTarget?.displayName || 'SSH Terminal'}</strong><small>{statusLabel(sshStatus)}{selectedTarget ? ` · ${selectedTarget.host}` : ''}</small></div>
             <span className="pane-window-controls"><button type="button" className="pane-terminal-connect" onClick={() => ['connected', 'reconnecting'].includes(sshStatus) ? void disconnect() : void connect()} disabled={['connecting', 'disconnecting'].includes(sshStatus)}>{['connected', 'reconnecting'].includes(sshStatus) ? 'Disconnect' : 'Connect'}</button><button type="button" className="pane-window-minimize" onClick={() => onMinimize(pane.id)} aria-label="Minimize window" title="Minimize window">-</button><button type="button" className="pane-window-maximize" onClick={() => onToggleMaximize(pane.id)} aria-label={pane.maximized ? 'Restore window' : 'Maximize window'} title={pane.maximized ? 'Restore window' : 'Maximize window'}>{pane.maximized ? 'x' : '[]'}</button><button type="button" className="pane-window-close" onClick={() => onClose(pane.id)} aria-label="Close terminal window" title="Close terminal window">x</button></span>
         </header>
