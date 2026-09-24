@@ -27,7 +27,7 @@ npm run check:browser
 React, ReactDOM, esbuild, and Playwright are development dependencies. The server does not import them to serve a built application. Busboy is a direct runtime dependency. Browser binaries are not part of normal installation. Build-time dependencies must be available when installing/upgrading; a deployment can omit them from its runtime-only installation after building assets.
 
 - `./build.sh browser` builds and validates browser output only. It does not start a server or run a desktop build.
-- `./build.sh install` and `./build.sh upgrade` install build-time dependencies, build the browser, and verify readiness. Upgrade also performs this check in its existing upstream preflight before changing the active checkout.
+- `./build.sh install` and `./build.sh upgrade` install build-time dependencies, build the browser, and verify readiness. Upgrade operates in the active checkout: when needed, it prepares dependencies for the database backup, then fast-forwards, rebuilds browser assets, applies migrations, and runs tests there; it does not create a temporary worktree.
 - The existing `./build.sh build` desktop command is retained.
 - `start.sh` and `restart.sh` run the shared read-only `check_browser_build` function. Restart checks before PID discovery or any stop signal. Neither compiles assets.
 - Output is `build-assets/browser/public`. The whole `build-assets` tree is already ignored. Do not force-add it to Git.
