@@ -83,12 +83,14 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) 
         window.setTimeout(() => loadFiles(id), 0);
     };
     const openTerminalWindow = () => {
+        console.log('[PaneWorkspaceLegacy] openTerminalWindow called');
         const id = `terminal-${nextTerminalId}`;
         setNextTerminalId((value) => value + 1);
         setTerminalWindows((current) => [...current, { id, targetId: '', minimized: false, maximized: false, position: null, z: nextZIndex() }]);
         setActiveId(id);
     };
     window.__paneWorkspaceOpenTerminal = openTerminalWindow;
+    console.log('[PaneWorkspaceLegacy] window.__paneWorkspaceOpenTerminal set');
     const closeWindow = (id) => {
         const pane = windows.find((item) => item.id === id);
         if (!pane) return;
