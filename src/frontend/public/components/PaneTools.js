@@ -1,6 +1,6 @@
 import React from 'react';
 
-const tools = [['terminal', 'Terminal'], ['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh'], ['select-all', 'Select All']];
+const tools = [['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh'], ['select-all', 'Select All']];
 const iconPaths = {
     terminal: <path d="M4 5h16v14H4zM7 9l3 3-3 3m5 0h4" />,
     upload: <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 14v5h16v-5" />,
@@ -15,6 +15,98 @@ const iconPaths = {
     'select-all': <><rect x="4" y="4" width="16" height="16" rx="2" /><path d="m8 12 2.5 2.5L16 9" /></>
 };
 
-export default function PaneTools({ active, onUpload, onAction, onOpenTerminal }) {
-    return <aside className="pane-side pane-tools"><div className="pane-heading">TOOLS</div><div className="pane-tool-grid">{tools.map(([action, label]) => <button type="button" aria-label={`Pane ${label}`} key={action} onClick={() => action === 'terminal' ? onOpenTerminal() : action === 'upload' ? onUpload() : onAction(action)} disabled={action !== 'terminal' && !active}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{iconPaths[action]}</svg><strong>{label}</strong></button>)}</div></aside>;
+export function PaneTerminalLauncher({ onOpenTerminal }) {
+    return <button className="pane-terminal-launch-card" type="button" aria-label="Open SSH Terminal" onClick={onOpenTerminal}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{iconPaths.terminal}</svg>
+        <span><strong>Terminal</strong><small>Open SSH terminal</small></span>
+    </button>;
+}
+
+export default function PaneTools({ active, onUpload, onAction }) {
+    const viewportRef = React.useRef(null);
+    const trackRef = React.useRef(null);
+    const cycleRef = React.useRef(null);
+    const cycleDistanceRef = React.useRef(0);
+    const loopEnabledRef = React.useRef(false);
+    const [narrowLayout, setNarrowLayout] = React.useState(() => window.matchMedia('(max-width: 900px)').matches);
+    const [loopEnabled, setLoopEnabled] = React.useState(false);
+
+    React.useEffect(() => {
+        const media = window.matchMedia('(max-width: 900px)');
+        const update = () => setNarrowLayout(media.matches);
+        media.addEventListener?.('change', update);
+        return () => media.removeEventListener?.('change', update);
+    }, []);
+
+    const measureLoop = React.useCallback(() => {
+        const viewport = viewportRef.current;
+        const cycle = cycleRef.current;
+        if (!viewport || !cycle) return;
+        const nextLoopEnabled = narrowLayout && cycle.getBoundingClientRect().height > viewport.clientHeight + 1;
+        if (nextLoopEnabled !== loopEnabledRef.current) {
+            loopEnabledRef.current = nextLoopEnabled;
+            setLoopEnabled(nextLoopEnabled);
+            return;
+        }
+        const groups = trackRef.current?.children;
+        if (nextLoopEnabled && groups?.length === 3) {
+            cycleDistanceRef.current = groups[1].offsetTop - groups[0].offsetTop;
+        }
+    }, [narrowLayout]);
+
+    React.useLayoutEffect(() => {
+        const viewport = viewportRef.current;
+        const cycle = cycleRef.current;
+        if (!viewport || !cycle) return undefined;
+        const observer = new ResizeObserver(measureLoop);
+        observer.observe(viewport);
+        observer.observe(cycle);
+        measureLoop();
+        return () => observer.disconnect();
+    }, [measureLoop, loopEnabled]);
+
+    React.useLayoutEffect(() => {
+        const viewport = viewportRef.current;
+        const groups = trackRef.current?.children;
+        if (!viewport) return;
+        if (!loopEnabled || groups?.length !== 3) {
+            viewport.scrollTop = 0;
+            cycleDistanceRef.current = 0;
+            return;
+        }
+        const distance = groups[1].offsetTop - groups[0].offsetTop;
+        cycleDistanceRef.current = distance;
+        viewport.scrollTop = groups[1].offsetTop;
+    }, [loopEnabled]);
+
+    const handleLoopScroll = () => {
+        if (!loopEnabledRef.current) return;
+        const viewport = viewportRef.current;
+        const distance = cycleDistanceRef.current;
+        if (!viewport || !distance) return;
+        // Rebase from the cached cycle offset synchronously so momentum scrolling never paints a list edge.
+        if (viewport.scrollTop < distance / 2) viewport.scrollTop += distance;
+        else if (viewport.scrollTop > distance * 1.5) viewport.scrollTop -= distance;
+    };
+
+    const renderCycle = (cycleName, clone = false) => <div className="pane-tool-cycle" key={cycleName} aria-hidden={clone || undefined}>
+        {tools.map(([action, label]) => <button type="button" aria-label={`Pane ${label}`} key={`${cycleName}-${action}`} data-tool-action={action} tabIndex={clone ? -1 : undefined} onClick={() => action === 'upload' ? onUpload() : onAction(action)} disabled={!active}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{iconPaths[action]}</svg><strong>{label}</strong>
+        </button>)}
+    </div>;
+
+    return <aside className="pane-side pane-tools" aria-label="File tools">
+        <div className="pane-heading" aria-hidden="true">TOOLS</div>
+        <div className={`pane-tool-grid${loopEnabled ? ' is-looping' : ''}`} ref={viewportRef} onScroll={handleLoopScroll} aria-label={loopEnabled ? 'File tools, continuous scrolling' : 'File tools'}>
+            <div className="pane-tool-track" ref={trackRef}>
+                {loopEnabled && renderCycle('before', true)}
+                <div className="pane-tool-cycle" key="original" ref={cycleRef}>
+                    {tools.map(([action, label]) => <button type="button" aria-label={`Pane ${label}`} key={action} data-tool-action={action} onClick={() => action === 'upload' ? onUpload() : onAction(action)} disabled={!active}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{iconPaths[action]}</svg><strong>{label}</strong>
+                    </button>)}
+                </div>
+                {loopEnabled && renderCycle('after', true)}
+            </div>
+        </div>
+    </aside>;
 }

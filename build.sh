@@ -281,15 +281,22 @@ ensure_rust() {
 }
 
 install_server_node_dependencies() {
-  npm ci --ignore-scripts --include=optional --include=dev --prefix "$ROOT_DIR"
-  npm rebuild --foreground-scripts --prefix "$ROOT_DIR"
-  npm run check:native --prefix "$ROOT_DIR"
-  (cd "$ROOT_DIR" && node -e 'for (const name of ["unrs-resolver", "ssh2", "ws"]) require.resolve(name);')
+  (
+    cd "$ROOT_DIR" &&
+      npm ci --ignore-scripts --include=optional --include=dev &&
+      npm rebuild --foreground-scripts &&
+      node -e 'for (const name of ["bcrypt", "sqlite3", "ssh2", "ws", "unrs-resolver", "esbuild"]) require.resolve(name);' &&
+      npm run check:native
+  ) || return $?
   cmd_browser
 }
 
 cmd_browser() {
-  npm run build:browser --prefix "$ROOT_DIR" && npm run check:browser --prefix "$ROOT_DIR"
+  (
+    cd "$ROOT_DIR" &&
+      npm run build:browser &&
+      npm run check:browser
+  )
 }
 
 install_desktop_node_dependencies() {
@@ -609,7 +616,7 @@ cmd_setup() {
     cmd_install
   else
     install_server_system_dependencies
-    if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! npm run check:native --prefix "$ROOT_DIR" >/dev/null 2>&1; then
+    if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! (cd "$ROOT_DIR" && npm run check:native >/dev/null 2>&1); then
       echo "Setup: installing and rebuilding server dependencies for this machine..."
       install_server_node_dependencies
     else

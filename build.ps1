@@ -386,6 +386,31 @@ for (const name of Object.keys(pkg.dependencies)) require.resolve(name, { paths:
     }
 }
 
+function Install-ServerDependencies {
+    Write-Host "Installing and verifying server/browser dependencies..."
+    Invoke-Native "npm.cmd" @("ci", "--ignore-scripts", "--include=optional", "--include=dev", "--prefix", $Root)
+    Invoke-Native "npm.cmd" @("rebuild", "--foreground-scripts", "--prefix", $Root)
+    Invoke-Native "npm.cmd" @("run", "check:native", "--prefix", $Root)
+
+    $resolveCheckPath = Join-Path ([IO.Path]::GetTempPath()) ("filetransfer-server-deps-check-{0}.js" -f [Guid]::NewGuid())
+    Set-Content -LiteralPath $resolveCheckPath -Encoding ascii -Value @'
+const path = require("path");
+const root = process.argv[2];
+for (const name of ["bcrypt", "sqlite3", "ssh2", "ws", "unrs-resolver", "esbuild"]) {
+    require.resolve(name, { paths: [root] });
+}
+'@
+    try {
+        Invoke-Native "node" @($resolveCheckPath, $Root)
+    }
+    finally {
+        Remove-Item -LiteralPath $resolveCheckPath -Force -ErrorAction SilentlyContinue
+    }
+
+    Invoke-Native "npm.cmd" @("run", "build:browser", "--prefix", $Root)
+    Invoke-Native "npm.cmd" @("run", "check:browser", "--prefix", $Root)
+}
+
 function Test-DesktopChecks {
     $checksRoot = Join-Path $DesktopRoot "checks"
     $testFiles = @(Get-ChildItem -LiteralPath $checksRoot -Filter "*.test.js" -File |
@@ -511,6 +536,7 @@ function Build-Desktop {
     Write-Host "Building nFterm v$(Get-AppVersion) for Windows..."
     Assert-ProjectVersionConsistency
     Install-DesktopDependencies
+    Install-ServerDependencies
     $versionInfo = Get-AppVersionInfo
     Write-Host "Desktop build identity: $($versionInfo.display)"
     Write-Host "Target triple: $WindowsTarget"

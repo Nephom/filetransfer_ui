@@ -24,12 +24,20 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     const [sshStatus, setSshStatus] = React.useState('disconnected');
     const [transportStatus, setTransportStatus] = React.useState('detached');
     const [error, setError] = React.useState('');
+    const [viewportWidth, setViewportWidth] = React.useState(() => typeof window === 'undefined' ? 1024 : window.innerWidth);
+    const [targetToolsOpen, setTargetToolsOpen] = React.useState(() => typeof window === 'undefined' || window.innerWidth > 900);
+    const [clipboardToolsOpen, setClipboardToolsOpen] = React.useState(() => typeof window === 'undefined' || window.innerWidth > 900);
     const [targetLoading, setTargetLoading] = React.useState(true);
     const [formOpen, setFormOpen] = React.useState(false);
     const [editingId, setEditingId] = React.useState(null);
     const [form, setForm] = React.useState(emptyForm);
     const [menu, setMenu] = React.useState(null);
     const [menuThemeStyle, setMenuThemeStyle] = React.useState({});
+    const [portalRoot, setPortalRoot] = React.useState(null);
+    const [sidePanelCoordinates, setSidePanelCoordinates] = React.useState({
+        target: { left: 8, top: 72, maxHeight: 'calc(100dvh - 80px)' },
+        clipboard: { left: 8, top: 72, maxHeight: 'calc(100dvh - 80px)' }
+    });
     const menuPosition = usePaneMenuPosition(menu);
     const terminalContainer = React.useRef(null);
     const terminalRef = React.useRef(null);
@@ -43,9 +51,78 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     const dragRef = React.useRef(null);
     const targetIdRef = React.useRef(targetId);
     const sshStatusRef = React.useRef(sshStatus);
+    const sidePanelOriginRef = React.useRef(null);
+    const onMoveRef = React.useRef(onMove);
+    const compactToolbarLayout = viewportWidth <= 900 || pane.maximized;
+    const overlayToolbarLayout = viewportWidth <= 600 || pane.maximized;
     targetIdRef.current = targetId;
     sshStatusRef.current = sshStatus;
+    onMoveRef.current = onMove;
 
+    const updateSidePanelPositions = React.useCallback(() => {
+        const windowElement = terminalContainer.current?.closest('.pane-terminal-window');
+        if (!windowElement) return;
+        const rectangle = windowElement.getBoundingClientRect();
+        const visible = window.visualViewport;
+        const viewport = {
+            left: visible?.offsetLeft || 0,
+            top: visible?.offsetTop || 0,
+            right: (visible?.offsetLeft || 0) + (visible?.width || document.documentElement.clientWidth || window.innerWidth),
+            bottom: (visible?.offsetTop || 0) + (visible?.height || document.documentElement.clientHeight || window.innerHeight)
+        };
+        const edge = 8;
+        const gap = 12;
+        const panelWidth = overlayToolbarLayout ? 176 : 160;
+        const minLeft = viewport.left + edge;
+        const maxLeft = Math.max(minLeft, viewport.right - panelWidth - edge);
+        const targetLeft = overlayToolbarLayout
+            ? minLeft
+            : Math.min(Math.max(minLeft, rectangle.left - panelWidth - gap), maxLeft);
+        const clipboardLeft = overlayToolbarLayout
+            ? maxLeft
+            : Math.min(Math.max(minLeft, rectangle.right + gap), maxLeft);
+        const minTop = viewport.top + edge;
+        const maxTop = Math.max(minTop, viewport.bottom - 128);
+        const top = Math.min(Math.max(minTop, rectangle.top + 44), maxTop);
+        const maxHeight = Math.max(80, viewport.bottom - top - edge);
+        setSidePanelCoordinates(current => {
+            const next = {
+                target: { left: Math.round(targetLeft), top: Math.round(top), maxHeight: `${Math.round(maxHeight)}px` },
+                clipboard: { left: Math.round(clipboardLeft), top: Math.round(top), maxHeight: `${Math.round(maxHeight)}px` }
+            };
+            return current.target.left === next.target.left && current.target.top === next.target.top && current.target.maxHeight === next.target.maxHeight && current.clipboard.left === next.clipboard.left && current.clipboard.top === next.clipboard.top && current.clipboard.maxHeight === next.clipboard.maxHeight ? current : next;
+        });
+    }, [overlayToolbarLayout]);
+
+    React.useLayoutEffect(() => {
+        const windowElement = terminalContainer.current?.closest('.pane-terminal-window');
+        if (!windowElement) return undefined;
+        const observer = new ResizeObserver(updateSidePanelPositions);
+        observer.observe(windowElement);
+        observer.observe(terminalContainer.current);
+        window.addEventListener('resize', updateSidePanelPositions);
+        window.addEventListener('scroll', updateSidePanelPositions, true);
+        window.visualViewport?.addEventListener('resize', updateSidePanelPositions);
+        window.visualViewport?.addEventListener('scroll', updateSidePanelPositions);
+        updateSidePanelPositions();
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', updateSidePanelPositions);
+            window.removeEventListener('scroll', updateSidePanelPositions, true);
+            window.visualViewport?.removeEventListener('resize', updateSidePanelPositions);
+            window.visualViewport?.removeEventListener('scroll', updateSidePanelPositions);
+        };
+    }, [active, portalRoot, updateSidePanelPositions, pane.position?.left, pane.position?.top]);
+
+    React.useEffect(() => {
+        const updateViewportWidth = () => setViewportWidth(window.innerWidth);
+        window.addEventListener('resize', updateViewportWidth);
+        return () => window.removeEventListener('resize', updateViewportWidth);
+    }, []);
+    React.useLayoutEffect(() => {
+        const root = terminalContainer.current?.closest('.pane-explorer');
+        if (root) setPortalRoot(root);
+    }, []);
     const selectedTarget = targets.find(target => target.id === targetId) || null;
     const setStatus = (status, transport = transportStatus) => {
         if (!mountedRef.current) return;
@@ -381,6 +458,85 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         dragRef.current = null;
     };
 
+    const prepareCompactDeck = side => {
+        if (!compactToolbarLayout || overlayToolbarLayout || sidePanelOriginRef.current) return;
+        const windowElement = terminalContainer.current?.closest('.pane-window');
+        const layer = windowElement?.parentElement;
+        if (!windowElement || !layer) return;
+        const rectangle = windowElement.getBoundingClientRect();
+        const layerRectangle = layer.getBoundingClientRect();
+        sidePanelOriginRef.current = {
+            explicit: !!pane.position,
+            left: pane.position?.left ?? rectangle.left - layerRectangle.left,
+            top: pane.position?.top ?? rectangle.top - layerRectangle.top
+        };
+        onMoveRef.current?.(pane.id, side === 'left' ? 172 : 8, sidePanelOriginRef.current.top);
+    };
+    const restoreCompactDeck = React.useCallback(() => {
+        const origin = sidePanelOriginRef.current;
+        if (!origin) return;
+        onMoveRef.current?.(pane.id, origin.explicit ? origin.left : null, origin.explicit ? origin.top : null);
+        sidePanelOriginRef.current = null;
+    }, [pane.id]);
+    const positionCompactDeckForSide = side => {
+        if (!compactToolbarLayout || overlayToolbarLayout) return;
+        if (!sidePanelOriginRef.current) {
+            prepareCompactDeck(side);
+            return;
+        }
+        onMoveRef.current?.(pane.id, side === 'left' ? 172 : 8, sidePanelOriginRef.current.top);
+    };
+    const toggleTargetTools = () => {
+        if (compactToolbarLayout) {
+            if (targetToolsOpen) {
+                setTargetToolsOpen(false);
+                setClipboardToolsOpen(false);
+                restoreCompactDeck();
+                return;
+            }
+            positionCompactDeckForSide('left');
+            setClipboardToolsOpen(false);
+        }
+        setTargetToolsOpen(open => !open);
+    };
+    const toggleClipboardTools = () => {
+        if (compactToolbarLayout) {
+            if (clipboardToolsOpen) {
+                setClipboardToolsOpen(false);
+                setTargetToolsOpen(false);
+                restoreCompactDeck();
+                return;
+            }
+            positionCompactDeckForSide('right');
+            setTargetToolsOpen(false);
+        }
+        setClipboardToolsOpen(open => !open);
+    };
+    const renderSideToggle = (side, expanded, controlsId, onToggle) => <button
+        type="button"
+        className={`pane-terminal-side-toggle is-${side}`}
+        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${side === 'left' ? 'SSH target controls' : 'terminal clipboard controls'}`}
+        aria-expanded={expanded}
+        aria-controls={controlsId}
+        onClick={onToggle}
+    >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d={side === 'left' ? (expanded ? 'm14 5-7 7 7 7' : 'm10 5 7 7-7 7') : (expanded ? 'm10 5 7 7-7 7' : 'm14 5-7 7 7 7')} />
+            <path d={side === 'left' ? 'M20 4v16' : 'M4 4v16'} />
+        </svg>
+    </button>;
+
+    React.useEffect(() => {
+        restoreCompactDeck();
+        if (compactToolbarLayout || overlayToolbarLayout) {
+            setTargetToolsOpen(false);
+            setClipboardToolsOpen(false);
+        } else {
+            setTargetToolsOpen(true);
+            setClipboardToolsOpen(true);
+        }
+    }, [compactToolbarLayout, overlayToolbarLayout, restoreCompactDeck]);
+
     React.useEffect(() => { void fetchTargets(); }, [fetchTargets]);
     React.useLayoutEffect(() => {
         if (!menu) {
@@ -395,6 +551,7 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
             '--pane-accent': theme.getPropertyValue('--pane-accent').trim(),
             '--pane-line-strong': theme.getPropertyValue('--pane-line-strong').trim(),
             '--pane-text': theme.getPropertyValue('--pane-text').trim(),
+            '--pane-menu-background': theme.getPropertyValue('--pane-menu-background').trim(),
             '--pane-small-font-size': controlFontSize || theme.getPropertyValue('--pane-small-font-size').trim()
         });
     }, [menu]);
@@ -443,17 +600,36 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     const contextMenuPortal = menu && typeof document !== 'undefined' && document.body
         ? createPortal(<div ref={menuPosition.ref} className="pane-context-menu pane-terminal-context-menu" style={{ ...menuPosition.style, ...menuThemeStyle, zIndex: 10000 }} onClick={event => event.stopPropagation()}><button type="button" onClick={() => { setMenu(null); void copySelection(); }}>Copy</button><button type="button" onClick={() => { setMenu(null); void pasteClipboard(); }}>Paste</button><button type="button" onClick={() => { setMenu(null); pasteSelected(); }}>Paste selected</button><button type="button" onClick={() => { setMenu(null); terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button></div>, document.body)
         : null;
+    const terminalSidePanelsPortal = active && portalRoot && typeof document !== 'undefined'
+        ? createPortal(<div className="pane-terminal-side-dock-layer" style={{ zIndex: 60 }}>
+            <aside className={`pane-terminal-side-panel pane-terminal-target-panel ${targetToolsOpen ? 'is-expanded' : 'is-collapsed'}`} aria-label="SSH target controls" style={{ ...sidePanelCoordinates.target, left: `${sidePanelCoordinates.target.left + (targetToolsOpen ? 0 : (overlayToolbarLayout ? 176 : 160) - 28)}px`, width: `${targetToolsOpen ? (overlayToolbarLayout ? 176 : 160) : 28}px` }}>
+                {renderSideToggle('left', targetToolsOpen, `pane-target-controls-${pane.id}`, toggleTargetTools)}
+                <div className="pane-terminal-side-content" id={`pane-target-controls-${pane.id}`} hidden={!targetToolsOpen}>
+                    <div className="pane-terminal-side-heading">SSH TARGET</div>
+                    <div className="pane-terminal-toolbar"><label>Target<select value={targetId} onChange={chooseTarget} disabled={targetLoading || ['connecting', 'connected', 'reconnecting', 'disconnecting'].includes(sshStatus)}><option value="">Select target</option>{targets.map(target => <option value={target.id} key={target.id}>{target.displayName} ({target.username}@{target.host}:{target.port})</option>)}</select></label><button type="button" onClick={openNewTarget}>New target</button><button type="button" onClick={openEditTarget} disabled={!selectedTarget}>Edit</button><button type="button" onClick={() => void deleteTarget()} disabled={!selectedTarget}>Delete</button><button type="button" onClick={() => void testTarget()} disabled={!selectedTarget || ['connecting', 'connected', 'reconnecting', 'disconnecting'].includes(sshStatus)}>Test</button></div>
+                </div>
+            </aside>
+            <aside className={`pane-terminal-side-panel pane-terminal-clipboard-panel ${clipboardToolsOpen ? 'is-expanded' : 'is-collapsed'}`} aria-label="Terminal clipboard controls" style={{ ...sidePanelCoordinates.clipboard, width: `${clipboardToolsOpen ? (overlayToolbarLayout ? 176 : 160) : 28}px` }}>
+                {renderSideToggle('right', clipboardToolsOpen, `pane-clipboard-controls-${pane.id}`, toggleClipboardTools)}
+                <div className="pane-terminal-side-content" id={`pane-clipboard-controls-${pane.id}`} hidden={!clipboardToolsOpen}>
+                    <div className="pane-terminal-side-heading">CLIPBOARD</div>
+                    <div className="pane-terminal-clipboard"><button type="button" onClick={() => void copySelection()}>Copy</button><button type="button" onClick={() => void pasteClipboard()}>Paste</button><button type="button" onClick={pasteSelected}>Paste selected</button><button type="button" onClick={() => { terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button><span className={`pane-terminal-transport ${transportStatus}`}>{statusLabel(sshStatus)}</span></div>
+                </div>
+            </aside>
+        </div>, portalRoot)
+        : null;
 
-    return <article data-window-id={pane.id} className={`pane-window pane-terminal-window ${active ? 'is-active' : ''} ${pane.minimized ? 'is-minimized' : ''} ${pane.maximized ? 'is-maximized' : ''}`} style={{ zIndex: pane.z, ...(pane.position ? { left: `${pane.position.left}px`, top: `${pane.position.top}px` } : {}) }} onPointerDown={() => onFocus(pane.id)} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY }); }}>
+    return <>
+        <article data-window-id={pane.id} className={`pane-window pane-terminal-window ${active ? 'is-active' : ''} ${pane.minimized ? 'is-minimized' : ''} ${pane.maximized ? 'is-maximized' : ''}`} style={{ zIndex: pane.z, ...(pane.position ? { left: `${pane.position.left}px`, top: `${pane.position.top}px` } : {}) }} onPointerDown={() => onFocus(pane.id)} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY }); }}>
         <header className="pane-window-titlebar" onPointerDown={externalOnTitlePointerDown || onTitlePointerDown} onPointerMove={externalOnTitlePointerMove || onTitlePointerMove} onPointerUp={externalOnTitlePointerUp || onTitlePointerUp}>
             <div><span className="terminal-icon" aria-hidden="true">&gt;_</span><strong>{selectedTarget?.displayName || 'SSH Terminal'}</strong><small>{statusLabel(sshStatus)}{selectedTarget ? ` · ${selectedTarget.host}` : ''}</small></div>
             <span className="pane-window-controls"><button type="button" className="pane-terminal-connect" onClick={() => ['connected', 'reconnecting'].includes(sshStatus) ? void disconnect() : void connect()} disabled={['connecting', 'disconnecting'].includes(sshStatus)}>{['connected', 'reconnecting'].includes(sshStatus) ? 'Disconnect' : 'Connect'}</button><button type="button" className="pane-window-minimize" onClick={() => onMinimize(pane.id)} aria-label="Minimize window" title="Minimize window">-</button><button type="button" className="pane-window-maximize" onClick={() => onToggleMaximize(pane.id)} aria-label={pane.maximized ? 'Restore window' : 'Maximize window'} title={pane.maximized ? 'Restore window' : 'Maximize window'}>{pane.maximized ? 'x' : '[]'}</button><button type="button" className="pane-window-close" onClick={() => onClose(pane.id)} aria-label="Close terminal window" title="Close terminal window">x</button></span>
         </header>
-        <div className="pane-terminal-toolbar"><label>Target<select value={targetId} onChange={chooseTarget} disabled={targetLoading || ['connecting', 'connected', 'reconnecting', 'disconnecting'].includes(sshStatus)}><option value="">Select target</option>{targets.map(target => <option value={target.id} key={target.id}>{target.displayName} ({target.username}@{target.host}:{target.port})</option>)}</select></label><button type="button" onClick={openNewTarget}>New target</button><button type="button" onClick={openEditTarget} disabled={!selectedTarget}>Edit</button><button type="button" onClick={() => void deleteTarget()} disabled={!selectedTarget}>Delete</button><button type="button" onClick={() => void testTarget()} disabled={!selectedTarget || ['connecting', 'connected', 'reconnecting', 'disconnecting'].includes(sshStatus)}>Test</button></div>
         {formOpen && <div className="pane-terminal-form-overlay" onClick={() => setFormOpen(false)}><div className="pane-terminal-form-modal" onClick={event => event.stopPropagation()}><form className="pane-terminal-target-form" onSubmit={saveTarget}><div className="pane-terminal-form-heading"><strong>{editingId ? 'Edit SSH target' : 'New SSH target'}</strong><button type="button" onClick={() => setFormOpen(false)} aria-label="Close target form">x</button></div><label>Name<input required value={form.displayName} onChange={event => setForm(current => ({ ...current, displayName: event.target.value }))} /></label><label>Host<input required value={form.host} onChange={event => setForm(current => ({ ...current, host: event.target.value }))} /></label><div className="pane-terminal-form-row"><label>Port<input required type="number" min="1" max="65535" value={form.port} onChange={event => setForm(current => ({ ...current, port: event.target.value }))} /></label><label>Username<input required value={form.username} onChange={event => setForm(current => ({ ...current, username: event.target.value }))} /></label></div><label>Authentication<select value={form.authType} onChange={event => setForm(current => ({ ...current, authType: event.target.value }))}><option value="private-key">Private key</option><option value="password">Password</option></select></label>{form.authType === 'private-key' ? <><label>Private key{editingId && <small>Leave empty to keep the saved key.</small>}<textarea required={!editingId} value={form.privateKey} onChange={event => setForm(current => ({ ...current, privateKey: event.target.value }))} /></label><label>Passphrase<input type="password" value={form.passphrase} onChange={event => setForm(current => ({ ...current, passphrase: event.target.value }))} /></label></> : <label>Password{editingId && <small>Leave empty to keep the saved password.</small>}<input required={!editingId} type="password" value={form.password} onChange={event => setForm(current => ({ ...current, password: event.target.value }))} /></label>}<div className="pane-terminal-form-actions"><button type="button" onClick={() => setFormOpen(false)}>Cancel</button><button type="button" className="confirm" onClick={saveTarget}>{editingId ? 'Save' : 'Create'}</button></div></form></div></div>}
-        <div className="pane-terminal-clipboard"><button type="button" onClick={() => void copySelection()}>Copy</button><button type="button" onClick={() => void pasteClipboard()}>Paste</button><button type="button" onClick={pasteSelected}>Paste selected</button><button type="button" onClick={() => { terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button><span className={`pane-terminal-transport ${transportStatus}`}>{statusLabel(sshStatus)}</span></div>
         {error && <div className="pane-error" role="alert">{error}</div>}
         <div className="pane-terminal-output" ref={terminalContainer} />
          {contextMenuPortal}
-    </article>;
+        </article>
+        {terminalSidePanelsPortal}
+    </>;
 }
