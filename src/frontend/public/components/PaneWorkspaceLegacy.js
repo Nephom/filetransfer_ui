@@ -88,7 +88,9 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, on
         setTerminalWindows((current) => [...current, { id, targetId: '', minimized: false, maximized: false, position: null, z: nextZIndex() }]);
         setActiveId(id);
     };
-    window.__paneWorkspaceOpenTerminal = openTerminalWindow;
+    if (onOpenTerminal) {
+        onOpenTerminal(openTerminalWindow);
+    }
     const closeWindow = (id) => {
         const pane = windows.find((item) => item.id === id);
         if (!pane) return;
@@ -99,11 +101,6 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, on
     const closeTerminalWindow = (id) => {
         setTerminalWindows((current) => current.filter((item) => item.id !== id));
         setActiveId((current) => current === id ? null : current);
-    };
-    const restoreTerminalWindow = (id) => {
-        const z = nextZIndex();
-        setTerminalWindows((current) => current.map((pane) => pane.id === id ? { ...pane, minimized: false, z } : pane));
-        setActiveId(id);
     };
     const focusWindow = (id) => {
         const pane = [...windowsRef.current, ...terminalWindowsRef.current].find((item) => item.id === id);
