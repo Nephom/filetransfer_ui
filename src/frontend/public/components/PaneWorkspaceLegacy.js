@@ -20,6 +20,7 @@ const normaliseBackgroundScale = (scale) => clamp(roundScale(Number(scale) || 1)
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
 export default function PaneWorkspace({ token, user, onLogout, onStyleChange, onOpenTerminal }) {
+    window.__paneWorkspaceOpenTerminal = openTerminalWindow;
     const [locations, setLocations] = React.useState([]);
     const [windows, setWindows] = React.useState([]);
     const [terminalWindows, setTerminalWindows] = React.useState([]);
