@@ -28,21 +28,13 @@ export default function PaneTools({ active, onUpload, onAction }) {
     const cycleRef = React.useRef(null);
     const cycleDistanceRef = React.useRef(0);
     const loopEnabledRef = React.useRef(false);
-    const [narrowLayout, setNarrowLayout] = React.useState(() => window.matchMedia('(max-width: 900px)').matches);
     const [loopEnabled, setLoopEnabled] = React.useState(false);
-
-    React.useEffect(() => {
-        const media = window.matchMedia('(max-width: 900px)');
-        const update = () => setNarrowLayout(media.matches);
-        media.addEventListener?.('change', update);
-        return () => media.removeEventListener?.('change', update);
-    }, []);
 
     const measureLoop = React.useCallback(() => {
         const viewport = viewportRef.current;
         const cycle = cycleRef.current;
         if (!viewport || !cycle) return;
-        const nextLoopEnabled = narrowLayout && cycle.getBoundingClientRect().height > viewport.clientHeight + 1;
+        const nextLoopEnabled = cycle.getBoundingClientRect().height > viewport.clientHeight + 1;
         if (nextLoopEnabled !== loopEnabledRef.current) {
             loopEnabledRef.current = nextLoopEnabled;
             setLoopEnabled(nextLoopEnabled);
@@ -52,7 +44,7 @@ export default function PaneTools({ active, onUpload, onAction }) {
         if (nextLoopEnabled && groups?.length === 3) {
             cycleDistanceRef.current = groups[1].offsetTop - groups[0].offsetTop;
         }
-    }, [narrowLayout]);
+    }, []);
 
     React.useLayoutEffect(() => {
         const viewport = viewportRef.current;
