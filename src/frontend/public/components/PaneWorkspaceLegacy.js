@@ -19,7 +19,7 @@ const normaliseBackgroundScale = (scale) => clamp(roundScale(Number(scale) || 1)
 
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
-export default function PaneWorkspace({ token, user, onLogout, onStyleChange, onOpenTerminal }) {
+export default function PaneWorkspace({ token, user, onLogout, onStyleChange }) {
     const [locations, setLocations] = React.useState([]);
     const [windows, setWindows] = React.useState([]);
     const [terminalWindows, setTerminalWindows] = React.useState([]);
@@ -88,9 +88,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, on
         setTerminalWindows((current) => [...current, { id, targetId: '', minimized: false, maximized: false, position: null, z: nextZIndex() }]);
         setActiveId(id);
     };
-    if (onOpenTerminal) {
-        onOpenTerminal(openTerminalWindow);
-    }
+    window.__paneWorkspaceOpenTerminal = openTerminalWindow;
     const closeWindow = (id) => {
         const pane = windows.find((item) => item.id === id);
         if (!pane) return;
