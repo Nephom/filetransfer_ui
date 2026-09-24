@@ -1,9 +1,10 @@
 import React from 'react';
-import PaneTerminalWindow from './PaneTerminalWindow.js';
 import PaneWorkspaceLegacy from './PaneWorkspaceLegacy.js';
+import { usePaneMenuPosition } from './pane-workspace-utils.js';
 
 export default function PaneWorkspace(props) {
     const [contextMenu, setContextMenu] = React.useState(null);
+    const menuPosition = usePaneMenuPosition(contextMenu, 200);
     React.useEffect(() => {
         const close = () => setContextMenu(null);
         window.addEventListener('click', close);
@@ -21,6 +22,6 @@ export default function PaneWorkspace(props) {
         setContextMenu({ x: event.clientX, y: event.clientY });
     }}>
         <PaneWorkspaceLegacy {...props} />
-        {contextMenu && <div className="pane-terminal-launch-menu" style={{ left: contextMenu.x + 200, top: contextMenu.y }}><button type="button" onClick={() => { if (window.__paneWorkspaceOpenTerminal) window.__paneWorkspaceOpenTerminal(); }}>Terminal</button></div>}
+        {contextMenu && <div ref={menuPosition.ref} className="pane-terminal-launch-menu" style={menuPosition.style}><button type="button" onClick={() => { if (window.__paneWorkspaceOpenTerminal) window.__paneWorkspaceOpenTerminal(); }}>Terminal</button></div>}
     </div>;
 }

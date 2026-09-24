@@ -204,6 +204,11 @@
             @media (max-width: 900px) { .pane-terminal-tools-overlay { right: 10px; width: 132px; }.pane-terminal-window { width: calc(100% - 180px); min-width: 330px; height: 500px; }.pane-terminal-form-modal { width: min(440px, calc(100% - 32px)); padding: 16px; } }
             @media (max-width: 600px) { .pane-terminal-tools-overlay { top: auto; right: 8px; bottom: 8px; width: 132px; }.pane-terminal-tools-overlay .pane-tool-grid button:not(:first-child) { display: none; }.pane-terminal-window { top: 16px; left: 16px; width: calc(100% - 32px); height: calc(100% - 32px); min-width: 280px; }.pane-terminal-form-row { grid-template-columns: 1fr; }.pane-terminal-minimized-dock { left: 8px; bottom: 8px; width: calc(100% - 16px); }.pane-terminal-form-modal { width: calc(100% - 24px); padding: 14px; } }
        </style>
+        <style>
+            /* Keep all floating panes in one stacking context and keep menus inside the viewport. */
+            .pane-window-layer { z-index: 2; }
+            .pane-context-menu, .pane-terminal-launch-menu { box-sizing: border-box; max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow-x: hidden; overflow-y: auto; }
+        </style>
 </head>
 <body>
     <div id="root"></div>

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Terminal } from '@xterm/xterm';
+import { usePaneMenuPosition } from './pane-workspace-utils.js';
 
 const MAX_CLIPBOARD_BYTES = 64 * 1024;
 const RECONNECT_DELAYS = [1000, 2000, 2000];
@@ -16,7 +17,7 @@ const statusLabel = status => ({
 
 const emptyForm = { displayName: '', host: '', port: '22', username: '', authType: 'private-key', privateKey: '', password: '', passphrase: '' };
 
-export default function PaneTerminalWindow({ window: pane, token, active, onFocus, onClose, onMinimize, onToggleMaximize, onMove, onUpdateZ, onTitlePointerDown: externalOnTitlePointerDown, onTitlePointerMove: externalOnTitlePointerMove, onTitlePointerUp: externalOnTitlePointerUp }) {
+export default function PaneTerminalWindow({ window: pane, token, active, onFocus, onClose, onMinimize, onToggleMaximize, onMove, onTitlePointerDown: externalOnTitlePointerDown, onTitlePointerMove: externalOnTitlePointerMove, onTitlePointerUp: externalOnTitlePointerUp }) {
     const [targets, setTargets] = React.useState([]);
     const [targetId, setTargetId] = React.useState(pane.targetId || '');
     const [sshStatus, setSshStatus] = React.useState('disconnected');
@@ -27,6 +28,7 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     const [editingId, setEditingId] = React.useState(null);
     const [form, setForm] = React.useState(emptyForm);
     const [menu, setMenu] = React.useState(null);
+    const menuPosition = usePaneMenuPosition(menu);
     const terminalContainer = React.useRef(null);
     const terminalRef = React.useRef(null);
     const socketRef = React.useRef(null);
@@ -420,7 +422,7 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         };
     }, [clearReconnect, copySelection, fitTerminal, pasteClipboard, token]);
 
-    return <article data-window-id={pane.id} className={`pane-window pane-terminal-window ${active ? 'is-active' : ''} ${pane.minimized ? 'is-minimized' : ''} ${pane.maximized ? 'is-maximized' : ''}`} style={{ zIndex: pane.z, ...(pane.position ? { left: `${pane.position.left}px`, top: `${pane.position.top}px` } : {}) }} onPointerDown={() => { onFocus(pane.id); if (onUpdateZ) onUpdateZ(pane.id, pane.z + 1); }} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY }); }}>
+    return <article data-window-id={pane.id} className={`pane-window pane-terminal-window ${active ? 'is-active' : ''} ${pane.minimized ? 'is-minimized' : ''} ${pane.maximized ? 'is-maximized' : ''}`} style={{ zIndex: pane.z, ...(pane.position ? { left: `${pane.position.left}px`, top: `${pane.position.top}px` } : {}) }} onPointerDown={() => onFocus(pane.id)} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); setMenu({ x: event.clientX, y: event.clientY }); }}>
         <header className="pane-window-titlebar" onPointerDown={externalOnTitlePointerDown || onTitlePointerDown} onPointerMove={externalOnTitlePointerMove || onTitlePointerMove} onPointerUp={externalOnTitlePointerUp || onTitlePointerUp}>
             <div><span className="terminal-icon" aria-hidden="true">&gt;_</span><strong>{selectedTarget?.displayName || 'SSH Terminal'}</strong><small>{statusLabel(sshStatus)}{selectedTarget ? ` · ${selectedTarget.host}` : ''}</small></div>
             <span className="pane-window-controls"><button type="button" className="pane-terminal-connect" onClick={() => ['connected', 'reconnecting'].includes(sshStatus) ? void disconnect() : void connect()} disabled={['connecting', 'disconnecting'].includes(sshStatus)}>{['connected', 'reconnecting'].includes(sshStatus) ? 'Disconnect' : 'Connect'}</button><button type="button" className="pane-window-minimize" onClick={() => onMinimize(pane.id)} aria-label="Minimize window" title="Minimize window">-</button><button type="button" className="pane-window-maximize" onClick={() => onToggleMaximize(pane.id)} aria-label={pane.maximized ? 'Restore window' : 'Maximize window'} title={pane.maximized ? 'Restore window' : 'Maximize window'}>{pane.maximized ? 'x' : '[]'}</button><button type="button" className="pane-window-close" onClick={() => onClose(pane.id)} aria-label="Close terminal window" title="Close terminal window">x</button></span>
@@ -430,6 +432,6 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         <div className="pane-terminal-clipboard"><button type="button" onClick={() => void copySelection()}>Copy</button><button type="button" onClick={() => void pasteClipboard()}>Paste</button><button type="button" onClick={pasteSelected}>Paste selected</button><button type="button" onClick={() => { terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button><span className={`pane-terminal-transport ${transportStatus}`}>{statusLabel(sshStatus)}</span></div>
         {error && <div className="pane-error" role="alert">{error}</div>}
         <div className="pane-terminal-output" ref={terminalContainer} />
-        {menu && <div className="pane-context-menu pane-terminal-context-menu" style={{ left: menu.x, top: menu.y }} onClick={event => event.stopPropagation()}><button type="button" onClick={() => { setMenu(null); void copySelection(); }}>Copy</button><button type="button" onClick={() => { setMenu(null); void pasteClipboard(); }}>Paste</button><button type="button" onClick={() => { setMenu(null); pasteSelected(); }}>Paste selected</button><button type="button" onClick={() => { setMenu(null); terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button></div>}
+         {menu && <div ref={menuPosition.ref} className="pane-context-menu pane-terminal-context-menu" style={menuPosition.style} onClick={event => event.stopPropagation()}><button type="button" onClick={() => { setMenu(null); void copySelection(); }}>Copy</button><button type="button" onClick={() => { setMenu(null); void pasteClipboard(); }}>Paste</button><button type="button" onClick={() => { setMenu(null); pasteSelected(); }}>Paste selected</button><button type="button" onClick={() => { setMenu(null); terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button></div>}
     </article>;
 }
