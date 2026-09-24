@@ -68,7 +68,7 @@ export default function PaneWorkspace(props) {
     }, [activeId, terminals]);
 
     return <div className="pane-terminal-shell" onContextMenu={showContextMenu} onContextMenuCapture={showContextMenuCapture}>
-        <PaneWorkspaceLegacy {...props} />
+        <PaneWorkspaceLegacy {...props} onActivateTerminal={focusTerminal} />
         <div className="pane-terminal-tools-overlay"><PaneTools active={null} onUpload={() => {}} onAction={() => {}} onOpenTerminal={openTerminal} /></div>
         <div className="pane-terminal-overlay" ref={layerRef}>{terminals.map(pane => <PaneTerminalWindow key={pane.id} window={pane} token={props.token} active={activeId === pane.id && !pane.minimized} onFocus={focusTerminal} onClose={closeTerminal} onMinimize={minimizeTerminal} onToggleMaximize={toggleMaximizeTerminal} onMove={moveTerminal} />)}</div>
         {terminals.some(pane => pane.minimized) && <div className="pane-terminal-minimized-dock" aria-label="Minimized terminal windows">{terminals.filter(pane => pane.minimized).map(pane => <div className="pane-minimized-item" key={pane.id}><button type="button" className="pane-minimized-restore" onClick={() => restoreTerminal(pane.id)}>SSH Terminal</button><button type="button" className="pane-minimized-close" onClick={() => closeTerminal(pane.id)} aria-label="Close minimized terminal">x</button></div>)}</div>}

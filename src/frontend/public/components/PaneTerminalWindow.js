@@ -379,6 +379,14 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
 
     React.useEffect(() => { void fetchTargets(); }, [fetchTargets]);
     React.useEffect(() => {
+        const closeMenu = (event) => {
+            if (event.target.closest?.('.pane-context-menu')) return;
+            setMenu(null);
+        };
+        window.addEventListener('click', closeMenu);
+        return () => window.removeEventListener('click', closeMenu);
+    }, []);
+    React.useEffect(() => {
         mountedRef.current = true;
         console.log('[Terminal] Creating Terminal instance, terminalContainer.current:', terminalContainer.current);
         const terminal = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: 14, theme: { background: '#050d18', foreground: '#d9eafa', cursor: '#5cdbff', selectionBackground: 'rgba(92,219,255,.35)' }, scrollback: 5000 });
