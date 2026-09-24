@@ -1,6 +1,5 @@
 import React from 'react';
 import PaneTerminalWindow from './PaneTerminalWindow.js';
-import PaneTools from './PaneTools.js';
 import PaneWorkspaceLegacy from './PaneWorkspaceLegacy.js';
 
 export default function PaneWorkspace(props) {
@@ -22,7 +21,6 @@ export default function PaneWorkspace(props) {
         setContextMenu({ x: event.clientX, y: event.clientY });
     }}>
         <PaneWorkspaceLegacy {...props} />
-        <div className="pane-terminal-tools-overlay"><PaneTools active={null} onUpload={() => {}} onAction={() => {}} onOpenTerminal={() => { if (window.__paneWorkspaceOpenTerminal) window.__paneWorkspaceOpenTerminal(); }} /></div>
         {contextMenu && <div className="pane-terminal-launch-menu" style={{ left: contextMenu.x + 200, top: contextMenu.y }}><button type="button" onClick={() => { if (window.__paneWorkspaceOpenTerminal) window.__paneWorkspaceOpenTerminal(); }}>Terminal</button></div>}
     </div>;
 }
