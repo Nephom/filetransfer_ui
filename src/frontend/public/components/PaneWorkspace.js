@@ -29,6 +29,9 @@ export default function PaneWorkspace(props) {
         setActiveId(id);
         patchTerminal(id, { z });
     };
+    const updateTerminalZ = (id, z) => {
+        patchTerminal(id, { z: z || nextZ() });
+    };
     const closeTerminal = id => {
         setTerminals(current => current.filter(pane => pane.id !== id));
         setActiveId(current => current === id ? null : current);
@@ -70,7 +73,7 @@ export default function PaneWorkspace(props) {
     return <div className="pane-terminal-shell" onContextMenu={showContextMenu} onContextMenuCapture={showContextMenuCapture}>
         <PaneWorkspaceLegacy {...props} onActivateTerminal={focusTerminal} />
         <div className="pane-terminal-tools-overlay"><PaneTools active={null} onUpload={() => {}} onAction={() => {}} onOpenTerminal={openTerminal} /></div>
-        <div className="pane-terminal-overlay" ref={layerRef}>{terminals.map(pane => <PaneTerminalWindow key={pane.id} window={pane} token={props.token} active={activeId === pane.id && !pane.minimized} onFocus={focusTerminal} onClose={closeTerminal} onMinimize={minimizeTerminal} onToggleMaximize={toggleMaximizeTerminal} onMove={moveTerminal} />)}</div>
+        <div className="pane-terminal-overlay" ref={layerRef}>{terminals.map(pane => <PaneTerminalWindow key={pane.id} window={pane} token={props.token} active={activeId === pane.id && !pane.minimized} onFocus={focusTerminal} onClose={closeTerminal} onMinimize={minimizeTerminal} onToggleMaximize={toggleMaximizeTerminal} onMove={moveTerminal} onUpdateZ={updateTerminalZ} />)}</div>
         {terminals.some(pane => pane.minimized) && <div className="pane-terminal-minimized-dock" aria-label="Minimized terminal windows">{terminals.filter(pane => pane.minimized).map(pane => <div className="pane-minimized-item" key={pane.id}><button type="button" className="pane-minimized-restore" onClick={() => restoreTerminal(pane.id)}>SSH Terminal</button><button type="button" className="pane-minimized-close" onClick={() => closeTerminal(pane.id)} aria-label="Close minimized terminal">x</button></div>)}</div>}
         {contextMenu && <div className="pane-terminal-launch-menu" style={{ left: contextMenu.x + 200, top: contextMenu.y }}><button type="button" onClick={openTerminal}>Terminal</button></div>}
     </div>;
