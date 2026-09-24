@@ -291,6 +291,10 @@ install_server_node_dependencies() {
   cmd_browser
 }
 
+server_native_dependencies_valid() {
+  (cd "$ROOT_DIR" && npm run check:native >/dev/null 2>&1)
+}
+
 cmd_browser() {
   (
     cd "$ROOT_DIR" &&
@@ -616,7 +620,7 @@ cmd_setup() {
     cmd_install
   else
     install_server_system_dependencies
-    if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! (cd "$ROOT_DIR" && npm run check:native >/dev/null 2>&1); then
+    if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! server_native_dependencies_valid; then
       echo "Setup: installing and rebuilding server dependencies for this machine..."
       install_server_node_dependencies
     else
@@ -744,7 +748,7 @@ cmd_upgrade() {
     legacy_config="$(mktemp)"
     cp "$ROOT_DIR/src/config.ini" "$legacy_config"
   fi
-  if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! (cd "$ROOT_DIR" && node -e 'require.resolve("sqlite3")' >/dev/null 2>&1); then
+  if [[ ! -d "$ROOT_DIR/node_modules" ]] || ! server_native_dependencies_valid; then
     echo "Upgrade: installing server dependencies before the database backup..."
     cmd_install
   fi
