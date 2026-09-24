@@ -75,18 +75,28 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
 
     const fitTerminal = React.useCallback(() => {
         const terminal = terminalRef.current;
-        if (!terminal || !terminalContainer.current) return;
+        if (!terminal || !terminalContainer.current) {
+            console.log('[Terminal] fitTerminal skipped - terminal:', !!terminal, 'container:', !!terminalContainer.current);
+            return;
+        }
         try {
             const windowElement = terminalContainer.current.closest('.pane-window');
             const computed = windowElement ? Number.parseFloat(getComputedStyle(windowElement).fontSize) : 14;
             const fontSize = Number.isFinite(computed) ? Math.max(11, Math.min(22, computed)) : 14;
             terminal.options.fontSize = fontSize;
             const rectangle = terminalContainer.current.getBoundingClientRect();
+            console.log('[Terminal] fitTerminal - container rect:', rectangle.width, 'x', rectangle.height, 'fontSize:', fontSize);
             const characterWidth = Math.max(6, fontSize * 0.6);
             const lineHeight = Math.max(13, fontSize * 1.2);
-            terminal.resize(Math.max(20, Math.floor(rectangle.width / characterWidth)), Math.max(4, Math.floor(rectangle.height / lineHeight)));
+            const cols = Math.max(20, Math.floor(rectangle.width / characterWidth));
+            const rows = Math.max(4, Math.floor(rectangle.height / lineHeight));
+            console.log('[Terminal] fitTerminal - calculated cols:', cols, 'rows:', rows);
+            terminal.resize(cols, rows);
+            console.log('[Terminal] fitTerminal - actual terminal size after resize:', terminal.cols, 'x', terminal.rows);
             sendResize();
-        } catch { /* The terminal can be between pane mount and layout. */ }
+        } catch (e) {
+            console.log('[Terminal] fitTerminal error:', e);
+        }
     }, [sendResize]);
 
     const clearReconnect = React.useCallback(() => {
@@ -100,10 +110,13 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         socket.binaryType = 'arraybuffer';
         socketRef.current = socket;
         socket.onopen = () => {
+            console.log('[Terminal] WebSocket onopen');
             if (!mountedRef.current) return socket.close();
             reconnectAttemptRef.current = 0;
             setStatus('connected', 'attached');
+            console.log('[Terminal] WebSocket opened, calling fitTerminal()');
             fitTerminal();
+            console.log('[Terminal] WebSocket calling focus()');
             terminalRef.current?.focus();
         };
         socket.onmessage = async event => {
@@ -112,6 +125,7 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
                 try {
                     const control = JSON.parse(event.data);
                     if (control.type === 'status') {
+                        console.log('[Terminal] WebSocket status message:', control);
                         setError(control.error || '');
                         if (control.hostKeyUpdated) writeLine('Remote host key updated and recorded.');
                         setStatus(control.sshStatus || control.status || 'connected', control.transportStatus || 'attached');
@@ -123,14 +137,24 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
                         return;
                     }
                 } catch { /* SSH output can be text that is not JSON. */ }
+                console.log('[Terminal] Writing string data to terminal, length:', event.data.length);
                 terminalRef.current?.write(event.data);
                 return;
             }
-            if (event.data instanceof Blob) terminalRef.current?.write(new Uint8Array(await event.data.arrayBuffer()));
-            else terminalRef.current?.write(event.data);
+            if (event.data instanceof Blob) {
+                const arrayBuffer = await event.data.arrayBuffer();
+                console.log('[Terminal] Writing Blob data to terminal, size:', arrayBuffer.byteLength);
+                terminalRef.current?.write(new Uint8Array(arrayBuffer));
+            } else {
+                console.log('[Terminal] Writing raw data to terminal');
+                terminalRef.current?.write(event.data);
+            }
         };
-        socket.onerror = () => {};
-        socket.onclose = () => {
+        socket.onerror = (error) => {
+            console.log('[Terminal] WebSocket error:', error);
+        };
+        socket.onclose = (event) => {
+            console.log('[Terminal] WebSocket onclose:', event.code, event.reason);
             if (socketRef.current === socket) socketRef.current = null;
             if (!mountedRef.current || intentionalRef.current || !sessionIdRef.current) return;
             setStatus('reconnecting', 'detached');
@@ -183,7 +207,9 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     }, [attachExisting, clearReconnect, token]);
 
     const connectNew = React.useCallback(async () => {
+        console.log('[Terminal] connectNew called, targetId:', targetIdRef.current);
         const terminal = terminalRef.current;
+        console.log('[Terminal] Terminal instance:', !!terminal, 'cols:', terminal?.cols, 'rows:', terminal?.rows);
         if (!targetIdRef.current) throw new Error('Select an SSH target first.');
         const response = await fetch('/api/terminal/sessions', {
             method: 'POST',
@@ -191,11 +217,13 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
             body: JSON.stringify({ targetId: targetIdRef.current, cols: terminal?.cols || 120, rows: terminal?.rows || 32 })
         });
         const data = await response.json().catch(() => ({}));
+        console.log('[Terminal] connectNew response:', data);
         if (!response.ok) throw new Error(data.error || 'Unable to connect to the SSH target.');
         sessionIdRef.current = data.session.sessionId;
         reconnectDeadlineRef.current = 0;
         setError('');
         setStatus(data.session.sshStatus, 'detached');
+        console.log('[Terminal] Opening WebSocket with sessionId:', data.session.sessionId);
         openSocket(data.session.attachTicket, data.session.sessionId);
     }, [openSocket, token]);
 
@@ -348,8 +376,11 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     React.useEffect(() => { void fetchTargets(); }, [fetchTargets]);
     React.useEffect(() => {
         mountedRef.current = true;
+        console.log('[Terminal] Creating Terminal instance, terminalContainer.current:', terminalContainer.current);
         const terminal = new Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace', fontSize: 14, theme: { background: '#050d18', foreground: '#d9eafa', cursor: '#5cdbff', selectionBackground: 'rgba(92,219,255,.35)' }, scrollback: 5000 });
+        console.log('[Terminal] Terminal instance created');
         terminal.open(terminalContainer.current);
+        console.log('[Terminal] Terminal opened in container');
         terminalRef.current = terminal;
         const dataSubscription = terminal.onData(data => { if (socketRef.current?.readyState === WebSocket.OPEN) socketRef.current.send(data); });
         terminal.attachCustomKeyEventHandler(event => {
@@ -360,8 +391,10 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         });
         const observer = new ResizeObserver(fitTerminal);
         observer.observe(terminalContainer.current);
+        console.log('[Terminal] ResizeObserver set up');
         window.requestAnimationFrame(fitTerminal);
         return () => {
+            console.log('[Terminal] Cleanup called');
             mountedRef.current = false;
             intentionalRef.current = true;
             clearReconnect();
