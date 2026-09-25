@@ -12,6 +12,8 @@ const BACKGROUND_SCALE_STEP = 0.1;
 const BACKGROUND_POSITION_STEP = 10;
 const PASTE_PROGRESS_READ_TIMEOUT_MS = 45_000; // Allow three missed 15-second server heartbeats.
 const PANE_TRANSFER_FAILURE_PREVIEW_LIMIT = 50; // Keep retained failure details bounded for large batches.
+const LOCATION_CARD_3D_OFFSET_PX = 5; // Matches the translated backing layer in Pane Style CSS.
+const LOCATION_LAYOUT_EPSILON_PX = 1; // Avoid mode changes from subpixel layout rounding.
 const clamp = (value, minimum, maximum) => Math.min(Math.max(value, minimum), maximum);
 const roundScale = (value) => Math.round(value * 100) / 100;
 const centeredBackgroundPosition = () => ({ x: 50, y: 50 });
@@ -84,6 +86,8 @@ const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [],
 
 export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onUploadFiles }) {
     const [locations, setLocations] = React.useState([]);
+    const [locationRailOverflow, setLocationRailOverflow] = React.useState(false);
+    const [locationPickerOpen, setLocationPickerOpen] = React.useState(false);
     const [windows, setWindows] = React.useState([]);
     const [terminalWindows, setTerminalWindows] = React.useState([]);
     const [activeId, setActiveId] = React.useState(null);
@@ -103,6 +107,11 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const [contextMenu, setContextMenu] = React.useState(null);
     const menuPosition = usePaneMenuPosition(contextMenu);
     const fileInput = React.useRef(null);
+    const locationRailRef = React.useRef(null);
+    const locationListRef = React.useRef(null);
+    const locationListHeightRef = React.useRef(0);
+    const locationCardHeightRef = React.useRef(86);
+    const locationPickerTriggerRef = React.useRef(null);
     const dragRef = React.useRef(null);
     const backgroundInput = React.useRef(null);
     const backgroundLoadRef = React.useRef(0);
@@ -119,6 +128,39 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const activeWindow = windows.find((pane) => pane.id === activeId && !pane.minimized);
     const locationFor = (id) => locations.find((location) => location.id === id);
     const announce = (message) => { setToast(message); window.setTimeout(() => setToast(''), 3000); };
+    const measureLocationRail = React.useCallback(() => {
+        const rail = locationRailRef.current;
+        const launcher = rail?.querySelector('.pane-terminal-launch-card');
+        const list = locationListRef.current;
+        const workspace = rail?.closest('.pane-workspace');
+        if (!rail || !launcher || !workspace) return;
+        if (list) {
+            const firstCard = list.querySelector('.pane-location-card');
+            if (firstCard) locationCardHeightRef.current = firstCard.getBoundingClientRect().height;
+            locationListHeightRef.current = list.scrollHeight;
+        }
+        const style = getComputedStyle(rail);
+        const maxHeight = Number.parseFloat(style.maxHeight);
+        let railCapacity = maxHeight;
+        if (!Number.isFinite(railCapacity)) {
+            const relativeMaxHeight = style.maxHeight.match(/100%\s*-\s*([\d.]+)px/);
+            if (relativeMaxHeight) railCapacity = workspace.clientHeight - Number(relativeMaxHeight[1]);
+            else {
+                const top = Number.parseFloat(style.top) || 0;
+                const bottom = Number.parseFloat(style.bottom);
+                railCapacity = workspace.clientHeight - top - (Number.isFinite(bottom) ? bottom : top);
+            }
+        }
+        const railGap = Number.parseFloat(style.rowGap) || 8;
+        const listStyle = list ? getComputedStyle(list) : null;
+        const listGap = Number.parseFloat(listStyle?.rowGap) || 9;
+        const expectedListHeight = locations.length * locationCardHeightRef.current + Math.max(0, locations.length - 1) * listGap + LOCATION_CARD_3D_OFFSET_PX;
+        const requiredListHeight = list ? Math.max(list.scrollHeight, expectedListHeight) : Math.max(locationListHeightRef.current, expectedListHeight);
+        const availableListHeight = Math.max(0, railCapacity - launcher.getBoundingClientRect().height - railGap);
+        const nextOverflow = locations.length > 0 && requiredListHeight > availableListHeight + LOCATION_LAYOUT_EPSILON_PX;
+        setLocationRailOverflow(current => current === nextOverflow ? current : nextOverflow);
+        if (!nextOverflow) setLocationPickerOpen(false);
+    }, [locations.length]);
     const clearTransferDismissTimer = () => {
         if (transferDismissTimerRef.current !== null) window.clearTimeout(transferDismissTimerRef.current);
         transferDismissTimerRef.current = null;
@@ -409,7 +451,43 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         if (pending) setClipboard(null);
     };
     React.useEffect(() => { fetch('/api/locations', { headers: token ? { Authorization: `Bearer ${token}` } : {} }).then((response) => response.json()).then((data) => setLocations((data.locations || []).filter((location) => location?.id))).catch(() => announce('Unable to load Locations.')); }, [token]);
-    React.useEffect(() => { const close = (event) => { if (event.target.closest?.('.pane-account-menu, .account')) return; closeAccountMenu(); setContextMenu(null); }; window.addEventListener('click', close); return () => window.removeEventListener('click', close); }, []);
+    React.useLayoutEffect(() => {
+        const rail = locationRailRef.current;
+        const launcher = rail?.querySelector('.pane-terminal-launch-card');
+        const workspace = rail?.closest('.pane-workspace');
+        if (!rail || !launcher || !workspace) return undefined;
+        const observer = new ResizeObserver(measureLocationRail);
+        observer.observe(rail);
+        observer.observe(launcher);
+        observer.observe(workspace);
+        if (locationListRef.current) observer.observe(locationListRef.current);
+        window.addEventListener('resize', measureLocationRail);
+        measureLocationRail();
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', measureLocationRail);
+        };
+    }, [locationRailOverflow, locations.length, measureLocationRail]);
+    React.useEffect(() => {
+        const close = (event) => {
+            if (event.target.closest?.('.pane-account-menu, .account')) return;
+            closeAccountMenu();
+            setContextMenu(null);
+            if (!event.target.closest?.('.pane-location-picker, .pane-location-picker-trigger')) setLocationPickerOpen(false);
+        };
+        window.addEventListener('click', close);
+        return () => window.removeEventListener('click', close);
+    }, []);
+    React.useEffect(() => {
+        if (!locationPickerOpen) return undefined;
+        const closeOnEscape = (event) => {
+            if (event.key !== 'Escape') return;
+            setLocationPickerOpen(false);
+            locationPickerTriggerRef.current?.focus();
+        };
+        window.addEventListener('keydown', closeOnEscape);
+        return () => window.removeEventListener('keydown', closeOnEscape);
+    }, [locationPickerOpen]);
     React.useEffect(() => {
         const allWindows = [...windows, ...terminalWindows];
         const active = allWindows.find((pane) => pane.id === activeId);
@@ -560,12 +638,23 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const transferTotal = Math.max(0, Number(transferProgress?.totalItems) || 0);
     const transferResolved = Math.min(transferTotal, Math.max(0, Number(transferProgress?.resolvedItems) || 0));
     const transferPercent = transferTotal ? transferResolved / transferTotal * 100 : 0;
+    const renderLocationCards = () => locations.map((location) => <button type="button" key={location.id} className={`pane-location-card${windows.some((pane) => pane.locationId === location.id) ? ' is-open' : ''}`} onClick={() => { openWindow(location.id); setLocationPickerOpen(false); }} onContextMenu={(event) => showLocationContextMenu(event, location.id)}><span className="folder-icon" aria-hidden="true">▰</span><span><strong>{location.displayName || location.id}</strong><small>{location.status || 'online'}</small></span></button>);
     return <div className={`pane-explorer${customBackground ? ' has-custom-background' : ''}`} data-theme={theme} style={backgroundStyle} onContextMenu={(event) => event.preventDefault()}>
         {customBackground && <div className="pane-custom-background-clip" aria-hidden="true"><div className="pane-custom-background" /></div>}
         <header className="pane-titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control"><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu pane-account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}<button type="button" className="style-settings-trigger" aria-expanded={styleSettingsOpen} onClick={() => setStyleSettingsOpen((open) => !open)}>Style settings <span aria-hidden="true">⌄</span></button>{styleSettingsOpen && <div className="pane-account-style"><h2>Interface style</h2><p>Choose the central workspace appearance.</p><label>Interface mode<select aria-label="Interface style" value="pane" onChange={(event) => onStyleChange(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><label>Central background<select aria-label="Central background" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="default">Default Gradient</option><option value="circuit">Dark Circuit</option><option value="space">Deep Space</option><option value="ocean">Ocean Signal</option><option value="aurora">Aurora Tech</option><option value="neon">Soft Neon</option><option value="light">Clean Light</option></select></label><button type="button" className="pane-background-button" onClick={() => backgroundInput.current?.click()}>▧ Choose background image</button>{customBackground && <button type="button" className="pane-background-edit-button" onClick={() => setBackgroundEditorOpen(true)}>▣ Edit background placement</button>}<input ref={backgroundInput} className="pane-hidden-file" type="file" accept="image/*" onChange={selectBackground} />{customBackground && <button type="button" className="pane-reset-background" onClick={clearBackground}>Use default background</button>}</div>}<hr /><button type="button" className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
         {customBackground && backgroundEditorOpen && <aside className="pane-background-editor" data-background-editor aria-label="Background image placement"><div className="pane-background-editor-header"><div><span className="pane-background-eyebrow">BACKGROUND PLACEMENT</span><strong title={customBackground.name}>{customBackground.name}</strong></div><button type="button" className="pane-background-close" onClick={() => setBackgroundEditorOpen(false)} aria-label="Close background editor" title="Close background editor">×</button></div><div className="pane-background-meta"><span>{customBackground.width} × {customBackground.height}px</span><span>{Math.round(customBackground.size / 1024)} KB</span></div><div className="pane-background-section"><span className="pane-background-label">Position</span><div className="pane-background-position-controls"><span /><button type="button" onClick={() => moveBackground('y', -1)} disabled={backgroundPosition.y <= 0} aria-label="Move background up" title="Move background up">↑</button><span /><button type="button" onClick={() => moveBackground('x', -1)} disabled={backgroundPosition.x <= 0} aria-label="Move background left" title="Move background left">←</button><button type="button" className="is-center" onClick={centerBackground} aria-label="Center background" title="Center background">◎</button><button type="button" onClick={() => moveBackground('x', 1)} disabled={backgroundPosition.x >= 100} aria-label="Move background right" title="Move background right">→</button><span /><button type="button" onClick={() => moveBackground('y', 1)} disabled={backgroundPosition.y >= 100} aria-label="Move background down" title="Move background down">↓</button><span /></div></div><div className="pane-background-section"><span className="pane-background-label">Scale</span><div className="pane-background-scale-controls"><button type="button" onClick={() => changeBackgroundScale(-1)} disabled={backgroundScale <= BACKGROUND_MIN_SCALE} aria-label="Shrink background" title="Shrink background">-</button><output aria-label="Background scale">{Math.round(backgroundScale * 100)}%</output><button type="button" onClick={() => changeBackgroundScale(1)} disabled={backgroundScale >= BACKGROUND_MAX_SCALE} aria-label="Expand background" title="Expand background">+</button></div></div><div className="pane-background-editor-actions"><button type="button" onClick={resetBackgroundPlacement}>Reset placement</button><button type="button" className="danger" onClick={clearBackground}>Remove image</button><button type="button" className="save" onClick={() => void saveBackgroundPlacement()}>Save</button></div></aside>}
         <main className="pane-workspace">
-            <aside className="pane-side pane-locations" aria-label="Locations"><div className="pane-heading" aria-hidden="true">LOCATIONS</div><PaneTerminalLauncher onOpenTerminal={openTerminalWindow} /><div className="pane-location-list">{locations.map((location) => <button type="button" key={location.id} className={windows.some((pane) => pane.locationId === location.id) ? 'is-open' : ''} onClick={() => openWindow(location.id)} onContextMenu={(event) => showLocationContextMenu(event, location.id)}><span className="folder-icon" aria-hidden="true">▰</span><span><strong>{location.displayName || location.id}</strong><small>{location.status || 'online'}</small></span></button>)}</div></aside>
+            <aside className="pane-side pane-locations" aria-label="Locations" ref={locationRailRef}>
+                <div className="pane-heading" aria-hidden="true">LOCATIONS</div>
+                <PaneTerminalLauncher onOpenTerminal={openTerminalWindow} />
+                {locationRailOverflow ? <button ref={locationPickerTriggerRef} type="button" className="pane-location-picker-trigger" aria-haspopup="dialog" aria-expanded={locationPickerOpen} onClick={() => setLocationPickerOpen((open) => !open)}>
+                    <span className="folder-icon" aria-hidden="true">▰</span><span><strong>Locations</strong><small>{locations.length} available</small></span>
+                </button> : <div className="pane-location-list" ref={locationListRef}>{renderLocationCards()}</div>}
+            </aside>
+            {locationPickerOpen && locationRailOverflow && <section className="pane-location-picker" role="dialog" aria-labelledby="pane-location-picker-title">
+                <header className="pane-location-picker-header"><div><span>LOCATION SELECTOR</span><strong id="pane-location-picker-title">Choose a Location</strong></div><button type="button" aria-label="Close Locations" onClick={() => setLocationPickerOpen(false)}>×</button></header>
+                <div className="pane-location-list pane-location-picker-grid">{renderLocationCards()}</div>
+            </section>}
             <section className="pane-center">
                 <div className="pane-window-layer">
                     {windows.map((pane) => <PaneFileWindow key={pane.id} window={pane} location={locationFor(pane.locationId)} active={activeId === pane.id && !pane.minimized} selectedItems={selectedItems(pane)} onFocus={focusWindow} onClose={closeWindow} onMinimize={minimizeWindow} onToggleMaximize={toggleMaximizeWindow} onAction={runAction} onModeChange={(id, mode) => patchWindow(id, { mode })} onQueryChange={(id, query) => patchWindow(id, { query })} onLoadFiles={loadFiles} onChoose={choose} onDrop={handleDrop} onMove={moveWindow} onContextMenu={showWindowContextMenu} />)}

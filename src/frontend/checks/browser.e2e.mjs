@@ -690,13 +690,29 @@ try {
     await page.locator('.account').click();
     await page.locator('.account-menu select[aria-label="Interface style"]').selectOption('pane');
     await page.locator('.pane-location-list button').first().waitFor();
+    assert.equal(await page.locator('.pane-location-picker-trigger').count(), 0, 'Location cards stay in the vertical rail when they fit');
+    const normalLocationRailOverflow = await page.locator('.pane-location-list').evaluate(element => ({ x: getComputedStyle(element).overflowX, y: getComputedStyle(element).overflowY }));
+    assert.deepEqual(normalLocationRailOverflow, { x: 'visible', y: 'visible' }, 'the Location rail itself never becomes a scroller');
     assert.equal(await page.locator('.pane-terminal-launch-card').count(), 1, 'one Terminal launcher sits outside the multi-Location list');
+    const terminalCardTransform = await page.locator('.pane-terminal-launch-card').evaluate(element => getComputedStyle(element, '::before').transform);
+    assert.match(terminalCardTransform, /matrix\(1,\s*0,\s*0,\s*1,\s*5,\s*5\)/, 'the Terminal launcher has the same 5px translated 3D backing as the Location cards');
     assert.equal(await page.locator('.pane-tool-grid button').filter({ hasText: 'Terminal' }).count(), 0, 'Terminal is not duplicated in the right-side file tools');
     await page.locator('.pane-empty-state').waitFor();
     assert.equal(await page.locator('.pane-empty-state').evaluate(element => getComputedStyle(element).display), 'grid', 'the empty workspace has a real layout style');
     const paneLocations = page.locator('.pane-location-list button');
-    await paneLocations.nth(0).click(); await paneLocations.nth(0).click();
-    await paneLocations.nth(1).click(); await paneLocations.nth(1).click();
+    const locationPickerTrigger = page.locator('.pane-location-picker-trigger');
+    const openLocationPickerIfNeeded = async () => {
+        if (await locationPickerTrigger.isVisible()) {
+            await locationPickerTrigger.click();
+            await page.locator('.pane-location-picker').waitFor();
+        }
+    };
+    const clickPaneLocation = async (index, options) => {
+        await openLocationPickerIfNeeded();
+        await paneLocations.nth(index).click(options);
+    };
+    await clickPaneLocation(0); await clickPaneLocation(0);
+    await clickPaneLocation(1); await clickPaneLocation(1);
     await page.locator('.pane-window').nth(3).waitFor();
     const paneWindows = page.locator('.pane-window');
     await page.setViewportSize({ width: 768, height: 844 });
@@ -722,7 +738,7 @@ try {
     });
     assert.ok(lightPaneContrast.pane >= 4.5 && lightPaneContrast.title >= 4.5, `light-theme window surfaces preserve text contrast: ${JSON.stringify(lightPaneContrast)}`);
     await themeRoot.evaluate(element => { element.dataset.theme = 'default'; });
-    await paneLocations.nth(0).click({ button: 'right' });
+    await clickPaneLocation(0, { button: 'right' });
     assert.equal(await page.locator('.pane-context-menu').count(), 1);
     assert.deepEqual(await page.locator('.pane-context-menu button').allTextContents(), ['Open new window']);
     await page.locator('.pane-context-menu button').click();
@@ -733,6 +749,40 @@ try {
     await page.locator('.pane-context-menu button').filter({ hasText: 'Refresh' }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     await frames();
+    await locationPickerTrigger.waitFor({ state: 'visible' });
+    assert.equal(await page.locator('.pane-locations .pane-location-list').count(), 0, 'overflowing Location cards leave the rail without a scroll container');
+    assert.equal(await locationPickerTrigger.getAttribute('aria-expanded'), 'false', 'the Location picker opens on demand when the vertical rail is full');
+    await locationPickerTrigger.click();
+    const locationPicker = page.locator('.pane-location-picker');
+    await locationPicker.waitFor();
+    assert.equal(await paneLocations.count(), 2, 'the floating pane contains every configured Location ID');
+    const popupFirstLocation = page.locator('.pane-location-picker .pane-location-list button').first();
+    await popupFirstLocation.waitFor();
+    const locationFitMetrics = await popupFirstLocation.evaluate(card => {
+        const rail = document.querySelector('.pane-locations');
+        const launcherHeight = rail.querySelector('.pane-terminal-launch-card').getBoundingClientRect().height;
+        const railGap = Number.parseFloat(getComputedStyle(rail).rowGap);
+        const cardHeight = card.getBoundingClientRect().height;
+        const listGap = Number.parseFloat(getComputedStyle(card.parentElement).rowGap);
+        const decorationOffset = new DOMMatrixReadOnly(getComputedStyle(card, '::before').transform).m42;
+        const available = Number.parseFloat(getComputedStyle(rail).maxHeight) - launcherHeight - railGap;
+        return { available, one: cardHeight + decorationOffset, two: cardHeight * 2 + listGap + decorationOffset };
+    });
+    assert.ok(locationFitMetrics.one <= locationFitMetrics.available && locationFitMetrics.two > locationFitMetrics.available, `one Location fits the vertical rail while both overflow: ${JSON.stringify(locationFitMetrics)}`);
+    const locationPickerBounds = await locationPicker.boundingBox();
+    assert.ok(locationPickerBounds, 'the floating Location pane has measurable viewport bounds');
+    assert.ok(locationPickerBounds.x >= 0 && locationPickerBounds.y >= 0 && locationPickerBounds.x + locationPickerBounds.width <= 390 && locationPickerBounds.y + locationPickerBounds.height <= 844, `the floating Location pane stays inside the narrow viewport: ${JSON.stringify(locationPickerBounds)}`);
+    assert.equal(await locationPicker.evaluate(element => Number(getComputedStyle(element).zIndex)), 65, 'the Location picker stacks above the Terminal side docks');
+    const popupCardTransform = await popupFirstLocation.evaluate(element => getComputedStyle(element, '::before').transform);
+    assert.match(popupCardTransform, /matrix\(1,\s*0,\s*0,\s*1,\s*5,\s*5\)/, 'Location cards retain their 5px 3D backing inside the floating pane');
+    await page.keyboard.press('Escape');
+    await locationPicker.waitFor({ state: 'detached' });
+    assert.equal(await locationPickerTrigger.getAttribute('aria-expanded'), 'false', 'Escape closes the Location picker');
+    await locationPickerTrigger.click();
+    await locationPicker.waitFor();
+    await page.mouse.click(5, 20);
+    await locationPicker.waitFor({ state: 'detached' });
+    assert.equal(await locationPickerTrigger.getAttribute('aria-expanded'), 'false', 'clicking outside closes the Location picker');
     const edgeFilePane = page.locator('.pane-window:not(.pane-terminal-window)').first();
     await edgeFilePane.dispatchEvent('contextmenu', { bubbles: true, button: 2, clientX: 387, clientY: 837 });
     const boundedFileMenu = page.locator('.pane-context-menu');
@@ -741,10 +791,15 @@ try {
     assert.ok(boundedFileMenuBox.x >= 0 && boundedFileMenuBox.y >= 0 && boundedFileMenuBox.x + boundedFileMenuBox.width <= 390 && boundedFileMenuBox.y + boundedFileMenuBox.height <= 844, `file context menu stays inside the narrow viewport: ${JSON.stringify(boundedFileMenuBox)}`);
     await boundedFileMenu.locator('button').filter({ hasText: 'Refresh' }).click();
 
-    await paneLocations.nth(0).dispatchEvent('contextmenu', { bubbles: true, button: 2, clientX: 387, clientY: 837 });
+    await openLocationPickerIfNeeded();
+    const pickerLocationBox = await paneLocations.nth(0).boundingBox();
+    assert.ok(pickerLocationBox, 'a Location card is visible for the right-click menu test');
+    await page.mouse.click(pickerLocationBox.x + 20, pickerLocationBox.y + 20, { button: 'right' });
     const boundedLaunchMenu = page.locator('.pane-terminal-launch-menu');
     await boundedLaunchMenu.waitFor();
+    await frames();
     const boundedLaunchMenuBox = await boundedLaunchMenu.boundingBox();
+    assert.ok(boundedLaunchMenuBox, 'the Terminal launch menu has measurable viewport bounds');
     assert.ok(boundedLaunchMenuBox.x >= 0 && boundedLaunchMenuBox.y >= 0 && boundedLaunchMenuBox.x + boundedLaunchMenuBox.width <= 390 && boundedLaunchMenuBox.y + boundedLaunchMenuBox.height <= 844, `terminal launch menu stays inside the narrow viewport: ${JSON.stringify(boundedLaunchMenuBox)}`);
     await boundedLaunchMenu.getByRole('button', { name: 'Terminal', exact: true }).click();
     const terminalPane = page.locator('.pane-terminal-window').last();
@@ -845,7 +900,7 @@ try {
     await frames();
 
     const zFileBeforeFocus = page.locator('.pane-window:not(.pane-terminal-window)').last();
-    await paneLocations.nth(1).click();
+    await clickPaneLocation(1);
     await zFileBeforeFocus.waitFor();
     const zFileId = await zFileBeforeFocus.getAttribute('data-window-id');
     const zValues = async () => page.evaluate(({ fileId, currentTerminalId }) => ({ file: Number(getComputedStyle(document.querySelector(`[data-window-id="${fileId}"]`)).zIndex), terminal: Number(getComputedStyle(document.querySelector(`[data-window-id="${currentTerminalId}"]`)).zIndex) }), { fileId: zFileId, currentTerminalId: terminalId });
@@ -861,7 +916,7 @@ try {
     await terminalPane.waitFor({ state: 'visible' });
     await terminalPane.locator('button[aria-label="Close terminal window"]').click();
     await zFileBeforeFocus.locator('button[aria-label="Close window"]').click();
-    await paneLocations.nth(0).click();
+    await clickPaneLocation(0);
     const temporaryToolsPane = page.locator('.pane-window:not(.pane-terminal-window)').last();
     await temporaryToolsPane.waitFor();
     assert.ok(await page.locator('.pane-tool-grid button').first().isEnabled(), 'right-side file tools are clickable with an active file pane');
@@ -871,6 +926,14 @@ try {
     const rightToolbar = page.locator('.pane-tools');
     const toolbarBounds = await rightToolbar.boundingBox();
     assert.ok(toolbarBounds.x > 720 && toolbarBounds.x + toolbarBounds.width <= 1440, `the file tools rail stays on the right side of the workspace: ${JSON.stringify(toolbarBounds)}`);
+    const rightToolDecoration = await page.locator('.pane-tool-grid button').first().evaluate(button => {
+        const rect = button.getBoundingClientRect();
+        const grid = button.closest('.pane-tool-grid').getBoundingClientRect();
+        const transform = getComputedStyle(button, '::before').transform;
+        const matrix = transform.match(/matrix\([^,]+,\s*[^,]+,\s*[^,]+,\s*[^,]+,\s*([^,]+),/);
+        return { transformedRight: rect.right + (matrix ? Number(matrix[1]) : 0), clipRight: grid.right, transform };
+    });
+    assert.ok(rightToolDecoration.transformedRight <= rightToolDecoration.clipRight, `the right toolbar's 3D border stays inside its clip edge: ${JSON.stringify(rightToolDecoration)}`);
     assert.equal(await page.locator('.pane-tool-grid').evaluate(element => element.closest('.pane-tools') !== null && element.closest('.pane-locations') === null), true, 'the looping viewport belongs to the right toolbar, not Locations');
     assert.equal(await page.locator('.pane-location-list .pane-tool-cycle').count(), 0, 'Location cards do not contain tool-loop cycles');
     const desktopToolColumns = await page.locator('.pane-tool-cycle').first().evaluate(element => getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length);
@@ -897,6 +960,7 @@ try {
     await loopingTools.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll', { bubbles: true })); });
     await frames();
     assert.ok(await loopingTools.evaluate(element => element.scrollTop > 0), 'scrolling above the first card wraps to the previous cycle');
+    await openLocationPickerIfNeeded();
     await page.evaluate(() => window.scrollTo(0, 80));
     await page.waitForFunction(() => window.scrollY > 0);
     await paneLocations.nth(0).evaluate(element => element.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 200, clientY: 280, view: window })));
@@ -936,7 +1000,7 @@ try {
     await page.locator('.pane-window').nth(2).locator('button[aria-label="Close window"]').click();
     await page.locator('.pane-window').nth(0).locator('button[aria-label="Close window"]').click();
     await page.locator('.pane-window').nth(0).locator('button[aria-label="Close window"]').click();
-    await paneLocations.nth(0).click();
+    await clickPaneLocation(0);
     await page.locator('.pane-window').first().locator('.pane-view-switch button.active').waitFor();
     assert.equal(await page.locator('.pane-window').first().locator('.pane-view-switch button.active').textContent(), 'Grid');
     const corePaneTypography = [
@@ -953,6 +1017,7 @@ try {
     ];
     await page.setViewportSize({ width: 390, height: 844 });
     await frames();
+    await openLocationPickerIfNeeded();
     const narrowCorePaneTypography = await measurePaneTypography(corePaneTypography);
     await page.setViewportSize({ width: 1440, height: 900 });
     await frames();
@@ -962,7 +1027,7 @@ try {
     const largeCorePaneTypography = await measurePaneTypography(corePaneTypography);
     assertResponsiveTypography(narrowCorePaneTypography, desktopCorePaneTypography, largeCorePaneTypography, 'Pane Style core typography');
     await page.setViewportSize({ width: 1440, height: 900 });
-    for (let index = 0; index < 6; index++) await paneLocations.nth(index % 2).click();
+    for (let index = 0; index < 6; index++) await clickPaneLocation(index % 2);
     const managedPaneWindows = page.locator('.pane-window');
     const managedPane = managedPaneWindows.last();
     await managedPane.locator('.pane-empty').waitFor({ state: 'detached' });
