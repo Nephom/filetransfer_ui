@@ -956,6 +956,73 @@ try {
     assert.equal(await page.locator('.pane-context-menu').count(), 0);
     assert.equal(await page.locator('.pane-tool-grid button').first().isEnabled(), false, 'file actions disable after the last active file pane closes');
     assert.equal(await page.locator('.pane-tool-grid button').count(), 10, 'the loop rail contains the ten file actions, excluding Terminal');
+    const queueLauncher = page.locator('.pane-tool-queue');
+    assert.equal(await queueLauncher.count(), 1, 'Transfer Queue has one fixed launcher in the right tools rail');
+    assert.equal(await queueLauncher.isEnabled(), true, 'Transfer Queue remains available without an active file pane');
+    if (await queueLauncher.getAttribute('aria-expanded') !== 'true') await queueLauncher.click();
+    const floatingQueue = page.locator('.pane-upload-queue');
+    await floatingQueue.waitFor();
+    await page.waitForFunction(() => document.querySelector('.pane-upload-queue')?.style.left !== '');
+    const initialQueueBounds = await floatingQueue.boundingBox();
+    assert.ok(initialQueueBounds.x < toolbarBounds.x, 'the queue floats beside the right toolbar rather than at the bottom or screen center');
+    const queueSurface = await floatingQueue.evaluate(element => {
+        const color = getComputedStyle(element).backgroundColor;
+        const channels = color.match(/[\d.]+/g)?.map(Number) || [];
+        return { color, alpha: channels.length > 3 ? channels[3] : 1 };
+    });
+    assert.equal(queueSurface.alpha, 1, `the queue surface is opaque so the background image cannot show through it: ${queueSurface.color}`);
+    const centralFrameDisplays = await page.evaluate(() => [
+        getComputedStyle(document.querySelector('.pane-workspace'), '::before').display,
+        getComputedStyle(document.querySelector('.pane-center'), '::after').display
+    ]);
+    assert.deepEqual(centralFrameDisplays, ['none', 'none'], 'the decorative outer frames around the central area are hidden');
+    const toolCardFrame = await page.locator('.pane-tool-grid button').first().evaluate(button => ({
+        border: getComputedStyle(button).borderTopWidth,
+        backing: getComputedStyle(button, '::before').borderTopWidth
+    }));
+    assert.deepEqual(toolCardFrame, { border: '1px', backing: '1px' }, '3D card button frames remain visible');
+
+    const queueDragHandle = await floatingQueue.locator('.pane-upload-queue-heading > div').boundingBox();
+    await page.mouse.move(queueDragHandle.x + 20, queueDragHandle.y + 14);
+    await page.mouse.down();
+    await page.mouse.move(queueDragHandle.x + 70, queueDragHandle.y + 48, { steps: 4 });
+    await page.mouse.up();
+    await page.waitForFunction(({ left, top }) => {
+        const bounds = document.querySelector('.pane-upload-queue')?.getBoundingClientRect();
+        return bounds && Math.abs(bounds.left - left) > 20 && Math.abs(bounds.top - top) > 15;
+    }, { left: initialQueueBounds.x, top: initialQueueBounds.y });
+    const movedQueueBounds = await floatingQueue.boundingBox();
+    assert.ok(movedQueueBounds.x > initialQueueBounds.x + 20 && movedQueueBounds.y > initialQueueBounds.y + 15, 'dragging the queue heading moves the floating window');
+
+    await page.mouse.move(movedQueueBounds.x + movedQueueBounds.width - 2, movedQueueBounds.y + movedQueueBounds.height - 2);
+    await page.mouse.down();
+    await page.mouse.move(movedQueueBounds.x + movedQueueBounds.width + 58, movedQueueBounds.y + movedQueueBounds.height + 42, { steps: 4 });
+    await page.mouse.up();
+    await page.waitForFunction(({ width, height }) => {
+        const bounds = document.querySelector('.pane-upload-queue')?.getBoundingClientRect();
+        return bounds && bounds.width > width + 20 && bounds.height > height + 20;
+    }, { width: movedQueueBounds.width, height: movedQueueBounds.height });
+    await page.waitForFunction(() => {
+        const panel = document.querySelector('.pane-upload-queue');
+        if (!panel) return false;
+        const bounds = panel.getBoundingClientRect();
+        return Math.abs(Number.parseFloat(panel.style.width) - bounds.width) < 1 &&
+            Math.abs(Number.parseFloat(panel.style.height) - bounds.height) < 1;
+    });
+    const resizedQueueBounds = await floatingQueue.boundingBox();
+    await floatingQueue.locator('.pane-upload-queue-close').click();
+    await floatingQueue.waitFor({ state: 'detached' });
+    assert.equal(await queueLauncher.getAttribute('aria-expanded'), 'false');
+    await queueLauncher.click();
+    await floatingQueue.waitFor();
+    await page.waitForFunction(({ left, top, width, height }) => {
+        const bounds = document.querySelector('.pane-upload-queue')?.getBoundingClientRect();
+        return bounds && Math.abs(bounds.left - left) < 2 && Math.abs(bounds.top - top) < 2 &&
+            Math.abs(bounds.width - width) < 2 && Math.abs(bounds.height - height) < 2;
+    }, { left: resizedQueueBounds.x, top: resizedQueueBounds.y, width: resizedQueueBounds.width, height: resizedQueueBounds.height });
+    await floatingQueue.locator('.pane-upload-queue-close').click();
+    await floatingQueue.waitFor({ state: 'detached' });
+    report.checks.push('Transfer Queue stays pinned in the right tools rail, opens as an opaque floating window, supports drag/resize, retains geometry during the page session, and hides only central frame lines');
     await page.setViewportSize({ width: 390, height: 600 });
     await frames();
     assert.equal(await page.locator('.pane-statusbar').evaluate(element => getComputedStyle(element).paddingLeft), '8px', 'the narrow status bar keeps its narrow padding after the Pane cascade');

@@ -103,6 +103,8 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const [nextTerminalId, setNextTerminalId] = React.useState(1);
     const [toast, setToast] = React.useState('');
     const [uploadQueueOpen, setUploadQueueOpen] = React.useState(false);
+    const [uploadQueuePosition, setUploadQueuePosition] = React.useState(null);
+    const [uploadQueueSize, setUploadQueueSize] = React.useState(null);
     const [transferProgress, setTransferProgress] = React.useState(null);
     const [clipboard, setClipboard] = React.useState(null);
     const [contextMenu, setContextMenu] = React.useState(null);
@@ -114,6 +116,8 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const locationCardHeightRef = React.useRef(86);
     const locationPickerTriggerRef = React.useRef(null);
     const dragRef = React.useRef(null);
+    const uploadQueuePanelRef = React.useRef(null);
+    const uploadQueueDragRef = React.useRef(null);
     const backgroundInput = React.useRef(null);
     const backgroundLoadRef = React.useRef(0);
     const pendingBackgroundUrlRef = React.useRef('');
@@ -145,6 +149,75 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         previousUploadStatusesRef.current = new Map(uploadQueueItems.map((item) => [item.id, item.status]));
         if (shouldOpen) setUploadQueueOpen(true);
     }, [transferQueue]);
+    React.useLayoutEffect(() => {
+        if (!uploadQueueOpen) return;
+        const defaultWidth = Math.min(440, Math.max(240, window.innerWidth - 16));
+        const defaultHeight = Math.min(420, Math.max(200, window.innerHeight - 16));
+        const toolRail = document.querySelector('.pane-tools');
+        const railBounds = toolRail?.getBoundingClientRect();
+        const maxLeft = Math.max(8, window.innerWidth - defaultWidth - 8);
+        const maxTop = Math.max(8, window.innerHeight - defaultHeight - 8);
+        setUploadQueueSize((current) => current || { width: defaultWidth, height: defaultHeight });
+        setUploadQueuePosition((current) => current || {
+            left: clamp(railBounds ? railBounds.left - defaultWidth - 12 : window.innerWidth - defaultWidth - 20, 8, maxLeft),
+            top: clamp(railBounds?.top ?? 84, 8, maxTop)
+        });
+    }, [uploadQueueOpen]);
+    React.useLayoutEffect(() => {
+        const panel = uploadQueuePanelRef.current;
+        if (!uploadQueueOpen || !panel || typeof ResizeObserver === 'undefined') return undefined;
+        const keepPanelOnscreen = () => {
+            const bounds = panel.getBoundingClientRect();
+            const width = Math.round(bounds.width);
+            const height = Math.round(bounds.height);
+            setUploadQueueSize((current) => current && Math.abs(current.width - width) < 1 && Math.abs(current.height - height) < 1
+                ? current : { width, height });
+            setUploadQueuePosition((current) => {
+                if (!current) return current;
+                const next = {
+                    left: clamp(current.left, 8, Math.max(8, window.innerWidth - width - 8)),
+                    top: clamp(current.top, 8, Math.max(8, window.innerHeight - height - 8))
+                };
+                return Math.abs(next.left - current.left) < 1 && Math.abs(next.top - current.top) < 1 ? current : next;
+            });
+        };
+        const observer = new ResizeObserver(keepPanelOnscreen);
+        observer.observe(panel);
+        window.addEventListener('resize', keepPanelOnscreen);
+        keepPanelOnscreen();
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', keepPanelOnscreen);
+        };
+    }, [uploadQueueOpen]);
+    const startUploadQueueDrag = (event) => {
+        if (event.button !== 0 || event.target.closest?.('button, a, input, select, textarea')) return;
+        const panel = uploadQueuePanelRef.current;
+        if (!panel || uploadQueueDragRef.current) return;
+        const bounds = panel.getBoundingClientRect();
+        event.preventDefault();
+        uploadQueueDragRef.current = {
+            pointerId: event.pointerId,
+            offsetX: event.clientX - bounds.left,
+            offsetY: event.clientY - bounds.top
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+    };
+    const moveUploadQueue = (event) => {
+        const drag = uploadQueueDragRef.current;
+        const panel = uploadQueuePanelRef.current;
+        if (!drag || drag.pointerId !== event.pointerId || !panel) return;
+        const bounds = panel.getBoundingClientRect();
+        setUploadQueuePosition({
+            left: clamp(event.clientX - drag.offsetX, 8, Math.max(8, window.innerWidth - bounds.width - 8)),
+            top: clamp(event.clientY - drag.offsetY, 8, Math.max(8, window.innerHeight - bounds.height - 8))
+        });
+    };
+    const finishUploadQueueDrag = (event) => {
+        if (uploadQueueDragRef.current?.pointerId !== event.pointerId) return;
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+        uploadQueueDragRef.current = null;
+    };
     const measureLocationRail = React.useCallback(() => {
         const rail = locationRailRef.current;
         const launcher = rail?.querySelector('.pane-terminal-launch-card');
@@ -709,7 +782,15 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
                 </div>}
                 {!windows.length && !terminalWindows.length && <div className="pane-empty-state"><strong>Open a Location</strong><span>Each Location opens as an independent floating file explorer.</span></div>}
             </section>
-            <PaneTools active={activeWindow} onUpload={() => fileInput.current?.click()} onAction={(action) => activeId && void runAction(activeId, action)} />
+            <PaneTools
+                active={activeWindow}
+                onUpload={() => fileInput.current?.click()}
+                onAction={(action) => activeId && void runAction(activeId, action)}
+                onToggleQueue={() => setUploadQueueOpen((open) => !open)}
+                queueOpen={uploadQueueOpen}
+                activeUploadCount={activeUploadCount}
+                uploadAttentionCount={uploadAttentionCount}
+            />
         </main>
         <input ref={fileInput} type="file" multiple hidden onChange={upload} />
         {transferProgress && <div className="pane-transfer-cover" data-status={transferProgress.status}>
@@ -742,22 +823,27 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         <footer className="pane-statusbar">
             <span>{windows.length} open window{windows.length === 1 ? '' : 's'}</span>
             <span className="pane-statusbar-active">{activeWindow ? `Active: ${locationFor(activeWindow.locationId)?.displayName || activeWindow.locationId}` : 'Open a Location to begin'}</span>
-            <button
-                type="button"
-                className={`pane-transfer-queue-trigger${uploadAttentionCount ? ' has-attention' : ''}`}
-                aria-expanded={uploadQueueOpen}
-                aria-controls="pane-transfer-queue-panel"
-                aria-label={`Transfer Queue: ${activeUploadCount} active, ${uploadAttentionCount} need attention`}
-                onClick={() => setUploadQueueOpen((open) => !open)}
-            >
-                <span>Transfer Queue</span>
-                <span className="pane-transfer-queue-count" aria-hidden="true">{activeUploadCount}</span>
-                {uploadAttentionCount > 0 && <span className="pane-transfer-queue-attention">{uploadAttentionCount} need attention</span>}
-            </button>
         </footer>
-        {uploadQueueOpen && <aside id="pane-transfer-queue-panel" className="pane-upload-queue" role="region" aria-label="Transfer Queue">
-            <div className="pane-upload-queue-heading">
-                <div><strong>Transfer Queue</strong><small>{activeUploadCount} active{uploadAttentionCount ? ` · ${uploadAttentionCount} need attention` : ''}</small></div>
+        {uploadQueueOpen && <aside
+            ref={uploadQueuePanelRef}
+            id="pane-transfer-queue-panel"
+            className="pane-upload-queue"
+            role="dialog"
+            aria-modal="false"
+            aria-labelledby="pane-transfer-queue-title"
+            style={{
+                ...(uploadQueuePosition ? { left: `${uploadQueuePosition.left}px`, top: `${uploadQueuePosition.top}px`, right: 'auto', bottom: 'auto' } : {}),
+                ...(uploadQueueSize ? { width: `${uploadQueueSize.width}px`, height: `${uploadQueueSize.height}px` } : {})
+            }}
+        >
+            <div
+                className="pane-upload-queue-heading"
+                onPointerDown={startUploadQueueDrag}
+                onPointerMove={moveUploadQueue}
+                onPointerUp={finishUploadQueueDrag}
+                onPointerCancel={finishUploadQueueDrag}
+            >
+                <div><strong id="pane-transfer-queue-title">Transfer Queue</strong><small>{activeUploadCount} active{uploadAttentionCount ? ` · ${uploadAttentionCount} need attention` : ''}</small></div>
                 {uploadQueueItems.some((item) => item.status === 'needs_user_action') &&
                     <button type="button" onClick={() => onClearNeedsAction?.()}>Clear needs action</button>}
                 <button type="button" className="pane-upload-queue-close" onClick={() => setUploadQueueOpen(false)} aria-label="Close Transfer Queue">×</button>

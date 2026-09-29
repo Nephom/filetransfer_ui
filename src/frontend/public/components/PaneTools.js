@@ -3,6 +3,7 @@ import React from 'react';
 const tools = [['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh'], ['select-all', 'Select All']];
 const iconPaths = {
     terminal: <path d="M4 5h16v14H4zM7 9l3 3-3 3m5 0h4" />,
+    'transfer-queue': <path d="M4 6h16M4 12h16M4 18h16" />,
     upload: <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M4 14v5h16v-5" />,
     'new-folder': <path d="M3.5 6.5h6l2 2h9v10h-17zM12 11v5m-2.5-2.5h5" />,
     rename: <path d="m14 5 5 5M4 20l3.7-.8L19.5 7.4a2.1 2.1 0 0 0-3-3L4.7 16.2z" />,
@@ -22,7 +23,7 @@ export function PaneTerminalLauncher({ onOpenTerminal }) {
     </button>;
 }
 
-export default function PaneTools({ active, onUpload, onAction }) {
+export default function PaneTools({ active, onUpload, onAction, onToggleQueue, queueOpen, activeUploadCount = 0, uploadAttentionCount = 0 }) {
     const viewportRef = React.useRef(null);
     const trackRef = React.useRef(null);
     const cycleRef = React.useRef(null);
@@ -100,5 +101,17 @@ export default function PaneTools({ active, onUpload, onAction }) {
                 {loopEnabled && renderCycle('after', true)}
             </div>
         </div>
+        <button
+            type="button"
+            className={`pane-tool-queue${uploadAttentionCount ? ' has-attention' : ''}`}
+            aria-expanded={queueOpen}
+            aria-controls="pane-transfer-queue-panel"
+            aria-label={`Transfer Queue: ${activeUploadCount} active, ${uploadAttentionCount} need attention`}
+            onClick={onToggleQueue}
+        >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{iconPaths['transfer-queue']}</svg>
+            <span><strong>Transfer Queue</strong><small>{activeUploadCount} active</small></span>
+            {uploadAttentionCount > 0 && <span className="pane-tool-queue-attention">{uploadAttentionCount}</span>}
+        </button>
     </aside>;
 }
