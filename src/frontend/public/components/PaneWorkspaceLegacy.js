@@ -102,6 +102,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const [nextId, setNextId] = React.useState(1);
     const [nextTerminalId, setNextTerminalId] = React.useState(1);
     const [toast, setToast] = React.useState('');
+    const [uploadQueueOpen, setUploadQueueOpen] = React.useState(false);
     const [transferProgress, setTransferProgress] = React.useState(null);
     const [clipboard, setClipboard] = React.useState(null);
     const [contextMenu, setContextMenu] = React.useState(null);
@@ -121,13 +122,29 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const transferRunningRef = React.useRef(false);
     const transferDismissTimerRef = React.useRef(null);
     const transferMountedRef = React.useRef(true);
+    const previousUploadStatusesRef = React.useRef(new Map());
     const windowsRef = React.useRef(windows);
     windowsRef.current = windows;
     const terminalWindowsRef = React.useRef(terminalWindows);
     terminalWindowsRef.current = terminalWindows;
     const activeWindow = windows.find((pane) => pane.id === activeId && !pane.minimized);
+    const uploadQueueItems = transferQueue.filter((item) => item.kind === 'upload');
+    const activeUploadCount = uploadQueueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length;
+    const uploadAttentionCount = uploadQueueItems.filter((item) => ['failed', 'needs_user_action'].includes(item.status)).length;
     const locationFor = (id) => locations.find((location) => location.id === id);
     const announce = (message) => { setToast(message); window.setTimeout(() => setToast(''), 3000); };
+    React.useEffect(() => {
+        const previousStatuses = previousUploadStatusesRef.current;
+        const shouldOpen = uploadQueueItems.some((item) => {
+            const previousStatus = previousStatuses.get(item.id);
+            if (previousStatus === item.status) return false;
+            return previousStatus === undefined
+                ? ['queued', 'running', 'retrying', 'failed', 'needs_user_action'].includes(item.status)
+                : ['failed', 'needs_user_action'].includes(item.status);
+        });
+        previousUploadStatusesRef.current = new Map(uploadQueueItems.map((item) => [item.id, item.status]));
+        if (shouldOpen) setUploadQueueOpen(true);
+    }, [transferQueue]);
     const measureLocationRail = React.useCallback(() => {
         const rail = locationRailRef.current;
         const launcher = rail?.querySelector('.pane-terminal-launch-card');
@@ -440,6 +457,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         onUploadFiles(items, [], {
             path: pane.path, locationId: pane.locationId, locationName: location.displayName || location.id,
         }, () => loadFiles(pane.id, pane.path, pane.query));
+        setUploadQueueOpen(true);
         announce('Resumable upload added to the Transfer Queue.');
     };
     const handleDrop = (event, destinationId) => {
@@ -696,13 +714,32 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
                 {transferProgress.status !== 'running' && <div className="pane-transfer-actions"><button type="button" onClick={dismissTransferProgress}>Close</button></div>}
             </section>
         </div>}
-        {transferQueue.some(item => item.kind === 'upload') && <aside className="pane-upload-queue" aria-label="API upload queue">
-            <div className="pane-upload-queue-heading"><strong>API Uploads</strong>
-                {transferQueue.some(item => item.kind === 'upload' && item.status === 'needs_user_action') &&
+        <footer className="pane-statusbar">
+            <span>{windows.length} open window{windows.length === 1 ? '' : 's'}</span>
+            <span className="pane-statusbar-active">{activeWindow ? `Active: ${locationFor(activeWindow.locationId)?.displayName || activeWindow.locationId}` : 'Open a Location to begin'}</span>
+            <button
+                type="button"
+                className={`pane-transfer-queue-trigger${uploadAttentionCount ? ' has-attention' : ''}`}
+                aria-expanded={uploadQueueOpen}
+                aria-controls="pane-transfer-queue-panel"
+                aria-label={`Transfer Queue: ${activeUploadCount} active, ${uploadAttentionCount} need attention`}
+                onClick={() => setUploadQueueOpen((open) => !open)}
+            >
+                <span>Transfer Queue</span>
+                <span className="pane-transfer-queue-count" aria-hidden="true">{activeUploadCount}</span>
+                {uploadAttentionCount > 0 && <span className="pane-transfer-queue-attention">{uploadAttentionCount} need attention</span>}
+            </button>
+        </footer>
+        {uploadQueueOpen && <aside id="pane-transfer-queue-panel" className="pane-upload-queue" role="region" aria-label="Transfer Queue">
+            <div className="pane-upload-queue-heading">
+                <div><strong>Transfer Queue</strong><small>{activeUploadCount} active{uploadAttentionCount ? ` · ${uploadAttentionCount} need attention` : ''}</small></div>
+                {uploadQueueItems.some((item) => item.status === 'needs_user_action') &&
                     <button type="button" onClick={() => onClearNeedsAction?.()}>Clear needs action</button>}
+                <button type="button" className="pane-upload-queue-close" onClick={() => setUploadQueueOpen(false)} aria-label="Close Transfer Queue">×</button>
             </div>
-            {transferQueue.filter(item => item.kind === 'upload').slice(-8).map(item => <article className={`pane-upload-queue-item queue-status-${item.status}`} key={item.id}>
-                <span><b>{item.label}</b><small role="status" aria-live="polite">{item.detail}</small></span>
+            {uploadQueueItems.length === 0 && <p className="pane-upload-queue-empty">No uploads in the queue.</p>}
+            {uploadQueueItems.slice(-8).map((item) => <article className={`pane-upload-queue-item queue-status-${item.status}`} key={item.id}>
+                <span><b>{item.label}</b><small className="pane-upload-queue-detail" role="status" aria-live="polite">{item.detail}</small></span>
                 {item.progress && <small>{item.progress.totalBytes ? `${Math.round(item.progress.completedBytes / item.progress.totalBytes * 100)}% · ` : ''}{item.progress.completedItems || 0}/{item.progress.totalItems || 0} files</small>}
                 {['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => onCancelUpload?.(item.id)}>Cancel</button>}
                 {item.serverSessionId && item.status === 'needs_user_action' && <button type="button" onClick={() => {
@@ -716,7 +753,6 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
                     </button>}
             </article>)}
         </aside>}
-        <footer className="pane-statusbar"><span>{windows.length} open window{windows.length === 1 ? '' : 's'}</span><span>{activeWindow ? `Active: ${locationFor(activeWindow.locationId)?.displayName || activeWindow.locationId}` : 'Open a Location to begin'}</span></footer>
         {contextMenu && <div ref={menuPosition.ref} className="pane-context-menu" style={menuPosition.style} onClick={(event) => event.stopPropagation()}>{contextMenu.type === 'location' ? <button type="button" onClick={() => { openWindow(contextMenu.locationId); closeContextMenu(); }}>Open new window</button> : <>{[['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh']].map(([action, label]) => <button type="button" key={action} onClick={() => { void runAction(contextMenu.windowId, action); closeContextMenu(); }}>{label}</button>)}</>}</div>}
         {toast && <div className="pane-toast" role="status">{toast}</div>}
         </div>;
