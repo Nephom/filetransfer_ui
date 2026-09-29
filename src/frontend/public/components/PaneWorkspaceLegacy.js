@@ -88,6 +88,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const [locations, setLocations] = React.useState([]);
     const [locationRailOverflow, setLocationRailOverflow] = React.useState(false);
     const [locationPickerOpen, setLocationPickerOpen] = React.useState(false);
+    const [locationRailPeek, setLocationRailPeek] = React.useState(false);
     const [windows, setWindows] = React.useState([]);
     const [terminalWindows, setTerminalWindows] = React.useState([]);
     const [activeId, setActiveId] = React.useState(null);
@@ -579,6 +580,27 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         window.addEventListener('keydown', closeOnEscape);
         return () => window.removeEventListener('keydown', closeOnEscape);
     }, [locationPickerOpen]);
+    const hasMaximizedWindow = [...windows, ...terminalWindows].some((pane) => pane.maximized && !pane.minimized);
+    const locationRailPeekVisible = hasMaximizedWindow && locationRailPeek;
+    React.useEffect(() => {
+        if (!hasMaximizedWindow) setLocationRailPeek(false);
+    }, [hasMaximizedWindow]);
+    React.useEffect(() => {
+        if (!locationRailPeekVisible) return undefined;
+        const closeOnOutsidePointer = (event) => {
+            if (event.target.closest?.('.pane-locations, .pane-rail-handle, .pane-location-picker, .pane-context-menu')) return;
+            setLocationRailPeek(false);
+        };
+        const closeOnEscape = (event) => {
+            if (event.key === 'Escape') setLocationRailPeek(false);
+        };
+        window.addEventListener('pointerdown', closeOnOutsidePointer);
+        window.addEventListener('keydown', closeOnEscape);
+        return () => {
+            window.removeEventListener('pointerdown', closeOnOutsidePointer);
+            window.removeEventListener('keydown', closeOnEscape);
+        };
+    }, [locationRailPeekVisible]);
     React.useEffect(() => {
         const allWindows = [...windows, ...terminalWindows];
         const active = allWindows.find((pane) => pane.id === activeId);
@@ -743,7 +765,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             active: activeId === pane.id && !pane.minimized
         }))
     ];
-    const renderLocationCards = () => locations.map((location) => <button type="button" key={location.id} className={`pane-location-card${windows.some((pane) => pane.locationId === location.id) ? ' is-open' : ''}`} onClick={() => { openWindow(location.id); setLocationPickerOpen(false); }} onContextMenu={(event) => showLocationContextMenu(event, location.id)}><span className="folder-icon" aria-hidden="true">▰</span><span><strong>{location.displayName || location.id}</strong><small>{location.status || 'online'}</small></span></button>);
+    const renderLocationCards = () => locations.map((location) => <button type="button" key={location.id} className={`pane-location-card${windows.some((pane) => pane.locationId === location.id) ? ' is-open' : ''}`} onClick={() => { openWindow(location.id); setLocationPickerOpen(false); setLocationRailPeek(false); }} onContextMenu={(event) => showLocationContextMenu(event, location.id)}><span className="folder-icon" aria-hidden="true">▰</span><span><strong>{location.displayName || location.id}</strong><small>{location.status || 'online'}</small></span></button>);
     return <div className={`pane-explorer${customBackground ? ' has-custom-background' : ''}`} data-theme={theme} style={backgroundStyle} onContextMenu={(event) => event.preventDefault()}>
         {customBackground && <div className="pane-custom-background-clip" aria-hidden="true"><div className="pane-custom-background" /></div>}
         <header className="pane-titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control"><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu pane-account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}<button type="button" className="style-settings-trigger" aria-expanded={styleSettingsOpen} onClick={() => setStyleSettingsOpen((open) => !open)}>Style settings <span aria-hidden="true">⌄</span></button>{styleSettingsOpen && <div className="pane-account-style"><h2>Interface style</h2><p>Choose the central workspace appearance.</p><label>Interface mode<select aria-label="Interface style" value="pane" onChange={(event) => onStyleChange(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><label>Central background<select aria-label="Central background" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="default">Default Gradient</option><option value="circuit">Dark Circuit</option><option value="space">Deep Space</option><option value="ocean">Ocean Signal</option><option value="aurora">Aurora Tech</option><option value="neon">Soft Neon</option><option value="light">Clean Light</option></select></label><button type="button" className="pane-background-button" onClick={() => backgroundInput.current?.click()}>▧ Choose background image</button>{customBackground && <button type="button" className="pane-background-edit-button" onClick={() => setBackgroundEditorOpen(true)}>▣ Edit background placement</button>}<input ref={backgroundInput} className="pane-hidden-file" type="file" accept="image/*" onChange={selectBackground} />{customBackground && <button type="button" className="pane-reset-background" onClick={clearBackground}>Use default background</button>}</div>}<hr /><button type="button" className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
@@ -759,10 +781,15 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             ><span>{item.label}</span>{item.minimized && <small>Minimized</small>}</button>)}
             {!windowSwitchItems.length && <span className="pane-window-switcher-empty">No open panes</span>}
         </nav>
-        <main className="pane-workspace">
+        <main className={`pane-workspace${hasMaximizedWindow ? ' has-maximized' : ''}${locationRailPeekVisible ? ' is-rail-peek' : ''}`}>
+            {hasMaximizedWindow && <button type="button" className="pane-rail-handle" aria-label={locationRailPeekVisible ? 'Hide Locations' : 'Show Locations'} aria-expanded={locationRailPeekVisible} title={locationRailPeekVisible ? 'Hide Locations' : 'Show Locations'} onClick={() => setLocationRailPeek((open) => !open)}>
+                {locationRailPeekVisible
+                    ? <svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true"><path d="M8 2 L3 8 L8 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    : <svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true"><path d="M2 2 V14 M5 2 V14 M8 2 V14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>}
+            </button>}
             <aside className="pane-side pane-locations" aria-label="Locations" ref={locationRailRef}>
                 <div className="pane-heading" aria-hidden="true">LOCATIONS</div>
-                <PaneTerminalLauncher onOpenTerminal={openTerminalWindow} />
+                <PaneTerminalLauncher onOpenTerminal={() => { openTerminalWindow(); setLocationRailPeek(false); }} />
                 {locationRailOverflow ? <button ref={locationPickerTriggerRef} type="button" className="pane-location-picker-trigger" aria-haspopup="dialog" aria-expanded={locationPickerOpen} onClick={() => setLocationPickerOpen((open) => !open)}>
                     <span className="folder-icon" aria-hidden="true">▰</span><span><strong>Locations</strong><small>{locations.length} available</small></span>
                 </button> : <div className="pane-location-list" ref={locationListRef}>{renderLocationCards()}</div>}

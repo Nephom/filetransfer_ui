@@ -1122,9 +1122,24 @@ try {
     assert.match(await managedPane.getAttribute('class'), /is-maximized/);
     const panePositionMaximized = await managedPane.boundingBox();
     assert.ok(panePositionMaximized.width > panePositionBeforeMaximize.width || panePositionMaximized.height > panePositionBeforeMaximize.height, 'maximize expands the pane');
+    const railHandle = page.locator('.pane-rail-handle');
+    await railHandle.waitFor();
+    assert.equal(await page.locator('.pane-locations').isVisible(), false, 'Locations rail is collapsed while a pane is maximized');
+    await railHandle.click();
+    await page.locator('.pane-workspace.is-rail-peek .pane-locations').waitFor({ state: 'visible' });
+    assert.equal(await railHandle.getAttribute('aria-expanded'), 'true', 'rail handle reports expanded state');
+    await page.keyboard.press('Escape');
+    await page.locator('.pane-workspace.is-rail-peek').waitFor({ state: 'detached' });
+    assert.equal(await page.locator('.pane-locations').isVisible(), false, 'Escape collapses the peeked Locations rail');
+    await railHandle.click();
+    await page.locator('.pane-workspace.is-rail-peek .pane-locations').waitFor({ state: 'visible' });
+    await page.mouse.click(700, 500);
+    await page.locator('.pane-workspace.is-rail-peek').waitFor({ state: 'detached' });
     await managedPane.locator('button[aria-label="Restore window"]').click();
     await managedPane.locator('button[aria-label="Maximize window"]').waitFor();
     assert.doesNotMatch(await managedPane.getAttribute('class'), /is-maximized/);
+    assert.equal(await railHandle.count(), 0, 'rail handle is removed after the pane is restored');
+    assert.equal(await page.locator('.pane-locations').isVisible(), true, 'Locations rail is restored after un-maximize');
     const panePositionBeforeMinimize = await managedPane.boundingBox();
     for (let index = 0; index < await managedPaneWindows.count(); index++) {
         const pane = managedPaneWindows.nth(index);

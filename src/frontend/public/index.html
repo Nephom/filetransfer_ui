@@ -167,6 +167,20 @@
            .pane-explorer { position: relative; isolation: isolate; grid-template-rows: auto auto minmax(0, 1fr) auto; }
            .pane-explorer > .pane-workspace, .pane-explorer > .pane-statusbar, .pane-explorer > .pane-window-switcher { position: relative; z-index: 1; }
            .pane-workspace::before, .pane-center::after { display: none; }
+           /* Maximized window: collapse the Locations rail into a slim translucent handle; clicking it peeks the rail temporarily. */
+           .pane-rail-handle { display: none; }
+           @media (min-width: 901px) {
+             .pane-workspace.has-maximized .pane-rail-handle { position: absolute; z-index: 6; top: 22px; left: 0; display: grid; width: 14px; height: 70px; place-items: center; padding: 0; border: 1px solid var(--pane-line-strong); border-left: 0; border-radius: 0 8px 8px 0; color: var(--pane-accent); background: rgba(7,19,34,.55); backdrop-filter: blur(6px); box-shadow: 2px 2px 0 rgba(0,0,0,.25); cursor: pointer; opacity: .45; transition: opacity 160ms ease, width 160ms ease, background 160ms ease; }
+             .pane-workspace.has-maximized .pane-rail-handle:hover, .pane-workspace.has-maximized .pane-rail-handle:focus-visible, .pane-workspace.has-maximized.is-rail-peek .pane-rail-handle { width: 18px; background: rgba(92,219,255,.2); opacity: 1; }
+             .pane-workspace.has-maximized .pane-rail-handle:focus-visible { outline: 2px solid var(--pane-accent); outline-offset: 1px; }
+             .pane-workspace.has-maximized .pane-rail-handle svg { display: block; width: 10px; height: 16px; }
+             .pane-workspace.has-maximized:not(.is-rail-peek) .pane-locations { visibility: hidden; opacity: 0; pointer-events: none; }
+             .pane-workspace.has-maximized.is-rail-peek .pane-locations { z-index: 5; left: 26px; animation: pane-rail-peek-in 160ms ease; }
+             .pane-workspace.has-maximized.is-rail-peek .pane-locations::after { position: absolute; z-index: -2; inset: -8px -10px -14px -8px; border: 1px solid var(--pane-line-strong); border-radius: 14px; background: var(--pane-panel); backdrop-filter: blur(14px); box-shadow: 0 18px 44px rgba(0,0,0,.4); content: ''; pointer-events: none; }
+           }
+           @keyframes pane-rail-peek-in { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+           .pane-explorer[data-theme="light"] .pane-workspace.has-maximized .pane-rail-handle { background: rgba(245,250,253,.7); }
+           @media (prefers-reduced-motion: reduce) { .pane-rail-handle, .pane-workspace.has-maximized.is-rail-peek .pane-locations { animation: none; transition: none; } }
            .pane-window-switcher { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 38px; overflow-x: auto; overflow-y: hidden; padding: 4px 22px; border-bottom: 1px solid var(--pane-line); background: rgba(7,19,34,.72); scrollbar-width: thin; }
            .pane-window-switcher-item { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: min(260px, 40vw); min-height: 29px; flex: 0 0 auto; padding: 5px 10px; overflow: hidden; border: 1px solid var(--pane-line); border-radius: 7px; color: var(--pane-muted); background: var(--pane-panel-soft); cursor: pointer; font: inherit; font-size: var(--pane-small-font-size); white-space: nowrap; transition: border-color 160ms ease, color 160ms ease, background 160ms ease, opacity 160ms ease; }
            .pane-window-switcher-item > span { overflow: hidden; text-overflow: ellipsis; }
