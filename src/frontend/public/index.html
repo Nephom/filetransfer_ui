@@ -142,7 +142,7 @@
          .pane-tool-grid button svg { width: 17px; height: 17px; margin-bottom: 5px; color: var(--pane-accent); }.pane-location-list .folder-icon { width: 38px; height: 34px; border: 1px solid rgba(255,196,92,.42); border-radius: 9px; color: #ffd379; background: rgba(255,187,68,.12); }
          @media (max-width: 900px) { .pane-explorer { min-height: 100dvh; height: auto; overflow: visible; }.pane-workspace { min-height: 620px; overflow: auto; }.pane-locations { left: 10px; width: 112px; }.pane-tools { right: 10px; width: 132px; }.pane-tool-grid { grid-template-columns: 1fr; }.pane-window { width: calc(100% - 36px); min-width: 0; height: 330px; }.pane-center { min-height: 410px; } }
          @media (max-width: 600px) { .pane-locations { max-height: none; border: 0; }.pane-window, .pane-window:nth-child(2n), .pane-window:nth-child(3n) { top: 16px; left: 16px; width: calc(100% - 32px); height: calc(100% - 32px); min-width: 280px; } }
-          .pane-explorer[data-theme="circuit"] { background: repeating-linear-gradient(120deg, transparent 0 34px, rgba(92,219,255,.045) 35px, transparent 36px), radial-gradient(circle at 70% 20%, rgba(17,126,170,.2), transparent 34%), linear-gradient(135deg, var(--pane-bg), var(--pane-bg-deep)); }.pane-explorer[data-theme="space"] { background: radial-gradient(circle at 20% 20%, rgba(111,76,180,.22) 0 1px, transparent 2px), radial-gradient(circle at 74% 35%, rgba(92,219,255,.14) 0 1px, transparent 2px), linear-gradient(135deg, rgba(56,30,104,.28), transparent 50%), var(--pane-bg-deep); }.pane-explorer[data-theme="ocean"] { background: radial-gradient(ellipse at 10% 10%, rgba(24,183,164,.2), transparent 35%), linear-gradient(160deg, rgba(8,76,109,.2), transparent 60%), var(--pane-bg-deep); }.pane-explorer[data-theme="aurora"] { background: radial-gradient(ellipse at 86% 10%, rgba(114,75,207,.25), transparent 36%), radial-gradient(ellipse at 12% 80%, rgba(44,197,158,.16), transparent 35%), var(--pane-bg-deep); }.pane-explorer[data-theme="neon"] { background: radial-gradient(circle at 40% 18%, rgba(164,79,222,.2), transparent 32%), linear-gradient(120deg, rgba(24,113,182,.16), transparent 60%), var(--pane-bg-deep); }.pane-explorer[data-theme="light"] { --pane-bg: #dfeaf2; --pane-bg-deep: #c8d7e1; --pane-panel: rgba(245,250,253,.88); --pane-panel-soft: rgba(255,255,255,.66); --pane-line: rgba(27,64,88,.18); --pane-line-strong: rgba(15,116,153,.48); --pane-text: #102b3d; --pane-muted: #476579; --pane-accent: #087fa9; background: linear-gradient(145deg, rgba(199,224,236,.84), rgba(246,250,252,.65)); }
+          .pane-explorer[data-theme="light"] { --pane-bg: #dfeaf2; --pane-bg-deep: #c8d7e1; --pane-panel: rgba(245,250,253,.88); --pane-panel-soft: rgba(255,255,255,.66); --pane-line: rgba(27,64,88,.18); --pane-line-strong: rgba(15,116,153,.48); --pane-text: #102b3d; --pane-muted: #476579; --pane-accent: #087fa9; background: linear-gradient(145deg, rgba(199,224,236,.84), rgba(246,250,252,.65)); }
           .pane-account-menu { width: min(250px, calc(100vw - 32px)); padding: 14px; border-radius: 12px; background: var(--pane-panel-solid, #0a1b2d); box-shadow: 0 24px 70px rgba(0,0,0,.32); }.pane-account-menu .account-summary { display: grid; gap: 2px; margin: -2px -2px 10px; padding: 0 2px 10px; border-bottom: 1px solid var(--pane-line); }.pane-account-menu .account-summary span, .pane-account-style p { color: var(--pane-muted); font-size: var(--pane-small-font-size); }.pane-account-menu button { width: 100%; margin-top: 6px; padding: 8px 9px; border: 1px solid var(--pane-line); border-radius: 7px; color: var(--pane-text); text-align: left; background: var(--pane-panel-soft); cursor: pointer; font-size: var(--pane-control-font-size); }.pane-account-menu button:hover { border-color: var(--pane-line-strong); background: rgba(92,219,255,.12); }.pane-account-menu .style-settings-trigger { display: flex; align-items: center; justify-content: space-between; }.pane-account-menu .style-settings-trigger span { color: var(--pane-muted); }.pane-account-menu hr { margin: 12px 0 0; border: 0; border-top: 1px solid var(--pane-line); }.pane-account-style { display: grid; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--pane-line); }.pane-account-style h2 { margin: 0; font-size: var(--pane-editor-heading-font-size); }.pane-account-style p { margin: -5px 0 0; }.pane-account-style label { display: grid; gap: 6px; color: var(--pane-muted); font-size: var(--pane-editor-font-size); }.pane-account-style select { width: 100%; padding: 8px; border: 1px solid var(--pane-line); border-radius: 7px; color: var(--pane-text); background: var(--pane-panel-soft); font-size: var(--pane-control-font-size); }.pane-hidden-file { display: none !important; }.pane-background-button, .pane-reset-background { margin-top: 0 !important; }.pane-account-menu .danger { color: #ff928d; }
           .pane-window.is-minimized { display: none; }
           .pane-window.is-maximized { top: 20px !important; left: 20px !important; width: calc(100% - 40px) !important; height: calc(100% - 40px) !important; resize: none; }
@@ -179,20 +179,20 @@
              .pane-workspace.has-maximized.is-rail-peek .pane-locations::after { position: absolute; z-index: -2; inset: -8px -10px -14px -8px; border: 1px solid var(--pane-line-strong); border-radius: 14px; background: var(--pane-panel); backdrop-filter: blur(14px); box-shadow: 0 18px 44px rgba(0,0,0,.4); content: ''; pointer-events: none; }
            }
            @keyframes pane-rail-peek-in { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
-           .pane-explorer[data-theme="light"] .pane-workspace.has-maximized .pane-rail-handle { background: rgba(245,250,253,.7); }
+           .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-workspace.has-maximized .pane-rail-handle { background: rgba(245,250,253,.7); }
            @media (prefers-reduced-motion: reduce) { .pane-rail-handle, .pane-workspace.has-maximized.is-rail-peek .pane-locations { animation: none; transition: none; } }
-           .pane-window-switcher { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 38px; overflow-x: auto; overflow-y: hidden; padding: 4px 22px; border-bottom: 1px solid var(--pane-line); background: rgba(7,19,34,.72); scrollbar-width: thin; }
+           .pane-window-switcher { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 38px; overflow-x: auto; overflow-y: hidden; padding: 4px 22px; border-bottom: 1px solid var(--pane-line); background: var(--pane-switcher-bg); scrollbar-width: thin; }
            .pane-window-switcher-item { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: min(260px, 40vw); min-height: 29px; flex: 0 0 auto; padding: 5px 10px; overflow: hidden; border: 1px solid var(--pane-line); border-radius: 7px; color: var(--pane-muted); background: var(--pane-panel-soft); cursor: pointer; font: inherit; font-size: var(--pane-small-font-size); white-space: nowrap; transition: border-color 160ms ease, color 160ms ease, background 160ms ease, opacity 160ms ease; }
            .pane-window-switcher-item > span { overflow: hidden; text-overflow: ellipsis; }
            .pane-window-switcher-item > small { color: var(--pane-muted); font-size: .85em; }
-           .pane-window-switcher-item:hover, .pane-window-switcher-item:focus-visible { border-color: var(--pane-line-strong); color: var(--pane-text); background: rgba(92,219,255,.12); }
-           .pane-window-switcher-item.is-active { border-color: var(--pane-accent); color: var(--pane-text); background: rgba(92,219,255,.14); box-shadow: inset 0 -2px var(--pane-accent); }
+           .pane-window-switcher-item:hover, .pane-window-switcher-item:focus-visible { border-color: var(--pane-line-strong); color: var(--pane-text); background: var(--pane-switcher-hover); }
+           .pane-window-switcher-item.is-active { border-color: var(--pane-accent); color: var(--pane-text); background: var(--pane-switcher-active); box-shadow: inset 0 -2px var(--pane-accent); }
            .pane-window-switcher-item.is-minimized { border-style: dashed; opacity: .72; }
            .pane-window-switcher-empty { padding: 0 2px; color: var(--pane-muted); font-size: var(--pane-small-font-size); }
            .pane-explorer > .pane-background-editor { position: absolute; z-index: 50; top: 72px; right: 22px; display: grid; gap: 13px; width: min(302px, calc(100vw - 44px)); max-height: calc(100dvh - 94px); overflow: auto; padding: 15px; border: 1px solid var(--pane-line-strong, rgba(112,214,255,.48)); border-radius: 12px; color: var(--pane-text, #edf8ff); background: rgba(7,19,34,.96); box-shadow: 7px 7px 0 rgba(0,0,0,.42), 0 24px 70px rgba(0,0,0,.4), inset 1px 1px 0 rgba(255,255,255,.1); backdrop-filter: blur(18px); }
            @media (max-width: 600px) { .pane-window-switcher { gap: 5px; min-height: 34px; padding: 3px 8px; }.pane-window-switcher-item { max-width: 62vw; padding: 4px 8px; } }
           .pane-background-editor-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; padding-bottom: 10px; border-bottom: 1px solid var(--pane-line, rgba(119,183,222,.2)); }.pane-background-editor-header > div { display: grid; gap: 4px; min-width: 0; }.pane-background-eyebrow { color: var(--pane-accent, #5cdbff); font-size: 9px; font-weight: 800; letter-spacing: .14em; }.pane-background-editor-header strong { overflow: hidden; color: var(--pane-text, #edf8ff); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.pane-background-close { width: 26px; height: 26px; flex: 0 0 auto; padding: 0; border: 1px solid var(--pane-line, rgba(119,183,222,.2)); border-radius: 6px; color: var(--pane-muted, #91abc0); background: transparent; cursor: pointer; font-size: 17px; line-height: 1; }.pane-background-close:hover, .pane-background-close:focus-visible { border-color: var(--pane-line-strong, rgba(112,214,255,.48)); color: var(--pane-text, #edf8ff); background: rgba(92,219,255,.12); }
-          .pane-background-meta { display: flex; justify-content: space-between; gap: 10px; color: var(--pane-muted, #91abc0); font-size: 10px; }.pane-background-section { display: grid; gap: 8px; }.pane-background-label { color: var(--pane-muted, #91abc0); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }.pane-background-position-controls { display: grid; grid-template-columns: repeat(3, 34px); grid-template-rows: repeat(3, 30px); gap: 4px; justify-content: center; }.pane-background-position-controls button, .pane-background-scale-controls button { display: grid; place-items: center; min-width: 0; padding: 0; border: 1px solid var(--pane-line, rgba(119,183,222,.2)); border-radius: 6px; color: var(--pane-text, #edf8ff); background: rgba(17,39,62,.68); cursor: pointer; font-size: 15px; line-height: 1; }.pane-background-position-controls button:hover:not(:disabled), .pane-background-position-controls button:focus-visible, .pane-background-scale-controls button:hover:not(:disabled), .pane-background-scale-controls button:focus-visible { border-color: var(--pane-line-strong, rgba(112,214,255,.48)); background: rgba(92,219,255,.16); }.pane-background-position-controls button:disabled, .pane-background-scale-controls button:disabled { cursor: default; opacity: .35; }.pane-background-position-controls .is-center { color: var(--pane-accent, #5cdbff); background: rgba(92,219,255,.1); }.pane-background-scale-controls { display: grid; grid-template-columns: 34px minmax(72px, 1fr) 34px; align-items: center; gap: 8px; }.pane-background-scale-controls output { color: var(--pane-text, #edf8ff); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }.pane-background-editor-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding-top: 2px; }.pane-background-editor-actions button { min-height: 30px; padding: 6px 8px; border: 1px solid var(--pane-line, rgba(119,183,222,.2)); border-radius: 6px; color: var(--pane-text, #edf8ff); background: rgba(17,39,62,.68); cursor: pointer; font-size: 10px; }.pane-background-editor-actions button:hover, .pane-background-editor-actions button:focus-visible { border-color: var(--pane-line-strong, rgba(112,214,255,.48)); background: rgba(92,219,255,.12); }.pane-background-editor-actions .danger { color: #ff928d; }.pane-background-editor-actions .danger:hover, .pane-background-editor-actions .danger:focus-visible { border-color: rgba(255,146,141,.65); background: rgba(255,92,92,.12); }.pane-account-style .pane-background-edit-button { color: var(--pane-accent); }
+          .pane-background-meta { display: flex; justify-content: space-between; gap: 10px; color: var(--pane-muted, #91abc0); font-size: 10px; }.pane-background-section { display: grid; gap: 8px; }.pane-background-label { color: var(--pane-muted, #91abc0); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }.pane-background-position-controls { display: grid; grid-template-columns: repeat(3, 34px); grid-template-rows: repeat(3, 30px); gap: 4px; justify-content: center; }.pane-background-position-controls button, .pane-background-scale-controls button { display: grid; place-items: center; min-width: 0; padding: 0; border: 1px solid var(--pane-line, rgba(119,183,222,.2)); border-radius: 6px; color: var(--pane-text, #edf8ff); background: var(--pane-panel-soft, rgba(17,39,62,.68)); cursor: pointer; font-size: 15px; line-height: 1; }.pane-background-position-controls button:hover:not(:disabled), .pane-background-position-controls button:focus-visible, .pane-background-scale-controls button:hover:not(:disabled), .pane-background-scale-controls button:focus-visible { border-color: var(--pane-line-strong, rgba(112,214,255,.48)); background: rgba(92,219,255,.16); }.pane-background-position-controls button:disabled, .pane-background-scale-controls button:disabled { cursor: default; opacity: .35; }.pane-background-position-controls .is-center { color: var(--pane-accent, #5cdbff); background: rgba(92,219,255,.1); }.pane-background-scale-controls { display: grid; grid-template-columns: 34px minmax(72px, 1fr) 34px; align-items: center; gap: 8px; }.pane-background-scale-controls output { color: var(--pane-text, #edf8ff); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }.pane-background-editor-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding-top: 2px; }.pane-background-editor-actions button { min-height: 30px; padding: 6px 8px; border: 1px solid var(--pane-line, rgba(119,183,222,.2)); border-radius: 6px; color: var(--pane-text, #edf8ff); background: var(--pane-panel-soft, rgba(17,39,62,.68)); cursor: pointer; font-size: 10px; }.pane-background-editor-actions button:hover, .pane-background-editor-actions button:focus-visible { border-color: var(--pane-line-strong, rgba(112,214,255,.48)); background: rgba(92,219,255,.12); }.pane-background-editor-actions .danger { color: #ff928d; }.pane-background-editor-actions .danger:hover, .pane-background-editor-actions .danger:focus-visible { border-color: rgba(255,146,141,.65); background: rgba(255,92,92,.12); }.pane-account-style .pane-background-edit-button { color: var(--pane-accent); }
            @media (max-width: 900px) { .pane-explorer > .pane-background-editor { top: 68px; right: 14px; width: min(290px, calc(100vw - 28px)); } }
            @media (max-width: 600px) { .pane-explorer > .pane-background-editor { top: 66px; right: 8px; left: 8px; width: calc(100% - 16px); max-height: calc(100dvh - 78px); } }
 
@@ -301,6 +301,9 @@
                  --pane-surface-muted: var(--pane-muted);
                  --pane-menu-background: #0a1b2d;
                  --pane-panel-solid: var(--pane-surface);
+                 --pane-switcher-bg: rgba(7,19,34,.72);
+                 --pane-switcher-hover: rgba(92,219,255,.12);
+                 --pane-switcher-active: rgba(92,219,255,.14);
              }
              .pane-explorer[data-theme="light"] {
                  --pane-surface: #f5fafc;
@@ -309,11 +312,27 @@
                  --pane-surface-muted: #476579;
                  --pane-menu-background: #f5fafc;
                  --pane-panel-solid: #f5fafc;
+                 --pane-switcher-bg: rgba(224,234,241,.96);
+                 --pane-switcher-hover: rgba(8,127,169,.14);
+                 --pane-switcher-active: rgba(8,127,169,.2);
+             }
+             /* Silver Gray: neutral metallic surfaces with a steel-blue accent. */
+             .pane-explorer[data-theme="silver"] {
+                 --pane-bg: #d5d8dd; --pane-bg-deep: #b4b9c1;
+                 --pane-panel: rgba(232,234,237,.92); --pane-panel-soft: rgba(250,251,252,.72);
+                 --pane-line: rgba(58,64,74,.24); --pane-line-strong: rgba(61,90,128,.55);
+                 --pane-text: #1d2229; --pane-muted: #4a525d; --pane-accent: #3d5a80;
+                 --pane-surface: #eceef1; --pane-surface-raised: #f9fafb; --pane-surface-input: #ffffff;
+                 --pane-surface-muted: #4a525d; --pane-menu-background: #eceef1; --pane-panel-solid: #eceef1;
+                 --pane-switcher-bg: rgba(202,205,211,.96);
+                 --pane-switcher-hover: rgba(61,90,128,.16);
+                 --pane-switcher-active: rgba(61,90,128,.24);
+                 background: repeating-linear-gradient(90deg, rgba(255,255,255,.07) 0 2px, rgba(0,0,0,.025) 2px 4px), linear-gradient(145deg, #c3c7cd, #e7e9ec 52%, #b8bcc4);
              }
 
              /* A dedicated clip preserves the zoomable background without containing fixed overlays. */
               .pane-explorer > .pane-custom-background-clip { position: absolute; z-index: -1; inset: 0; overflow: hidden; pointer-events: none; }
-             .pane-explorer .pane-custom-background { position: absolute; top: 50%; left: 50%; width: 100%; height: 100%; background-image: linear-gradient(135deg, rgba(3,9,20,.62), rgba(3,9,20,.72)), var(--pane-background-image); background-position: center, var(--pane-background-position, 50% 50%); background-size: cover, cover; background-repeat: no-repeat; transform: translate3d(-50%, -50%, 0) scale(var(--pane-background-scale, 1)); transform-origin: center; transition: background-position 180ms ease, transform 180ms ease; }
+             .pane-explorer .pane-custom-background { position: absolute; top: 50%; left: 50%; width: 100%; height: 100%; background-image: linear-gradient(135deg, rgba(3,9,20,.62), rgba(3,9,20,.72)), var(--pane-background-image); background-position: center, var(--pane-background-position, 50% 50%); background-size: cover, var(--pane-background-size, cover); background-repeat: no-repeat; transform: translate3d(-50%, -50%, 0) scale(var(--pane-background-scale, 1)); transform-origin: center; transition: background-position 180ms ease, transform 180ms ease; }
 
              /* Keep Location and Tools rails bounded; the Terminal launcher stays pinned above Locations. */
               .pane-locations { display: flex; flex-direction: column; gap: 8px; max-height: calc(100% - 44px); overflow: visible; }
@@ -421,34 +440,189 @@
              @media (max-width: 600px) { .pane-statusbar { padding: 6px 8px; } }
 
              /* The light theme uses light foreground/background pairs on every pane surface. */
-              .pane-explorer[data-theme="light"] .pane-window:not(.pane-terminal-window),
-             .pane-explorer[data-theme="light"] .pane-account-menu,
-             .pane-explorer[data-theme="light"] .pane-background-editor,
-             .pane-explorer[data-theme="light"] .pane-transfer-panel,
-              .pane-explorer[data-theme="light"] .pane-context-menu { color: var(--pane-text); background-color: var(--pane-surface); }
-              .pane-explorer[data-theme="light"] .pane-terminal-window { color: var(--pane-text); background: var(--pane-surface); border-color: var(--pane-line-strong); }
-             .pane-explorer[data-theme="light"] .pane-transfer-panel { background: linear-gradient(145deg, #ffffff, #edf5f8); }
-             .pane-explorer[data-theme="light"] .pane-window-titlebar { color: var(--pane-text); background: var(--pane-surface-raised); border-bottom-color: var(--pane-line); }
-             .pane-explorer[data-theme="light"] .pane-window-titlebar strong,
-             .pane-explorer[data-theme="light"] .pane-window-titlebar small,
-             .pane-explorer[data-theme="light"] .pane-window-navigation span { color: var(--pane-text); }
-             .pane-explorer[data-theme="light"] .pane-window-navigation input,
-             .pane-explorer[data-theme="light"] .pane-files table,
-             .pane-explorer[data-theme="light"] .pane-account-menu button,
-             .pane-explorer[data-theme="light"] .pane-account-style select,
-             .pane-explorer[data-theme="light"] .pane-context-menu button { color: var(--pane-text); background-color: var(--pane-surface-raised); }
-             .pane-explorer[data-theme="light"] .pane-file-tile { color: var(--pane-text); background: var(--pane-surface-raised); }
-             .pane-explorer[data-theme="light"] .pane-file-tile small,
-             .pane-explorer[data-theme="light"] .pane-account-summary span,
-             .pane-explorer[data-theme="light"] .pane-account-style p { color: var(--pane-surface-muted); }
-             .pane-explorer[data-theme="light"] .pane-terminal-side-panel { color: var(--pane-text); background: var(--pane-surface); }
-             .pane-explorer[data-theme="light"] .pane-terminal-toolbar button,
-             .pane-explorer[data-theme="light"] .pane-terminal-clipboard button,
-             .pane-explorer[data-theme="light"] .pane-terminal-toolbar select,
-             .pane-explorer[data-theme="light"] .pane-terminal-side-toggle { color: var(--pane-text); background: var(--pane-surface-raised); }
-             .pane-explorer[data-theme="light"] .pane-terminal-form-modal { color: var(--pane-text); background: var(--pane-surface); }
+              .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-window:not(.pane-terminal-window),
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-account-menu,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-background-editor,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-transfer-panel,
+              .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-context-menu { color: var(--pane-text); background-color: var(--pane-surface); }
+              .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-terminal-window { color: var(--pane-text); background: var(--pane-surface); border-color: var(--pane-line-strong); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-transfer-panel { background: linear-gradient(145deg, #ffffff, #edf5f8); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-window-titlebar { color: var(--pane-text); background: var(--pane-surface-raised); border-bottom-color: var(--pane-line); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-window-titlebar strong,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-window-titlebar small,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-window-navigation span { color: var(--pane-text); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-window-navigation input,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-files table,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-account-menu button,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-account-style select,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-context-menu button { color: var(--pane-text); background-color: var(--pane-surface-raised); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-file-tile { color: var(--pane-text); background: var(--pane-surface-raised); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-file-tile small,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-account-summary span,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-account-style p { color: var(--pane-surface-muted); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-terminal-side-panel { color: var(--pane-text); background: var(--pane-surface); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-terminal-toolbar button,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-terminal-clipboard button,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-terminal-toolbar select,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-terminal-side-toggle { color: var(--pane-text); background: var(--pane-surface-raised); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-terminal-form-modal { color: var(--pane-text); background: var(--pane-surface); }
+             /* Location cards, tool buttons and window controls keep a hard-coded dark backing layer in Default; light themes need a light face. */
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) :is(.pane-location-list button, .pane-tool-grid button, .pane-terminal-launch-card, .pane-tool-queue, .pane-location-picker-grid button, .pane-location-picker-trigger)::before { display: none; }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) :is(.pane-location-list button, .pane-tool-grid button, .pane-terminal-launch-card, .pane-tool-queue, .pane-location-picker-grid button, .pane-location-picker-trigger) { color: var(--pane-text); background: var(--pane-surface-raised); border-color: var(--pane-line-strong); box-shadow: 5px 5px 0 rgba(16,43,61,.22); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) :is(.pane-location-list button, .pane-tool-grid button, .pane-terminal-launch-card, .pane-tool-queue, .pane-location-picker-grid button, .pane-location-picker-trigger):hover:not(:disabled) { background: var(--pane-switcher-hover); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) :is(.pane-location-list button, .pane-tool-grid button, .pane-terminal-launch-card) small { color: var(--pane-muted); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-files th { color: var(--pane-muted); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-files td,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-files th { border-bottom-color: var(--pane-line); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-files tr:hover,
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-files tr.selected { background: var(--pane-switcher-hover); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) :is(.pane-window-toolbar button, .pane-view-switch button, .pane-window-navigation button) { color: var(--pane-text); border-color: var(--pane-line-strong); background: var(--pane-surface-raised); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) :is(.pane-window-toolbar button, .pane-view-switch button, .pane-window-navigation button):hover:not(:disabled) { background: var(--pane-switcher-hover); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-view-switch button.active { color: var(--pane-text); background: var(--pane-switcher-active); box-shadow: inset 0 -2px var(--pane-accent); }
+             .pane-explorer:is([data-theme="light"], [data-theme="silver"]) .pane-titlebar .connection-status { color: var(--pane-accent); }
              .pane-terminal-shell:has(.pane-explorer[data-theme="light"]) { --pane-text: #102b3d; --pane-muted: #476579; --pane-accent: #087fa9; --pane-line: rgba(27,64,88,.18); --pane-line-strong: rgba(15,116,153,.48); --pane-menu-background: #f5fafc; }
              .pane-terminal-shell:has(.pane-explorer[data-theme="light"]) .pane-terminal-launch-menu { color: #102b3d; background: #f5fafc; }
+             .pane-terminal-shell:has(.pane-explorer[data-theme="silver"]) { --pane-text: #1d2229; --pane-muted: #4a525d; --pane-accent: #3d5a80; --pane-line: rgba(58,64,74,.24); --pane-line-strong: rgba(61,90,128,.55); --pane-menu-background: #eceef1; }
+             .pane-terminal-shell:has(.pane-explorer[data-theme="silver"]) .pane-terminal-launch-menu { color: #1d2229; background: #eceef1; }
+
+
+             /* Background editor: Layout presets (Left / Center / Expand) and the pointer-anchored tooltip. */
+             .pane-background-fit-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+             .pane-background-fit-controls button { display: grid; justify-items: center; gap: 4px; min-width: 0; padding: 7px 4px 6px; border: 1px solid var(--pane-line, rgba(119,183,222,.2)); border-radius: 6px; color: var(--pane-text, #edf8ff); background: var(--pane-panel-soft, rgba(17,39,62,.68)); cursor: pointer; font: inherit; font-size: var(--pane-label-font-size, 10px); line-height: 1; }
+             .pane-background-fit-controls button:hover, .pane-background-fit-controls button:focus-visible { border-color: var(--pane-line-strong, rgba(112,214,255,.48)); background: var(--pane-switcher-hover, rgba(92,219,255,.16)); }
+             .pane-background-fit-controls button.is-active { border-color: var(--pane-accent, #5cdbff); color: var(--pane-accent, #5cdbff); background: var(--pane-switcher-active, rgba(92,219,255,.14)); box-shadow: inset 0 -2px var(--pane-accent, #5cdbff); }
+             .pane-background-fit-controls svg { width: calc(var(--pane-icon-font-size, 15px) * 1.6); height: calc(var(--pane-icon-font-size, 15px) * 1.2); overflow: visible; }
+             .pane-background-fit-controls .fit-frame { fill: none; stroke: currentColor; stroke-width: 1.4; opacity: .75; }
+             .pane-background-fit-controls .fit-image { fill: currentColor; opacity: .55; }
+             .pane-background-editor button:disabled { pointer-events: none; }
+             .pane-tip { position: fixed; z-index: 2000; width: max-content; max-width: 220px; padding: 5px 9px; border: 1px solid rgba(112,214,255,.55); border-radius: 6px; color: #edf8ff; background: rgba(4,13,25,.97); box-shadow: 0 8px 24px rgba(0,0,0,.4); font: 12px/1.35 Inter, "Segoe UI", system-ui, sans-serif; pointer-events: none; transform: translate(-50%, -100%); }
+             .pane-tip.is-below { transform: translate(-50%, 0); }
+             .pane-tip[data-theme="light"], .pane-tip[data-theme="silver"] { border-color: rgba(15,116,153,.5); color: #102b3d; background: #fbfdfe; }
+             .pane-tip[data-theme="dos"] { border: 1px solid #ffffff; border-radius: 0; color: #ffffff; background: #000000; box-shadow: 3px 3px 0 rgba(0,0,0,.55); font-family: "Perfect DOS VGA 437", "Px437 IBM VGA 8x16", "Lucida Console", "Courier New", monospace; }
+             .pane-explorer .pane-background-fit-controls button { font-size: var(--pane-label-font-size); }
+
+             /* MS-DOS: blue desktop, light-gray boxes, black hard shadows, square corners, monospace text. */
+             .pane-explorer[data-theme="dos"] {
+                 --pane-bg: #0000aa; --pane-bg-deep: #000080; --pane-panel: #aaaaaa; --pane-panel-soft: #c0c0c0;
+                 --pane-line: #000000; --pane-line-strong: #000000; --pane-text: #000000; --pane-muted: #2b2b2b; --pane-accent: #0000aa;
+                 --pane-surface: #aaaaaa; --pane-surface-raised: #c0c0c0; --pane-surface-input: #ffffff; --pane-surface-muted: #2b2b2b;
+                 --pane-menu-background: #aaaaaa; --pane-panel-solid: #aaaaaa; --pane-danger: #aa0000;
+                 --pane-switcher-bg: #aaaaaa; --pane-switcher-hover: #ffffff; --pane-switcher-active: #00aaaa;
+                 font-family: "Perfect DOS VGA 437", "Px437 IBM VGA 8x16", "Lucida Console", "Courier New", monospace;
+                 background: repeating-linear-gradient(0deg, rgba(0,0,0,.14) 0 1px, transparent 1px 3px), #0000aa;
+             }
+             .pane-explorer[data-theme="dos"] *, .pane-explorer[data-theme="dos"] *::before, .pane-explorer[data-theme="dos"] *::after { border-radius: 0 !important; backdrop-filter: none !important; text-shadow: none; }
+             .pane-explorer[data-theme="dos"] :is(button, input, select, textarea) { font-family: inherit; }
+             .pane-explorer[data-theme="dos"] .pane-titlebar,
+             .pane-explorer[data-theme="dos"] .pane-statusbar { color: #000000; background: #aaaaaa; border-color: #000000; }
+             .pane-explorer[data-theme="dos"] .pane-titlebar { border-bottom: 2px solid #000000; }
+             .pane-explorer[data-theme="dos"] .pane-statusbar { border-top: 2px solid #000000; }
+             .pane-explorer[data-theme="dos"] .pane-workspace::before,
+             .pane-explorer[data-theme="dos"] .pane-center::after { border-color: rgba(255,255,255,.18); background: transparent; box-shadow: none; }
+             .pane-explorer[data-theme="dos"] .pane-empty-state { color: #ffffff; }
+             .pane-explorer[data-theme="dos"] .pane-empty-state * { color: #ffffff; }
+             /* Boxes: double white frame on light gray, offset solid black shadow (the classic dialog look). */
+             .pane-explorer[data-theme="dos"] .pane-window,
+             .pane-explorer[data-theme="dos"] .pane-account-menu,
+             .pane-explorer[data-theme="dos"] .pane-background-editor,
+             .pane-explorer[data-theme="dos"] .pane-transfer-panel,
+             .pane-explorer[data-theme="dos"] .pane-context-menu,
+             .pane-explorer[data-theme="dos"] .pane-location-picker,
+             .pane-explorer[data-theme="dos"] .pane-terminal-form-modal,
+             .pane-explorer[data-theme="dos"] .pane-toast { color: #000000; background: #aaaaaa; border: 3px double #ffffff; box-shadow: 8px 8px 0 #000000; }
+             .pane-explorer[data-theme="dos"] .pane-window.is-active { border-color: #ffffff; box-shadow: 8px 8px 0 #000000; }
+             .pane-explorer[data-theme="dos"] .pane-window-titlebar { color: #000000; background: #aaaaaa; border-bottom: 2px solid #000000; box-shadow: none; }
+             .pane-explorer[data-theme="dos"] .pane-window.is-active .pane-window-titlebar { background: #ffffff; }
+             .pane-explorer[data-theme="dos"] .pane-window-titlebar strong { color: #000000; }
+             .pane-explorer[data-theme="dos"] .pane-window-titlebar small { color: #2b2b2b; }
+             .pane-explorer[data-theme="dos"] .pane-window-toolbar,
+             .pane-explorer[data-theme="dos"] .pane-window-navigation { border-bottom: 1px solid #000000; background: #aaaaaa; }
+             .pane-explorer[data-theme="dos"] .pane-window-navigation input,
+             .pane-explorer[data-theme="dos"] .pane-files table,
+             .pane-explorer[data-theme="dos"] .pane-account-style select { color: #000000; background: #ffffff; border: 1px solid #000000; }
+             .pane-explorer[data-theme="dos"] .pane-file-tile { color: #000000; background: #c0c0c0; border: 1px solid #000000; box-shadow: 3px 3px 0 #000000; }
+             .pane-explorer[data-theme="dos"] .pane-file-tile small { color: #2b2b2b; }
+             .pane-explorer[data-theme="dos"] .pane-file-icon,
+             .pane-explorer[data-theme="dos"] .pane-location-list .folder-icon { color: #000000; border-color: #000000; background: #ffff55; }
+             .pane-explorer[data-theme="dos"] .pane-terminal-window { color: #ffffff; background: #000000; border: 3px double #ffffff; box-shadow: 8px 8px 0 #000000; }
+             .pane-explorer[data-theme="dos"] .pane-terminal-side-panel,
+             .pane-explorer[data-theme="dos"] .pane-terminal-toolbar,
+             .pane-explorer[data-theme="dos"] .pane-terminal-clipboard { color: #000000; background: #aaaaaa; }
+             /* Location cards, tool buttons, switcher tabs, generic buttons. */
+             .pane-explorer[data-theme="dos"] :is(.pane-location-list button, .pane-tool-grid button, .pane-terminal-launch-card, .pane-tool-queue, .pane-location-picker-grid button, .pane-location-picker-trigger)::before { display: none; }
+             .pane-explorer[data-theme="dos"] :is(.pane-location-list button, .pane-tool-grid button, .pane-terminal-launch-card, .pane-tool-queue, .pane-location-picker-grid button, .pane-location-picker-trigger) { color: #000000; background: #aaaaaa; border: 2px solid #000000; box-shadow: 5px 5px 0 #000000; }
+             .pane-explorer[data-theme="dos"] :is(.pane-location-list button, .pane-tool-grid button, .pane-terminal-launch-card) small { color: #2b2b2b; }
+             .pane-explorer[data-theme="dos"] .pane-tool-grid button svg { color: #0000aa; }
+             .pane-explorer[data-theme="dos"] .pane-titlebar .connection-status { color: #0000aa; }
+             .pane-explorer[data-theme="dos"] .pane-files th { color: #0000aa; }
+             .pane-explorer[data-theme="dos"] .pane-files td,
+             .pane-explorer[data-theme="dos"] .pane-files th { border-bottom-color: #000000; }
+             .pane-explorer[data-theme="dos"] :is(.pane-window-toolbar button, .pane-view-switch button, .pane-window-navigation button) { color: #000000; border: 1px solid #000000; background: #c0c0c0; }
+             .pane-explorer[data-theme="dos"] .pane-window-navigation span { color: #000000; }
+             .pane-explorer[data-theme="dos"] .pane-view-switch button.active { color: #ffffff; background: #000000; box-shadow: none; }
+             .pane-explorer[data-theme="dos"] .account { color: #ffffff; background: #000000; border: 2px solid #ffffff; }
+             .pane-explorer[data-theme="dos"] .pane-window-switcher-item { color: #000000; background: #c0c0c0; border: 1px solid #000000; }
+             .pane-explorer[data-theme="dos"] .pane-window-switcher-item.is-active { color: #000000; border-color: #000000; box-shadow: inset 0 -3px #0000aa; }
+             .pane-explorer[data-theme="dos"] .pane-window-switcher-item.is-minimized { border-style: dashed; }
+             .pane-explorer[data-theme="dos"] .pane-window-switcher-empty,
+             .pane-explorer[data-theme="dos"] .pane-window-switcher-item small { color: #2b2b2b; }
+             .pane-explorer[data-theme="dos"] :is(.pane-account-menu, .pane-context-menu, .pane-location-picker, .pane-window-titlebar, .pane-window-navigation, .pane-window-toolbar, .pane-view-switch, .pane-tool-grid, .pane-location-list, .pane-terminal-launch-menu) button:hover:not(:disabled),
+             .pane-explorer[data-theme="dos"] :is(.pane-account-menu, .pane-context-menu, .pane-location-picker, .pane-window-titlebar, .pane-window-navigation, .pane-window-toolbar, .pane-view-switch, .pane-tool-grid, .pane-location-list, .pane-terminal-launch-menu) button:focus-visible,
+             .pane-explorer[data-theme="dos"] .pane-terminal-launch-card:hover,
+             .pane-explorer[data-theme="dos"] .pane-file-tile:hover { color: #000000; background: #ffffff; }
+             .pane-explorer[data-theme="dos"] .pane-file-tile.selected,
+             .pane-explorer[data-theme="dos"] .pane-files tr.selected { color: #ffffff; background: #000000; }
+             .pane-explorer[data-theme="dos"] .pane-account-menu button.danger,
+             .pane-explorer[data-theme="dos"] .pane-background-editor-actions .danger { color: #aa0000; }
+             .pane-explorer[data-theme="dos"] .pane-error { color: #ffffff; background: #aa0000; border: 2px solid #000000; }
+             /* Dialog action buttons: < Label > with a selected state of white on black, like the DOS Colors dialog. */
+             .pane-explorer[data-theme="dos"] .pane-transfer-actions button,
+             .pane-explorer[data-theme="dos"] .pane-background-editor-actions button,
+             .pane-explorer[data-theme="dos"] .pane-terminal-form-actions button,
+             .pane-explorer[data-theme="dos"] .pane-upload-queue-item button { color: #000000; background: #aaaaaa; border: 0; box-shadow: 2px 2px 0 #000000; }
+             .pane-explorer[data-theme="dos"] :is(.pane-transfer-actions, .pane-background-editor-actions, .pane-terminal-form-actions) button::before { content: '< '; }
+             .pane-explorer[data-theme="dos"] :is(.pane-transfer-actions, .pane-background-editor-actions, .pane-terminal-form-actions) button::after { content: ' >'; }
+             .pane-explorer[data-theme="dos"] .pane-transfer-actions button:hover,
+             .pane-explorer[data-theme="dos"] .pane-transfer-actions button:focus-visible,
+             .pane-explorer[data-theme="dos"] .pane-background-editor-actions button:hover,
+             .pane-explorer[data-theme="dos"] .pane-background-editor-actions button:focus-visible,
+             .pane-explorer[data-theme="dos"] .pane-terminal-form-actions button:hover,
+             .pane-explorer[data-theme="dos"] .pane-terminal-form-actions button:focus-visible,
+             .pane-explorer[data-theme="dos"] .pane-upload-queue-item button:hover,
+             .pane-explorer[data-theme="dos"] .pane-upload-queue-item button:focus-visible { color: #ffffff; background: #000000; }
+             .pane-explorer[data-theme="dos"] .pane-background-editor-actions .danger:hover,
+             .pane-explorer[data-theme="dos"] .pane-background-editor-actions .danger:focus-visible { color: #ff5555; background: #000000; }
+             .pane-explorer[data-theme="dos"] .pane-background-editor-actions .save,
+             .pane-explorer[data-theme="dos"] .pane-terminal-form-actions .confirm { color: #ffffff; background: #0000aa; }
+             .pane-explorer[data-theme="dos"] .pane-background-editor-actions .save:hover,
+             .pane-explorer[data-theme="dos"] .pane-background-editor-actions .save:focus-visible { color: #ffffff; background: #000000; }
+             .pane-explorer[data-theme="dos"] .pane-background-position-controls button,
+             .pane-explorer[data-theme="dos"] .pane-background-scale-controls button,
+             .pane-explorer[data-theme="dos"] .pane-background-fit-controls button,
+             .pane-explorer[data-theme="dos"] .pane-background-close { color: #000000; background: #c0c0c0; border: 1px solid #000000; box-shadow: 2px 2px 0 #000000; }
+             .pane-explorer[data-theme="dos"] .pane-background-position-controls button:hover:not(:disabled),
+             .pane-explorer[data-theme="dos"] .pane-background-scale-controls button:hover:not(:disabled),
+             .pane-explorer[data-theme="dos"] .pane-background-fit-controls button:hover,
+             .pane-explorer[data-theme="dos"] .pane-background-fit-controls button:focus-visible,
+             .pane-explorer[data-theme="dos"] .pane-background-close:hover { color: #000000; background: #ffffff; }
+             .pane-explorer[data-theme="dos"] .pane-background-fit-controls button.is-active { color: #ffffff; background: #000000; box-shadow: 2px 2px 0 #000000; }
+             .pane-explorer[data-theme="dos"] .pane-background-position-controls .is-center { color: #0000aa; background: #c0c0c0; }
+             .pane-explorer[data-theme="dos"] .pane-background-eyebrow { color: #0000aa; }
+             .pane-explorer[data-theme="dos"] .pane-transfer-progress { border: 1px solid #000000; background: #ffffff; }
+             .pane-explorer[data-theme="dos"] .pane-transfer-progress > span { background: #0000aa; box-shadow: none; }
+             .pane-explorer[data-theme="dos"] .pane-transfer-cover { background: rgba(0,0,60,.6); }
+             .pane-explorer[data-theme="dos"] .pane-transfer-failed-count { color: #aa0000; }
+             .pane-explorer[data-theme="dos"] .pane-transfer-errors li { color: #000000; border: 1px solid #aa0000; background: #ffffff; }
+             .pane-explorer[data-theme="dos"] .pane-transfer-errors strong,
+             .pane-explorer[data-theme="dos"] .pane-transfer-errors span { color: #aa0000; }
+             .pane-explorer[data-theme="dos"] .pane-upload-queue { color: #000000; background: #aaaaaa; border: 3px double #ffffff; box-shadow: 8px 8px 0 #000000; }
+             .pane-explorer[data-theme="dos"] .pane-upload-queue-heading { background: #ffffff; margin: -14px -14px 0; padding: 6px 14px; border-bottom: 2px solid #000000; }
+             .pane-explorer[data-theme="dos"] .pane-upload-queue-item { border: 1px solid #000000; background: #c0c0c0; }
+             .pane-explorer[data-theme="dos"] .pane-minimized-item::after { color: #ffffff; background: #000000; border: 1px solid #ffffff; box-shadow: 3px 3px 0 #000000; }
+             .pane-explorer[data-theme="dos"] .pane-rail-handle,
+             .pane-explorer[data-theme="dos"] .pane-workspace.has-maximized .pane-rail-handle { color: #000000; background: #aaaaaa; border-color: #000000; box-shadow: 2px 2px 0 #000000; }
+             .pane-terminal-shell:has(.pane-explorer[data-theme="dos"]) { --pane-text: #000000; --pane-muted: #2b2b2b; --pane-accent: #0000aa; --pane-line: #000000; --pane-line-strong: #000000; --pane-menu-background: #aaaaaa; }
+             .pane-terminal-shell:has(.pane-explorer[data-theme="dos"]) .pane-terminal-launch-menu { color: #000000; background: #aaaaaa; border: 3px double #ffffff; border-radius: 0; box-shadow: 6px 6px 0 #000000; }
 
              @media (prefers-reduced-motion: reduce) {
                  .pane-terminal-launch-card, .pane-terminal-side-toggle { transition: none; }

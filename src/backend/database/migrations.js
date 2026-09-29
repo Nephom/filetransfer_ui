@@ -183,6 +183,16 @@ const MIGRATIONS = [
         )
       `);
     }
+  },
+  {
+    id: '007-add-pane-background-fit',
+    description: 'Add the fit mode (cover, left, center, stretch) to stored Pane Style backgrounds.',
+    async up(db) {
+      const columns = await db.all('PRAGMA table_info(user_pane_backgrounds)');
+      if (!columns.some((column) => column.name === 'fit')) {
+        await db.run("ALTER TABLE user_pane_backgrounds ADD COLUMN fit TEXT NOT NULL DEFAULT 'cover'");
+      }
+    }
   }
 ];
 

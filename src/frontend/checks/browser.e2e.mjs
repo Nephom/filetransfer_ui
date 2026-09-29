@@ -709,6 +709,7 @@ try {
     const normalLocationRailOverflow = await page.locator('.pane-location-list').evaluate(element => ({ x: getComputedStyle(element).overflowX, y: getComputedStyle(element).overflowY }));
     assert.deepEqual(normalLocationRailOverflow, { x: 'visible', y: 'visible' }, 'the Location rail itself never becomes a scroller');
     assert.equal(await page.locator('.pane-terminal-launch-card').count(), 1, 'one Terminal launcher sits outside the multi-Location list');
+    assert.equal(await page.locator('.pane-terminal-launch-card small').textContent(), 'SSH', 'the Terminal card subtitle only says SSH');
     const terminalCardTransform = await page.locator('.pane-terminal-launch-card').evaluate(element => getComputedStyle(element, '::before').transform);
     assert.match(terminalCardTransform, /matrix\(1,\s*0,\s*0,\s*1,\s*5,\s*5\)/, 'the Terminal launcher has the same 5px translated 3D backing as the Location cards');
     assert.equal(await page.locator('.pane-tool-grid button').filter({ hasText: 'Terminal' }).count(), 0, 'Terminal is not duplicated in the right-side file tools');
@@ -752,7 +753,48 @@ try {
         return { pane: ratio(paneStyle.color, paneStyle.backgroundColor), title: ratio(titlebar.color, titlebar.backgroundColor), paneColor: paneStyle.color, paneBackground: paneStyle.backgroundColor, titleColor: titlebar.color, titleBackground: titlebar.backgroundColor };
     });
     assert.ok(lightPaneContrast.pane >= 4.5 && lightPaneContrast.title >= 4.5, `light-theme window surfaces preserve text contrast: ${JSON.stringify(lightPaneContrast)}`);
+    for (const themeName of ['light', 'silver', 'dos']) {
+        await themeRoot.evaluate((element, name) => { element.dataset.theme = name; }, themeName);
+        await page.waitForTimeout(400); // Tab items transition colour/background for 160ms; measure the settled values.
+        const switcher = await page.locator('.pane-window-switcher').evaluate(strip => {
+            // WCAG 2.x relative luminance and contrast, with translucent backgrounds composited over what is really behind them.
+            const parse = color => { const values = color.match(/[\d.]+/g).map(Number); return { r: values[0], g: values[1], b: values[2], a: values.length > 3 ? values[3] : 1 }; };
+            const luminance = ({ r, g, b }) => [r, g, b].map(value => value / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+            const ratio = (foreground, background) => { const [high, low] = [luminance(foreground), luminance(background)].sort((left, right) => right - left); return (high + .05) / (low + .05); };
+            const themeBase = getComputedStyle(strip.closest('.pane-explorer'));
+            const fallback = document.createElement('span');
+            fallback.style.backgroundColor = 'var(--pane-bg)';
+            strip.closest('.pane-explorer').appendChild(fallback);
+            let backdrop = parse(getComputedStyle(fallback).backgroundColor);
+            fallback.remove();
+            const composite = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
+            const effectiveBackground = element => {
+                const layers = [];
+                for (let node = element; node && node !== strip.closest('.pane-explorer'); node = node.parentElement) {
+                    const layer = parse(getComputedStyle(node).backgroundColor);
+                    if (layer.a > 0) layers.push(layer);
+                    if (layer.a >= 1) break;
+                }
+                const opaque = layers.length && layers[layers.length - 1].a >= 1;
+                return layers.reduceRight((below, layer) => composite(layer, below), opaque ? { r: 0, g: 0, b: 0, a: 1 } : backdrop);
+            };
+            const probe = document.createElement('span');
+            probe.style.color = 'var(--pane-muted)';
+            strip.appendChild(probe);
+            const mutedColor = parse(getComputedStyle(probe).color);
+            probe.remove();
+            const stripBackground = effectiveBackground(strip);
+            const items = [...strip.querySelectorAll('.pane-window-switcher-item')].map(item => ({ ratio: ratio(parse(getComputedStyle(item).color), effectiveBackground(item)), color: getComputedStyle(item).color, background: getComputedStyle(item).backgroundColor, className: item.className }));
+            return { theme: themeBase.getPropertyValue('--pane-bg').trim(), mutedColor, stripBackground, stripLuminance: luminance(stripBackground), mutedOnStrip: ratio(mutedColor, stripBackground), items };
+        });
+        assert.ok(switcher.items.length > 0, `${themeName}: the pane tab bar lists the open panes`);
+        assert.ok(switcher.mutedOnStrip >= 4.5, `${themeName}: pane tab bar text keeps contrast on its own background: ${JSON.stringify(switcher)}`);
+        assert.ok(switcher.items.every(item => item.ratio >= 4.5), `${themeName}: pane tab items keep contrast: ${JSON.stringify(switcher)}`);
+        if (themeName !== 'dos') assert.ok(switcher.stripLuminance > 0.45, `${themeName}: pane tab bar follows the light theme instead of staying dark: ${JSON.stringify(switcher)}`);
+    }
     await themeRoot.evaluate(element => { element.dataset.theme = 'default'; });
+    const defaultSwitcherBackground = await page.locator('.pane-window-switcher').evaluate(strip => getComputedStyle(strip).backgroundColor);
+    assert.equal(defaultSwitcherBackground, 'rgba(7, 19, 34, 0.72)', 'Default theme keeps its original pane tab bar colour');
     await clickPaneLocation(0, { button: 'right' });
     assert.equal(await page.locator('.pane-context-menu').count(), 1);
     assert.deepEqual(await page.locator('.pane-context-menu button').allTextContents(), ['Open new window']);
@@ -1250,11 +1292,18 @@ try {
     assert.equal(await page.locator('.pane-account-menu').count(), 1, 'Account Panel stays open when Style settings collapses');
     assert.equal(await styleSettings.getAttribute('aria-expanded'), 'false');
     await styleSettings.click();
-    await page.locator('.pane-account-style select').last().selectOption('circuit');
+    await page.locator('.pane-account-style select').last().selectOption('silver');
+    assert.equal(await page.locator('.pane-explorer').getAttribute('data-theme'), 'silver');
+    assert.deepEqual(await page.locator('.pane-account-style select').last().locator('option').evaluateAll(options => options.map(option => option.value)), ['default', 'light', 'silver', 'dos'], 'only Default, Clean Light, Silver Gray and MS-DOS remain');
     assert.equal(await page.locator('.pane-account-menu').count(), 1, 'Account Panel stays open while settings controls are used');
     await page.mouse.click(5, 5);
     await page.locator('.pane-account-menu').waitFor({ state: 'detached' });
-    report.checks.push('pane style switch, independent floating windows, Details/Grid view, maximize/minimize/restore dock, and Account Panel settings persistence');
+    await page.evaluate(() => localStorage.setItem('pane-background-theme', 'circuit'));
+    await page.reload();
+    await page.locator('.pane-location-list button').first().waitFor();
+    assert.equal(await page.locator('.pane-explorer').getAttribute('data-theme'), 'default', 'a removed theme id from an earlier release migrates to default');
+    assert.equal(await page.evaluate(() => localStorage.getItem('pane-background-theme')), 'default', 'the migrated theme id is written back');
+    report.checks.push('pane tab bar follows Light/Silver/MS-DOS themes with readable contrast, removed themes migrate to default, pane style switch, independent floating windows, Details/Grid view, maximize/minimize/restore dock, and Account Panel settings persistence');
 
     const backgroundInput = page.locator('input[type="file"][accept="image/*"]');
     assert.equal(await page.locator('[data-background-editor]').count(), 0, 'background editor stays hidden before an image is selected');
@@ -1326,6 +1375,48 @@ try {
     await page.getByRole('button', { name: 'Reset placement', exact: true }).click();
     assert.equal(await backgroundScaleOutput.textContent(), '100%');
     assert.equal(await page.locator('.pane-explorer').evaluate((root) => root.style.getPropertyValue('--pane-background-position').trim()), '50% 50%');
+    const layerLayout = () => page.locator('.pane-explorer').evaluate((root) => ({
+        size: getComputedStyle(root.querySelector('.pane-custom-background')).backgroundSize,
+        position: root.style.getPropertyValue('--pane-background-position').trim(),
+        scale: root.style.getPropertyValue('--pane-background-scale').trim()
+    }));
+    const layoutButton = (name) => page.getByRole('button', { name, exact: true });
+    assert.deepEqual(await layerLayout(), { size: 'cover, cover', position: '50% 50%', scale: '1' }, 'a fresh image keeps the original cover layout');
+    for (const name of ['Align image left', 'Center image', 'Expand image to fill']) assert.equal(await layoutButton(name).getAttribute('aria-pressed'), 'false', `${name} is not pressed by default`);
+    await page.getByRole('button', { name: 'Expand background' }).click();
+    await layoutButton('Align image left').click();
+    assert.deepEqual(await layerLayout(), { size: 'cover, auto', position: '0% 50%', scale: '1' }, 'Left pins the original-size image to the left edge and resets the zoom');
+    assert.equal(await layoutButton('Align image left').getAttribute('aria-pressed'), 'true');
+    await layoutButton('Center image').click();
+    assert.deepEqual(await layerLayout(), { size: 'cover, auto', position: '50% 50%', scale: '1' }, 'Center keeps the original size and centers it');
+    assert.equal(await layoutButton('Center image').getAttribute('aria-pressed'), 'true');
+    assert.equal(await layoutButton('Align image left').getAttribute('aria-pressed'), 'false');
+    await layoutButton('Expand image to fill').click();
+    assert.deepEqual(await layerLayout(), { size: 'cover, 100% 100%', position: '50% 50%', scale: '1' }, 'Expand stretches the image over the whole central area');
+    assert.equal(await page.getByRole('button', { name: 'Move background left' }).isDisabled(), true, 'position arrows are inert while the image is stretched');
+    const stretchedBox = await page.locator('.pane-custom-background').boundingBox();
+    const clipBox = await page.locator('.pane-custom-background-clip').boundingBox();
+    assert.ok(Math.abs(stretchedBox.width - clipBox.width) < 1 && Math.abs(stretchedBox.height - clipBox.height) < 1, `the stretched layer covers the whole central area: ${JSON.stringify({ stretchedBox, clipBox })}`);
+    await layoutButton('Align image left').click();
+    assert.equal(await page.getByRole('button', { name: 'Move background left' }).isDisabled(), true, 'left-pinned image cannot move further left');
+    assert.equal(await page.getByRole('button', { name: 'Move background right' }).isDisabled(), false);
+    // Tooltip: floats above the pointer, uses no native title bubble, disappears when the pointer leaves.
+    const tipTarget = layoutButton('Align image left');
+    assert.equal(await tipTarget.getAttribute('title'), null, 'layout buttons do not use the browser title bubble');
+    const tipBox = await tipTarget.boundingBox();
+    const pointerX = tipBox.x + tipBox.width / 2;
+    const pointerY = tipBox.y + tipBox.height / 2;
+    await page.mouse.move(pointerX - 6, pointerY);
+    await page.mouse.move(pointerX, pointerY, { steps: 3 });
+    await page.locator('.pane-tip').waitFor();
+    const tipGeometry = await page.locator('.pane-tip').boundingBox();
+    assert.match(await page.locator('.pane-tip').textContent(), /Align left/);
+    assert.ok(tipGeometry.y + tipGeometry.height <= pointerY, `the tooltip sits above the mouse pointer: ${JSON.stringify({ tipGeometry, pointerY })}`);
+    assert.ok(Math.abs(tipGeometry.x + tipGeometry.width / 2 - pointerX) <= 8, `the tooltip is horizontally centred on the pointer: ${JSON.stringify({ tipGeometry, pointerX })}`);
+    await page.mouse.move(pointerX, 2);
+    await page.locator('.pane-tip').waitFor({ state: 'detached' });
+    await page.getByRole('button', { name: 'Reset placement', exact: true }).click();
+    assert.deepEqual(await layerLayout(), { size: 'cover, cover', position: '50% 50%', scale: '1' }, 'Reset placement restores the cover layout');
     await page.getByRole('button', { name: 'Close background editor', exact: true }).click();
     assert.equal(await page.locator('[data-background-editor]').count(), 0, 'closing hides the editor without removing the background');
     await page.locator('.account').click();
@@ -1363,6 +1454,28 @@ try {
     assert.equal(restoredBackground.scale, '1.1');
     assert.equal(restoredBackground.position, '60% 50%');
     assert.equal(await page.locator('[data-background-editor]').count(), 0, 'restored background does not force the editor open');
+    assert.equal(requests.findLast(request => request.path === '/api/user/background' && request.method === 'PUT').body.fit, 'cover', 'Save writes the layout preset to the backend');
+    await page.locator('.account').click();
+    await page.getByRole('button', { name: 'Style settings', exact: true }).click();
+    await page.locator('.pane-background-edit-button').click();
+    await page.locator('[data-background-editor]').waitFor();
+    await layoutButton('Expand image to fill').click();
+    const fitSaveResponse = page.waitForResponse(response => response.url().endsWith('/api/user/background') && response.request().method() === 'PUT');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    assert.equal((await fitSaveResponse).status(), 200);
+    assert.equal(requests.findLast(request => request.path === '/api/user/background' && request.method === 'PUT').body.fit, 'stretch', 'the Expand preset is persisted');
+    await page.reload();
+    await page.locator('.pane-custom-background').waitFor();
+    assert.equal(await page.locator('.pane-explorer').evaluate((root) => getComputedStyle(root.querySelector('.pane-custom-background')).backgroundSize), 'cover, 100% 100%', 'the stored Expand preset is restored after reload');
+    await page.locator('.account').click();
+    await page.getByRole('button', { name: 'Style settings', exact: true }).click();
+    await page.locator('.pane-background-edit-button').click();
+    await page.locator('[data-background-editor]').waitFor();
+    await page.getByRole('button', { name: 'Reset placement', exact: true }).click();
+    await page.getByRole('button', { name: 'Move background right' }).click();
+    await page.getByRole('button', { name: 'Expand background' }).click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await page.locator('[data-background-editor]').waitFor({ state: 'detached' });
     await context.addCookies([{ name: 'fixtureUserB', value: '1', url: origin }]);
     await page.reload();
     await page.locator('.pane-location-list button').first().waitFor();

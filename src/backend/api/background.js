@@ -6,6 +6,7 @@ const MAX_BACKGROUND_SIZE = 5 * 1024 * 1024;
 const MIN_BACKGROUND_SCALE = 0.5;
 const MAX_BACKGROUND_SCALE = 2;
 const MAX_BACKGROUND_DIMENSION = 100000;
+const BACKGROUND_FITS = ['cover', 'left', 'center', 'stretch'];
 const IMAGE_DATA_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
 const IMAGE_MIME_PATTERN = /^image\/[a-z0-9.+-]+$/i;
 
@@ -29,13 +30,15 @@ const parseBackground = (body = {}) => {
   const position = body.position || {};
   const x = Number(position.x);
   const y = Number(position.y);
+  const fit = body.fit === undefined || body.fit === null ? 'cover' : body.fit;
   if (!name || name.length > 255) throw errorWithStatus('Background image name is invalid.');
   if (!Number.isInteger(width) || width < 1 || width > MAX_BACKGROUND_DIMENSION) throw errorWithStatus('Background image width is invalid.');
   if (!Number.isInteger(height) || height < 1 || height > MAX_BACKGROUND_DIMENSION) throw errorWithStatus('Background image height is invalid.');
   if (!Number.isFinite(scale) || scale < MIN_BACKGROUND_SCALE || scale > MAX_BACKGROUND_SCALE) throw errorWithStatus('Background image scale is invalid.');
   if (!Number.isFinite(x) || x < 0 || x > 100 || !Number.isFinite(y) || y < 0 || y > 100) throw errorWithStatus('Background image position is invalid.');
+  if (typeof fit !== 'string' || !BACKGROUND_FITS.includes(fit)) throw errorWithStatus('Background image fit is invalid.');
 
-  return { image, mimeType: body.mimeType.toLowerCase(), name, width, height, size: image.length, scale, x, y };
+  return { image, mimeType: body.mimeType.toLowerCase(), name, width, height, size: image.length, scale, x, y, fit };
 };
 
 const serializeBackground = (row) => ({
@@ -47,6 +50,7 @@ const serializeBackground = (row) => ({
   size: row.size,
   scale: row.scale,
   position: { x: row.positionX, y: row.positionY },
+  fit: row.fit || 'cover',
   updatedAt: row.updatedAt
 });
 
@@ -57,7 +61,7 @@ const createBackgroundRouter = ({ db = database, auth = authenticate } = {}) => 
     const userId = currentUserId(req);
     if (userId === null) return res.status(401).json({ error: 'Authenticated user ID is required.' });
     try {
-      const row = await db.get('SELECT image, mimeType, name, width, height, size, scale, positionX, positionY, updatedAt FROM user_pane_backgrounds WHERE userId = ?', [userId]);
+      const row = await db.get('SELECT image, mimeType, name, width, height, size, scale, positionX, positionY, fit, updatedAt FROM user_pane_backgrounds WHERE userId = ?', [userId]);
       res.set('Cache-Control', 'no-store');
       res.json({ background: row ? serializeBackground(row) : null });
     } catch (error) {
@@ -73,9 +77,9 @@ const createBackgroundRouter = ({ db = database, auth = authenticate } = {}) => 
       const updatedAt = Date.now();
       await db.run(`
         INSERT OR REPLACE INTO user_pane_backgrounds
-          (userId, image, mimeType, name, width, height, size, scale, positionX, positionY, updatedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [userId, background.image, background.mimeType, background.name, background.width, background.height, background.size, background.scale, background.x, background.y, updatedAt]);
+          (userId, image, mimeType, name, width, height, size, scale, positionX, positionY, fit, updatedAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [userId, background.image, background.mimeType, background.name, background.width, background.height, background.size, background.scale, background.x, background.y, background.fit, updatedAt]);
       res.set('Cache-Control', 'no-store');
       res.json({
         success: true,
@@ -87,6 +91,7 @@ const createBackgroundRouter = ({ db = database, auth = authenticate } = {}) => 
           size: background.size,
           scale: background.scale,
           position: { x: background.x, y: background.y },
+          fit: background.fit,
           updatedAt
         }
       });

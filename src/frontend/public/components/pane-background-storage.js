@@ -39,7 +39,8 @@ export const loadPaneBackground = async (token) => {
         height: background.height,
         size: background.size,
         scale: background.scale,
-        position: background.position
+        position: background.position,
+        fit: background.fit
     };
 };
 
@@ -54,7 +55,8 @@ export const savePaneBackground = async (record, token) => {
             width: record.width,
             height: record.height,
             scale: record.scale,
-            position: record.position
+            position: record.position,
+            fit: record.fit
         })
     });
     if (!response.ok) throw new Error('Unable to save background image.');

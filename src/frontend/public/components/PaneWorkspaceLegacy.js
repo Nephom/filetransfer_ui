@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import PaneFileWindow from './PaneFileWindow.js';
 import PaneTerminalWindow from './PaneTerminalWindow.js';
 import PaneTools, { PaneTerminalLauncher } from './PaneTools.js';
@@ -10,6 +11,17 @@ const BACKGROUND_MIN_SCALE = 0.5;
 const BACKGROUND_MAX_SCALE = 2;
 const BACKGROUND_SCALE_STEP = 0.1;
 const BACKGROUND_POSITION_STEP = 10;
+const PANE_THEMES = ['default', 'light', 'silver', 'dos'];
+const BACKGROUND_FITS = ['cover', 'left', 'center', 'stretch'];
+// Fit presets: CSS background-size for the image layer and the horizontal anchor applied when the preset is chosen.
+const BACKGROUND_FIT_LAYOUT = {
+    cover: { size: 'cover', x: 50 },
+    left: { size: 'auto', x: 0 },
+    center: { size: 'auto', x: 50 },
+    stretch: { size: '100% 100%', x: 50 }
+};
+const BACKGROUND_TIP_EDGE_PX = 110; // Half of the widest tooltip, keeps it inside the viewport horizontally.
+const BACKGROUND_TIP_LIFT_PX = 16; // Gap between the mouse pointer and the tooltip that floats above it.
 const PASTE_PROGRESS_READ_TIMEOUT_MS = 45_000; // Allow three missed 15-second server heartbeats.
 const PANE_TRANSFER_FAILURE_PREVIEW_LIMIT = 50; // Keep retained failure details bounded for large batches.
 const LOCATION_CARD_3D_OFFSET_PX = 5; // Matches the translated backing layer in Pane Style CSS.
@@ -19,6 +31,8 @@ const roundScale = (value) => Math.round(value * 100) / 100;
 const centeredBackgroundPosition = () => ({ x: 50, y: 50 });
 const normaliseBackgroundCoordinate = (value) => { const numeric = Number(value); return Number.isFinite(numeric) ? numeric : 50; };
 const normaliseBackgroundPosition = (position) => ({ x: clamp(normaliseBackgroundCoordinate(position?.x), 0, 100), y: clamp(normaliseBackgroundCoordinate(position?.y), 0, 100) });
+const normaliseBackgroundFit = (fit) => BACKGROUND_FITS.includes(fit) ? fit : 'cover';
+const normalisePaneTheme = (theme) => PANE_THEMES.includes(theme) ? theme : 'default';
 const normaliseBackgroundScale = (scale) => clamp(roundScale(Number(scale) || 1), BACKGROUND_MIN_SCALE, BACKGROUND_MAX_SCALE);
 const consumePasteProgressStream = async (response, onEvent) => {
     const reader = response.body?.getReader();
@@ -94,11 +108,13 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const [activeId, setActiveId] = React.useState(null);
     const [accountOpen, setAccountOpen] = React.useState(false);
     const [styleSettingsOpen, setStyleSettingsOpen] = React.useState(false);
-    const [theme, setTheme] = React.useState(() => localStorage.getItem('pane-background-theme') || 'default');
+    const [theme, setTheme] = React.useState(() => normalisePaneTheme(localStorage.getItem('pane-background-theme')));
     const [customBackground, setCustomBackground] = React.useState(null);
     const [backgroundEditorOpen, setBackgroundEditorOpen] = React.useState(false);
     const [backgroundScale, setBackgroundScale] = React.useState(1);
     const [backgroundPosition, setBackgroundPosition] = React.useState(centeredBackgroundPosition());
+    const [backgroundFit, setBackgroundFit] = React.useState('cover');
+    const [backgroundTip, setBackgroundTip] = React.useState(null);
     const [backgroundStorageReady, setBackgroundStorageReady] = React.useState(false);
     const [nextId, setNextId] = React.useState(1);
     const [nextTerminalId, setNextTerminalId] = React.useState(1);
@@ -607,6 +623,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         if (activeId && (!active || active.minimized)) setActiveId(allWindows.filter((pane) => !pane.minimized).sort((left, right) => right.z - left.z)[0]?.id || null);
     }, [windows, terminalWindows, activeId]);
     React.useEffect(() => { if (!accountOpen) setStyleSettingsOpen(false); }, [accountOpen]);
+    React.useEffect(() => { if (!backgroundEditorOpen || !customBackground) setBackgroundTip(null); }, [backgroundEditorOpen, customBackground]);
     React.useEffect(() => { localStorage.setItem('pane-background-theme', theme); }, [theme]);
     React.useEffect(() => {
         let active = true;
@@ -617,6 +634,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         setBackgroundEditorOpen(false);
         setBackgroundScale(1);
         setBackgroundPosition(centeredBackgroundPosition());
+        setBackgroundFit('cover');
         setBackgroundStorageReady(false);
         Promise.allSettled([clearLegacyPaneBackgroundStorage(), loadPaneBackground(token)]).then(([, backgroundResult]) => {
             if (!active) return;
@@ -641,6 +659,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
                 setCustomBackground({ url: restoredUrl, blob: record.blob, name: record.name || 'Background image', width: image.naturalWidth, height: image.naturalHeight, size: record.size || record.blob.size });
                 setBackgroundScale(normaliseBackgroundScale(record.scale));
                 setBackgroundPosition(normaliseBackgroundPosition(record.position));
+                setBackgroundFit(normaliseBackgroundFit(record.fit));
                 setBackgroundStorageReady(true);
             };
             image.onerror = () => {
@@ -655,7 +674,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             if (restoredUrl) URL.revokeObjectURL(restoredUrl);
         };
     }, [token]);
-    const persistBackground = (background, scale, position) => {
+    const persistBackground = (background, scale, position, fit) => {
         if (!backgroundStorageReady || !background?.blob) return Promise.resolve(false);
         const record = {
             blob: background.blob,
@@ -664,7 +683,8 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             height: background.height,
             size: background.size,
             scale,
-            position
+            position,
+            fit
         };
         const pending = backgroundPersistenceRef.current
             .catch(() => {})
@@ -673,8 +693,8 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         return pending;
     };
     React.useEffect(() => {
-        void persistBackground(customBackground, backgroundScale, backgroundPosition);
-    }, [backgroundStorageReady, customBackground, backgroundScale, backgroundPosition, token]);
+        void persistBackground(customBackground, backgroundScale, backgroundPosition, backgroundFit);
+    }, [backgroundStorageReady, customBackground, backgroundScale, backgroundPosition, backgroundFit, token]);
     React.useEffect(() => () => {
         if (customBackground?.url) URL.revokeObjectURL(customBackground.url);
         if (pendingBackgroundUrlRef.current) URL.revokeObjectURL(pendingBackgroundUrlRef.current);
@@ -699,6 +719,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             setCustomBackground({ url: objectUrl, blob: file, name: file.name, width: image.naturalWidth, height: image.naturalHeight, size: file.size });
             setBackgroundScale(1);
             setBackgroundPosition(centeredBackgroundPosition());
+            setBackgroundFit('cover');
             closeAccountMenu();
             setBackgroundEditorOpen(true);
             announce(`${file.name} is now the background.`);
@@ -717,7 +738,28 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const moveBackground = (axis, direction) => setBackgroundPosition((current) => ({ ...current, [axis]: clamp(current[axis] + direction * BACKGROUND_POSITION_STEP, 0, 100) }));
     const centerBackground = () => setBackgroundPosition(centeredBackgroundPosition());
     const changeBackgroundScale = (direction) => setBackgroundScale((current) => clamp(roundScale(current + direction * BACKGROUND_SCALE_STEP), BACKGROUND_MIN_SCALE, BACKGROUND_MAX_SCALE));
-    const resetBackgroundPlacement = () => { setBackgroundScale(1); setBackgroundPosition(centeredBackgroundPosition()); };
+    const resetBackgroundPlacement = () => { setBackgroundScale(1); setBackgroundPosition(centeredBackgroundPosition()); setBackgroundFit('cover'); };
+    const applyBackgroundFit = (fit) => {
+        const layout = BACKGROUND_FIT_LAYOUT[normaliseBackgroundFit(fit)];
+        setBackgroundFit(normaliseBackgroundFit(fit));
+        setBackgroundScale(1);
+        setBackgroundPosition({ x: layout.x, y: 50 });
+    };
+    const showBackgroundTip = (event) => {
+        const target = event.target instanceof Element ? event.target.closest('[data-tip]') : null;
+        if (!target || !event.currentTarget.contains(target)) { setBackgroundTip(null); return; }
+        let x = event.clientX;
+        let y = event.clientY;
+        if (event.type === 'focus') { // Keyboard focus has no pointer, so anchor the tip above the focused button.
+            const rect = target.getBoundingClientRect();
+            x = rect.left + rect.width / 2;
+            y = rect.top - 4;
+        }
+        const next = { text: target.dataset.tip, x: clamp(x, BACKGROUND_TIP_EDGE_PX, Math.max(BACKGROUND_TIP_EDGE_PX, window.innerWidth - BACKGROUND_TIP_EDGE_PX)), y, below: y < 44 };
+        // Follow the pointer, but skip re-renders for sub-4px jitter so the whole workspace is not repainted on every mousemove.
+        setBackgroundTip((current) => current && current.text === next.text && current.below === next.below && Math.abs(current.x - next.x) < 4 && Math.abs(current.y - next.y) < 4 ? current : next);
+    };
+    const hideBackgroundTip = () => setBackgroundTip(null);
     const clearBackground = () => {
         backgroundLoadRef.current += 1;
         if (pendingBackgroundUrlRef.current) {
@@ -735,7 +777,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     };
     const saveBackgroundPlacement = async () => {
         try {
-            if (!await persistBackground(customBackground, backgroundScale, backgroundPosition)) throw new Error('Background storage is unavailable.');
+            if (!await persistBackground(customBackground, backgroundScale, backgroundPosition, backgroundFit)) throw new Error('Background storage is unavailable.');
             setBackgroundEditorOpen(false);
             announce('Background placement saved.');
         } catch {
@@ -745,6 +787,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const backgroundStyle = customBackground ? {
         '--pane-background-image': `url("${customBackground.url}")`,
         '--pane-background-scale': backgroundScale,
+        '--pane-background-size': BACKGROUND_FIT_LAYOUT[backgroundFit].size,
         '--pane-background-position': `${backgroundPosition.x}% ${backgroundPosition.y}%`
     } : undefined;
     const transferVerb = transferProgress?.operation === 'copy' ? 'copy' : 'move';
@@ -768,8 +811,8 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const renderLocationCards = () => locations.map((location) => <button type="button" key={location.id} className={`pane-location-card${windows.some((pane) => pane.locationId === location.id) ? ' is-open' : ''}`} onClick={() => { openWindow(location.id); setLocationPickerOpen(false); setLocationRailPeek(false); }} onContextMenu={(event) => showLocationContextMenu(event, location.id)}><span className="folder-icon" aria-hidden="true">▰</span><span><strong>{location.displayName || location.id}</strong><small>{location.status || 'online'}</small></span></button>);
     return <div className={`pane-explorer${customBackground ? ' has-custom-background' : ''}`} data-theme={theme} style={backgroundStyle} onContextMenu={(event) => event.preventDefault()}>
         {customBackground && <div className="pane-custom-background-clip" aria-hidden="true"><div className="pane-custom-background" /></div>}
-        <header className="pane-titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control"><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu pane-account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}<button type="button" className="style-settings-trigger" aria-expanded={styleSettingsOpen} onClick={() => setStyleSettingsOpen((open) => !open)}>Style settings <span aria-hidden="true">⌄</span></button>{styleSettingsOpen && <div className="pane-account-style"><h2>Interface style</h2><p>Choose the central workspace appearance.</p><label>Interface mode<select aria-label="Interface style" value="pane" onChange={(event) => onStyleChange(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><label>Central background<select aria-label="Central background" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="default">Default Gradient</option><option value="circuit">Dark Circuit</option><option value="space">Deep Space</option><option value="ocean">Ocean Signal</option><option value="aurora">Aurora Tech</option><option value="neon">Soft Neon</option><option value="light">Clean Light</option></select></label><button type="button" className="pane-background-button" onClick={() => backgroundInput.current?.click()}>▧ Choose background image</button>{customBackground && <button type="button" className="pane-background-edit-button" onClick={() => setBackgroundEditorOpen(true)}>▣ Edit background placement</button>}<input ref={backgroundInput} className="pane-hidden-file" type="file" accept="image/*" onChange={selectBackground} />{customBackground && <button type="button" className="pane-reset-background" onClick={clearBackground}>Use default background</button>}</div>}<hr /><button type="button" className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
-        {customBackground && backgroundEditorOpen && <aside className="pane-background-editor" data-background-editor aria-label="Background image placement"><div className="pane-background-editor-header"><div><span className="pane-background-eyebrow">BACKGROUND PLACEMENT</span><strong title={customBackground.name}>{customBackground.name}</strong></div><button type="button" className="pane-background-close" onClick={() => setBackgroundEditorOpen(false)} aria-label="Close background editor" title="Close background editor">×</button></div><div className="pane-background-meta"><span>{customBackground.width} × {customBackground.height}px</span><span>{Math.round(customBackground.size / 1024)} KB</span></div><div className="pane-background-section"><span className="pane-background-label">Position</span><div className="pane-background-position-controls"><span /><button type="button" onClick={() => moveBackground('y', -1)} disabled={backgroundPosition.y <= 0} aria-label="Move background up" title="Move background up">↑</button><span /><button type="button" onClick={() => moveBackground('x', -1)} disabled={backgroundPosition.x <= 0} aria-label="Move background left" title="Move background left">←</button><button type="button" className="is-center" onClick={centerBackground} aria-label="Center background" title="Center background">◎</button><button type="button" onClick={() => moveBackground('x', 1)} disabled={backgroundPosition.x >= 100} aria-label="Move background right" title="Move background right">→</button><span /><button type="button" onClick={() => moveBackground('y', 1)} disabled={backgroundPosition.y >= 100} aria-label="Move background down" title="Move background down">↓</button><span /></div></div><div className="pane-background-section"><span className="pane-background-label">Scale</span><div className="pane-background-scale-controls"><button type="button" onClick={() => changeBackgroundScale(-1)} disabled={backgroundScale <= BACKGROUND_MIN_SCALE} aria-label="Shrink background" title="Shrink background">-</button><output aria-label="Background scale">{Math.round(backgroundScale * 100)}%</output><button type="button" onClick={() => changeBackgroundScale(1)} disabled={backgroundScale >= BACKGROUND_MAX_SCALE} aria-label="Expand background" title="Expand background">+</button></div></div><div className="pane-background-editor-actions"><button type="button" onClick={resetBackgroundPlacement}>Reset placement</button><button type="button" className="danger" onClick={clearBackground}>Remove image</button><button type="button" className="save" onClick={() => void saveBackgroundPlacement()}>Save</button></div></aside>}
+        <header className="pane-titlebar"><span className="app-mark" /><span className="app-name">LAB File Manager</span><span className="connection-status">SECURE STORAGE</span><div className="account-control"><button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>{user.username}<span className="account-role">{user.role === 'admin' ? 'Admin' : user.role === 'superuser' ? 'Superuser' : 'User'}</span><span className="account-chevron">⌄</span></button>{accountOpen && <div className="account-menu pane-account-menu"><div className="account-summary"><strong>{user.username}</strong><span>{user.role === 'admin' ? 'System administrator' : user.role === 'superuser' ? 'Superuser' : 'Standard user'}</span></div>{['admin', 'superuser'].includes(user.role) && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}{user.role === 'admin' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}{user.role === 'superuser' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}<button type="button" className="style-settings-trigger" aria-expanded={styleSettingsOpen} onClick={() => setStyleSettingsOpen((open) => !open)}>Style settings <span aria-hidden="true">⌄</span></button>{styleSettingsOpen && <div className="pane-account-style"><h2>Interface style</h2><p>Choose the central workspace appearance.</p><label>Interface mode<select aria-label="Interface style" value="pane" onChange={(event) => onStyleChange(event.target.value)}><option value="classical">Classical Style</option><option value="pane">Pane Style</option></select></label><label>Central background<select aria-label="Central background" value={theme} onChange={(event) => setTheme(event.target.value)}><option value="default">Default Gradient</option><option value="light">Clean Light</option><option value="silver">Silver Gray</option><option value="dos">MS-DOS</option></select></label><button type="button" className="pane-background-button" onClick={() => backgroundInput.current?.click()}>▧ Choose background image</button>{customBackground && <button type="button" className="pane-background-edit-button" onClick={() => setBackgroundEditorOpen(true)}>▣ Edit background placement</button>}<input ref={backgroundInput} className="pane-hidden-file" type="file" accept="image/*" onChange={selectBackground} />{customBackground && <button type="button" className="pane-reset-background" onClick={clearBackground}>Use default background</button>}</div>}<hr /><button type="button" className="danger" onClick={onLogout}>Log out</button></div>}</div></header>
+        {customBackground && backgroundEditorOpen && <aside className="pane-background-editor" data-background-editor aria-label="Background image placement" onMouseOver={showBackgroundTip} onMouseMove={showBackgroundTip} onMouseLeave={hideBackgroundTip} onFocus={showBackgroundTip} onBlur={hideBackgroundTip} onClick={hideBackgroundTip}><div className="pane-background-editor-header"><div><span className="pane-background-eyebrow">BACKGROUND PLACEMENT</span><strong title={customBackground.name}>{customBackground.name}</strong></div><button type="button" className="pane-background-close" onClick={() => setBackgroundEditorOpen(false)} aria-label="Close background editor" data-tip="Close background editor">×</button></div><div className="pane-background-meta"><span>{customBackground.width} × {customBackground.height}px</span><span>{Math.round(customBackground.size / 1024)} KB</span></div><div className="pane-background-section"><span className="pane-background-label">Layout</span><div className="pane-background-fit-controls" role="group" aria-label="Background layout"><button type="button" className={backgroundFit === 'left' ? 'is-active' : ''} aria-pressed={backgroundFit === 'left'} onClick={() => applyBackgroundFit('left')} aria-label="Align image left" data-tip="Align left: original size, pinned to the left edge"><svg viewBox="0 0 24 18" aria-hidden="true"><rect className="fit-frame" x="1" y="1" width="22" height="16" rx="1.5" /><rect className="fit-image" x="3" y="4" width="9" height="10" rx="1" /></svg><span>Left</span></button><button type="button" className={backgroundFit === 'center' ? 'is-active' : ''} aria-pressed={backgroundFit === 'center'} onClick={() => applyBackgroundFit('center')} aria-label="Center image" data-tip="Center: original size, centered"><svg viewBox="0 0 24 18" aria-hidden="true"><rect className="fit-frame" x="1" y="1" width="22" height="16" rx="1.5" /><rect className="fit-image" x="7.5" y="4" width="9" height="10" rx="1" /></svg><span>Center</span></button><button type="button" className={backgroundFit === 'stretch' ? 'is-active' : ''} aria-pressed={backgroundFit === 'stretch'} onClick={() => applyBackgroundFit('stretch')} aria-label="Expand image to fill" data-tip="Expand: stretch to fill the whole central area"><svg viewBox="0 0 24 18" aria-hidden="true"><rect className="fit-frame" x="1" y="1" width="22" height="16" rx="1.5" /><rect className="fit-image" x="2.5" y="2.5" width="19" height="13" rx="1" /></svg><span>Expand</span></button></div></div><div className="pane-background-section"><span className="pane-background-label">Position</span><div className="pane-background-position-controls"><span /><button type="button" onClick={() => moveBackground('y', -1)} disabled={backgroundFit === 'stretch' || backgroundPosition.y <= 0} aria-label="Move background up" data-tip="Move background up">↑</button><span /><button type="button" onClick={() => moveBackground('x', -1)} disabled={backgroundFit === 'stretch' || backgroundPosition.x <= 0} aria-label="Move background left" data-tip="Move background left">←</button><button type="button" className="is-center" onClick={centerBackground} disabled={backgroundFit === 'stretch'} aria-label="Center background" data-tip="Center background">◎</button><button type="button" onClick={() => moveBackground('x', 1)} disabled={backgroundFit === 'stretch' || backgroundPosition.x >= 100} aria-label="Move background right" data-tip="Move background right">→</button><span /><button type="button" onClick={() => moveBackground('y', 1)} disabled={backgroundFit === 'stretch' || backgroundPosition.y >= 100} aria-label="Move background down" data-tip="Move background down">↓</button><span /></div></div><div className="pane-background-section"><span className="pane-background-label">Scale</span><div className="pane-background-scale-controls"><button type="button" onClick={() => changeBackgroundScale(-1)} disabled={backgroundScale <= BACKGROUND_MIN_SCALE} aria-label="Shrink background" data-tip="Shrink background">-</button><output aria-label="Background scale">{Math.round(backgroundScale * 100)}%</output><button type="button" onClick={() => changeBackgroundScale(1)} disabled={backgroundScale >= BACKGROUND_MAX_SCALE} aria-label="Expand background" data-tip="Expand background">+</button></div></div><div className="pane-background-editor-actions"><button type="button" onClick={resetBackgroundPlacement}>Reset placement</button><button type="button" className="danger" onClick={clearBackground}>Remove image</button><button type="button" className="save" onClick={() => void saveBackgroundPlacement()}>Save</button></div></aside>}{backgroundTip && createPortal(<div className={`pane-tip${backgroundTip.below ? ' is-below' : ''}`} data-theme={theme} role="tooltip" style={{ left: backgroundTip.x, top: backgroundTip.below ? backgroundTip.y + BACKGROUND_TIP_LIFT_PX + 14 : backgroundTip.y - BACKGROUND_TIP_LIFT_PX }}>{backgroundTip.text}</div>, document.body)}
         <nav className="pane-window-switcher" aria-label="Open panes">
             {windowSwitchItems.map((item) => <button
                 type="button"

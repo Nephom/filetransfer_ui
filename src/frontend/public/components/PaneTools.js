@@ -19,7 +19,7 @@ const iconPaths = {
 export function PaneTerminalLauncher({ onOpenTerminal }) {
     return <button className="pane-terminal-launch-card" type="button" aria-label="Open SSH Terminal" onClick={onOpenTerminal}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{iconPaths.terminal}</svg>
-        <span><strong>Terminal</strong><small>Open SSH terminal</small></span>
+        <span><strong>Terminal</strong><small>SSH</small></span>
     </button>;
 }
 

@@ -16,6 +16,23 @@ The Pane Style Account Panel keeps its menu mounted while Style settings are exp
 
 Pane Style custom backgrounds are user-owned backend data. `GET /api/user/background`, `PUT /api/user/background`, and `DELETE /api/user/background` authenticate the request and scope the SQLite record to `req.user.id`; the image Blob, MIME type, dimensions, scale, and position are stored in `user_pane_backgrounds`. The browser reloads the same user's background on every device that uses the account. The old browser-local `filetransfer-ui-pane-background` IndexedDB database is deleted by the new client and is not migrated.
 
+### Pane Themes And Background Layout
+
+The **Central background** select offers four themes, stored in `localStorage` as `pane-background-theme`: `default` (Default Gradient), `light` (Clean Light), `silver` (Silver Gray) and `dos` (MS-DOS). Themes are applied as `data-theme` on `.pane-explorer` and are implemented with `--pane-*` CSS variables. Stored ids from earlier releases (`circuit`, `space`, `ocean`, `aurora`, `neon`) or any unknown value are migrated to `default` on load and written back.
+
+The pane tab bar (`.pane-window-switcher`) takes its colours from `--pane-switcher-bg`, `--pane-switcher-hover` and `--pane-switcher-active`, which every theme defines, so it follows the active theme. MS-DOS uses a blue desktop, light-gray boxes with double frames, solid black offset shadows, square corners and a monospace font. Native `window.prompt` / `window.confirm` dialogs (rename, new folder, delete confirmation) are drawn by the browser and cannot be themed.
+
+The background editor has a **Layout** group next to Position and Scale:
+
+| Button | `fit` | Rendering |
+|---|---|---|
+| (none pressed) | `cover` | Original behaviour: `background-size: cover`. |
+| Left | `left` | Original pixel size (`background-size: auto`), position `0% 50%`, zoom reset to 100%. |
+| Center | `center` | Original pixel size, position `50% 50%`, zoom reset to 100%. |
+| Expand | `stretch` | `background-size: 100% 100%`: the image is stretched over the whole central area. Position arrows are disabled because there is nothing left to move. |
+
+The preset is stored with the background: `PUT /api/user/background` accepts `fit` (`cover`, `left`, `center`, `stretch`; a missing value means `cover`, anything else is rejected with 400) and `GET` returns it. Migration `007-add-pane-background-fit` adds the `fit` column with default `cover`. Editor tooltips are custom (`data-tip`) and float above the mouse pointer, or above the focused button for keyboard users; they flip below the pointer only when there is no room above.
+
 ## Build And Startup
 
 ```sh

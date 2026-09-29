@@ -133,8 +133,8 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     async get(sql, [userId]) { return sql.includes('user_pane_backgrounds') ? backgroundRows.get(String(userId)) : undefined; },
     async run(sql, params = []) {
       if (sql.includes('INSERT OR REPLACE INTO user_pane_backgrounds')) {
-        const [userId, image, mimeType, name, width, height, size, scale, positionX, positionY, updatedAt] = params;
-        backgroundRows.set(String(userId), { image, mimeType, name, width, height, size, scale, positionX, positionY, updatedAt });
+        const [userId, image, mimeType, name, width, height, size, scale, positionX, positionY, fit, updatedAt] = params;
+        backgroundRows.set(String(userId), { image, mimeType, name, width, height, size, scale, positionX, positionY, fit, updatedAt });
         return { changes: 1 };
       }
       if (sql.includes('DELETE FROM user_pane_backgrounds')) return { changes: backgroundRows.delete(String(params[0])) ? 1 : 0 };
@@ -356,6 +356,10 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     assert.equal(own.body.background.name, 'user-a.png');
     assert.equal(own.body.background.size, Buffer.from('fixture-image').length);
     assert.deepEqual(own.body.background.position, { x: 60, y: 50 });
+    assert.equal(own.body.background.fit, 'cover', 'a legacy payload without fit defaults to cover');
+    status(await send('/api/user/background', { username: null, method: 'PUT', headers: { cookie: userCookie }, body: { ...background, fit: 'diagonal' } }), 400);
+    status(await send('/api/user/background', { username: null, method: 'PUT', headers: { cookie: userCookie }, body: { ...background, fit: 'stretch' } }), 200);
+    assert.equal((await send('/api/user/background', { username: null, headers: { cookie: userCookie } })).body.background.fit, 'stretch');
     const other = await send('/api/user/background', { username: null, headers: { cookie: staffCookie } });
     status(other, 200);
     assert.equal(other.body.background, null);
