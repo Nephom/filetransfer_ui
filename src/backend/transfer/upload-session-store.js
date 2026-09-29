@@ -397,6 +397,7 @@ class UploadSessionStore {
       sessionId: row.sessionId,
       clientAttemptId: row.clientAttemptId,
       locationId: row.locationId,
+      locationRevision: row.locationRevision,
       path: row.destinationPath,
       chunkSize: row.chunkSize,
       expectedFileCount: row.expectedFileCount,

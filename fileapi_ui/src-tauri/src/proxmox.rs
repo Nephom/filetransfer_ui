@@ -1713,9 +1713,9 @@ fn parse_unix_find_output(stdout: &str, path: &str) -> Vec<crate::LocalFile> {
         }
         let is_directory = kind == "d";
         let size: u64 = size_text.parse().unwrap_or(0);
-        let modified: u128 = mtime_text
+        let modified: u64 = mtime_text
             .parse::<f64>()
-            .map(|seconds| (seconds * 1000.0).max(0.0) as u128)
+            .map(|seconds| (seconds * 1000.0).max(0.0) as u64)
             .unwrap_or(0);
         let child_path = format!("{}/{}", path.trim_end_matches('/'), name);
         files.push(crate::LocalFile {
@@ -1826,7 +1826,7 @@ fn parse_windows_listing_output(stdout: &str, path: &str) -> Vec<crate::LocalFil
         }
         let is_directory = kind == "d";
         let size: u64 = size_text.parse().unwrap_or(0);
-        let modified: u128 = modified_text.parse().unwrap_or(0);
+        let modified: u64 = modified_text.parse().unwrap_or(0);
         let child_path = format!("{}/{}", path.trim_end_matches('/'), name);
         files.push(crate::LocalFile {
             name: name.to_string(),

@@ -76,9 +76,9 @@ const fileType = (item) => {
     const extension = item.name?.split('.').pop();
     return extension && extension !== item.name ? `${extension.toUpperCase()} file` : 'File';
 };
-const classifyTransferError = (error) => {
+export const classifyTransferError = (error) => {
     const message = String(error?.message || error || '').toLowerCase();
-    const status = Number(error?.status || error?.statusCode || message.match(/\b(401|403|404|409|5\d\d)\b/)?.[1] || 0);
+    const status = Number(error?.status || error?.statusCode || message.match(/\b(400|401|403|404|409|5\d\d)\b/)?.[1] || 0);
     if (status >= 500) return 'server_error';
     if (message.includes('401') || message.includes('unauthor')) return 'authentication';
     if (message.includes('403') || message.includes('permission')) return 'permission';
@@ -86,7 +86,7 @@ const classifyTransferError = (error) => {
     if (message.includes('409') || message.includes('conflict')) return 'conflict';
     if (message.includes('source changed') || message.includes('modified after')) return 'source_changed';
     if (message.includes('destination') && (message.includes('unavailable') || message.includes('missing'))) return 'destination_unavailable';
-    if (message.includes('invalid') || message.includes('validation')) return 'validation';
+    if (status === 400 || message.includes('invalid') || message.includes('validation')) return 'validation';
     if (message.includes('timeout') || message.includes('timed out')) return 'timeout';
     if (message.includes('network') || message.includes('connect') || message.includes('fetch')) return 'network';
     if (message.includes('cancel')) return 'cancelled';
@@ -983,26 +983,48 @@ export default function FileBrowser({ token, user, onLogout }) {
         updateQueueItem(id, { status: 'queued', detail: 'Retry queued', finishedAt: null });
         void runNextQueueItem();
     };
-    const removeQueueItem = (id) => {
+    const discardQueueItem = async (id) => {
         const item = queueItemsRef.current.find((candidate) => candidate.id === id);
         if (item && ['queued', 'running', 'retrying'].includes(item.status)) {
             cancelQueueItem(id);
-            return;
+            return false;
         }
+        if (!item) return true;
+        const attempt = uploadAttemptsRef.current.get(id);
+        if (item.serverSessionId) {
+            updateQueueItem(id, { detail: 'Discarding the unfinished server upload session...' });
+            try {
+                const response = await fetch(`/api/upload/sessions/${encodeURIComponent(item.serverSessionId)}`, {
+                    method: 'DELETE',
+                    headers: attempt?.headers || headersForLocation(item.locationId),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok && response.status !== 404 && response.status !== 410) {
+                    throw new Error(data.error?.message || data.error || `Could not discard upload session (${response.status}).`);
+                }
+            } catch (error) {
+                updateQueueItem(id, { detail: `Could not discard upload session: ${error.message || error}` });
+                return false;
+            }
+        }
+        attempt?.control.abort();
+        uploadAttemptsRef.current.delete(id);
         queueJobsRef.current.delete(id);
-        const next = queueItemsRef.current.filter((item) => item.id !== id);
+        const retryTimer = queueRetryTimersRef.current.get(id);
+        if (retryTimer) window.clearTimeout(retryTimer);
+        queueRetryTimersRef.current.delete(id);
+        const next = queueItemsRef.current.filter((candidate) => candidate.id !== id);
         queueItemsRef.current = next;
         setQueueItems(next);
+        return true;
     };
-    const clearQueueHistory = () => {
-        const next = queueItemsRef.current.filter((item) => !['completed', 'failed', 'cancelled'].includes(item.status));
-        queueItemsRef.current = next;
-        setQueueItems(next);
+    const clearQueueHistory = async () => {
+        const removable = queueItemsRef.current.filter((item) => ['completed', 'failed', 'cancelled', 'needs_user_action'].includes(item.status));
+        await Promise.all(removable.map((item) => discardQueueItem(item.id)));
     };
-    const clearQueueStatus = (status) => {
-        const next = queueItemsRef.current.filter((item) => item.status !== status);
-        queueItemsRef.current = next;
-        setQueueItems(next);
+    const clearQueueStatus = async (status) => {
+        const removable = queueItemsRef.current.filter((item) => item.status === status);
+        await Promise.all(removable.map((item) => discardQueueItem(item.id)));
     };
     const startDownload = () => {
         if (!selectedItems.length) return;
@@ -1663,14 +1685,32 @@ export default function FileBrowser({ token, user, onLogout }) {
           if (!tree || !tree.loaded) return <span className="tree-loading">Loading folders...</span>;
           return <div className="tree-children">{tree.children.map((node) => <FolderTree key={node.path} node={node} currentPath={requestedLocationId === locationId ? currentPath : ''} dragItems={dragItems} dropTarget={dropTarget} onToggle={(child) => toggleFolder(requestedLocationId, child)} onNavigate={(path) => selectLocation(requestedLocationId, path)} onDragOver={(event, child) => { if (isValidMoveTarget(dragItems, child.path, requestedLocationId)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropTarget(child.path); scheduleTreeExpand(requestedLocationId, child); } }} onDragLeave={() => setDropTarget(null)} onDrop={(event, child) => { event.preventDefault(); endDrag(); moveItems(dragItems, child.path, requestedLocationId); }} />)}</div>;
        };
-        const renderQueueItem = (item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}><strong>{item.label}</strong><span role="status" aria-live="polite">{item.detail}</span>{item.progress && <small>{formatSize(item.progress.completedBytes)}{item.progress.totalBytes == null ? '' : ` / ${formatSize(item.progress.totalBytes)}`}{item.progress.percentage == null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}{['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}{item.kind === 'upload' && item.serverSessionId && item.status === 'needs_user_action' && <button type="button" onClick={() => beginResumeUpload(item)}>Resume</button>}{['failed', 'needs_user_action'].includes(item.status) && !item.serverSessionId && queueJobsRef.current.has(item.id) && <button type="button" onClick={() => retryQueueItem(item.id)}>{item.batchId ? 'Reconcile' : 'Retry'}</button>}{['completed', 'failed', 'cancelled'].includes(item.status) && <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>}</li>;
+        const renderQueueItem = (item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}>
+            <strong>{item.label}</strong>
+            <span role="status" aria-live="polite">{item.detail}</span>
+            {item.progress && <small>{formatSize(item.progress.completedBytes)}{item.progress.totalBytes == null ? '' : ` / ${formatSize(item.progress.totalBytes)}`}{item.progress.percentage == null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}
+            {['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}
+            {item.kind === 'upload' && item.serverSessionId && item.status === 'needs_user_action' &&
+                <button type="button" onClick={() => item.errorCategory === 'validation' && queueJobsRef.current.has(item.id)
+                    ? retryQueueItem(item.id) : beginResumeUpload(item)}>
+                    {item.errorCategory === 'validation' && queueJobsRef.current.has(item.id) ? 'Retry upload' : 'Resume'}
+                </button>}
+            {['failed', 'needs_user_action'].includes(item.status) && !item.serverSessionId && queueJobsRef.current.has(item.id) &&
+                <button type="button" onClick={() => retryQueueItem(item.id)}>{item.batchId ? 'Reconcile' : 'Retry'}</button>}
+            {['completed', 'failed', 'cancelled', 'needs_user_action'].includes(item.status) &&
+                <button type="button" onClick={() => void discardQueueItem(item.id)}>
+                    {item.kind === 'upload' && item.serverSessionId ? 'Discard' : 'Remove'}
+                </button>}
+        </li>;
 
        if (interfaceStyle === 'pane') {
            return <>
                <input ref={inputRef} type="file" multiple hidden onChange={upload} />
                <input ref={resumeDirectoryInputRef} type="file" multiple webkitdirectory="" hidden onChange={upload} />
                <PaneWorkspace token={token} user={user} onLogout={onLogout} onStyleChange={setInterfaceStyle}
-                   transferQueue={queueItems} onCancelUpload={cancelQueueItem} onResumeUpload={beginResumeUpload}
+                    transferQueue={queueItems} onCancelUpload={cancelQueueItem} onResumeUpload={beginResumeUpload}
+                    onRetryUpload={retryQueueItem}
+                    onDiscardUpload={discardQueueItem} onClearNeedsAction={() => clearQueueStatus('needs_user_action')}
                    onUploadFiles={(items, directories, uploadContext, onComplete) => uploadFiles(items, directories, null, { ...uploadContext, onComplete })} />
            </>;
        }
@@ -1712,7 +1752,7 @@ export default function FileBrowser({ token, user, onLogout }) {
             </div>
         </Dialog>}
          {modal === 'shareLinks' && <Dialog title="Share Links" onClose={() => setModal(null)}><div className="share-links-dialog"><div className="share-links-toolbar"><p>Links created by {user.username}.</p><button type="button" onClick={loadShareLinks} disabled={shareLinksLoading}>{shareLinksLoading ? 'Refreshing...' : 'Refresh'}</button></div>{shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : <div className="share-link-groups">{shareLinkGroups.map((group) => <section className="share-link-group" key={group.key}><div className="share-link-group-heading"><h3>{group.label}</h3><span>{group.links.length}</span>{group.key === 'revoked' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteRevokedShareLink(link.shareToken)))}>Clear all revoked</button>}{group.key === 'expired' && <button type="button" onClick={() => void Promise.all(group.links.map((link) => deleteExpiredShareLink(link.shareToken)))}>Clear all expired</button>}</div><div className="share-links-list">{group.links.map((link) => { const secureUrl = shareLinkUrl(link, 'secure'); const directUrl = shareLinkUrl(link, 'direct'); const status = shareLinkStatus(link); return <article className="share-link-card" key={link.shareToken}><div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div><small>Location: {link.locationId || '--'} · Created: {formatDate(link.createdAt)}</small><small>Downloads: {link.downloadCount || 0}{link.maxDownloads > 0 ? ` / ${link.maxDownloads}` : ' / unlimited'} · Expires: {link.expiresAt ? formatDate(link.expiresAt) : 'never'}</small><label>Secure link<input readOnly value={secureUrl} onFocus={(event) => event.target.select()} /></label>{directUrl && <label>Direct download<input readOnly value={directUrl} onFocus={(event) => event.target.select()} /></label>}<div className="modal-actions">{status === 'Active' && <><button type="button" onClick={() => void copyShareLink(link, 'secure')}>Copy secure</button>{directUrl && <button type="button" onClick={() => void copyShareLink(link, 'direct')}>Copy direct</button>}<button type="button" className="danger" onClick={() => void revokeShareLink(link.shareToken)}>Revoke</button></>}{status === 'Revoked' && <button type="button" onClick={() => void deleteRevokedShareLink(link.shareToken)}>Clear revoked</button>}{status === 'Expired' && <button type="button" onClick={() => void deleteExpiredShareLink(link.shareToken)}>Clear expired</button>}</div></article>; })}</div></section>)}</div>}</div></Dialog>}
-          {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue ({queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length} active)</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No transfers in history.</p> : <><strong>Active</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['queued', 'running', 'retrying', 'needs_user_action'].includes(item.status)).map(renderQueueItem)}</ul>{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <><strong>History</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['completed', 'failed', 'cancelled'].includes(item.status)).map(renderQueueItem)}</ul></>}</>}{queueItems.some((item) => item.status === 'completed') && <button type="button" onClick={() => clearQueueStatus('completed')}>Clear completed</button>}{queueItems.some((item) => item.status === 'failed') && <button type="button" onClick={() => clearQueueStatus('failed')}>Clear failed</button>}{queueItems.some((item) => item.status === 'cancelled') && <button type="button" onClick={() => clearQueueStatus('cancelled')}>Clear cancelled</button>}{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <button type="button" onClick={clearQueueHistory}>Clear history</button>}</div>}
+         {queueOpen && <div className="queue-panel"><div className="queue-panel-header"><strong>Transfer Queue ({queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length} active)</strong><button onClick={() => setQueueOpen(false)}>×</button></div>{queueItems.length === 0 ? <p className="muted">No transfers in history.</p> : <><strong>Active</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['queued', 'running', 'retrying', 'needs_user_action'].includes(item.status)).map(renderQueueItem)}</ul>{queueItems.some((item) => ['completed', 'failed', 'cancelled'].includes(item.status)) && <><strong>History</strong><ul className="queue-panel-list">{queueItems.filter((item) => ['completed', 'failed', 'cancelled'].includes(item.status)).map(renderQueueItem)}</ul></>}</>}{queueItems.some((item) => item.status === 'needs_user_action') && <button type="button" onClick={() => void clearQueueStatus('needs_user_action')}>Clear needs action</button>}{queueItems.some((item) => item.status === 'completed') && <button type="button" onClick={() => void clearQueueStatus('completed')}>Clear completed</button>}{queueItems.some((item) => item.status === 'failed') && <button type="button" onClick={() => void clearQueueStatus('failed')}>Clear failed</button>}{queueItems.some((item) => item.status === 'cancelled') && <button type="button" onClick={() => void clearQueueStatus('cancelled')}>Clear cancelled</button>}{queueItems.some((item) => ['completed', 'failed', 'cancelled', 'needs_user_action'].includes(item.status)) && <button type="button" onClick={() => void clearQueueHistory()}>Clear history</button>}</div>}
              {modal === 'ai' && <Dialog title="AI Log analysis" className="ai-analysis-modal" onClose={() => { if (['queued', 'running', 'cancelling'].includes(aiAnalysis?.status)) cancelAiAnalysis(); setModal(null); }}>
                {['queued', 'running', 'cancelling'].includes(aiAnalysis?.status) && <section className="ai-analysis-progress" role="status" aria-live="polite" aria-label="Local LLM analysis in progress">
                 <div className="ai-analysis-visual" aria-hidden="true">

@@ -482,7 +482,9 @@ const GlobalStyles = () => {
                 .rounded-full { border-radius: 50%; }
 
                 .pane-upload-queue { position: absolute; z-index: 45; right: 22px; bottom: 54px; display: grid; gap: 8px; width: min(420px, calc(100vw - 44px)); max-height: 38vh; overflow: auto; padding: 12px; border: 1px solid var(--pane-line-strong, rgba(112,214,255,.48)); border-radius: 12px; color: var(--pane-text, #edf8ff); background: var(--pane-panel, rgba(7,19,34,.96)); box-shadow: 5px 5px 0 rgba(0,0,0,.3), 0 18px 44px rgba(0,0,0,.35); }
-                .pane-upload-queue > strong { color: var(--pane-accent, #5cdbff); font-size: var(--pane-small-font-size, 12px); letter-spacing: .08em; text-transform: uppercase; }
+                .pane-upload-queue-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+                .pane-upload-queue-heading strong { color: var(--pane-accent, #5cdbff); font-size: var(--pane-small-font-size, 12px); letter-spacing: .08em; text-transform: uppercase; }
+                .pane-upload-queue-heading button { padding: 5px 8px; border: 1px solid var(--pane-line-strong, rgba(112,214,255,.48)); border-radius: 6px; color: var(--pane-text, #edf8ff); background: transparent; cursor: pointer; }
                 .pane-upload-queue-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--pane-line, rgba(119,183,222,.2)); border-radius: 8px; background: var(--pane-panel-soft, rgba(17,39,62,.68)); }
                 .pane-upload-queue-item > span { display: grid; min-width: 0; gap: 3px; }
                 .pane-upload-queue-item b, .pane-upload-queue-item small { overflow-wrap: anywhere; }

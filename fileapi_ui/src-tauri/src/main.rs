@@ -266,7 +266,7 @@ struct UploadSummary {
 struct UploadSource {
     path: String,
     size: u64,
-    modified: u128,
+    modified: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -277,7 +277,7 @@ struct UploadManifestFile {
     path: String,
     name: String,
     size: u64,
-    modified: u128,
+    modified: u64,
     chunk_hashes: Vec<String>,
     manifest_hash: String,
 }
@@ -296,7 +296,7 @@ fn upload_source_snapshot(path: &Path) -> Result<UploadSource, String> {
         .modified()
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis())
+        .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
     Ok(UploadSource {
         path: path.to_string_lossy().to_string(),
@@ -341,7 +341,7 @@ struct LocalFile {
     path: String,
     is_directory: bool,
     size: u64,
-    modified: u128,
+    modified: u64,
 }
 
 #[derive(Serialize)]
@@ -1933,7 +1933,7 @@ fn local_list_directory(path: String) -> Result<LocalDirectory, String> {
                 .modified()
                 .ok()
                 .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_millis())
+                .map(|duration| duration.as_millis() as u64)
                 .unwrap_or_default();
             Some(LocalFile {
                 name,
@@ -2225,7 +2225,7 @@ async fn api_upload_chunk(
     offset: u64,
     total_size: u64,
     chunk_size: u64,
-    expected_modified: u128,
+    expected_modified: u64,
     expected_hash: String,
     ignore_tls_errors: bool,
     session_id: Option<String>,

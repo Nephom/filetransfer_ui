@@ -856,6 +856,75 @@ test('resumable upload options provide the configured chunk size and reject stal
   assert.equal((await f.send('/upload/sessions/config', '', auth, 'GET')).status, 404);
 });
 
+test('resumable manifest accepts ordinary 64/69 KiB files, reports exact validation failures, and discards failed sessions', async t => {
+  const logEntries = [];
+  const f = await fixture(t, { logger: { logSystem: (level, message) => logEntries.push({ level, message }) } });
+  const { store } = await enableResumableFixture(t, f);
+  f.config.maxFileSize = 10 * 1024 * 1024 * 1024;
+  const jsonHeaders = { ...auth, 'content-type': 'application/json' };
+  const contents = [Buffer.alloc(64 * 1024, 0x61), Buffer.alloc(69 * 1024, 0x62)];
+  const files = contents.map((body, index) => {
+    const name = `${index ? 69 : 64}kb.bin`;
+    return {
+      fileId: randomUUID(), path: name, name, size: body.length,
+      chunkHashes: [createHash('sha256').update(body).digest('hex')]
+    };
+  });
+  const reservation = await f.send('/upload/sessions', JSON.stringify({
+    path: '', clientAttemptId: 'small-browser-files', fileCount: files.length, directoryCount: 0
+  }), jsonHeaders);
+  assert.equal(reservation.status, 201);
+  const sessionId = reservation.body.sessionId;
+  const manifest = await f.send(`/upload/sessions/${sessionId}/manifest/pages/0`, JSON.stringify({
+    fileOffset: 0, directoryOffset: 0, files, directories: []
+  }), jsonHeaders);
+  assert.equal(manifest.status, 201, JSON.stringify(manifest.body));
+  await f.send(`/upload/sessions/${sessionId}/manifest/complete`, '');
+
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index];
+    const body = contents[index];
+    const digest = file.chunkHashes[0];
+    const chunk = await f.send(`/upload/sessions/${sessionId}/files/${file.fileId}/chunks`, body, {
+      ...auth, 'content-type': 'application/octet-stream', 'content-length': String(body.length),
+      'content-range': `bytes 0-${body.length - 1}/${body.length}`, 'x-chunk-sha256': digest
+    }, 'PUT');
+    assert.equal(chunk.status, 200, JSON.stringify(chunk.body));
+    assert.equal((await f.send(`/upload/sessions/${sessionId}/files/${file.fileId}/complete`, '')).status, 200);
+    assert.deepEqual(await fs.promises.readFile(path.join(f.root, file.name)), body);
+  }
+  assert.equal((await f.send(`/upload/sessions/${sessionId}/complete`, '')).body.status, 'completed');
+
+  const invalidReservation = await f.send('/upload/sessions', JSON.stringify({
+    path: '', clientAttemptId: 'bad-manifest-to-discard', fileCount: 1, directoryCount: 0
+  }), jsonHeaders);
+  const invalidSessionId = invalidReservation.body.sessionId;
+  const invalidFile = { ...files[0], fileId: randomUUID(), chunkHashes: [] };
+  const rejected = await f.send(`/upload/sessions/${invalidSessionId}/manifest/pages/0`, JSON.stringify({
+    fileOffset: 0, directoryOffset: 0, files: [invalidFile], directories: []
+  }), jsonHeaders);
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.body.error.message, /chunk count does not match file size/);
+  assert.ok(logEntries.some(entry => entry.level === 'WARN' &&
+    entry.message.includes('manifest/pages/:pageIndex') && entry.message.includes('chunk count does not match file size')));
+
+  const wrongOwner = await f.send(`/upload/sessions/${invalidSessionId}`, '', { ...auth, authorization: 'Bearer bob' }, 'DELETE');
+  assert.equal(wrongOwner.status, 404);
+  assert.ok(await store.get(invalidSessionId), 'another user cannot discard the session');
+  const discarded = await f.send(`/upload/sessions/${invalidSessionId}`, '', auth, 'DELETE');
+  assert.equal(discarded.status, 200);
+  assert.equal(discarded.body.discarded, true);
+  assert.equal(await store.get(invalidSessionId), undefined);
+  const listed = await f.send('/upload/sessions', '', auth, 'GET');
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  assert.deepEqual((await store.list({ id: 'id-alice', username: 'alice' })).map(session => session.status), ['completed']);
+  assert.equal(listed.body.sessions.length, 1,
+    'only the completed upload remains listed');
+  assert.equal(listed.body.sessions[0].locationRevision, f.locations.getRevision('default'));
+  assert.deepEqual(await fs.promises.readFile(path.join(f.root, files[0].name)), contents[0],
+    'discarding a session never removes completed destination files');
+});
+
 test('resumable API session resumes an unfinished file after manager restart and never republishes completed output', async t => {
   const f = await fixture(t);
   const { store, resumable } = await enableResumableFixture(t, f);

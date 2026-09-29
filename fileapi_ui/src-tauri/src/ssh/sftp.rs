@@ -168,7 +168,7 @@ pub async fn list_directory(
         let size = metadata.size.unwrap_or(0);
         let modified = metadata
             .mtime
-            .map(|seconds| (seconds as u128) * 1000)
+            .map(|seconds| (seconds as u64) * 1000)
             .unwrap_or(0);
         let child_path = format!("{}/{}", remote_path.trim_end_matches('/'), name);
         files.push(crate::LocalFile {

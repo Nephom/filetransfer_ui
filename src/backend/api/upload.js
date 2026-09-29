@@ -118,25 +118,33 @@ class UploadAPI {
     }
   }
 
-  _respondError(res, error) {
+  _respondError(res, error, req = null) {
     if (res.headersSent || res.destroyed) return;
     const status = error.statusCode || ({ ENOSPC: 507, EACCES: 403, EPERM: 403, ENOENT: 404, ABORT_ERR: 409 }[error.code]) || 500;
+    if (status === 400) {
+      const endpoint = req?.route?.path
+        ? `${req.baseUrl || ''}${req.route.path}`
+        : (req?.path || '/upload');
+      this._warn(`Upload API validation rejected ${req?.method || 'request'} ${endpoint}: ${error.message || 'Invalid upload request'}`);
+    }
+    const message = status === 400 && typeof error.message === 'string' && error.message
+      ? error.message
+      : ({ 400: 'Invalid upload request', 401: 'Authentication required', 403: 'Upload access denied', 404: 'Upload not found',
+        409: 'Upload state or Location changed', 413: 'Upload limit exceeded', 429: 'Upload admission capacity reached' }[status] || (status < 500 ? 'Upload rejected' : 'Upload could not be completed'));
     res.status(status).json({ success: false,
       ...(Number.isSafeInteger(error.expectedOffset) && error.expectedOffset >= 0 ? { expectedOffset: error.expectedOffset } : {}),
       ...(Number.isSafeInteger(error.retryAfterMs) && error.retryAfterMs > 0 ? { retryAfterMs: error.retryAfterMs } : {}),
-      error: { code: status, message: status < 500 ?
-      ({ 400: 'Invalid upload request', 401: 'Authentication required', 403: 'Upload access denied', 404: 'Upload not found',
-        409: 'Upload state or Location changed', 413: 'Upload limit exceeded', 429: 'Upload admission capacity reached' }[status] || 'Upload rejected') : 'Upload could not be completed' } });
+      error: { code: status, message } });
   }
 
   _setupRoutes() {
-    const auth = (req, res, next) => Promise.resolve(this.authenticate(req, res, next)).catch(error => this._respondError(res, error));
+    const auth = (req, res, next) => Promise.resolve(this.authenticate(req, res, next)).catch(error => this._respondError(res, error, req));
     const route = fn => (req, res) => Promise.resolve().then(() => {
       if (Object.keys(req.query || {}).some(key => /token|password|authorization/i.test(key))) {
         throw fault(400, 'Body/query credentials are not supported');
       }
       return fn(req, res);
-    }).catch(error => this._respondError(res, error));
+    }).catch(error => this._respondError(res, error, req));
     this.router.post('/upload/batches', auth, express.json({ limit: '20kb' }), route(async (req, res) => {
       const body = req.body;
       if (!body || Array.isArray(body) || Object.keys(body).some(key => !['path', 'clientAttemptId'].includes(key)) ||
@@ -200,6 +208,24 @@ class UploadAPI {
       }
       res.set('Cache-Control', 'no-store').json({ sessions: accessible });
     }));
+    this.router.delete('/upload/sessions/:sessionId', auth, route(async (req, res) => {
+      const manager = this._requireResumableUploads();
+      const owner = this._owner(req);
+      const session = await manager.store.getOwned(req.params.sessionId, owner);
+      if (!session) throw fault(404, 'Upload session not found');
+      if (req.headers['x-location-id'] && req.headers['x-location-id'] !== session.locationId) {
+        throw fault(403, 'Location does not match upload session');
+      }
+      if (session.expiresAt <= manager.now() || session.status === 'expired') {
+        await manager.cleanupExpired();
+      } else {
+        // Cancellation settles in-flight chunk writes and removes only session staging.
+        // Already published files remain in their destination Location.
+        await manager.cancel(session);
+      }
+      await manager.store.remove(session.sessionId);
+      res.set('Cache-Control', 'no-store').json({ success: true, sessionId: session.sessionId, discarded: true });
+    }));
     this.router.post('/upload/sessions/:sessionId/manifest/pages/:pageIndex', auth, express.json({ limit: '5mb' }), route(async (req, res) => {
       const manager = this._requireResumableUploads();
       const { session, context } = await this._authorizedUploadSession(req, req.params.sessionId);
@@ -214,23 +240,40 @@ class UploadAPI {
         throw fault(400, 'Invalid upload manifest page');
       }
       const maxFileSize = this.getConfig('fileSystem.maxFileSize');
-      const files = body.files.map(entry => {
-        if (!entry || Array.isArray(entry) || Object.keys(entry).some(key => ![
+      const files = body.files.map((entry, index) => {
+        if (!entry || Array.isArray(entry) || typeof entry !== 'object' || Object.keys(entry).some(key => ![
           'fileId', 'path', 'name', 'size', 'chunkHashes'
-        ].includes(key)) || typeof entry.fileId !== 'string' || !/^[0-9a-f-]{36}$/i.test(entry.fileId) ||
-            typeof entry.path !== 'string' || typeof entry.name !== 'string' ||
-            !Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > maxFileSize ||
-            !Array.isArray(entry.chunkHashes)) throw fault(400, 'Invalid upload manifest file');
+        ].includes(key))) throw fault(400, `Invalid upload manifest file fields at index ${index}`);
+        if (typeof entry.fileId !== 'string' || !/^[0-9a-f-]{36}$/i.test(entry.fileId)) {
+          throw fault(400, `Invalid upload manifest file ID at index ${index}`);
+        }
+        if (typeof entry.path !== 'string' || typeof entry.name !== 'string') {
+          throw fault(400, `Invalid upload manifest path or name at index ${index}`);
+        }
+        if (!Number.isSafeInteger(entry.size) || entry.size < 0) {
+          throw fault(400, `Invalid upload manifest file size at index ${index}`);
+        }
+        if (entry.size > maxFileSize) {
+          throw fault(400, `Upload manifest file at index ${index} exceeds the configured maximum size`);
+        }
+        if (!Array.isArray(entry.chunkHashes)) {
+          throw fault(400, `Invalid upload manifest chunk hashes at index ${index}`);
+        }
         const filePath = relativePath(entry.path);
         const name = this._sanitizeFilename(entry.name);
-        if (path.posix.basename(filePath) !== name || Buffer.byteLength(name) > 16384) throw fault(400, 'Invalid upload manifest filename');
+        if (path.posix.basename(filePath) !== name || Buffer.byteLength(name) > 16384) {
+          throw fault(400, `Invalid upload manifest filename at index ${index}`);
+        }
         if (this.getConfig('security.enableFileUploadSecurity') === true &&
             [filePath, name].some(value => dangerousExtensions.has(path.extname(value).toLowerCase()))) {
-          throw fault(400, 'File type is not allowed');
+          throw fault(400, `File type is not allowed for manifest entry ${index}`);
         }
         const chunks = Math.ceil(entry.size / session.chunkSize);
-        if (entry.chunkHashes.length !== chunks || entry.chunkHashes.some(hash => typeof hash !== 'string' || !/^[a-f0-9]{64}$/i.test(hash))) {
-          throw fault(400, 'Invalid upload chunk checksum manifest');
+        if (entry.chunkHashes.length !== chunks) {
+          throw fault(400, `Upload manifest chunk count does not match file size at index ${index}`);
+        }
+        if (entry.chunkHashes.some(hash => typeof hash !== 'string' || !/^[a-f0-9]{64}$/i.test(hash))) {
+          throw fault(400, `Invalid upload chunk checksum at index ${index}`);
         }
         return { fileId: entry.fileId, relativePath: filePath, fileName: name, size: entry.size,
           chunkHashes: entry.chunkHashes.map(hash => hash.toLowerCase()) };
@@ -763,7 +806,7 @@ class UploadAPI {
           error: cleanupError || (state.controller.signal.aborted ? null : error) });
         done.resolve();
       }
-      this._respondError(res, error);
+      this._respondError(res, error, req);
     }
   }
 

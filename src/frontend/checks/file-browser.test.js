@@ -16,9 +16,13 @@ function loadSource(relative) {
     module._compile(result.outputFiles[0].text, filename);
     return module.exports;
 }
-const { deleteGroups, sortFiles, createRequestGate } = loadSource('../public/components/FileBrowser.js');
+const { classifyTransferError, deleteGroups, sortFiles, createRequestGate } = loadSource('../public/components/FileBrowser.js');
 const { virtualRange } = loadSource('../public/components/VirtualFileList.js');
 const { buildBrowserUploadManifest, buildBrowserManifestPages, planBrowserUploadChildren, rebindBrowserUploadManifest, sha256FallbackHex } = loadSource('../public/upload-batching.js');
+
+test('HTTP 400 upload validation errors are classified for retry/discard actions', () => {
+    assert.equal(classifyTransferError(Object.assign(new Error('Invalid upload manifest chunk count'), { status: 400 })), 'validation');
+});
 
 test('browser upload manifest hashes chunks, sorts UTF-8 paths, and preserves empty directories', async () => {
     const a = Object.assign(new Blob(['abc']), { name: 'a.txt', lastModified: 1 });

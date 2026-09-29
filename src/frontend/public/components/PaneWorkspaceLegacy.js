@@ -84,7 +84,7 @@ const consumePasteProgressStream = async (response, onEvent) => {
 
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
-export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onUploadFiles }) {
+export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onRetryUpload, onDiscardUpload, onClearNeedsAction, onUploadFiles }) {
     const [locations, setLocations] = React.useState([]);
     const [locationRailOverflow, setLocationRailOverflow] = React.useState(false);
     const [locationPickerOpen, setLocationPickerOpen] = React.useState(false);
@@ -697,15 +697,23 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             </section>
         </div>}
         {transferQueue.some(item => item.kind === 'upload') && <aside className="pane-upload-queue" aria-label="API upload queue">
-            <strong>API Uploads</strong>
+            <div className="pane-upload-queue-heading"><strong>API Uploads</strong>
+                {transferQueue.some(item => item.kind === 'upload' && item.status === 'needs_user_action') &&
+                    <button type="button" onClick={() => onClearNeedsAction?.()}>Clear needs action</button>}
+            </div>
             {transferQueue.filter(item => item.kind === 'upload').slice(-8).map(item => <article className={`pane-upload-queue-item queue-status-${item.status}`} key={item.id}>
                 <span><b>{item.label}</b><small role="status" aria-live="polite">{item.detail}</small></span>
                 {item.progress && <small>{item.progress.totalBytes ? `${Math.round(item.progress.completedBytes / item.progress.totalBytes * 100)}% · ` : ''}{item.progress.completedItems || 0}/{item.progress.totalItems || 0} files</small>}
                 {['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => onCancelUpload?.(item.id)}>Cancel</button>}
                 {item.serverSessionId && item.status === 'needs_user_action' && <button type="button" onClick={() => {
+                    if (item.errorCategory === 'validation' && onRetryUpload) return onRetryUpload(item.id);
                     const pane = windowsRef.current.find(candidate => candidate.locationId === item.locationId) || activeWindow;
                     onResumeUpload?.(item, pane ? () => loadFiles(pane.id, pane.path, pane.query) : undefined);
-                }}>Resume</button>}
+                }}>{item.errorCategory === 'validation' && onRetryUpload ? 'Retry upload' : 'Resume'}</button>}
+                {['failed', 'cancelled', 'needs_user_action', 'completed'].includes(item.status) &&
+                    <button type="button" onClick={() => void onDiscardUpload?.(item.id)}>
+                        {item.serverSessionId ? 'Discard' : 'Remove'}
+                    </button>}
             </article>)}
         </aside>}
         <footer className="pane-statusbar"><span>{windows.length} open window{windows.length === 1 ? '' : 's'}</span><span>{activeWindow ? `Active: ${locationFor(activeWindow.locationId)?.displayName || activeWindow.locationId}` : 'Open a Location to begin'}</span></footer>
