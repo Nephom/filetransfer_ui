@@ -5,11 +5,12 @@ import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { chromium, firefox } from 'playwright';
 import build from '../../../scripts/build-browser.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const baselineRef = process.env.BROWSER_BASELINE_REF || 'ac222f0f65cf8b8846645af2fcfdc9f158e8cb97';
+const browserType = process.env.BROWSER_ENGINE === 'firefox' ? firefox : chromium;
 await build.buildBrowser();
 const manifest = build.checkBrowserBuild();
 const records = Array.from({ length: 10000 }, (_, index) => ({ name: `file${index}.txt`, path: `file${index}.txt`, size: index, modified: '2026-09-09T00:00:00Z', isDirectory: false }));
@@ -272,8 +273,9 @@ const waitFor = async (predicate, message, timeout = 10000) => {
         await new Promise(resolve => setTimeout(resolve, 25));
     }
 };
+testRun: {
 try {
-    browser = await chromium.launch({ headless: true });
+    browser = await browserType.launch({ headless: true });
     report.browser = browser.version();
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const page = await context.newPage();
@@ -332,13 +334,17 @@ try {
     await page.locator('.file-row').nth(1).click({ modifiers: ['Control'] });
     await page.getByRole('button', { name: 'Download', exact: true }).click();
     await page.locator('input[name="downloadMode"]').nth(1).check();
+    const zipDownloadEvent = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Start download', exact: true }).click();
+    assert.equal(await (await zipDownloadEvent).failure(), null);
     await waitFor(() => requests.filter(request => request.path === '/api/archive').length >= 1, 'ZIP archive request was not sent');
     assert.equal(requests.findLast(request => request.path === '/api/archive').body.format, 'zip');
 
     await page.getByRole('button', { name: 'Download', exact: true }).click();
     await page.locator('input[name="downloadMode"]').nth(0).check();
+    const tarGzipDownloadEvent = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Start download', exact: true }).click();
+    assert.equal(await (await tarGzipDownloadEvent).failure(), null);
     await waitFor(() => requests.filter(request => request.path === '/api/archive').length >= 2, 'tar.gz archive request was not sent');
     assert.equal(requests.findLast(request => request.path === '/api/archive').body.format, 'tar.gz');
     report.checks.push('archive format selection sends the confirmed ZIP and tar.gz formats');
@@ -464,13 +470,16 @@ try {
     await page.waitForFunction(() => document.querySelector('.statusbar')?.textContent.includes('10000 items'));
 
     uploadMode = 'held';
-    await page.locator('input[type="file"]').first().setInputFiles({ name: 'fixture.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
+    const uploadFileChooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+    await (await uploadFileChooser).setFiles({ name: 'fixture.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
     await waitFor(() => batches.size === 1 && [...batches.values()][0].uploads === 1, 'reserved upload dispatched');
     const uploadOptionsIndex = requests.findIndex(request => request.path === '/api/upload/sessions/config' && request.method === 'GET');
     const uploadReservationIndex = requests.findIndex(request => request.path === '/api/upload/sessions' && request.method === 'POST');
     const uploadManifestIndex = requests.findIndex(request => request.path.endsWith('/manifest/pages/0') && request.method === 'POST');
     assert.ok(uploadOptionsIndex >= 0 && uploadOptionsIndex < uploadReservationIndex && uploadReservationIndex < uploadManifestIndex,
         'chunk options and source preparation precede session reservation; manifest pages follow it');
+    assert.deepEqual(Object.keys(requests[uploadManifestIndex].body.files[0]).sort(), ['chunkHashes', 'fileId', 'name', 'path', 'size']);
     assert.equal(requests[uploadReservationIndex].body.chunkSize, 8 * 1024 * 1024);
     await page.getByRole('button', { name: 'Location B', exact: true }).click();
     await page.locator('.queue-panel-item button').filter({ hasText: /^Cancel$/ }).click();
@@ -504,6 +513,12 @@ try {
     assert.equal(lost.files[0].uploadedOffset, 12);
     assert.equal(lost.uploads, 1);
     report.checks.push('lost chunk response resumes from the server checkpoint without retransmitting accepted bytes');
+
+    if (process.env.BROWSER_TEST_SCOPE === 'upload') {
+        report.checks.push('upload-only scope completed browser selection, manifest, chunk, and completion checks');
+        console.log(JSON.stringify(report, null, 2));
+        break testRun;
+    }
 
     reserveDelay = 600;
     await page.locator('input[type="file"]').first().setInputFiles({ name: 'reserve-cancel.txt', mimeType: 'text/plain', buffer: Buffer.from('fixture data') });
@@ -1340,4 +1355,5 @@ try {
 } finally {
     await browser?.close();
     await new Promise(resolve => server.close(resolve));
+}
 }

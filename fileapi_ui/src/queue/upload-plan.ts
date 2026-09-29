@@ -9,6 +9,8 @@ export type UploadManifestFile = {
   manifestHash: string;
 };
 
+type ApiUploadManifestFile = Pick<UploadManifestFile, "fileId" | "path" | "name" | "size" | "chunkHashes">;
+
 export type UploadSessionFile = {
   fileId: string;
   index: number;
@@ -60,6 +62,9 @@ export const planUploadChildren = (files: UploadManifestFile[], maxFiles = 500) 
   return children;
 };
 
+const projectApiManifestFile = ({ fileId, path, name, size, chunkHashes }: UploadManifestFile): ApiUploadManifestFile =>
+  ({ fileId, path, name, size, chunkHashes });
+
 export const buildManifestPages = (
   files: UploadManifestFile[],
   directories: string[],
@@ -72,10 +77,10 @@ export const buildManifestPages = (
   const encodedLength = (fileOffset: number, directoryOffset: number, pageFiles: UploadManifestFile[], pageDirectories: string[]) =>
     new TextEncoder().encode(JSON.stringify({
       fileOffset, directoryOffset,
-      files: pageFiles.map(({ fileId, path, name, size, chunkHashes }) => ({ fileId, path, name, size, chunkHashes })),
+      files: pageFiles.map(projectApiManifestFile),
       directories: pageDirectories,
     })).length;
-  const pages: { pageIndex: number; fileOffset: number; directoryOffset: number; files: UploadManifestFile[]; directories: string[] }[] = [];
+  const pages: { pageIndex: number; fileOffset: number; directoryOffset: number; files: ApiUploadManifestFile[]; directories: string[] }[] = [];
   let fileOffset = 0, directoryOffset = 0;
   while (fileOffset < sortedFiles.length || directoryOffset < sortedDirectories.length || !pages.length) {
     const pageFiles: UploadManifestFile[] = [], pageDirectories: string[] = [];
@@ -95,7 +100,8 @@ export const buildManifestPages = (
     if (!pageFiles.length && !pageDirectories.length && (fileOffset < sortedFiles.length || directoryOffset < sortedDirectories.length)) {
       throw new Error("Upload manifest page could not fit within the API metadata limit.");
     }
-    pages.push({ pageIndex: pages.length, fileOffset, directoryOffset, files: pageFiles, directories: pageDirectories });
+    pages.push({ pageIndex: pages.length, fileOffset, directoryOffset,
+      files: pageFiles.map(projectApiManifestFile), directories: pageDirectories });
     fileOffset += pageFiles.length;
     directoryOffset += pageDirectories.length;
   }

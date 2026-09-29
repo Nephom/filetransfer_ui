@@ -65,6 +65,7 @@ test('browser manifest pages rebind unfinished source files to persisted server 
     const manifest = await buildBrowserUploadManifest([{ file, relativePath: 'a.txt' }], [], 1024 * 1024);
     const pages = buildBrowserManifestPages(manifest.files, ['d1', 'd2'], 1);
     assert.deepEqual(pages.map(page => [page.fileOffset, page.directoryOffset]), [[0, 0], [1, 1]]);
+    assert.deepEqual(Object.keys(pages[0].files[0]).sort(), ['chunkHashes', 'fileId', 'name', 'path', 'size']);
     const rebound = rebindBrowserUploadManifest(manifest.files, [{ ...manifest.files[0], fileId: 'server-file', index: 0, chunkSize: 1024 * 1024, uploadedOffset: 2, status: 'uploading' }]);
     assert.equal(rebound[0].fileId, 'server-file');
     assert.throws(() => rebindBrowserUploadManifest([{ ...manifest.files[0], chunkHashes: ['f'.repeat(64)] }], []), /source does not match/);

@@ -156,9 +156,10 @@ export const planBrowserUploadChildren = (files, maxFiles = 500) => {
 export const buildBrowserManifestPages = (files, directories, pageSize = 50) => {
     if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 50) throw new TypeError('Invalid upload manifest page size');
     const maximumPageBytes = 4 * 1024 * 1024;
+    const projectManifestFile = ({ fileId, path, name, size, chunkHashes }) => ({ fileId, path, name, size, chunkHashes });
     const encodedLength = (fileOffset, directoryOffset, pageFiles, pageDirectories) => encoder.encode(JSON.stringify({
         fileOffset, directoryOffset,
-        files: pageFiles.map(({ fileId, path, name, size, chunkHashes }) => ({ fileId, path, name, size, chunkHashes })),
+        files: pageFiles.map(projectManifestFile),
         directories: pageDirectories,
     })).length;
     const pages = [];
@@ -181,7 +182,8 @@ export const buildBrowserManifestPages = (files, directories, pageSize = 50) => 
         if (!pageFiles.length && !pageDirectories.length && (fileOffset < files.length || directoryOffset < directories.length)) {
             throw new Error('Upload manifest page could not fit within the API metadata limit.');
         }
-        pages.push({ pageIndex: pages.length, fileOffset, directoryOffset, files: pageFiles, directories: pageDirectories });
+        pages.push({ pageIndex: pages.length, fileOffset, directoryOffset,
+            files: pageFiles.map(projectManifestFile), directories: pageDirectories });
         fileOffset += pageFiles.length;
         directoryOffset += pageDirectories.length;
     }

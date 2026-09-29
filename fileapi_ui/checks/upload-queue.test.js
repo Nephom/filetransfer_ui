@@ -17,6 +17,12 @@ test("upload plan uses UTF-8 path order and keeps collision groups together unde
   assert.throws(() => uploadPlan.planUploadChildren(Array.from({ length: 501 }, (_, index) => manifestFile(String(index), "same")), 500), /same destination path/);
 });
 
+test("manifest pages project native source metadata to the five API file fields", () => {
+  const file = { ...manifestFile("file-A", "folder/a.txt"), manifestHash: "a".repeat(64) };
+  const page = uploadPlan.buildManifestPages([file], [])[0];
+  assert.deepEqual(Object.keys(page.files[0]).sort(), ["chunkHashes", "fileId", "name", "path", "size"]);
+});
+
 test("resume manifest rebinds existing file IDs by path, size, and chunk hashes", () => {
   const local = [manifestFile("new-a", "dir/a"), { ...manifestFile("new-b", "dir/b"), size: 3, chunkHashes: ["b".repeat(64)] }];
   const remote = [
@@ -141,7 +147,10 @@ test("prepares and preflights the manifest before session reservation; native AP
     path: "folder", clientAttemptId: app.props.transferQueue[0].clientAttemptId, chunkSize: 8 * 1024 * 1024, fileCount: 1, directoryCount: 0,
   });
   assert.equal(app.calls.some((call) => call.command === "api_upload_paths"), false);
-  assert.equal(app.calls.some((call) => call.args.url?.includes("/api/upload/sessions/session-A/manifest/pages/0")), true);
+  const manifestPageRequest = app.calls.find((call) => call.command === "api_request" && call.args.url?.includes("/api/upload/sessions/session-A/manifest/pages/0"));
+  assert.ok(manifestPageRequest);
+  const pageBody = JSON.parse(new TextDecoder().decode(Uint8Array.from(manifestPageRequest.args.body)));
+  assert.deepEqual(Object.keys(pageBody.files[0]).sort(), ["chunkHashes", "fileId", "name", "path", "size"]);
   for (const call of app.calls.filter((call) => call.command === "api_request")) {
     assert.equal(call.args.sessionId, "opaque-A");
     assert.ok(call.args.headers.some(([name, value]) => name === "X-Location-ID" && value === "A"));
