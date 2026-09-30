@@ -1267,7 +1267,7 @@ try {
     await completedRow.waitFor();
     const completedText = await completedRow.innerText();
     assert.equal((completedText.match(/completed/gi) || []).length, 1, `a completed upload shows Completed exactly once: ${completedText}`);
-    assert.match(completedText, /To\s+\S+:\//, 'the queue row names the destination Location and path');
+    assert.match(completedText, /^to\s*.+:\//i, 'the queue row names the destination Location and path');
     assert.equal(await completedRow.locator('.pane-upload-queue-bar').count(), 0, 'a completed row no longer shows a progress bar');
     assert.equal(await completedRow.locator('button', { hasText: 'Discard' }).count(), 0, 'a completed row is cleared, not discarded');
     assert.ok(/^\s*\d+\/\d+ files/.test(await queuePanel.locator('.pane-upload-queue-total').innerText()), 'the summary row shows the actual completed/total file count');
@@ -1278,6 +1278,8 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('.pane-upload-queue .queue-status-completed').length === 0);
     assert.equal(await queuePanel.getByRole('button', { name: 'Clear list', exact: true }).isDisabled(), true, 'Clear list is disabled when no finished record remains');
     report.checks.push('Transfer Queue shows destination, one Completed label, a compact title bar, a real file-count summary, and Clear list removes only finished records');
+    await queuePanel.locator('.pane-upload-queue-close').click();
+    await queuePanel.waitFor({ state: 'detached' });
     await managedPane.locator('button[aria-label="Close window"]').click();
     while (await page.locator('.pane-minimized-item').count()) await page.locator('.pane-minimized-item').last().locator('.pane-minimized-close').click();
     await page.locator('.pane-minimized-dock').waitFor({ state: 'detached' });
