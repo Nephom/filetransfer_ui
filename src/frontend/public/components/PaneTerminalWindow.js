@@ -35,7 +35,7 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     const [menuThemeStyle, setMenuThemeStyle] = React.useState({});
     const [portalRoot, setPortalRoot] = React.useState(null);
     const [sidePanelCoordinates, setSidePanelCoordinates] = React.useState({
-        target: { left: 8, top: 72, maxHeight: 'calc(100dvh - 80px)' },
+        target: { left: 8, top: 72, handleTop: 72, maxHeight: 'calc(100dvh - 80px)' },
         clipboard: { left: 8, top: 72, maxHeight: 'calc(100dvh - 80px)' }
     });
     const menuPosition = usePaneMenuPosition(menu);
@@ -84,13 +84,18 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         const minTop = viewport.top + edge;
         const maxTop = Math.max(minTop, viewport.bottom - 128);
         const top = Math.min(Math.max(minTop, rectangle.top + 44), maxTop);
+        const handleHeight = 70;
+        const handleTop = Math.round(Math.max(minTop, Math.min(
+            viewport.top + (viewport.bottom - viewport.top - handleHeight) / 2,
+            viewport.bottom - handleHeight - edge
+        )));
         const maxHeight = Math.max(80, viewport.bottom - top - edge);
         setSidePanelCoordinates(current => {
             const next = {
-                target: { left: Math.round(targetLeft), top: Math.round(top), maxHeight: `${Math.round(maxHeight)}px` },
+                target: { left: Math.round(targetLeft), top: Math.round(top), handleTop, maxHeight: `${Math.round(maxHeight)}px` },
                 clipboard: { left: Math.round(clipboardLeft), top: Math.round(top), maxHeight: `${Math.round(maxHeight)}px` }
             };
-            return current.target.left === next.target.left && current.target.top === next.target.top && current.target.maxHeight === next.target.maxHeight && current.clipboard.left === next.clipboard.left && current.clipboard.top === next.clipboard.top && current.clipboard.maxHeight === next.clipboard.maxHeight ? current : next;
+            return current.target.left === next.target.left && current.target.top === next.target.top && current.target.handleTop === next.target.handleTop && current.target.maxHeight === next.target.maxHeight && current.clipboard.left === next.clipboard.left && current.clipboard.top === next.clipboard.top && current.clipboard.maxHeight === next.clipboard.maxHeight ? current : next;
         });
     }, [overlayToolbarLayout]);
 
@@ -165,7 +170,12 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
             const computed = windowElement ? Number.parseFloat(getComputedStyle(windowElement).fontSize) : 14;
             const fontSize = Number.isFinite(computed) ? Math.max(11, Math.min(22, computed)) : 14;
             terminal.options.fontSize = fontSize;
-            const rectangle = terminalContainer.current.getBoundingClientRect();
+            const xtermElement = terminalContainer.current.querySelector('.xterm');
+            const rectangle = xtermElement?.getBoundingClientRect();
+            if (!rectangle || rectangle.width <= 0 || rectangle.height <= 0) {
+                console.log('[Terminal] fitTerminal skipped - xterm has no visible area');
+                return;
+            }
             console.log('[Terminal] fitTerminal - container rect:', rectangle.width, 'x', rectangle.height, 'fontSize:', fontSize);
             const characterWidth = Math.max(6, fontSize * 0.6);
             const lineHeight = Math.max(13, fontSize * 1.2);
@@ -521,8 +531,9 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
         onClick={onToggle}
     >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d={side === 'left' ? (expanded ? 'm14 5-7 7 7 7' : 'm10 5 7 7-7 7') : (expanded ? 'm10 5 7 7-7 7' : 'm14 5-7 7 7 7')} />
-            <path d={side === 'left' ? 'M20 4v16' : 'M4 4v16'} />
+            {side === 'left'
+                ? <path d={expanded ? 'M15 5 7 12l8 7Z' : 'M9 5l8 7-8 7Z'} fill="currentColor" stroke="none" />
+                : <><path d={expanded ? 'm10 5 7 7-7 7' : 'm14 5-7 7 7 7'} /><path d="M4 4v16" /></>}
         </svg>
     </button>;
 
@@ -600,9 +611,10 @@ export default function PaneTerminalWindow({ window: pane, token, active, onFocu
     const contextMenuPortal = menu && typeof document !== 'undefined' && document.body
         ? createPortal(<div ref={menuPosition.ref} className="pane-context-menu pane-terminal-context-menu" style={{ ...menuPosition.style, ...menuThemeStyle, zIndex: 10000 }} onClick={event => event.stopPropagation()}><button type="button" onClick={() => { setMenu(null); void copySelection(); }}>Copy</button><button type="button" onClick={() => { setMenu(null); void pasteClipboard(); }}>Paste</button><button type="button" onClick={() => { setMenu(null); pasteSelected(); }}>Paste selected</button><button type="button" onClick={() => { setMenu(null); terminalRef.current?.selectAll(); terminalRef.current?.focus(); }}>Select all</button></div>, document.body)
         : null;
+    const maximizedTargetHandle = pane.maximized && !targetToolsOpen;
     const terminalSidePanelsPortal = active && portalRoot && typeof document !== 'undefined'
-        ? createPortal(<div className="pane-terminal-side-dock-layer" style={{ zIndex: 60 }}>
-            <aside className={`pane-terminal-side-panel pane-terminal-target-panel ${targetToolsOpen ? 'is-expanded' : 'is-collapsed'}`} aria-label="SSH target controls" style={{ ...sidePanelCoordinates.target, left: `${sidePanelCoordinates.target.left + (targetToolsOpen ? 0 : (overlayToolbarLayout ? 176 : 160) - 28)}px`, width: `${targetToolsOpen ? (overlayToolbarLayout ? 176 : 160) : 28}px` }}>
+        ? createPortal(<div className={`pane-terminal-side-dock-layer${pane.maximized ? ' is-maximized' : ''}`} style={{ zIndex: 60 }}>
+            <aside className={`pane-terminal-side-panel pane-terminal-target-panel ${targetToolsOpen ? 'is-expanded' : 'is-collapsed'}`} aria-label="SSH target controls" style={{ ...sidePanelCoordinates.target, top: `${maximizedTargetHandle ? sidePanelCoordinates.target.handleTop : sidePanelCoordinates.target.top}px`, left: `${maximizedTargetHandle ? 0 : sidePanelCoordinates.target.left + (targetToolsOpen ? 0 : (overlayToolbarLayout ? 176 : 160) - 28)}px`, width: `${maximizedTargetHandle ? 14 : targetToolsOpen ? (overlayToolbarLayout ? 176 : 160) : 28}px` }}>
                 {renderSideToggle('left', targetToolsOpen, `pane-target-controls-${pane.id}`, toggleTargetTools)}
                 <div className="pane-terminal-side-content" id={`pane-target-controls-${pane.id}`} hidden={!targetToolsOpen}>
                     <div className="pane-terminal-side-heading">SSH TARGET</div>

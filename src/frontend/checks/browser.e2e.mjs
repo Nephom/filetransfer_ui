@@ -896,6 +896,20 @@ try {
     await boundedTerminalMenu.getByRole('button', { name: 'Copy', exact: true }).dispatchEvent('click', { bubbles: true });
 
     const terminalOutput = terminalPane.locator('.pane-terminal-output');
+    await page.waitForFunction(() => {
+        const screen = document.querySelector('.pane-terminal-output .xterm .xterm-screen');
+        return screen?.getBoundingClientRect().height > 0;
+    });
+    const xtermFitMetrics = await terminalOutput.evaluate(output => {
+        const viewport = output.querySelector('.xterm-viewport');
+        const screen = output.querySelector('.xterm-screen');
+        const viewportBounds = viewport.getBoundingClientRect();
+        const screenBounds = screen.getBoundingClientRect();
+        return { screenHeight: screenBounds.height, viewportBottom: viewportBounds.bottom, screenBottom: screenBounds.bottom };
+    });
+    assert.ok(xtermFitMetrics.screenHeight > 0, 'xterm renders a measurable screen');
+    assert.ok(xtermFitMetrics.screenBottom <= xtermFitMetrics.viewportBottom + 1, `the xterm screen rows fit in the visible terminal area: ${JSON.stringify(xtermFitMetrics)}`);
+    report.checks.push('SSH terminal rows are sized to the padded output content box with the last row fully visible');
     const outputWidthAtNarrow = await terminalOutput.evaluate(element => element.getBoundingClientRect().width);
     await page.getByRole('button', { name: 'Expand SSH target controls' }).click();
     await frames();
@@ -927,6 +941,49 @@ try {
     assert.equal(Math.round(await terminalOutput.evaluate(element => element.getBoundingClientRect().width)), Math.round(outputWidthAtDesktop), 'collapsing a desktop side rail leaves the central xterm width unchanged');
     await page.getByRole('button', { name: 'Expand SSH target controls' }).click();
     await frames();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await frames();
+    await terminalPane.locator('button[aria-label="Maximize window"]').click();
+    await terminalPane.locator('button[aria-label="Restore window"]').waitFor();
+    await frames();
+    const maximizedTargetHandle = page.getByRole('button', { name: 'Expand SSH target controls' });
+    await maximizedTargetHandle.waitFor();
+    const maximizedTargetHandleMetrics = await maximizedTargetHandle.evaluate(button => {
+        const handle = button.closest('.pane-terminal-side-panel').getBoundingClientRect();
+        const buttonBounds = button.getBoundingClientRect();
+        const terminal = document.querySelector('.pane-terminal-output .xterm').getBoundingClientRect();
+        const path = button.querySelector('svg path');
+        return {
+            left: handle.left,
+            width: handle.width,
+            height: handle.height,
+            centerY: handle.top + handle.height / 2,
+            buttonWidth: buttonBounds.width,
+            terminalLeft: terminal.left,
+            iconPath: path?.getAttribute('d'),
+            iconFill: path?.getAttribute('fill'),
+            iconStroke: path?.getAttribute('stroke'),
+            iconPathCount: button.querySelectorAll('svg path').length
+        };
+    });
+    assert.equal(maximizedTargetHandleMetrics.left, 0, `the maximized SSH target handle docks at the left edge: ${JSON.stringify(maximizedTargetHandleMetrics)}`);
+    assert.equal(maximizedTargetHandleMetrics.width, 14, 'the maximized SSH target handle uses a slim rail width');
+    assert.equal(maximizedTargetHandleMetrics.height, 70, 'the maximized SSH target handle uses the matching rail height');
+    assert.ok(Math.abs(maximizedTargetHandleMetrics.centerY - 422) <= 1, `the handle is vertically centered below the occupied top area: ${JSON.stringify(maximizedTargetHandleMetrics)}`);
+    assert.ok(maximizedTargetHandleMetrics.left + maximizedTargetHandleMetrics.width <= maximizedTargetHandleMetrics.terminalLeft, `the handle does not overlap xterm: ${JSON.stringify(maximizedTargetHandleMetrics)}`);
+    assert.ok(maximizedTargetHandleMetrics.buttonWidth > 0 && maximizedTargetHandleMetrics.buttonWidth <= maximizedTargetHandleMetrics.width, 'the triangle button fits inside the slim outer rail');
+    assert.equal(maximizedTargetHandleMetrics.iconPath, 'M9 5l8 7-8 7Z', 'the collapsed left control uses a right-pointing triangle');
+    assert.equal(maximizedTargetHandleMetrics.iconFill, 'currentColor', 'the collapsed left control triangle is filled');
+    assert.equal(maximizedTargetHandleMetrics.iconStroke, 'none', 'the collapsed left control triangle has no outline stroke');
+    assert.equal(maximizedTargetHandleMetrics.iconPathCount, 1, 'the collapsed left control contains only the triangle icon');
+    await maximizedTargetHandle.click();
+    await page.getByRole('button', { name: 'Collapse SSH target controls' }).waitFor();
+    await page.getByRole('button', { name: 'Collapse SSH target controls' }).click();
+    await maximizedTargetHandle.waitFor();
+    await terminalPane.locator('button[aria-label="Restore window"]').click();
+    await terminalPane.locator('button[aria-label="Maximize window"]').waitFor();
+    report.checks.push('maximized narrow SSH target handle is centered at the left edge, uses a filled triangle, avoids xterm, and still expands');
 
     await page.setViewportSize({ width: 390, height: 120 });
     await frames();
@@ -1227,13 +1284,31 @@ try {
         }, destinationFiles);
     };
     pasteMode = 'success';
-    pasteDelay = 500;
+    pasteDelay = 1500;
     await dispatchPaneDrop(0, 1);
     const paneTransfer = page.locator('.pane-transfer-cover');
     await paneTransfer.waitFor();
-    assert.equal(await paneTransfer.locator('.pane-transfer-current strong').textContent(), 'file0.txt');
-    assert.equal(await paneTransfer.locator('.pane-transfer-counts strong').textContent(), '0 of 2 items moved');
-    await paneTransfer.locator('.pane-transfer-current strong').filter({ hasText: 'file1.txt' }).waitFor();
+    const expectedTransferNames = ['file0.txt', 'file1.txt'];
+    const transferRequest = requests.findLast(request => request.path === '/api/files/paste');
+    assert.deepEqual(transferRequest.body.items.map(item => item.name), expectedTransferNames, 'the move request keeps the selected item order');
+    await page.waitForFunction(({ firstName, nextName }) => {
+        const currentName = document.querySelector('.pane-transfer-current strong')?.textContent;
+        const completedCount = document.querySelector('.pane-transfer-counts strong')?.textContent;
+        return (currentName === firstName && completedCount === '0 of 2 items moved')
+            || (currentName === nextName && completedCount === '1 of 2 items moved');
+    }, { firstName: expectedTransferNames[0], nextName: expectedTransferNames[1] });
+    const visibleTransferName = await paneTransfer.locator('.pane-transfer-current strong').textContent();
+    const visibleTransferCount = await paneTransfer.locator('.pane-transfer-counts strong').textContent();
+    assert.ok(
+        (visibleTransferName === expectedTransferNames[0] && visibleTransferCount === '0 of 2 items moved')
+            || (visibleTransferName === expectedTransferNames[1] && visibleTransferCount === '1 of 2 items moved'),
+        `the current item and completed count advance together: ${visibleTransferName}, ${visibleTransferCount}`
+    );
+    await page.waitForFunction(nextName => {
+        const currentName = document.querySelector('.pane-transfer-current strong')?.textContent;
+        const completedCount = document.querySelector('.pane-transfer-counts strong')?.textContent;
+        return currentName === nextName && completedCount === '1 of 2 items moved';
+    }, expectedTransferNames[1]);
     await paneTransfer.getByText('1 of 2 items moved', { exact: true }).waitFor();
     await paneTransfer.getByText('1 remaining', { exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('.pane-transfer-cover')?.dataset.status === 'completed');
