@@ -5,6 +5,8 @@ This document is the technical reference for the Proxmox VNC workspace in
 CSS token dependencies and the VNC-specific component/state/function
 contract. Location and REST API mode are documented separately in
 [`location_tech.md`](./location_tech.md) and [`restapi_tech.md`](./restapi_tech.md).
+The shared custom-property contract is in [`css_tokens.md`](./css_tokens.md),
+and the broader desktop runtime boundaries are in [`desktop.md`](./desktop.md).
 
 ## Tech stack
 
@@ -15,51 +17,17 @@ contract. Location and REST API mode are documented separately in
 | Desktop shell | Tauri 2 (Rust) | `src-tauri/`; the webview calls Rust `#[tauri::command]`s via `@tauri-apps/api/core`'s `invoke()`. |
 | Terminal | xterm.js (`@xterm/xterm` + `addon-fit`) | SSH terminal tabs. |
 | VNC | noVNC (`public/noVNC`) | Loaded at runtime via a dynamic `import()` of `noVNC/core/rfb.js` so it never enters Vite's module graph (it's a plain public asset, not an npm package). |
-| Styling | Plain CSS with custom properties (design tokens) | No CSS framework/Tailwind; see [CSS design tokens](#css-design-tokens-stylestokenscss) below. One `*.css` file per feature area, imported from `styles/index.css` or lazily alongside its feature's `*.tsx` (e.g. `proxmox-vnc.css` next to `proxmox-vnc.tsx`). |
+| Styling | Plain CSS with custom properties (design tokens) | No CSS framework/Tailwind; shared variables are defined in [CSS Tokens](./css_tokens.md). One `*.css` file per feature area, imported from `styles/index.css` or lazily alongside its feature's `*.tsx` (e.g. `proxmox-vnc.css` next to `proxmox-vnc.tsx`). |
 
-## CSS design tokens (`styles/tokens.css`)
+## Shared CSS tokens
 
-Every color, spacing, font-size, and control-height value used across the
-desktop UI should reference one of these custom properties instead of a
-literal value, so the Auto/Mobile("Large")/theme profiles stay consistent.
-`:root` defines the tokens; `styles/theme/*.css` (e.g. `starship-bridge.css`)
-supplies the underlying `--bridge-*` palette that most color tokens alias.
+Shared color, spacing, typography, control, profile, theme, and stacking tokens
+are documented in [CSS Tokens](./css_tokens.md). VNC styles use those semantic
+variables and keep component-specific layout rules in `proxmox-vnc.css`.
 
-| Token | Meaning | Typical usage |
-|---|---|---|
-| `--color-bg` | App background (darkest). | Page/workspace backgrounds. |
-| `--color-bg-panel` | Panel background (semi-transparent). | Sidebars, cards (`.vnc-entry-pane`, `.rest-entry-pane`). |
-| `--color-bg-panel-strong` | Denser panel background. | Nested "well" areas inside a panel (`.vnc-entry-auth`, toolbar buttons). |
-| `--color-bg-popover` | Popover/menu surface. | Dropdown menus, context menus. |
-| `--color-text` | Primary text color. | Headings, active labels. |
-| `--color-text-muted` | Secondary/help text color. | `<small>` help text, breadcrumbs, placeholders. |
-| `--color-primary` | Accent/cyan brand color. | Hover borders, focus rings, links. |
-| `--color-secondary` | Secondary accent (blue). | Gradients (e.g. active entry row background). |
-| `--color-success` | Success/green status color. | "direct-sftp"/"jump-sftp" reachability badge. |
-| `--color-warning` | Warning/amber status color. | Active tab/pill buttons, session status badge. |
-| `--color-danger` | Danger/red status color. | "unavailable" reachability badge, error notices. |
-| `--color-border` | Default 1px border color. | Every panel/input/button border. |
-| `--color-border-strong` | Brighter border for emphasis. | Rarely used directly; mostly via `--dropdown-border` etc. |
-| `--space-1` … `--space-6` | Spacing scale (3.2px → 25.6px, roughly a 1.6x ramp). | `gap`, `padding`, `margin` everywhere; prefer the smallest token that fits instead of a literal px value. |
-| `--font-size-base` / `--font-size-small` / `--font-size-heading` | Fluid (`clamp()`) type scale for the Auto profile. | Body text / helper text / section headings. |
-| `--font-size-mobile-base` / `--font-size-mobile-small` / `--font-size-mobile-heading` | Fixed type scale for the Mobile/Large profile (see note below). | Applied under `.explorer.ui-layout-mobile`. |
-| `--control-height-base` | Fluid control height (Auto profile). | Buttons/inputs outside Mobile/Large. |
-| `--control-height-mobile` | Fixed 32px control height. | Buttons/inputs that should stay a constant height regardless of profile (most toolbar buttons use this so every button in the app matches). |
-| `--control-height-mobile-lg` | Fixed 35.2px "comfortable" touch height. | Mobile/Large-only controls (dropdown options, `.vnc-entry`, `.vnc-entry-modal-tab` under Large profile overrides). |
-| `--icon-size` / `--icon-size-lg` | Icon glyph sizes. | Inline icons vs. larger pane-collapse chevrons. |
-| `--radius-sm` / `--radius-md` | Border-radius scale. | Small controls vs. panels/modals. |
-| `--shadow-panel` / `--shadow-inset` / `--shadow-glow` | Elevation/glow shadows. | Panel drop shadow, inset highlight, focus glow. |
-| `--transition-fast` / `--motion-fast` / `--motion-base` | Animation durations. | Hover/focus transitions. |
-| `--z-dropdown` / `--z-context` / `--z-modal` / `--z-toast` | Stacking order. | Keeps popovers/menus/modals/toasts layered correctly relative to each other. |
-| `--dropdown-*` | Shared contract for every dropdown-like popover (`Dropdown`, `ContextPicker`, `MobileChoiceMenu`, command-bar overflow menu). | So all popovers look interchangeable instead of each hand-picking base tokens. |
-
-**Important:** despite the class name `ui-layout-mobile` and the CSS
-comments that say "mobile", this profile is **not** a phone-sized layout --
-per project convention it's the **"Large" profile**: the same desktop
-layout with every control, icon, and text size enlarged (and some
-non-essential chrome collapsed), for users who want bigger touch targets on
-a normal desktop/laptop screen. Do not add actual small-screen/phone
-breakpoints under this class name.
+The class name `ui-layout-mobile` refers to the project's **Large** profile,
+not a phone-sized layout. It enlarges the regular desktop controls, icons, and
+text; actual narrow-screen behavior is defined by the relevant media queries.
 
 ## Proxmox VNC workspace (`proxmox-vnc.tsx` + `proxmox-vnc.css`)
 
@@ -135,14 +103,6 @@ to disconnect, so the resulting disconnect event cannot replace a security
 failure or timeout reason. A server disconnect during handshake is diagnosed
 from the attempt's phase, not a captured React loading flag.
 
-`fileapi_ui/checks/vnc.test.js` exercises the production component's effects
-and rendered handlers with mocked RFB, Tauri, timers, and DOM. It covers the
-credential requests, current drafts, legacy/account isolation, delayed keyring
-loads, timeout ownership, cancellation/unmount races, diagnostics, fullscreen
-portal placement, and Proxmox password isolation. Live ARD/password-only VNC,
-native keyring, and actual WebView fullscreen rendering remain platform
-acceptance tests, not conclusions from mocks.
-
 ### Direct VNC fullscreen cursor
 
 Direct VNC forces noVNC to use its canvas-based cursor fallback because some
@@ -155,7 +115,7 @@ the canvas back to `document.body` when fullscreen ends. This keeps the cursor
 visible in both normal and fullscreen display modes without changing VNC mouse
 input handling.
 
-### Layout overview (as of T-220/T-221)
+### Workspace layout
 
 ```
 .vnc-workspace (flex row)
@@ -170,36 +130,22 @@ input handling.
 └── <section className="vnc-reader">               -- right side, ALWAYS mounted (never unmounts VNC)
     ├── .vnc-reader-heading                        -- workspace name, entry name, session status
     └── .vnc-display-split (flex column)
-        ├── .vnc-auth-panel(.open|.collapsed)       -- "Connection controls": Node/VM pickers, Connect/
-        │                                              Disconnect/Logout, TLS/error notices
-        └── .vnc-screen-shell                       -- noVNC canvas + Ctrl+Alt+Del/Focus/View-only/Fullscreen
+        ├── .vnc-auth-panel(.open|.collapsed)       -- Connection controls: Node/VM pickers and actions
+        └── .vnc-screen-shell                       -- persistent noVNC canvas + display controls
 ```
 
-Prior to T-220 the right side had a "Screen"/"Files" tab switch that
-conditionally unmounted the div holding the noVNC canvas (`screenRef`)
-whenever the user switched to "Files" -- since noVNC attaches directly to
-that DOM node, removing it broke the live session and the only recovery was
-a full Proxmox Logout + Login cycle. The fix was structural, not a patch:
-**the VNC screen and Connection Controls now always render** (no
-conditional unmount), and file transfer moved entirely into the left
-sidebar, which was already swapping content based on `transferMode` and
-never touched the VNC screen's DOM.
+The VNC reader and noVNC screen remain mounted while the left sidebar switches
+between the Proxmox entry list and the VM file browser. This keeps the RFB
+canvas target stable during file browsing and transfer operations.
 
 ### Collapse/Expand sizing (`.vnc-auth-panel` / `.vnc-screen-shell`)
-
-Connection Controls used to have a *draggable* resize handle
-(`.vnc-screen-resize`) between it and the VNC screen; two conflicting sets
-of CSS rules for the same selectors left it visually broken. It's been
-removed in favor of the existing Collapse/Expand button alone:
 
 - **Expanded** (`.vnc-auth-panel` without `.collapsed`): grows to fit the
   Node/VM dropdowns, Connect/Disconnect/Logout buttons, and any TLS/error
   notices, capped at `max-height: min(56vh, 640px)` with its own
-  `overflow-y: auto` for very short windows -- estimated to comfortably fit
-  every control without a scrollbar in normal windows, only spilling to a
-  scrollbar when the window is unusually short.
-- **Collapsed** (`.vnc-auth-panel.collapsed`): shrinks to just its heading
-  strip; the sibling `.vnc-screen-shell` gets `flex: 0 0 80%` via
+  `overflow-y: auto` when the available window height is short.
+- **Collapsed** (`.vnc-auth-panel.collapsed`): shrinks to its heading strip;
+  the sibling `.vnc-screen-shell` gets `flex: 0 0 80%` via
   `.vnc-display-split.controls-collapsed .vnc-screen-shell`, i.e. the VNC
   screen claims 80% of `.vnc-reader`'s available height.
 - Connecting a VNC session auto-collapses Connection Controls
@@ -258,7 +204,7 @@ component itself holds no state.
 | `updatePassword` | Updates the Proxmox login password draft + persists it to the workspace's secret store. |
 | `loginEntry` / `logoutEntry` | Proxmox web-session login/logout (`proxmox_login`/`proxmox_logout`). |
 | `loadVms` | Fetches the VM list for the authenticated session. |
-| `detectTransferMode` | Checks QEMU Guest Agent health independently, then preserves #235's profile-gated direct-sftp → jump-sftp probing; without a VM SFTP profile it skips automatic SSH probes and uses Guest Agent when its ping is up. It sets `transferMode`/`guestIp`/`transferError`. |
+| `detectTransferMode` | Checks QEMU Guest Agent health independently, then performs profile-gated direct-sftp → jump-sftp probing; without a VM SFTP profile it skips automatic SSH probes and uses Guest Agent when its ping is up. It sets `transferMode`/`guestIp`/`transferError`. |
 | `buildSshProfile` | Builds the `SshTransferProfile` (host/port/username/key, plus jump-host fields for `jump-sftp`) passed to `ssh_list_directory`/`ssh_upload_path`/`ssh_download_path`. |
 | `loadRemoteFiles(path)` | Lists a remote directory via the Guest Agent or SSH, depending on `transferMode`. |
 | `selectRemotePath(path)` | Navigates the file browser into a directory (used by both the file table's folder buttons and its ".. (up)" row). |

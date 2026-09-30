@@ -1,47 +1,36 @@
 # Queue Maintenance Guide
 
-## Add An Upload Or Download
+The [Transfer Queue contract](./queue.md) defines shared states, progress
+semantics, retries, cancellation, and history retention. This guide describes how
+to connect a new transfer entry point to that contract.
 
-1. Create a Queue item before performing any network or filesystem transfer.
-2. Put platform-specific work in an executor. Desktop executors use Tauri
-   commands; WebUI executors use `fetch`, `XMLHttpRequest`, or browser stream
-   APIs. Do not share those implementations.
-3. Report normalized byte progress and item counts through the existing Queue
-   progress model. Use `null` for unknown totals.
-4. Release readers, listeners, timers, abort controllers, object URLs and
-   temporary handles in `finally`.
-5. Route toolbar, double-click, context-menu and drag/drop entry points to the
+## Add an Upload or Download Entry Point
+
+1. Create a Queue item before starting network or filesystem transfer work.
+2. Put platform-specific work in an executor. Desktop uses Tauri commands;
+   WebUI uses browser networking and file APIs. Keep their executors separate.
+3. Report byte progress and item counts through the Queue progress model. Use
+   `null` when a total is unknown.
+4. Release readers, listeners, timers, abort controllers, object URLs, and
+   temporary handles in a `finally` path.
+5. Route toolbar, double-click, context-menu, and drag/drop actions through the
    same Queue admission path.
-6. Add a test for success, cancellation, a retryable failure, a non-retryable
-   failure and a late callback after cancellation.
 
-## Lifecycle Rules
+## Resume and Cleanup
 
-API upload chunk retries are bounded and idempotent: after a lost response, query
-the same session and continue from its stored offset. Authentication, permission,
-conflict, missing source, changed source, checksum mismatch and unavailable
-destination errors require a user decision. A browser download without File System
-Access API is a normal browser download, not resumable.
+Resumable API uploads continue through the same server session and its
+authoritative byte offsets. Do not create a replacement attempt because a chunk
+response or progress request was lost. Browser clients reselect local sources
+after reload; Desktop reopens captured paths and validates the source manifest.
+See the [Upload API](./api/upload.md) and [Progress API](./api/progress.md) for
+session, offset, cancellation, and retention contracts.
 
-`needs_user_action` is a coordination state until the user explicitly resumes the
-same API upload session. Completed files remain complete; only unfinished files and
-byte ranges are sent. Sessions expire four hours after creation. Browser clients ask
-the user to reselect sources after reload and verify chunk checksums. Desktop clients
-reopen captured paths and verify them before continuing. Other restored transfers
-must not be reported as completed or silently rebound to new credentials. Sensitive
-request headers, bodies, and download URLs must not be persisted.
-
-## Cleanup
-
-Use `removeQueueItem` only for terminal client items. Active items must be
-cancelled first. The client retains completed/cancelled history for 24 hours
-and failed history for 7 days, bounded by the documented per-state counts.
-Legacy batch progress records are independent in-memory diagnostics and are pruned
-by `TransferManager.cleanup()`. Resumable upload manifests and offsets are persisted
-in SQLite; expired staging is removed by the resumable-session cleanup task.
+Remove only terminal client Queue items. Cancel active work first and wait for
+its executor resources to settle. Client Queue history and server-side progress
+records have independent retention policies; see [History Cleanup](./queue.md#history-cleanup).
 
 ## Public Shares
 
 `share.html` is an unauthenticated public boundary and cannot update an
-authenticated FileBrowser Queue. Keep its local indicator separate unless a
-future server-backed public transfer queue is explicitly introduced.
+authenticated FileBrowser Queue. Keep its local download status separate from
+the authenticated Queue.

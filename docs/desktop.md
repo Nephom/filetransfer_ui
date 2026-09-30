@@ -139,9 +139,7 @@ Each connection attempt owns its handshake timer and cleanup. The 15-second
 timer pauses while a credential prompt waits for input and restarts on Continue;
 the server can impose its own deadline. Late events from an old connection
 cannot cancel a new attempt's timer or overwrite its failure reason. Credential
-prompts remain available in fullscreen. Verify real ARD/viewer authentication,
-native keyring behavior, and Windows share/ACL handling on their target systems;
-mocked component tests do not establish platform interoperability.
+prompts remain available in fullscreen.
 
 Proxmox credentials are submitted to the Proxmox ticket endpoint and retained
 in the OS credential store when the user chooses to save them. The desktop
@@ -218,11 +216,10 @@ successful agent ping remains usable even when the guest cannot report an IP.
 
 When a VM has a saved VM SFTP profile, the client additionally detects direct
 SFTP and then host-jump SFTP after VNC connects. For a VM without a saved
-profile, direct SFTP and host-jump probing are not started automatically, so
-the #235 timeout-avoidance behavior is preserved. Connection Controls provides
-a compact **Try Host Jump** action; only that explicit action attempts the
-host-jump route for the selected VM. If the attempt fails, the Entry list
-remains visible with the diagnostic error.
+profile, direct SFTP and host-jump probing are not started automatically.
+Connection Controls provides a compact **Try Host Jump** action; only that
+explicit action attempts the host-jump route for the selected VM. If the
+attempt fails, the Entry list remains visible with the diagnostic error.
 Once a route is found, the VNC workspace's left sidebar swaps its Proxmox
 entries list for a multi-select remote file browser (Upload / Download /
 Refresh toolbar, breadcrumb, and a file table identical to LOCATION mode's
@@ -269,10 +266,10 @@ redact values containing password, token, secret, cookie, or private-key
 markers, normalize line breaks, cap field length, rotate at 10 MiB, and retain
 at most three log files. Logs are diagnostic records, not a credential store.
 
-## Release Verification
+## Related Documentation
 
-Before a release, maintainers must verify the relevant platform build, Rust
-tests, TypeScript production build, Clippy with warnings denied, JavaScript
-dependency audit, and RustSec audit. A RustSec advisory with no upstream fix
-must be documented with its dependency path and an explicit product risk
-decision before release approval.
+- [Location mode architecture](./location_tech.md)
+- [REST API mode architecture](./restapi_tech.md)
+- [Proxmox VNC frontend architecture](./proxmox_vnc_tech.md)
+- [Transfer Queue](./queue.md)
+- [Server API Reference](./api/API_REFERENCE.md)

@@ -1,5 +1,10 @@
 # Server Locations
 
+This document covers server-side Location configuration, filesystem boundaries,
+cache scope, and operations. See the [API Reference](./api/API_REFERENCE.md) for
+Location request headers and the [Permission Management guide](./permissions.md)
+for user capabilities.
+
 ## Configuration Schema
 
 The existing `fileSystem.storagePath` remains the migration and default fallback. Multiple server-side roots are configured as a JSON array in the optional `[locations]` section of `src/config.ini`:
@@ -19,7 +24,8 @@ Each Location contains:
 - `rootPath`: server-side filesystem/NFS mount root. It is never returned to ordinary clients.
 - `storageType`: `local` (default) or `nfs`. NFS Locations are `offline` when the configured path is no longer a Linux mount point, even if the underlying directory still exists. A legacy global `fileSystem.type=nfs` also marks Locations without an explicit type as NFS; set per-Location `storageType=local` when mixing storage types.
 - `enabled`: disabled Locations remain configured and report `disabled` health, but are not selectable.
-- `readOnly`: capability metadata used by later API authorization work.
+- `readOnly`: Location-level read-only state. The server rejects mutations even
+  when the user has mutation capabilities.
 - `order`: explicit display/selection order. Filesystem or NFS creation time is never used.
 
 If `definitions` is omitted, `LocationManager` exposes one `default` Location from `fileSystem.storagePath`. Existing deployments therefore keep their current behavior without migration.
@@ -79,13 +85,13 @@ Initialization cold-rebuilds its own scope. It never loads ambiguous legacy data
 
 Hot and memory snapshots expire after at most 3000 ms, measured with a monotonic clock from scan start. The cache constructor accepts a shorter `cacheTtlMs`; values above 3000 ms are capped and zero disables hits. Hits and hot-cache promotion do not extend the deadline. Thus an external in-place file edit can show old metadata only within that bounded interval; changed directory mtimes, explicit refresh, and application invalidation trigger a new checked scan sooner. Invalidation expires in-memory snapshots immediately even when Redis cleanup is queued. Returned snapshots cannot be modified by callers.
 
-The existing server `enterDirectory()` followed by filesystem `list()` reuses the same fresh snapshot instead of scanning twice. Concurrent misses recheck the cache when they reach the scan queue, so one scan can satisfy the group. `cacheMetrics.directoryScans` counts actual scan attempts; `hotCacheHits`, `memoryCacheHits`, and `cacheMisses` record the selected read path. Fixture tests assert both these counts and actual `readdir` calls.
+The existing server `enterDirectory()` followed by filesystem `list()` reuses the same fresh snapshot instead of scanning twice. Concurrent misses recheck the cache when they reach the scan queue, so one scan can satisfy the group. `cacheMetrics.directoryScans` counts actual scan attempts; `hotCacheHits`, `memoryCacheHits`, and `cacheMisses` record the selected read path.
 
 Navigation and storage mutation have different index effects. `leaveDirectory()` evicts the directory view with `preserveIndex: true`; it does not remove search entries or index mtimes. Each successful checked `updateDirectoryCache()` scan, including upload `refreshDirectory()` calls, writes current immediate search entries and directory metadata. It removes missing immediate children and cached subtrees whose directory was deleted or replaced by a file. Descendants of unchanged sibling directories remain indexed. Search still checks retained records against the live no-follow path policy.
 
 Enhanced filesystem mutations call `cache.refreshPaths(paths)` with canonical affected paths in each cache's own root. This expires stale views, removes selected old index scopes, refreshes parent/ancestor directories non-recursively, and indexes existing changed directory subtrees after a complete no-follow preflight. File create/write/rename/move/delete does not perform a full Location tree rebuild. Directory copy/rename indexes the selected destination subtree, including new descendants. Deleted subtrees are removed without scanning unrelated sibling trees. `indexDirectory(path)` is also limited to its selected subtree. Reconciliation uses scoped Redis SCAN with bounded deletion batches; it does not rebuild or modify other Locations. The index-status last-completed summary remains a historical full-index summary, not a live file census.
 
-Clear drains previously admitted cache work and invalidates queued old-generation background jobs before removing the scope. Fresh root polling and the next periodic index may repopulate current data. `refreshCache()` on the enhanced filesystem clears and rebuilds the active scope without closing/reusing a closed Redis client. Periodic full-index refresh still uses a checked whole-root walk; `buildIncrementalIndex()` retains its method name but does not skip subtrees based on stale mtimes. Ordinary navigation, uploads, and mutations no longer depend on that periodic job to restore searchable entries. Fresh cached browsing, including pagination, bypasses the indexing queue after boundary validation. Index status returns a copied current progress/last-completed summary without waiting for the index or reading Redis. Close also drains these independent reads. Expired/missing listings, search, and Redis-backed statistics can still wait behind indexing. Large-tree and scoped Redis pruning latency have not been benchmarked in this change.
+Clear drains previously admitted cache work and invalidates queued old-generation background jobs before removing the scope. Fresh root polling and the next periodic index may repopulate current data. `refreshCache()` on the enhanced filesystem clears and rebuilds the active scope without closing/reusing a closed Redis client. Periodic full-index refresh still uses a checked whole-root walk; `buildIncrementalIndex()` retains its method name but does not skip subtrees based on stale mtimes. Ordinary navigation, uploads, and mutations no longer depend on that periodic job to restore searchable entries. Fresh cached browsing, including pagination, bypasses the indexing queue after boundary validation. Index status returns a copied current progress/last-completed summary without waiting for the index or reading Redis. Close also drains these independent reads. Expired/missing listings, search, and Redis-backed statistics can still wait behind indexing.
 
 Before deploying this migration, stop every old application process: old binaries can still call whole-database cache clear. Do not delete old keys automatically. Review and remove obsolete namespaces separately only with an explicit operational decision and backup. A same-ID root change uses a new root scope; the old scope is preserved, not migrated into the new root.
 

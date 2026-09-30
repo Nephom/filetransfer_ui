@@ -81,8 +81,8 @@ New API uploads use one durable parent session per Queue item:
 
 Legacy Queue items with `serverBatchId` retain their original behavior: reconcile the
 same in-memory batch without resending multipart data. They are not converted to
-byte-range sessions. See the [legacy remediation report](./review-remediation.md#final-report)
-for the boundaries of its historical verification run.
+byte-range sessions. See the [Upload API](./api/upload.md) and
+[Progress API](./api/progress.md) for the server-side protocol contracts.
 
 The browser and desktop executors retain their separate scheduling and UI
 implementations. SSH/SFTP and ordinary downloads do not acquire this server
@@ -90,9 +90,8 @@ upload reservation protocol. Updated API clients require the updated backend;
 there is no fallback that treats client-only abort as confirmed cancellation.
 Legacy upload endpoints remain supported for external clients, but clients
 without a reservation cannot recover an unknown batch ID from a lost acceptance
-response. See [upload.md](./api/upload.md) and [progress.md](./api/progress.md)
-for the integrated service contract. Real deployment and platform smoke tests
-remain separate from the verified local fixtures.
+response. See [Upload API](./api/upload.md) and [Progress API](./api/progress.md)
+for the server-side contract.
 
 ## Queue Item
 
@@ -220,7 +219,7 @@ uploading, processing, and cancelling work. This is separate from frontend
 history cleanup and is not crash recovery. Server restart loses in-memory
 telemetry and does not confirm an unknown upload outcome.
 
-## Adding a Transfer Entry Point
+## Executor Integration
 
 New upload/download UI code must only create a Queue item and provide an
 executor. It must not call an upload/download endpoint directly from a render
@@ -228,9 +227,9 @@ component or bypass Queue state updates. The executor must report progress,
 return a terminal detail, classify failures, and release all resources in a
 `finally` path.
 
-Before merging a new entry point, verify:
+Toolbar, double-click, context-menu, and drag/drop entry points use the same Queue
+admission path. Keep API and SSH/SFTP execution separate. Represent unknown-size
+and fast-completion transfers using the progress fallbacks above, and route
+cancellation, retry, and terminal cleanup through the Queue lifecycle.
 
-- Toolbar, double-click, context menu and drag/drop paths use the same executor.
-- API and SSH/SFTP behavior remains separated.
-- Unknown-size and fast-completion transfers have sensible display fallback.
-- Cancel, retry, failure and history cleanup are covered by tests.
+For implementation steps, see [Queue Maintenance](./queue-maintenance.md).

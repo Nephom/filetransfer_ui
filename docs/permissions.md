@@ -2,7 +2,7 @@
 
 This document describes the WebUI permission model for server Locations. The desktop client does not provide permission administration; use the WebUI Admin Console or Super Panel.
 
-The removed desktop `Upload Log` and `Session Path` features are not part of the current WebUI or nFterm workflow and are intentionally not referenced by the permission screens.
+Location configuration and health are described in [Server Locations](./locations.md). The complete endpoint contract is in the [API Reference](./api/API_REFERENCE.md#roles).
 
 ## Permission Sources
 

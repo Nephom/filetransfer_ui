@@ -1,14 +1,7 @@
 # File Transfer API Reference
 
-This is the contract reference for the Node.js service. Client changes must follow this document rather than infer behaviour from server implementation.
-
-Final integration snapshot (2026-09-09): the account, filesystem, upload,
-progress, share, settings, and browser modules are integrated in server.js.
-The final full Node run passes 261 tests with no failures/skips, including all
-30 server tests. Fourteen native session tests pass, including production
-native transport against actual backend routes with isolated services.
-This is not live Tauri/AppHandle dispatch or a production deployment. See the
-[final report](../review-remediation.md#final-report) for evidence and limits.
+This is the contract reference for the Node.js service. Client changes must
+follow this document rather than infer behaviour from server implementation.
 
 ## Conventions
 
@@ -53,6 +46,10 @@ not claim revocation of every previously issued JWT; clients must sign in again.
 | GET | `/api/files/index-status` | Retrieve index state. |
 | POST | `/api/files/rebuild-index` | Start an index rebuild. |
 | POST | `/api/files/refresh-cache` | Refresh cache; optional `{ "directoryPath" }`. |
+
+Location roots, health, path boundaries, and cache scope are described in
+[Server Locations](../locations.md). User capabilities and Permission Roles are
+described in [Permission Management](../permissions.md).
 
 ## Upload and Progress
 
@@ -171,7 +168,7 @@ The server derives rename's destination from the actual source parent and
 restricts `newName` to a basename. Legacy fields remain supported; if both name
 and full path are supplied, they must agree. Numeric names/oldPath, invalid
 currentPath types, and null delete items return `400`, not uncaught path/string
-errors. All previously failing malformed-name tests now pass.
+errors.
 
 Delete preflights the selection and returns exact `results[].path`/`success`,
 `deletedItems`, and `deletedCount`. A partial delete uses `207` with
@@ -181,6 +178,8 @@ aliases, descendants, and incompatible operands before mutation. Shared locks
 cover copy through source deletion. Paste preserves per-item outcomes and
 copied-but-not-moved failures; do not infer success from processed names or
 retry an unconfirmed move automatically. These are process-local guarantees.
+See [Server Locations](../locations.md) for filesystem path checks and operation
+locking.
 
 ### Scoped Revisions
 
@@ -235,7 +234,7 @@ Location. It rechecks the captured root and permission-runtime identity across
 asynchronous permission/file/password work, including immediately before
 insertion. A stale header or changed root/runtime returns `409` without creating
 a share for a replacement Location. Current and omitted revision headers remain
-supported. These HTTP regressions pass in the final full suite.
+supported.
 
 ## Administration and TLS
 
@@ -282,19 +281,16 @@ The enabled file limiter runs before file/upload/folder/archive routes
 (50 requests/minute; the 51st request is limited). Turning the flag off restores
 access. Public cache statistics omit the internal storagePath.
 
-Importing server.js exports the app without automatically starting listeners,
+Importing `server.js` exports the app without automatically starting listeners,
 loading runtime configuration, or installing process handlers; direct execution
-uses the require.main guard. Tests replace persistent-service dependencies before
-import. Startup checks generated browser readiness and binds HTTP/HTTPS to the
-configured server.host; bind errors are not reported as readiness.
+uses the `require.main` guard. Startup checks generated browser readiness and
+binds HTTP/HTTPS to the configured `server.host`; bind errors fail startup.
 
-`POST /api/admin/service/restart` validates browser assets before stopping work,
-rejects conflicting runtime changes, and returns an initiation response, not a
-healthy-replacement guarantee. It stops new storage work, drains requests,
-uploads, initializers and all Location caches, closes the database, and waits
-for the child `spawn` event before exiting. Failure releases the restart lock.
-Tests exercise the actual route with mocked process effects; no live production
-restart is claimed. Restart never compiles browser assets.
+`POST /api/admin/service/restart` validates browser assets before stopping work
+and returns an initiation response, not a healthy-replacement guarantee. It
+stops new storage work, drains requests, uploads, initializers, and all Location
+caches, closes the database, then waits for the replacement process to spawn
+before exiting. Restart does not compile browser assets.
 
 ## Logging
 
@@ -302,7 +298,7 @@ Request-derived user operations are stored in `logs/{IPv4-with-underscores}.log`
 
 ## Error Handling
 
-Use the HTTP status first, then display the response's `error.message`, `error`, or `message` field. Upload-specific structured codes are documented in [error-codes.md](./error-codes.md). Do not assume every older endpoint returns identical error shapes.
+Use the HTTP status first, then display the response's `error.message`, `error`, or `message` field. Upload-specific errors are documented in [error-codes.md](./error-codes.md); upload request schemas and recovery behavior are in [upload.md](./upload.md) and [progress.md](./progress.md). Do not assume every older endpoint returns identical error shapes.
 
 ## Performance Dashboard
 

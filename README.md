@@ -4,15 +4,16 @@
 
 本專案包含兩個產品面：上方是提供瀏覽器使用的 WebUI，下方是獨立的 nFterm Desktop App。兩者共用 API server 與權限模型，但執行環境、檔案能力與使用方式不同。
 
-## WebUI 3.4.0
+## WebUI
 
 WebUI 是瀏覽器版檔案管理介面，提供：
 
 - Location 檔案瀏覽、搜尋、上傳、下載、重新命名、刪除與資料夾操作。
-- 多檔案與資料夾上傳，保留相對目錄結構並提供進度查詢。
+- 多檔案與資料夾上傳，續傳(4.0.0+)，保留相對目錄結構並提供進度查詢。
 - ZIP archive 下載、share link、到期與下載次數管理。
 - JWT 登入、TLS、Location health、read-only 與 capability 權限控制。
 - Admin Console 的使用者、Permission Role、Location 與系統設定管理。
+- 切換風格，目前具備Classic 和 Pane 兩種(4.0.0+)
 
 ### WebUI 安裝與啟動
 
@@ -49,7 +50,7 @@ WebUI 是瀏覽器版檔案管理介面，提供：
 
 預設 HTTP port 為 `9400`，HTTPS port 為 `9443`。正式環境應使用受作業系統信任的 HTTPS 憑證。
 
-## nFterm Desktop 3.4.0
+## nFterm Desktop
 
 nFterm 是 Tauri v2 desktop client，支援 Ubuntu 22.04+ 與 Windows 10/11。它使用 HTTPS 連線至 API server，並提供：
 

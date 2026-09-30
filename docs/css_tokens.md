@@ -211,11 +211,12 @@ bypass or change action permissions.
 - `rest-api.css` and `proxmox-vnc.css`: feature-local geometry and states.
 - `mobile-ui.css`: Large profile aliases/overrides.
 
-`styles/layout/panes.css` scopes the LOCAL path bar to
-`.local-pane-heading .pane-breadcrumbs`. Its border-box width leaves a
-`--space-2` right gutter inside the heading and shrinks with the pane in Auto
-and Large profiles. Its flex basis uses the existing `--ui-button-height`
-token (fallback: `--control-height-base`). Theme and REMOTE rules stay unchanged.
+`styles/layout/panes.css` owns LOCAL and REMOTE pane geometry, including LOCAL
+breadcrumb sizing. That layout uses `--space-2` for its gutter and
+`--ui-button-height` with a `--control-height-base` fallback. See the
+[Location mode CSS inventory](./location_tech.md#css-inventory-for-location-mode)
+for stylesheet ownership. The feature references for [REST API](./restapi_tech.md)
+and [Proxmox VNC](./proxmox_vnc_tech.md) describe their component styles.
 
 When adding a CSS variable, document its purpose here and add it at the layer
 that owns it. Do not create a feature-specific color alias when an existing

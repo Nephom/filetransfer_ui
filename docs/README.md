@@ -1,368 +1,51 @@
-# File Transfer Documentation
-
-## Documentation Structure
-
-### API Documentation
-
-The complete API documentation is available in the `api/` directory:
-
-- **[API Overview](./api/README.md)** - Complete API documentation index
-  - Quick start guide
-  - API workflow diagrams
-  - Data models and status values
-  - Best practices and examples
-
-- **[Upload API](./api/upload.md)** - Upload endpoint documentation
-  - Single file upload with real-time progress
-  - Multi-file batch upload
-  - Folder upload with structure preservation
-  - Request/response formats
-
-- **[Progress Tracking API](./api/progress.md)** - Progress monitoring
-  - Single transfer progress tracking
-  - Batch progress tracking
-  - Polling strategies
-  - Performance metrics
-
-- **[Error Codes](./api/error-codes.md)** - Error code reference
-  - Custom error codes (301, 302, 304, 401, 402, 403, 413)
-  - Error handling examples
-   - User-friendly error messages
-
-- **[API Contract Reference](./api/API_REFERENCE.md)** - Authoritative endpoint contract
-  - Authentication, browsing, upload, download, archive, sharing, administration, and TLS routes
-  - Required payloads and client behaviour
-   - Archive and IPv4 logging rules
-
-### Desktop Documentation
-
-- **[nFterm Desktop Architecture](./desktop.md)** - Supported desktop runtime
-  boundaries, secrets, local filesystem protection, queue, SSH/SFTP, and
-  Proxmox VNC behavior.
-- **[Proxmox VNC frontend architecture](./proxmox_vnc_tech.md)** - VNC
-  workspace component/state/function breakdown and CSS contract.
-- **[Location mode frontend architecture](./location_tech.md)** - LOCAL/REMOTE
-  browsing, Location selection, transfers, sharing, overlays, and the complete
-  Location-mode CSS inventory.
-- **[REST API mode frontend architecture](./restapi_tech.md)** - REST request,
-  authentication, Redfish/HPE/OpenBMC tools, response views, and complete
-  REST CSS contract.
-- **[Frontend CSS custom properties](./css_tokens.md)** - Purpose, fallback
-  chain, profile aliases, z-index, spacing, typography, and ownership of every
-  shared CSS variable.
-- **[Transfer Queue](./queue.md)** - Queue lifecycle, progress, retry, cleanup,
-  persistence, and failure decisions.
-
----
-
-## Quick Links
-
-### For Developers
-
-- [Getting Started](#getting-started)
-- [API Overview](./api/README.md)
-- [Upload Examples](./api/upload.md#request-example)
-- [Error Handling](./api/error-codes.md)
-- [WebUI Permission Management](./permissions.md)
-- [nFterm Desktop Architecture](./desktop.md)
-- [Location mode frontend architecture](./location_tech.md)
-- [REST API mode frontend architecture](./restapi_tech.md)
-- [Proxmox VNC frontend architecture](./proxmox_vnc_tech.md)
-- [Frontend CSS custom properties](./css_tokens.md)
-
-### For API Users
-
-- [Authentication](./api/README.md#authentication)
-- [Single File Upload](./api/upload.md#single-file-upload-with-real-time-progress)
-- [Multi-File Upload](./api/upload.md#multi-file-upload-with-batch-tracking)
-- [Progress Polling](./api/progress.md)
-- [Permission and Role API](./api/API_REFERENCE.md#roles)
-
----
-
-## Getting Started
-
-### Deployment Lifecycle
-
-Use the root `build.sh` for the server lifecycle on Alpine Linux or Ubuntu. On a Windows build machine, use `build.ps1 build`, `build.ps1 upgrade`, and `build.ps1 self-upgrade` for the Tauri desktop client. The desktop `build` command produces a Linux DEB on Ubuntu or a Windows NSIS package and portable EXE on Windows.
-
-```bash
-# New environment
-./build.sh install
-./build.sh setup
-./start.sh
-
-# Existing checkout
-./build.sh upgrade
-./start.sh
-
-# One-command proxy, used only for this invocation
-./build.sh upgrade --proxy http://proxy.example.internal:8080
-```
-
-Actual deployment values belong in ignored `.env` and `src/config.ini` files. Never put internal addresses, credentials, tokens, or certificates in documentation or GitHub discussions. Production Alpine systems should use `install`, `setup`, `upgrade`, and `start`; they do not run the desktop `build` command.
-
-Native Node modules such as `bcrypt` and `sqlite3` must be installed or rebuilt on the target machine. Do not copy `node_modules` between machines. The supported minimum Node.js version is `20.17.0` because it is required by the locked `sqlite3` release; Node.js 22 LTS is recommended. `build.sh` and `build.ps1` validate this minimum before installing dependencies. `build.sh setup`, `build.sh install`, `build.sh upgrade`, and `start.sh` run a native dependency smoke check before continuing.
-
-### 1. Authentication
-
-All API endpoints require JWT authentication:
-
-```javascript
-// Login to get token
-const response = await fetch('/auth/login', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    username: 'your_username',
-    password: 'your_password'
-  })
-});
-
-const { token } = await response.json();
-```
-
-### 2. Upload a File
-
-```javascript
-// Prepare file upload
-const formData = new FormData();
-formData.append('file', fileObject);
-formData.append('fileName', 'document.pdf');
-
-// Initiate upload
-const uploadResponse = await fetch('/api/upload/single-progress', {
-  method: 'POST',
-  headers: { 'Authorization': `Bearer ${token}` },
-  body: formData
-});
-
-const { transferId } = await uploadResponse.json();
-```
-
-### 3. Track Progress
-
-```javascript
-// Poll for progress
-const pollInterval = setInterval(async () => {
-  const response = await fetch(`/api/progress/${transferId}`, {
-    headers: { 'Authorization': `Bearer ${token}` }
-  });
-
-  const progress = await response.json();
-  console.log(`Progress: ${progress.progress}%`);
-
-  if (progress.status === 'completed') {
-    clearInterval(pollInterval);
-    console.log('Upload completed!');
-  }
-}, 1000);
-```
-
----
-
-## Features
-
-### Real-Time Progress Tracking
-
-- **Streaming Upload**: Files are processed as streams using Busboy
-- **Real Progress**: Track actual file write progress, not just network transfer
-- **Batch Support**: Upload multiple files with aggregate progress tracking
-- **Individual File Status**: Monitor each file's progress in batch uploads
-
-### Error Handling
-
-- **Custom Error Codes**: Specific codes for different error scenarios
-- **Automatic Cleanup**: Failed uploads automatically clean up partial files
-- **Detailed Messages**: Clear error messages in Chinese and English
-
-### Security
-
-- **JWT Authentication**: All endpoints require valid JWT tokens
-- **Path Traversal Prevention**: Automatic sanitization of file paths
-- **Filename Validation**: UTF-8 encoding and illegal character filtering
-- **Rate Limiting**: Protection against abuse
-
-### Performance
-
-- **Memory Efficient**: Streaming architecture prevents memory overflow
-- **Async Processing**: Multi-file uploads process in background
-- **Progress Caching**: In-memory progress tracking for fast polling
-
----
-
-## API Architecture
-
-### Upload Flow
-
-```
-Client                Server                 Storage
-  │                     │                       │
-  ├─ POST /upload ─────>│                       │
-  │  (file data)        │                       │
-  │                     ├─ Create transferId    │
-  │                     ├─ Start streaming ────>│
-  │<─ 202 Accepted ─────┤   (write file)        │
-  │  { transferId }     │                       │
-  │                     │                       │
-  ├─ GET /progress ────>│                       │
-  │<─ Progress data ────┤                       │
-  │  { progress: 50% }  │                       │
-  │                     │                       │
-  │      (polling)      │                       │
-  │         ...         │                       │
-  │                     │                       │
-  ├─ GET /progress ────>│                       │
-  │<─ Complete ─────────┤                       │
-  │  { status: done }   │<─ File saved ─────────┤
-```
-
-### Batch Upload Flow
-
-```
-Client                Server                 Storage
-  │                     │                       │
-  ├─ POST /multiple ───>│                       │
-  │  (multiple files)   │                       │
-  │                     ├─ Create batchId       │
-  │<─ 202 Accepted ─────┤                       │
-  │  { batchId }        │                       │
-  │                     ├─ Process files ──────>│
-  │                     │   (background)        │
-  │                     │                       │
-  ├─ GET /batch ───────>│                       │
-  │<─ Batch stats ──────┤                       │
-  │  { 3/10 files }     │                       │
-  │                     │                       │
-  │      (polling)      │                       │
-  │         ...         │                       │
-  │                     │                       │
-  ├─ GET /batch ───────>│                       │
-  │<─ Complete ─────────┤                       │
-  │  { 10/10 done }     │<─ All saved ──────────┤
-```
-
----
-
-## Technology Stack
-
-### Backend
-
-- **Node.js**: Runtime environment
-- **Express.js**: Web framework
-- **Busboy**: Multipart form-data parser for streaming
-- **UUID**: Unique ID generation for transfers and batches
-
-### Storage
-
-- **File System**: Local file storage with configurable path
-- **In-Memory**: Progress tracking using Map data structures
-
-### Security
-
-- **JWT**: JSON Web Tokens for authentication
-- **Helmet**: Security headers middleware
-- **Rate Limiting**: Request rate limiting per IP
-
----
-
-## Configuration
-
-Server configuration is managed in `src/backend/config/`:
-
-```javascript
-{
-  fileSystem: {
-    storagePath: './storage',      // File storage directory
-    maxFileSize: 10000 * 1024 * 1024 // 10 GB max file size
-  },
-  security: {
-    jwtSecret: 'your-secret-key',  // JWT signing secret
-    tokenExpiry: '24h'             // Token expiration time
-  }
-}
-```
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-**Upload fails with error 413**
-- Check the configured per-file limit and the number/metadata limits of a legacy multipart request.
-- Resumable sessions split large file sets into bounded manifest pages and chunks.
-
-**Upload fails with error 507**
-- Check free space on the upload staging volume and destination Location.
-
-**A chunk response is lost**
-- Read the session's `uploadedOffset` and continue from that checkpoint. Do not resend the whole file.
-
-**Upload fails with error 401**
-- Server disk is full
-- Contact system administrator
-
-**Progress polling returns 404**
-- Transfer ID is invalid or expired
-- Verify transfer ID from upload response
-
-### Debug Mode
-
-Enable debug logging in development:
-
-```javascript
-process.env.DEBUG = 'true';
-```
-
----
-
-## Contributing
-
-To contribute to this project:
-
-1. Read the API documentation
-2. Understand the architecture
-3. Follow coding standards
-4. Write tests for new features
-5. Update documentation
-
----
-
-## Version History
-
-### Version 2.0.0 (Current)
-
-**Release Date**: January 2025
-
-**New Features**:
-- Real-time progress tracking
-- Batch upload support
-- Custom error codes
-- UTF-8 filename support
-- Automatic cleanup
-
-**API Changes**:
-- Added `POST /api/upload/single-progress`
-- Modified `POST /api/upload/multiple` (now async)
-- Added `GET /api/progress/:transferId`
-- Added `GET /api/progress/batch/:batchId`
-
-### Version 1.0.0
-
-**Release Date**: 2024
-
-**Features**:
-- Basic file upload
-- JWT authentication
-- File validation
-
----
-
-## License
-
-Copyright © 2025. All rights reserved.
-
----
-
-**Last Updated**: January 2025
+# Technical Documentation
+
+This index links to the maintained API, WebUI, server, and nFterm technical
+references. For installation, upgrade, startup, and build commands, see the
+[project README](../README.md).
+
+## API Server
+
+- [API Reference](./api/API_REFERENCE.md) — authoritative authentication,
+  Location, browsing, transfer, sharing, administration, and TLS contracts.
+- [API Documentation](./api/README.md) — API document map and protocol entry
+  points.
+- [Upload API](./api/upload.md) — reservations, resumable sessions, chunk
+  manifests, multipart compatibility, publication, and cancellation.
+- [Progress API](./api/progress.md) — transfer states, byte semantics,
+  cancellation settlement, and retention.
+- [Error Codes](./api/error-codes.md) — upload response errors and recovery
+  behavior.
+
+## WebUI and Server Features
+
+- [Browser Frontend](./browser_frontend.md) — active browser modules, interface
+  styles, build integration, navigation, and upload lifecycle.
+- [Server Locations](./locations.md) — Location configuration, path safety,
+  cache scope, NFS operations, and migration.
+- [Permission Management](./permissions.md) — Permission Roles, fallback
+  permissions, capabilities, and administration workflows.
+- [AI Log Analysis](./ai-analysis.md) — provider configuration, request limits,
+  archive handling, and analysis lifecycle.
+
+## nFterm Desktop
+
+- [Desktop Architecture](./desktop.md) — runtime boundaries, credentials,
+  filesystem access, transfer queue, SSH/SFTP, and Proxmox behavior.
+- [Location Mode Architecture](./location_tech.md) — LOCAL/REMOTE browsing,
+  Locations, file operations, transfers, terminal, overlays, and CSS ownership.
+- [REST API Mode Architecture](./restapi_tech.md) — authentication, native
+  requests, Redfish workflows, vendor tools, and REST styling.
+- [Proxmox VNC Architecture](./proxmox_vnc_tech.md) — VNC sessions, Direct
+  VNC, VM transfer routes, workspace state, and styling.
+- [Transfer Queue](./queue.md) — queue states, progress, retries, resumable
+  uploads, failure handling, and retention.
+- [Queue Maintenance](./queue-maintenance.md) — executor integration and
+  lifecycle guidance for queue changes.
+
+## Shared Frontend and Release Metadata
+
+- [CSS Tokens](./css_tokens.md) — shared custom properties, profiles, themes,
+  stacking layers, and stylesheet ownership.
+- [Versioning](./versioning.md) — repository version metadata and displayed
+  application version.

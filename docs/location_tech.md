@@ -1,6 +1,6 @@
 # Location mode frontend architecture (`fileapi_ui/src/main.tsx`)
 
-This document describes the Location workspace in the Tauri desktop client. The shared custom-property meanings and fallback chain are documented in [`css_tokens.md`](./css_tokens.md); this document lists which CSS files and selector families consume them. It is a code-level companion to [`locations.md`](./locations.md), the server configuration and operations guide, and [`queue.md`](./queue.md), the transfer queue contract.
+This document describes the Location workspace in the Tauri desktop client. The shared custom-property meanings and fallback chain are documented in [`css_tokens.md`](./css_tokens.md); this document lists which CSS files and selector families consume them. It is a code-level companion to [`locations.md`](./locations.md), the server configuration and operations guide, [`queue.md`](./queue.md), the transfer queue contract, and the [API Reference](./api/API_REFERENCE.md).
 
 ## Scope and runtime model
 
@@ -37,7 +37,7 @@ Ordinary API `401` responses share one refresh attempt and retry once while thei
 
 ### Location discovery and authorization
 
-`loadLocations()` calls `GET /api/locations`, filters entries without an id, updates the list, and selects the first permitted Location if the current id is no longer available. It runs after login and every 15 seconds. Results are guarded by session identity, request generation, and mounted state. A changed selected ID or opaque revision invalidates old API view/undo state, including a changed root under the same ID. The server response is authoritative: the client never constructs a filesystem root path. The integrated server exposes revisions and rejects supplied stale revisions with `409`; HTTP and native/backend fixture checks verify this behavior.
+`loadLocations()` calls `GET /api/locations`, filters entries without an id, updates the list, and selects the first permitted Location if the current id is no longer available. It runs after login and every 15 seconds. Results are guarded by session identity, request generation, and mounted state. A changed selected ID or opaque revision invalidates old API view/undo state, including a changed root under the same ID. The server response is authoritative: the client never constructs a filesystem root path. The server exposes revisions and rejects supplied stale revisions with `409`.
 
 `activeLocation`, `locationOnline`, and `hasCapability(capability)` are the common guards used by the UI. API Remote operations require an online Location and the relevant capability (`read`, `upload`, `mkdir`, `move`, `rename`, `share`, or `delete`). `api()` sends the native session ID and adds `X-Location-ID` independently of cookie/Bearer authentication, plus `X-Location-Revision` when available. Only a real token produces `Authorization: Bearer <JWT>`. `apiForLocation()` is used for a specific Location, such as health/selection checks. Download and staging headers follow the same separation. SSH browsing bypasses Location capability checks because it uses a connected SSH profile instead.
 
@@ -110,7 +110,7 @@ Windows external drag-out is deliberately disabled; the stable Download/Queue ro
 
 ## Rename, delete, move, undo, and sharing
 
-`moveItems()` chooses SFTP, API Remote, or cross-source copy/verification based on source and destination. LOCAL-only moves remain disabled. `rename` and `remove` use confirmation settings, capability guards, refresh the affected panes, and write operation logs. API search rename sends `oldPath` and the actual parent with legacy `oldName`/`currentPath`; delete groups targets by actual parent and retains each `items[].path`. The integrated server validates these fields and rejects malformed names. Partial delete/move results are matched by exact path; ambiguous or missing outcomes remain unconfirmed. `recordUndoableRename()` and `recordUndoableMove()` retain complete paths and confirmed outcomes; cross-parent API undo uses move rather than rename. Undo and completion refreshes remain bound to the original session/Location/view context. P36's full-path, legacy, malformed, and partial-outcome HTTP checks all pass.
+`moveItems()` chooses SFTP, API Remote, or cross-source copy based on source and destination. LOCAL-only moves remain disabled. `rename` and `remove` use confirmation settings, capability guards, refresh the affected panes, and write operation logs. API search rename sends `oldPath` and the actual parent with legacy `oldName`/`currentPath`; delete groups targets by actual parent and retains each `items[].path`. The server validates these fields and rejects malformed names. Partial delete/move results are matched by exact path; ambiguous or missing outcomes remain unconfirmed. `recordUndoableRename()` and `recordUndoableMove()` retain complete paths and confirmed outcomes; cross-parent API undo uses move rather than rename. Undo and completion refreshes remain bound to the original session/Location/view context.
 
 Cross-Location server requests support optional `sourceLocationRevision` and `targetLocationRevision` beside their respective Location IDs. `X-Location-Revision` is not reused against an unrelated target root. A supplied stale source or target revision returns `409`. These API fields do not change SSH/SFTP behavior.
 
@@ -166,11 +166,9 @@ The setting retains the persisted `bracketedPasteControlEnabled` key and default
 
 Real connection start/end boundaries reset DEC 2004 in the live terminal and retained output. This reset is separate from `VT_SESSION_BOUNDARY_GUARD`, which is appended after initial replay and must not erase a valid current-session mode advertisement.
 
-`fileapi_ui/checks/terminal.test.js` runs production hook logic with mocked lifecycle/clipboard services and real xterm parsing/input. It checks Python indentation, newline forms, tabs, blank lines, control-code rejection, marker cleaning, one-block dispatch, keyboard variants, copy/OSC 52 behavior, collapse, tab changes, and connection races. This proves local payload handling, not arbitrary remote editor behavior. Remote applications can apply auto-indent or interpret input differently; verify actual shell/editor/Python and tmux combinations before claiming end-to-end formatting or execution safety.
-
 ### Save Log destination
 
-Every Save Log picker opens with `{ path: "" }`, independent of the LOCAL pane or a previous destination. Rust resolves this to the process user's HOME; Windows prefers `USERPROFILE` and falls back to `HOME`. A picker result of `null` means cancellation, while `""` is a valid HOME selection. The selected destination still passes the existing write check when saving the recording package. Native picker placement, Windows mappings, ACLs, and original-file Notepad behavior require platform smoke tests in addition to the mocked action and path tests in `fileapi_ui/checks/local-filesystem.test.js`.
+Every Save Log picker opens with `{ path: "" }`, independent of the LOCAL pane or a previous destination. Rust resolves this to the process user's HOME; Windows prefers `USERPROFILE` and falls back to `HOME`. A picker result of `null` means cancellation, while `""` is a valid HOME selection. The selected destination still passes the existing write check when saving the recording package.
 
 ## UI components and overlays
 
@@ -251,15 +249,14 @@ components and therefore apply wherever those components are rendered.
 
 The exact payloads and server routes belong in the API reference; this document records the frontend orchestration and security decisions. When changing a command or response shape, update the TypeScript type, the corresponding guard/error path, and the operation-log event together.
 
-## Verification Boundary
+## Related Documentation
 
-Final verification passes 261 Node tests with no failures/skips, including 94 desktop checks and all 30 server tests. The TypeScript/Vite build passes. Desktop auth/Location/queue tests use explicit native mocks in `checks/test-utils.js`; they are not themselves native transport tests.
-
-Offline locked cargo check and all 14 legacy native session tests pass. The `fileapi_ui/checks/backend-fixture.cjs` exercises production native `api_request` and the legacy multipart response core against actual Node server/UploadAPI handlers with isolated services; it does not launch Tauri or dispatch the AppHandle-dependent upload commands. The resumable chunk server path is covered by backend HTTP tests, and the new Tauri manifest/hash/chunk commands are covered by compile and helper tests separately.
-
-`fileapi_ui/checks/local-path-layout.e2e.mjs` passes 24 production-CSS fixture cases in Auto/Large. At LOCAL pane widths 220/300/450px, path-bar widths are 194.406/274.406/424.406px with preserved left alignment and a 6.4px right gutter. REMOTE geometry and LOCAL appearance are unchanged. The rule is scoped to `.local-pane-heading .pane-breadcrumbs`; it uses existing tokens documented in `css_tokens.md`. These checks do not represent a full native window or prove untested viewport behavior.
-
-Windows/Linux/NFS runtime, real production restart/deployment, and live Tauri command dispatch remain untested. See the [final report](./review-remediation.md#final-report) for every PlanID and the independent-review disposition.
+- [Server Locations](./locations.md) describes server-side Location configuration,
+  path safety, and storage behavior.
+- [Transfer Queue](./queue.md) and the [Upload API](./api/upload.md) describe
+  transfer state and the server upload protocol.
+- [CSS Tokens](./css_tokens.md) documents shared variables used by Location,
+  REST API, and Proxmox VNC styles.
 
 ## Staff Performance Dashboard
 
