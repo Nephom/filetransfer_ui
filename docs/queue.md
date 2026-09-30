@@ -142,6 +142,36 @@ finishes by server settlement, not division by zero. Directory-only batches
 may complete with zero files and zero bytes. A byte percentage of 100 is not
 proof that publication or cleanup has finished.
 
+## Pane Style Queue Window
+
+The Pane Style floating window (`PaneWorkspaceLegacy.js`) is laid out as a compact
+title bar, a totals row and a scrolling list:
+
+- The title bar only holds the `Transfer Queue` title and the close button; it is
+  also the drag handle.
+- The totals row shows `done/total files · percent`, the active count and the
+  need-attention count. Every value is computed from the items' `progress`
+  (`completedItems`, `totalItems`, `completedBytes`, `totalBytes`); the percentage
+  is `doneBytes / totalBytes`, falling back to `doneFiles / totalFiles` when the
+  total byte count is zero.
+- Each upload row shows `To <Location>:/<destination path>`, the file that is
+  being sent right now, an animated arrow flow (running and retrying only, disabled
+  under `prefers-reduced-motion`), a progress bar whose width is the real item
+  percentage, and `File k/N`. A batch upload is one row; the browser uploader
+  records the in-flight file in `currentFile` at the start of every file and
+  moves it to the next in-flight file (or clears it) when that file settles, so
+  the name changes as the batch advances. Finished rows show a single
+  `Completed` label instead of a percentage and hide the raw detail text.
+
+Button meaning:
+
+| Button | Where | Effect |
+|---|---|---|
+| `Clear` | Completed or Cancelled row | Removes only this record. Uploaded files are untouched. |
+| `Clear list` | Totals row | Removes every Completed and Cancelled upload record. Running, failed and needs-action rows are kept because they may hold a resumable server session. |
+| `Discard` | Failed or needs-action row with a server session | Deletes the unfinished upload session on the server, so it can no longer be resumed. Published files are kept. |
+| `Remove` | Failed or needs-action row without a server session | Removes the record only. |
+
 ## Failure Decisions
 
 | Category | Default decision |

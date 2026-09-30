@@ -6,6 +6,14 @@ import PaneTools, { PaneTerminalLauncher } from './PaneTools.js';
 import { clearLegacyPaneBackgroundStorage, deletePaneBackground, loadPaneBackground, savePaneBackground } from './pane-background-storage.js';
 import { normalisePanePath, paneHeaders, paneItemKey, paneViewModeKey, usePaneMenuPosition } from './pane-workspace-utils.js';
 
+const formatQueueSize = (size) => {
+    const bytes = Number(size);
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    return `${(bytes / Math.pow(1024, index)).toFixed(index ? 1 : 0)} ${units[index]}`;
+};
+
 const BACKGROUND_MAX_FILE_SIZE = 5 * 1024 * 1024;
 const BACKGROUND_MIN_SCALE = 0.5;
 const BACKGROUND_MAX_SCALE = 2;
@@ -98,7 +106,7 @@ const consumePasteProgressStream = async (response, onEvent) => {
 
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
-export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onRetryUpload, onDiscardUpload, onClearNeedsAction, onUploadFiles }) {
+export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onRetryUpload, onDiscardUpload, onClearNeedsAction, onClearFinished, onUploadFiles }) {
     const [locations, setLocations] = React.useState([]);
     const [locationRailOverflow, setLocationRailOverflow] = React.useState(false);
     const [locationPickerOpen, setLocationPickerOpen] = React.useState(false);
@@ -152,6 +160,26 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const uploadQueueItems = transferQueue.filter((item) => item.kind === 'upload');
     const activeUploadCount = uploadQueueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length;
     const uploadAttentionCount = uploadQueueItems.filter((item) => ['failed', 'needs_user_action'].includes(item.status)).length;
+    const uploadFinishedCount = uploadQueueItems.filter((item) => ['completed', 'cancelled'].includes(item.status)).length;
+    const uploadTotals = uploadQueueItems.reduce((totals, item) => {
+        const progress = item.progress || {};
+        totals.files += Number(progress.totalItems) || 0;
+        totals.doneFiles += item.status === 'completed' ? (Number(progress.totalItems) || 0) : (Number(progress.completedItems) || 0);
+        totals.bytes += Number(progress.totalBytes) || 0;
+        totals.doneBytes += item.status === 'completed' ? (Number(progress.totalBytes) || 0) : Math.min(Number(progress.completedBytes) || 0, Number(progress.totalBytes) || 0);
+        return totals;
+    }, { files: 0, doneFiles: 0, bytes: 0, doneBytes: 0 });
+    const uploadTotalPercent = uploadTotals.bytes ? Math.min(100, uploadTotals.doneBytes / uploadTotals.bytes * 100)
+        : (uploadTotals.files ? Math.min(100, uploadTotals.doneFiles / uploadTotals.files * 100) : 0);
+    const uploadItemPercent = (item) => {
+        if (item.status === 'completed') return 100;
+        const progress = item.progress;
+        if (!progress) return 0;
+        if (Number(progress.totalBytes) > 0) return Math.max(0, Math.min(100, (Number(progress.completedBytes) || 0) / Number(progress.totalBytes) * 100));
+        if (Number(progress.totalItems) > 0) return Math.max(0, Math.min(100, (Number(progress.completedItems) || 0) / Number(progress.totalItems) * 100));
+        return 0;
+    };
+    const uploadStatusLabels = { queued: 'Queued', running: 'Uploading', retrying: 'Retrying', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', needs_user_action: 'Needs action' };
     const locationFor = (id) => locations.find((location) => location.id === id);
     const announce = (message) => { setToast(message); window.setTimeout(() => setToast(''), 3000); };
     React.useEffect(() => {
@@ -913,26 +941,61 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
                 onPointerUp={finishUploadQueueDrag}
                 onPointerCancel={finishUploadQueueDrag}
             >
-                <div><strong id="pane-transfer-queue-title">Transfer Queue</strong><small>{activeUploadCount} active{uploadAttentionCount ? ` · ${uploadAttentionCount} need attention` : ''}</small></div>
-                {uploadQueueItems.some((item) => item.status === 'needs_user_action') &&
-                    <button type="button" onClick={() => onClearNeedsAction?.()}>Clear needs action</button>}
+                <strong id="pane-transfer-queue-title">Transfer Queue</strong>
                 <button type="button" className="pane-upload-queue-close" onClick={() => setUploadQueueOpen(false)} aria-label="Close Transfer Queue">×</button>
             </div>
-            {uploadQueueItems.length === 0 && <p className="pane-upload-queue-empty">No uploads in the queue.</p>}
-            {uploadQueueItems.slice(-8).map((item) => <article className={`pane-upload-queue-item queue-status-${item.status}`} key={item.id}>
-                <span><b>{item.label}</b><small className="pane-upload-queue-detail" role="status" aria-live="polite">{item.detail}</small></span>
-                {item.progress && <small>{item.progress.totalBytes ? `${Math.round(item.progress.completedBytes / item.progress.totalBytes * 100)}% · ` : ''}{item.progress.completedItems || 0}/{item.progress.totalItems || 0} files</small>}
-                {['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => onCancelUpload?.(item.id)}>Cancel</button>}
-                {item.serverSessionId && item.status === 'needs_user_action' && <button type="button" onClick={() => {
-                    if (item.errorCategory === 'validation' && onRetryUpload) return onRetryUpload(item.id);
-                    const pane = windowsRef.current.find(candidate => candidate.locationId === item.locationId) || activeWindow;
-                    onResumeUpload?.(item, pane ? () => loadFiles(pane.id, pane.path, pane.query) : undefined);
-                }}>{item.errorCategory === 'validation' && onRetryUpload ? 'Retry upload' : 'Resume'}</button>}
-                {['failed', 'cancelled', 'needs_user_action', 'completed'].includes(item.status) &&
-                    <button type="button" onClick={() => void onDiscardUpload?.(item.id)}>
-                        {item.serverSessionId ? 'Discard' : 'Remove'}
-                    </button>}
-            </article>)}
+            <div className="pane-upload-queue-summary" role="status" aria-live="polite">
+                <span className="pane-upload-queue-total"><b>{uploadTotals.doneFiles}/{uploadTotals.files}</b> files · {Math.round(uploadTotalPercent)}%</span>
+                <span>{activeUploadCount} active</span>
+                {uploadAttentionCount > 0 && <span className="pane-upload-queue-warn">{uploadAttentionCount} need attention</span>}
+                <span className="pane-upload-queue-summary-actions">
+                    {uploadQueueItems.some((item) => item.status === 'needs_user_action') &&
+                        <button type="button" onClick={() => onClearNeedsAction?.()}>Clear needs action</button>}
+                    <button type="button" disabled={uploadFinishedCount === 0} onClick={() => void onClearFinished?.()}
+                        title="Clears every Completed and Cancelled record from this list. Running, failed and needs-action uploads are kept, and files that were already uploaded are not affected.">Clear list</button>
+                </span>
+            </div>
+            <div className="pane-upload-queue-list">
+                {uploadQueueItems.length === 0 && <p className="pane-upload-queue-empty">No uploads in the queue.</p>}
+                {uploadQueueItems.slice(-8).map((item) => {
+                    const running = ['running', 'retrying'].includes(item.status);
+                    const inFlight = running || item.status === 'queued';
+                    const percent = uploadItemPercent(item);
+                    const progress = item.progress || {};
+                    const totalFiles = Number(progress.totalItems) || 0;
+                    const doneFiles = item.status === 'completed' ? totalFiles : Math.min(totalFiles, Number(progress.completedItems) || 0);
+                    const currentName = running && item.currentFile ? item.currentFile : (item.fileLabel || item.label);
+                    const destination = `${item.locationName || item.locationId || ''}:/${String(item.destinationPath || '').replace(/^\/+/, '')}`;
+                    const showDetail = item.status !== 'completed' && !(running && item.currentFile) && item.detail;
+                    return <article className={`pane-upload-queue-item queue-status-${item.status}`} key={item.id}>
+                        <div className="pane-upload-queue-dest" title={destination}><span>To</span>{destination}</div>
+                        <div className="pane-upload-queue-row">
+                            <b className="pane-upload-queue-name" title={currentName}>{currentName}</b>
+                            {running && <span className="pane-upload-queue-flow" aria-hidden="true"><i /><i /><i /></span>}
+                            <span className="pane-upload-queue-state">{item.status === 'completed' ? 'Completed' : (inFlight ? `${Math.round(percent)}%` : uploadStatusLabels[item.status] || item.status)}</span>
+                        </div>
+                        {inFlight && <div className="pane-upload-queue-bar" role="progressbar" aria-label={`Upload progress for ${currentName}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}><span style={{ width: `${percent}%` }} /></div>}
+                        <div className="pane-upload-queue-meta">
+                            <small>{running && totalFiles ? `File ${Math.min(totalFiles, doneFiles + 1)}/${totalFiles}` : `${doneFiles}/${totalFiles} files`}{progress.totalBytes ? ` · ${formatQueueSize(item.status === 'completed' ? progress.totalBytes : progress.completedBytes || 0)} / ${formatQueueSize(progress.totalBytes)}` : ''}</small>
+                            <span className="pane-upload-queue-actions">
+                                {['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => onCancelUpload?.(item.id)}>Cancel</button>}
+                                {item.serverSessionId && item.status === 'needs_user_action' && <button type="button" onClick={() => {
+                                    if (item.errorCategory === 'validation' && onRetryUpload) return onRetryUpload(item.id);
+                                    const pane = windowsRef.current.find(candidate => candidate.locationId === item.locationId) || activeWindow;
+                                    onResumeUpload?.(item, pane ? () => loadFiles(pane.id, pane.path, pane.query) : undefined);
+                                }}>{item.errorCategory === 'validation' && onRetryUpload ? 'Retry upload' : 'Resume'}</button>}
+                                {['completed', 'cancelled'].includes(item.status) &&
+                                    <button type="button" title="Clear this record from the list. Files that were already uploaded are not affected." onClick={() => void onDiscardUpload?.(item.id)}>Clear</button>}
+                                {['failed', 'needs_user_action'].includes(item.status) &&
+                                    <button type="button"
+                                        title={item.serverSessionId ? 'Discard deletes the unfinished upload session on the server, so this upload can no longer be resumed. Files already uploaded are kept.' : 'Remove this record from the list.'}
+                                        onClick={() => void onDiscardUpload?.(item.id)}>{item.serverSessionId ? 'Discard' : 'Remove'}</button>}
+                            </span>
+                        </div>
+                        {showDetail && <small className={`pane-upload-queue-detail`} role="status" aria-live="polite">{item.detail}</small>}
+                    </article>;
+                })}
+            </div>
         </aside>}
         {contextMenu && <div ref={menuPosition.ref} className="pane-context-menu" style={menuPosition.style} onClick={(event) => event.stopPropagation()}>{contextMenu.type === 'location' ? <button type="button" onClick={() => { openWindow(contextMenu.locationId); closeContextMenu(); }}>Open new window</button> : <>{[['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh']].map(([action, label]) => <button type="button" key={action} onClick={() => { void runAction(contextMenu.windowId, action); closeContextMenu(); }}>{label}</button>)}</>}</div>}
         {toast && <div className="pane-toast" role="status">{toast}</div>}

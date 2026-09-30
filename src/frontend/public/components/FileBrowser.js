@@ -796,7 +796,7 @@ export default function FileBrowser({ token, user, onLogout }) {
     };
     const finishQueueItem = (id, status, detail) => {
         if (queueItemsRef.current.find((item) => item.id === id)?.status === 'cancelled') return;
-        updateQueueItem(id, { status, detail, finishedAt: Date.now() });
+        updateQueueItem(id, { status, detail, finishedAt: Date.now(), currentFile: null });
         if (!['failed', 'needs_user_action'].includes(status)) queueJobsRef.current.delete(id);
         const attempt = uploadAttemptsRef.current.get(id);
         if (attempt?.terminal) {
@@ -1026,6 +1026,12 @@ export default function FileBrowser({ token, user, onLogout }) {
         const removable = queueItemsRef.current.filter((item) => item.status === status);
         await Promise.all(removable.map((item) => discardQueueItem(item.id)));
     };
+    // "Clear list" only removes finished records (completed and cancelled). Running, failed and
+    // needs-action items are kept because they may hold a resumable server session.
+    const clearFinishedQueueItems = async () => {
+        const removable = queueItemsRef.current.filter((item) => item.kind === 'upload' && ['completed', 'cancelled'].includes(item.status));
+        await Promise.all(removable.map((item) => discardQueueItem(item.id)));
+    };
     const startDownload = () => {
         if (!selectedItems.length) return;
         const isArchive = selectedItems.length > 1 || selectedItems[0].isDirectory;
@@ -1221,6 +1227,8 @@ export default function FileBrowser({ token, user, onLogout }) {
             locationRevision: locations.find(location => location.id === targetLocationId)?.revision,
             expectedDirectoryCount: directories.length,
             label: `Upload ${items.length} file${items.length === 1 ? '' : 's'}`,
+            fileLabel: items.length ? `${items[0].file?.name || String(items[0].relativePath || '').split('/').pop()}${items.length > 1 ? ` +${items.length - 1}` : ''}` : '',
+            currentFile: null,
             kind: 'upload', paths: [], destinationPath: targetPath, locationId: targetLocationId,
             locationName: uploadContext.locationName || locations.find(location => location.id === targetLocationId)?.displayName || targetLocationId,
             status: 'queued', detail: 'Waiting to start', finishedAt: null,
@@ -1255,6 +1263,7 @@ export default function FileBrowser({ token, user, onLogout }) {
         const offsets = new Map();
         const statuses = new Map();
         const activeChunks = new Map();
+        const activeFiles = new Map();
         const failures = [];
         let sessionInfo;
         const updateProgress = () => {
@@ -1361,6 +1370,18 @@ export default function FileBrowser({ token, user, onLogout }) {
         };
 
         const uploadFile = async (session, file, currentAttempt) => {
+            // Track every file that is being sent right now so the Transfer Queue names the file
+            // that is really in flight, and moves on to the next one when the first finishes.
+            activeFiles.set(file.fileId, file.path);
+            updateQueueItem(queueId, { currentFile: file.path });
+            try { await uploadFileBody(session, file, currentAttempt); }
+            finally {
+                activeFiles.delete(file.fileId);
+                const remaining = [...activeFiles.values()];
+                updateQueueItem(queueId, { currentFile: remaining.length ? remaining[remaining.length - 1] : null });
+            }
+        };
+        const uploadFileBody = async (session, file, currentAttempt) => {
             let remote = await getRemoteFile(file);
             if (remote.status === 'completed') return;
             let offset = remote.uploadedOffset;
@@ -1568,7 +1589,7 @@ export default function FileBrowser({ token, user, onLogout }) {
             updateQueueItem(queueId, { progress });
             if (attempt.onComplete) attempt.onComplete();
             else if (attempt.refreshMain && attempt.current()) { loadFiles(attempt.path, attempt.locationId); loadTreeChildren(attempt.locationId, '', true); }
-            return { status: 'completed', detail: `${completedCount} file(s) completed. ${result.status || 'Server verified each file.'}` };
+            return { status: 'completed', detail: `${completedCount} file(s) completed and verified by the server.` };
         }
         updateQueueItem(queueId, { uploadOutcome: 'resumable' });
         return { status: 'needs_user_action', detail: `${completedCount}/${snapshot.session.expectedFileCount} files completed. ${failures[0] || 'Resume continues only unfinished files and byte ranges.'}` };
@@ -1710,7 +1731,7 @@ export default function FileBrowser({ token, user, onLogout }) {
                <PaneWorkspace token={token} user={user} onLogout={onLogout} onStyleChange={setInterfaceStyle}
                     transferQueue={queueItems} onCancelUpload={cancelQueueItem} onResumeUpload={beginResumeUpload}
                     onRetryUpload={retryQueueItem}
-                    onDiscardUpload={discardQueueItem} onClearNeedsAction={() => clearQueueStatus('needs_user_action')}
+                    onDiscardUpload={discardQueueItem} onClearNeedsAction={() => clearQueueStatus('needs_user_action')} onClearFinished={clearFinishedQueueItems}
                    onUploadFiles={(items, directories, uploadContext, onComplete) => uploadFiles(items, directories, null, { ...uploadContext, onComplete })} />
            </>;
        }

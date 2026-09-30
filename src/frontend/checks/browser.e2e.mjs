@@ -1024,7 +1024,7 @@ try {
     }));
     assert.deepEqual(toolCardFrame, { border: '1px', backing: '1px' }, '3D card button frames remain visible');
 
-    const queueDragHandle = await floatingQueue.locator('.pane-upload-queue-heading > div').boundingBox();
+    const queueDragHandle = await floatingQueue.locator('.pane-upload-queue-heading > strong').boundingBox();
     await page.mouse.move(queueDragHandle.x + 20, queueDragHandle.y + 14);
     await page.mouse.down();
     await page.mouse.move(queueDragHandle.x + 70, queueDragHandle.y + 48, { steps: 4 });
@@ -1260,6 +1260,24 @@ try {
     await waitFor(() => batches.size === 5 && [...batches.values()][4].status === 'completed', 'Pane API upload uses the resumable session queue');
     assert.equal([...batches.values()][4].uploads, 1);
     report.checks.push('Pane Style upload shares resumable API sessions, chunk integrity, and Transfer Queue completion');
+    if (await page.locator('.pane-upload-queue').count() === 0) await page.locator('.pane-tool-queue').click();
+    const queuePanel = page.locator('.pane-upload-queue');
+    await queuePanel.waitFor();
+    const completedRow = queuePanel.locator('.queue-status-completed').filter({ hasText: 'pane-upload.txt' });
+    await completedRow.waitFor();
+    const completedText = await completedRow.innerText();
+    assert.equal((completedText.match(/completed/gi) || []).length, 1, `a completed upload shows Completed exactly once: ${completedText}`);
+    assert.match(completedText, /To\s+\S+:\//, 'the queue row names the destination Location and path');
+    assert.equal(await completedRow.locator('.pane-upload-queue-bar').count(), 0, 'a completed row no longer shows a progress bar');
+    assert.equal(await completedRow.locator('button', { hasText: 'Discard' }).count(), 0, 'a completed row is cleared, not discarded');
+    assert.ok(/^\s*\d+\/\d+ files/.test(await queuePanel.locator('.pane-upload-queue-total').innerText()), 'the summary row shows the actual completed/total file count');
+    const queueHeadingHeight = await queuePanel.locator('.pane-upload-queue-heading').evaluate(element => element.getBoundingClientRect().height);
+    assert.ok(queueHeadingHeight < 56, `the Transfer Queue title bar stays compact: ${queueHeadingHeight}px`);
+    assert.match(await completedRow.locator('button', { hasText: 'Clear' }).getAttribute('title'), /not affected/i);
+    await queuePanel.getByRole('button', { name: 'Clear list', exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.pane-upload-queue .queue-status-completed').length === 0);
+    assert.equal(await queuePanel.getByRole('button', { name: 'Clear list', exact: true }).isDisabled(), true, 'Clear list is disabled when no finished record remains');
+    report.checks.push('Transfer Queue shows destination, one Completed label, a compact title bar, a real file-count summary, and Clear list removes only finished records');
     await managedPane.locator('button[aria-label="Close window"]').click();
     while (await page.locator('.pane-minimized-item').count()) await page.locator('.pane-minimized-item').last().locator('.pane-minimized-close').click();
     await page.locator('.pane-minimized-dock').waitFor({ state: 'detached' });
