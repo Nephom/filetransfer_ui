@@ -6,6 +6,12 @@ The browser application uses React and ReactDOM **18.3.1**, compiled by esbuild 
 
 `src/frontend/public/index.html` remains the style and HTML template. The build replaces its `__BROWSER_ENTRY__` marker with the hashed bundle URL. `share.html` and `favicon.ico` are copied without rewriting them. Private `admin.html` and `super.html` remain under `src/frontend/private`, outside the generated static root. Their authenticated routes remain the backend's responsibility.
 
+## Admin Log Viewer
+
+The Admin Console keeps separate **System log** and **User / IP activity** views. System log retains its existing `server.log` refresh and download controls. User activity reads the admin-only log APIs and groups recorded IPv4 sources under the selected User; anonymous public-share activity is listed separately. IP groups start collapsed and sort by each User's latest matching activity. Expanding a group shows only the timestamp and operation details, newest first, with pagination for older entries.
+
+User activity can be filtered by an inclusive date range and an exact normalized API operation type. Dates use the server-local date prefix in each log record; `FILE RENAME` and `API RENAME` both match `RENAME`. Applying filters updates the IP summaries and every expanded entry page consistently. The viewer reads per-IP log files without merging them into `server.log`; the existing IPv4-only logging policy remains in effect.
+
 ## Interface Styles
 
 The account menu exposes two interface styles. **Classical Style** is the default and preserves the original single-directory browser. **Pane Style** uses the same authenticated API surface in an independent Location card, floating-window, and tool-card layout.

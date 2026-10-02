@@ -37,9 +37,11 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
   let app;
   let server;
   let uploadApi;
+  const loggerEvents = [];
   const forbiddenCalls = [];
   const instances = [];
   const cacheEvents = [];
+  const logDirectory = path.join(base, 'logs');
   const forbidden = name => () => {
     forbiddenCalls.push(name);
     throw new Error(`Fixture forbids production service: ${name}`);
@@ -119,10 +121,19 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
       uploadApi = this;
     }
   }
-  const logger = new Proxy({}, { get: () => () => {} });
+  const logger = new Proxy({ logsDir: logDirectory, serverLogFile: path.join(base, 'server.log') }, {
+    get(target, method) {
+      if (method in target) return target[method];
+      return (...args) => { loggerEvents.push({ method, args }); };
+    }
+  });
   mock('./config', configManager);
   mock('./auth/user-manager', users);
   mock('./utils/logger', { systemLogger: logger, createLogger: () => logger, redactLogData: value => value, redactUrl: value => value });
+  mock('./ai/analysis-job', { analyzePath: async ({ onProgress }) => {
+    onProgress({ phase: 'summary', completedChunks: 1, totalChunks: 1 });
+    return { result: 'fixture analysis result' };
+  } });
   mock('./file-system', { EnhancedMemoryFileSystem: FixtureFileSystem });
   mock('./api/upload', FixtureUploadAPI);
   mock('../../scripts/build-browser', { publicDirectory, checkBrowserBuild: (...args) => buildCheck(...args) });
@@ -200,7 +211,7 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
       await app.locals.configureLocationRuntime();
       await app.locals.refreshSecurity();
     }
-    return { root, other, directory };
+    return { root, other, directory, logDirectory, loggerEvents };
   };
   await fixture();
   app = require('./server');
@@ -332,6 +343,22 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     status(await send('/api/admin/config', { headers: { authorization: `Bearer ${token('fixture-user', { role: 'admin' })}` } }), 403);
     status(await send('/auth/verify', { method: 'POST', headers: { authorization: `Bearer ${token('fixture-admin', { id: '0' })}` } }), 401);
     assert.equal(saves, 0);
+  });
+
+  await t.test('admin User/IP log reader is mounted, uses configured logsDir, and remains admin-only', async () => {
+    const f = await fixture();
+    await fs.mkdir(f.logDirectory, { recursive: true });
+    await fs.writeFile(path.join(f.logDirectory, '192_0_2_45.log'),
+      '[2026-10-02 09:30:00] [INFO] API RENAME - Resource: report.txt, Status: SUCCESS | URL: PUT /api/files/rename | User-Agent: fixture | User: ken (user)\n');
+
+    const denied = await send('/api/admin/logs/users', { username: 'fixture-user' });
+    status(denied, 403);
+    const staffDenied = await send('/api/admin/logs/users', { username: 'fixture-staff' });
+    status(staffDenied, 403);
+    const response = await send('/api/admin/logs/users');
+    status(response, 200);
+    assert.equal(response.body.users[0].username, 'ken');
+    assert.equal(response.body.users[0].ipCount, 1);
   });
 
   await t.test('user backgrounds are authenticated, isolated by user ID, and removable without cross-user access', async () => {
@@ -665,6 +692,88 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     safe(partial);
     assert.equal(await fs.readFile(path.join(f.root, 'a/io-failure.txt'), 'utf8'), 'retained');
     await assert.rejects(fs.stat(path.join(f.root, 'a/same.txt')), { code: 'ENOENT' });
+  });
+
+  await t.test('file and admin actions write scoped IP audit details while retaining server system events', async () => {
+    const f = await fixture();
+    f.loggerEvents.length = 0;
+    await fs.writeFile(path.join(f.root, 'good.txt'), 'good');
+    await fs.writeFile(path.join(f.root, 'io-failure.txt'), 'keep');
+
+    const deleted = await send('/api/files/delete', { method: 'DELETE', body: {
+      currentPath: '', items: [{ name: 'good.txt' }, { name: 'io-failure.txt' }]
+    } });
+    status(deleted, 207);
+    const deleteItems = f.loggerEvents.filter(event => event.method === 'logFileOperation' && event.args[0] === 'delete');
+    assert.equal(deleteItems.length, 2);
+    assert.equal(deleteItems.find(event => event.args[1] === 'good.txt').args[2], true);
+    const failedDelete = deleteItems.find(event => event.args[1] === 'io-failure.txt');
+    assert.equal(failedDelete.args[2], false);
+    assert.match(failedDelete.args[4].error, /Permission denied/);
+    assert.doesNotMatch(failedDelete.args[4].error, new RegExp(f.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    const deleteSummary = f.loggerEvents.find(event => event.method === 'logAPI' && event.args[0] === 'delete');
+    assert.equal(deleteSummary.args[2], false);
+    assert.equal(deleteSummary.args[4].deletedCount, 1);
+    assert.equal(deleteSummary.args[4].failedCount, 1);
+
+    await fs.writeFile(path.join(f.root, 'listed.txt'), 'listed');
+    const flattened = await send('/api/files/flatten', { method: 'POST', body: {
+      items: [{ name: 'listed.txt', path: 'listed.txt' }]
+    } });
+    status(flattened, 200);
+    const flattenAudit = f.loggerEvents.find(event => event.method === 'logAPI' && event.args[0] === 'flatten');
+    assert.equal(flattenAudit.args[2], true);
+    assert.equal(flattenAudit.args[4].fileCount, 1);
+    assert.equal(flattenAudit.args[4].totalBytes, 6);
+
+    await fs.writeFile(path.join(f.root, 'io-failure.txt'), 'copy then retain');
+    const paste = await send('/api/files/paste', { method: 'POST', body: {
+      items: [{ name: 'io-failure.txt', path: 'io-failure.txt', sourceLocationId: 'default' }],
+      operation: 'cut', sourceLocationId: 'default', targetLocationId: 'other', targetPath: ''
+    } });
+    status(paste, 500);
+    const pasteItem = f.loggerEvents.find(event => event.method === 'logFileOperation' && event.args[0] === 'move');
+    assert.ok(pasteItem);
+    assert.equal(pasteItem.args[2], false);
+    assert.equal(pasteItem.args[4].source, 'io-failure.txt');
+    assert.equal(pasteItem.args[4].target, 'io-failure.txt');
+    assert.match(pasteItem.args[4].error, /Permission denied/);
+    assert.doesNotMatch(pasteItem.args[4].error, new RegExp(f.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    const adminChange = await send('/api/admin/config', { method: 'PUT', body: { server: { port: 12346 } } });
+    status(adminChange, 200);
+    const adminAudit = f.loggerEvents.find(event => event.method === 'logAPI' && event.args[0] === 'admin_put');
+    assert.ok(adminAudit);
+    assert.equal(adminAudit.args[2], true);
+    assert.equal(adminAudit.args[3].user.username, 'fixture-admin');
+    assert.ok(f.loggerEvents.some(event => event.method === 'logSystem' && String(event.args[1]).includes('Configuration updated by admin')),
+      'system event remains in server.log while request attribution is written to the IP log');
+  });
+
+  await t.test('authentication and asynchronous AI outcomes are attributable without logging submitted secrets', async () => {
+    const f = await fixture();
+    f.loggerEvents.length = 0;
+    const rejectedLogin = await send('/auth/login', { username: null, method: 'POST', body: { username: 'fixture-user', password: 'wrong-password-sentinel' } });
+    status(rejectedLogin, 401);
+    assert.ok(f.loggerEvents.some(event => event.method === 'logAuth' && event.args[0] === 'login' && event.args[2] === false));
+
+    const badPassword = await send('/auth/change-password', { method: 'POST', body: { currentPassword: 'wrong-password-sentinel', newPassword: 'new-password-sentinel' } });
+    status(badPassword, 401);
+    const changePasswordAudit = f.loggerEvents.find(event => event.method === 'logAuth' && event.args[0] === 'change_password');
+    assert.equal(changePasswordAudit.args[2], false);
+    assert.doesNotMatch(JSON.stringify(changePasswordAudit.args[3]), /wrong-password-sentinel|new-password-sentinel/);
+
+    const forgot = await send('/auth/forgot-password', { username: null, method: 'POST', body: { username: 'fixture-user' } });
+    status(forgot, 200);
+    assert.ok(f.loggerEvents.some(event => event.method === 'logAuth' && event.args[0] === 'forgot_password' && event.args[2] === false));
+
+    config.ai = { enabled: true, baseUrl: 'http://127.0.0.1:1', model: 'fixture-model' };
+    await fs.writeFile(path.join(f.root, 'analysis.txt'), 'fixture input');
+    const started = await send('/api/ai/analyze', { username: 'fixture-user', method: 'POST', body: { path: 'analysis.txt' } });
+    status(started, 202);
+    await until(() => f.loggerEvents.some(event => event.method === 'logAPI' && event.args[0] === 'ai_analysis' && event.args[4]?.status === 'complete'));
+    assert.ok(f.loggerEvents.some(event => event.method === 'logAPI' && event.args[0] === 'ai_analysis' && event.args[4]?.status === 'queued'));
+    assert.ok(f.loggerEvents.some(event => event.method === 'logAPI' && event.args[0] === 'ai_analysis' && event.args[4]?.status === 'complete'));
   });
 
   await t.test('E04 cross-Location same-object move and cut never delete the only file', async () => {

@@ -1,6 +1,7 @@
 const express = require('express');
 const database = require('../database/db');
 const { authenticate } = require('../middleware/auth');
+const { systemLogger } = require('../utils/logger');
 
 const MAX_BACKGROUND_SIZE = 5 * 1024 * 1024;
 const MIN_BACKGROUND_SCALE = 0.5;
@@ -54,24 +55,37 @@ const serializeBackground = (row) => ({
   updatedAt: row.updatedAt
 });
 
-const createBackgroundRouter = ({ db = database, auth = authenticate } = {}) => {
+const createBackgroundRouter = ({ db = database, auth = authenticate, logger = systemLogger } = {}) => {
   const router = express.Router();
+  const audit = (...args) => {
+    try { Promise.resolve(logger.logAPI?.(...args)).catch(() => {}); }
+    catch { /* Logging must not change a committed background update. */ }
+  };
 
   router.get('/user/background', auth, async (req, res) => {
     const userId = currentUserId(req);
-    if (userId === null) return res.status(401).json({ error: 'Authenticated user ID is required.' });
+    if (userId === null) {
+      audit('background_load', 'user pane background', false, req, { statusCode: 401, error: 'Authenticated user ID is required' });
+      return res.status(401).json({ error: 'Authenticated user ID is required.' });
+    }
     try {
       const row = await db.get('SELECT image, mimeType, name, width, height, size, scale, positionX, positionY, fit, updatedAt FROM user_pane_backgrounds WHERE userId = ?', [userId]);
       res.set('Cache-Control', 'no-store');
       res.json({ background: row ? serializeBackground(row) : null });
     } catch (error) {
+      audit('background_load', 'user pane background', false, req, {
+        statusCode: 500, errorCode: error.code || error.name || 'DATABASE_ERROR'
+      });
       res.status(500).json({ error: 'Unable to load background image.' });
     }
   });
 
   router.put('/user/background', auth, async (req, res) => {
     const userId = currentUserId(req);
-    if (userId === null) return res.status(401).json({ error: 'Authenticated user ID is required.' });
+    if (userId === null) {
+      audit('background_save', 'user pane background', false, req, { statusCode: 401, error: 'Authenticated user ID is required' });
+      return res.status(401).json({ error: 'Authenticated user ID is required.' });
+    }
     try {
       const background = parseBackground(req.body);
       const updatedAt = Date.now();
@@ -80,6 +94,10 @@ const createBackgroundRouter = ({ db = database, auth = authenticate } = {}) => 
           (userId, image, mimeType, name, width, height, size, scale, positionX, positionY, fit, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [userId, background.image, background.mimeType, background.name, background.width, background.height, background.size, background.scale, background.x, background.y, background.fit, updatedAt]);
+      audit('background_save', 'user pane background', true, req, {
+        name: background.name, mimeType: background.mimeType, size: background.size,
+        width: background.width, height: background.height, fit: background.fit
+      });
       res.set('Cache-Control', 'no-store');
       res.json({
         success: true,
@@ -96,18 +114,30 @@ const createBackgroundRouter = ({ db = database, auth = authenticate } = {}) => 
         }
       });
     } catch (error) {
+      audit('background_save', 'user pane background', false, req, {
+        statusCode: error.statusCode || 500,
+        ...(typeof req.body?.name === 'string' ? { name: req.body.name.slice(0, 255) } : {}),
+        error: error.statusCode ? error.message : 'Unable to save background image'
+      });
       res.status(error.statusCode || 500).json({ error: error.statusCode ? error.message : 'Unable to save background image.' });
     }
   });
 
   router.delete('/user/background', auth, async (req, res) => {
     const userId = currentUserId(req);
-    if (userId === null) return res.status(401).json({ error: 'Authenticated user ID is required.' });
+    if (userId === null) {
+      audit('background_remove', 'user pane background', false, req, { statusCode: 401, error: 'Authenticated user ID is required' });
+      return res.status(401).json({ error: 'Authenticated user ID is required.' });
+    }
     try {
       const result = await db.run('DELETE FROM user_pane_backgrounds WHERE userId = ?', [userId]);
+      audit('background_remove', 'user pane background', true, req, { deleted: result.changes > 0 });
       res.set('Cache-Control', 'no-store');
       res.json({ success: true, deleted: result.changes > 0 });
     } catch (error) {
+      audit('background_remove', 'user pane background', false, req, {
+        statusCode: 500, errorCode: error.code || error.name || 'DATABASE_ERROR'
+      });
       res.status(500).json({ error: 'Unable to remove background image.' });
     }
   });

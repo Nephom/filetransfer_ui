@@ -296,6 +296,16 @@ before exiting. Restart does not compile browser assets.
 
 Request-derived user operations are stored in `logs/{IPv4-with-underscores}.log`. Entries include timestamp, level, operation, request information when available, and authenticated user information. IPv6 request addresses are intentionally excluded from operation logs. Server-only events remain in `server.log`.
 
+The admin-only User/IP log viewer reads these per-IPv4 files; it does not merge them into `server.log`. Runtime logs are not API response data except through the following admin endpoints:
+
+| Method | Endpoint | Access | Response |
+|---|---|---|---|
+| GET | `/api/admin/logs/users` | Admin | `{ "users": [{ "key", "username", "latestAt", "entryCount", "ipCount" }] }`. `username: null` represents unauthenticated activity. The `key` is the opaque selector value used by the other endpoints. |
+| GET | `/api/admin/logs/ips?user=<key>&from=YYYY-MM-DD&to=YYYY-MM-DD&operation=<type>` | Admin | `{ "username", "ips": [{ "ip", "latestAt", "entryCount", "operations" }], "operations": ["RENAME"] }`. IPs are sorted by their latest matching activity. Date endpoints are inclusive and use the date prefix written in the server's local log time. |
+| GET | `/api/admin/logs/entries?user=<key>&ip=<IPv4>&limit=50&before=<cursor>&from=YYYY-MM-DD&to=YYYY-MM-DD&operation=<type>` | Admin | `{ "entries": [{ "sequence", "timestamp", "level", "operationType", "operation" }], "hasMore", "nextCursor" }`. Entries are returned newest-first; `before` is the cursor from the previous page. |
+
+Operation filtering is an exact normalized type match, case-insensitive at input. For example, both `FILE RENAME` and `API RENAME` are classified as `RENAME`; a filename containing the word `rename` does not match that filter. The IP summary and entry pages apply the same date and operation filters. Entry descriptions omit the repeated User/IP fields; request URLs are redacted and credentials are not exposed. Only validated regular IPv4 log files inside the configured log directory can be read.
+
 ## Error Handling
 
 Use the HTTP status first, then display the response's `error.message`, `error`, or `message` field. Upload-specific errors are documented in [error-codes.md](./error-codes.md); upload request schemas and recovery behavior are in [upload.md](./upload.md) and [progress.md](./progress.md). Do not assume every older endpoint returns identical error shapes.

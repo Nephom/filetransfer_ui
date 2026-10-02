@@ -53,6 +53,7 @@ async function fixture(t, options = {}) {
   const root = path.join(base, 'storage');
   await fs.promises.mkdir(root);
   const manager = new TransferManager();
+  const auditEvents = [];
   const permissions = { allowed: true, hook: null, async assertCurrent(user, id, capability) {
     if (this.hook) await this.hook(user, id, capability);
     if (!this.allowed) throw Object.assign(new Error('secret permission detail'), { statusCode: 403 });
@@ -60,7 +61,11 @@ async function fixture(t, options = {}) {
   const config = { maxFileSize: 1024, enableFileUploadSecurity: false, chunkSize: 1024 * 1024, enableResume: true };
   let authCalls = 0;
   const api = new UploadAPI({
-    transferManager: manager, tempDir: path.join(base, 'staging'), logger: { logSystem() {} },
+    transferManager: manager, tempDir: path.join(base, 'staging'), logger: {
+      logSystem() {},
+      logAPI: (...args) => auditEvents.push({ kind: 'api', operation: args[0], resource: args[1], success: args[2], details: args[4] }),
+      logUpload: (...args) => auditEvents.push({ kind: 'upload', fileName: args[0], success: args[1], details: args[3] })
+    },
     getConfig: key => key === 'fileSystem.maxFileSize' ? config.maxFileSize :
       key === 'security.enableFileUploadSecurity' ? config.enableFileUploadSecurity :
       key === 'transfer.chunkSize' ? config.chunkSize :
@@ -121,7 +126,7 @@ async function fixture(t, options = {}) {
     for (const batch of manager.getAllBatches()) await manager.cancelBatch(batch.batchId);
     await fs.promises.rm(base, { recursive: true, force: true });
   });
-  return { base, root, manager, api, config, permissions, locations, open, send, upload, reserve, poll, settled, authCalls: () => authCalls };
+  return { base, root, manager, api, config, permissions, locations, open, send, upload, reserve, poll, settled, auditEvents, authCalls: () => authCalls };
 }
 
 const sqliteAdapter = raw => ({
@@ -178,6 +183,10 @@ test('cookie and Bearer routes retain legacy filenames and synchronous responses
     assert.equal((await f.poll(result.body.transferId, false)).body.transferredSize, 3);
   }
   assert.equal(await fs.promises.readFile(path.join(f.root, '100%中文_(1).txt'), 'utf8'), 'abc');
+  const uploads = f.auditEvents.filter(event => event.kind === 'upload' && event.success);
+  assert.equal(uploads.length, 2);
+  assert.ok(uploads.every(event => event.details.size === 3 && event.details.batchId));
+  assert.ok(f.auditEvents.some(event => event.kind === 'api' && event.operation === 'upload_batch' && event.success));
 });
 
 test('runtime per-file limits accept exact boundary/zero files and reject above it without aggregate reduction', async t => {
@@ -254,6 +263,8 @@ test('permission/path rejection is awaited, cleans staging, and never exposes in
   const denied = await f.upload([file()]);
   assert.equal(denied.status, 403);
   assert.equal(JSON.stringify(denied.body).includes('secret'), false);
+  assert.ok(f.auditEvents.some(event => event.kind === 'api' && event.operation === 'upload_request' &&
+    !event.success && event.details.statusCode === 403));
   assert.deepEqual(await fs.promises.readdir(f.api.tempDir), []);
   f.permissions.allowed = true;
   const outside = path.join(f.base, 'outside');
@@ -434,6 +445,8 @@ test('individual pending cancellation removes its staged file and allows sibling
   const batch = await f.settled(id);
   assert.equal(batch.successCount, 1);
   assert.equal(batch.cancelledCount, 1);
+  assert.ok(f.auditEvents.some(event => event.kind === 'upload' && event.fileName === 'second' &&
+    !event.success && /cancelled/i.test(event.details.error)));
   assert.deepEqual(await fs.promises.readdir(f.root), ['first']);
 });
 
@@ -999,6 +1012,10 @@ test('resumable API session resumes an unfinished file after manager restart and
   const completed = await f.send(`/upload/sessions/${sessionId}/complete`);
   assert.equal(completed.body.status, 'completed');
   assert.deepEqual(await fs.promises.readdir(path.join(f.root, 'nested')), ['large.bin']);
+  assert.ok(f.auditEvents.some(event => event.kind === 'api' && event.operation === 'resumable_upload_session' && event.success));
+  assert.ok(f.auditEvents.some(event => event.kind === 'upload' && event.fileName === 'nested/large.bin' && event.success && event.details.size === contents.length));
+  assert.ok(f.auditEvents.some(event => event.kind === 'api' && event.operation === 'resumable_upload_complete' && event.success));
+  assert.equal(f.auditEvents.some(event => JSON.stringify(event).includes('/chunks')), false, 'chunk traffic must not create per-request audit noise');
 });
 
 test('unfinished resumable sessions expire after exactly four hours and remove owned staging', async t => {

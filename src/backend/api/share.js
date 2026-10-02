@@ -17,11 +17,22 @@ const { authenticate, requireAdmin } = dependencies.auth || require('../middlewa
 const userManager = dependencies.userManager || require('../auth/user-manager');
 const LocationManager = dependencies.LocationManager || require('../location').LocationManager;
 let locationPermissionManager = dependencies.locationPermissionManager || null;
+const safeAudit = method => (...args) => {
+  try { return Promise.resolve(systemLogger[method]?.(...args)).catch(() => undefined); }
+  catch { return Promise.resolve(); }
+};
+const auditApi = safeAudit('logAPI');
+const auditDownload = safeAudit('logDownload');
+const auditFailure = (error, fallbackStatus = 500) => ({
+  statusCode: error?.statusCode || fallbackStatus,
+  errorCode: typeof error?.code === 'string' ? error.code : error?.name || 'SHARE_REQUEST_FAILED'
+});
 
 router.use((req, res, next) => {
   res.set('Cache-Control', 'no-store');
   res.set('Referrer-Policy', 'no-referrer');
   if (Object.keys(req.query).some(key => /password/i.test(key))) {
+    void auditApi('share_request', req.path, false, req, { statusCode: 400, error: 'Query-string credentials are not accepted' });
     return res.status(400).json({ success: false, message: 'Use POST body credentials; query passwords are not accepted' });
   }
   next();
@@ -78,6 +89,7 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     const userId = req.user?.id || req.user?.username || 'anonymous';
 
     if (typeof filePath !== 'string' || !filePath) {
+      void auditApi('share_create', 'selected file', false, req, { statusCode: 400, error: 'File path is required' });
       return res.status(400).json({ success: false, message: '文件路徑不能為空' });
     }
 
@@ -85,6 +97,7 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     const normalizedPath = path.normalize(filePath);
     if (normalizedPath.includes('..')) {
       systemLogger.logSystem('WARN', 'Invalid share creation path');
+      void auditApi('share_create', normalizedPath, false, req, { statusCode: 400, error: 'Invalid relative file path' });
       return res.status(400).json({ success: false, message: '無效的文件路徑' });
     }
 
@@ -114,9 +127,11 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     try {
       const stats = await fs.stat(fullPath);
       if (!stats.isFile()) {
+        void auditApi('share_create', normalizedPath, false, req, { locationId: context.locationId, statusCode: 400, error: 'Only files can be shared' });
         return res.status(400).json({ success: false, message: '只能分享文件，不能分享目錄' });
       }
     } catch (error) {
+      void auditApi('share_create', normalizedPath, false, req, { locationId: context.locationId, statusCode: 404, error: 'File is unavailable' });
       return res.status(404).json({ success: false, message: '文件不存在' });
     }
 
@@ -139,7 +154,12 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     );
 
     // Log share link creation
-    systemLogger.logSystem('INFO', 'Share link creation completed');
+    void auditApi('share_create', normalizedPath, true, req, {
+      locationId: context.locationId,
+      expiresAt: shareLink.expiresAt,
+      maxDownloads: shareLink.maxDownloads,
+      passwordProtected: shareLink.hasPassword
+    });
 
     res.json({
       success: true,
@@ -160,6 +180,7 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', 'Share link creation failed');
+    void auditApi('share_create', typeof req.body?.filePath === 'string' ? req.body.filePath : 'selected file', false, req, auditFailure(error));
     res.status(error.statusCode || 500).json({ success: false, message: error.statusCode === 409
       ? 'Location changed; refresh the file selection' : 'Unable to create share link' });
   }
@@ -170,22 +191,28 @@ router.post('/files/share', authenticate, createShareLimiter, async (req, res) =
  * Download file using share token (NO authentication required)
  */
 const download = async (req, res) => {
+  let shareLink = null;
   try {
     const { shareToken } = req.params;
     const password = req.method === 'POST' ? req.body?.password : undefined;
     if (password != null && typeof password !== 'string') {
+      void auditDownload('unknown', 'share-link', false, req, { statusCode: 400, error: 'Invalid password format' });
       return res.status(400).json({ success: false, message: 'Invalid password format' });
     }
 
     // Validate share token
-    const shareLink = await shareManager.validateShareToken(shareToken, password);
+    shareLink = await shareManager.validateShareToken(shareToken, password);
 
     if (!shareLink) {
+      void auditDownload('unknown', 'share-link', false, req, { statusCode: 404, error: 'Share link is unavailable' });
       return res.status(404).json({ success: false, message: '分享連結不存在或已失效' });
     }
 
     // Handle validation errors
     if (shareLink.error) {
+      void auditDownload(shareLink.fileName || 'unknown', 'share-link', false, req, {
+        statusCode: shareLink.status, error: shareLink.error
+      });
       return res.status(shareLink.status).json({ success: false, message: shareLink.error });
     }
 
@@ -193,6 +220,7 @@ const download = async (req, res) => {
     const normalizedPath = path.normalize(shareLink.filePath);
     if (normalizedPath.includes('..')) {
       systemLogger.logSystem('WARN', 'Invalid stored share path');
+      void auditDownload(shareLink.fileName || 'unknown', 'share-link', false, req, { statusCode: 400, error: 'Stored share path is invalid' });
       return res.status(400).json({ success: false, message: '無效的文件路徑' });
     }
 
@@ -204,15 +232,20 @@ const download = async (req, res) => {
     try {
       await fs.access(fullPath);
       stats = await fs.stat(fullPath);
-      if (!stats.isFile()) return res.status(404).json({ success: false, message: 'File not found' });
+      if (!stats.isFile()) {
+        void auditDownload(shareLink.fileName || 'unknown', 'share-link', false, req, { statusCode: 404, error: 'Shared path is not a file' });
+        return res.status(404).json({ success: false, message: 'File not found' });
+      }
     } catch (error) {
       systemLogger.logSystem('WARN', 'Shared file unavailable');
+      void auditDownload(shareLink.fileName || 'unknown', 'share-link', false, req, { statusCode: 404, error: 'Shared file is unavailable' });
       return res.status(404).json({ success: false, message: '文件不存在' });
     }
 
     // HEAD consumes no admission. Every admitted GET/POST, including Range,
     // consumes one count, even if the client disconnects or streaming fails.
     if (req.method !== 'HEAD' && !(await shareManager.admitDownload(shareToken))) {
+      void auditDownload(shareLink.fileName || 'unknown', 'share-link', false, req, { statusCode: 410, error: 'Share link is expired, revoked, or exhausted' });
       return res.status(410).json({ success: false, message: 'Share link expired, revoked, or exhausted' });
     }
 
@@ -224,8 +257,8 @@ const download = async (req, res) => {
     // Stream file to client
     res.download(fullPath, shareLink.fileName, { cacheControl: false, lastModified: false }, (err) => {
       if (err) {
-        systemLogger.logDownload(shareLink.fileName, 'share-link', false, req, {
-          error: 'File transfer failed'
+        void auditDownload(shareLink.fileName, 'share-link', false, req, {
+          statusCode: 500, error: 'File transfer failed'
         });
         if (!res.headersSent) {
           res.removeHeader('Content-Length');
@@ -235,11 +268,12 @@ const download = async (req, res) => {
           res.destroy();
         }
       } else if (req.method !== 'HEAD') {
-        systemLogger.logDownload(shareLink.fileName, 'share-link', true, req, { size: stats.size });
+        void auditDownload(shareLink.fileName, 'share-link', true, req, { size: stats.size, locationId: shareLink.locationId });
       }
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', 'Share download failed');
+    void auditDownload(shareLink?.fileName || 'unknown', 'share-link', false, req, auditFailure(error));
     if (!res.headersSent) {
       res.status(error.code === 'ENOENT' ? 404 : error.statusCode || 500).json({ success: false, message: '下載失敗' });
     }
@@ -267,12 +301,14 @@ router.get('/files/shares', authenticate, async (req, res) => {
       }
     }
 
+    void auditApi('share_list', 'user share links', true, req, { count: permittedLinks.length });
     res.json({
       success: true,
       data: permittedLinks
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', 'Failed to get user share links');
+    void auditApi('share_list', 'user share links', false, req, auditFailure(error));
     res.status(500).json({ success: false, message: '獲取分享連結列表失敗' });
   }
 });
@@ -288,6 +324,7 @@ router.delete('/files/share/:shareToken', authenticate, async (req, res) => {
 
     const shareLink = await shareManager.getShareLinkInfo(shareToken);
     if (!shareLink) {
+      void auditApi('share_revoke', 'share link', false, req, { statusCode: 404, error: 'Share link is unavailable' });
       return res.status(404).json({ success: false, message: '分享連結不存在或無權限撤銷' });
     }
     await assertSharePermission(req.user, shareLink.locationId || 'default');
@@ -295,14 +332,16 @@ router.delete('/files/share/:shareToken', authenticate, async (req, res) => {
     const success = await shareManager.revokeShareLink(shareToken, userId);
 
     if (!success) {
+      void auditApi('share_revoke', 'share link', false, req, { statusCode: 404, error: 'Share link could not be revoked' });
       return res.status(404).json({ success: false, message: '分享連結不存在或無權限撤銷' });
     }
 
-    systemLogger.logSystem('INFO', 'Share link revoked by owner');
+    void auditApi('share_revoke', shareLink.fileName || 'share link', true, req, { locationId: shareLink.locationId });
 
     res.json({ success: true, message: '分享連結已撤銷' });
   } catch (error) {
     systemLogger.logSystem('ERROR', 'Failed to revoke share link');
+    void auditApi('share_revoke', 'share link', false, req, auditFailure(error));
     res.status(error.statusCode || 500).json({ success: false, message: '撤銷分享連結失敗' });
   }
 });
@@ -319,6 +358,7 @@ router.get('/admin/share-links', requireAdmin, async (req, res) => {
     ]);
     const usernamesById = new Map(users.map(user => [String(user.id), user.username]));
 
+    void auditApi('share_admin_list', 'all share links', true, req, { count: shareLinks.length });
     res.json({
       success: true,
       data: shareLinks.map(link => ({
@@ -328,26 +368,54 @@ router.get('/admin/share-links', requireAdmin, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', 'Failed to get all share links');
+    void auditApi('share_admin_list', 'all share links', false, req, auditFailure(error));
     res.status(500).json({ success: false, message: '獲取全部分享連結列表失敗' });
   }
 });
 
 router.delete('/admin/share-links/:shareToken', requireAdmin, async (req, res) => {
-  const success = await shareManager.revokeShareLinkAsAdmin(req.params.shareToken);
-  if (!success) return res.status(404).json({ success: false, message: '分享連結不存在' });
-  res.json({ success: true, message: '分享連結已撤銷' });
+  try {
+    const success = await shareManager.revokeShareLinkAsAdmin(req.params.shareToken);
+    if (!success) {
+      void auditApi('share_admin_revoke', 'share link', false, req, { statusCode: 404, error: 'Share link is unavailable' });
+      return res.status(404).json({ success: false, message: '分享連結不存在' });
+    }
+    void auditApi('share_admin_revoke', 'share link', true, req);
+    res.json({ success: true, message: '分享連結已撤銷' });
+  } catch (error) {
+    void auditApi('share_admin_revoke', 'share link', false, req, auditFailure(error));
+    res.status(error.statusCode || 500).json({ success: false, message: '撤銷分享連結失敗' });
+  }
 });
 
 router.delete('/admin/share-links/:shareToken/history', requireAdmin, async (req, res) => {
-  const success = await shareManager.deleteExpiredShareLinkAsAdmin(req.params.shareToken);
-  if (!success) return res.status(404).json({ success: false, message: '過期分享連結不存在或尚未過期' });
-  res.json({ success: true, message: '過期分享連結已移除' });
+  try {
+    const success = await shareManager.deleteExpiredShareLinkAsAdmin(req.params.shareToken);
+    if (!success) {
+      void auditApi('share_admin_delete_expired', 'share history', false, req, { statusCode: 404, error: 'Expired share link is unavailable' });
+      return res.status(404).json({ success: false, message: '過期分享連結不存在或尚未過期' });
+    }
+    void auditApi('share_admin_delete_expired', 'share history', true, req);
+    res.json({ success: true, message: '過期分享連結已移除' });
+  } catch (error) {
+    void auditApi('share_admin_delete_expired', 'share history', false, req, auditFailure(error));
+    res.status(error.statusCode || 500).json({ success: false, message: '移除過期分享連結失敗' });
+  }
 });
 
 router.delete('/admin/share-links/:shareToken/history/revoked', requireAdmin, async (req, res) => {
-  const success = await shareManager.deleteRevokedShareLinkAsAdmin(req.params.shareToken);
-  if (!success) return res.status(404).json({ success: false, message: '已撤銷分享連結不存在或仍在啟用中' });
-  res.json({ success: true, message: '已撤銷分享連結已移除' });
+  try {
+    const success = await shareManager.deleteRevokedShareLinkAsAdmin(req.params.shareToken);
+    if (!success) {
+      void auditApi('share_admin_delete_revoked', 'share history', false, req, { statusCode: 404, error: 'Revoked share link is unavailable' });
+      return res.status(404).json({ success: false, message: '已撤銷分享連結不存在或仍在啟用中' });
+    }
+    void auditApi('share_admin_delete_revoked', 'share history', true, req);
+    res.json({ success: true, message: '已撤銷分享連結已移除' });
+  } catch (error) {
+    void auditApi('share_admin_delete_revoked', 'share history', false, req, auditFailure(error));
+    res.status(error.statusCode || 500).json({ success: false, message: '移除已撤銷分享連結失敗' });
+  }
 });
 
 /**
@@ -361,18 +429,22 @@ router.delete('/files/share/:shareToken/history', authenticate, async (req, res)
 
     const shareLink = await shareManager.getShareLinkInfo(shareToken);
     if (!shareLink) {
+      void auditApi('share_delete_expired', 'share history', false, req, { statusCode: 404, error: 'Expired share link is unavailable' });
       return res.status(404).json({ success: false, message: '過期分享連結不存在或尚未過期' });
     }
     await assertSharePermission(req.user, shareLink.locationId || 'default');
     const success = await shareManager.deleteExpiredShareLink(shareToken, userId);
 
     if (!success) {
+      void auditApi('share_delete_expired', 'share history', false, req, { statusCode: 404, error: 'Expired share link could not be removed' });
       return res.status(404).json({ success: false, message: '過期分享連結不存在或尚未過期' });
     }
 
+    void auditApi('share_delete_expired', shareLink.fileName || 'share history', true, req, { locationId: shareLink.locationId });
     res.json({ success: true, message: '過期分享連結已從歷史記錄移除' });
   } catch (error) {
     systemLogger.logSystem('ERROR', 'Failed to delete expired share link');
+    void auditApi('share_delete_expired', 'share history', false, req, auditFailure(error));
     res.status(error.statusCode || 500).json({ success: false, message: '移除過期分享連結失敗' });
   }
 });
@@ -388,18 +460,22 @@ router.delete('/files/share/:shareToken/history/revoked', authenticate, async (r
 
     const shareLink = await shareManager.getShareLinkInfo(shareToken);
     if (!shareLink) {
+      void auditApi('share_delete_revoked', 'share history', false, req, { statusCode: 404, error: 'Revoked share link is unavailable' });
       return res.status(404).json({ success: false, message: '已撤銷分享連結不存在或仍在啟用中' });
     }
     await assertSharePermission(req.user, shareLink.locationId || 'default');
     const success = await shareManager.deleteRevokedShareLink(shareToken, userId);
 
     if (!success) {
+      void auditApi('share_delete_revoked', 'share history', false, req, { statusCode: 404, error: 'Revoked share link could not be removed' });
       return res.status(404).json({ success: false, message: '已撤銷分享連結不存在或仍在啟用中' });
     }
 
+    void auditApi('share_delete_revoked', shareLink.fileName || 'share history', true, req, { locationId: shareLink.locationId });
     res.json({ success: true, message: '已撤銷分享連結已從歷史記錄移除' });
   } catch (error) {
     systemLogger.logSystem('ERROR', 'Failed to delete revoked share link');
+    void auditApi('share_delete_revoked', 'share history', false, req, auditFailure(error));
     res.status(error.statusCode || 500).json({ success: false, message: '移除已撤銷分享連結失敗' });
   }
 });
@@ -416,10 +492,15 @@ router.get('/share/:shareToken/info', async (req, res) => {
     const shareLink = await shareManager.getShareLinkInfo(shareToken);
 
     if (!shareLink) {
+      void auditApi('share_info', 'share link', false, req, { statusCode: 404, error: 'Share link is unavailable' });
       return res.status(404).json({ success: false, message: '分享連結不存在' });
     }
 
     // Only return safe information for public access
+    void auditApi('share_info', shareLink.fileName || 'shared file', true, req, {
+      statusCode: 200, requiresPassword: shareLink.hasPassword === true,
+      isActive: shareLink.isActive === true
+    });
     res.json({
       success: true,
       data: {
@@ -436,6 +517,7 @@ router.get('/share/:shareToken/info', async (req, res) => {
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', 'Failed to get public share link info');
+    void auditApi('share_info', 'share link', false, req, auditFailure(error));
     res.status(500).json({ success: false, message: '獲取分享連結信息失敗' });
   }
 });
@@ -451,17 +533,20 @@ router.get('/files/share/:shareToken/info', authenticate, async (req, res) => {
     const shareLink = await shareManager.getShareLinkInfo(shareToken);
 
     if (!shareLink) {
+      void auditApi('share_info', 'share link', false, req, { statusCode: 404, error: 'Share link is unavailable' });
       return res.status(404).json({ success: false, message: '分享連結不存在' });
     }
 
     await assertSharePermission(req.user, shareLink.locationId || 'default');
 
+    void auditApi('share_info', shareLink.fileName || 'shared file', true, req, { locationId: shareLink.locationId });
     res.json({
       success: true,
       data: shareLink
     });
   } catch (error) {
     systemLogger.logSystem('ERROR', 'Failed to get share link info');
+    void auditApi('share_info', 'share link', false, req, auditFailure(error));
     res.status(error.statusCode || 500).json({ success: false, message: '獲取分享連結信息失敗' });
   }
 });

@@ -31,7 +31,11 @@ async function fixture(t) {
   )`);
   await fs.writeFile(path.join(root, 'file.txt'), '0123456789');
   const logs = [];
-  const logger = { logSystem: (...args) => logs.push(args), logDownload: (...args) => logs.push(args.slice(0, 3)) };
+  const logger = {
+    logSystem: (...args) => logs.push({ kind: 'system', args }),
+    logAPI: (...args) => logs.push({ kind: 'api', operation: args[0], resource: args[1], success: args[2], details: args[4] }),
+    logDownload: (...args) => logs.push({ kind: 'download', fileName: args[0], type: args[1], success: args[2], details: args[4] })
+  };
   const configManager = {
     get: () => ({ enabled: true, defaultExpiration: 3600, maxExpiration: 7200, maxDownloadsDefault: 9, allowPasswordProtection: true }),
     getConfig: () => ({ fileSystem: { storagePath: root } })
@@ -254,6 +258,38 @@ test('HTTP passwordless GET, protected POST, query rejection, HEAD, and Range co
   assert.equal(JSON.stringify(info).includes('password-only'), false);
 });
 
+test('owner, administrator and public share actions produce scoped safe audit events', async t => {
+  const f = await fixture(t);
+  const request = await serve(t, f);
+  const createdResponse = await request('/files/share', post({ filePath: 'file.txt', password: 'fixture-password-only' }));
+  assert.equal(createdResponse.status, 200);
+  const created = (await createdResponse.json()).data;
+
+  assert.equal((await request('/files/shares')).status, 200);
+  assert.equal((await request(`/share/${created.shareToken}/info`)).status, 200);
+  assert.equal((await request(`/share/${created.shareToken}/download`, post({ password: 'wrong-password' }))).status, 401);
+  assert.equal(await (await request(`/share/${created.shareToken}/download`, post({ password: 'fixture-password-only' }))).text(), '0123456789');
+  assert.equal((await request(`/files/share/${created.shareToken}`, { method: 'DELETE' })).status, 200);
+  assert.equal((await request(`/files/share/${created.shareToken}/history/revoked`, { method: 'DELETE' })).status, 200);
+
+  const adminLink = await create(f);
+  assert.equal((await request('/admin/share-links')).status, 200);
+  assert.equal((await request(`/admin/share-links/${adminLink.shareToken}`, { method: 'DELETE' })).status, 200);
+
+  const apiEvents = f.logs.filter(event => event.kind === 'api');
+  assert.ok(apiEvents.some(event => event.operation === 'share_create' && event.success === true));
+  assert.ok(apiEvents.some(event => event.operation === 'share_list' && event.success === true));
+  assert.ok(apiEvents.some(event => event.operation === 'share_revoke' && event.success === true));
+  assert.ok(apiEvents.some(event => event.operation === 'share_delete_revoked' && event.success === true));
+  assert.ok(apiEvents.some(event => event.operation === 'share_admin_list' && event.success === true));
+  assert.ok(apiEvents.some(event => event.operation === 'share_admin_revoke' && event.success === true));
+
+  const downloadEvents = f.logs.filter(event => event.kind === 'download');
+  assert.ok(downloadEvents.some(event => event.type === 'share-link' && event.success === false && event.details.statusCode === 401));
+  assert.ok(downloadEvents.some(event => event.type === 'share-link' && event.success === true));
+  assert.doesNotMatch(JSON.stringify([...apiEvents, ...downloadEvents]), /fixture-password-only|wrong-password|shareToken|share-token/);
+});
+
 test('HTTP races never deliver more bodies than admissions and expired/revoked links fail', async t => {
   const f = await fixture(t);
   const request = await serve(t, f);
@@ -308,8 +344,8 @@ test('stream failure consumes its admission, sends safe errors, and never logs s
   assert.equal(response.headers.get('content-disposition'), null);
   assert.doesNotMatch(await response.text(), /synthetic|file\.txt/);
   assert.equal((await f.manager.getShareLinkInfo(link.shareToken)).downloadCount, 1);
-  assert.ok(f.logs.some(entry => entry[1] === 'share-link' && entry[2] === false));
-  assert.ok(!f.logs.some(entry => entry[1] === 'share-link' && entry[2] === true));
+  assert.ok(f.logs.some(entry => entry.kind === 'download' && entry.type === 'share-link' && entry.success === false));
+  assert.ok(!f.logs.some(entry => entry.kind === 'download' && entry.type === 'share-link' && entry.success === true));
 });
 
 for (const panel of ['admin', 'super']) {

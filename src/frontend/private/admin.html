@@ -362,6 +362,32 @@
             word-wrap: break-word;
         }
 
+        .log-view-switch { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; border-bottom: 1px solid #284966; }
+        .log-view-switch button { width: auto; border-radius: 5px 5px 0 0; color: #9fb8ce; }
+        .log-view-switch button[aria-selected="true"] { color: #effaff; border-color: #47cdf1; background: #173653; }
+        .log-filter-grid { display: grid; grid-template-columns: minmax(180px, 1.3fr) repeat(3, minmax(145px, 1fr)); align-items: end; gap: 12px; margin: 18px 0; }
+        .log-filter-field { display: flex; flex-direction: column; gap: 6px; color: #b9cee4; font-size: .84rem; }
+        .log-filter-field .form-control { min-width: 0; }
+        .log-filter-actions { display: flex; flex-wrap: wrap; gap: 8px; grid-column: 1 / -1; }
+        .log-filter-actions .btn { width: auto; }
+        .log-ip-groups { display: grid; gap: 10px; }
+        .log-ip-group { overflow: hidden; border: 1px solid #315b7e; border-radius: 6px; background: rgba(7, 25, 42, .7); }
+        .log-ip-group > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 13px 15px; color: #e9fbff; cursor: pointer; list-style-position: inside; }
+        .log-ip-group > summary:hover, .log-ip-group > summary:focus-visible { background: #102d49; }
+        .log-ip-group > summary:focus-visible { outline: 2px solid #47cdf1; outline-offset: -2px; }
+        .log-ip-address { min-width: 125px; color: #9ff3ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; }
+        .log-ip-meta { color: #9fb8ce; font-size: .82rem; }
+        .log-ip-entries { padding: 0 14px 14px; }
+        .log-event-list { max-height: 430px; overflow: auto; border: 1px solid #254764; border-radius: 5px; }
+        .log-event-row { display: grid; grid-template-columns: minmax(165px, 220px) minmax(0, 1fr); gap: 14px; padding: 10px 12px; border-bottom: 1px solid rgba(49, 91, 126, .65); }
+        .log-event-row:last-child { border-bottom: 0; }
+        .log-event-time { color: #9fb8ce; white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .log-event-operation { color: #e6eefc; overflow-wrap: anywhere; }
+        .log-event-operation[data-level="ERROR"], .log-event-operation[data-level="WARN"] { color: #ffb8ae; }
+        .log-ip-status { min-height: 1.4em; color: #9fb8ce; margin: 8px 0; }
+        .log-more-button { width: auto; margin-top: 10px; }
+        .log-inline-error { color: #ffb8ae; padding: 12px 0; }
+
         .btn-small {
             padding: 6px 12px;
             font-size: 0.85rem;
@@ -434,7 +460,8 @@
          .permission-advanced.is-role-managed { opacity: .62; }
          .table-scroll { overflow-x: auto; }
          .status-note { color: #9fb8ce; font-size: .82rem; line-height: 1.4; }
-         @media (max-width: 768px) { .modal-content { width: calc(100% - 20px); padding: 20px; max-height: 90vh; } .user-table { min-width: 760px; } .form-row { grid-template-columns: 1fr; } .btn-group { flex-wrap: wrap; } .btn-group .btn { flex: 1 1 180px; } }
+          @media (max-width: 768px) { .modal-content { width: calc(100% - 20px); padding: 20px; max-height: 90vh; } .user-table { min-width: 760px; } .form-row { grid-template-columns: 1fr; } .btn-group { flex-wrap: wrap; } .btn-group .btn { flex: 1 1 180px; } }
+          @media (max-width: 620px) { .log-filter-grid { grid-template-columns: 1fr 1fr; }.log-filter-field:first-child { grid-column: 1 / -1; }.log-filter-actions { grid-column: 1 / -1; }.log-event-row { grid-template-columns: 1fr; gap: 4px; }.log-event-time { white-space: normal; } }
 
      </style>
 </head>
@@ -838,13 +865,40 @@
                 <h2>📋 Logs</h2>
                 <button class="modal-close" onclick="closeModal('logViewerModal')">✕ Close</button>
             </div>
-            <div class="btn-group">
-                <button class="btn" onclick="refreshLogs()">🔄 Refresh</button>
-                <button class="btn" onclick="downloadLogs()">⬇️ Download</button>
+            <div class="log-view-switch" role="tablist" aria-label="Log categories">
+                <button class="btn" id="systemLogsTab" type="button" role="tab" aria-controls="systemLogPanel" aria-selected="true" onclick="setLogView('system')">System log</button>
+                <button class="btn" id="userLogsTab" type="button" role="tab" aria-controls="userLogPanel" aria-selected="false" onclick="setLogView('user')">User / IP activity</button>
             </div>
-            <div id="logContent" class="log-viewer" style="margin-top: 20px;">
-                Loading logs...
-            </div>
+            <section id="systemLogPanel" role="tabpanel" aria-labelledby="systemLogsTab">
+                <div class="btn-group">
+                    <button class="btn" type="button" onclick="refreshLogs()">🔄 Refresh system log</button>
+                    <button class="btn" type="button" onclick="downloadLogs()">⬇️ Download system log</button>
+                </div>
+                <div id="logContent" class="log-viewer" style="margin-top: 20px;">Loading logs...</div>
+            </section>
+            <section id="userLogPanel" role="tabpanel" aria-labelledby="userLogsTab" hidden>
+                <div class="log-filter-grid">
+                    <label class="log-filter-field" for="logUserSelect">User
+                        <select class="form-control" id="logUserSelect" onchange="loadSelectedUserIps()"><option value="">Choose a User</option></select>
+                    </label>
+                    <label class="log-filter-field" for="logDateFrom">From date
+                        <input class="form-control" id="logDateFrom" type="date">
+                    </label>
+                    <label class="log-filter-field" for="logDateTo">To date
+                        <input class="form-control" id="logDateTo" type="date">
+                    </label>
+                    <label class="log-filter-field" for="logOperationSelect">API operation
+                        <select class="form-control" id="logOperationSelect"><option value="">All operations</option></select>
+                    </label>
+                    <div class="log-filter-actions">
+                        <button class="btn" type="button" onclick="applyUserLogFilters()">🔎 Apply filters</button>
+                        <button class="btn" type="button" onclick="resetUserLogFilters()">Reset filters</button>
+                        <button class="btn" type="button" onclick="loadLogUsers()">🔄 Refresh User logs</button>
+                    </div>
+                </div>
+                <p id="ipLogStatus" class="log-ip-status" role="status" aria-live="polite"></p>
+                <div id="ipLogGroups" class="log-ip-groups"></div>
+            </section>
         </div>
     </div>
 
@@ -1934,9 +1988,22 @@
         }
 
         // Log Viewer Modal Functions
+        const IP_LOG_PAGE_SIZE = 50;
+        let ipLogRequestGeneration = 0;
+
+        function setLogView(view) {
+            const system = view === 'system';
+            document.getElementById('systemLogPanel').hidden = !system;
+            document.getElementById('userLogPanel').hidden = system;
+            document.getElementById('systemLogsTab').setAttribute('aria-selected', String(system));
+            document.getElementById('userLogsTab').setAttribute('aria-selected', String(!system));
+            if (system) void loadLogs();
+            else void loadLogUsers();
+        }
+
         function openLogViewer() {
             openModal('logViewerModal');
-            loadLogs();
+            setLogView('system');
         }
 
         async function loadLogs() {
@@ -1971,11 +2038,249 @@
         }
 
         function refreshLogs() {
-            loadLogs();
+            void loadLogs();
         }
 
         function downloadLogs() {
             window.open('/server.log', '_blank');
+        }
+
+        function selectedLogFilters() {
+            return {
+                from: document.getElementById('logDateFrom').value,
+                to: document.getElementById('logDateTo').value,
+                operation: document.getElementById('logOperationSelect').value
+            };
+        }
+
+        function addLogFilters(parameters, filters) {
+            if (filters.from) parameters.set('from', filters.from);
+            if (filters.to) parameters.set('to', filters.to);
+            if (filters.operation) parameters.set('operation', filters.operation);
+            return parameters;
+        }
+
+        function validLogDateRange(filters) {
+            if (filters.from && filters.to && filters.from > filters.to) {
+                document.getElementById('ipLogStatus').textContent = 'From date must be on or before To date.';
+                document.getElementById('ipLogGroups').replaceChildren();
+                return false;
+            }
+            return true;
+        }
+
+        async function loadLogUsers() {
+            const status = document.getElementById('ipLogStatus');
+            const groups = document.getElementById('ipLogGroups');
+            const select = document.getElementById('logUserSelect');
+            const generation = ++ipLogRequestGeneration;
+            status.textContent = 'Loading User activity...';
+            groups.replaceChildren();
+            select.disabled = true;
+
+            try {
+                const response = await fetch('/api/admin/logs/users', { cache: 'no-store' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.error || `Could not load User logs (${response.status}).`);
+                if (generation !== ipLogRequestGeneration) return;
+
+                const previousKey = select.value;
+                const users = Array.isArray(data.users) ? data.users : [];
+                select.replaceChildren(new Option('Choose a User', ''));
+                users.forEach(user => {
+                    const option = document.createElement('option');
+                    option.value = user.key;
+                    const label = user.username || 'Anonymous / unauthenticated';
+                    option.textContent = `${label} · ${user.ipCount} IP · ${user.latestAt}`;
+                    select.appendChild(option);
+                });
+                const selected = users.some(user => user.key === previousKey) ? previousKey : users[0]?.key || '';
+                select.value = selected;
+                select.disabled = users.length === 0;
+                if (!users.length) {
+                    status.textContent = 'No IPv4 User logs are available.';
+                    return;
+                }
+                status.textContent = 'Choose an account to view its IPv4 sources. Date filters use the server log date and include both endpoints.';
+                await loadSelectedUserIps(generation);
+            } catch (error) {
+                if (generation !== ipLogRequestGeneration) return;
+                select.disabled = false;
+                status.textContent = `Unable to load User logs: ${error.message}`;
+                const retry = document.createElement('button');
+                retry.type = 'button'; retry.className = 'btn log-more-button'; retry.textContent = 'Retry';
+                retry.addEventListener('click', () => void loadLogUsers());
+                groups.replaceChildren(retry);
+            }
+        }
+
+        async function loadSelectedUserIps(parentGeneration = null, filterOverride = null) {
+            const status = document.getElementById('ipLogStatus');
+            const groups = document.getElementById('ipLogGroups');
+            const userKey = document.getElementById('logUserSelect').value;
+            const filters = filterOverride || selectedLogFilters();
+            if (!validLogDateRange(filters)) return;
+            if (!userKey) {
+                groups.replaceChildren();
+                status.textContent = 'Choose a User to view activity.';
+                return;
+            }
+
+            const generation = parentGeneration === null ? ++ipLogRequestGeneration : parentGeneration;
+            status.textContent = 'Loading IP activity...';
+            groups.replaceChildren();
+            try {
+                const parameters = addLogFilters(new URLSearchParams({ user: userKey }), filters);
+                const response = await fetch(`/api/admin/logs/ips?${parameters}`, { cache: 'no-store' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.error || `Could not load IP summaries (${response.status}).`);
+                if (generation !== ipLogRequestGeneration) return;
+
+                const operationSelect = document.getElementById('logOperationSelect');
+                const currentOperation = operationSelect.value;
+                operationSelect.replaceChildren(new Option('All operations', ''));
+                (data.operations || []).forEach(operation => {
+                    const option = document.createElement('option');
+                    option.value = operation;
+                    option.textContent = operation.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase());
+                    operationSelect.appendChild(option);
+                });
+                const operationExists = (data.operations || []).includes(currentOperation);
+                operationSelect.value = operationExists ? currentOperation : '';
+                if (filters.operation && !operationExists) {
+                    await loadSelectedUserIps(generation, { ...filters, operation: '' });
+                    return;
+                }
+
+                const ips = Array.isArray(data.ips) ? data.ips : [];
+                if (!ips.length) {
+                    status.textContent = 'No IP logs match the selected User and filters.';
+                    return;
+                }
+                status.textContent = `${ips.length} matching IPv4 source${ips.length === 1 ? '' : 's'}; newest activity first.`;
+                ips.forEach(item => {
+                    const details = document.createElement('details');
+                    details.className = 'log-ip-group';
+                    details.dataset.userKey = userKey;
+                    details.dataset.ip = item.ip;
+                    details.dataset.filters = JSON.stringify(filters);
+                    details.dataset.generation = String(generation);
+
+                    const summary = document.createElement('summary');
+                    const address = document.createElement('span');
+                    address.className = 'log-ip-address';
+                    address.textContent = item.ip;
+                    const meta = document.createElement('span');
+                    meta.className = 'log-ip-meta';
+                    meta.textContent = `Latest ${item.latestAt} · ${item.entryCount} matching event${item.entryCount === 1 ? '' : 's'}`;
+                    summary.append(address, meta);
+                    const content = document.createElement('div');
+                    content.className = 'log-ip-entries';
+                    content.setAttribute('aria-live', 'polite');
+                    details.append(summary, content);
+                    details.addEventListener('toggle', () => {
+                        if (details.open && details.dataset.loaded !== 'true' && details.dataset.loading !== 'true') void loadIpLogEntries(details);
+                    });
+                    groups.appendChild(details);
+                });
+            } catch (error) {
+                if (generation !== ipLogRequestGeneration) return;
+                status.textContent = `Unable to load IP logs: ${error.message}`;
+                const retry = document.createElement('button');
+                retry.type = 'button'; retry.className = 'btn log-more-button'; retry.textContent = 'Retry';
+                retry.addEventListener('click', () => void loadSelectedUserIps());
+                groups.replaceChildren(retry);
+            }
+        }
+
+        async function loadIpLogEntries(details, before = null, append = false) {
+            const content = details.querySelector('.log-ip-entries');
+            const userKey = details.dataset.userKey;
+            const ip = details.dataset.ip;
+            const filters = JSON.parse(details.dataset.filters || '{}');
+            const generation = details.dataset.generation;
+            details.dataset.loading = 'true';
+            if (!append) content.replaceChildren(document.createTextNode('Loading matching operations...'));
+            else details.querySelector('.log-more-button')?.setAttribute('disabled', 'disabled');
+
+            try {
+                const parameters = addLogFilters(new URLSearchParams({ user: userKey, ip, limit: String(IP_LOG_PAGE_SIZE) }), filters);
+                if (before !== null) parameters.set('before', String(before));
+                const response = await fetch(`/api/admin/logs/entries?${parameters}`, { cache: 'no-store' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.error || `Could not load IP entries (${response.status}).`);
+                if (!details.isConnected || details.dataset.generation !== generation) return;
+
+                let list = content.querySelector('.log-event-list');
+                if (!list) {
+                    content.replaceChildren();
+                    list = document.createElement('div');
+                    list.className = 'log-event-list';
+                    list.setAttribute('role', 'table');
+                    list.setAttribute('aria-label', `Operations from ${ip}`);
+                    content.appendChild(list);
+                }
+                (data.entries || []).forEach(entry => {
+                    const row = document.createElement('div');
+                    row.className = 'log-event-row';
+                    row.setAttribute('role', 'row');
+                    const time = document.createElement('time');
+                    time.className = 'log-event-time';
+                    time.textContent = entry.timestamp;
+                    time.dateTime = entry.timestamp.replace(' ', 'T');
+                    const operation = document.createElement('span');
+                    operation.className = 'log-event-operation';
+                    operation.dataset.level = entry.level || 'INFO';
+                    operation.textContent = `${entry.level || 'INFO'} · ${entry.operation || entry.operationType || 'Operation'}`;
+                    row.append(time, operation);
+                    list.appendChild(row);
+                });
+
+                const priorButton = content.querySelector('.log-more-button');
+                priorButton?.remove();
+                if (!data.entries?.length && !list.children.length) {
+                    const empty = document.createElement('p');
+                    empty.className = 'log-ip-meta';
+                    empty.textContent = 'No matching operation entries.';
+                    content.replaceChildren(empty);
+                }
+                if (data.hasMore && data.nextCursor !== null) {
+                    const more = document.createElement('button');
+                    more.type = 'button';
+                    more.className = 'btn log-more-button';
+                    more.textContent = 'Load older operations';
+                    more.addEventListener('click', () => void loadIpLogEntries(details, data.nextCursor, true));
+                    content.appendChild(more);
+                }
+                details.dataset.loaded = 'true';
+            } catch (error) {
+                if (!details.isConnected || details.dataset.generation !== generation) return;
+                const failure = document.createElement('p');
+                failure.className = 'log-inline-error';
+                failure.textContent = `Unable to load operations: ${error.message}`;
+                const retry = document.createElement('button');
+                retry.type = 'button'; retry.className = 'btn log-more-button'; retry.textContent = 'Retry';
+                retry.addEventListener('click', () => void loadIpLogEntries(details, before, append));
+                if (append && content.querySelector('.log-event-list')) {
+                    content.querySelector('.log-more-button')?.remove();
+                    content.append(failure, retry);
+                } else {
+                    content.replaceChildren(failure, retry);
+                }
+            } finally {
+                details.dataset.loading = 'false';
+            }
+        }
+
+        function applyUserLogFilters() {
+            void loadSelectedUserIps();
+        }
+
+        function resetUserLogFilters() {
+            document.getElementById('logDateFrom').value = '';
+            document.getElementById('logDateTo').value = '';
+            document.getElementById('logOperationSelect').value = '';
+            void loadSelectedUserIps();
         }
 
         // Legacy request code still calls this object localStorage; JWTs are never stored here.

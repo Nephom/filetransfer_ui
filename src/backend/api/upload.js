@@ -51,7 +51,11 @@ class UploadAPI {
     this.withOperationLocks = options.withOperationLocks || ((...args) => require('../file-system/operation-locks').withOperationLocks(...args));
     this.assertSafePath = options.assertSafePath || ((...args) => require('../file-system/path-safety').assertSafePath(...args));
     this.assertSafeTree = options.assertSafeTree || ((...args) => require('../file-system/path-safety').assertSafeTree(...args));
-    this.logger = options.logger || { logSystem: (...args) => require('../utils/logger').systemLogger.logSystem(...args) };
+    this.logger = options.logger || {
+      logSystem: (...args) => require('../utils/logger').systemLogger.logSystem(...args),
+      logAPI: (...args) => require('../utils/logger').systemLogger.logAPI(...args),
+      logUpload: (...args) => require('../utils/logger').systemLogger.logUpload(...args)
+    };
     this.cache = null;
     this.locationManager = null;
     this.locationPermissionManager = null;
@@ -127,6 +131,16 @@ class UploadAPI {
         : (req?.path || '/upload');
       this._warn(`Upload API validation rejected ${req?.method || 'request'} ${endpoint}: ${error.message || 'Invalid upload request'}`);
     }
+    const routePath = String(req?.route?.path || req?.path || '');
+    const highLevelMutation = ['POST', 'PUT', 'DELETE'].includes(req?.method) &&
+      !routePath.includes('/chunks') && !routePath.includes('/manifest/pages/') &&
+      !routePath.includes('/files/:fileId/complete') && !routePath.startsWith('/progress/');
+    if (highLevelMutation) {
+      this._audit('logAPI', 'upload_request', routePath, false, req, {
+        statusCode: status,
+        error: status >= 500 ? 'Upload service failure' : error.message || 'Upload request rejected'
+      });
+    }
     const message = status === 400 && typeof error.message === 'string' && error.message
       ? error.message
       : ({ 400: 'Invalid upload request', 401: 'Authentication required', 403: 'Upload access denied', 404: 'Upload not found',
@@ -153,6 +167,9 @@ class UploadAPI {
       const context = await this._resolveLocation(req, body.path);
       const batchId = this.transfers.reserveBatch({ ...context, clientAttemptId: body.clientAttemptId });
       const batch = this.transfers.getBatch(batchId);
+      this._audit('logAPI', 'upload_batch_reserve', context.path || '/', true, req, {
+        batchId, locationId: context.locationId, status: 'reserved'
+      });
       res.status(201).json({ batchId, status: 'reserved', locationId: batch.locationId, expiresAt: batch.expiresAt });
     }));
     this.router.get('/upload/sessions/config', auth, route(async (req, res) => {
@@ -192,6 +209,10 @@ class UploadAPI {
         chunkSize
       });
       const { created, ...publicSession } = session;
+      if (created) this._audit('logAPI', 'resumable_upload_session', context.path || '/', true, req, {
+        sessionId: session.sessionId, locationId: context.locationId,
+        fileCount: body.fileCount, directoryCount: body.directoryCount, status: 'created'
+      });
       res.status(created ? 201 : 200).json({ ...publicSession, expiresInMs: RESUMABLE_SESSION_TTL_MS });
     }));
     this.router.get('/upload/sessions', auth, route(async (req, res) => {
@@ -223,6 +244,9 @@ class UploadAPI {
         // Already published files remain in their destination Location.
         await manager.cancel(session);
       }
+      this._audit('logAPI', 'resumable_upload_discard', session.destinationPath || '/', true, req, {
+        sessionId: session.sessionId, locationId: session.locationId, status: 'discarded'
+      });
       await manager.store.remove(session.sessionId);
       res.set('Cache-Control', 'no-store').json({ success: true, sessionId: session.sessionId, discarded: true });
     }));
@@ -330,10 +354,19 @@ class UploadAPI {
       const { session, context } = await this._authorizedUploadSession(req, req.params.sessionId);
       const file = await this.resumableUploads.store.getFile(session.sessionId, req.params.fileId);
       if (!file) throw fault(404, 'Upload file not found');
-      const result = file.status === 'completed'
-        ? await this._finalizeResumableFile(session, file, context, req.user)
-        : await this.resumableUploads.withSessionOperation(session.sessionId, signal =>
-          this._finalizeResumableFile(session, file, context, req.user, signal));
+      let result;
+      try {
+        result = file.status === 'completed'
+          ? await this._finalizeResumableFile(session, file, context, req.user, null, req)
+          : await this.resumableUploads.withSessionOperation(session.sessionId, signal =>
+            this._finalizeResumableFile(session, file, context, req.user, signal, req));
+      } catch (error) {
+        this._audit('logUpload', file.relativePath, false, req, {
+          batchId: session.sessionId, size: file.size,
+          error: this._safeErrorForLog(error, context.rootPath)
+        });
+        throw error;
+      }
       res.set('Cache-Control', 'no-store').json(result);
     }));
     this.router.post('/upload/sessions/:sessionId/complete', auth, route(async (req, res) => {
@@ -351,6 +384,10 @@ class UploadAPI {
       }
       return { success: true, sessionId: session.sessionId, status: 'completed' };
       });
+      this._audit('logAPI', 'resumable_upload_complete', session.destinationPath || '/', true, req, {
+        sessionId: session.sessionId, locationId: session.locationId,
+        fileCount: session.expectedFileCount, totalBytes: session.totalSize, status: result.status
+      });
       res.set('Cache-Control', 'no-store').json(result);
     }));
     this.router.post('/upload/sessions/:sessionId/cancel', auth, route(async (req, res) => {
@@ -360,6 +397,9 @@ class UploadAPI {
         throw fault(409, 'Upload session is already settled');
       }
       const result = await this.resumableUploads.cancel(session);
+      this._audit('logAPI', 'resumable_upload_cancel', session.destinationPath || '/', true, req, {
+        sessionId: session.sessionId, locationId: session.locationId, status: result.status
+      });
       res.set('Cache-Control', 'no-store').json(result);
     }));
     for (const [endpoint, single, asynchronous] of [
@@ -376,6 +416,10 @@ class UploadAPI {
         await this._authorizeRecord(req, record);
         if (cancel) await (isBatch ? this.transfers.cancelBatch(id) : this.transfers.cancelTransfer(id));
         const result = isBatch ? this.transfers.serializeBatch(id) : this.transfers.serializeTransfer(id);
+        if (cancel) {
+          this._audit('logAPI', isBatch ? 'upload_batch_cancel' : 'upload_cancel', result.path || result.fileName || id,
+            true, req, { status: result.status, batchId: isBatch ? id : result.batchId, transferId: isBatch ? undefined : id });
+        }
         res.set('Cache-Control', 'no-store').status(result.status === 'cancelling' ? 202 : 200).json(result);
       });
       this.router.get(endpoint, auth, progress(false));
@@ -430,7 +474,7 @@ class UploadAPI {
     }
   }
 
-  async _finalizeResumableFile(session, file, context, user, signal = null) {
+  async _finalizeResumableFile(session, file, context, user, signal = null, req = null) {
     const manager = this._requireResumableUploads();
     if (file.status === 'completed') {
       await manager.cleanupFilePublicationTemp(session.sessionId, file.fileId);
@@ -568,6 +612,10 @@ class UploadAPI {
     await manager.removeFileStaging(session.sessionId, file.fileId);
     try { await this._refreshCacheDirectory(path.dirname(finalPath), context); }
     catch { this._warn('Committed resumable upload cache refresh failed'); }
+    const relativeFilePath = path.relative(context.rootPath, finalPath).split(path.sep).join('/');
+    this._audit('logUpload', relativeFilePath, true, req, {
+      batchId: session.sessionId, transferId: file.fileId, size: file.size, locationId: session.locationId
+    });
     return {
       fileId: file.fileId,
       status: 'completed',
@@ -577,7 +625,7 @@ class UploadAPI {
     };
   }
 
-  _registerFile(file, batchId, parentController) {
+  _registerFile(file, batchId, parentController, state = {}) {
     file.transferId = this.transfers.startTransfer({ batchId, fileName: file.originalname,
       totalSize: file.measured ? file.size : undefined, phase: file.measured ? 'pending' : 'receiving' });
     file.controller = new AbortController();
@@ -598,6 +646,14 @@ class UploadAPI {
           file.cleanupFailed = true;
           this.transfers.failTransfer(file.transferId, error);
         } finally {
+          const settled = this.transfers.getTransfer(file.transferId);
+          const relativeFilePath = state.context?.rootPath && file.destination
+            ? path.relative(state.context.rootPath, file.destination).split(path.sep).join('/')
+            : file.originalname;
+        this._audit('logUpload', relativeFilePath || 'unknown', false, state.request, {
+            transferId: file.transferId, batchId, size: file.size, status: settled?.status,
+            error: this._safeErrorForLog(settled?.status === 'cancelled' ? new Error('Upload cancelled') : settled?.error || new Error('Upload cancellation failed'), state.context?.rootPath)
+          });
           parentController.signal.removeEventListener('abort', file.abort);
           file.done.resolve();
         }
@@ -706,7 +762,7 @@ class UploadAPI {
 
   async _handleUpload(req, res, { single, asynchronous }) {
     this._owner(req);
-    const state = { files: [], fields: Object.create(null), controller: new AbortController(), stage: null, batchId: null };
+    const state = { files: [], fields: Object.create(null), controller: new AbortController(), stage: null, batchId: null, request: req };
     setMaxListeners(1010, state.controller.signal);
     const done = deferred();
     this.#workers.add(done.promise);
@@ -735,6 +791,7 @@ class UploadAPI {
       if (context && (rel !== context.path || (locationId && locationId !== context.locationId))) throw fault(409, 'Reservation target mismatch');
       if (req.headers['x-location-id'] && locationId && locationId !== req.headers['x-location-id']) throw fault(400, 'Conflicting Location');
       context ||= await this._resolveLocation(req, rel, locationId);
+      state.context = context;
       if (admission && (context.locationId !== admission.locationId || context.locationRevision !== admission.locationRevision ||
           context.rootPath !== admission.rootPath)) throw fault(409, 'Location changed');
       await this._recheck(req.user, context);
@@ -774,7 +831,7 @@ class UploadAPI {
       if (!state.batchId) {
         state.batchId = this.transfers.createBatch(context);
         registerBatch();
-        for (const file of state.files) this._registerFile(file, state.batchId, state.controller);
+        for (const file of state.files) this._registerFile(file, state.batchId, state.controller, state);
       }
       this.transfers.sealBatch(state.batchId);
       for (const file of state.files) {
@@ -782,7 +839,7 @@ class UploadAPI {
         this.transfers.updateTransferStatus(file.transferId, 'pending');
         if (file.controller.signal.aborted) file.cancelQueued();
       }
-      const worker = Promise.resolve().then(() => this._processFiles(state, context, req.user)).finally(done.resolve);
+      const worker = Promise.resolve().then(() => this._processFiles(state, context, req.user, req)).finally(done.resolve);
       // The worker owns all staged files from this point, including response-write failure.
       handedOff = true;
       if (!state.files.length || !asynchronous) {
@@ -801,7 +858,7 @@ class UploadAPI {
       if (!handedOff) {
         let cleanupError;
         try { await this._cleanupStage(state); } catch (failure) { cleanupError = failure; }
-        this._settleRemaining(state, cleanupError || error, !!cleanupError);
+        this._settleRemaining(state, cleanupError || error, !!cleanupError, req);
         if (state.batchId) this.transfers.updateBatchProgress(state.batchId, { settled: true,
           error: cleanupError || (state.controller.signal.aborted ? null : error) });
         done.resolve();
@@ -810,13 +867,21 @@ class UploadAPI {
     }
   }
 
-  _settleRemaining(state, error, cleanupFailed = false) {
+  _settleRemaining(state, error, cleanupFailed = false, req = state.request || null) {
     for (const file of state.files) {
       if (!file.transferId) continue;
       const record = this.transfers.getTransfer(file.transferId);
       if (!terminal.has(record.status)) {
         if (file.controller.signal.aborted && !cleanupFailed) this.transfers.settleCancelledTransfer(file.transferId);
         else this.transfers.failTransfer(file.transferId, error);
+        const settled = this.transfers.getTransfer(file.transferId);
+        this._audit('logUpload', file.originalname || 'unknown', false, req, {
+          transferId: file.transferId,
+          batchId: state.batchId,
+          size: file.size,
+          status: settled?.status,
+          error: this._safeErrorForLog(error, state.context?.rootPath)
+        });
       }
       state.controller.signal.removeEventListener('abort', file.abort);
       file.controller.signal.removeEventListener('abort', file.cancelQueued);
@@ -824,7 +889,7 @@ class UploadAPI {
     }
   }
 
-  async _processFiles(state, context, user) {
+  async _processFiles(state, context, user, req = state.request || null) {
     let outerError;
     let workComplete = false;
     try {
@@ -860,6 +925,17 @@ class UploadAPI {
           file.controller.signal.removeEventListener('abort', file.cancelQueued);
           file.done.resolve();
         }
+        const relativeFilePath = path.relative(context.rootPath, file.publishedPath || file.destination).split(path.sep).join('/');
+        const transfer = this.transfers.getTransfer(file.transferId);
+        this._audit('logUpload', relativeFilePath, transfer?.status === 'completed', req, {
+          transferId: file.transferId,
+          batchId: state.batchId,
+          size: file.size,
+          locationId: context.locationId,
+          ...(transfer?.status !== 'completed' ? {
+            error: this._safeErrorForLog(failure || new Error(transfer?.status === 'cancelled' ? 'Upload cancelled' : 'Upload failed'), context.rootPath)
+          } : {})
+        });
         this.transfers.updateBatchProgress(state.batchId);
       }
       workComplete = true;
@@ -873,10 +949,29 @@ class UploadAPI {
     await Promise.all(state.files.map(file => file.cancellation));
     let cleanupError;
     try { await this._cleanupStage(state); } catch (error) { cleanupError = error; }
-    this._settleRemaining(state, cleanupError || outerError || fault(500, 'Worker stopped'), !!cleanupError);
+    this._settleRemaining(state, cleanupError || outerError || fault(500, 'Worker stopped'), !!cleanupError, req);
     const fileCleanupError = state.files.some(file => file.cleanupFailed) ? fault(500, 'Upload cleanup failed') : null;
     this.transfers.updateBatchProgress(state.batchId, { settled: true,
       error: cleanupError || fileCleanupError || (state.controller.signal.aborted ? null : outerError), workComplete });
+    const batch = this.transfers.getBatch(state.batchId);
+    const transfers = state.files.map(file => this.transfers.getTransfer(file.transferId)).filter(Boolean);
+    const completedCount = transfers.filter(transfer => transfer.status === 'completed').length;
+    const failedCount = transfers.filter(transfer => !['completed', 'cancelled'].includes(transfer.status)).length;
+    const cancelledCount = transfers.filter(transfer => transfer.status === 'cancelled').length;
+    const totalBytes = state.files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+    const success = workComplete && batch?.status === 'completed';
+    this._audit('logAPI', 'upload_batch', context.path || '/', success, req, {
+      batchId: state.batchId,
+      locationId: context.locationId,
+      fileCount: state.files.length,
+      directoryCount: state.directories.length,
+      completedCount,
+      failedCount,
+      cancelledCount,
+      totalBytes,
+      status: batch?.status || 'unknown',
+      ...(success ? {} : { error: this._safeErrorForLog(cleanupError || fileCleanupError || outerError || new Error('Upload batch did not complete'), context.rootPath) })
+    });
   }
 
   async _publish(file, context, user) {
@@ -906,6 +1001,7 @@ class UploadAPI {
         await this._recheck(user, context);
         signal.throwIfAborted();
         committed = true;
+        file.publishedPath = finalPath;
         try { await this._refreshCacheDirectory(path.dirname(finalPath), context); }
         catch { this._warn('Committed upload cache refresh failed'); }
         return finalPath;
@@ -954,6 +1050,22 @@ class UploadAPI {
   }
 
   _warn(message) { try { this.logger.logSystem('WARN', message); } catch { /* Logging cannot change a committed result. */ } }
+
+  _audit(method, ...args) {
+    try {
+      const writer = this.logger?.[method];
+      if (typeof writer !== 'function') return;
+      Promise.resolve(writer.apply(this.logger, args)).catch(() => {});
+    } catch { /* Logging must not alter transfer results. */ }
+  }
+
+  _safeErrorForLog(error, rootPath = null) {
+    let message = String(error?.message || error || 'Upload failed');
+    for (const privatePath of [rootPath, this.tempDir].filter(value => typeof value === 'string' && value)) {
+      message = message.split(privatePath).join('[PATH]');
+    }
+    return message.replace(/[\r\n]/g, ' ');
+  }
 
   async cleanupTempUploads(retentionDays) {
     if (!Number.isFinite(retentionDays) || retentionDays < 0) throw new TypeError('Invalid retention');

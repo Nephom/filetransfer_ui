@@ -19,6 +19,7 @@ const userManager = require('./auth/user-manager');
 const RoleManager = require('./auth/role-manager');
 const UploadAPI = require('./api/upload.js');
 const shareRoutes = require('./api/share');
+const adminLogsRoutes = require('./api/admin-logs');
 const backgroundRoutes = require('./api/background');
 const sslRoutes = require('./api/ssl');
 const database = require('./database/db');
@@ -361,6 +362,24 @@ app.use(express.static(publicDirectory, {
 const uploadApi = new UploadAPI();
 app.use('/api', uploadApi.getRouter());
 
+// Keep authenticated admin mutations attributable to the requesting User/IP.
+// System events continue to use server.log; log-viewer reads are excluded to
+// prevent the viewer from generating its own audit noise.
+app.use('/api/admin', (req, res, next) => {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) || req.path === '/logs' || req.path.startsWith('/logs/') ||
+      req.path === '/share-links' || req.path.startsWith('/share-links/')) {
+    return next();
+  }
+  const startedAt = Date.now();
+  res.once('finish', () => {
+    systemLogger.logAPI(`admin_${req.method.toLowerCase()}`, req.originalUrl, res.statusCode < 400, req, {
+      statusCode: res.statusCode,
+      durationMs: Date.now() - startedAt
+    });
+  });
+  next();
+});
+
 const configureLocationRuntime = async () => {
   if (runtimeChanging) throw Object.assign(new Error('Storage reconfiguration is already in progress'), { statusCode: 409 });
   const nextManager = new LocationManager(configManager.getConfig());
@@ -397,6 +416,7 @@ const configureLocationRuntime = async () => {
 // Share routes - /api/share/:token/download does NOT require authentication
 // Other share routes require authentication via middleware
 app.use('/api', shareRoutes);
+app.use('/api/admin/logs', adminLogsRoutes);
 app.use('/api', backgroundRoutes);
 app.use('/api', terminalTargetRoutes);
 app.use('/api', terminalSessionRoutes);
@@ -512,6 +532,7 @@ app.post('/auth/login', (req, res, next) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
+      systemLogger.logAuth('login', username || 'unknown', false, { reason: 'Username or password is required' }, req);
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
@@ -553,12 +574,23 @@ app.post('/auth/login', (req, res, next) => {
       res.status(401).json({ error: 'Invalid credentials' });
     }
   } catch (error) {
+    systemLogger.logAuth('login', req.body?.username || 'unknown', false, { reason: error.message }, req);
     systemLogger.logSystem('ERROR', `Login error: ${error.message}`);
     res.status(401).json({ error: 'Authentication failed' });
   }
 });
 
 app.post('/auth/logout', (req, res) => {
+  const sessionToken = getSessionToken(req);
+  if (sessionToken) {
+    try {
+      const jwt = require('jsonwebtoken');
+      const decoded = jwt.verify(sessionToken, configManager.get('security.jwtSecret'));
+      if (typeof decoded.username === 'string' && decoded.username) {
+        systemLogger.logAuth('logout', decoded.username, true, { role: decoded.role || 'unknown' }, req);
+      }
+    } catch { /* Logout remains successful if an expired session cannot identify its user. */ }
+  }
   clearSessionCookie(req, res);
   res.json({ success: true });
 });
@@ -606,10 +638,12 @@ app.post('/auth/change-password', (req, res, next) => {
     const { currentPassword, newPassword } = req.body;
 
     if (!currentPassword || !newPassword) {
+      systemLogger.logAuth('change_password', req.user.username, false, { reason: 'Required password field missing' }, req);
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
 
     if (newPassword.length < 6) {
+      systemLogger.logAuth('change_password', req.user.username, false, { reason: 'New password is too short' }, req);
       return res.status(400).json({ error: 'New password must be at least 6 characters long' });
     }
 
@@ -622,6 +656,7 @@ app.post('/auth/change-password', (req, res, next) => {
         : currentPassword === configPassword;
 
       if (!validPassword) {
+        systemLogger.logAuth('change_password', req.user.username, false, { reason: 'Current password did not match' }, req);
         return res.status(401).json({ error: 'Current password is incorrect' });
       }
 
@@ -631,7 +666,7 @@ app.post('/auth/change-password', (req, res, next) => {
       await userManager.changeOwnPassword(req.user.username, currentPassword, newPassword);
     }
 
-    systemLogger.logSystem('INFO', `Password changed successfully for user: ${req.user.username}`);
+    systemLogger.logAuth('change_password', req.user.username, true, { role: req.user.role }, req);
 
     clearSessionCookie(req, res);
     res.json({
@@ -639,6 +674,7 @@ app.post('/auth/change-password', (req, res, next) => {
       message: 'Password changed successfully. Please login again with your new password.'
     });
   } catch (error) {
+    systemLogger.logAuth('change_password', req.user?.username || 'unknown', false, { reason: error.message }, req);
     systemLogger.logSystem('ERROR', `Password change error: ${error.message}`);
     res.status(500).json({ error: 'Failed to change password' });
   }
@@ -712,6 +748,7 @@ app.post('/auth/forgot-password', (req, res, next) => {
     const { username } = req.body;
 
     if (!username) {
+      systemLogger.logAuth('forgot_password', 'unknown', false, { reason: 'Username is required' }, req);
       return res.status(400).json({ error: 'Username is required' });
     }
 
@@ -719,6 +756,7 @@ app.post('/auth/forgot-password', (req, res, next) => {
 
     if (username !== configUsername) {
       // Don't reveal if username exists or not
+      systemLogger.logAuth('forgot_password', username, false, { reason: 'Account is not eligible for password reset' }, req);
       return res.json({
         success: true,
         message: 'If the username exists, a reset token has been generated. Check the server console.'
@@ -728,6 +766,7 @@ app.post('/auth/forgot-password', (req, res, next) => {
     // Use Redis to store the reset token
     const redisClient = await resetTokenClient();
     if (!redisClient) {
+      systemLogger.logAuth('forgot_password', username, false, { reason: 'Reset token service is unavailable' }, req);
       return res.status(500).json({ error: 'Redis client not available' });
     }
 
@@ -736,6 +775,8 @@ app.post('/auth/forgot-password', (req, res, next) => {
     const expirySeconds = 15 * 60; // 15 minutes
 
     await redisClient.set(redisKey, resetToken, { EX: expirySeconds });
+
+    systemLogger.logAuth('forgot_password', username, true, { expiresInMinutes: 15 }, req);
 
     // Log to server.log
     systemLogger.logSystem('INFO', `Password reset request for user: ${username}, Token: ${resetToken}, Valid for: 15 minutes`);
@@ -765,6 +806,7 @@ app.post('/auth/forgot-password', (req, res, next) => {
       message: 'Reset token generated. Check the server console for the token.'
     });
   } catch (error) {
+    systemLogger.logAuth('forgot_password', req.body?.username || 'unknown', false, { reason: error.message }, req);
     systemLogger.logSystem('ERROR', `Forgot password error: ${error.message}`);
     res.status(500).json({ error: 'Failed to process forgot password request' });
   }
@@ -783,12 +825,14 @@ app.post('/auth/reset-password', (req, res, next) => {
     const { username, resetToken, newPassword } = req.body;
 
     if (!username || !resetToken || !newPassword) {
+      systemLogger.logAuth('reset_password', username || 'unknown', false, { reason: 'Required reset fields missing' }, req);
       return res.status(400).json({ error: 'Username, reset token, and new password are required' });
     }
 
     // Check if reset token exists and is valid in Redis
     const redisClient = await resetTokenClient();
     if (!redisClient) {
+      systemLogger.logAuth('reset_password', username, false, { reason: 'Reset token service is unavailable' }, req);
       return res.status(500).json({ error: 'Redis client not available' });
     }
 
@@ -796,6 +840,7 @@ app.post('/auth/reset-password', (req, res, next) => {
     const storedToken = await redisClient.get(redisKey);
 
     if (storedToken !== resetToken) {
+      systemLogger.logAuth('reset_password', username, false, { reason: 'Reset token invalid or expired' }, req);
       return res.status(401).json({ error: 'Invalid or expired reset token' });
     }
 
@@ -811,13 +856,14 @@ app.post('/auth/reset-password', (req, res, next) => {
     // Reload configuration
     await configManager.load();
 
-    systemLogger.logSystem('INFO', `Password reset successfully for user: ${username}`);
+    systemLogger.logAuth('reset_password', username, true, null, req);
 
     res.json({
       success: true,
       message: 'Password reset successfully. Please login with your new password.'
     });
   } catch (error) {
+    systemLogger.logAuth('reset_password', req.body?.username || 'unknown', false, { reason: error.message }, req);
     systemLogger.logSystem('ERROR', `Password reset error: ${error.message}`);
     res.status(500).json({ error: 'Failed to reset password' });
   }
@@ -1001,6 +1047,7 @@ app.get('/api/locations', authenticate, async (req, res) => {
     }));
     res.json({ success: true, locations });
   } catch (error) {
+    systemLogger.logAPI('list_locations', 'accessible Locations', false, req, { error: publicErrorMessage(error) });
     res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
@@ -1021,7 +1068,9 @@ app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
       res.json({ success: true, locationId: context.locationId, message: 'Entire cache refreshed successfully' });
     }
   } catch (error) {
-    systemLogger.logSystem('ERROR', `Cache refresh error: ${error.message}`);
+    systemLogger.logAPI('refresh_cache', req.body?.directoryPath || '/', false, req, {
+      error: publicErrorMessage(error), locationId: getRequestedLocationId(req)
+    });
     res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
@@ -1319,6 +1368,19 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
     });
     for (const context of targets) await refreshDirectoryCache(path.dirname(context.targetPath), 'refresh_after_delete', req, context.fileSystem).catch(() => {});
     const success = results.every(item => item.success);
+    for (const result of results) {
+      systemLogger.logFileOperation('delete', result.path, result.success, req, {
+        locationId: contexts[0].locationId,
+        ...(result.error ? { error: result.error } : {})
+      });
+    }
+    systemLogger.logAPI('delete', req.body.currentPath || '/', success, req, {
+      locationId: contexts[0].locationId,
+      requestedCount: items.length,
+      deletedCount: deletedItems.length,
+      failedCount: results.filter(item => !item.success).length,
+      statusCode: success ? 200 : 207
+    });
     res.status(success ? 200 : 207).json({
       success,
       message: `${deletedItems.length} item(s) deleted successfully`,
@@ -1327,7 +1389,7 @@ app.delete('/api/files/delete', authenticate, async (req, res) => {
     });
   } catch (error) {
     systemLogger.logFileOperation('delete', req.body.currentPath || '/', false, req, {
-      error: error.message, items: Array.isArray(req.body.items) ? req.body.items.map(item => item?.name) : undefined
+      error: error.message, items: Array.isArray(req.body.items) ? req.body.items.map(item => item?.path || item?.name) : undefined
     });
     res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
@@ -1618,8 +1680,14 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
               await refreshDirectoryCache(path.dirname(sourceContext.targetPath), 'refresh_after_paste_source', req, sourceContext.fileSystem).catch(() => {});
             }
           }
-          systemLogger.logFileOperation(pasteCapability, destinationPath, results[results.length - 1].success, req, {
-            source: sourceContext.targetPath, target: destinationContext.targetPath
+          const itemResult = results[results.length - 1];
+          systemLogger.logFileOperation(pasteCapability, destinationPath, itemResult.success, req, {
+            source: sourcePath,
+            target: destinationPath,
+            sourceLocationId: sourceContext.locationId,
+            targetLocationId: destinationContext.locationId,
+            copied,
+            ...(itemResult.error ? { error: itemResult.error } : {})
           });
           sendProgressEvent('item-result', {
             currentName: item.name,
@@ -1637,6 +1705,14 @@ app.post('/api/files/paste', authenticate, async (req, res) => {
     });
 
     const success = results.every(item => item.success);
+    systemLogger.logAPI(pasteCapability, targetPath || '/', success, req, {
+      sourceLocationId,
+      targetLocationId: targetContext.locationId,
+      requestedCount: items.length,
+      completedCount: completedItems,
+      failedCount: failedItems,
+      statusCode: success ? 200 : processedItems.length ? 207 : 500
+    });
     const responseBody = {
       success,
       locationId: targetContext.locationId,
@@ -1828,6 +1904,7 @@ app.post('/api/files/flatten', authenticate, async (req, res) => {
   try {
     const { items, currentPath = '' } = req.body;
     if (!items || !Array.isArray(items) || items.length === 0) {
+      systemLogger.logAPI('flatten', currentPath || '/', false, req, { error: 'Items array is required', requestedCount: 0, statusCode: 400 });
       return res.status(400).json({ error: 'Items array is required' });
     }
     await getStorageContext(req, currentPath, 'read');
@@ -1845,8 +1922,15 @@ app.post('/api/files/flatten', authenticate, async (req, res) => {
       }
     });
 
-    res.json({ files: results, totalFiles: results.length, totalBytes: results.reduce((sum, entry) => sum + entry.size, 0) });
+    const totalBytes = results.reduce((sum, entry) => sum + entry.size, 0);
+    systemLogger.logAPI('flatten', currentPath || '/', true, req, {
+      selectedCount: items.length, fileCount: results.length, totalBytes
+    });
+    res.json({ files: results, totalFiles: results.length, totalBytes });
   } catch (error) {
+    systemLogger.logAPI('flatten', req.body?.currentPath || '/', false, req, {
+      error: publicErrorMessage(error), selectedCount: Array.isArray(req.body?.items) ? req.body.items.length : 0
+    });
     res.status(error.statusCode || (error.code === 'ENOENT' ? 404 : 500)).json({ error: publicErrorMessage(error) });
   }
 });
@@ -1854,35 +1938,63 @@ app.post('/api/files/flatten', authenticate, async (req, res) => {
 // UploadAPI owns progress and cancellation routes and their ownership checks.
 
 app.post('/api/ai/analyze', authenticate, async (req, res) => {
+  const requestedPath = req.body?.path;
+  const reject = (status, message) => {
+    systemLogger.logAPI('ai_analysis', requestedPath || '/', false, req, { statusCode: status, error: message });
+    return res.status(status).json({ error: message });
+  };
   try {
     const { path: relativePath, locationId } = req.body || {};
     if (typeof relativePath !== 'string' || !relativePath || relativePath.includes('..') || path.posix.isAbsolute(relativePath)) {
-      return res.status(400).json({ error: 'A safe Location-relative file path is required' });
+      return reject(400, 'A safe Location-relative file path is required');
     }
-    if (configManager.get('ai.enabled') !== true) return res.status(503).json({ error: 'AI analysis is not enabled' });
+    if (configManager.get('ai.enabled') !== true) return reject(503, 'AI analysis is not enabled');
     const context = await getStorageContext(req, relativePath, 'read', locationId);
     const stat = await context.fileSystem.stat(context.targetPath);
-    if (stat.isDirectory) return res.status(400).json({ error: 'Directories cannot be analyzed directly' });
+    if (stat.isDirectory) return reject(400, 'Directories cannot be analyzed directly');
     const config = configManager.get('ai');
-    if (!config.baseUrl || !config.model) return res.status(503).json({ error: 'AI endpoint or model is not configured' });
+    if (!config.baseUrl || !config.model) return reject(503, 'AI endpoint or model is not configured');
     const owner = req.user?.username || req.user?.id;
+    let jobId = null;
     const job = aiAnalysisQueue.enqueue({
       owner,
       source: relativePath,
-      run: ({ signal, onProgress }) => analyzePath({
-        filePath: context.targetPath,
-        source: relativePath,
-        config,
-        signal,
-        onProgress: progress => {
-          onProgress(progress);
-          systemLogger.logSystem('DEBUG', `AI analysis ${JSON.stringify({ user: owner, ...progress })}`);
+      run: async ({ signal, onProgress }) => {
+        const startedAt = Date.now();
+        try {
+          const result = await analyzePath({
+            filePath: context.targetPath,
+            source: relativePath,
+            config,
+            signal,
+            onProgress: progress => {
+              onProgress(progress);
+              systemLogger.logSystem('DEBUG', `AI analysis ${JSON.stringify({ user: owner, ...progress })}`);
+            }
+          });
+          systemLogger.logAPI('ai_analysis', relativePath, true, req, {
+            jobId, status: 'complete', durationMs: Date.now() - startedAt
+          });
+          return result;
+        } catch (error) {
+          const cancelled = error?.code === 'ABORT_ERR' || signal.aborted;
+          systemLogger.logAPI('ai_analysis', relativePath, false, req, {
+            jobId, status: cancelled ? 'cancelled' : 'failed',
+            durationMs: Date.now() - startedAt,
+            ...(cancelled ? {} : { error: error.message })
+          });
+          throw error;
         }
-      })
+      }
+    });
+    jobId = job.jobId;
+    systemLogger.logAPI('ai_analysis', relativePath, true, req, {
+      jobId, status: 'queued', locationId: context.locationId
     });
     res.status(202).json({ success: true, ...job, locationId: context.locationId, path: relativePath });
   } catch (error) {
     const status = error.statusCode || (error.code === 'ENOENT' ? 404 : 500);
+    systemLogger.logAPI('ai_analysis', requestedPath || '/', false, req, { statusCode: status, error: publicErrorMessage(error) });
     systemLogger.logSystem(status >= 500 ? 'ERROR' : 'WARN', `AI analysis failed: ${error.message}`);
     res.status(status).json({ error: error.message || 'AI analysis failed', code: error.code || 'AI_ERROR' });
   }
@@ -1898,7 +2010,13 @@ app.get('/api/ai/analyze/:jobId', authenticate, (req, res) => {
 app.post('/api/ai/analyze/:jobId/cancel', authenticate, (req, res) => {
   const owner = req.user?.username || req.user?.id;
   const job = aiAnalysisQueue.cancel(req.params.jobId, owner);
-  if (!job) return res.status(404).json({ error: 'AI analysis job not found' });
+  if (!job) {
+    systemLogger.logAPI('ai_analysis_cancel', req.params.jobId, false, req, { status: 'not_found' });
+    return res.status(404).json({ error: 'AI analysis job not found' });
+  }
+  systemLogger.logAPI('ai_analysis_cancel', job.source, true, req, {
+    jobId: job.jobId, status: job.status
+  });
   return res.json({ success: true, ...job });
 });
 
