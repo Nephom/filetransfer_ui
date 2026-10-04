@@ -158,6 +158,7 @@ export default function FileBrowser({ token, user, onLogout }) {
     const [transferStatus, setTransferStatus] = React.useState('');
     const [error, setError] = React.useState('');
     const [aiAnalysis, setAiAnalysis] = React.useState(null);
+    const [aiAvailable, setAiAvailable] = React.useState(false);
     const aiAbortRef = React.useRef(null);
     const aiJobRef = React.useRef(null);
     const [modal, setModal] = React.useState(null);
@@ -324,6 +325,22 @@ export default function FileBrowser({ token, user, onLogout }) {
         }
     };
 
+    const loadAiAvailability = async () => {
+        const session = sessionRef.current;
+        try {
+            const response = await fetch('/api/ai/availability', {
+                headers: headersForLocation(''),
+                signal: session.controller.signal,
+                cache: 'no-store'
+            });
+            if (!response.ok) throw new Error('AI analysis is unavailable.');
+            const data = await response.json();
+            if (session.active) setAiAvailable(data.available === true);
+        } catch {
+            if (session.active && !session.controller.signal.aborted) setAiAvailable(false);
+        }
+    };
+
     const loadFiles = async (path = currentPath, requestedLocationId = locationId, { forceReload = false } = {}) => {
         const request = requestGate.current.begin();
         setLoading(true); setError(''); setContext(null); setModal(null); setSelected([]); setFiles([]);
@@ -430,11 +447,12 @@ export default function FileBrowser({ token, user, onLogout }) {
     React.useEffect(() => {
         sessionRef.current = { active: true, controller: new AbortController() };
         loadLocations();
+        loadAiAvailability();
         return () => { sessionRef.current.active = false; sessionRef.current.controller.abort(); requestGate.current.invalidate(); };
     }, [token, user.id, user.username]);
 
     React.useEffect(() => {
-        const healthTimer = window.setInterval(() => { loadLocations(); }, 15000);
+        const healthTimer = window.setInterval(() => { loadLocations(); loadAiAvailability(); }, 15000);
         return () => window.clearInterval(healthTimer);
     }, [token]);
 
@@ -537,7 +555,7 @@ export default function FileBrowser({ token, user, onLogout }) {
 
     const analyzeSelectedFile = async () => {
         const item = selectedItems.length === 1 ? selectedItems[0] : null;
-        if (!item || item.isDirectory || !hasCapability('read')) return;
+        if (!aiAvailable || !item || item.isDirectory || !hasCapability('read')) return;
         aiAbortRef.current?.abort();
         const previousJob = aiJobRef.current;
         if (previousJob?.jobId) {
@@ -1742,7 +1760,7 @@ export default function FileBrowser({ token, user, onLogout }) {
               <button className="primary" disabled={!hasCapability('upload')} onClick={() => { resumeTargetRef.current = null; inputRef.current.click(); }}>Upload</button><input ref={inputRef} type="file" multiple hidden onChange={upload} /><input ref={resumeDirectoryInputRef} type="file" multiple webkitdirectory="" hidden onChange={upload} />
              <button disabled={!hasCapability('mkdir')} onClick={() => setModal('folder')}>New folder</button><span className="divider" />
               <button disabled={!selectedItems.length || downloading || !hasCapability('read')} onClick={startDownload}>{downloading ? 'Preparing download...' : 'Download'}</button><button className="optional" onClick={() => setQueueOpen((open) => !open)}>Transfer Queue{queueItems.some((item) => ['queued', 'running', 'retrying'].includes(item.status)) ? ` (${queueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length})` : ''}</button><button disabled={!selectedItems.length || moving || !hasCapability('move')} onClick={() => setModal('move')}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => setModal('rename')}>Rename</button>
-              <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setCreatedShareLinks(null); setModal('share'); }}>Share</button><button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('read')} onClick={() => void analyzeSelectedFile()}>AI analyze</button><button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
+               <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => { setCreatedShareLinks(null); setModal('share'); }}>Share</button>{aiAvailable && <button className="optional" disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('read')} onClick={() => void analyzeSelectedFile()}>AI analyze</button>}<button disabled={!selectedItems.length || !hasCapability('delete')} onClick={remove}>Delete</button><span className="divider" />
                <button className="optional" onClick={selectAll}>Select all</button><label className="sort-control">Sort<select value={sortKey} onChange={(event) => setSortKey(event.target.value)} aria-label="Sort files"><option value="name">Name</option><option value="modified">Modified</option><option value="size">Size</option><option value="directory">Directory first</option></select><button type="button" onClick={() => setSortDirection((current) => current === 'asc' ? 'desc' : 'asc')} aria-label={`Sort ${sortDirection === 'asc' ? 'descending' : 'ascending'}`}>{sortDirection === 'asc' ? 'Ascending' : 'Descending'}</button></label><span className="view-switch" aria-label="File view"><button className={viewMode === 'details' ? 'active' : ''} onClick={() => setViewMode('details')}>Details</button><button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')}>Grid</button></span><button className="optional" onClick={openShareLinks}>Share Links</button><button onClick={() => { void refreshCurrentDirectory(); }} disabled={loading}>Refresh</button>
         </nav>
          <div className="navigation"><button className="nav-button" aria-label="Go up" disabled={!currentPath && !searching} onClick={goUp}>↑</button><div className="crumbs"><button onClick={() => loadFiles('')}>/</button>{crumbs.map((part, index) => <React.Fragment key={`${part}-${index}`}><span className="crumb-separator">›</span><button onClick={() => loadFiles(crumbs.slice(0, index + 1).join('/'))}>{part}</button></React.Fragment>)}</div><div className="search-control"><input className="search" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') searchFiles(); if (event.key === 'Escape') clearSearch(); }} placeholder="Search files" aria-label="Search files" />{(search || searching) && <button className="clear-search" onClick={clearSearch} aria-label="Clear search">×</button>}</div></div>
@@ -1751,7 +1769,7 @@ export default function FileBrowser({ token, user, onLogout }) {
                  <div className="file-area" onClick={(event) => { if (event.target === event.currentTarget) setSelected([]); }}>{loading ? <div className="empty"><span className="loading-orbit" /><strong>Loading files...</strong></div> : files.length === 0 ? <div className="empty"><strong>{searching ? 'No matching files' : 'This folder is empty'}</strong><span>{searching ? 'Try a different search term.' : 'Upload files or create a folder to get started.'}</span></div> : <VirtualFileList items={sortedFiles} mode={viewMode} renderItem={renderFileItem} onChoose={choose} onOpen={file => file.isDirectory ? openFolder(file) : download([file])} onClear={() => setSelected([])} />}</div>
             </section></main>
         <footer className="statusbar"><span>{files.length} item{files.length === 1 ? '' : 's'}</span><span>{searching ? 'Search results' : currentPath ? `/${currentPath}` : '/'}</span></footer>
-          {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading || !hasCapability('read')} onClick={() => action(startDownload)}>Download</button><button disabled={moving || !hasCapability('move')} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => action(() => { setCreatedShareLinks(null); setModal('share'); })}>Share</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('read')} onClick={() => action(analyzeSelectedFile)}>AI analyze</button><hr /><button disabled={!hasCapability('delete')} onClick={() => action(remove)}>Delete</button></div>}
+           {context && <div className="context-menu" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}><button disabled={downloading || !hasCapability('read')} onClick={() => action(startDownload)}>Download</button><button disabled={moving || !hasCapability('move')} onClick={() => action(() => setModal('move'))}>Move</button><button disabled={selectedItems.length !== 1 || !hasCapability('rename')} onClick={() => action(() => setModal('rename'))}>Rename</button><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('share')} onClick={() => action(() => { setCreatedShareLinks(null); setModal('share'); })}>Share</button>{aiAvailable && <><button disabled={selectedItems.length !== 1 || selectedItems[0].isDirectory || !hasCapability('read')} onClick={() => action(analyzeSelectedFile)}>AI analyze</button><hr /></>}<button disabled={!hasCapability('delete')} onClick={() => action(remove)}>Delete</button></div>}
         {modal === 'folder' && <Dialog title="New folder" onClose={() => setModal(null)}><form onSubmit={saveFolder}><p>Create a folder in {currentPath ? `/${currentPath}` : '/'}.</p><label>Folder name<input name="folderName" autoFocus required /></label><DialogActions onClose={() => setModal(null)} label="Create" /></form></Dialog>}
          {modal === 'move' && <Dialog title="Move selected items" onClose={() => setModal(null)}><p>Choose a destination. You cannot move an item into its current folder or one of its own subfolders.</p><div className="move-tree">{locations.map((location) => <section key={location.id}><strong>{location.displayName}</strong>{renderTree(location.id, (node) => moveItems(selectedItems, node.path, location.id))}</section>)}</div><div className="modal-actions"><button type="button" onClick={() => setModal(null)}>Cancel</button></div></Dialog>}
         {modal === 'password' && <Dialog title="Change password" onClose={() => setModal(null)}><form onSubmit={savePassword}><p>Changing your password signs this device out.</p><label>Current password<input name="currentPassword" type="password" autoFocus required /></label><label>New password<input name="newPassword" type="password" minLength="6" required /></label><label>Confirm new password<input name="confirmPassword" type="password" minLength="6" required /></label><DialogActions onClose={() => setModal(null)} label="Change password" /></form></Dialog>}

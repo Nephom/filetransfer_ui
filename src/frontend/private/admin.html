@@ -458,9 +458,26 @@
          .source-chip.fallback { border-color: #80662d; color: #ffe6a3; }
          .permission-advanced { padding: 14px; border: 1px solid #254764; border-radius: 6px; background: rgba(7,25,42,.45); }
          .permission-advanced.is-role-managed { opacity: .62; }
-         .table-scroll { overflow-x: auto; }
-         .status-note { color: #9fb8ce; font-size: .82rem; line-height: 1.4; }
-          @media (max-width: 768px) { .modal-content { width: calc(100% - 20px); padding: 20px; max-height: 90vh; } .user-table { min-width: 760px; } .form-row { grid-template-columns: 1fr; } .btn-group { flex-wrap: wrap; } .btn-group .btn { flex: 1 1 180px; } }
+          .table-scroll { overflow-x: auto; }
+          .status-note { color: #9fb8ce; font-size: .82rem; line-height: 1.4; }
+          .ai-model-manager { padding: 16px; border: 1px solid #254764; border-radius: 7px; background: rgba(7,25,42,.58); }
+          .ai-model-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+          .ai-model-toolbar .btn { width: auto; min-width: 125px; }
+          .ai-connection-message { flex: 1 1 260px; margin: 0; color: #9fb8ce; font-size: .88rem; line-height: 1.45; }
+          .ai-connection-message.error { color: #fecaca; }
+          .ai-connection-message.success { color: #86efac; }
+          .ai-model-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+          .ai-model-column { min-width: 0; padding: 12px; border: 1px solid #254764; border-radius: 6px; background: rgba(11,33,55,.76); }
+          .ai-model-column h4 { margin-bottom: 9px; color: #d9eafa; font-size: .9rem; }
+          .ai-model-list { display: grid; gap: 7px; min-height: 38px; list-style: none; }
+          .ai-model-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 8px; border: 1px solid #254764; border-radius: 5px; background: #07192a; color: #e6eefc; overflow-wrap: anywhere; }
+          .ai-model-list button { flex: 0 0 34px; min-width: 34px; height: 32px; border: 1px solid #3b7097; border-radius: 5px; background: #102d49; color: #e9fbff; font-size: 1.1rem; cursor: pointer; }
+          .ai-model-list button:hover:not(:disabled) { border-color: #47cdf1; background: #173653; }
+          .ai-model-list button:focus-visible, .ai-model-toolbar .btn:focus-visible { outline: 2px solid #67e8f9; outline-offset: 2px; }
+          .ai-model-list button:disabled { cursor: not-allowed; opacity: .48; }
+          .ai-model-empty { color: #9fb8ce; font-size: .86rem; }
+          @media (max-width: 680px) { .ai-model-grid { grid-template-columns: 1fr; }.ai-model-manager { padding: 12px; } }
+           @media (max-width: 768px) { .modal-content { width: calc(100% - 20px); padding: 20px; max-height: 90vh; } .user-table { min-width: 760px; } .form-row { grid-template-columns: 1fr; } .btn-group { flex-wrap: wrap; } .btn-group .btn { flex: 1 1 180px; } }
           @media (max-width: 620px) { .log-filter-grid { grid-template-columns: 1fr 1fr; }.log-filter-field:first-child { grid-column: 1 / -1; }.log-filter-actions { grid-column: 1 / -1; }.log-event-row { grid-template-columns: 1fr; gap: 4px; }.log-event-time { white-space: normal; } }
 
      </style>
@@ -1122,6 +1139,189 @@
                 .replace(/'/g, '&#039;');
         }
 
+        let aiDiscoveredModels = [];
+        let aiModelDiscoveryMessage = 'Run Test to retrieve models from the configured endpoint.';
+        let aiModelManagedByEnvironment = false;
+
+        function readConfiguredAiModels() {
+            const input = document.getElementById('config-ai-models');
+            if (!input) return [];
+            try {
+                const value = JSON.parse(input.value);
+                return Array.isArray(value) ? value.filter(model => typeof model === 'string' && model.trim()).map(model => model.trim()) : [];
+            } catch { return []; }
+        }
+
+        function updateAiConnectionMessage(text, kind = '') {
+            const message = document.getElementById('aiConnectionStatus');
+            if (!message) return;
+            message.textContent = text;
+            message.className = `ai-connection-message${kind ? ` ${kind}` : ''}`;
+        }
+
+        function showAiConnectionStateFromModels() {
+            if (!aiDiscoveredModels.length) return;
+            const activeModel = document.getElementById('config-ai-model')?.value.trim() || '';
+            const configuredModels = readConfiguredAiModels();
+            if (!activeModel) {
+                updateAiConnectionMessage('Connected, but no analysis model is selected. Add a discovered model with +, then select it.', 'error');
+            } else if (!aiDiscoveredModels.includes(activeModel)) {
+                updateAiConnectionMessage(`The selected model “${activeModel}” was not found at this URL. Choose a model returned by Test.`, 'error');
+            } else if (!configuredModels.includes(activeModel)) {
+                updateAiConnectionMessage(`The selected model “${activeModel}” is available; use + to add it to the configured model list.`, 'error');
+            } else {
+                updateAiConnectionMessage(`Connected. The selected model “${activeModel}” is available.`, 'success');
+            }
+        }
+
+        function refreshAiModelOptions(selectedModel = null) {
+            const select = document.getElementById('config-ai-model');
+            if (!select) return;
+            const currentModel = select.value.trim();
+            const selected = selectedModel === null ? currentModel : selectedModel;
+            const configured = readConfiguredAiModels();
+            const choices = [...configured, ...(currentModel && !configured.includes(currentModel) ? [currentModel] : [])];
+            select.innerHTML = `<option value="">Select a configured model</option>${choices.map(model => `<option value="${escapeHtml(model)}">${escapeHtml(model)}${configured.includes(model) ? '' : ' (not in configured list)'}</option>`).join('')}`;
+            select.value = choices.includes(selected) ? selected : '';
+        }
+
+        function renderAiModelLists() {
+            const configuredList = document.getElementById('aiConfiguredModels');
+            const discoveredList = document.getElementById('aiDiscoveredModels');
+            if (!configuredList || !discoveredList) return;
+            const configured = readConfiguredAiModels();
+            const activeModel = document.getElementById('config-ai-model')?.value.trim() || '';
+            const activeManaged = aiModelManagedByEnvironment && activeModel;
+
+            configuredList.innerHTML = configured.length
+                ? configured.map((model, index) => `<li><span>${escapeHtml(model)}${model === activeModel ? ' · active' : ''}</span><button type="button" data-ai-remove-index="${index}" aria-label="Remove configured model ${escapeHtml(model)}" ${activeManaged && model === activeModel ? 'disabled title="The active model is managed by .env"' : ''}>−</button></li>`).join('')
+                : '<li class="ai-model-empty">No models are configured for analysis.</li>';
+            configuredList.querySelectorAll('[data-ai-remove-index]').forEach(button => {
+                button.addEventListener('click', () => removeConfiguredAiModel(Number(button.dataset.aiRemoveIndex)));
+            });
+
+            discoveredList.innerHTML = aiDiscoveredModels.length
+                ? aiDiscoveredModels.map((model, index) => {
+                    const alreadyAdded = configured.includes(model);
+                    return `<li><span>${escapeHtml(model)}</span><button type="button" data-ai-add-index="${index}" aria-label="${alreadyAdded ? 'Model already configured' : `Add model ${escapeHtml(model)}`}" ${alreadyAdded ? 'disabled' : ''}>+</button></li>`;
+                }).join('')
+                : `<li class="ai-model-empty">${escapeHtml(aiModelDiscoveryMessage)}</li>`;
+            discoveredList.querySelectorAll('[data-ai-add-index]').forEach(button => {
+                button.addEventListener('click', () => addDiscoveredAiModel(Number(button.dataset.aiAddIndex)));
+            });
+        }
+
+        function setConfiguredAiModels(models, { preferFirst = false } = {}) {
+            const input = document.getElementById('config-ai-models');
+            const select = document.getElementById('config-ai-model');
+            if (!input || !select) return;
+            const next = [...new Set(models.filter(model => typeof model === 'string' && model.trim()).map(model => model.trim()))];
+            const previousActive = select.value.trim();
+            input.value = JSON.stringify(next);
+            const previousActiveAvailable = next.includes(previousActive) && aiDiscoveredModels.includes(previousActive);
+            let nextActive = previousActive;
+            if (!aiModelManagedByEnvironment && ((preferFirst && !previousActive) || !next.includes(previousActive) || (aiDiscoveredModels.length && !previousActiveAvailable))) {
+                const discoveredModel = next.find(model => aiDiscoveredModels.includes(model));
+                nextActive = discoveredModel || (aiDiscoveredModels.length ? '' : next[0] || '');
+            }
+            refreshAiModelOptions(nextActive);
+            renderAiModelLists();
+            showAiConnectionStateFromModels();
+        }
+
+        function addDiscoveredAiModel(index) {
+            const model = aiDiscoveredModels[index];
+            if (!model) return;
+            const configured = readConfiguredAiModels();
+            if (configured.includes(model)) return;
+            setConfiguredAiModels([...configured, model], { preferFirst: true });
+        }
+
+        function removeConfiguredAiModel(index) {
+            const configured = readConfiguredAiModels();
+            const removed = configured[index];
+            if (removed === undefined || (aiModelManagedByEnvironment && removed === document.getElementById('config-ai-model')?.value)) return;
+            setConfiguredAiModels(configured.filter((_, modelIndex) => modelIndex !== index));
+        }
+
+        function aiConnectionErrorMessage(code, fallback) {
+            if (code === 'AI_API_KEY_MISSING') return 'API key is missing. Set AI_API_KEY in .env or apiKey in src/config.ini; the server can run without it, but AI analysis remains hidden.';
+            if (code === 'AI_AUTH_FAILED') return 'The AI endpoint rejected the API key. Check the key in .env or src/config.ini.';
+            if (code === 'AI_URL_INVALID' || code === 'AI_UNREACHABLE') return 'The configured AI URL is invalid or cannot be reached.';
+            if (code === 'AI_TIMEOUT') return 'The AI URL did not respond before the connection test timed out.';
+            if (code === 'AI_NO_MODELS') return 'The URL responded, but no usable Model was found.';
+            if (code === 'AI_MODEL_LIST_FAILED') return 'The URL responded, but its /models endpoint could not be used.';
+            return fallback || 'The AI endpoint or API key could not be used.';
+        }
+
+        async function testAiConnection() {
+            const button = document.getElementById('aiTestConnection');
+            if (!button) return;
+            const provider = document.getElementById('config-ai-provider')?.value || '';
+            const baseUrl = document.getElementById('config-ai-baseUrl')?.value.trim() || '';
+            const model = document.getElementById('config-ai-model')?.value.trim() || '';
+            const apiKey = document.getElementById('config-ai-apiKey')?.value || '';
+            const body = { provider, baseUrl, model };
+            if (apiKey.trim()) body.apiKey = apiKey;
+            button.disabled = true;
+            button.textContent = 'Testing…';
+            updateAiConnectionMessage('Checking the endpoint and retrieving available models…');
+            aiDiscoveredModels = [];
+            aiModelDiscoveryMessage = 'Testing the configured endpoint…';
+            renderAiModelLists();
+            try {
+                const response = await fetch('/api/admin/config/ai-test', {
+                    method: 'POST',
+                    headers: {
+                        Authorization: `Bearer ${localStorage.getItem('token')}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(body)
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw Object.assign(new Error(data.error || 'Unable to test the AI endpoint'), { code: data.code });
+                aiDiscoveredModels = Array.isArray(data.models) ? data.models.filter(model => typeof model === 'string' && model.trim()) : [];
+                renderAiModelLists();
+                if (!aiDiscoveredModels.length) {
+                    aiModelDiscoveryMessage = 'The endpoint returned no usable models.';
+                    renderAiModelLists();
+                    updateAiConnectionMessage('The URL responded, but no usable Model was found.', 'error');
+                } else {
+                    showAiConnectionStateFromModels();
+                }
+            } catch (error) {
+                aiDiscoveredModels = [];
+                aiModelDiscoveryMessage = aiConnectionErrorMessage(error.code, error.message);
+                renderAiModelLists();
+                updateAiConnectionMessage(aiModelDiscoveryMessage, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Test connection';
+            }
+        }
+
+        function bindAiModelManager() {
+            const modelSelect = document.getElementById('config-ai-model');
+            const testButton = document.getElementById('aiTestConnection');
+            if (!modelSelect || !testButton) return;
+            modelSelect.addEventListener('change', () => {
+                renderAiModelLists();
+                showAiConnectionStateFromModels();
+            });
+            ['config-ai-provider', 'config-ai-baseUrl', 'config-ai-apiKey'].forEach(id => {
+                const input = document.getElementById(id);
+                input?.addEventListener('input', () => {
+                    aiDiscoveredModels = [];
+                    aiModelDiscoveryMessage = 'Settings changed. Run Test to retrieve models from this endpoint.';
+                    renderAiModelLists();
+                    updateAiConnectionMessage('Settings changed. Test the current URL and API key before saving.', 'error');
+                });
+            });
+            testButton.addEventListener('click', () => void testAiConnection());
+            renderAiModelLists();
+            void testAiConnection();
+        }
+
         function locationRowHtml(location = {}, index = 0) {
             const id = escapeHtml(location.id || '');
             const displayName = escapeHtml(location.displayName || '');
@@ -1205,12 +1405,23 @@
                     html += '<button type="button" class="btn" style="margin-top:12px;" onclick="addLocationRow()">+ Add Location</button>';
                     html += '<p style="font-size:0.85rem; opacity:0.75; line-height:1.5;">Read-only Locations allow listing and downloading but reject upload, rename, delete, move, copy, mkdir and share operations.</p>';
                 } else {
+                    if (section === 'ai') {
+                        aiModelManagedByEnvironment = values.modelManagedByEnvironment === true;
+                        aiDiscoveredModels = [];
+                        aiModelDiscoveryMessage = 'Run Test to retrieve models from the configured endpoint.';
+                    }
                     Object.entries(values).forEach(([key, value]) => {
+                        if (section === 'ai' && ['apiKeyManagedByEnvironment', 'modelManagedByEnvironment'].includes(key)) return;
                         const metadata = schema[section]?.[key] || { label: key, description: '' };
                         const fieldName = `${section}.${key}`;
                         const inputId = `config-${section}-${key}`;
                         const label = escapeHtml(metadata.label || key);
-                        const description = escapeHtml(metadata.description || '');
+                        const managedApiKey = section === 'ai' && key === 'apiKey' && values.apiKeyManagedByEnvironment === true;
+                        const managedModel = section === 'ai' && key === 'model' && values.modelManagedByEnvironment === true;
+                        const descriptionText = managedApiKey
+                            ? `${metadata.description || ''} Managed by AI_API_KEY in .env.`
+                            : managedModel ? `${metadata.description || ''} Managed by AI_MODEL in .env.` : (metadata.description || '');
+                        const description = escapeHtml(descriptionText);
                         const example = metadata.example ? `<br><strong>Example:</strong> <code>${escapeHtml(metadata.example)}</code>` : '';
                         const restart = metadata.requiresRestart ? '<span style="color:#fbbf24; margin-left:8px;">Restart required</span>' : '<span style="color:#86efac; margin-left:8px;">Applies without restart</span>';
                         html += `<div class="form-group"><label for="${inputId}">${label}${restart}</label>`;
@@ -1219,7 +1430,14 @@
                         } else if (metadata.type === 'enum') {
                             html += `<select id="${inputId}" name="${fieldName}" class="form-control">${(metadata.options || []).map(option => `<option value="${escapeHtml(option)}" ${String(value).toLowerCase() === String(option).toLowerCase() ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}</select>`;
                         } else if (metadata.type === 'secret') {
-                            html += `<input type="password" id="${inputId}" name="${fieldName}" class="form-control" value="" placeholder="${escapeHtml(value === '[SET]' ? 'Configured; enter a new value to replace it' : 'Generated at startup')}">`;
+                            html += `<input type="password" id="${inputId}" name="${fieldName}" class="form-control" value="" placeholder="${escapeHtml(managedApiKey ? 'Managed by .env' : value === '[SET]' ? 'Configured; enter a new value to replace it' : 'Not configured')}" ${managedApiKey ? 'disabled' : ''}>`;
+                        } else if (section === 'ai' && key === 'model') {
+                            const models = Array.isArray(values.models) ? values.models : [];
+                            const modelChoices = [...new Set([...models, ...(value ? [String(value)] : [])])];
+                            html += `<select id="${inputId}" name="${fieldName}" class="form-control" ${managedModel ? 'disabled' : ''}><option value="">Select a configured model</option>${modelChoices.map(model => `<option value="${escapeHtml(model)}" ${String(value) === model ? 'selected' : ''}>${escapeHtml(model)}${models.includes(model) ? '' : ' (not in configured list)'}</option>`).join('')}</select>`;
+                        } else if (metadata.type === 'modelList') {
+                            const models = Array.isArray(value) ? value : [];
+                            html += `<div class="ai-model-manager"><input type="hidden" id="${inputId}" name="${fieldName}" value="${escapeHtml(JSON.stringify(models))}"><div class="ai-model-toolbar"><button type="button" class="btn" id="aiTestConnection">Test connection</button><p id="aiConnectionStatus" class="ai-connection-message" role="status" aria-live="polite">Checking the endpoint…</p></div><div class="ai-model-grid"><section class="ai-model-column" aria-labelledby="aiDiscoveredModelsLabel"><h4 id="aiDiscoveredModelsLabel">Models returned by Test</h4><ul id="aiDiscoveredModels" class="ai-model-list"><li class="ai-model-empty">Run Test to retrieve models.</li></ul></section><section class="ai-model-column" aria-labelledby="aiConfiguredModelsLabel"><h4 id="aiConfiguredModelsLabel">Models configured for analysis</h4><ul id="aiConfiguredModels" class="ai-model-list"><li class="ai-model-empty">No models configured.</li></ul></section></div><p class="status-note" style="margin-top:10px;">Use + to add a provider model and − to remove it. The selected model must be present in both lists.</p></div>`;
                         } else if (metadata.type === 'textarea') {
                             html += `<textarea id="${inputId}" name="${fieldName}" class="form-control" rows="8">${escapeHtml(value)}</textarea>`;
                         } else {
@@ -1242,6 +1460,7 @@
             html += '</div>';
 
             configContent.innerHTML = html;
+            bindAiModelManager();
         }
 
         async function saveConfig() {
@@ -1261,6 +1480,10 @@
                         config[section] = config[section] || {};
                         if (input.type === 'checkbox') {
                             config[section][field] = input.checked;
+                        } else if (section === 'ai' && field === 'models') {
+                            config[section][field] = JSON.parse(input.value);
+                        } else if (section === 'ai' && field === 'model') {
+                            config[section][field] = input.value.trim();
                         } else if (input.type === 'number') {
                             config[section][field] = input.value === '' ? '' : Number(input.value);
                         } else if (input.value.trim() !== '') {

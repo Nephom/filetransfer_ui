@@ -236,6 +236,32 @@ insertion. A stale header or changed root/runtime returns `409` without creating
 a share for a replacement Location. Current and omitted revision headers remain
 supported.
 
+## AI Model Discovery and Analysis
+
+| Method | Endpoint | Access | Request / response |
+|---|---|---|---|
+| GET | `/api/ai/availability` | Authenticated user | `{ "success": true, "available": boolean }`. Returns only a safe readiness flag, never the key or endpoint model list. |
+| POST | `/api/admin/config/ai-test` | Administrator | Optional `{ "provider", "baseUrl", "apiKey", "model" }` values test the current form without saving. A blank/omitted key uses the server's effective saved key. Success: `{ "success": true, "models": ["..."], "selectedModel", "selectedModelAvailable" }`. |
+| POST | `/api/ai/analyze` | Authenticated user with Location read permission | `{ "locationId", "path" }`; returns `202` with an analysis job when AI is enabled and the endpoint, key, and selected model are available. |
+| GET | `/api/ai/analyze/:jobId` | Job owner | Current queued/running/complete/failed job status. |
+| POST | `/api/ai/analyze/:jobId/cancel` | Job owner | Cancels the owned analysis job. |
+
+The availability check makes an authenticated server-to-server `GET
+{baseUrl}/models` request with the effective API key. It requires AI enabled, a
+nonempty key, a reachable HTTP(S) endpoint, at least one returned model, and the
+selected `ai.model` to occur in the saved `ai.models` list and the remote model
+list. A negative result hides AI analysis actions in the Classic file view.
+Readiness results are cached for up to 30 seconds and invalidated after AI
+settings are saved. The Admin Test endpoint is a live test and also returns the
+provider's model IDs for its model-selection UI; it never returns an API key.
+
+The Admin panel stores `ai.models` as the configured model allowlist and
+`ai.model` as the single active model sent to the provider. Model IDs are
+trimmed, deduplicated, and limited to 100 entries of at most 256 characters.
+An empty list or a selected model missing from either list keeps AI unavailable.
+An empty/missing `AI_API_KEY` in `.env` does not prevent service startup; the
+panel can use `apiKey` from `src/config.ini`, otherwise AI remains unavailable.
+
 ## Administration and TLS
 
 Configuration, cache clear, service restart, settings writes, and TLS management require the current administrator identity. User/Permission Role management uses staff gates with additional target/role restrictions; the `/api/admin/` prefix does not itself mean that every route rejects superusers. TLS management routes are under `/api/admin/ssl`: `status`, `generate`, `renew`, `sans`, `sans/add`, `sans/:san`, and `download/ca`.

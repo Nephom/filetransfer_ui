@@ -12,6 +12,7 @@
     "check:native": "node scripts/check-native-dependencies.js",
     "test:browser:unit": "node --test src/frontend/checks/file-browser.test.js",
     "test:browser:logs": "node src/frontend/checks/admin-log-viewer.e2e.mjs",
+    "test:browser:ai-settings": "node src/frontend/checks/ai-settings.e2e.mjs",
     "test:browser": "node src/frontend/checks/browser.e2e.mjs",
     "migrate:database": "node scripts/migrate-database.js"
   },

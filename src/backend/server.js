@@ -44,6 +44,7 @@ const { withOperationLocks } = require('./file-system/operation-locks');
 const { assertSafeTree, assertTransferPaths } = require('./file-system/path-safety');
 const { publicDirectory, checkBrowserBuild } = require('../../scripts/build-browser');
 const { analyzePath } = require('./ai/analysis-job');
+const { listModels } = require('./ai/openai-compatible');
 const { AnalysisQueue } = require('./ai/analysis-queue');
 const { DEFAULT_SYSTEM_PROMPT } = require('./ai/prompt');
 const { SecretStore } = require('./terminal/secret-store');
@@ -86,6 +87,41 @@ const configurationChange = handler => (req, res, next) => {
   const job = configurationWrites.then(() => handler(req, res));
   configurationWrites = job.catch(() => {});
   job.catch(next);
+};
+const AI_AVAILABILITY_CACHE_MS = 30_000;
+let aiAvailabilityCache = null;
+const invalidateAiAvailability = () => { aiAvailabilityCache = null; };
+const configuredAiModels = ai => Array.isArray(ai?.models)
+  ? ai.models.filter(model => typeof model === 'string' && model.trim()).map(model => model.trim())
+  : typeof ai?.model === 'string' && ai.model.trim() ? [ai.model.trim()] : [];
+const getAiAvailability = async () => {
+  const ai = configManager.get('ai') || {};
+  const apiKey = typeof ai.apiKey === 'string' ? ai.apiKey.trim() : '';
+  const model = typeof ai.model === 'string' ? ai.model.trim() : '';
+  const models = configuredAiModels(ai);
+  const baseUrl = typeof ai.baseUrl === 'string' ? ai.baseUrl.trim() : '';
+  const unavailable = code => ({ available: false, code });
+
+  if (ai.enabled !== true) return unavailable('AI_DISABLED');
+  if (!apiKey) return unavailable('AI_API_KEY_MISSING');
+  if (!/^https?:\/\//i.test(baseUrl)) return unavailable('AI_URL_INVALID');
+  if (!model || !models.includes(model)) return unavailable('AI_MODEL_NOT_CONFIGURED');
+
+  const fingerprint = crypto.createHash('sha256')
+    .update(JSON.stringify([ai.provider || '', baseUrl, apiKey, model, models]))
+    .digest('hex');
+  if (aiAvailabilityCache?.fingerprint === fingerprint && aiAvailabilityCache.expiresAt > Date.now()) {
+    return aiAvailabilityCache.promise;
+  }
+
+  const entry = { fingerprint, expiresAt: Date.now() + AI_AVAILABILITY_CACHE_MS, promise: null };
+  entry.promise = listModels({ config: { ...ai, baseUrl, apiKey } })
+    .then(availableModels => availableModels.includes(model)
+      ? { available: true, code: 'AI_READY' }
+      : unavailable('AI_MODEL_NOT_FOUND'))
+    .catch(error => unavailable(error.code || 'AI_UNAVAILABLE'));
+  aiAvailabilityCache = entry;
+  return entry.promise;
 };
 
 const getLocationFileSystem = async (location) => {
@@ -1937,6 +1973,58 @@ app.post('/api/files/flatten', authenticate, async (req, res) => {
 
 // UploadAPI owns progress and cancellation routes and their ownership checks.
 
+app.get('/api/ai/availability', authenticate, async (req, res) => {
+  try {
+    const status = await getAiAvailability();
+    res.set('Cache-Control', 'no-store').json({ success: true, available: status.available });
+  } catch (error) {
+    systemLogger.logSystem('WARN', `AI availability check failed: ${error.code || 'AI_UNAVAILABLE'}`);
+    res.set('Cache-Control', 'no-store').json({ success: true, available: false });
+  }
+});
+
+app.post('/api/admin/config/ai-test', requireAdmin, async (req, res) => {
+  const body = req.body && !Array.isArray(req.body) && typeof req.body === 'object' ? req.body : {};
+  const allowed = new Set(['provider', 'baseUrl', 'apiKey', 'model']);
+  if (Object.keys(body).some(key => !allowed.has(key))) {
+    return res.status(400).json({ success: false, code: 'AI_TEST_INVALID', error: 'Supply only provider, URL, API key, and model test values' });
+  }
+
+  const current = configManager.get('ai') || {};
+  const provider = String(body.provider ?? current.provider ?? 'ollama').trim().toLowerCase();
+  const baseUrl = body.baseUrl === undefined ? current.baseUrl : body.baseUrl;
+  // The Admin password field is intentionally blank when a key is already stored.
+  const apiKey = typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey : current.apiKey;
+  const model = body.model === undefined ? current.model : body.model;
+  if (!['ollama', 'vllm', 'omlx', 'openai', 'custom'].includes(provider) || typeof baseUrl !== 'string' || !/^https?:\/\//i.test(baseUrl.trim()) || typeof model !== 'string' || model.length > 256 || (apiKey !== undefined && typeof apiKey !== 'string') || String(apiKey || '').length > 4096) {
+    return res.status(400).json({ success: false, code: 'AI_TEST_INVALID', error: 'Check the provider, HTTP(S) URL, model, and API key values' });
+  }
+  if (typeof apiKey !== 'string' || !apiKey.trim()) {
+    return res.status(400).json({ success: false, code: 'AI_API_KEY_MISSING', error: 'Configure AI_API_KEY in .env or apiKey in src/config.ini before testing.' });
+  }
+
+  try {
+    const models = await listModels({ config: { ...current, provider, baseUrl: baseUrl.trim(), apiKey } });
+    const selectedModel = model.trim();
+    res.set('Cache-Control', 'no-store').json({
+      success: true,
+      models,
+      selectedModel,
+      selectedModelAvailable: Boolean(selectedModel && models.includes(selectedModel))
+    });
+  } catch (error) {
+    const code = error.code || 'AI_UNAVAILABLE';
+    const status = code === 'AI_TIMEOUT' ? 504
+      : code === 'AI_URL_INVALID' ? 400
+        : 502;
+    res.set('Cache-Control', 'no-store').status(status).json({
+      success: false,
+      code,
+      error: error.message || 'Unable to test the configured AI endpoint'
+    });
+  }
+});
+
 app.post('/api/ai/analyze', authenticate, async (req, res) => {
   const requestedPath = req.body?.path;
   const reject = (status, message) => {
@@ -1953,7 +2041,12 @@ app.post('/api/ai/analyze', authenticate, async (req, res) => {
     const stat = await context.fileSystem.stat(context.targetPath);
     if (stat.isDirectory) return reject(400, 'Directories cannot be analyzed directly');
     const config = configManager.get('ai');
-    if (!config.baseUrl || !config.model) return reject(503, 'AI endpoint or model is not configured');
+    const selectedModels = configuredAiModels(config);
+    if (!config.baseUrl || !config.model || !selectedModels.includes(config.model) || !String(config.apiKey || '').trim()) {
+      return reject(503, 'AI API key, endpoint, or selected model is not configured');
+    }
+    const availability = await getAiAvailability();
+    if (!availability.available) return reject(503, 'AI endpoint, API key, or selected model is unavailable');
     const owner = req.user?.username || req.user?.id;
     let jobId = null;
     const job = aiAnalysisQueue.enqueue({
@@ -2068,7 +2161,7 @@ app.put('/api/settings', requireAdmin, configurationChange(async (req, res) => {
 
 const getSuperuserAiConfig = () => ({
   enabled: configManager.get('ai.enabled') === true,
-  model: configManager.get('ai.model') || 'llama3.2',
+  model: configManager.get('ai.model') ?? 'llama3.2',
   requestTimeoutMs: configManager.get('ai.requestTimeoutMs') ?? 2 * 60 * 60 * 1000,
   contextWindowTokens: 32768,
   maxOutputTokens: configManager.get('ai.maxOutputTokens') ?? 8192,
@@ -2092,7 +2185,11 @@ app.put('/api/super/ai-config', requireStaffRole, configurationChange(async (req
     if (next.contextWindowTokens !== 32768) return res.status(400).json({ error: 'contextWindowTokens is fixed at 32768' });
     if (typeof next.enabled !== 'boolean' || typeof next.model !== 'string' || !next.model.trim()) return res.status(400).json({ error: 'Invalid AI settings' });
     const numeric = ['requestTimeoutMs', 'maxOutputTokens', 'maxInputBytes', 'maxArchiveFiles', 'maxArchiveExpandedBytes', 'maxSingleExpandedFileBytes', 'maxNestedArchiveDepth', 'maxChunkTokens', 'chunkOverlapLines', 'maxRetries'];
-    const pending = [['ai.enabled', next.enabled], ['ai.model', next.model.trim()], ['ai.systemPrompt', String(next.systemPrompt || '')]];
+    const selectedModel = next.model.trim();
+    const currentModels = configuredAiModels(configManager.get('ai') || {});
+    // The Super panel still edits the active model directly, so keep its selection in the configured model list.
+    const nextModels = currentModels.includes(selectedModel) ? currentModels : [...currentModels, selectedModel];
+    const pending = [['ai.enabled', next.enabled], ['ai.model', selectedModel], ['ai.models', nextModels], ['ai.systemPrompt', String(next.systemPrompt || '')]];
     for (const key of numeric) {
       const value = Number(next[key]);
       const minimum = ['maxNestedArchiveDepth', 'chunkOverlapLines', 'maxRetries'].includes(key) ? 0 : 1;
@@ -2100,8 +2197,14 @@ app.put('/api/super/ai-config', requireStaffRole, configurationChange(async (req
       if (key === 'requestTimeoutMs' && value > 2 * 60 * 60 * 1000) return res.status(400).json({ error: 'requestTimeoutMs cannot exceed 2 hours' });
       pending.push([`ai.${key}`, value]);
     }
+    const previous = pending.map(([key]) => [key, configManager.get(key)]);
     pending.forEach(([key, value]) => configManager.set(key, value));
-    await configManager.save();
+    try { await configManager.save(); }
+    catch (error) {
+      previous.forEach(([key, value]) => configManager.set(key, value));
+      throw error;
+    }
+    invalidateAiAvailability();
     systemLogger.logSystem('INFO', `AI behavior settings updated by ${req.user.username}`);
     res.json({ success: true, config: getSuperuserAiConfig() });
   } catch (error) { res.status(400).json({ error: error.message }); }
@@ -2539,6 +2642,7 @@ const ADMIN_CONFIG_SCHEMA = {
     baseUrl: { type: 'url', label: 'AI API URL', description: 'OpenAI-compatible API base URL. Admin only.', requiresRestart: false, sensitive: true },
     apiKey: { type: 'secret', label: 'AI API key', description: 'Stored server-side and never returned.', requiresRestart: false, sensitive: true },
     model: { type: 'string', label: 'AI model', description: 'Model name sent to the provider.', requiresRestart: false },
+    models: { type: 'modelList', label: 'Available AI models', description: 'Models confirmed at the configured endpoint and allowed for analysis.', requiresRestart: false },
     requestTimeoutMs: { type: 'integer', label: 'Request timeout (ms)', description: 'Long timeout for local LLM inference.', requiresRestart: false },
     contextWindowTokens: { type: 'integer', label: 'Context window', description: 'Fixed at 32768 tokens.', requiresRestart: false },
     maxOutputTokens: { type: 'integer', label: 'Maximum output tokens', description: 'Maximum response size.', requiresRestart: false },
@@ -2608,6 +2712,8 @@ const getAdminConfig = () => ({
     baseUrl: configManager.get('ai.baseUrl') ?? 'http://127.0.0.1:11434/v1',
     apiKey: configManager.get('ai.apiKey') ? '[SET]' : '',
     model: configManager.get('ai.model') ?? 'llama3.2',
+    models: configuredAiModels(configManager.get('ai') || {}),
+    modelManagedByEnvironment: Boolean(String(process.env.AI_MODEL || '').trim()),
   requestTimeoutMs: configManager.get('ai.requestTimeoutMs') ?? 2 * 60 * 60 * 1000,
     contextWindowTokens: 32768,
     maxOutputTokens: configManager.get('ai.maxOutputTokens') ?? 8192,
@@ -2620,7 +2726,7 @@ const getAdminConfig = () => ({
     chunkOverlapLines: configManager.get('ai.chunkOverlapLines') ?? 200,
     maxRetries: configManager.get('ai.maxRetries') ?? 2,
     systemPrompt: configManager.get('ai.systemPrompt') || DEFAULT_SYSTEM_PROMPT,
-    apiKeyManagedByEnvironment: Boolean(process.env.AI_API_KEY)
+    apiKeyManagedByEnvironment: Boolean(String(process.env.AI_API_KEY || '').trim())
   },
   ssl: {
     httpsPort: configManager.get('ssl.httpsPort') ?? 9443,
@@ -2814,7 +2920,32 @@ app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) 
       if (ai.provider !== undefined) { add('ai.provider', provider); updatedFields.push('ai.provider'); }
       if (ai.baseUrl !== undefined) { if (typeof ai.baseUrl !== 'string' || !/^https?:\/\//i.test(ai.baseUrl)) throw new Error('ai.baseUrl must be an HTTP(S) URL'); add('ai.baseUrl', ai.baseUrl.trim().replace(/\/$/, '')); updatedFields.push('ai.baseUrl'); }
       if (ai.apiKey !== undefined && ai.apiKey !== '[SET]') { if (typeof ai.apiKey !== 'string' || ai.apiKey.length > 4096) throw new Error('ai.apiKey is invalid'); add('ai.apiKey', ai.apiKey); updatedFields.push('ai.apiKey'); }
-      if (ai.model !== undefined) { if (typeof ai.model !== 'string' || !ai.model.trim()) throw new Error('ai.model is required'); add('ai.model', ai.model.trim()); updatedFields.push('ai.model'); }
+      const currentModels = configuredAiModels(configManager.get('ai') || {});
+      let nextModels = currentModels;
+      if (ai.models !== undefined) {
+        if (!Array.isArray(ai.models) || ai.models.length > 100 || ai.models.some(model => typeof model !== 'string' || !model.trim() || model.length > 256)) {
+          throw new Error('ai.models must be an array of up to 100 non-empty model IDs');
+        }
+        nextModels = [...new Set(ai.models.map(model => model.trim()))];
+        add('ai.models', nextModels);
+        updatedFields.push('ai.models');
+      }
+      if (ai.model !== undefined) {
+        if (typeof ai.model !== 'string' || ai.model.length > 256) throw new Error('ai.model must be a string model ID');
+        const activeModel = ai.model.trim();
+        if ((activeModel && !nextModels.includes(activeModel)) || (!activeModel && nextModels.length)) {
+          throw new Error('ai.model must be selected from ai.models, or be empty when no models are configured');
+        }
+        add('ai.model', activeModel);
+        updatedFields.push('ai.model');
+      } else if (ai.models !== undefined) {
+        const currentModel = String(configManager.get('ai.model') || '').trim();
+        const activeModel = currentModel && nextModels.includes(currentModel) ? currentModel : (nextModels[0] || '');
+        if (activeModel !== currentModel) {
+          add('ai.model', activeModel);
+          updatedFields.push('ai.model');
+        }
+      }
        if (ai.requestTimeoutMs !== undefined) { add('ai.requestTimeoutMs', integer(ai.requestTimeoutMs, 'ai.requestTimeoutMs', 1000, 2 * 60 * 60 * 1000)); updatedFields.push('ai.requestTimeoutMs'); }
       if (ai.contextWindowTokens !== undefined && Number(ai.contextWindowTokens) !== 32768) throw new Error('ai.contextWindowTokens is fixed at 32768');
       for (const key of ['maxOutputTokens', 'maxInputBytes', 'maxArchiveFiles', 'maxArchiveExpandedBytes', 'maxSingleExpandedFileBytes', 'maxNestedArchiveDepth', 'maxChunkTokens', 'chunkOverlapLines', 'maxRetries']) {
@@ -2866,6 +2997,7 @@ app.put('/api/admin/config', requireAdmin, configurationChange(async (req, res) 
     if (updatedFields.some(field => field.startsWith('security.') && field !== 'security.jwtSecret')) refreshSecurity();
     if (updatedFields.includes('logging.level')) systemLogger.setLogLevel(configManager.get('logging.level'));
     if (updatedFields.some(field => field.startsWith('maintenance.'))) scheduleTempCleanup();
+    if (updatedFields.some(field => field.startsWith('ai.'))) invalidateAiAvailability();
 
     systemLogger.logSystem('INFO', `Configuration updated by admin: ${req.user?.username}, Updated fields: ${JSON.stringify(updatedFields)}`);
 

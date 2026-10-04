@@ -9,6 +9,7 @@ const { extractArchive, safeEntry } = require('./archive-reader');
 const { DEFAULT_SYSTEM_PROMPT, analysisContext } = require('./prompt');
 const { AnalysisQueue } = require('./analysis-queue');
 const { chunkOptions, contextInputBudget, groupByTokenBudget } = require('./analysis-job');
+const { complete, listModels } = require('./openai-compatible');
 
 const waitFor = (predicate, message) => new Promise((resolve, reject) => {
   const deadline = Date.now() + 2000;
@@ -44,6 +45,60 @@ test('bounds an individual oversized summary item before grouping', () => {
   const groups = groupByTokenBudget([{ source: 'large.log', analysis: { summary: 'x'.repeat(10000) } }], 100);
   assert.equal(groups.length, 1);
   assert.ok(groups[0][0].truncated);
+});
+
+test('discovers and de-duplicates OpenAI-compatible model IDs with the configured API key', async () => {
+  const originalFetch = global.fetch;
+  let request;
+  global.fetch = async (url, options) => {
+    request = { url, options };
+    return { ok: true, status: 200, json: async () => ({ data: [{ id: 'model-a' }, { id: 'model-a' }, { id: ' model-b ' }] }) };
+  };
+  try {
+    assert.deepEqual(await listModels({ config: { baseUrl: 'https://ai.example/v1/', apiKey: 'fixture-secret' } }), ['model-a', 'model-b']);
+    assert.equal(request.url, 'https://ai.example/v1/models');
+    assert.equal(request.options.method, 'GET');
+    assert.equal(request.options.headers.Authorization, 'Bearer fixture-secret');
+    assert.equal(request.options.headers.Accept, 'application/json');
+  } finally { global.fetch = originalFetch; }
+});
+
+test('AI completion sends the same trimmed API key used for model discovery', async () => {
+  const originalFetch = global.fetch;
+  let authorization;
+  global.fetch = async (_url, options) => {
+    authorization = options.headers.Authorization;
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) };
+  };
+  try {
+    await complete({ config: {
+      baseUrl: 'https://ai.example/v1', apiKey: ' fixture-secret ', model: 'fixture-model',
+      requestTimeoutMs: 1000, maxOutputTokens: 100
+    }, userPrompt: 'test' });
+    assert.equal(authorization, 'Bearer fixture-secret');
+  } finally { global.fetch = originalFetch; }
+});
+
+test('classifies invalid URLs, rejected credentials, unavailable models, and timed-out model discovery', async () => {
+  const originalFetch = global.fetch;
+  try {
+    await assert.rejects(listModels({ config: { baseUrl: 'file:///etc/passwd' } }), { code: 'AI_URL_INVALID' });
+
+    global.fetch = async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'secret provider detail' } }) });
+    await assert.rejects(listModels({ config: { baseUrl: 'https://ai.example/v1', apiKey: 'bad-key' } }), error => {
+      assert.equal(error.code, 'AI_AUTH_FAILED');
+      assert.doesNotMatch(error.message, /secret provider detail|bad-key/);
+      return true;
+    });
+
+    global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ data: [] }) });
+    await assert.rejects(listModels({ config: { baseUrl: 'https://ai.example/v1', apiKey: 'fixture-key' } }), { code: 'AI_NO_MODELS' });
+
+    global.fetch = async (_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    });
+    await assert.rejects(listModels({ config: { baseUrl: 'https://ai.example/v1' }, timeoutMs: 5 }), { code: 'AI_TIMEOUT' });
+  } finally { global.fetch = originalFetch; }
 });
 
 test('rejects unsafe archive paths', () => {

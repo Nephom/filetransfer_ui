@@ -82,6 +82,7 @@ maxDownloadsDefault=0
 
 [ai]
 # AI analysis is disabled until an OpenAI-compatible endpoint is configured.
+# The application can start with apiKey empty, but AI analysis stays unavailable until a working API key is set here or as AI_API_KEY in .env.
 enabled=false
 # Supported values: ollama, vllm, omlx, openai, custom.
 provider=ollama
@@ -90,6 +91,8 @@ baseUrl=http://127.0.0.1:11434/v1
 # Keep secrets out of tracked files. Use AI_API_KEY in .env when possible.
 apiKey=
 model=llama3.2
+# Models approved for analysis; the selected model above must be in this list.
+models=["llama3.2"]
 # Local LLM calls may be slow. This is two hours per request.
 requestTimeoutMs=7200000
 # Fixed by the application; this value is not editable in the panels.

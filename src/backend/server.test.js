@@ -37,6 +37,9 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
   let app;
   let server;
   let uploadApi;
+  let discoveredModels = ['fixture-model'];
+  let modelDiscoveryError = null;
+  const modelDiscoveryRequests = [];
   const loggerEvents = [];
   const forbiddenCalls = [];
   const instances = [];
@@ -134,6 +137,11 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     onProgress({ phase: 'summary', completedChunks: 1, totalChunks: 1 });
     return { result: 'fixture analysis result' };
   } });
+  mock('./ai/openai-compatible', { listModels: async ({ config: aiConfig }) => {
+    modelDiscoveryRequests.push({ baseUrl: aiConfig.baseUrl, apiKey: aiConfig.apiKey });
+    if (modelDiscoveryError) throw modelDiscoveryError;
+    return [...discoveredModels];
+  } });
   mock('./file-system', { EnhancedMemoryFileSystem: FixtureFileSystem });
   mock('./api/upload', FixtureUploadAPI);
   mock('../../scripts/build-browser', { publicDirectory, checkBrowserBuild: (...args) => buildCheck(...args) });
@@ -199,6 +207,9 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
       transfer: { chunkSize: 8 * 1024 * 1024, enableResume: true },
       shareLinks: { defaultExpiration: 3600, maxExpiration: 86400 }
     };
+    discoveredModels = ['fixture-model'];
+    modelDiscoveryError = null;
+    modelDiscoveryRequests.length = 0;
     accounts = new Map([
       ['fixture-admin', { id: 0, username: 'fixture-admin', role: 'admin', active: true }],
       ['fixture-user', { id: 7, username: 'fixture-user', role: 'user', active: true }],
@@ -767,13 +778,130 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     status(forgot, 200);
     assert.ok(f.loggerEvents.some(event => event.method === 'logAuth' && event.args[0] === 'forgot_password' && event.args[2] === false));
 
-    config.ai = { enabled: true, baseUrl: 'http://127.0.0.1:1', model: 'fixture-model' };
+    config.ai = { enabled: true, provider: 'custom', baseUrl: 'http://127.0.0.1:1', apiKey: 'fixture-ai-key', model: 'fixture-model', models: ['fixture-model'] };
     await fs.writeFile(path.join(f.root, 'analysis.txt'), 'fixture input');
     const started = await send('/api/ai/analyze', { username: 'fixture-user', method: 'POST', body: { path: 'analysis.txt' } });
     status(started, 202);
     await until(() => f.loggerEvents.some(event => event.method === 'logAPI' && event.args[0] === 'ai_analysis' && event.args[4]?.status === 'complete'));
     assert.ok(f.loggerEvents.some(event => event.method === 'logAPI' && event.args[0] === 'ai_analysis' && event.args[4]?.status === 'queued'));
     assert.ok(f.loggerEvents.some(event => event.method === 'logAPI' && event.args[0] === 'ai_analysis' && event.args[4]?.status === 'complete'));
+  });
+
+  await t.test('AI availability requires a configured key, a live model list, and the selected model', async () => {
+    await fixture();
+    status(await send('/api/ai/availability', { username: null }), 401);
+
+    config.ai = { enabled: false, baseUrl: 'http://ai.example/v1', apiKey: 'disabled-key', model: 'model-a', models: ['model-a'] };
+    const callsBeforeDisabled = modelDiscoveryRequests.length;
+    assert.deepEqual((await send('/api/ai/availability')).body, { success: true, available: false });
+    assert.equal(modelDiscoveryRequests.length, callsBeforeDisabled, 'disabled AI does not make an outbound request');
+
+    config.ai = { enabled: true, baseUrl: 'http://ai.example/v1', apiKey: '', model: 'model-a', models: ['model-a'] };
+    assert.deepEqual((await send('/api/ai/availability')).body, { success: true, available: false });
+    assert.equal(modelDiscoveryRequests.length, callsBeforeDisabled, 'missing credentials fail closed without a request');
+
+    config.ai = { enabled: true, baseUrl: 'http://ai.example/v1', apiKey: 'configured-key', model: 'model-a', models: [] };
+    assert.deepEqual((await send('/api/ai/availability')).body, { success: true, available: false });
+    assert.equal(modelDiscoveryRequests.length, callsBeforeDisabled, 'an empty configured model list is unavailable');
+
+    config.ai = { enabled: true, baseUrl: 'http://ai.example/v1', apiKey: 'bad-key', model: 'auth-model', models: ['auth-model'] };
+    modelDiscoveryError = Object.assign(new Error('provider rejected key'), { code: 'AI_AUTH_FAILED' });
+    assert.deepEqual((await send('/api/ai/availability')).body, { success: true, available: false });
+
+    config.ai = { enabled: true, baseUrl: 'not-an-http-url', apiKey: 'bad-url-key', model: 'url-model', models: ['url-model'] };
+    assert.deepEqual((await send('/api/ai/availability')).body, { success: true, available: false });
+
+    config.ai = { enabled: true, baseUrl: 'http://ai.example/v1', apiKey: 'empty-list-key', model: 'empty-model', models: ['empty-model'] };
+    modelDiscoveryError = Object.assign(new Error('no models'), { code: 'AI_NO_MODELS' });
+    assert.deepEqual((await send('/api/ai/availability')).body, { success: true, available: false });
+
+    config.ai = { enabled: true, baseUrl: 'http://ai.example/v1', apiKey: 'missing-model-key', model: 'model-not-found', models: ['model-not-found'] };
+    modelDiscoveryError = null;
+    discoveredModels = ['different-model'];
+    assert.deepEqual((await send('/api/ai/availability')).body, { success: true, available: false });
+
+    config.ai = { enabled: true, provider: 'custom', baseUrl: 'http://ai.example/v1', apiKey: 'ready-key', model: 'ready-model', models: ['ready-model'] };
+    discoveredModels = ['ready-model', 'another-model'];
+    assert.deepEqual((await send('/api/ai/availability')).body, { success: true, available: true });
+    assert.equal(modelDiscoveryRequests.at(-1).apiKey, 'ready-key');
+    assert.doesNotMatch(JSON.stringify((await send('/api/ai/availability')).body), /ready-key/);
+  });
+
+  await t.test('AI Admin Test uses unsaved or saved credentials, returns model IDs only, and stays admin-only', async () => {
+    await fixture();
+    const endpoint = '/api/admin/config/ai-test';
+    status(await send(endpoint, { username: 'fixture-user', method: 'POST', body: {} }), 403);
+
+    config.ai = { enabled: false, provider: 'custom', baseUrl: 'http://saved.example/v1', apiKey: '', model: 'model-a', models: ['model-a'] };
+    const callsBeforeMissingKey = modelDiscoveryRequests.length;
+    const missingKey = await send(endpoint, { method: 'POST', body: { provider: 'custom', baseUrl: 'http://saved.example/v1', model: 'model-a' } });
+    status(missingKey, 400);
+    assert.equal(missingKey.body.code, 'AI_API_KEY_MISSING');
+    assert.equal(modelDiscoveryRequests.length, callsBeforeMissingKey);
+
+    discoveredModels = ['model-a', 'model-b'];
+    const tested = await send(endpoint, { method: 'POST', body: {
+      provider: 'custom', baseUrl: 'http://unsaved.example/v1', apiKey: 'unsaved-test-key', model: 'model-a'
+    } });
+    status(tested, 200);
+    assert.deepEqual(tested.body.models, ['model-a', 'model-b']);
+    assert.equal(tested.body.selectedModelAvailable, true);
+    assert.equal(modelDiscoveryRequests.at(-1).baseUrl, 'http://unsaved.example/v1');
+    assert.equal(modelDiscoveryRequests.at(-1).apiKey, 'unsaved-test-key');
+    assert.doesNotMatch(JSON.stringify(tested.body), /unsaved-test-key/);
+
+    config.ai.apiKey = 'saved-config-key';
+    const savedKeyTest = await send(endpoint, { method: 'POST', body: {
+      provider: 'custom', baseUrl: 'http://saved.example/v1', model: 'model-b'
+    } });
+    status(savedKeyTest, 200);
+    assert.equal(modelDiscoveryRequests.at(-1).apiKey, 'saved-config-key');
+    assert.equal(savedKeyTest.body.selectedModelAvailable, true);
+  });
+
+  await t.test('AI analysis rejects missing credentials and unavailable live models', async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.root, 'ai-readiness.txt'), 'fixture input');
+    config.ai = { enabled: true, provider: 'custom', baseUrl: 'http://ai.example/v1', apiKey: '', model: 'model-a', models: ['model-a'] };
+    const missingKey = await send('/api/ai/analyze', { username: 'fixture-user', method: 'POST', body: { path: 'ai-readiness.txt' } });
+    status(missingKey, 503);
+    assert.match(missingKey.body.error, /API key/);
+
+    config.ai = { enabled: true, provider: 'custom', baseUrl: 'http://ai.example/v1', apiKey: 'live-failure-key', model: 'model-a', models: ['model-a'] };
+    modelDiscoveryError = Object.assign(new Error('fixture endpoint unavailable'), { code: 'AI_UNREACHABLE' });
+    const unavailable = await send('/api/ai/analyze', { username: 'fixture-user', method: 'POST', body: { path: 'ai-readiness.txt' } });
+    status(unavailable, 503);
+    assert.match(unavailable.body.error, /unavailable/);
+  });
+
+  await t.test('AI model settings save atomically and Super panel model changes remain supported', async () => {
+    await fixture();
+    const saved = await send('/api/admin/config', { method: 'PUT', body: { ai: {
+      enabled: true, provider: 'custom', baseUrl: 'http://ai.example/v1', apiKey: 'saved-ai-key',
+      model: 'model-a', models: ['model-a', 'model-b']
+    } } });
+    status(saved, 200);
+    assert.equal(config.ai.model, 'model-a');
+    assert.deepEqual(config.ai.models, ['model-a', 'model-b']);
+
+    const invalid = await send('/api/admin/config', { method: 'PUT', body: { ai: { model: 'not-listed', models: ['model-a', 'model-b'] } } });
+    status(invalid, 400);
+    assert.equal(config.ai.model, 'model-a', 'invalid active-model changes do not mutate configuration');
+    assert.deepEqual(config.ai.models, ['model-a', 'model-b']);
+
+    const cleared = await send('/api/admin/config', { method: 'PUT', body: { ai: { model: '', models: [] } } });
+    status(cleared, 200);
+    assert.equal(config.ai.model, '');
+    assert.deepEqual(config.ai.models, []);
+    assert.equal((await send('/api/ai/availability')).body.available, false, 'an empty model list remains unavailable');
+
+    config.ai = { enabled: true, provider: 'custom', baseUrl: 'http://ai.example/v1', apiKey: 'saved-ai-key', model: 'existing-model', models: ['existing-model'] };
+    const superuserChange = await send('/api/super/ai-config', {
+      username: 'fixture-staff', method: 'PUT', body: { enabled: true, model: 'superuser-selected-model' }
+    });
+    status(superuserChange, 200);
+    assert.equal(config.ai.model, 'superuser-selected-model');
+    assert.deepEqual(config.ai.models, ['existing-model', 'superuser-selected-model']);
   });
 
   await t.test('E04 cross-Location same-object move and cut never delete the only file', async () => {

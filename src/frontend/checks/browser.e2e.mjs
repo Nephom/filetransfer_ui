@@ -18,6 +18,7 @@ const duplicates = ['a', 'b'].map(parent => ({ name: 'same.txt', path: `${parent
 const capabilities = ['list', 'read', 'upload', 'mkdir', 'move', 'rename', 'share', 'delete'];
 const locations = ['A', 'B'].map(id => ({ id, revision: `${id}-root-1`, displayName: `Location ${id}`, capabilities, status: 'online' }));
 let availableLocations = locations;
+let aiAvailable = false;
 const malicious = `x'\"/><img src=x onerror="window.__xss=1">/account`;
 const fixtureUser = { username: malicious, email: malicious, role: 'user', active: true, roleId: 'role-fixture', permissions: [] };
 const shareCases = [
@@ -86,6 +87,7 @@ const server = http.createServer(async (req, res) => {
             if (req.method === 'DELETE') { const deleted = userBackgrounds.delete(fixtureUserId); return json({ success: true, deleted }); }
         }
         if (url.pathname === '/api/locations') return json({ locations: availableLocations });
+        if (url.pathname === '/api/ai/availability') return json({ success: true, available: aiAvailable });
         if (url.pathname === '/api/files') return json({ currentPath: url.searchParams.get('path') || '', files: requestedLocation?.revision === 'A-root-2' ? [{ name: 'replacement-root.txt', path: 'replacement-root.txt', size: 4 }] : req.headers['x-location-id'] === 'B' ? [{ name: 'B-only.txt', path: 'B-only.txt', size: 8 }] : records });
         if (url.pathname === '/api/files/search') {
             if (delaySearch) await new Promise(resolve => setTimeout(resolve, 700));
@@ -329,6 +331,26 @@ try {
     for (const key of ['rowHeight', 'font', 'color', 'background']) assert.equal(report.metrics.production[key], report.metrics.baseline[key], `preserved ${key}`);
     assert.ok(requests.slice(browserStart).filter(request => request.path.startsWith('/api/')).every(request => !request.headers.authorization), 'cookie requests omit Bearer null');
     report.checks.push('production cold load, baseline comparison, cookie-only auth, unchanged table styling');
+
+    await page.goto(origin);
+    await page.locator('.file-row').first().waitFor();
+    assert.equal(await page.getByRole('button', { name: 'AI analyze', exact: true }).count(), 0, 'Classic toolbar hides AI while the endpoint is unavailable');
+    await page.locator('.file-row').first().click({ button: 'right' });
+    await page.locator('.context-menu').waitFor();
+    assert.equal(await page.locator('.context-menu').getByRole('button', { name: 'AI analyze', exact: true }).count(), 0, 'Classic context menu hides AI while the endpoint is unavailable');
+    assert.equal(await page.locator('.context-menu hr').count(), 0, 'the hidden AI action does not leave an orphan separator');
+    aiAvailable = true;
+    await page.goto(origin);
+    await page.locator('.file-row').first().waitFor();
+    await page.getByRole('button', { name: 'AI analyze', exact: true }).waitFor();
+    await page.locator('.file-row').first().click({ button: 'right' });
+    await page.locator('.context-menu').getByRole('button', { name: 'AI analyze', exact: true }).waitFor();
+    assert.equal(await page.locator('.context-menu hr').count(), 1, 'the separator returns with the visible AI action');
+    report.checks.push('Classic AI toolbar and context actions follow live availability');
+    aiAvailable = false;
+    await page.goto(origin);
+    await page.locator('.file-row').first().waitFor();
+    assert.equal(await page.getByRole('button', { name: 'AI analyze', exact: true }).count(), 0, 'Classic actions hide again after the provider becomes unavailable');
 
     await page.locator('.file-row').nth(0).click();
     await page.locator('.file-row').nth(1).click({ modifiers: ['Control'] });
@@ -1489,6 +1511,12 @@ try {
     await layoutButton('Expand image to fill').click();
     assert.deepEqual(await layerLayout(), { size: 'cover, 100% 100%', position: '50% 50%', scale: '1' }, 'Expand stretches the image over the whole central area');
     assert.equal(await page.getByRole('button', { name: 'Move background left' }).isDisabled(), true, 'position arrows are inert while the image is stretched');
+    // The pane background transform has a 180ms CSS transition; measure after it settles.
+    await page.waitForFunction(() => {
+        const layer = document.querySelector('.pane-custom-background')?.getBoundingClientRect();
+        const clip = document.querySelector('.pane-custom-background-clip')?.getBoundingClientRect();
+        return layer && clip && Math.abs(layer.width - clip.width) < 1 && Math.abs(layer.height - clip.height) < 1;
+    }, null, { timeout: 3000 });
     const stretchedBox = await page.locator('.pane-custom-background').boundingBox();
     const clipBox = await page.locator('.pane-custom-background-clip').boundingBox();
     assert.ok(Math.abs(stretchedBox.width - clipBox.width) < 1 && Math.abs(stretchedBox.height - clipBox.height) < 1, `the stretched layer covers the whole central area: ${JSON.stringify({ stretchedBox, clipBox })}`);

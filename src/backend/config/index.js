@@ -81,6 +81,7 @@ class ConfigManager {
         baseUrl: 'http://127.0.0.1:11434/v1',
         apiKey: '',
         model: 'llama3.2',
+        models: [],
         requestTimeoutMs: 2 * 60 * 60 * 1000,
         contextWindowTokens: 32768,
         maxOutputTokens: 8192,
@@ -131,6 +132,10 @@ class ConfigManager {
 
     // Merge configurations with priority: env > file > defaults
     this.config = this._mergeConfig(this.defaults, fileConfig, envConfig);
+    const modelsAreConfigured = Array.isArray(fileConfig.ai?.models) || Array.isArray(envConfig.ai?.models);
+    if (!modelsAreConfigured && typeof this.config.ai?.model === 'string' && this.config.ai.model.trim()) {
+      this.config.ai.models = [this.config.ai.model.trim()];
+    }
 
     // Validate configuration
     await this._validate();
@@ -205,6 +210,15 @@ class ConfigManager {
               config.fileSystem.locations = JSON.parse(value);
             } catch (error) {
               throw new Error('locations.definitions must be valid JSON');
+            }
+          } else if (currentSection === 'ai' && key === 'models') {
+            try {
+              const models = JSON.parse(value);
+              if (!Array.isArray(models)) throw new Error('not an array');
+              config.ai = config.ai || {};
+              config.ai.models = models;
+            } catch (error) {
+              throw new Error('ai.models must be a valid JSON array');
             }
           } else {
             config[sectionName] = config[sectionName] || {};
@@ -295,11 +309,15 @@ class ConfigManager {
       env.ai = env.ai || {};
       env.ai.enabled = process.env.AI_ENABLED.toLowerCase() === 'true';
     }
-    for (const [name, key] of [['AI_PROVIDER', 'provider'], ['AI_BASE_URL', 'baseUrl'], ['AI_MODEL', 'model'], ['AI_API_KEY', 'apiKey']]) {
+    for (const [name, key] of [['AI_PROVIDER', 'provider'], ['AI_BASE_URL', 'baseUrl'], ['AI_MODEL', 'model']]) {
       if (process.env[name] !== undefined) {
         env.ai = env.ai || {};
         env.ai[key] = process.env[name];
       }
+    }
+    if (typeof process.env.AI_API_KEY === 'string' && process.env.AI_API_KEY.trim()) {
+      env.ai = env.ai || {};
+      env.ai.apiKey = process.env.AI_API_KEY.trim();
     }
     for (const [name, key] of [['AI_REQUEST_TIMEOUT_MS', 'requestTimeoutMs'], ['AI_MAX_OUTPUT_TOKENS', 'maxOutputTokens']]) {
       if (process.env[name] !== undefined) {
@@ -424,6 +442,13 @@ class ConfigManager {
       throw new Error('ai.provider must be ollama, vllm, omlx, openai, or custom');
     }
     if (typeof ai.baseUrl !== 'string' || !/^https?:\/\//i.test(ai.baseUrl)) throw new Error('ai.baseUrl must be an HTTP(S) URL');
+    if (!Array.isArray(ai.models) || ai.models.length > 100 || ai.models.some(model => typeof model !== 'string' || !model.trim() || model.length > 256)) {
+      throw new Error('ai.models must be an array of non-empty model IDs');
+    }
+    ai.models = [...new Set(ai.models.map(model => model.trim()))];
+    if (typeof ai.model !== 'string' || ai.model.length > 256) throw new Error('ai.model must be a string model ID');
+    ai.model = ai.model.trim();
+    // A stale/missing active model keeps the service running; live readiness hides AI until Admin repairs it.
     for (const [key, minimum] of [['requestTimeoutMs', 1000], ['maxOutputTokens', 1], ['maxInputBytes', 1], ['maxArchiveFiles', 1], ['maxArchiveExpandedBytes', 1], ['maxSingleExpandedFileBytes', 1], ['maxChunkTokens', 100], ['maxRetries', 0]]) {
       if (!Number.isSafeInteger(ai[key]) || ai[key] < minimum) throw new Error(`ai.${key} must be a valid integer`);
     }
@@ -587,7 +612,8 @@ class ConfigManager {
         iniContent += `provider=${this.config.ai?.provider || 'ollama'}\n`;
         iniContent += `baseUrl=${this.config.ai?.baseUrl || 'http://127.0.0.1:11434/v1'}\n`;
         iniContent += `apiKey=${this.config.ai?.apiKey || ''}\n`;
-        iniContent += `model=${this.config.ai?.model || 'llama3.2'}\n`;
+        iniContent += `model=${this.config.ai?.model ?? 'llama3.2'}\n`;
+        iniContent += `models=${JSON.stringify(Array.isArray(this.config.ai?.models) ? this.config.ai.models : [])}\n`;
         iniContent += `requestTimeoutMs=${this.config.ai?.requestTimeoutMs ?? 2 * 60 * 60 * 1000}\n`;
         iniContent += '# contextWindowTokens is fixed at 32768.\n';
         iniContent += `contextWindowTokens=32768\n`;
