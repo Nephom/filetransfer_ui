@@ -14,7 +14,6 @@ type ApiLikeResponse = {
 };
 
 type ManagedSessionLike = { sshEntries: SshProfile[] };
-type SshTabLike = { sshEntryId: string; connected: boolean };
 
 // Generic over the caller's full Session shape (main.tsx's own `Session`
 // type isn't exported), so this hook only needs to know that whatever
@@ -25,9 +24,7 @@ export type UseRemoteApiActionsParams<SessionLike extends { locationId: string; 
   readError: (response: ApiLikeResponse) => Promise<string>;
   session: SessionLike;
   setSession: (updater: (current: SessionLike) => SessionLike) => void;
-  remoteSshEntryId: string;
   managedSessions: ManagedSessionLike[];
-  sshTabs: SshTabLike[];
   locations: RemoteLocation[];
   setLocations: (locations: RemoteLocation[]) => void;
   setLocationsLoading: (loading: boolean) => void;
@@ -49,8 +46,8 @@ export type UseRemoteApiActionsParams<SessionLike extends { locationId: string; 
 // other REMOTE-connection functions would have made the eventual full
 // Phase 5 extraction harder, not easier.
 export function useRemoteApiActions<SessionLike extends { locationId: string; locationRevision?: string }>({
-  api, readError, session, setSession, remoteSshEntryId,
-  managedSessions, sshTabs, locations, setLocations, setLocationsLoading,
+  api, readError, session, setSession,
+  managedSessions, locations, setLocations, setLocationsLoading,
   locationsLoadedRef, locationRefreshInProgressRef,
   sessionIdentity, onLocationInvalidated,
 }: UseRemoteApiActionsParams<SessionLike>) {
@@ -110,19 +107,8 @@ export function useRemoteApiActions<SessionLike extends { locationId: string; lo
   const findSshProfileById = (entryId: string): SshProfile | undefined =>
     managedSessions.flatMap((workspace) => workspace.sshEntries).find((entry) => entry.id === entryId);
 
-  const ensureApiRemote = () => {
-    if (remoteSshEntryId) {
-      throw new Error("This action is not available while browsing an SSH remote. Switch LOCATION back to an API Remote first.");
-    }
-  };
-
-  const connectedSshBrowseOptions = () =>
-    managedSessions
-      .flatMap((workspace) => workspace.sshEntries)
-      .filter((entry) => sshTabs.some((tab) => tab.sshEntryId === entry.id && tab.connected));
-
   return {
     activeLocation, hasCapability, locationOnline,
-    loadLocations, findSshProfileById, ensureApiRemote, connectedSshBrowseOptions,
+    loadLocations, findSshProfileById,
   };
 }

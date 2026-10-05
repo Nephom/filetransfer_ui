@@ -44,6 +44,7 @@ function harness(handler = () => undefined, { sourceSize = 0, fileCount = 1 } = 
     api: async () => ({ ok: true, json: async () => ({ files: [{ remotePath: "a/file", relativePath: "file", size: 0 }] }) }),
     readError: async () => "error", session: { token: "cookie", nativeSessionId: "opaque-A", userId: 0, locationId: "A", locationRevision: "root-A", ignoreTlsErrors: false },
     serverUrl: () => "https://original.test:9443", writeOperationLog() {}, describeError: String, path: "folder", localPath: "Downloads", loadFiles: async () => {},
+    refreshSftpWindow(entryId, folder) { (props.refreshed ||= []).push([entryId, folder]); },
     selectedItems: [{ name: "folder", path: "folder", isDirectory: true, size: 0 }],
     transferQueue: [item], setTransferQueue: (update) => { props.transferQueue = update(props.transferQueue); },
     queueStoreRef: { current: { replace() {} } }, setQueueOpen() {}, setArchiveFormatOpen() {}, setArchiveFormatDraft() {},
@@ -383,6 +384,21 @@ test("unmount releases chunk progress listeners and queued retry timers", async 
 test("SFTP upload still uses its existing native command, without API sessions", async () => {
   const app = harness(); await app.render().runQueuedSshUpload({ ...app.item, sshEntryId: "ssh" }, { id: "ssh" });
   assert.deepEqual(app.calls.map((call) => call.command), ["ssh_upload_path"]);
+  // The queue refreshes the SFTP window of that entry (and only that one) in the destination folder.
+  assert.deepEqual(app.props.refreshed, [["ssh", "folder"]]);
+});
+
+test("SFTP download is addressed by SSH entry and destination folder, not by the API Remote selection", async () => {
+  const app = harness();
+  app.props.findSshProfileById = (id) => (id === "ssh-B" ? { id, name: "B" } : undefined);
+  const items = [{ name: "a.txt", path: "/srv/a.txt", isDirectory: false, size: 1, modified: 0 }];
+  app.render().enqueueSshDownload("ssh-B", items, "Documents");
+  const queued = app.props.transferQueue.find((candidate) => candidate.sshEntryId === "ssh-B");
+  assert.ok(queued, "an SFTP download was queued");
+  assert.equal(queued.localDestinationFolder, "Documents");
+  assert.deepEqual(queued.sshItems, items);
+  app.render().enqueueSshDownload("ssh-missing", items);
+  assert.equal(app.props.transferQueue.filter((candidate) => candidate.sshEntryId).length, 1, "unknown entries queue nothing");
 });
 
 test("late native chunk progress is attempt-scoped and cannot overwrite cancellation settlement", async () => {

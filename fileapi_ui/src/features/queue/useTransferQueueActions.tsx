@@ -81,8 +81,9 @@ export type UseTransferQueueActionsParams = {
   activeLocationDisplayName: string | undefined;
   activeManagedWorkspaceName: string | undefined;
   findSshProfileById: (entryId: string) => SshProfile | undefined;
-  remoteSshEntryId: string;
-  // The currently selected REMOTE items -- only path/isDirectory/name/size
+  /** Refreshes the open SFTP window of `entryId` after a transfer finished in `folder` (no-op when no such window is open). */
+  refreshSftpWindow: (entryId: string, folder: string) => void;
+  // The currently selected API REMOTE items -- only path/isDirectory/name/size
   // are read, so callers can pass a plain array of that shape.
   selectedItems: Pick<FileItem, "name" | "path" | "isDirectory" | "size">[];
 
@@ -116,7 +117,7 @@ export function useTransferQueueActions({
   run, notify, setNotice, api, readError, session, serverUrl,
   writeOperationLog, describeError, path, localPath, loadFiles,
   activeLocationDisplayName, activeManagedWorkspaceName,
-  findSshProfileById, remoteSshEntryId, selectedItems,
+  findSshProfileById, refreshSftpWindow, selectedItems,
   transferQueue, setTransferQueue, queueStoreRef,
   setQueueOpen, setArchiveFormatOpen, setArchiveFormatDraft,
   queueProgressSamplesRef, latestQueueProgressRef, queueCompletionHandlersRef,
@@ -294,7 +295,7 @@ export function useTransferQueueActions({
       }
       updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${completed} item(s) to ${item.destinationPath || "/"}.` });
       writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${completed} item(s) via SFTP.`);
-      await loadFiles(path);
+      refreshSftpWindow(item.sshEntryId || "", item.destinationPath);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
       const recovery = classifyQueueError(error);
@@ -1193,39 +1194,37 @@ export function useTransferQueueActions({
     void runQueuedDownload(item);
   };
 
-  const enqueueSshDownload = () => {
-    if (!selectedItems.length) return;
-    const profile = findSshProfileById(remoteSshEntryId);
+  /** Download `items` of the SSH entry `entryId` (an SFTP window) into the LOCAL folder `destinationFolder`. */
+  const enqueueSshDownload = (entryId: string, items: FileItem[], destinationFolder: string = localPath, onDone?: () => void) => {
+    if (!items.length) return;
+    const profile = findSshProfileById(entryId);
     if (!profile) {
       setNotice("The SSH connection for this remote view is no longer available.");
       return;
     }
     const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-    const label = selectedItems.length === 1 ? selectedItems[0].name : `${selectedItems.length} selected items`;
+    const label = items.length === 1 ? items[0].name : `${items.length} selected items`;
     const item: TransferQueueItem = {
       id,
       label,
       kind: "download",
       paths: [],
-      destinationPath: localPath ? `~/${localPath}` : "~",
+      destinationPath: destinationFolder ? `~/${destinationFolder}` : "~",
       locationId: "",
       locationName: `SSH: ${profile.name}`,
       status: "queued",
       detail: "Waiting to start",
-      sshEntryId: remoteSshEntryId,
-      sshItems: selectedItems as FileItem[],
-      localDestinationFolder: localPath,
+      sshEntryId: entryId,
+      sshItems: items,
+      localDestinationFolder: destinationFolder,
     };
     setTransferQueue((current) => [...current, item]);
     setQueueOpen(true);
-    void runQueuedSshDownload(item, profile, selectedItems as FileItem[]);
+    void runQueuedSshDownload(item, profile, items).then(() => onDone?.());
   };
 
+  // API REMOTE download button. SFTP windows call enqueueSshDownload directly.
   const download = () => {
-    if (remoteSshEntryId) {
-      enqueueSshDownload();
-      return;
-    }
     if (!selectedItems.length) return;
     const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
     if (!singleFile) {

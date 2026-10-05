@@ -51,6 +51,15 @@ const bridge = () => {
         return json({ success: true });
       }
       case "local_list_directory": return { path: args.path || "", files };
+      case "ssh_connect": return `ssh-session-${args.profile.id}`;
+      case "ssh_list_directory": {
+        // Each SSH entry has its own tree so the windows can be told apart.
+        const own = args.profile.id === "ssh-1" ? "alpha-only.txt" : "beta-only.txt";
+        return { path: args.path || "/", files: [
+          { name: "srv", path: "/srv", isDirectory: true, size: 0, modified: 1_700_000_000_000 },
+          { name: own, path: `/${own}`, isDirectory: false, size: 10, modified: 1_700_000_000_000 },
+        ] };
+      }
       case "local_list_directories": return { path: args.path || "", directories: [{ name: "Documents", path: "Documents" }] };
       case "list_local_roots": return [];
       case "local_home_path": return "/home/test";
@@ -81,6 +90,14 @@ await context.addInitScript(bridge);
 await context.addInitScript(() => {
   // Show the Functions menu entries for REST and VNC too.
   localStorage.setItem("nfterm-settings", JSON.stringify({ restApiModeEnabled: true, proxmoxVncModeEnabled: true }));
+  // Two saved SSH entries for the SFTP window checks.
+  localStorage.setItem("fileapi-session-registry", JSON.stringify([{
+    id: "ws-1", name: "Lab", restApiEntries: [], proxmoxVncEntries: [],
+    sshEntries: [
+      { id: "ssh-1", name: "Alpha", host: "alpha.test", port: 22, username: "root", privateKeyPath: "" },
+      { id: "ssh-2", name: "Beta", host: "beta.test", port: 22, username: "root", privateKeyPath: "" },
+    ],
+  }]));
 });
 const page = await context.newPage();
 const errors = [];
@@ -187,6 +204,57 @@ try {
   await page.locator(".pane-window-local .local-file, .pane-window-local .file-tile, .pane-window-local .file-row").first().click({ button: "right" });
   assert.equal(await page.locator(".context-menu").count(), 1, "right-click opens the context menu");
   await page.keyboard.press("Escape");
+
+  // SFTP windows: an SSH entry must be connected in the Terminal first; then each entry gets its own window.
+  await page.locator(".pane-functions-button").click();
+  await page.waitForTimeout(450);
+  await page.locator(".pane-flyout-button", { hasText: "Location" }).click();
+  const alphaBefore = page.locator(".pane-location-menu .pane-menu-item", { hasText: "Alpha" });
+  assert.equal(await alphaBefore.isDisabled(), true, "an SSH entry that is not connected cannot be opened as SFTP");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  const terminalTab = page.locator(".pane-task", { hasText: "Terminal" }).locator(".pane-task-main");
+  await terminalTab.click();
+  await page.waitForTimeout(250);
+  if (await page.locator(".pane-window-terminal.is-hidden").count()) { await terminalTab.click(); await page.waitForTimeout(250); }
+  await page.locator(".pane-window-terminal:not(.is-hidden)").waitFor();
+  // The Workspaces quick list is open by default; connect both saved entries from it.
+  await page.locator(".pane-window-terminal .ssh-quick-list").waitFor();
+  for (const name of ["Alpha", "Beta"]) {
+    await page.locator(".ssh-quick-list-entry", { hasText: name }).click();
+    await page.waitForTimeout(300);
+  }
+  const openSftp = async (name) => {
+    await page.locator(".pane-functions-button").click();
+    await page.waitForTimeout(450);
+    await page.locator(".pane-flyout-button", { hasText: "Location" }).click();
+    const item = page.locator(".pane-location-menu .pane-menu-item", { hasText: name });
+    await page.waitForFunction((label) => [...document.querySelectorAll(".pane-location-menu .pane-menu-item")].some((el) => el.textContent.includes(label) && !el.disabled), name, { timeout: 8000 });
+    await item.click();
+  };
+  await openSftp("Alpha");
+  await page.locator(".pane-window-sftp").first().waitFor();
+  await openSftp("Beta");
+  await page.waitForFunction(() => document.querySelectorAll(".pane-window-sftp").length === 2);
+  assert.equal(await page.locator(".pane-window-sftp").count(), 2, "two SSH entries open two SFTP windows");
+  assert.equal(await page.locator(".pane-task", { hasText: "SFTP" }).count(), 2, "each SFTP window has its own taskbar tab");
+  await page.locator('.pane-window-sftp[data-window-id="sftp:ssh-1"] .file-row[data-path="/alpha-only.txt"]').waitFor();
+  await page.locator('.pane-window-sftp[data-window-id="sftp:ssh-2"] .file-row[data-path="/beta-only.txt"]').waitFor();
+  assert.equal(await page.locator('.pane-window-sftp[data-window-id="sftp:ssh-1"] .file-row[data-path="/beta-only.txt"]').count(), 0, "each window lists only its own entry");
+  await shot("08-two-sftp-windows");
+
+  // Choosing an entry that already has a window raises it instead of opening a third one.
+  await openSftp("Alpha");
+  await page.waitForTimeout(250);
+  assert.equal(await page.locator(".pane-window-sftp").count(), 2, "re-opening an entry does not duplicate its window");
+
+  // Closing one SFTP window disconnects only that entry and removes only its tab.
+  const disconnectsBefore = await page.evaluate(() => window.__calls.filter((cmd) => cmd === "ssh_sftp_disconnect").length);
+  await page.locator(".pane-task", { hasText: "Beta" }).locator(".pane-task-close").click();
+  await page.waitForFunction(() => document.querySelectorAll(".pane-window-sftp").length === 1);
+  assert.equal(await page.locator(".pane-task", { hasText: "SFTP · Beta" }).count(), 0, "closing removes that SFTP tab");
+  assert.equal(await page.locator(".pane-task", { hasText: "SFTP · Alpha" }).count(), 1, "the other SFTP window stays");
+  assert.equal(await page.evaluate(() => window.__calls.filter((cmd) => cmd === "ssh_sftp_disconnect").length), disconnectsBefore + 1, "the closed window released its SFTP connection");
 
   // Closing a window removes its tab.
   await page.locator(".pane-task", { hasText: "VNC" }).locator(".pane-task-close").click();

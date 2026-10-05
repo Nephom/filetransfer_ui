@@ -76,3 +76,71 @@ test("stored layouts are validated before use", () => {
   assert.equal(model.normalizeStoredLayout({ version: 1, windows: [{ id: "local", x: "a", y: 0, w: 1, h: 1, z: 1 }] }), null);
   assert.equal(model.loadStoredLayout({ getItem: () => "{not json" }), null);
 });
+
+test("window ids: singleton kinds keep their id, SFTP windows are sftp:<entryId>", () => {
+  assert.equal(model.sftpWindowId("entry-1"), "sftp:entry-1");
+  assert.equal(model.sshEntryIdOf("sftp:entry-1"), "entry-1");
+  assert.equal(model.sshEntryIdOf("sftp:"), null);
+  assert.equal(model.sshEntryIdOf("local"), null);
+  for (const id of ["local", "remote", "vnc", "rest", "terminal"]) assert.equal(model.kindOf(id), id);
+  assert.equal(model.kindOf("sftp:entry-1"), "sftp");
+  assert.equal(model.kindOf("sftp:"), null);
+  assert.equal(model.kindOf("bogus"), null);
+  assert.equal(model.kindOf(undefined), null);
+  assert.deepEqual(model.minSizeOf("sftp:entry-1"), model.PANE_MIN_SIZE.sftp);
+});
+
+test("several SFTP windows can be open at once, one per SSH entry", () => {
+  let layout = open(open(empty(), "local"), "remote");
+  layout = open(layout, "sftp:a");
+  layout = open(layout, "sftp:b");
+  assert.equal(layout.windows.filter((item) => model.kindOf(item.id) === "sftp").length, 2);
+  assert.equal(layout.activeId, "sftp:b");
+  // opening an entry that already has a window raises that window instead of adding another one
+  layout = paneReducer(layout, { type: "focus", id: "sftp:a" });
+  assert.equal(layout.activeId, "sftp:a");
+  const count = layout.windows.length;
+  layout = open(layout, "sftp:b");
+  assert.equal(layout.windows.length, count);
+  assert.equal(layout.activeId, "sftp:b");
+  // unknown ids are ignored
+  assert.equal(open(layout, "bogus"), layout);
+});
+
+test("new SFTP windows are cascaded and stay inside the layer", () => {
+  let layout = open(open(open(empty(), "local"), "remote"), "sftp:a");
+  layout = open(layout, "sftp:b");
+  const first = win(layout, "sftp:a");
+  const second = win(layout, "sftp:b");
+  assert.ok(second.x !== first.x || second.y !== first.y, "the second SFTP window does not sit exactly on the first");
+  for (const item of [first, second]) {
+    assert.ok(item.x >= 0 && item.y >= 0 && item.x + item.w <= layer.w && item.y + item.h <= layer.h);
+    assert.ok(item.w >= model.PANE_MIN_SIZE.sftp.w && item.h >= model.PANE_MIN_SIZE.sftp.h);
+  }
+});
+
+test("closing an SFTP window discards it; other kinds keep their geometry", () => {
+  let layout = open(open(empty(), "local"), "sftp:a");
+  layout = paneReducer(layout, { type: "close", id: "sftp:a" });
+  assert.equal(win(layout, "sftp:a"), undefined);
+  assert.equal(layout.activeId, "local");
+  layout = paneReducer(layout, { type: "close", id: "local" });
+  assert.equal(win(layout, "local").open, false);
+});
+
+test("closeUnavailable drops SFTP windows whose SSH entry was removed", () => {
+  let layout = open(open(open(empty(), "local"), "sftp:a"), "sftp:b");
+  layout = paneReducer(layout, { type: "closeUnavailable", available: ["local", "sftp:a"] });
+  assert.ok(win(layout, "sftp:a"));
+  assert.equal(win(layout, "sftp:b"), undefined);
+});
+
+test("SFTP windows are never persisted or restored", () => {
+  const layout = open(open(open(empty(), "local"), "remote"), "sftp:a");
+  const stored = JSON.parse(model.serializeLayout(layout));
+  assert.deepEqual(stored.windows.map((item) => item.id).sort(), ["local", "remote"]);
+  const withSftp = { version: 1, windows: [...stored.windows, { id: "sftp:a", x: 0, y: 0, w: 500, h: 400, z: 99, open: true }] };
+  const restored = model.normalizeStoredLayout(withSftp);
+  assert.deepEqual(restored.windows.map((item) => item.id).sort(), ["local", "remote"]);
+  assert.notEqual(restored.activeId, "sftp:a");
+});

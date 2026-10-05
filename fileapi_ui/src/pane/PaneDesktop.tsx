@@ -3,8 +3,8 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PaneDock, type PaneLocationChoice } from "./PaneDock";
 import { PaneWindow } from "./PaneWindow";
 import { usePaneWindows } from "./usePaneWindows";
-import { PANE_WINDOW_KINDS, type PaneWindowKind } from "./pane-window-model";
-import { LocalIcon, RemoteIcon, RestIcon, TerminalIcon, VncIcon } from "./pane-icons";
+import { PANE_SINGLETON_KINDS, kindOf, sftpWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
+import { LocalIcon, RemoteIcon, RestIcon, SftpIcon, TerminalIcon, VncIcon } from "./pane-icons";
 import { loadWallpaper, useWallpaper, wallpaperCssVariables } from "./pane-wallpaper-store";
 import {
   closeAllSshPopups,
@@ -17,29 +17,31 @@ import {
   subscribeSshPopups,
 } from "./ssh-popup-registry";
 
-/** Marks the content of one window; PaneDesktop places it inside that window's frame. */
-export function PaneBody({ children }: { kind: PaneWindowKind; children: React.ReactNode }) {
+/** Marks the content of one window (by window id); PaneDesktop places it inside that window's frame. */
+export function PaneBody({ children }: { id: PaneWindowId; children: React.ReactNode }) {
   return <>{children}</>;
 }
 
 type Props = {
   restEnabled: boolean;
   vncEnabled: boolean;
-  /** One <PaneBody kind=...> child per window. The elements keep their identity while a window is dragged, so dragging never re-renders their contents. */
+  /** One <PaneBody id=...> child per window. The elements keep their identity while a window is dragged, so dragging never re-renders their contents. */
   children: React.ReactNode;
-  titles: Record<PaneWindowKind, string>;
-  subtitles: Partial<Record<PaneWindowKind, string>>;
+  /** Window titles / subtitles by window id (`local`, `remote`, ..., `sftp:<entryId>`). */
+  titles: Record<string, string>;
+  subtitles: Partial<Record<string, string>>;
   remoteChoices: PaneLocationChoice[];
   sftpChoices: PaneLocationChoice[];
+  /** SSH entries that still exist; an open SFTP window whose entry is gone is dropped. */
+  sftpEntryIds: readonly string[];
   busy: boolean;
   /** Pills in the top-right corner (queue, account, ...). */
   topRight: React.ReactNode;
   onSelectRemote: (locationId: string) => void;
-  onSelectSftp: (entryId: string) => void;
   /** Receives the "open this window" function so the app can open windows (e.g. from the Workspace Manager). */
-  openRef: React.MutableRefObject<(kind: PaneWindowKind) => void>;
+  openRef: React.MutableRefObject<(id: PaneWindowId) => void>;
   /** Called when the set of open windows or the focused window changes. */
-  onWindowState: (openKinds: PaneWindowKind[], activeId: PaneWindowKind | null) => void;
+  onWindowState: (openIds: PaneWindowId[], activeId: PaneWindowId | null) => void;
   /** Resolves true when the user agrees to close the app although SSH windows hold unsaved recordings. */
   confirmDiscardRecordings: () => Promise<boolean>;
 };
@@ -50,6 +52,7 @@ const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
   vnc: <VncIcon size={16} />,
   rest: <RestIcon size={16} />,
   terminal: <TerminalIcon size={16} />,
+  sftp: <SftpIcon size={16} />,
 };
 
 const KEEP_MOUNTED: Partial<Record<PaneWindowKind, boolean>> = { terminal: true };
@@ -66,16 +69,19 @@ function Wallpaper() {
 }
 
 export function PaneDesktop({
-  restEnabled, vncEnabled, openRef, children, titles, subtitles, remoteChoices, sftpChoices, busy, topRight,
-  onSelectRemote, onSelectSftp, onWindowState, confirmDiscardRecordings,
+  restEnabled, vncEnabled, openRef, children, titles, subtitles, remoteChoices, sftpChoices, sftpEntryIds, busy, topRight,
+  onSelectRemote, onWindowState, confirmDiscardRecordings,
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const [layer, setLayer] = useState({ w: 0, h: 0 });
-  const available: PaneWindowKind[] = PANE_WINDOW_KINDS.filter((kind) => (kind === "vnc" ? vncEnabled : kind === "rest" ? restEnabled : true));
+  const available: PaneWindowId[] = [
+    ...PANE_SINGLETON_KINDS.filter((kind) => (kind === "vnc" ? vncEnabled : kind === "rest" ? restEnabled : true)),
+    ...sftpEntryIds.map(sftpWindowId),
+  ];
   const { layout, open, focus, minimize, toggleMaximize, close, setRect } = usePaneWindows(available, layer);
-  const bodies: Partial<Record<PaneWindowKind, React.ReactNode>> = {};
+  const bodies: Partial<Record<string, React.ReactNode>> = {};
   React.Children.forEach(children, (child) => {
-    if (React.isValidElement<{ kind: PaneWindowKind; children: React.ReactNode }>(child)) bodies[child.props.kind] = child.props.children;
+    if (React.isValidElement<{ id: PaneWindowId; children: React.ReactNode }>(child)) bodies[child.props.id] = child.props.children;
   });
   const popups = useSyncExternalStore(subscribeSshPopups, getSshPopupSnapshot, getSshPopupSnapshot);
 
@@ -105,10 +111,10 @@ export function PaneDesktop({
     }
   }, [layer.w, layer.h, layout.windows.length, open]);
 
-  const openKinds = layout.windows.filter((win) => win.open).map((win) => win.id);
-  const openKey = openKinds.join(",");
+  const openIds = layout.windows.filter((win) => win.open).map((win) => win.id);
+  const openKey = openIds.join(",");
   useEffect(() => {
-    onWindowState(openKinds, layout.activeId);
+    onWindowState(openIds, layout.activeId);
   }, [openKey, layout.activeId]);
 
   // Native SSH popup windows: track, reconcile, and report their state.
@@ -142,11 +148,11 @@ export function PaneDesktop({
     return () => { void unlisten.then((dispose) => dispose()); };
   }, []);
 
-  const activate = useCallback((kind: PaneWindowKind) => {
-    const win = layout.windows.find((item) => item.id === kind);
+  const activate = useCallback((id: PaneWindowId) => {
+    const win = layout.windows.find((item) => item.id === id);
     // Taskbar semantics: clicking the focused window minimizes it, anything else brings it forward.
-    if (win && win.open && !win.minimized && layout.activeId === kind) minimize(kind);
-    else open(kind);
+    if (win && win.open && !win.minimized && layout.activeId === id) minimize(id);
+    else open(id);
   }, [layout, minimize, open]);
 
   return (
@@ -157,26 +163,26 @@ export function PaneDesktop({
         <div className="pane-topright">{topRight}</div>
       </div>
       <div className="pane-window-layer" ref={layerRef}>
-        {PANE_WINDOW_KINDS.map((kind) => {
-          const win = layout.windows.find((item) => item.id === kind);
-          if (!win || !available.includes(kind)) return null;
+        {layout.windows.map((win) => {
+          const kind = kindOf(win.id);
+          if (!kind || !available.includes(win.id)) return null;
           return (
             <PaneWindow
-              key={kind}
+              key={win.id}
               win={win}
-              title={titles[kind]}
-              subtitle={subtitles[kind]}
+              title={titles[win.id] || win.id}
+              subtitle={subtitles[win.id]}
               icon={KIND_ICON[kind]}
-              active={layout.activeId === kind}
+              active={layout.activeId === win.id}
               layer={layer}
               keepMounted={KEEP_MOUNTED[kind]}
-              onFocus={() => focus(kind)}
-              onMinimize={() => minimize(kind)}
-              onToggleMaximize={() => toggleMaximize(kind)}
-              onClose={() => close(kind)}
-              onRect={(rect) => setRect(kind, rect)}
+              onFocus={() => focus(win.id)}
+              onMinimize={() => minimize(win.id)}
+              onToggleMaximize={() => toggleMaximize(win.id)}
+              onClose={() => close(win.id)}
+              onRect={(rect) => setRect(win.id, rect)}
             >
-              {bodies[kind]}
+              {bodies[win.id]}
             </PaneWindow>
           );
         })}
@@ -192,7 +198,7 @@ export function PaneDesktop({
         busy={busy}
         onOpenLocal={() => open("local")}
         onOpenRemote={(id) => { onSelectRemote(id); open("remote"); }}
-        onOpenSftp={(id) => { onSelectSftp(id); open("remote"); }}
+        onOpenSftp={(entryId) => open(sftpWindowId(entryId))}
         onActivate={activate}
         onCloseWindow={close}
         onFocusPopup={(label) => { void focusSshPopup(label).catch(() => undefined); }}

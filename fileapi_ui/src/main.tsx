@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { resolveResource } from "@tauri-apps/api/path";
 import {
   initialQueueProgress,
 } from "./queue/progress";
@@ -14,6 +13,12 @@ import { locationHeaders, remoteParent, groupRemoteDeletes, remoteMutationResult
 import { useRemoteApiActions } from "./features/remote-browser/useRemoteApiActions";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon, CollapseIcon, ExpandIcon, SortAscIcon, SortDescIcon, WarningIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
+import { PersistentScrollbar } from "./ui/PersistentScrollbar";
+import { CommandBarOverflowMenu } from "./ui/CommandBarOverflowMenu";
+import {
+  compareFileNames, isValidMoveTarget, normalizeColumnWidths, readPersistedColumnWidths, sortFileItems, updateTreeNode,
+  type ColumnKey, type FolderNode, type LocalDirectory, type SortDirection, type SortKey, type UndoEntry,
+} from "./features/sftp/file-list-utils";
 import "./ui/overflow-menu.css";
 // `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
 // imported inside the terminal-setup effect below instead of eagerly here:
@@ -41,7 +46,8 @@ import { AppShell } from "./app/AppShell";
 import { PaneBody, PaneDesktop } from "./pane/PaneDesktop";
 import { PaneTopRight } from "./pane/PaneTopRight";
 import { type PaneLocationChoice } from "./pane/PaneDock";
-import { type PaneWindowKind } from "./pane/pane-window-model";
+import { sftpWindowId, type PaneWindowId } from "./pane/pane-window-model";
+import { SftpWindow, type SftpDndBridge, type SftpTransferBridge } from "./features/sftp/SftpWindow";
 import { trackSshPopup } from "./pane/ssh-popup-registry";
 import { SSH_POPUP_PREFIX } from "./pane/ssh-popup-contracts";
 import { useCommandbarOverflow } from "./pane/useCommandbarOverflow";
@@ -106,34 +112,9 @@ type Session = {
 };
 type NativeApiResponse = { status: number; body: number[]; headers?: [string, string][] };
 type UploadSummary = { files: number; directories: number; totalSize: number; sources: { path: string; size: number; modified: number }[] };
-type FolderNode = {
-  path: string;
-  name: string;
-  expanded: boolean;
-  loaded: boolean;
-  children: FolderNode[];
-};
-type LocalDirectory = {
-  path: string;
-  files: FileItem[];
-};
 type LocalDirectoryChildren = {
   path: string;
   directories: { name: string; path: string }[];
-};
-type ColumnKey = "name" | "modified" | "size";
-type SortKey = ColumnKey;
-type SortDirection = "asc" | "desc";
-
-type UndoEntry = {
-  id: string;
-  description: string;
-  source: "api" | "ssh" | "local";
-  locationId?: string;
-  context?: string;
-  entryId?: string;
-  oldPath: string;
-  newPath: string;
 };
 
 type ModalDragId =
@@ -154,7 +135,7 @@ type ModalDragSession = {
   onUp: () => void;
 };
 type NamePromptRequest = { title: string; value: string };
-type ConfirmRequest = { title: string; message: string };
+type ConfirmRequest = { title: string; message: string; /** Show a single OK button: the dialog only informs. */ infoOnly?: boolean };
 
 
 
@@ -224,251 +205,6 @@ type ConfirmRequest = { title: string; message: string };
 // `item.output + data`.
 
 
-type ScrollMetrics = {
-  scrollTop: number;
-  clientHeight: number;
-  scrollHeight: number;
-};
-
-function PersistentScrollbar({
-  targetRef,
-  label,
-}: {
-  targetRef: React.RefObject<HTMLElement | null>;
-  label: string;
-}) {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const dragStart = useRef<{ pointerY: number; scrollTop: number } | null>(null);
-  const [metrics, setMetrics] = useState<ScrollMetrics>({
-    scrollTop: 0,
-    clientHeight: 0,
-    scrollHeight: 0,
-  });
-
-  useEffect(() => {
-    const target = targetRef.current;
-    if (!target) return;
-
-    const update = () =>
-      setMetrics({
-        scrollTop: target.scrollTop,
-        clientHeight: target.clientHeight,
-        scrollHeight: target.scrollHeight,
-      });
-    const resizeObserver = new ResizeObserver(update);
-    resizeObserver.observe(target);
-    resizeObserver.observe(trackRef.current || target);
-    target.addEventListener("scroll", update, { passive: true });
-    update();
-
-    return () => {
-      target.removeEventListener("scroll", update);
-      resizeObserver.disconnect();
-    };
-  }, [targetRef]);
-
-  const trackHeight = trackRef.current?.clientHeight || 0;
-  const hasOverflow = metrics.scrollHeight > metrics.clientHeight;
-  const thumbHeight = hasOverflow
-    ? Math.max(32, trackHeight * (metrics.clientHeight / metrics.scrollHeight))
-    : trackHeight;
-  const availableTravel = Math.max(0, trackHeight - thumbHeight);
-  const maxScroll = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
-  const thumbTop = maxScroll > 0
-    ? availableTravel * (metrics.scrollTop / maxScroll)
-    : 0;
-
-  const stopDragging = () => {
-    dragStart.current = null;
-    window.removeEventListener("pointermove", handlePointerMove);
-    window.removeEventListener("pointerup", stopDragging);
-  };
-  const handlePointerMove = (event: PointerEvent) => {
-    const start = dragStart.current;
-    const target = targetRef.current;
-    if (!start || !target || availableTravel <= 0) return;
-    const nextTop = Math.max(
-      0,
-      Math.min(availableTravel, thumbTop + event.clientY - start.pointerY),
-    );
-    target.scrollTop = maxScroll * (nextTop / availableTravel);
-  };
-  const startDragging = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!hasOverflow || availableTravel <= 0) return;
-    event.preventDefault();
-    dragStart.current = { pointerY: event.clientY, scrollTop: metrics.scrollTop };
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", stopDragging);
-  };
-
-  return (
-    <div
-      ref={trackRef}
-      className="persistent-scrollbar"
-      role="scrollbar"
-      aria-label={label}
-      aria-controls={label === "Folders" ? "folders" : "files"}
-      aria-orientation="vertical"
-      aria-valuemin={0}
-      aria-valuemax={maxScroll}
-      aria-valuenow={metrics.scrollTop}
-      onWheel={(event) => {
-        const target = targetRef.current;
-        if (!target) return;
-        event.preventDefault();
-        target.scrollTop += event.deltaY;
-      }}
-    >
-      <div
-        className="persistent-scrollbar-thumb"
-        style={{ height: `${thumbHeight}px`, transform: `translateY(${thumbTop}px)` }}
-        onPointerDown={startDragging}
-      />
-    </div>
-  );
-}
-
-type CommandBarOverflowAction = {
-  key: string;
-  label: string;
-  onClick: () => void;
-  disabled?: boolean;
-  title?: string;
-};
-
-// Narrow commandbars cannot show every action at full label width (see
-// styles/commandbar.css); rather than truncating every button into an
-// unreadable "…", secondary actions collapse behind this one trigger.
-// Portaled to document.body (mirrors ContextPicker) because .commandbar
-// has overflow:hidden, which would otherwise clip a normally-positioned
-// popover before it ever became visible.
-function CommandBarOverflowMenu({ label, actions }: { label: string; actions: CommandBarOverflowAction[] }) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
-
-  const closeMenu = () => {
-    setOpen(false);
-    triggerRef.current?.focus();
-  };
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const close = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node) && !(event.target as HTMLElement).closest(".commandbar-overflow-options")) setOpen(false);
-    };
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [open]);
-
-  // T-133: match ui/Dropdown.tsx's keyboard matrix -- Escape/Arrow keys/
-  // Home/End are handled by the portaled menu's own onKeyDown below, and
-  // opening focuses the first action so this menu does not depend on a
-  // mouse click to be usable.
-  useEffect(() => {
-    if (!open) return;
-    const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not(:disabled)") || []);
-    buttons[0]?.focus();
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    const reposition = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const width = Math.max(190, rect.width);
-      const maxHeight = Math.min(420, Math.max(140, window.innerHeight - 24));
-      const gap = 6;
-      const belowTop = rect.bottom + gap;
-      const aboveTop = rect.top - gap - maxHeight;
-      const top = belowTop + maxHeight <= window.innerHeight - 12
-        ? belowTop
-        : aboveTop >= 12
-          ? aboveTop
-          : Math.max(12, Math.min(belowTop, window.innerHeight - maxHeight - 12));
-      const left = Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12));
-      setPopoverStyle({ top, left, width, maxHeight, visibility: "visible" });
-    };
-    reposition();
-    window.addEventListener("resize", reposition);
-    window.addEventListener("scroll", reposition, true);
-    return () => {
-      window.removeEventListener("resize", reposition);
-      window.removeEventListener("scroll", reposition, true);
-    };
-  }, [open]);
-
-  return (
-    <div ref={rootRef} className={`mobile-choice-menu commandbar-overflow${open ? " open" : ""}`}>
-      <button
-        ref={triggerRef}
-        type="button"
-        className="mobile-choice-trigger commandbar-overflow-trigger"
-        aria-label={label}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            setOpen(true);
-          }
-        }}
-        onClick={(event) => {
-          event.stopPropagation();
-          setOpen((value) => !value);
-        }}
-      >
-        <span>{label}</span>
-        <span aria-hidden="true">{open ? <ChevronLeftIcon /> : <ChevronRightIcon />}</span>
-      </button>
-      {open && createPortal(
-        <div
-          ref={menuRef}
-          className="mobile-choice-options commandbar-overflow-options"
-          style={popoverStyle}
-          role="menu"
-          aria-label={label}
-          onKeyDown={(event) => {
-            const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]:not(:disabled)") || []);
-            const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
-            if (event.key === "Escape") {
-              event.preventDefault();
-              closeMenu();
-            } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-              event.preventDefault();
-              const nextIndex = event.key === "ArrowDown"
-                ? Math.min(currentIndex + 1, buttons.length - 1)
-                : Math.max(currentIndex - 1, 0);
-              buttons[nextIndex]?.focus();
-            } else if (event.key === "Home" || event.key === "End") {
-              event.preventDefault();
-              buttons[event.key === "Home" ? 0 : buttons.length - 1]?.focus();
-            }
-          }}
-        >
-          {actions.map((action) => (
-            <button
-              key={action.key}
-              type="button"
-              role="menuitem"
-              disabled={action.disabled}
-              title={action.title}
-              onClick={() => {
-                action.onClick();
-                closeMenu();
-              }}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>,
-        document.body,
-      )}
-    </div>
-  );
-}
 
 const defaultHost = import.meta.env.VITE_DEFAULT_SERVER_HOST || "";
 const defaultPort = import.meta.env.VITE_DEFAULT_SERVER_PORT || "9443";
@@ -490,47 +226,6 @@ const initialSession: Session = {
 };
 const apiCredentialEntryId = (session: Session) => `api-login:https://${session.host.trim().toLowerCase()}:${Number(session.port) || session.port.trim()}:${encodeURIComponent(session.username)}`;
 
-// T-210: reads the raw persisted file-table column widths with the same
-// per-field fallback defaults as before, but WITHOUT normalizing them --
-// normalizeColumnWidths (below) is applied separately by every caller so a
-// corrupt or drifted persisted value (see its own comment) can never reach
-// the <col> widths unnormalized.
-const readPersistedColumnWidths = (): Record<ColumnKey, number> => {
-  try {
-    const saved = JSON.parse(localStorage.getItem("fileapi-column-widths") || "{}");
-    return {
-      name: Number(saved.name) || 50,
-      modified: Number(saved.modified) || 30,
-      size: Number(saved.size) || 20,
-    };
-  } catch {
-    return { name: 50, modified: 30, size: 20 };
-  }
-};
-// T-210: the file table renders each column's width as a literal percent
-// (main.tsx's <col style={{ width: `${columnWidths.x}%` }} />), with no
-// runtime guarantee the three persisted percentages actually sum to 100 --
-// e.g. a manually edited localStorage value, or a future bug in the
-// column-resize drag handler, could persist widths that sum to well over
-// or under 100%, which would either overflow the table horizontally or
-// leave a visibly too-narrow/wide column. This proportionally rescales
-// whatever was read so the three columns always sum to exactly 100 before
-// they're ever used to size a <col>, regardless of what was persisted.
-const normalizeColumnWidths = (widths: Record<ColumnKey, number>): Record<ColumnKey, number> => {
-  const sanitized = {
-    name: Number.isFinite(widths.name) && widths.name > 0 ? widths.name : 50,
-    modified: Number.isFinite(widths.modified) && widths.modified > 0 ? widths.modified : 30,
-    size: Number.isFinite(widths.size) && widths.size > 0 ? widths.size : 20,
-  };
-  const total = sanitized.name + sanitized.modified + sanitized.size;
-  if (!Number.isFinite(total) || total <= 0) return { name: 50, modified: 30, size: 20 };
-  const scale = 100 / total;
-  return {
-    name: sanitized.name * scale,
-    modified: sanitized.modified * scale,
-    size: sanitized.size * scale,
-  };
-};
 const readError = async (response: {
   status: number;
   text: () => Promise<string>;
@@ -553,51 +248,6 @@ const parentPath = (path: string) =>
   path.split("/").filter(Boolean).slice(0, -1).join("/");
 const joinLocalPath = (directory: string, name: string) =>
   directory ? `${directory.replace(/\/+$/, "")}/${name}` : name;
-const sshParentPath = (path: string) => {
-  const segments = path.split("/").filter(Boolean);
-  return segments.length > 1 ? `/${segments.slice(0, -1).join("/")}` : "/";
-};
-const joinSshPath = (directory: string, name: string) =>
-  directory === "/" ? `/${name}` : `${directory.replace(/\/+$/, "")}/${name}`;
-const fileTimestamp = (value: number | string | undefined) => {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const numeric = Number(value);
-    if (Number.isFinite(numeric)) return numeric;
-    const parsed = Date.parse(value);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return 0;
-};
-const compareFileNames = (left: string, right: string) =>
-  left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
-const compareFileItems = (
-  left: FileItem,
-  right: FileItem,
-  sortKey: SortKey,
-  direction: SortDirection,
-  directoriesFirst = false,
-) => {
-  if (directoriesFirst && left.isDirectory !== right.isDirectory) {
-    return left.isDirectory ? -1 : 1;
-  }
-  let result = sortKey === "modified"
-    ? fileTimestamp(left.modified) - fileTimestamp(right.modified)
-    : sortKey === "size"
-      ? left.size - right.size
-      : compareFileNames(left.name, right.name);
-  if (result === 0) {
-    result = compareFileNames(left.name, right.name) || left.path.localeCompare(right.path);
-  }
-  return direction === "desc" ? -result : result;
-};
-const sortFileItems = (
-  items: FileItem[],
-  sortKey: SortKey,
-  direction: SortDirection,
-  directoriesFirst = false,
-) => [...items].sort((left, right) =>
-  compareFileItems(left, right, sortKey, direction, directoriesFirst));
 const sanitizeArchiveName = (value: string) => {
   const cleaned = value
     .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
@@ -918,7 +568,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
   const [path, setPath] = useState("");
-  const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const {
     shareUrl, setShareUrl,
@@ -963,6 +612,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     confirmPromptResolver.current = resolve;
     setConfirmPrompt({ title, message });
   });
+  // An information dialog with a single OK button (no choice to make).
+  const requestInfo = (message: string, title: string) => new Promise<boolean>((resolve) => {
+    confirmPromptResolver.current = resolve;
+    setConfirmPrompt({ title, message, infoOnly: true });
+  });
   const finishConfirmation = (value: boolean) => {
     const resolve = confirmPromptResolver.current;
     confirmPromptResolver.current = null;
@@ -998,7 +652,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const treeGeneration = useRef(0);
   const treeRequests = useRef(new Map<string, number>());
   const remoteMounted = useRef(true);
-  const remoteIdentity = JSON.stringify([serverUrl(session), session.nativeSessionId, session.userId, session.locationId, session.locationRevision, remoteSshEntryId]);
+  const remoteIdentity = JSON.stringify([serverUrl(session), session.nativeSessionId, session.userId, session.locationId, session.locationRevision]);
   const currentRemote = useRef({ identity: remoteIdentity, path });
   currentRemote.current = { identity: remoteIdentity, path };
   const isRemoteCurrent = () => remoteMounted.current && currentRemote.current.identity === remoteIdentity;
@@ -1013,15 +667,21 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     localStorage.getItem("local-file-view-mode") === "grid" ? "grid" : "details",
   );
   // Pane desktop: which windows are open / focused (reported by PaneDesktop).
-  // The Local and Remote windows are two independent panes of the Location
-  // browser; the focused one decides what the toolbar and menus act on.
-  const [paneOpenKinds, setPaneOpenKinds] = useState<PaneWindowKind[]>([]);
-  const [paneActiveKind, setPaneActiveKind] = useState<PaneWindowKind | null>(null);
-  const paneOpenWindowRef = useRef<(kind: PaneWindowKind) => void>(() => undefined);
-  const localWindowOpen = paneOpenKinds.includes("local");
-  const handlePaneWindowState = useCallback((kinds: PaneWindowKind[], active: PaneWindowKind | null) => {
-    setPaneOpenKinds(kinds);
-    setPaneActiveKind(active);
+  // The Local and API Remote windows are two independent panes of the Location
+  // browser; the focused one decides what the toolbar and menus act on. Every
+  // SFTP window (id `sftp:<entryId>`) is self-contained.
+  const [paneOpenIds, setPaneOpenIds] = useState<PaneWindowId[]>([]);
+  const [paneActiveId, setPaneActiveId] = useState<PaneWindowId | null>(null);
+  const paneOpenWindowRef = useRef<(id: PaneWindowId) => void>(() => undefined);
+  const localWindowOpen = paneOpenIds.includes("local");
+  const handlePaneWindowState = useCallback((ids: PaneWindowId[], active: PaneWindowId | null) => {
+    setPaneOpenIds(ids);
+    setPaneActiveId(active);
+  }, []);
+  // Current folder of each open SFTP window, shown in its title bar.
+  const [sftpPaths, setSftpPaths] = useState<Record<string, string>>({});
+  const handleSftpPathChange = useCallback((entryId: string, nextPath: string) => {
+    setSftpPaths((current) => (current[entryId] === nextPath ? current : { ...current, [entryId]: nextPath }));
   }, []);
   const {
     managedSessions, setManagedSessions,
@@ -1109,10 +769,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const viewerGeneration = useRef(0);
   const viewerContextRef = useRef("");
   const closeViewer = () => { viewerGeneration.current++; setViewerOpen(false); };
-  const dragPreparationRef = useRef(new Map<string, Promise<string>>());
   const dragExpandTimerRef = useRef<number | undefined>(undefined);
   const dragScrollIntervalRef = useRef<number | null>(null);
-  const dragIconPathRef = useRef<Promise<string> | null>(null);
 
   const [pendingRemotePath, setPendingRemotePath] = useState<string | null>(null);
   const [folderTree, setFolderTree] = useState<FolderNode>({
@@ -1124,6 +782,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   });
   const [dragItems, setDragItems] = useState<FileItem[]>([]);
   const [dragSource, setDragSource] = useState<"local" | "remote" | "">("");
+  // The SSH entry of the SFTP window a "remote" drag started in ("" while the
+  // drag comes from the API Remote window, or when nothing is being dragged).
+  const [dragEntryId, setDragEntryId] = useState("");
   // Which pane the toolbar (New folder/Rename/Delete/View/Select all) acts
   // on when Split mode shows both LOCAL and REMOTE at once. Without this,
   // the toolbar always silently acted on REMOTE even while the user was
@@ -1179,6 +840,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const localFileListRef = useRef<HTMLDivElement>(null);
   const dragItemsRef = useRef<FileItem[]>([]);
   const dragSourceRef = useRef<"local" | "remote" | "">("");
+  const dragEntryRef = useRef("");
   const dragContextRef = useRef("");
   const noticeTimer = useRef<number | undefined>();
 
@@ -1731,52 +1393,31 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // (token refresh) -- see useRemoteApiActions.ts for why.
   const {
     activeLocation, hasCapability, locationOnline,
-    loadLocations, findSshProfileById, ensureApiRemote, connectedSshBrowseOptions,
+    loadLocations, findSshProfileById,
   } = useRemoteApiActions({
-    api, readError, session, setSession, remoteSshEntryId,
-    managedSessions, sshTabs, locations, setLocations, setLocationsLoading,
+    api, readError, session, setSession,
+    managedSessions, locations, setLocations, setLocationsLoading,
     locationsLoadedRef: locationsLoaded, locationRefreshInProgressRef: locationRefreshInProgress,
     sessionIdentity: JSON.stringify([serverUrl(session), session.nativeSessionId, session.userId]),
     onLocationInvalidated: () => {
-      setUndoStack((current) => current.filter((entry) => entry.source !== "api"));
-      if (remoteSshEntryId) return;
+      // SFTP undo entries belong to their own windows and survive an API Location change.
+      setUndoStack((current) => current.filter((entry) => entry.source === "ssh"));
       remoteGeneration.current++;
       treeGeneration.current++;
       setFiles([]); setSelected([]); setSearch(""); setSearching(false); setPath("");
-      setUndoStack([]); closeViewer(); setSharePasswordOpen(false); setShareUrl("");
-      dragPreparationRef.current.clear();
+      closeViewer(); setSharePasswordOpen(false); setShareUrl("");
       setFolderTree({ path: "", name: "/", expanded: true, loaded: false, children: [] });
     },
   });
 
-  const loadFiles = async (nextPath = path, sshEntryOverride: string | null = null) => {
-    if (sshEntryOverride === null && !isViewCurrent()) return;
+  const loadFiles = async (nextPath = path) => {
+    if (!isViewCurrent()) return;
     const generation = ++remoteGeneration.current;
-    const sshEntryId = sshEntryOverride !== null ? sshEntryOverride : remoteSshEntryId;
-    const expectedIdentity = JSON.stringify([serverUrl(session), session.nativeSessionId, session.userId, session.locationId, session.locationRevision, sshEntryId]);
-    const isCurrent = () => remoteMounted.current && generation === remoteGeneration.current && currentRemote.current.identity === expectedIdentity;
+    const isCurrent = () => remoteMounted.current && generation === remoteGeneration.current && currentRemote.current.identity === remoteIdentity;
     const operationId = crypto.randomUUID();
     const started = performance.now();
-    const operation = sshEntryId ? "ssh_browse" : "api_browse";
-    const source = sshEntryId ? `SSH: ${sshEntryId}` : "API Remote";
-    writeOperationLog(operation, "started", source, nextPath, JSON.stringify({ operationId, path: nextPath, sshEntryId, locationId: session.locationId }), "DEBUG");
+    writeOperationLog("api_browse", "started", "API Remote", nextPath, JSON.stringify({ operationId, path: nextPath, locationId: session.locationId }), "DEBUG");
     try {
-      if (sshEntryId) {
-        const profile = findSshProfileById(sshEntryId);
-        if (!profile) {
-          setRemoteSshEntryId("");
-          throw new Error("The SSH connection for this remote view is no longer available.");
-        }
-        const data = await invoke<LocalDirectory>("ssh_list_directory", { profile, path: nextPath });
-        if (!isCurrent()) return;
-        setFiles(data.files || []);
-        setPath(data.path || "");
-        setSearching(false);
-        selectionAnchorRef.current = null;
-        setSelected([]);
-        writeOperationLog(operation, "completed", source, data.path || nextPath, JSON.stringify({ operationId, path: data.path || nextPath, fileCount: data.files?.length || 0, durationMs: Math.round(performance.now() - started), sshEntryId }), "INFO");
-        return;
-      }
       const response = await api(
         `/api/files?path=${encodeURIComponent(nextPath)}&sort=${remoteSortKey}&order=${remoteSortDirection}&directoriesFirst=${remoteDirectoriesFirst}`,
       );
@@ -1789,10 +1430,10 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       setSearching(false);
       selectionAnchorRef.current = null;
       setSelected([]);
-      writeOperationLog(operation, "completed", source, data.currentPath || nextPath, JSON.stringify({ operationId, path: data.currentPath || nextPath, fileCount: files.length, durationMs: Math.round(performance.now() - started), locationId: session.locationId, httpStatus: response.status }), "INFO");
+      writeOperationLog("api_browse", "completed", "API Remote", data.currentPath || nextPath, JSON.stringify({ operationId, path: data.currentPath || nextPath, fileCount: files.length, durationMs: Math.round(performance.now() - started), locationId: session.locationId, httpStatus: response.status }), "INFO");
     } catch (error) {
       if (!isCurrent()) return;
-      writeOperationLog(operation, "failed", source, nextPath, JSON.stringify({ operationId, path: nextPath, durationMs: Math.round(performance.now() - started), failureType: "browse", errorMessage: describeError(error), locationId: session.locationId, sshEntryId }), "ERROR");
+      writeOperationLog("api_browse", "failed", "API Remote", nextPath, JSON.stringify({ operationId, path: nextPath, durationMs: Math.round(performance.now() - started), failureType: "browse", errorMessage: describeError(error), locationId: session.locationId }), "ERROR");
       throw error;
     }
   };
@@ -1800,10 +1441,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const refreshRemoteFiles = async () => {
     const refreshPath = path;
     const recoveryCountBefore = remoteRecoveryCountRef.current;
-    if (remoteSshEntryId) {
-      await Promise.all([loadLocations(), loadFiles(refreshPath)]);
-      return;
-    }
 
     const cacheResponse = await api("/api/files/refresh-cache", {
       method: "POST",
@@ -1932,43 +1569,20 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     );
   };
 
-  const updateTreeNode = (
-    node: FolderNode,
-    targetPath: string,
-    update: (node: FolderNode) => FolderNode,
-  ): FolderNode =>
-    node.path === targetPath
-      ? update(node)
-      : {
-          ...node,
-          children: node.children.map((child) =>
-            updateTreeNode(child, targetPath, update),
-          ),
-        };
 
-  const loadTreeChildren = async (treePath: string, force = false, sshEntryOverride: string | null = null) => {
-    if (sshEntryOverride === null && !isRemoteCurrent()) return;
+  const loadTreeChildren = async (treePath: string, force = false) => {
+    if (!isRemoteCurrent()) return;
     const generation = treeGeneration.current;
     const request = (treeRequests.current.get(treePath) || 0) + 1;
     treeRequests.current.set(treePath, request);
-    const sshEntryId = sshEntryOverride !== null ? sshEntryOverride : remoteSshEntryId;
-    const expectedIdentity = JSON.stringify([serverUrl(session), session.nativeSessionId, session.userId, session.locationId, session.locationRevision, sshEntryId]);
-    const isCurrent = () => remoteMounted.current && generation === treeGeneration.current && treeRequests.current.get(treePath) === request && currentRemote.current.identity === expectedIdentity;
+    const isCurrent = () => remoteMounted.current && generation === treeGeneration.current && treeRequests.current.get(treePath) === request && currentRemote.current.identity === remoteIdentity;
     try {
-      let childFiles: FileItem[];
-      if (sshEntryId) {
-        const profile = findSshProfileById(sshEntryId);
-        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        const data = await invoke<LocalDirectory>("ssh_list_directory", { profile, path: treePath });
-        childFiles = data.files || [];
-      } else {
-        const response = await api(
-          `/api/files?path=${encodeURIComponent(treePath)}&sort=name&order=asc`,
-        );
-        if (!response.ok) throw new Error(await readError(response));
-        const data = await response.json();
-        childFiles = data.files || [];
-      }
+      const response = await api(
+        `/api/files?path=${encodeURIComponent(treePath)}&sort=name&order=asc`,
+      );
+      if (!response.ok) throw new Error(await readError(response));
+      const data = await response.json();
+      const childFiles: FileItem[] = data.files || [];
       if (!isCurrent()) return;
       const children = childFiles
         .filter((file: FileItem) => file.isDirectory)
@@ -2142,7 +1756,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   }, [session.token]);
 
   useEffect(() => {
-    if (session.token && session.locationId && !remoteSshEntryId) {
+    if (session.token && session.locationId) {
       const nextPath = pendingRemotePath ?? "";
       if (pendingRemotePath !== null) setPendingRemotePath(null);
       void loadFiles(nextPath).catch((error) => setNotice(error.message));
@@ -2153,9 +1767,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const selectLocation = (locationId: string) => {
     remoteGeneration.current++; treeGeneration.current++;
     setFiles([]); closeViewer(); setSharePasswordOpen(false); setShareUrl("");
-    dragPreparationRef.current.clear();
     writeOperationLog("location", "selected", session.locationId || "none", locationId || "none", "Location selected.", "INFO");
-    setRemoteSshEntryId("");
     setPath("");
     setSelected([]);
     setSearch("");
@@ -2171,35 +1783,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     if (locationId === session.locationId) {
       // The Location effect does not run when its identifier is unchanged.
       void run(async () => {
-        await Promise.all([loadFiles("", ""), loadTreeChildren("", true, "")]);
+        await Promise.all([loadFiles(""), loadTreeChildren("", true)]);
       });
       return;
     }
     setSession((current) => ({ ...current, locationId, locationRevision: locations.find((location) => location.id === locationId)?.revision }));
-  };
-
-  const selectSshBrowse = (entryId: string) => {
-    if (entryId === remoteSshEntryId) return;
-    remoteGeneration.current++; treeGeneration.current++;
-    setFiles([]); closeViewer(); setSharePasswordOpen(false); setShareUrl("");
-    dragPreparationRef.current.clear();
-    writeOperationLog("ssh_browse", "selected", remoteSshEntryId || "none", entryId, "SSH browse entry selected.", "INFO");
-    setRemoteSshEntryId(entryId);
-    setPath("/");
-    setSelected([]);
-    setSearch("");
-    setSearching(false);
-    setPathBeforeSearch("");
-    setFolderTree({
-      path: "/",
-      name: "/",
-      expanded: true,
-      loaded: false,
-      children: [],
-    });
-    void run(async () => {
-      await Promise.all([loadFiles("/", entryId), loadTreeChildren("/", true, entryId)]);
-    });
   };
 
   const run = async (action: () => Promise<void>) => {
@@ -2604,11 +2192,22 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const localSelectedItems = localFiles.filter((file) => localSelected.includes(file.path));
   const activeTransferQueue = selectActiveQueueItems(transferQueue);
   const transferHistory = selectQueueHistory(transferQueue);
+  // Undo entries the toolbars of the Local / API Remote windows act on; SFTP
+  // entries ("ssh") belong to their SFTP window.
+  const ownUndoStack = undoStack.filter((entry) => entry.source !== "ssh");
   // Whether the REMOTE file list should show an in-list "../" entry to go up
   // one level, mirroring LOCAL's own in-list ".." row instead of a separate
-  // toolbar button. Root differs by source: SSH browsing is always
-  // absolute-path-rooted at "/", while API-backed Locations use "" as root.
-  const showRemoteUp = remoteSshEntryId ? path !== "/" : Boolean(path);
+  // toolbar button. API-backed Locations use "" as their root.
+  const showRemoteUp = Boolean(path);
+
+  // Each open SFTP window registers a refresh callback here so the transfer
+  // queue can reload the folder an upload just finished writing to.
+  const sftpRefreshRef = useRef(new Map<string, (folder: string) => void>());
+  const registerSftpRefresh = useCallback((entryId: string, refresh: ((folder: string) => void) | null) => {
+    if (refresh) sftpRefreshRef.current.set(entryId, refresh);
+    else sftpRefreshRef.current.delete(entryId);
+  }, []);
+  const refreshSftpWindow = (entryId: string, folder: string) => sftpRefreshRef.current.get(entryId)?.(folder);
 
   const {
     updateQueueItem,
@@ -2631,7 +2230,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     runQueuedSshDownload,
     retryDesktopQueueItem,
     renderDesktopQueueItem,
-    queueDragPreparation,
     enqueueQueueDownload,
     enqueueDownload,
     enqueueSshDownload,
@@ -2644,7 +2242,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     path, localPath, loadFiles,
     activeLocationDisplayName: activeLocation?.displayName,
     activeManagedWorkspaceName: activeManagedWorkspace?.name,
-    findSshProfileById, remoteSshEntryId, selectedItems,
+    findSshProfileById, refreshSftpWindow, selectedItems,
     transferQueue, setTransferQueue, queueStoreRef,
     setQueueOpen, setArchiveFormatOpen, setArchiveFormatDraft,
     queueProgressSamplesRef, latestQueueProgressRef, queueCompletionHandlersRef,
@@ -2800,7 +2398,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     };
   }, []);
 
-  const canSearchRemote = Boolean(session.token && session.locationId && !remoteSshEntryId);
+  const canSearchRemote = Boolean(session.token && session.locationId);
 
   const searchFiles = () => {
     if (!canSearchRemote) return;
@@ -2857,31 +2455,23 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     </div>
   );
 
-  const isValidMoveTarget = (items: FileItem[], destination: string) =>
-    items.length > 0 &&
-    items.every((item) => {
-      const source = item.path;
-      const sourceFolder = source.split("/").slice(0, -1).join("/");
-      return (
-        destination !== sourceFolder &&
-        (!item.isDirectory ||
-          (destination !== source && !destination.startsWith(`${source}/`)))
-      );
-    });
 
+  // An SFTP-origin drag may also be released on the API Remote window: it is
+  // accepted for dragover so the drop can explain that SFTP <-> API transfers
+  // need a manual download + upload (see moveItems).
   const canDropOnRemote = (destination: string) =>
     dragSource === "local"
-      ? Boolean(dragItems.length && (remoteSshEntryId ? true : session.locationId))
-      : dragSource === "remote" && isValidMoveTarget(dragItems, destination);
+      ? Boolean(dragItems.length && session.locationId)
+      : dragSource === "remote" && (dragEntryId !== "" || isValidMoveTarget(dragItems, destination));
 
-  // Whether the current REMOTE view (SSH or API) allows dragging its items
-  // out to LOCAL. SSH always can (SFTP download); an API Remote can only if
+  // Whether the current drag may be released on LOCAL. A drag that started in
+  // an SFTP window can always be downloaded (SFTP); an API Remote drag only if
   // it's online and the active Location grants read access.
-  const canDragRemoteToLocal = Boolean(remoteSshEntryId) || (locationOnline && hasCapability("read"));
-  // Mirror of the above for the opposite direction (LOCAL -> REMOTE
+  const canDragRemoteToLocal = dragEntryId !== "" || (locationOnline && hasCapability("read"));
+  // Mirror of the above for the opposite direction (LOCAL -> API REMOTE
   // upload), used to gate drag-over/drop-target feedback consistently with
   // `canDropOnRemote`'s own "local" branch.
-  const canDragLocalToRemote = Boolean(remoteSshEntryId) || Boolean(session.locationId);
+  const canDragLocalToRemote = Boolean(session.locationId);
 
   // Undo history is intentionally limited to operations that can be reliably
   // and verifiably reversed: rename and move (a move is just a rename that
@@ -2911,22 +2501,17 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   const undoLastOperation = () =>
     run(async () => {
-      const entry = undoStack[undoStack.length - 1];
+      // SFTP operations are undone from the window they happened in.
+      const entry = ownUndoStack[ownUndoStack.length - 1];
       if (!entry) return;
-      const sourceLabel =
-        entry.source === "ssh" ? `SSH: ${entry.newPath}`
-        : entry.source === "local" ? `LOCAL: ~/${entry.newPath}`
+      const sourceLabel = entry.source === "local"
+        ? `LOCAL: ~/${entry.newPath}`
         : `${activeLocation?.displayName || entry.locationId || "Remote"}:${entry.newPath}`;
-      const destinationLabel =
-        entry.source === "ssh" ? `SSH: ${entry.oldPath}`
-        : entry.source === "local" ? `LOCAL: ~/${entry.oldPath}`
+      const destinationLabel = entry.source === "local"
+        ? `LOCAL: ~/${entry.oldPath}`
         : `${activeLocation?.displayName || entry.locationId || "Remote"}:${entry.oldPath}`;
       try {
-        if (entry.source === "ssh") {
-          const profile = entry.entryId ? findSshProfileById(entry.entryId) : undefined;
-          if (!profile) throw new Error("The SSH connection for this undo entry is no longer available.");
-          await invoke("ssh_rename_path", { profile, oldPath: entry.newPath, newPath: entry.oldPath });
-        } else if (entry.source === "local") {
+        if (entry.source === "local") {
           await invoke("local_rename_path", { oldPath: entry.newPath, newPath: entry.oldPath });
           await loadLocalFiles(localPath);
         } else {
@@ -2949,14 +2534,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         }
         setUndoStack((current) => current.filter((item) => item.id !== entry.id));
         // Only refresh the REMOTE listing for entries that actually
-        // happened on REMOTE (ssh/api) -- the "local" branch above already
+        // happened on the API REMOTE -- the "local" branch above already
         // refreshed LOCAL itself via loadLocalFiles(). Calling loadFiles()
         // unconditionally here used to throw ("builder error: empty host")
         // whenever there was no active API-Remote session, which made a
         // LOCAL undo that had *already succeeded* get logged and reported
         // as "failed" purely because of this unrelated, unnecessary REMOTE
         // refresh.
-        if (entry.source !== "local") await loadFiles(path);
+        if (entry.source === "api") await loadFiles(path);
         writeOperationLog("undo", "completed", sourceLabel, destinationLabel, `Undone: ${entry.description}`);
         notify(`Undone: ${entry.description}`);
       } catch (error) {
@@ -2968,6 +2553,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   const moveItems = (items: FileItem[], destination: string, source = dragSourceRef.current) =>
     run(async () => {
+      if (source === "remote" && dragEntryRef.current) {
+        // Dragged out of an SFTP window onto the API Remote window: not supported.
+        showCrossWindowDragNotice();
+        return;
+      }
       if (source === "remote" && dragContextRef.current !== remoteIdentity) throw new Error("The dragged files belong to a previous remote view. Select them again.");
       writeOperationLog("drag", "dropped", source === "local" ? "LOCAL" : "REMOTE", destination, JSON.stringify({ itemCount: items.length, sourceType: source === "local" ? "LOCAL" : "REMOTE", destinationType: source === "local" ? "REMOTE" : "LOCAL" }), "INFO");
       if (source === "local") {
@@ -2979,28 +2569,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           "Choose a folder other than the current folder or a folder inside a selected folder.",
         );
       const sourceLabel = `${items.length} item${items.length === 1 ? "" : "s"}`;
-      if (remoteSshEntryId) {
-        const profile = findSshProfileById(remoteSshEntryId);
-        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        const destinationLabel = `SSH: ${profile.name}:${destination}`;
-        try {
-          for (const item of items) {
-            const newPath = joinSshPath(destination, item.name);
-            const finalPath = await invoke<string>("ssh_rename_path", { profile, oldPath: item.path, newPath });
-            recordUndoableMove({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath: finalPath });
-          }
-          setDragItems([]);
-          setDropTarget(null);
-          setContextMenu(null);
-          await loadFiles(path);
-          writeOperationLog("move", "completed", sourceLabel, destinationLabel, `Moved ${items.length} item(s) through SFTP.`);
-          notify(`Moved ${items.length} item${items.length === 1 ? "" : "s"}.`);
-        } catch (error) {
-          writeOperationLog("move", "failed", sourceLabel, destinationLabel, `Failed to move through SFTP: ${describeError(error)}`, "ERROR");
-          throw error;
-        }
-        return;
-      }
       const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${destination}`;
       const context = captureRemoteMutation();
       const targets = items.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath }));
@@ -3089,10 +2657,28 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     if (!selected.includes(file.path)) setSelected([file.path]);
     dragItemsRef.current = items;
     dragSourceRef.current = "remote";
+    dragEntryRef.current = "";
     dragContextRef.current = remoteIdentity;
     setDragItems(items);
     setDragSource("remote");
+    setDragEntryId("");
     writeOperationLog("drag", "started", "REMOTE", file.path, JSON.stringify({ fileCount: items.length, source: "remote" }), "DEBUG");
+    event.dataTransfer.effectAllowed = "copyMove";
+    event.dataTransfer.setData("application/x-filetransfer-source", "remote");
+  };
+
+  // A drag that starts in an SFTP window. It uses the "remote" source so the
+  // Local pane accepts it as a download; `dragEntryRef` records which SSH
+  // entry (= which SFTP window) the items belong to.
+  const beginSftpDrag = (event: React.DragEvent, entryId: string, items: FileItem[], label: string) => {
+    dragItemsRef.current = items;
+    dragSourceRef.current = "remote";
+    dragEntryRef.current = entryId;
+    dragContextRef.current = "";
+    setDragItems(items);
+    setDragSource("remote");
+    setDragEntryId(entryId);
+    writeOperationLog("drag", "started", `SSH: ${findSshProfileById(entryId)?.name || entryId}`, label, JSON.stringify({ fileCount: items.length, source: "sftp" }), "DEBUG");
     event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData("application/x-filetransfer-source", "remote");
   };
@@ -3102,18 +2688,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     if (!localSelected.includes(file.path)) setLocalSelected([file.path]);
     dragItemsRef.current = items;
     dragSourceRef.current = "local";
+    dragEntryRef.current = "";
     setDragItems(items);
     setDragSource("local");
+    setDragEntryId("");
     writeOperationLog("drag", "started", "LOCAL", file.path, JSON.stringify({ fileCount: items.length, source: "local" }), "DEBUG");
     event.dataTransfer.effectAllowed = "copyMove";
     event.dataTransfer.setData("application/x-filetransfer-source", "local");
-  };
-
-  const resolveDragIcon = () => {
-    if (!dragIconPathRef.current) {
-      dragIconPathRef.current = resolveResource("icons/32x32.png").catch(() => "");
-    }
-    return dragIconPathRef.current;
   };
 
   const beginRemoteDrag = (event: React.DragEvent, file: FileItem) => {
@@ -3127,141 +2708,30 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     writeOperationLog("drag_out", "skipped", file.name, "External file manager", "Windows outbound native drag is disabled; use Download/Queue instead.", "WARN");
   };
 
-  const prepareRemoteDrag = (file: FileItem) => {
-    const items = selected.includes(file.path) ? selectedItems : [file];
-    const preparationKey = `${remoteIdentity}\0${items.map((item) => item.path).join("\0")}`;
-    if (dragPreparationRef.current.has(preparationKey)) return;
-    if (remoteSshEntryId) {
-      const profile = findSshProfileById(remoteSshEntryId);
-      if (!profile) return;
-      setNotice(`Preparing ${items.length} selected item${items.length === 1 ? "" : "s"} for drag...`);
-      const setId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-      const queueItem: TransferQueueItem = {
-        id: setId,
-        label: `${items.length} SSH remote item${items.length === 1 ? "" : "s"}`,
-        kind: "download",
-        paths: items.map((item) => item.path),
-        destinationPath: localPath ? `~/${localPath}` : "~/",
-        locationId: "",
-        locationName: `SSH: ${profile.name}`,
-        status: "queued",
-        detail: "Waiting to prepare drag transfer.",
-        sshEntryId: profile.id,
-        sshItems: items,
-        localDestinationFolder: localPath,
-      };
-      const preparation = queueDragPreparation(queueItem, async () => {
-        let lastDestination = "";
-        for (const item of items) {
-          lastDestination = await invoke<string>("ssh_download_to_drag_staging", {
-            profile,
-            remotePath: item.path,
-            isDirectory: item.isDirectory,
-            setId,
-          });
-        }
-        if (items.length === 1) return lastDestination;
-        const suffixLength = items[items.length - 1].name.length + 1;
-        return lastDestination.slice(0, lastDestination.length - suffixLength);
-      });
-      dragPreparationRef.current.set(preparationKey, preparation);
-      return;
-    }
-    const singleFile = items.length === 1 && !items[0].isDirectory;
-    const headers = locationHeaders(session);
-    if (singleFile) {
-      const queueItem: TransferQueueItem = {
-        id: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`,
-        label: items[0].name,
-        kind: "download",
-        paths: [items[0].path],
-        destinationPath: localPath ? `~/${localPath}` : "~/",
-        locationId: session.locationId,
-        locationName: activeLocation?.displayName || session.locationId,
-        status: "queued",
-        detail: "Waiting to prepare drag transfer.",
-        localDestinationFolder: localPath,
-      };
-      const preparation = queueDragPreparation(queueItem, () => invoke<string>("download_to_drag_staging", {
-          sessionId: session.nativeSessionId,
-          url: `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`,
-          method: "GET",
-          headers,
-          body: undefined,
-          fileName: items[0].name,
-          ignoreTlsErrors: session.ignoreTlsErrors,
-        }));
-      dragPreparationRef.current.set(preparationKey, preparation);
-      return;
-    }
-    // Multiple files and/or folders: drag out "queue style" -- download each
-    // file individually into a reconstructed folder tree in drag-staging,
-    // then drag that assembled folder as a single native item, instead of
-    // always forcing a tar.gz/zip archive step first.
-    setNotice(`Preparing ${items.length} selected item${items.length === 1 ? "" : "s"} for drag...`);
-    const setId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-    const setLabel = items.length === 1 ? items[0].name : `${items.length} selected items`;
-    // A synthetic wrapper folder is only needed to bundle multiple
-    // top-level selections under one draggable item. For a single
-    // directory, `entry.relativePath` from /api/files/flatten already
-    // starts with that directory's own name -- adding `setLabel` (the same
-    // name) on top would nest it inside a duplicate copy of itself.
-    const needsWrapper = items.length > 1;
-    const queueItem: TransferQueueItem = {
-      id: setId,
-      label: setLabel,
-      kind: "download-set",
-      paths: items.map((item) => item.path),
-      destinationPath: localPath ? `~/${localPath}` : "~/",
-      locationId: session.locationId,
-      locationName: activeLocation?.displayName || session.locationId,
-      status: "queued",
-      detail: "Waiting to prepare drag transfer.",
-      localDestinationFolder: localPath,
-    };
-    const preparation = queueDragPreparation(queueItem, async () => {
-      const response = await api("/api/files/flatten", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          items: items.map(({ name, isDirectory, path: itemPath }) => ({ name, isDirectory, path: itemPath })),
-          currentPath: path,
-        }),
-      });
-      if (!response.ok) throw new Error(await readError(response));
-      const data = await response.json() as { files?: { relativePath: string; remotePath: string }[] };
-      const files = data.files || [];
-      if (!files.length) throw new Error("The selection has no files to drag out.");
-      let lastDestination = "";
-      let lastRelativePath = "";
-      for (const entry of files) {
-        lastRelativePath = needsWrapper ? `${setLabel}/${entry.relativePath}` : entry.relativePath;
-        lastDestination = await invoke<string>("download_to_drag_staging_at", {
-          sessionId: session.nativeSessionId,
-          url: `${serverUrl(session)}/api/files/download/${downloadPath(entry.remotePath)}`,
-          method: "GET",
-          headers,
-          body: undefined,
-          setId,
-          relativePath: lastRelativePath,
-          ignoreTlsErrors: session.ignoreTlsErrors,
-        });
-      }
-      const topName = needsWrapper ? setLabel : items[0].name;
-      const suffixLength = lastRelativePath.length - topName.length;
-      return lastDestination.slice(0, lastDestination.length - suffixLength);
-    });
-    dragPreparationRef.current.set(preparationKey, preparation);
-  };
-
   const finishDrag = () => {
     dragItemsRef.current = [];
     dragSourceRef.current = "";
+    // `dragEntryRef` is deliberately kept: drop handlers call finishDrag()
+    // and then start the transfer, which still needs to know which SFTP
+    // window the items came from. Every drag start overwrites it, and it is
+    // only read while `dragSourceRef` is "remote".
     setDragItems([]);
     setDragSource("");
+    setDragEntryId("");
     setDropTarget(null);
     setPaneDragHover("");
   };
+
+  // SFTP <-> another remote window (a different SSH entry, or the API Remote)
+  // has no direct transfer path: the user has to download to LOCAL and upload.
+  const showCrossWindowDragNotice = () => {
+    writeOperationLog("drag", "cancelled", "REMOTE", "REMOTE", JSON.stringify({ reason: "cross_remote_unsupported" }), "WARN");
+    void requestInfo(
+      "Files cannot be dragged directly between an SFTP window and another remote window (a different SFTP entry or the API Remote).\n\nPlease download the files to LOCAL first, then upload them to the destination manually.",
+      "Manual transfer required",
+    );
+  };
+
   const finishDragAfterDrop = () => {
     // Windows WebView2 can emit dragend before React receives the target's
     // drop callback. Keep the source payload alive for one event-loop turn so
@@ -3393,26 +2863,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       );
       if (!accepted) return;
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-      if (remoteSshEntryId) {
-        const profile = findSshProfileById(remoteSshEntryId);
-        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        const item: TransferQueueItem = {
-          id,
-          label: `${summary.files} files, ${summary.directories} folders`,
-          kind: "upload",
-          paths,
-          destinationPath: path,
-          locationId: "",
-          locationName: `SSH: ${profile.name}`,
-          status: "queued",
-          detail: "Waiting to start",
-          sshEntryId: remoteSshEntryId,
-        };
-        setTransferQueue((current) => [...current, item]);
-        setQueueOpen(true);
-        void runQueuedSshUpload(item, profile);
-        return;
-      }
       const item: TransferQueueItem = {
         id,
         label: `${summary.files} files, ${summary.directories} folders`,
@@ -3429,9 +2879,40 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       void runQueuedUpload(item);
     });
 
-  const downloadRemoteItemsToLocal = (items: FileItem[], destination: string = localPath) =>
+  // Picker upload into an SFTP window's folder (queued through ssh_upload_path).
+  const uploadPathsToSftp = (entryId: string, paths: string[], destination: string) =>
     void run(async () => {
-      if (dragContextRef.current && dragContextRef.current !== remoteIdentity) throw new Error("The dragged files belong to a previous remote view. Select them again.");
+      if (!paths.length) return;
+      const profile = findSshProfileById(entryId);
+      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths });
+      const accepted = await requestConfirmation(
+        `Upload ${summary.files} file${summary.files === 1 ? "" : "s"} and ${summary.directories} folder${summary.directories === 1 ? "" : "s"} to ${destination || "/"}?`,
+        "Confirm upload",
+      );
+      if (!accepted) return;
+      const item: TransferQueueItem = {
+        id: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`,
+        label: `${summary.files} files, ${summary.directories} folders`,
+        kind: "upload",
+        paths,
+        destinationPath: destination,
+        locationId: "",
+        locationName: `SSH: ${profile.name}`,
+        status: "queued",
+        detail: "Waiting to start",
+        sshEntryId: entryId,
+      };
+      setTransferQueue((current) => [...current, item]);
+      setQueueOpen(true);
+      void runQueuedSshUpload(item, profile);
+    });
+
+  // Drops / downloads into LOCAL. `entryId` is the SFTP window the items came
+  // from; "" means they come from the API Remote window.
+  const downloadRemoteItemsToLocal = (items: FileItem[], destination: string = localPath, entryId: string = dragEntryRef.current) =>
+    void run(async () => {
+      if (!entryId && dragContextRef.current && dragContextRef.current !== remoteIdentity) throw new Error("The dragged files belong to a previous remote view. Select them again.");
       if (!items.length) {
         writeOperationLog(
           "download",
@@ -3444,37 +2925,20 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         setNotice("No items were detected for this drag; nothing was downloaded.");
         return;
       }
-      if (remoteSshEntryId) {
-        const profile = findSshProfileById(remoteSshEntryId);
+      if (entryId) {
+        const profile = findSshProfileById(entryId);
         if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
         writeOperationLog(
           "download",
           "started",
           `SSH: ${profile.name}`,
           `LOCAL: ~/${destination || ""}`,
-          `Drag-downloading ${items.length} item(s) from SSH to LOCAL.`,
+          `Downloading ${items.length} item(s) from SSH to LOCAL.`,
           "DEBUG",
         );
-        const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-        const queueItem: TransferQueueItem = {
-          id,
-          label: `${items.length} selected items`,
-          kind: "download",
-          paths: [],
-          destinationPath: destination ? `~/${destination}` : "~",
-          locationId: remoteSshEntryId,
-          locationName: profile.name,
-          status: "queued",
-          detail: "Waiting to start",
-          localDestinationFolder: destination,
-          sshEntryId: profile.id,
-          sshItems: items,
-        };
-        setTransferQueue((current) => [...current, queueItem]);
-        setQueueOpen(true);
         finishDrag();
-        void runQueuedSshDownload(queueItem, profile, items).then(async () => {
-          await loadLocalFiles(localPath);
+        enqueueSshDownload(entryId, items, destination, () => {
+          void loadLocalFiles(localPath).catch(() => undefined);
           if (destination !== localPath) void loadLocalTreeChildren(destination, true);
         });
         return;
@@ -3575,6 +3039,35 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       }
     });
 
+  // Drag / context-menu upload of LOCAL items into an SFTP window's folder.
+  const uploadLocalItemsToSftp = (entryId: string, items: FileItem[], destination: string) =>
+    void run(async () => {
+      if (!items.length) {
+        writeOperationLog("upload", "skipped", `LOCAL: ~/${localPath || ""}`, "REMOTE", "No items were detected in the drag payload; nothing was uploaded.", "WARN");
+        setNotice("No items were detected for this drag; nothing was uploaded.");
+        return;
+      }
+      const profile = findSshProfileById(entryId);
+      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      writeOperationLog("upload", "started", `LOCAL: ~/${localPath || ""}`, `SSH: ${profile.name}:${destination}`, `Uploading ${items.length} item(s) from LOCAL to SSH.`, "DEBUG");
+      const queueItem: TransferQueueItem = {
+        id: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`,
+        label: `${items.length} selected items`,
+        kind: "upload",
+        paths: items.map((item) => item.path),
+        destinationPath: destination,
+        locationId: "",
+        locationName: `SSH: ${profile.name}`,
+        status: "queued",
+        detail: "Waiting to start",
+        sshEntryId: entryId,
+      };
+      setTransferQueue((current) => [...current, queueItem]);
+      setQueueOpen(true);
+      finishDrag();
+      void runQueuedSshUpload(queueItem, profile);
+    });
+
   const uploadLocalItemsToRemote = (items: FileItem[], destination: string) =>
     void run(async () => {
       if (!items.length) {
@@ -3589,37 +3082,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         setNotice("No items were detected for this drag; nothing was uploaded.");
         return;
       }
-      if (remoteSshEntryId) {
-        const profile = findSshProfileById(remoteSshEntryId);
-        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        writeOperationLog(
-          "upload",
-          "started",
-          `LOCAL: ~/${localPath || ""}`,
-          `SSH: ${profile.name}:${destination}`,
-          `Drag-uploading ${items.length} item(s) from LOCAL to SSH.`,
-          "DEBUG",
-        );
-        const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
-        const queueItem: TransferQueueItem = {
-          id,
-          label: `${items.length} selected items`,
-          kind: "upload",
-          paths: items.map((item) => item.path),
-          destinationPath: destination,
-          locationId: remoteSshEntryId,
-          locationName: profile.name,
-          status: "queued",
-          detail: "Waiting to start",
-          sshEntryId: profile.id,
-        };
-        setTransferQueue((current) => [...current, queueItem]);
-        setQueueOpen(true);
-        finishDrag();
-        void runQueuedSshUpload(queueItem, profile);
-        return;
-      }
-      // API Remote (not SSH): reuse the exact same queued-upload machinery
+      // API Remote: reuse the exact same queued-upload machinery
       // the button-based Upload already relies on (`runQueuedUpload`) so
       // drag transfer gets the same multipart batching, progress polling,
       // and collision handling instead of a second, divergent code path.
@@ -3700,21 +3163,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         notify(`Created ${name}.`);
         return;
       }
-      if (remoteSshEntryId) {
-        const profile = findSshProfileById(remoteSshEntryId);
-        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        const fullPath = path ? joinSshPath(path, name) : `/${name}`;
-        try {
-          await invoke("ssh_create_directory", { profile, path: fullPath });
-          await loadFiles(path);
-          writeOperationLog("create_folder", "completed", `SSH: ${profile.name}:${path || "/"}`, `SSH: ${profile.name}:${fullPath}`, `Created folder ${name} through SFTP.`);
-          notify(`Created ${name}.`);
-        } catch (error) {
-          writeOperationLog("create_folder", "failed", `SSH: ${profile.name}:${path || "/"}`, `SSH: ${profile.name}:${fullPath}`, `Failed to create folder ${name} through SFTP: ${describeError(error)}`, "ERROR");
-          throw error;
-        }
-        return;
-      }
       const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`;
       try {
         const response = await api("/api/folders", {
@@ -3751,22 +3199,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         await loadLocalFiles(localPath);
         writeOperationLog("rename", "completed", `LOCAL: ~/${item.path}`, `LOCAL: ~/${finalPath}`, `Renamed ${item.name} locally.`);
         notify(`Renamed ${item.name}.`);
-        return;
-      }
-      if (remoteSshEntryId) {
-        const profile = findSshProfileById(remoteSshEntryId);
-        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        const newPath = joinSshPath(sshParentPath(item.path), trimmedName);
-        try {
-          const finalPath = await invoke<string>("ssh_rename_path", { profile, oldPath: item.path, newPath });
-          recordUndoableRename({ source: "ssh", entryId: remoteSshEntryId, oldPath: item.path, newPath: finalPath });
-          await loadFiles(path);
-          writeOperationLog("rename", "completed", `SSH: ${profile.name}:${item.path}`, `SSH: ${profile.name}:${finalPath}`, `Renamed ${item.name} to ${finalPath.split("/").pop()} through SFTP.`);
-          notify(`Renamed ${item.name} to ${finalPath.split("/").pop()}.`);
-        } catch (error) {
-          writeOperationLog("rename", "failed", `SSH: ${profile.name}:${item.path}`, `SSH: ${profile.name}:${newPath}`, `Failed to rename ${item.name} through SFTP: ${describeError(error)}`, "ERROR");
-          throw error;
-        }
         return;
       }
       const sourceLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${item.path}`;
@@ -3812,23 +3244,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       )
         return;
       const sourceLabel = `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`;
-      if (remoteSshEntryId) {
-        const profile = findSshProfileById(remoteSshEntryId);
-        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-        const destinationLabel = `SSH: ${profile.name}:${path || "/"}`;
-        try {
-          for (const item of selectedItems) {
-            await invoke("ssh_delete_path", { profile, path: item.path, isDirectory: item.isDirectory });
-          }
-          await loadFiles(path);
-          writeOperationLog("delete", "completed", sourceLabel, destinationLabel, "Deleted through SFTP. This cannot be undone.");
-          notify("Deleted selected items. This cannot be undone.");
-        } catch (error) {
-          writeOperationLog("delete", "failed", sourceLabel, destinationLabel, `Failed to delete through SFTP: ${describeError(error)}`, "ERROR");
-          throw error;
-        }
-        return;
-      }
       const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`;
       const context = captureRemoteMutation();
       const groups = groupRemoteDeletes(selectedItems);
@@ -3880,7 +3295,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     writeOperationLog, describeError,
     shareLinkMode: desktopSettings.shareLinkMode,
     shareLinkExpirationDays: desktopSettings.shareLinkExpirationDays,
-    ensureApiRemote,
     isContextCurrent: isRemoteCurrent,
     selectedShareableItem: selectedItems.length === 1 ? selectedItems[0] : undefined,
     shareLinks, setShareLinks, setShareLinksLoading,
@@ -3935,58 +3349,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         throw error;
       }
     });
-
-  const compressRemoteItems = () =>
-    run(async () => {
-      if (!selectedItems.length || !remoteSshEntryId) return;
-      const profile = findSshProfileById(remoteSshEntryId);
-      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-      const defaultName = selectedItems.length === 1
-        ? selectedItems[0].name.replace(/\.[^./]+$/, "")
-        : "Archive";
-      const archiveName = await requestName("Archive name", defaultName);
-      if (!archiveName?.trim()) return;
-      const sourceLabel = `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`;
-      const destinationLabel = `SSH: ${profile.name}:${path || "/"}`;
-      try {
-        const finalName = await invoke<string>("ssh_compress_paths", {
-          profile,
-          paths: selectedItems.map((item) => item.path),
-          destinationFolder: path,
-          archiveName: archiveName.trim(),
-        });
-        await loadFiles(path);
-        writeOperationLog("compress", "completed", sourceLabel, destinationLabel, `Created ${finalName} through SFTP.`);
-        notify(`Created ${finalName}.`);
-      } catch (error) {
-        writeOperationLog("compress", "failed", sourceLabel, destinationLabel, `Failed to create archive through SFTP: ${describeError(error)}`, "ERROR");
-        throw error;
-      }
-    });
-
-  const extractRemoteArchive = () =>
-    run(async () => {
-      if (selectedItems.length !== 1 || !remoteSshEntryId) return;
-      const profile = findSshProfileById(remoteSshEntryId);
-      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
-      const item = selectedItems[0];
-      const sourceLabel = `SSH: ${profile.name}:${item.path}`;
-      const destinationLabel = `SSH: ${profile.name}:${path || "/"}`;
-      try {
-        const finalName = await invoke<string>("ssh_extract_archive", {
-          profile,
-          path: item.path,
-          destinationFolder: path,
-        });
-        await loadFiles(path);
-        writeOperationLog("extract", "completed", sourceLabel, destinationLabel, `Extracted ${item.name} to ${finalName} through SFTP.`);
-        notify(`Extracted to ${finalName}.`);
-      } catch (error) {
-        writeOperationLog("extract", "failed", sourceLabel, destinationLabel, `Failed to extract ${item.name} through SFTP: ${describeError(error)}`, "ERROR");
-        throw error;
-      }
-    });
-
 
   const isZipFile = (item: FileItem) => !item.isDirectory && /\.zip$/i.test(item.name);
 
@@ -4096,15 +3458,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // Opening the Terminal window enables xterm creation; closing it later keeps
   // every SSH tab and session alive (only hidden), like the old collapse did.
   useEffect(() => {
-    if (paneOpenKinds.includes("terminal")) setTerminalOpen(true);
-  }, [paneOpenKinds]);
+    if (paneOpenIds.includes("terminal")) setTerminalOpen(true);
+  }, [paneOpenIds]);
 
   // The focused Location window decides which pane the toolbar, menus and
   // keyboard-less actions (rename, delete, new folder, ...) act on.
   useEffect(() => {
-    if (paneActiveKind === "local") setActivePane("local");
-    else if (paneActiveKind === "remote") setActivePane("remote");
-  }, [paneActiveKind]);
+    if (paneActiveId === "local") setActivePane("local");
+    else if (paneActiveId === "remote") setActivePane("remote");
+  }, [paneActiveId]);
 
   const renderLocalTreeNode = (node: FolderNode): React.ReactNode => (
     <div className="folder-tree" key={node.path}>
@@ -4197,14 +3559,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const parts = path.split("/").filter(Boolean);
     return (
       <div className="pane-breadcrumbs crumbs" aria-label="REMOTE path">
-        <button onClick={() => void run(() => loadFiles(remoteSshEntryId ? "/" : ""))}>/</button>
+        <button onClick={() => void run(() => loadFiles(""))}>/</button>
         {parts.map((part, index) => (
           <React.Fragment key={`remote-pane-${part}-${index}`}>
             <span className="crumb-separator">›</span>
             <button
-              onClick={() => void run(() => loadFiles(remoteSshEntryId
-                ? `/${parts.slice(0, index + 1).join("/")}`
-                : parts.slice(0, index + 1).join("/")))}
+              onClick={() => void run(() => loadFiles(parts.slice(0, index + 1).join("/")))}
             >
               {part}
             </button>
@@ -4213,9 +3573,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       </div>
     );
   };
-  const remoteSourceLabel = remoteSshEntryId
-    ? `REMOTE (SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"})`
-    : `REMOTE (${activeLocation?.id || session.locationId || "Unknown"})`;
+  const remoteSourceLabel = `REMOTE (${activeLocation?.id || session.locationId || "Unknown"})`;
 
   const renderLocalPane = () => (
     <section
@@ -4479,21 +3837,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [restBarHost, setRestBarHost] = useState<HTMLElement | null>(null);
   const [vncBarHost, setVncBarHost] = useState<HTMLElement | null>(null);
 
-  // Context pickers: the Remote window picks an API Location or an SSH entry,
-  // the REST and VNC windows pick one of the Workspace's saved entries.
-  const remoteContextValue = remoteSshEntryId
-    ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}`
-    : activeLocation?.id || session.locationId || "No Location";
+  // Context pickers: the Remote window picks an API Location, the REST and
+  // VNC windows pick one of the Workspace's saved entries.
+  const remoteContextValue = activeLocation?.id || session.locationId || "No Location";
   const remoteContextGroups: ContextPickerGroup[] = [{
     label: "Locations",
-    options: [
-      ...locations.map((location) => ({ id: `location:${location.id}`, label: location.displayName, detail: location.id, selected: !remoteSshEntryId && location.id === session.locationId })),
-      ...connectedSshBrowseOptions().map((entry) => ({ id: `ssh:${entry.id}`, label: `SSH: ${entry.name}`, selected: entry.id === remoteSshEntryId })),
-    ],
+    options: locations.map((location) => ({ id: `location:${location.id}`, label: location.displayName, detail: location.id, selected: location.id === session.locationId })),
   }];
   const selectRemoteContext = (id: string) => {
     if (id.startsWith("location:")) void selectLocation(id.slice("location:".length));
-    else if (id.startsWith("ssh:")) selectSshBrowse(id.slice("ssh:".length));
   };
   const renderEntryPicker = (kind: "rest" | "vnc") => {
     const activeId = kind === "rest" ? activeRestEntryId : activeVncEntryId;
@@ -4513,26 +3865,40 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   };
 
   // What the Functions menu offers: every API Location (offline ones disabled)
-  // and every saved SSH entry (usable once it is connected in the Terminal).
+  // and every saved SSH entry (openable once it is connected in the Terminal;
+  // one SFTP window per entry).
   const paneRemoteChoices: PaneLocationChoice[] = locations.map((location) => ({
     id: location.id,
     label: location.displayName,
     detail: location.id,
     available: location.status === "online",
     disabledReason: `${location.displayName} is ${location.status || "unavailable"}`,
-    selected: !remoteSshEntryId && location.id === session.locationId,
+    selected: location.id === session.locationId,
   }));
-  const paneSftpChoices: PaneLocationChoice[] = managedSessions.flatMap((workspace) => workspace.sshEntries.map((entry) => ({
+  const sshEntries = managedSessions.flatMap((workspace) => workspace.sshEntries.map((entry) => ({ entry, workspaceName: workspace.name })));
+  const sshEntryLabel = (entry: SshProfile) => {
+    const base = entry.name || `${entry.username}@${entry.host}`;
+    // Two entries with the same name must stay distinguishable in the taskbar.
+    return sshEntries.filter((other) => (other.entry.name || `${other.entry.username}@${other.entry.host}`) === base).length > 1
+      ? `${base} (${entry.username}@${entry.host})`
+      : base;
+  };
+  const paneSftpChoices: PaneLocationChoice[] = sshEntries.map(({ entry, workspaceName }) => ({
     id: entry.id,
-    label: entry.name || `${entry.username}@${entry.host}`,
-    detail: `${workspace.name} · ${entry.username}@${entry.host}`,
+    label: sshEntryLabel(entry),
+    detail: `${workspaceName} · ${entry.username}@${entry.host}`,
     available: sshTabs.some((tab) => tab.sshEntryId === entry.id && tab.connected),
     disabledReason: "Not connected - connect it in Terminal first",
-    selected: entry.id === remoteSshEntryId,
-  })));
-  const remoteWindowTitle = remoteSshEntryId
-    ? `SFTP · ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}`
-    : `Remote · ${activeLocation?.displayName || session.locationId || "No Location"}`;
+    selected: paneOpenIds.includes(sftpWindowId(entry.id)),
+  }));
+  const remoteWindowTitle = `Remote · ${activeLocation?.displayName || session.locationId || "No Location"}`;
+  const sftpEntryIds = sshEntries.map(({ entry }) => entry.id);
+  const paneTitles: Record<string, string> = { local: "Local", remote: remoteWindowTitle, rest: "RestAPI", vnc: "VNC", terminal: "Terminal" };
+  const paneSubtitles: Record<string, string> = { local: localPath ? `~/${localPath}` : "~", remote: path ? `/${path}` : "/" };
+  for (const { entry } of sshEntries) {
+    paneTitles[sftpWindowId(entry.id)] = `SFTP · ${sshEntryLabel(entry)}`;
+    paneSubtitles[sftpWindowId(entry.id)] = sftpPaths[entry.id] || "/";
+  }
 
   // Each Location window has its own toolbar. `pane` replaces the shared
   // `activePane` for what the toolbar *shows*; clicking anywhere in a window
@@ -4541,63 +3907,54 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const activePane = pane;
     const bar = pane === "local" ? localBar : remoteBar;
     const commandBarOverflow = bar.overflow;
+    const lastUndo = ownUndoStack[ownUndoStack.length - 1];
+    const undoTitle = lastUndo ? `Undo: ${lastUndo.description}` : "No operation to undo";
+    const remoteReady = Boolean(session.locationId);
+    const viewDisabled = activePane === "local"
+      ? busy || localSelectedItems.length !== 1 || localSelectedItems[0].isDirectory
+      : busy ||
+        !locationOnline ||
+        selectedItems.length !== 1 ||
+        selectedItems[0].isDirectory ||
+        !hasCapability("read");
+    const renameDisabled = activePane === "local"
+      ? localReadOnly || busy || localSelectedItems.length !== 1
+      : busy || selectedItems.length !== 1 || !remoteReady;
+    const shareDisabled =
+      busy ||
+      activePane === "local" ||
+      !locationOnline ||
+      selectedItems.length !== 1 ||
+      selectedItems[0].isDirectory ||
+      !hasCapability("share");
+    const deleteDisabled = activePane === "local"
+      ? localReadOnly || busy || !localSelectedItems.length
+      : busy || !selectedItems.length || !remoteReady;
+    const newFolderDisabled = activePane === "local" ? localReadOnly || busy : busy || !remoteReady;
+    const downloadDisabled = busy || !selectedItems.length || !(locationOnline && hasCapability("read"));
+    const selectAll = () =>
+      activePane === "local"
+        ? setLocalSelected(
+            localSelected.length === localFiles.length
+              ? []
+              : sortedLocalFiles.map((file) => file.path),
+          )
+        : setSelected(
+            selected.length === files.length
+              ? []
+              : sortedFiles.map((file) => file.path),
+          );
     return (
       <nav ref={bar.setRef} className="commandbar" aria-label="File actions" onPointerDownCapture={() => setActivePane(pane)}>
-        <button
-          className="primary"
-          onClick={() => {
-            // Desktop is used from the LOCAL side: while a split SSH view has
-            // LOCAL active, Upload sends the LOCAL selection into the current
-            // REMOTE folder (mirrors dragging LOCAL -> REMOTE); otherwise it
-            // falls back to the plain file-picker upload.
-            if (remoteSshEntryId && activePane === "local" && localSelected.length) {
-              uploadLocalItemsToRemote(localSelectedItems, path);
-            } else {
-              void upload();
-            }
-          }}
-          disabled={
-            busy ||
-            (remoteSshEntryId
-              ? activePane !== "local"
-               : !(remoteSshEntryId ? true : Boolean(session.locationId)))
-          }
-          title={remoteSshEntryId ? "Send the LOCAL selection to the current REMOTE folder" : undefined}
-        >
+        <button className="primary" onClick={() => void upload()} disabled={busy || !remoteReady}>
           Upload
         </button>
         {!commandBarOverflow && <>
-          <button
-            onClick={createFolder}
-            disabled={
-              activePane === "local"
-                ? localReadOnly || busy
-                 : busy || !(remoteSshEntryId ? true : Boolean(session.locationId))
-            }
-          >
+          <button onClick={createFolder} disabled={newFolderDisabled}>
             New folder
           </button>
           <span className="divider" />
-          <button
-            disabled={
-              busy ||
-              (remoteSshEntryId
-                ? activePane !== "remote" || !selectedItems.length
-                : !selectedItems.length || !(remoteSshEntryId ? true : locationOnline && hasCapability("read")))
-            }
-            onClick={() => {
-              // Mirror the Upload button above: while a split SSH view has
-              // REMOTE active, Download brings the REMOTE selection straight
-              // into the current LOCAL folder (mirrors dragging REMOTE ->
-              // LOCAL) instead of queuing it to the Downloads folder.
-              if (remoteSshEntryId && activePane === "remote" && selectedItems.length) {
-                downloadRemoteItemsToLocal(selectedItems);
-              } else {
-                download();
-              }
-            }}
-            title={remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined}
-          >
+          <button disabled={downloadDisabled} onClick={download}>
             Download
           </button>
         </>}
@@ -4605,124 +3962,29 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           <CommandBarOverflowMenu
             label="More actions"
             actions={[
-              {
-                key: "new-folder",
-                label: "New folder",
-                disabled: activePane === "local"
-                  ? localReadOnly || busy
-                   : busy || !(remoteSshEntryId ? true : Boolean(session.locationId)),
-                onClick: createFolder,
-              },
-              {
-                key: "download",
-                label: "Download",
-                disabled:
-                  busy ||
-                  (remoteSshEntryId
-                    ? activePane !== "remote" || !selectedItems.length
-                    : !selectedItems.length || !(remoteSshEntryId ? true : locationOnline && hasCapability("read"))),
-                title: remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined,
-                onClick: () => {
-                  if (remoteSshEntryId && activePane === "remote" && selectedItems.length) {
-                    downloadRemoteItemsToLocal(selectedItems);
-                  } else {
-                    download();
-                  }
-                },
-              },
+              { key: "new-folder", label: "New folder", disabled: newFolderDisabled, onClick: createFolder },
+              { key: "download", label: "Download", disabled: downloadDisabled, onClick: download },
               {
                 key: "view",
                 label: "View",
-                disabled: activePane === "local"
-                  ? busy || localSelectedItems.length !== 1 || localSelectedItems[0].isDirectory
-                  : busy ||
-                    !locationOnline ||
-                    selectedItems.length !== 1 ||
-                    selectedItems[0].isDirectory ||
-                    !!remoteSshEntryId ||
-                    !hasCapability("read"),
+                disabled: viewDisabled,
                 onClick: () =>
                   activePane === "local"
                     ? openLocalViewer(localSelectedItems[0].path)
                     : openRemoteViewer(selectedItems[0]),
               },
-              {
-                key: "rename",
-                label: "Rename",
-                disabled: activePane === "local"
-                  ? localReadOnly || busy || localSelectedItems.length !== 1
-                  : busy ||
-                    selectedItems.length !== 1 ||
-                     !(remoteSshEntryId ? true : Boolean(session.locationId)),
-                onClick: rename,
-              },
-              {
-                key: "share",
-                label: "Share",
-                disabled:
-                  busy ||
-                  (activePane === "local") ||
-                  !locationOnline ||
-                  selectedItems.length !== 1 ||
-                  selectedItems[0].isDirectory ||
-                  !!remoteSshEntryId ||
-                  !hasCapability("share"),
-                onClick: share,
-              },
-              {
-                key: "delete",
-                label: "Delete",
-                disabled: activePane === "local"
-                  ? localReadOnly || busy || !localSelectedItems.length
-                  : busy ||
-                    !selectedItems.length ||
-                     !(remoteSshEntryId ? true : Boolean(session.locationId)),
-                onClick: remove,
-              },
-              {
-                key: "undo",
-                label: "Undo",
-                disabled: busy || !undoStack.length,
-                title: undoStack.length ? `Undo: ${undoStack[undoStack.length - 1].description}` : "No operation to undo",
-                onClick: undoLastOperation,
-              },
-              {
-                key: "select-all",
-                label: "Select all",
-                onClick: () =>
-                  activePane === "local"
-                    ? setLocalSelected(
-                        localSelected.length === localFiles.length
-                          ? []
-                          : sortedLocalFiles.map((file) => file.path),
-                      )
-                    : setSelected(
-                        selected.length === files.length
-                          ? []
-                          : sortedFiles.map((file) => file.path),
-                      ),
-              },
-              {
-                key: "refresh",
-                label: "Refresh",
-                disabled: busy,
-                onClick: () => void run(refreshActivePane),
-              },
+              { key: "rename", label: "Rename", disabled: renameDisabled, onClick: rename },
+              { key: "share", label: "Share", disabled: shareDisabled, onClick: share },
+              { key: "delete", label: "Delete", disabled: deleteDisabled, onClick: remove },
+              { key: "undo", label: "Undo", disabled: busy || !ownUndoStack.length, title: undoTitle, onClick: undoLastOperation },
+              { key: "select-all", label: "Select all", onClick: selectAll },
+              { key: "refresh", label: "Refresh", disabled: busy, onClick: () => void run(refreshActivePane) },
             ]}
           />
         ) : (
           <>
             <button
-              disabled={
-                activePane === "local"
-                  ? busy || localSelectedItems.length !== 1 || localSelectedItems[0].isDirectory
-                  : busy ||
-                    !locationOnline ||
-                    selectedItems.length !== 1 ||
-                    selectedItems[0].isDirectory ||
-                    !!remoteSshEntryId ||
-                    !hasCapability("read")
-              }
+              disabled={viewDisabled}
               onClick={() =>
                 activePane === "local"
                   ? openLocalViewer(localSelectedItems[0].path)
@@ -4731,67 +3993,20 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             >
               View
             </button>
-            <button
-              disabled={
-                activePane === "local"
-                  ? localReadOnly || busy || localSelectedItems.length !== 1
-                  : busy ||
-                    selectedItems.length !== 1 ||
-                     !(remoteSshEntryId ? true : Boolean(session.locationId))
-              }
-              onClick={rename}
-            >
+            <button disabled={renameDisabled} onClick={rename}>
               Rename
             </button>
-            <button
-              disabled={
-                busy ||
-                (activePane === "local") ||
-                !locationOnline ||
-                selectedItems.length !== 1 ||
-                selectedItems[0].isDirectory ||
-                !!remoteSshEntryId ||
-                !hasCapability("share")
-              }
-              onClick={share}
-            >
+            <button disabled={shareDisabled} onClick={share}>
               Share
             </button>
-            <button
-              disabled={
-                activePane === "local"
-                  ? localReadOnly || busy || !localSelectedItems.length
-                  : busy ||
-                    !selectedItems.length ||
-                     !(remoteSshEntryId ? true : Boolean(session.locationId))
-              }
-              onClick={remove}
-            >
+            <button disabled={deleteDisabled} onClick={remove}>
               Delete
             </button>
-            <button
-              disabled={busy || !undoStack.length}
-              onClick={undoLastOperation}
-              title={undoStack.length ? `Undo: ${undoStack[undoStack.length - 1].description}` : "No operation to undo"}
-            >
+            <button disabled={busy || !ownUndoStack.length} onClick={undoLastOperation} title={undoTitle}>
               Undo
             </button>
             <span className="divider" />
-            <button
-              onClick={() =>
-                activePane === "local"
-                  ? setLocalSelected(
-                      localSelected.length === localFiles.length
-                        ? []
-                        : sortedLocalFiles.map((file) => file.path),
-                    )
-                  : setSelected(
-                      selected.length === files.length
-                        ? []
-                        : sortedFiles.map((file) => file.path),
-                    )
-              }
-            >
+            <button onClick={selectAll}>
               Select all
             </button>
           </>
@@ -4932,9 +4147,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               <div className="file-grid">
                 {showRemoteUp && (
                   <article
-                    className={`file-tile file-tile-dotdot ${dropTarget === (remoteSshEntryId ? sshParentPath(path) : parentPath(path)) ? "drop-target" : ""}`}
+                    className={`file-tile file-tile-dotdot ${dropTarget === parentPath(path) ? "drop-target" : ""}`}
                     onDragOver={(event) => {
-                      const destination = remoteSshEntryId ? sshParentPath(path) : parentPath(path);
+                      const destination = parentPath(path);
                       if (canDropOnRemote(destination)) {
                         event.preventDefault();
                         setDropTarget(destination);
@@ -4943,13 +4158,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                     onDrop={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      const destination = remoteSshEntryId ? sshParentPath(path) : parentPath(path);
+                      const destination = parentPath(path);
                       const items = dragItemsRef.current;
                       const source = dragSourceRef.current;
                       finishDrag();
                       void moveItems(items, destination, source);
                     }}
-                    onClick={() => void run(() => loadFiles(remoteSshEntryId ? sshParentPath(path) : parentPath(path)))}
+                    onClick={() => void run(() => loadFiles(parentPath(path)))}
                   >
                     <span className="tile-icon glyph-folder" aria-hidden="true" />
                     <strong>../</strong>
@@ -5074,9 +4289,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 <tbody>
                   {showRemoteUp && (
                     <tr
-                      className={`file-row file-row-dotdot ${dropTarget === (remoteSshEntryId ? sshParentPath(path) : parentPath(path)) ? "drop-target" : ""}`}
+                      className={`file-row file-row-dotdot ${dropTarget === parentPath(path) ? "drop-target" : ""}`}
                       onDragOver={(event) => {
-                        const destination = remoteSshEntryId ? sshParentPath(path) : parentPath(path);
+                        const destination = parentPath(path);
                         if (canDropOnRemote(destination)) {
                           event.preventDefault();
                           setDropTarget(destination);
@@ -5085,13 +4300,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                       onDrop={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
-                        const destination = remoteSshEntryId ? sshParentPath(path) : parentPath(path);
+                        const destination = parentPath(path);
                         const items = dragItemsRef.current;
                         const source = dragSourceRef.current;
                         finishDrag();
                         void moveItems(items, destination, source);
                       }}
-                      onClick={() => void run(() => loadFiles(remoteSshEntryId ? sshParentPath(path) : parentPath(path)))}
+                      onClick={() => void run(() => loadFiles(parentPath(path)))}
                     >
                       <td />
                       <td colSpan={3}><span className="glyph-folder" aria-hidden="true" /> ../</td>
@@ -5332,6 +4547,24 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     />
   );
 
+  const sftpDnd: SftpDndBridge = {
+    dragItems,
+    itemsRef: dragItemsRef,
+    sourceRef: dragSourceRef,
+    entryRef: dragEntryRef,
+    begin: beginSftpDrag,
+    finish: finishDrag,
+    finishAfterDrop: finishDragAfterDrop,
+    isExternalFileDrag,
+    notifyExternalFileDrag,
+    showCrossWindowNotice: showCrossWindowDragNotice,
+  };
+  const sftpTransfer: SftpTransferBridge = {
+    uploadPaths: uploadPathsToSftp,
+    uploadLocalItems: uploadLocalItemsToSftp,
+    downloadToLocal: (entryId, items) => downloadRemoteItemsToLocal(items, localPath, entryId),
+  };
+
   return (
     <AppShell style={themeVariables} className={`explorer pane-style ${desktopSettings.glassMainEnabled ? "" : "glass-main-off"} ${desktopSettings.glassMenusEnabled ? "" : "glass-menus-off"} ${desktopSettings.glassDialogsEnabled ? "" : "glass-dialogs-off"}`}>
       <Suspense fallback={null}>
@@ -5339,10 +4572,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         restEnabled={desktopSettings.restApiModeEnabled}
         vncEnabled={desktopSettings.proxmoxVncModeEnabled}
         openRef={paneOpenWindowRef}
-        titles={{ local: "Local", remote: remoteWindowTitle, rest: "RestAPI", vnc: "VNC", terminal: "Terminal" }}
-        subtitles={{ local: localPath ? `~/${localPath}` : "~", remote: remoteSshEntryId ? path || "/" : path ? `/${path}` : "/" }}
+        titles={paneTitles}
+        subtitles={paneSubtitles}
         remoteChoices={paneRemoteChoices}
         sftpChoices={paneSftpChoices}
+        sftpEntryIds={sftpEntryIds}
         busy={busy}
         topRight={
           <PaneTopRight
@@ -5365,15 +4599,36 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           />
         }
         onSelectRemote={(locationId) => { void selectLocation(locationId); }}
-        onSelectSftp={selectSshBrowse}
         onWindowState={handlePaneWindowState}
         confirmDiscardRecordings={() => requestConfirmation("An SSH window has a recording that was not saved. Close nFterm and discard it?", "Close nFterm")}
       >
-        <PaneBody kind="local">{renderLocalWindow()}</PaneBody>
-        <PaneBody kind="remote">{renderRemoteWindow()}</PaneBody>
-        <PaneBody kind="rest">{renderRestWindow()}</PaneBody>
-        <PaneBody kind="vnc">{renderVncWindow()}</PaneBody>
-        <PaneBody kind="terminal">{terminalBody}</PaneBody>
+        <PaneBody id="local">{renderLocalWindow()}</PaneBody>
+        <PaneBody id="remote">{renderRemoteWindow()}</PaneBody>
+        <PaneBody id="rest">{renderRestWindow()}</PaneBody>
+        <PaneBody id="vnc">{renderVncWindow()}</PaneBody>
+        <PaneBody id="terminal">{terminalBody}</PaneBody>
+        {sshEntries.map(({ entry }) => (
+          <PaneBody key={entry.id} id={sftpWindowId(entry.id)}>
+            <SftpWindow
+              entryId={entry.id}
+              profile={entry}
+              writeOperationLog={writeOperationLog}
+              describeError={describeError}
+              requestName={requestName}
+              requestConfirmation={requestConfirmation}
+              confirmDelete={desktopSettings.confirmations.delete}
+              folderResizeEnabled={!!desktopSettings.collapseMainPaneEnabled}
+              undoEnabled={desktopSettings.undoHistoryEnabled}
+              undoEntries={undoStack}
+              recordUndo={recordUndoEntry}
+              removeUndo={(id) => setUndoStack((current) => current.filter((item) => item.id !== id))}
+              dnd={sftpDnd}
+              transfer={sftpTransfer}
+              registerRefresh={registerSftpRefresh}
+              onPathChange={handleSftpPathChange}
+            />
+          </PaneBody>
+        ))}
       </PaneDesktop>
       {marqueeRect && (
         <div
@@ -5489,7 +4744,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               </button>
               <button
                 disabled={
-                  selectedItems.length !== 1 || selectedItems[0].isDirectory || !!remoteSshEntryId
+                  selectedItems.length !== 1 || selectedItems[0].isDirectory
                 }
                 onClick={() => {
                   setContextMenu(null);
@@ -5498,29 +4753,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               >
                 Share
               </button>
-              {remoteSshEntryId && (
-                <>
-                  <hr />
-                  <button
-                    disabled={!selectedItems.length}
-                    onClick={() => {
-                      setContextMenu(null);
-                      void compressRemoteItems();
-                    }}
-                  >
-                    Compress to .zip
-                  </button>
-                  <button
-                    disabled={selectedItems.length !== 1 || !isZipFile(selectedItems[0])}
-                    onClick={() => {
-                      setContextMenu(null);
-                      void extractRemoteArchive();
-                    }}
-                  >
-                    Extract here
-                  </button>
-                </>
-              )}
               <hr />
               <button
                 disabled={!selectedItems.length}
@@ -5784,9 +5016,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         style={modalStyle("workspace-name")}
         header={<h2>{confirmPrompt.title}</h2>}
         onClose={() => finishConfirmation(false)}
-        footer={<><button type="button" onClick={() => finishConfirmation(false)}>Cancel</button><button type="button" className="confirm" onClick={() => finishConfirmation(true)}>Confirm</button></>}
+        footer={confirmPrompt.infoOnly
+          ? <button type="button" className="confirm" onClick={() => finishConfirmation(true)}>OK</button>
+          : <><button type="button" onClick={() => finishConfirmation(false)}>Cancel</button><button type="button" className="confirm" onClick={() => finishConfirmation(true)}>Confirm</button></>}
       >
-        <p>{confirmPrompt.message}</p>
+        <p style={{ whiteSpace: "pre-line" }}>{confirmPrompt.message}</p>
       </FloatingWindow>}
       </Suspense>
     </AppShell>

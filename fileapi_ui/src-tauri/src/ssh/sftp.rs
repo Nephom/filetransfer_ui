@@ -10,7 +10,7 @@ use russh::client;
 use russh::ChannelMsg;
 use russh_sftp::client::SftpSession;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -35,10 +35,40 @@ struct SftpConnection {
     sftp: SftpSession,
 }
 
-static SFTP_SESSIONS: OnceLock<Arc<AsyncMutex<HashMap<String, SftpConnection>>>> = OnceLock::new();
+// One SFTP connection per SSH entry id. The map lock is only held while a
+// connection is looked up / inserted / removed, never while a transfer or a
+// directory listing runs, so a long operation on one entry (or one SFTP
+// window) cannot block listings on any other entry.
+type SftpSessions = HashMap<String, Arc<SftpConnection>>;
 
-fn sftp_sessions() -> &'static Arc<AsyncMutex<HashMap<String, SftpConnection>>> {
+static SFTP_SESSIONS: OnceLock<Arc<AsyncMutex<SftpSessions>>> = OnceLock::new();
+
+fn sftp_sessions() -> &'static Arc<AsyncMutex<SftpSessions>> {
     SFTP_SESSIONS.get_or_init(|| Arc::new(AsyncMutex::new(HashMap::new())))
+}
+
+// Per-entry gate that serializes the (slow) SSH handshake of the same entry so
+// two concurrent first calls do not open two connections, while handshakes of
+// different entries proceed in parallel.
+static CONNECT_GATES: OnceLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> = OnceLock::new();
+
+fn connect_gate(entry_id: &str) -> Arc<AsyncMutex<()>> {
+    let gates = CONNECT_GATES.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut gates = gates.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    gates
+        .entry(entry_id.to_string())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+        .clone()
+}
+
+/// The live connection of an entry, if there is one (a clone of the `Arc`; the
+/// map lock is released before this returns).
+async fn cached_connection(entry_id: &str) -> Option<Arc<SftpConnection>> {
+    let sessions = sftp_sessions().lock().await;
+    sessions
+        .get(entry_id)
+        .filter(|connection| !connection.handle.is_closed())
+        .cloned()
 }
 
 async fn open_connection(profile: &SshProfile) -> Result<SftpConnection, String> {
@@ -95,15 +125,20 @@ async fn open_connection(profile: &SshProfile) -> Result<SftpConnection, String>
 /// one when possible so repeated directory navigation does not pay the cost
 /// of a fresh SSH handshake every time.
 pub async fn ensure_connected(profile: &SshProfile) -> Result<(), String> {
-    let mut sessions = sftp_sessions().lock().await;
-    if let Some(existing) = sessions.get(&profile.id) {
-        if !existing.handle.is_closed() {
-            return Ok(());
-        }
-        sessions.remove(&profile.id);
+    if cached_connection(&profile.id).await.is_some() {
+        return Ok(());
     }
-    let connection = open_connection(profile).await?;
-    sessions.insert(profile.id.clone(), connection);
+    // Only this entry waits for its own handshake; the map lock is not held.
+    let gate = connect_gate(&profile.id);
+    let _handshake = gate.lock().await;
+    if cached_connection(&profile.id).await.is_some() {
+        return Ok(());
+    }
+    let connection = Arc::new(open_connection(profile).await?);
+    sftp_sessions()
+        .lock()
+        .await
+        .insert(profile.id.clone(), connection);
     Ok(())
 }
 
@@ -123,9 +158,8 @@ pub async fn list_directory(
         &serde_json::json!({"operationId": operation_id, "path": path}).to_string(),
     );
     ensure_connected(&profile).await?;
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
 
     let remote_path = if path.trim().is_empty() || path.trim() == "." {
@@ -199,7 +233,9 @@ pub async fn list_directory(
 }
 
 pub async fn disconnect(entry_id: String) -> Result<(), String> {
-    if let Some(connection) = sftp_sessions().lock().await.remove(&entry_id) {
+    // Take the connection out of the map first so the lock is not held while closing.
+    let removed = sftp_sessions().lock().await.remove(&entry_id);
+    if let Some(connection) = removed {
         let _ = connection.sftp.close().await;
         connection.handle.disconnect_all().await;
         crate::oplog::log(
@@ -237,9 +273,8 @@ pub async fn download_file(
         return Err("Local destination path must be an absolute path without '..'".to_string());
     }
     ensure_connected(&profile).await?;
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
     let data = match connection.sftp.read(remote_path.clone()).await {
         Ok(data) => data,
@@ -283,9 +318,8 @@ pub async fn upload_file(
     };
     let byte_count = data.len();
     ensure_connected(&profile).await?;
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
     if let Err(error) = write_remote_file(&connection.sftp, remote_path.clone(), &data).await {
         crate::oplog::log("ERROR", "sftp_upload", "failed", &label, &remote_path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "bytes": byte_count, "error": error.to_string()}).to_string());
@@ -309,9 +343,8 @@ pub async fn create_directory(profile: SshProfile, path: String) -> Result<(), S
         "Creating a remote folder over SFTP.",
     );
     ensure_connected(&profile).await?;
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
     // Absolute paths must stay absolute while being rebuilt segment by
     // segment -- losing the leading '/' here silently creates the folder
@@ -385,9 +418,8 @@ pub async fn delete_path(
     let label = super::profile_label(&profile);
     crate::oplog::log("DEBUG", "sftp_delete", "started", &label, &path, &serde_json::json!({"operationId": operation_id, "path": path, "isDirectory": is_directory}).to_string());
     ensure_connected(&profile).await?;
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
     match delete_recursive(&connection.sftp, &path, is_directory).await {
         Ok(()) => {
@@ -451,9 +483,8 @@ pub async fn rename_path(
             .to_string(),
     );
     ensure_connected(&profile).await?;
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
     let mut final_path = new_path.clone();
     if final_path != old_path && connection.sftp.metadata(final_path.clone()).await.is_ok() {
@@ -551,9 +582,8 @@ async fn upload_path_inner(
     let local = std::path::Path::new(&local_path);
     let metadata = std::fs::symlink_metadata(local).map_err(|error| error.to_string())?;
     ensure_connected(&profile).await?;
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
     let destination_root = connection
         .sftp
@@ -685,9 +715,8 @@ async fn download_path_inner(
         .ok_or_else(|| "Invalid remote path".to_string())?
         .to_string();
     ensure_connected(&profile).await?;
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
     let destination_root = std::path::Path::new(&local_destination_folder);
     // Collision-avoidance on the top-level name only, mirroring
@@ -816,9 +845,8 @@ pub async fn compress_paths(
         crate::oplog::log("ERROR", "compress", "failed", &format!("SSH: {label}:{destination_folder}"), &archive_name, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "pathCount": paths.len(), "failureType": "ensure_connected", "error": error}).to_string());
         return Err(error);
     }
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
 
     let base_name = crate::sanitize_archive_name(if archive_name.trim().is_empty() {
@@ -918,9 +946,8 @@ pub async fn extract_archive(
         crate::oplog::log("ERROR", "extract", "failed", &format!("SSH: {label}:{archive_path}"), &destination_folder, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "failureType": "ensure_connected", "error": error}).to_string());
         return Err(error);
     }
-    let sessions = sftp_sessions().lock().await;
-    let connection = sessions
-        .get(&profile.id)
+    let connection = cached_connection(&profile.id)
+        .await
         .ok_or_else(|| "SFTP session is not connected".to_string())?;
 
     let archive_name = archive_path
@@ -993,4 +1020,36 @@ pub async fn extract_archive(
         &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "attempt": attempt, "exitStatus": exit_status, "stderrSummary": stderr.trim()}).to_string(),
     );
     Ok(final_name)
+}
+
+#[cfg(test)]
+mod connection_isolation_tests {
+    use super::*;
+
+    #[test]
+    fn handshake_gate_is_per_entry() {
+        let first = connect_gate("entry-gate-a");
+        assert!(Arc::ptr_eq(&first, &connect_gate("entry-gate-a")));
+        assert!(!Arc::ptr_eq(&first, &connect_gate("entry-gate-b")));
+    }
+
+    #[tokio::test]
+    async fn different_entries_connect_in_parallel_but_one_entry_is_serialized() {
+        let held_a = connect_gate("entry-par-a");
+        let guard_a = held_a.lock().await;
+        // Another entry's handshake is not blocked by entry A's.
+        let gate_b = connect_gate("entry-par-b");
+        assert!(gate_b.try_lock().is_ok());
+        // A second caller for entry A has to wait for the first one.
+        assert!(connect_gate("entry-par-a").try_lock().is_err());
+        drop(guard_a);
+        assert!(connect_gate("entry-par-a").try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn looking_up_a_connection_does_not_hold_the_session_map() {
+        assert!(cached_connection("entry-never-connected").await.is_none());
+        // The map lock must be free again as soon as the lookup returns.
+        assert!(sftp_sessions().try_lock().is_ok());
+    }
 }

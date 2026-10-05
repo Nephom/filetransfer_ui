@@ -23,7 +23,6 @@ export type UseShareLinksActionsParams = {
   describeError: (error: unknown) => string;
   shareLinkMode: "secure" | "direct";
   shareLinkExpirationDays: number;
-  ensureApiRemote: () => void;
   isContextCurrent: () => boolean;
   // The single selected, non-directory REMOTE file share() creates a link
   // for -- only its `path` is read, so callers can pass a plain object
@@ -51,7 +50,7 @@ export type UseShareLinksActionsParams = {
 export function useShareLinksActions({
   run, notify, api, readError, session, serverUrl, activeLocationDisplayName,
   writeOperationLog, describeError, shareLinkMode, shareLinkExpirationDays,
-  ensureApiRemote, isContextCurrent, selectedShareableItem,
+  isContextCurrent, selectedShareableItem,
   shareLinks, setShareLinks, setShareLinksLoading,
   setShareUrl, setShareLinksOpen, setSharePasswordOpen, setSharePasswordDraft,
 }: UseShareLinksActionsParams) {
@@ -60,7 +59,6 @@ export function useShareLinksActions({
   const createCapturedShareLink = (password?: string) =>
     run(async () => {
       if (!isContextCurrent()) throw new Error("The share's original Location has changed. Select the file again.");
-      ensureApiRemote();
       const item = selectedShareableItem;
       if (!item || item.isDirectory) return;
       const sourceLabel = `${activeLocationDisplayName || session.locationId || "Remote"}:${item.path}`;

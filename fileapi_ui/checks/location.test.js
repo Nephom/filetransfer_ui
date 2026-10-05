@@ -72,7 +72,7 @@ test("Location refresh ignores logout and invalidates a changed root with the sa
     api: () => pending.promise, readError: async () => "failed", setSession: (update) => { props.session = update(props.session); },
     locations: [], setLocations: (value) => { props.locations = value; }, setLocationsLoading() {},
     locationsLoadedRef: { current: false }, locationRefreshInProgressRef: { current: false },
-    managedSessions: [], sshTabs: [], remoteSshEntryId: "", onLocationInvalidated: () => invalidations++,
+    managedSessions: [], onLocationInvalidated: () => invalidations++,
   };
   const { useRemoteApiActions } = loadTypeScript("features/remote-browser/useRemoteApiActions.ts", { mocks: { react: driver.react } });
   const render = () => driver.render(() => useRemoteApiActions(props));
@@ -94,7 +94,7 @@ test("share dialog captures its selected file and protected links never expose a
     api: async (_endpoint, init) => { calls.push(JSON.parse(init.body)); return { ok: true, json: async () => ({ data: { hasPassword: true, shareUrl: "/share/safe", directDownloadUrl: "/direct/unsafe" } }) }; },
     readError: async () => "error", session: { token: "cookie", locationId: "A", role: "user" }, serverUrl: () => "https://server.test",
     writeOperationLog() {}, describeError: String, shareLinkMode: "secure", shareLinkExpirationDays: 1,
-    ensureApiRemote() {}, isContextCurrent: () => current,
+    isContextCurrent: () => current,
     selectedShareableItem: { path: "original/file", isDirectory: false }, shareLinks: [], setShareLinks() {}, setShareLinksLoading() {},
     setShareUrl: (url) => { props.url = url; }, setShareLinksOpen() {}, setSharePasswordOpen() {}, setSharePasswordDraft() {},
   };
@@ -151,7 +151,7 @@ function desktop(handler = () => undefined) {
   const onlyRemoteWindow = (tree) => {
     if (Array.isArray(tree)) return tree.map(onlyRemoteWindow).filter((child) => child !== null);
     if (!tree || typeof tree !== "object") return tree;
-    if (typeof tree.type === "function" && tree.type.name === "PaneBody" && tree.props.kind !== "remote") return null;
+    if (typeof tree.type === "function" && tree.type.name === "PaneBody" && tree.props.id !== "remote") return null;
     if (!tree.props || tree.props.children === undefined) return tree;
     return { ...tree, props: { ...tree.props, children: onlyRemoteWindow(tree.props.children) } };
   };
@@ -455,16 +455,14 @@ test("remote search normalizes case while retaining partial filename matching", 
   assert.equal(nodes(app.render(), (node) => node.props?.["data-path"] === "startup.nsh").length, 1);
 });
 
-test("late SSH directory and tree replies cannot replace the API Location after switching back", async () => {
-  const ssh = deferred();
-  const app = desktop((command) => command === "ssh_list_directory" ? ssh.promise : undefined);
+test("the API Remote window no longer offers SSH entries and never lists SFTP directories", async () => {
+  const app = desktop();
   app.storage.set("fileapi-session-registry", JSON.stringify([{ id: "workspace", name: "test", sshEntries: [{ id: "ssh-A", name: "SSH A", host: "ssh.test", port: 22, username: "user" }] }]));
-  nodes(app.render(), (node) => node.props?.label === "LocationID")[0].props.onSelect("ssh:ssh-A"); app.render();
-  assert.equal(app.calls.filter((call) => call.command === "ssh_list_directory").length, 2);
-  nodes(app.render(), (node) => node.props?.label === "LocationID")[0].props.onSelect("location:A"); app.render(); await tick();
-  ssh.resolve({ path: "/", files: [{ name: "stale-ssh", path: "/stale-ssh", isDirectory: true, size: 0 }] }); await tick();
-  assert.doesNotMatch(text(app.render()), /stale-ssh/);
-  assert.ok(app.calls.some((call) => call.args.url?.includes("/api/files?")));
+  const picker = nodes(app.render(), (node) => node.props?.label === "LocationID")[0];
+  const offered = picker.props.groups.flatMap((group) => group.options.map((option) => option.id));
+  assert.ok(offered.every((id) => id.startsWith("location:")), "only API Locations are selectable");
+  picker.props.onSelect("ssh:ssh-A"); app.render(); await tick();
+  assert.equal(app.calls.filter((call) => call.command === "ssh_list_directory").length, 0);
 });
 
 test("late folder-tree replies cannot cross a Location switch", async () => {

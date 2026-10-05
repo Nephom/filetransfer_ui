@@ -2,15 +2,42 @@
 // data + functions (no React, no DOM) so the geometry / z-order rules can be
 // unit tested and reused by the reducer in usePaneWindows.ts.
 
-export type PaneWindowKind = "local" | "remote" | "vnc" | "rest" | "terminal";
+/**
+ * Window kinds. Every kind except "sftp" has exactly one window whose id is
+ * the kind itself. "sftp" windows are per SSH entry: their id is
+ * `sftp:<entryId>` (see sftpWindowId) so several can be open at once.
+ */
+export type PaneWindowKind = "local" | "remote" | "vnc" | "rest" | "terminal" | "sftp";
 
-export const PANE_WINDOW_KINDS: readonly PaneWindowKind[] = ["local", "remote", "vnc", "rest", "terminal"];
+export type PaneSftpWindowId = `sftp:${string}`;
+export type PaneWindowId = Exclude<PaneWindowKind, "sftp"> | PaneSftpWindowId;
+
+export const PANE_WINDOW_KINDS: readonly PaneWindowKind[] = ["local", "remote", "vnc", "rest", "terminal", "sftp"];
+
+/** Kinds that only ever have one window (id === kind). */
+export const PANE_SINGLETON_KINDS: readonly Exclude<PaneWindowKind, "sftp">[] = ["local", "remote", "vnc", "rest", "terminal"];
+
+const SFTP_PREFIX = "sftp:";
+
+export const sftpWindowId = (entryId: string): PaneSftpWindowId => `${SFTP_PREFIX}${entryId}`;
+
+/** The SSH entry id behind a `sftp:<entryId>` window id (null for every other window). */
+export function sshEntryIdOf(id: string): string | null {
+  return id.startsWith(SFTP_PREFIX) && id.length > SFTP_PREFIX.length ? id.slice(SFTP_PREFIX.length) : null;
+}
+
+/** Window kind for an id, or null when the id is not a valid window id. */
+export function kindOf(id: unknown): PaneWindowKind | null {
+  if (typeof id !== "string") return null;
+  if (sshEntryIdOf(id)) return "sftp";
+  return (PANE_SINGLETON_KINDS as readonly string[]).includes(id) ? (id as PaneWindowKind) : null;
+}
 
 export type PaneRect = { x: number; y: number; w: number; h: number };
 export type PaneSize = { w: number; h: number };
 
 export type PaneWindowState = PaneRect & {
-  id: PaneWindowKind;
+  id: PaneWindowId;
   /** false = the window is closed (frame hidden; bodies of non-keep-alive kinds are unmounted). */
   open: boolean;
   minimized: boolean;
@@ -20,7 +47,7 @@ export type PaneWindowState = PaneRect & {
 
 export type PaneLayout = {
   windows: PaneWindowState[];
-  activeId: PaneWindowKind | null;
+  activeId: PaneWindowId | null;
 };
 
 export const PANE_MIN_SIZE: Record<PaneWindowKind, PaneSize> = {
@@ -29,6 +56,7 @@ export const PANE_MIN_SIZE: Record<PaneWindowKind, PaneSize> = {
   vnc: { w: 520, h: 340 },
   rest: { w: 520, h: 340 },
   terminal: { w: 460, h: 280 },
+  sftp: { w: 460, h: 280 },
 };
 
 export const PANE_KIND_LABEL: Record<PaneWindowKind, string> = {
@@ -37,7 +65,14 @@ export const PANE_KIND_LABEL: Record<PaneWindowKind, string> = {
   vnc: "VNC",
   rest: "RestAPI",
   terminal: "Terminal",
+  sftp: "SFTP",
 };
+
+/** Minimum size of the window with this id (unknown ids fall back to the smallest kind minimum). */
+export function minSizeOf(id: string): PaneSize {
+  const kind = kindOf(id);
+  return kind ? PANE_MIN_SIZE[kind] : PANE_MIN_SIZE.local;
+}
 
 export const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), Math.max(min, max));
 
@@ -86,6 +121,8 @@ export function defaultRect(kind: PaneWindowKind, layer: PaneSize, openCount: nu
   else if (kind === "terminal") {
     const h = Math.round(layer.h * 0.5);
     rect = { x: gap, y: layer.h - h - gap, w: layer.w - gap * 2, h };
+  } else if (kind === "sftp") {
+    rect = { x: Math.round(layer.w * 0.06), y: Math.round(layer.h * 0.06), w: Math.round(layer.w * 0.68), h: Math.round(layer.h * 0.74) };
   } else {
     rect = { x: Math.round(layer.w * 0.1), y: Math.round(layer.h * 0.08), w: Math.round(layer.w * 0.8), h: Math.round(layer.h * 0.84) };
   }
@@ -98,7 +135,7 @@ export function defaultRect(kind: PaneWindowKind, layer: PaneSize, openCount: nu
 export const nextZ = (windows: readonly PaneWindowState[]) => windows.reduce((max, win) => Math.max(max, win.z), 0) + 1;
 
 /** The window that should hold focus: the open, non-minimized one with the highest z. */
-export function pickActive(windows: readonly PaneWindowState[]): PaneWindowKind | null {
+export function pickActive(windows: readonly PaneWindowState[]): PaneWindowId | null {
   let best: PaneWindowState | null = null;
   for (const win of windows) {
     if (!win.open || win.minimized) continue;
@@ -121,8 +158,9 @@ export function normalizeStoredLayout(raw: unknown): PaneLayout | null {
   for (const item of record.windows) {
     if (!item || typeof item !== "object") continue;
     const win = item as Record<string, unknown>;
-    const id = win.id as PaneWindowKind;
-    if (!PANE_WINDOW_KINDS.includes(id) || windows.some((existing) => existing.id === id)) continue;
+    const id = win.id as PaneWindowId;
+    // SFTP windows are never restored (they are bound to a live SSH entry), so only singleton kinds are accepted.
+    if (kindOf(id) === null || kindOf(id) === "sftp" || windows.some((existing) => existing.id === id)) continue;
     if (![win.x, win.y, win.w, win.h, win.z].every(isFiniteNumber)) continue;
     windows.push({
       id,
@@ -141,7 +179,7 @@ export function normalizeStoredLayout(raw: unknown): PaneLayout | null {
 }
 
 export function serializeLayout(layout: PaneLayout): string {
-  return JSON.stringify({ version: STORAGE_VERSION, windows: layout.windows });
+  return JSON.stringify({ version: STORAGE_VERSION, windows: layout.windows.filter((win) => kindOf(win.id) !== "sftp") });
 }
 
 export function loadStoredLayout(storage: Pick<Storage, "getItem"> = localStorage): PaneLayout | null {

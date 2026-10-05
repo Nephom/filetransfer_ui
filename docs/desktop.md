@@ -106,6 +106,13 @@ connection has a bounded connection/authentication attempt, but an established
 interactive session remains available until the user disconnects or the
 server closes it.
 
+Each SSH entry opens in its own SFTP window and keeps its own SFTP connection;
+several entries can be browsed and transferred at the same time, and a slow
+transfer on one entry does not block the others. Closing the window releases
+that entry's SFTP connection. Direct transfers between two SFTP windows (or an
+SFTP window and the API Remote) are not supported; the UI asks the user to
+download to LOCAL and upload manually.
+
 SFTP transfers support directory browsing, create, rename, delete, upload,
 download, archive, extraction, and native drag staging. File contents are
 transferred in bounded operations appropriate to the selected executor; local

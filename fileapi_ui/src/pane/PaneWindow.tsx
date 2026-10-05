@@ -1,5 +1,5 @@
 import React, { useRef } from "react";
-import { resizeRect, type PaneRect, type PaneSize, type PaneWindowState, type ResizeEdges, PANE_MIN_SIZE } from "./pane-window-model";
+import { kindOf, minSizeOf, resizeRect, type PaneRect, type PaneSize, type PaneWindowState, type ResizeEdges } from "./pane-window-model";
 
 type Props = {
   win: PaneWindowState;
@@ -66,7 +66,7 @@ export function PaneWindow({ win, title, subtitle, icon, active, layer, keepMoun
   const moveResize = (event: React.PointerEvent<HTMLElement>) => {
     const state = resizeRef.current;
     if (!state || state.pointerId !== event.pointerId) return;
-    onRect(resizeRect(state.origin, state.edges, event.clientX - state.startX, event.clientY - state.startY, layer, PANE_MIN_SIZE[win.id]));
+    onRect(resizeRect(state.origin, state.edges, event.clientX - state.startX, event.clientY - state.startY, layer, minSizeOf(win.id)));
   };
   const endResize = (event: React.PointerEvent<HTMLElement>) => {
     if (resizeRef.current?.pointerId !== event.pointerId) return;
@@ -74,7 +74,7 @@ export function PaneWindow({ win, title, subtitle, icon, active, layer, keepMoun
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
 
-  const className = ["pane-window", `pane-window-${win.id}`, active ? "is-active" : "", win.maximized ? "is-maximized" : "", visible ? "" : "is-hidden"].filter(Boolean).join(" ");
+  const className = ["pane-window", `pane-window-${kindOf(win.id) || "local"}`, active ? "is-active" : "", win.maximized ? "is-maximized" : "", visible ? "" : "is-hidden"].filter(Boolean).join(" ");
   const style: React.CSSProperties = win.maximized
     ? { zIndex: win.z }
     : { left: win.x, top: win.y, width: win.w, height: win.h, zIndex: win.z };
@@ -82,6 +82,7 @@ export function PaneWindow({ win, title, subtitle, icon, active, layer, keepMoun
   return (
     <section
       className={className}
+      data-window-id={win.id}
       style={style}
       role="dialog"
       aria-label={title}

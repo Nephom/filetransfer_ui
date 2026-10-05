@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import type { PaneLayout, PaneWindowKind } from "./pane-window-model";
+import type { PaneLayout, PaneWindowId, PaneWindowKind } from "./pane-window-model";
+import { PANE_SINGLETON_KINDS, kindOf } from "./pane-window-model";
 import type { SshPopupInfo } from "./ssh-popup-registry";
 import { ExternalWindowIcon, FunctionsIcon, LocalIcon, LocationIcon, RemoteIcon, RestIcon, SftpIcon, TerminalIcon, VncIcon } from "./pane-icons";
 
@@ -15,7 +16,8 @@ export type PaneLocationChoice = {
 
 type Props = {
   layout: PaneLayout;
-  titles: Record<PaneWindowKind, string>;
+  /** Window titles by window id. */
+  titles: Record<string, string>;
   restEnabled: boolean;
   vncEnabled: boolean;
   remoteChoices: PaneLocationChoice[];
@@ -25,9 +27,9 @@ type Props = {
   onOpenLocal: () => void;
   onOpenRemote: (locationId: string) => void;
   onOpenSftp: (entryId: string) => void;
-  /** Open / restore / minimize toggle for vnc, rest and terminal (also used by taskbar tabs). */
-  onActivate: (kind: PaneWindowKind) => void;
-  onCloseWindow: (kind: PaneWindowKind) => void;
+  /** Open / restore / minimize toggle for a window (also used by taskbar tabs). */
+  onActivate: (id: PaneWindowId) => void;
+  onCloseWindow: (id: PaneWindowId) => void;
   onFocusPopup: (label: string) => void;
   onClosePopup: (label: string) => void;
 };
@@ -38,6 +40,7 @@ const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
   vnc: <VncIcon size={18} />,
   rest: <RestIcon size={18} />,
   terminal: <TerminalIcon size={18} />,
+  sftp: <SftpIcon size={18} />,
 };
 
 export function PaneDock({
@@ -70,15 +73,16 @@ export function PaneDock({
     };
   }, [functionsOpen, locationOpen]);
 
-  const windowOf = (kind: PaneWindowKind) => layout.windows.find((win) => win.id === kind);
-  const isOpen = (kind: PaneWindowKind) => Boolean(windowOf(kind)?.open);
+  const windowOf = (id: PaneWindowId) => layout.windows.find((win) => win.id === id);
+  const isOpen = (id: PaneWindowId) => Boolean(windowOf(id)?.open);
+  const anySftpOpen = layout.windows.some((win) => win.open && kindOf(win.id) === "sftp");
 
   const flyoutItems: { key: string; label: string; icon: React.ReactNode; open: boolean; onClick: () => void; hasMenu?: boolean; expanded?: boolean }[] = [
     {
       key: "location",
       label: "Location",
       icon: <LocationIcon size={26} />,
-      open: isOpen("local") || isOpen("remote"),
+      open: isOpen("local") || isOpen("remote") || anySftpOpen,
       hasMenu: true,
       expanded: locationOpen,
       onClick: () => setLocationOpen((value) => !value),
@@ -111,7 +115,11 @@ export function PaneDock({
         </button>
       ));
 
-  const taskbarKinds = (["local", "remote", "vnc", "rest", "terminal"] as PaneWindowKind[]).filter(isOpen);
+  // Singleton windows keep a fixed order; SFTP windows follow in the order they were opened.
+  const taskbarIds: PaneWindowId[] = [
+    ...PANE_SINGLETON_KINDS.filter(isOpen),
+    ...layout.windows.filter((win) => win.open && kindOf(win.id) === "sftp").map((win) => win.id),
+  ];
 
   return (
     <nav className="pane-dock" aria-label="Desktop dock">
@@ -169,24 +177,25 @@ export function PaneDock({
       </div>
 
       <div className="pane-taskbar" role="tablist" aria-label="Open windows">
-        {taskbarKinds.length === 0 && popups.length === 0 && <span className="pane-taskbar-empty">No open windows</span>}
-        {taskbarKinds.map((kind) => {
-          const win = windowOf(kind)!;
-          const active = layout.activeId === kind;
+        {taskbarIds.length === 0 && popups.length === 0 && <span className="pane-taskbar-empty">No open windows</span>}
+        {taskbarIds.map((id) => {
+          const win = windowOf(id)!;
+          const active = layout.activeId === id;
+          const title = titles[id] || id;
           return (
-            <span key={kind} className={`pane-task${active ? " is-active" : ""}${win.minimized ? " is-minimized" : ""}`}>
+            <span key={id} className={`pane-task${active ? " is-active" : ""}${win.minimized ? " is-minimized" : ""}`}>
               <button
                 type="button"
                 role="tab"
                 aria-selected={active}
                 className="pane-task-main"
-                title={win.minimized ? `Restore ${titles[kind]}` : active ? `Minimize ${titles[kind]}` : `Show ${titles[kind]}`}
-                onClick={() => onActivate(kind)}
+                title={win.minimized ? `Restore ${title}` : active ? `Minimize ${title}` : `Show ${title}`}
+                onClick={() => onActivate(id)}
               >
-                {KIND_ICON[kind]}
-                <span className="pane-task-title">{titles[kind]}</span>
+                {KIND_ICON[kindOf(id) || "local"]}
+                <span className="pane-task-title">{title}</span>
               </button>
-              <button type="button" className="pane-task-close" aria-label={`Close ${titles[kind]}`} onClick={() => onCloseWindow(kind)}>×</button>
+              <button type="button" className="pane-task-close" aria-label={`Close ${title}`} onClick={() => onCloseWindow(id)}>×</button>
             </span>
           );
         })}
