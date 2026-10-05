@@ -13,12 +13,6 @@
 .folder-tree-scroll + .persistent-scrollbar, .file-area + .persistent-scrollbar { cursor: pointer; }
 .folder-tree-scroll + .persistent-scrollbar .persistent-scrollbar-thumb, .file-area + .persistent-scrollbar .persistent-scrollbar-thumb { cursor: grab; }
 .file-pane .file-area { overscroll-behavior: contain; }
-.remote-navigation-items { display: flex; gap: var(--space-2); padding: var(--space-2) var(--space-2) 0; }
-.remote-navigation-items button { padding: var(--space-1) var(--space-2); color: var(--color-text); background: var(--color-bg-panel); border-color: var(--color-border); font-size: var(--font-size-small); }
-.remote-navigation-items button:hover:not(:disabled) { color: var(--color-text); border-color: var(--color-primary); }
-.remote-navigation-items button:disabled { opacity: .45; cursor: not-allowed; }
-.split-workspace { gap: 0; }
-.split-workspace .desktop-folder-tree { display: none; }
 /* T-209: max-width is a CSS-level safety net, independent of the JS
    drag-resize clamp (resizePane in main.tsx) and its viewport-resize
    re-clamp (T-206) -- if either ever fails to run (e.g. a future direct
@@ -31,8 +25,6 @@
    in Split mode where LOCAL and REMOTE are both on screen at once. */
 .local-pane.active-pane { box-shadow: inset 0 0 0 2px var(--color-primary); }
 .desktop-content.active-pane { box-shadow: inset 0 0 0 2px var(--color-primary); }
-.active-pane-indicator { padding: var(--space-1) var(--space-3); margin-right: var(--space-1); color: var(--color-text-muted); font-size: var(--font-size-small); background: var(--color-bg-panel-strong); border: 1px solid var(--color-border); border-radius: 999px; white-space: nowrap; }
-.active-pane-indicator strong { color: var(--color-primary); }
 .pane-resize-handle { flex: 0 0 var(--space-2); min-height: 0; background: transparent; cursor: col-resize; border-left: 1px solid var(--color-border); }
 .pane-resize-handle:hover, .pane-resize-handle:active { background: var(--color-primary); border-left-color: var(--color-primary); }
 .local-pane-heading { display: flex; flex-direction: column; min-width: 0; gap: var(--space-1); padding: var(--space-3) var(--space-3) var(--space-2); color: var(--color-text); }

@@ -62,8 +62,7 @@
 }
 
 :where(.explorer) input,
-:where(.explorer) textarea,
-:where(.explorer) .palette-select {
+:where(.explorer) textarea {
   min-height: var(--ui-control-height);
   font-size: var(--ui-font-size);
   line-height: 1.2;
@@ -83,28 +82,13 @@
 
 
 /* Keep the mode switch's Location and Workspace controls on one density scale. */
-.mode-switcher .location-control,
-.mode-switcher .workspace-select-wrap {
-  height: var(--ui-control-height);
-  min-height: var(--ui-control-height);
-  padding-top: 0;
-  padding-bottom: 0;
-}
 
-.mode-switcher .location-select,
-.mode-switcher .workspace-select {
-  height: 100%;
-  min-height: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-}
 .commandbar {
   min-height: calc(var(--ui-button-height) + var(--space-3));
   padding: var(--space-2) var(--space-3);
 }
 
-.commandbar button,
-.navigation .nav-button {
+.commandbar button {
   min-height: var(--ui-button-height);
   padding: var(--ui-button-padding-y) var(--ui-button-padding-x);
   font-size: var(--ui-font-size);
@@ -143,10 +127,7 @@
 
 .ssh-recording-actions > button,
 .ssh-controls > button,
-.modal-actions button,
-.session-list-heading button,
-.session-card-heading button,
-.ssh-entry-actions button {
+.modal-actions button {
   min-height: var(--ui-button-height);
   padding: var(--ui-button-padding-y) var(--ui-button-padding-x);
 }
@@ -166,9 +147,6 @@
 
 
 
-.sessions-layout {
-  gap: var(--ui-section-gap);
-}
 
 /* T-038: these used to be gated by a raw `@media (max-width: 720px)`
    query, which happened to give the correct result for Auto profile
@@ -201,11 +179,9 @@
 html, body, #root { width: 100%; height: 100%; overflow: hidden; }
 body { min-width: 320px; }
 .explorer { height: 100dvh; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.titlebar, .commandbar, .navigation, .statusbar { flex-shrink: 0; }
+.commandbar, .navigation, .statusbar { flex-shrink: 0; }
 .app-mark { width: var(--app-mark-width); height: var(--app-mark-height); position: relative; }
 .app-mark::before { content: ""; position: absolute; width: 10px; height: 4px; top: -3px; left: 2px; border-radius: 2px 2px 0 0; }
-.app-name { font-weight: 700; }
-.connection-status { font-weight: 700; }
 .divider { width: 1px; height: var(--space-5); margin: 0 var(--space-1); flex: 0 0 auto; }
 .crumbs { display: flex; align-items: center; min-width: 0; flex: 1; padding: 0 var(--space-3); overflow: hidden; white-space: nowrap; }
 .crumbs button { border: 0; padding: 3px var(--space-1); border-radius: 3px; cursor: pointer; }

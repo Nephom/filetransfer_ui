@@ -70,6 +70,8 @@ export function hookDriver({ effects = true } = {}) {
     },
     useMemo(fn) { cursor++; return fn(); },
     useCallback(fn) { cursor++; return fn; },
+    // External stores are read once per render; tests drive them directly.
+    useSyncExternalStore(_subscribe, getSnapshot) { return getSnapshot(); },
     lazy: () => "lazy",
     Suspense: "suspense",
   };

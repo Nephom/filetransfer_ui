@@ -150,7 +150,9 @@
   position: relative;
   z-index: 1;
   min-height: 0;
-  overflow: hidden;
+  /* Visible, not hidden: windows are clamped inside the layer, and a window
+     touching the right or bottom edge must still show its drop shadow. */
+  overflow: visible;
 }
 .pane-window {
   position: absolute;
@@ -163,18 +165,29 @@
   border: 1px solid var(--color-border);
   border-radius: 12px;
   background: color-mix(in srgb, var(--color-bg) 94%, transparent);
-  box-shadow: 0 14px 40px rgba(0, 0, 0, .38), 0 2px 0 color-mix(in srgb, var(--color-bg) 60%, transparent);
+  /* Raised look: the shadow falls to the right and below the window. */
+  box-shadow: 8px 10px 22px rgba(0, 0, 0, .42), 2px 3px 0 color-mix(in srgb, var(--color-bg) 60%, transparent);
   opacity: 1;
   transition: opacity .16s ease, box-shadow .16s ease, border-color .16s ease;
 }
 .pane-window.is-active {
   border-color: var(--color-primary);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, .5), 0 0 0 1px color-mix(in srgb, var(--color-primary) 55%, transparent), 0 0 24px color-mix(in srgb, var(--color-primary) 18%, transparent);
+  box-shadow: 12px 16px 34px rgba(0, 0, 0, .55), 0 0 0 1px color-mix(in srgb, var(--color-primary) 55%, transparent), 0 0 24px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+/* Settings -> "Window shadows" off: no blurred shadows to composite, only the
+   thin focus ring remains on the active window. */
+.pane-shadow-off .pane-window {
+  box-shadow: none;
+  transition: opacity .16s ease, border-color .16s ease;
+}
+.pane-shadow-off .pane-window.is-active {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
 .pane-window.is-maximized {
   inset: 0;
   border-radius: 0;
   border-width: 0;
+  box-shadow: none;
 }
 /* Hidden windows keep their layout box (visibility, not display:none), so the
    SSH terminal's xterm does not measure a 0x0 host and resize the remote PTY. */
@@ -324,16 +337,28 @@
 }
 
 /* ---- dock ----------------------------------------------------------- */
+/* The dock strip itself is fully transparent: no bar, no border line, no
+   divider. The Functions / Terminal launchers and the taskbar tabs float on
+   their own raised, shadowed surfaces (always on, independent of the
+   "Window shadows" setting so they stay readable on any wallpaper) and
+   overlap the bottom edge of the window area. The empty parts of the strip
+   let pointer events through to the windows behind. */
 .pane-dock {
   position: relative;
   z-index: 20;
   display: flex;
   align-items: flex-end;
   gap: var(--space-4);
-  padding: var(--space-2) var(--space-4) var(--space-2);
-  border-top: 1px solid var(--color-border);
-  background: linear-gradient(0deg, color-mix(in srgb, var(--color-bg-panel-strong) 92%, transparent), color-mix(in srgb, var(--color-bg-panel) 62%, transparent));
-  backdrop-filter: blur(16px) saturate(140%);
+  margin-top: calc(-1 * var(--space-3));
+  padding: 0 var(--space-4) var(--space-3);
+  border: 0;
+  background: none;
+  pointer-events: none;
+}
+.pane-dock-launchers,
+.pane-task,
+.pane-taskbar-empty {
+  pointer-events: auto;
 }
 .pane-dock-launchers {
   flex: 0 0 auto;
@@ -368,7 +393,7 @@
   border-radius: 14px;
   color: var(--color-text);
   background: linear-gradient(180deg, color-mix(in srgb, var(--color-bg-panel-strong) 94%, white 4%), color-mix(in srgb, var(--color-bg-panel-strong) 86%, transparent));
-  box-shadow: 0 3px 0 color-mix(in srgb, var(--color-bg) 75%, transparent), var(--shadow-inset);
+  box-shadow: 3px 5px 10px rgba(0, 0, 0, .5), 0 3px 0 color-mix(in srgb, var(--color-bg) 75%, transparent), var(--shadow-inset);
   transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, color .16s ease;
 }
 .pane-dock-button:hover:not(:disabled) .pane-dock-icon,
@@ -376,11 +401,11 @@
   transform: translateY(-3px);
   border-color: var(--color-primary);
   color: var(--color-primary);
-  box-shadow: 0 6px 0 color-mix(in srgb, var(--color-bg) 70%, transparent), 0 0 16px color-mix(in srgb, var(--color-primary) 30%, transparent);
+  box-shadow: 4px 9px 14px rgba(0, 0, 0, .5), 0 6px 0 color-mix(in srgb, var(--color-bg) 70%, transparent), 0 0 16px color-mix(in srgb, var(--color-primary) 30%, transparent);
 }
 .pane-dock-button:active .pane-dock-icon {
   transform: translateY(1px);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg) 75%, transparent);
+  box-shadow: 1px 2px 5px rgba(0, 0, 0, .5), 0 1px 0 color-mix(in srgb, var(--color-bg) 75%, transparent);
 }
 .pane-dock-button.is-expanded .pane-dock-icon,
 .pane-dock-button.is-open .pane-dock-icon {
@@ -539,9 +564,10 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding-left: var(--space-4);
-  border-left: 1px solid var(--color-border);
+  /* The padding leaves room inside the scroll box for the tabs' shadows. */
+  padding: var(--space-2) var(--space-4) var(--space-3);
   overflow-x: auto;
+  pointer-events: none;
   scrollbar-width: none;
 }
 .pane-taskbar::-webkit-scrollbar {
@@ -557,14 +583,15 @@
   align-items: stretch;
   border: 1px solid var(--color-border);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--color-bg-panel-strong) 86%, transparent);
+  background: color-mix(in srgb, var(--color-bg-panel-strong) 90%, transparent);
+  box-shadow: 3px 4px 9px rgba(0, 0, 0, .45), var(--shadow-inset);
   overflow: hidden;
   transition: border-color var(--motion-fast), background var(--motion-fast);
 }
 .pane-task.is-active {
   border-color: var(--color-primary);
   background: color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-panel-strong));
-  box-shadow: inset 0 -2px var(--color-primary);
+  box-shadow: 3px 4px 9px rgba(0, 0, 0, .45), inset 0 -2px var(--color-primary);
 }
 .pane-task.is-minimized {
   border-style: dashed;
@@ -621,7 +648,6 @@
   background: color-mix(in srgb, var(--color-danger) 50%, transparent);
 }
 
-.glass-main-off .pane-dock,
 .glass-main-off .pane-pill {
   backdrop-filter: none;
 }

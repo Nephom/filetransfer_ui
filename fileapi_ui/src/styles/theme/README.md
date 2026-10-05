@@ -15,12 +15,12 @@ instead of by "which override file happened to add it first".
 last stylesheets loaded (after every layout/component CSS) so they always
 win the cascade for anything they target:
 
-1. `base.css` -- generic explorer surface, buttons/inputs, titlebar/
+1. `base.css` -- generic explorer surface, buttons/inputs,
    commandbar/navigation/statusbar, modal text, danger/log-level colors.
-2. `location-controls.css` -- LocationControl, ContextPicker trigger,
+2. `location-controls.css` -- ContextPicker trigger,
    account trigger, and the shared dropdown-like popover family
-   (`.location-menu` / `.context-menu` / `.context-picker-popover` /
-   `.palette-select-menu`).
+   (`.location-menu` / `.account-menu` / `.context-menu` /
+   `.context-picker-popover`).
 3. `location-panes.css` -- LOCAL/REMOTE panes, folder tree, terminal dock
    and SSH controls.
 4. `rest.css` -- REST API mode (entry rail, request editor, response

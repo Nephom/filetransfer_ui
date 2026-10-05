@@ -111,6 +111,10 @@ export function SettingsModal({
             <input type="checkbox" checked={desktopSettings.glassDialogsEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, glassDialogsEnabled: event.target.checked }))} />
             <span><strong>Window glass effect</strong><small>Keeps the soft see-through look on settings and other pop-up windows.</small></span>
           </label>
+          <label className="settings-check">
+            <input type="checkbox" checked={desktopSettings.paneShadowEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, paneShadowEnabled: event.target.checked }))} />
+            <span><strong>Window shadows</strong><small>Gives desktop windows a raised look with a shadow on the right and bottom. Turn it off to save graphics-card work.</small></span>
+          </label>
         </div>
         {(() => {
           // T-216: only shown once the previewed theme/accent actually

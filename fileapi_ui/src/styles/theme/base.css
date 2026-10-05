@@ -1,5 +1,5 @@
 /* Theme surface layer, part 1: base explorer surface, generic controls,
- * titlebar/commandbar/navigation/statusbar, modals, and semantic text
+ * commandbar/navigation/statusbar, modals, and semantic text
  * colors (danger/log-level). Split out of the former theme-overrides.css
  * (T-202) -- see styles/theme/README.md for the full module map and the
  * ownership boundary against styles/theme/surfaces-*.css. */
@@ -17,13 +17,11 @@
 }
 
 :where(.explorer) button:hover:not(:disabled),
-:where(.explorer) .nav-button:hover:not(:disabled),
 :where(.explorer) .commandbar button:hover:not(:disabled) {
   border-color: var(--color-primary);
   background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel-strong));
 }
 
-:where(.explorer) .titlebar,
 :where(.explorer) .commandbar,
 :where(.explorer) .navigation,
 :where(.explorer) .statusbar {

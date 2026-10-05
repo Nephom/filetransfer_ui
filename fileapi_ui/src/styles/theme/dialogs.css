@@ -6,14 +6,12 @@
  * theme-overrides.css and surface-overrides.css (T-202). See
  * styles/theme/README.md. */
 :where(.explorer) .queue-item,
-:where(.explorer) .session-card,
 :where(.explorer) .workspace-card,
 :where(.explorer) .share-link-card,
 :where(.explorer) .settings-section { border-color: var(--color-border); background: var(--color-bg-panel); }
 :where(.explorer) .queue-item-route,
 :where(.explorer) .queue-item-progress,
 :where(.explorer) .share-link-card small,
-:where(.explorer) .session-entry small,
 :where(.explorer) .workspace-entry-button span { color: var(--color-text-muted); }
 :where(.explorer) .queue-item-detail,
 :where(.explorer) .queue-item-route code { color: var(--color-text); }
@@ -22,13 +20,10 @@
 :where(.explorer) .queue-status.failed { color: var(--color-danger); }
 :where(.explorer) .queue-status.cancelled { color: var(--color-warning); }
 :where(.explorer) .file-viewer { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg); }
-:where(.explorer) .workspace-card.selected,
-:where(.explorer) .session-card.selected { border-color: var(--color-primary); box-shadow: inset 0 0 0 1px var(--color-primary), var(--shadow-panel); }
+:where(.explorer) .workspace-card.selected { border-color: var(--color-primary); box-shadow: inset 0 0 0 1px var(--color-primary), var(--shadow-panel); }
 :where(.explorer) .workspace-name,
-:where(.explorer) .workspace-entry-button,
-:where(.explorer) .session-entry { color: var(--color-text); background: var(--color-bg-panel); }
-:where(.explorer) .workspace-entry-button:hover,
-:where(.explorer) .session-entry:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
+:where(.explorer) .workspace-entry-button { color: var(--color-text); background: var(--color-bg-panel); }
+:where(.explorer) .workspace-entry-button:hover { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
 :where(.explorer) .share-link-group-heading,
 :where(.explorer) .workspace-list-heading,
 :where(.explorer) .workspace-modal-footer { border-color: var(--color-border); }
@@ -37,8 +32,7 @@
 
 :where(.explorer) .workspace-card,
 :where(.explorer) .share-link-card,
-:where(.explorer) .settings-inline-action,
-:where(.explorer) .session-card {
+:where(.explorer) .settings-inline-action {
   border-color: var(--color-border);
   background: var(--color-bg-panel);
   box-shadow: var(--shadow-inset);
@@ -63,11 +57,9 @@
 /* REST helpers and login share the same theme contract outside the explorer pane. */
 :where(.explorer) .rest-help-button,
 :where(.explorer) .token-path-help-button,
-:where(.explorer) .rest-session-help-close,
 :where(.explorer) .token-path-help-close { border-color: var(--color-border); color: var(--color-primary); background: var(--color-bg-panel); }
 :where(.explorer) .rest-help-button:hover,
 :where(.explorer) .token-path-help-button:hover,
-:where(.explorer) .rest-session-help-close:hover,
 :where(.explorer) .token-path-help-close:hover { color: var(--color-bg); background: var(--color-primary); }
 :where(.explorer) .rest-session-help,
 :where(.explorer) .token-path-help-popup,
@@ -86,7 +78,6 @@
 .name-prompt-dialog h2 { margin: 0 0 16px; font-size: 1.05rem; }
 .name-prompt-dialog label { display: grid; gap: 7px; color: var(--color-text-muted); }
 .name-prompt-dialog input { width: 100%; box-sizing: border-box; }
-.name-prompt-dialog .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .confirm-prompt-dialog { width: min(460px, calc(100vw - 32px)); }
 .confirm-prompt-dialog p { margin: 0; color: var(--color-text-muted); line-height: 1.5; }
 

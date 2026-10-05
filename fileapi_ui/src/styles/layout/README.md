@@ -27,10 +27,9 @@ byte-for-byte unchanged from before the split):
    modal, archive-format and log-name dialogs.
 7. `panes.css` -- persistent scrollbar rail, the LOCAL pane
    (breadcrumbs/actions/tree/file list/privileged styling).
-8. `collapse-controls.css` -- Location's [<]/[>] pane-collapse rail,
-   native `<select>` styling, the generic `.modal`/`.modal-cover` shell.
-9. `buttons.css` -- generic desktop button semantics (confirm/danger/
-   ghost) and the shared modal-actions/ssh-entry-actions button family.
+8. `modal-shell.css` -- the generic `.modal`/`.modal-cover` shell.
+9. `buttons.css` -- generic desktop button semantics (confirm/danger)
+   and the shared modal-actions button family.
 
 These load in the *middle* tier of `styles/index.css` (after tokens/
 overlays, before the `styles/theme/` override modules), same position the

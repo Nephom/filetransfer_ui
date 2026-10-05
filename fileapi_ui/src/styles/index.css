@@ -61,7 +61,7 @@
 @import "./layout/terminal.css";
 @import "./layout/queue-settings-dialogs.css";
 @import "./layout/panes.css";
-@import "./layout/collapse-controls.css";
+@import "./layout/modal-shell.css";
 @import "./layout/buttons.css";
 @import "./desktop-ui.css";
 @import "./starship-bridge.css";

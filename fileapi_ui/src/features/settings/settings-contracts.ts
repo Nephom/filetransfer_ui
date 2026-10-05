@@ -14,6 +14,8 @@ export type DesktopSettings = {
   glassMainEnabled: boolean;
   glassMenusEnabled: boolean;
   glassDialogsEnabled: boolean;
+  /** Drop shadow under the Pane windows (raised look). Off saves GPU work. */
+  paneShadowEnabled: boolean;
   proxmoxVncModeEnabled: boolean;
   restApiModeEnabled: boolean;
   collapseMainPaneEnabled: boolean;
@@ -51,6 +53,7 @@ export const defaultDesktopSettings: DesktopSettings = {
   glassMainEnabled: true,
   glassMenusEnabled: true,
   glassDialogsEnabled: true,
+  paneShadowEnabled: true,
   proxmoxVncModeEnabled: false,
   restApiModeEnabled: false,
   collapseMainPaneEnabled: false,
@@ -97,6 +100,7 @@ export const normalizeDesktopSettings = (raw: unknown): DesktopSettings => {
     glassMainEnabled: pick(saved.glassMainEnabled, (value) => typeof value === "boolean", defaultDesktopSettings.glassMainEnabled),
     glassMenusEnabled: pick(saved.glassMenusEnabled, (value) => typeof value === "boolean", defaultDesktopSettings.glassMenusEnabled),
     glassDialogsEnabled: pick(saved.glassDialogsEnabled, (value) => typeof value === "boolean", defaultDesktopSettings.glassDialogsEnabled),
+    paneShadowEnabled: pick(saved.paneShadowEnabled, (value) => typeof value === "boolean", defaultDesktopSettings.paneShadowEnabled),
     operationLogLevel: pick(
       saved.operationLogLevel,
       (value) => typeof value === "string" && ["DEBUG", "INFO", "WARN", "ERROR"].includes(value),

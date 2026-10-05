@@ -119,6 +119,29 @@ try {
   });
   await shot("01-desktop");
 
+  // Dock: the strip is fully transparent (no bar, no top line, no divider); the launchers and
+  // tabs float on their own shadowed surfaces; windows get a right/bottom drop shadow.
+  const style = (selector, props) => page.locator(selector).first().evaluate((el, names) => {
+    const css = getComputedStyle(el);
+    return Object.fromEntries(names.map((name) => [name, css.getPropertyValue(name)]));
+  }, props);
+  const offsets = (shadow) => [...shadow.matchAll(/(-?[\d.]+)px (-?[\d.]+)px (-?[\d.]+)px/g)].map((match) => ({ x: Number(match[1]), y: Number(match[2]), blur: Number(match[3]) }));
+  const dock = await style(".pane-dock", ["border-top-width", "background-color", "background-image", "backdrop-filter"]);
+  assert.equal(dock["border-top-width"], "0px", "no line above Functions / Terminal");
+  assert.equal(dock["background-color"], "rgba(0, 0, 0, 0)", "the dock strip has no background colour");
+  assert.equal(dock["background-image"], "none", "the dock strip has no background gradient");
+  assert.ok(["none", ""].includes(dock["backdrop-filter"]), "the dock strip has no blur");
+  assert.equal((await style(".pane-taskbar", ["border-left-width"]))["border-left-width"], "0px", "no divider between launchers and tabs");
+  const launcherShadow = offsets((await style(".pane-dock-icon", ["box-shadow"]))["box-shadow"]);
+  assert.ok(launcherShadow.some((s) => s.x > 0 && s.y > 0 && s.blur > 0), "launchers float on a shadow");
+  const tabShadow = offsets((await style(".pane-task", ["box-shadow"]))["box-shadow"]);
+  assert.ok(tabShadow.some((s) => s.x > 0 && s.y > 0 && s.blur > 0), "taskbar tabs float on a shadow");
+  const windowShadow = offsets((await style(".pane-window-local", ["box-shadow"]))["box-shadow"]);
+  assert.ok(windowShadow.some((s) => s.x > 0 && s.y > 0 && s.blur > 0), "windows have a right/bottom drop shadow");
+  // The empty dock strip lets clicks through to the window behind it.
+  assert.equal((await style(".pane-dock", ["pointer-events"]))["pointer-events"], "none");
+  assert.equal((await style(".pane-dock-launchers", ["pointer-events"]))["pointer-events"], "auto");
+
   // First launch: Local + Remote side by side, both inside the window layer.
   const layer = await rect(".pane-window-layer");
   const local = await rect(".pane-window-local");
@@ -195,7 +218,11 @@ try {
     await page.locator(`.pane-window-${cls}:not(.is-hidden)`).waitFor();
     const win = await rect(`.pane-window-${cls}`);
     const dock = await rect(".pane-dock");
-    assert.ok(win.b <= dock.y + 1, `${label} window ends above the dock`);
+    const layerNow = await rect(".pane-window-layer");
+    // The launchers float over the bottom edge of the window area by a small, fixed amount;
+    // a window never leaves the window area, so it never reaches below that overlap.
+    assert.ok(win.b <= layerNow.b + 1, `${label} window stays inside the window area`);
+    assert.ok(layerNow.b - dock.y <= 16, `${label}: the floating dock overlaps the window area by at most 16px`);
   }
   await shot("07-rest-vnc");
 
@@ -259,6 +286,20 @@ try {
   // Closing a window removes its tab.
   await page.locator(".pane-task", { hasText: "VNC" }).locator(".pane-task-close").click();
   assert.equal(await page.locator(".pane-task", { hasText: "VNC" }).count(), 0, "closing removes the taskbar tab");
+
+  // Settings -> Window shadows switches the window shadows off, but never the dock / tab shadows.
+  await page.locator('button[aria-label="Settings"]').click();
+  await page.locator(".settings-panel-card", { hasText: "Color theme" }).click();
+  await page.locator(".settings-check", { hasText: "Window shadows" }).locator("input").uncheck();
+  assert.equal(await page.locator(".explorer.pane-shadow-off").count(), 1, "the shadow switch is applied to the desktop");
+  assert.equal((await style(".pane-window-local", ["box-shadow"]))["box-shadow"], "none", "window shadow is gone when switched off");
+  assert.ok(offsets((await style(".pane-dock-icon", ["box-shadow"]))["box-shadow"]).some((s) => s.blur > 0), "launchers keep their 3D shadow");
+  assert.ok(offsets((await style(".pane-task", ["box-shadow"]))["box-shadow"]).some((s) => s.blur > 0), "tabs keep their 3D shadow");
+  await shot("09-shadows-off");
+  await page.locator(".settings-check", { hasText: "Window shadows" }).locator("input").check();
+  assert.equal(await page.locator(".explorer.pane-shadow-off").count(), 0, "switching back on restores the shadows");
+  await page.keyboard.press("Escape");
+  await page.locator(".modal-cover, .floating-dialog-layer").first().waitFor({ state: "detached", timeout: 3000 }).catch(() => undefined);
 
   const ignorable = /Failed to load resource|ResizeObserver|favicon/;
   const real = errors.filter((message) => !ignorable.test(message));

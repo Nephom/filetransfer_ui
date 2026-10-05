@@ -199,7 +199,7 @@ REST mode also consumes shared styles loaded by `styles/index.css`:
 - `tokens.css`, `starship-bridge.css`, and `styles/theme/*.css`: tokens, palette, and final theme overrides;
 - `desktop-ui.css`, `commandbar.css`, `pane-style.css`: shell, command bar, and Pane window frame;
 - `location-control.css`, `context-picker.css`, `settings.css`, `account-menu.css`, `tls.css`: shared shell controls and modal semantics;
-- `styles/layout/buttons.css`, `workspace-dialogs.css`, `collapse-controls.css`, and `panes.css`: shared controls and pane conventions;
+- `styles/layout/buttons.css`, `workspace-dialogs.css`, `modal-shell.css`, and `panes.css`: shared controls and pane conventions;
 - `ui/dropdown.css`, `ui/overflow-menu.css`, `ui/entry-actions-menu.css`: shared popup and entry action controls.
 
 Do not duplicate global token, dropdown, popup, or modal rules in `rest-api.css`. Feature-specific selectors belong here; cross-feature rules belong in the shared module or in the appropriate final theme override. `rest-api.css` is loaded before no additional REST theme overrides because the theme layer is already loaded last through `styles/index.css`.

@@ -66,7 +66,6 @@ body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI",
   mix-blend-mode: screen;
 }
 
-.titlebar,
 .commandbar,
 .navigation,
 .statusbar {
@@ -81,8 +80,6 @@ body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI",
 
 .explorer > *:not(.modal-cover) { position: relative; z-index: 1; }
 .explorer > .context-menu { position: fixed; z-index: 100; }
-.explorer > .terminal-layer { position: fixed; z-index: 120; }
-.explorer > .titlebar { z-index: 110; }
 .explorer > .commandbar { z-index: 20; }
 .explorer > .navigation { z-index: 10; }
 .explorer > .modal-cover {
@@ -91,36 +88,11 @@ body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI",
   z-index: 100;
 }
 .explorer > .floating-dialog-layer { z-index: var(--z-modal); }
-.account-control,
-.location-control { z-index: 2; }
+.account-control { z-index: 2; }
 .account-menu,
 .location-menu,
 .context-menu { z-index: 100; }
 
-.titlebar {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 360px) minmax(0, 1fr) auto;
-  align-items: center;
-  min-height: clamp(44px, calc(30px + 4vmin), 56px);
-  height: clamp(44px, calc(30px + 4vmin), 56px);
-  max-height: clamp(44px, calc(30px + 4vmin), 56px);
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-4);
-  overflow: hidden;
-}
-.titlebar-brand, .titlebar-main, .titlebar-account { min-width: 0; display: flex; align-items: center; }
-.explorer > .titlebar { overflow: visible; }
-.titlebar-brand { gap: var(--space-3); overflow: hidden; }
-.titlebar-brand > span { margin-left: 0; }
-.titlebar-brand .app-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.titlebar-main { justify-content: center; }
-.titlebar-main { position: relative; }
-.titlebar-main .mode-switcher { width: fit-content; max-width: 100%; min-width: 0; margin-left: 0; flex: 0 0 auto; }
-.titlebar-account { justify-content: flex-end; }
-.titlebar-account .account-control { margin-left: 0; }
-.titlebar span { margin-left: 0; }
-.titlebar::before,
 .commandbar::before,
 .navigation::before {
   position: absolute;
@@ -138,31 +110,23 @@ body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI",
   background: linear-gradient(135deg, rgba(99, 230, 255, .95), rgba(49, 139, 255, .65));
   box-shadow: 0 0 18px rgba(99, 230, 255, .42), inset 0 0 10px rgba(255, 255, 255, .35);
 }
-.app-name { letter-spacing: .08em; text-transform: uppercase; font-family: "Share Tech Mono", "Fira Code", monospace; }
-.connection-status { color: var(--bridge-green); font-size: .72em; letter-spacing: .06em; text-transform: uppercase; }
-.location-control,
-.account,
-.active-pane-indicator {
+.account {
   border-color: var(--bridge-line);
   border-radius: var(--bridge-radius-sm);
   background: rgba(11, 42, 65, .68);
   box-shadow: var(--bridge-inset);
 }
-.location-control { margin-left: 22px; }
-.location-label,
 .sidebar-label,
 .eyebrow,
 .terminal-header::before {
   color: var(--bridge-cyan);
   letter-spacing: .16em;
 }
-.health-dot.online { background: var(--bridge-green); box-shadow: 0 0 0 2px rgba(93, 242, 189, .18), 0 0 14px var(--bridge-green); }
 
 .commandbar { position: relative; gap: var(--space-2); min-height: clamp(42px, calc(28px + 4vmin), 54px); padding: var(--space-2) var(--space-4); }
 .commandbar button,
 .navigation button,
 .account,
-.nav-button,
 .view-switch button {
   border-color: transparent;
   border-radius: var(--bridge-radius-sm);
@@ -173,7 +137,6 @@ body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI",
 .commandbar button:hover:not(:disabled),
 .navigation button:hover:not(:disabled),
 .account:hover,
-.nav-button:hover:not(:disabled),
 .view-switch button:hover:not(:disabled) {
   color: var(--bridge-text);
   border-color: var(--bridge-line);
@@ -196,7 +159,6 @@ body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI",
 .navigation { position: relative; padding: var(--space-2) var(--space-4); }
 .crumbs,
 .search,
-.palette-select,
 .location-menu,
 .account-menu,
 .context-menu {
@@ -208,7 +170,6 @@ body { color: var(--bridge-text); font-family: var(--font-family-ui, "Segoe UI",
 }
 .crumbs { height: clamp(30px, calc(20px + 3vmin), 38px); }
 .search:focus,
-.palette-select:focus,
 input:focus,
 textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99, 230, 255, .16), 0 0 18px rgba(99, 230, 255, .1); outline: none; }
 
@@ -253,12 +214,10 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .file-tile.selected { border-color: var(--bridge-cyan); background: rgba(45, 121, 153, .38); box-shadow: 0 0 0 1px rgba(99, 230, 255, .45), var(--bridge-glass-shadow); }
 
 .glyph-folder,
-.glyph-file,
-.status-glyph { display: inline-block; flex: 0 0 auto; vertical-align: -.12em; }
+.glyph-file { display: inline-block; flex: 0 0 auto; vertical-align: -.12em; }
 .glyph-folder { position: relative; width: 1.05em; height: .78em; border: 1px solid var(--bridge-amber); border-radius: 2px; background: linear-gradient(135deg, rgba(242, 189, 99, .8), rgba(166, 103, 38, .6)); box-shadow: 0 0 8px rgba(242, 189, 99, .28); }
 .glyph-folder::before { position: absolute; top: -.28em; left: .08em; width: .48em; height: .3em; content: ""; border: 1px solid var(--bridge-amber); border-bottom: 0; border-radius: 2px 2px 0 0; background: rgba(242, 189, 99, .8); }
 .glyph-file { width: .82em; height: 1em; border: 1px solid var(--bridge-cyan); border-radius: 2px; background: linear-gradient(135deg, rgba(99, 230, 255, .26), rgba(49, 139, 255, .08)); box-shadow: 0 0 8px rgba(99, 230, 255, .18); }
-.status-glyph { color: var(--bridge-cyan); font-size: .8em; }
 
 .notice,
 .share-link { border-color: var(--bridge-line); border-radius: var(--bridge-radius-sm); background: rgba(16, 70, 91, .44); box-shadow: var(--bridge-inset); }
@@ -274,7 +233,6 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .xterm-host,
 .ssh-output { border-color: var(--bridge-line); background: rgba(1, 7, 14, .88); }
 .ssh-quick-list { border-color: var(--bridge-line); background: rgba(5, 25, 42, .8); }
-.terminal-restore { margin: 0 var(--space-3) var(--space-2); width: calc(100% - var(--space-5)); border: 1px solid var(--bridge-line); border-radius: var(--bridge-radius-sm); background: rgba(7, 27, 44, .7); }
 
 .modal-cover { background: rgba(0, 5, 13, .7); backdrop-filter: blur(10px) saturate(125%); }
 .modal,
@@ -311,7 +269,6 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .workspace-card,
 .share-link-card,
 .queue-item,
-.session-card,
 .archive-format-option { position: relative; border-color: var(--bridge-line); border-radius: var(--bridge-radius-sm); background: rgba(3, 19, 33, .56); box-shadow: var(--bridge-inset); }
 .settings-section h3,
 .workspace-entry-section h3 { color: var(--bridge-cyan); letter-spacing: .12em; text-transform: uppercase; }
@@ -342,7 +299,6 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .login output { color: #ffb4c1; }
 
 /* Stronger material separation for WebViews where backdrop-filter is subtle. */
-.titlebar,
 .commandbar,
 .navigation,
 .desktop-folder-tree,
@@ -374,7 +330,6 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 }
 
 /* True transparent glass: the page behind the surface must remain visible. */
-.titlebar,
 .commandbar,
 .navigation,
 .statusbar {
@@ -405,21 +360,18 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 }
 .account-menu button:focus-visible,
 .location-menu button:focus-visible,
-.context-menu button:focus-visible,
-.palette-select-menu button:focus-visible {
+.context-menu button:focus-visible {
   outline: 2px solid var(--bridge-cyan);
   outline-offset: -2px;
 }
 .account-menu button:disabled,
 .location-menu button:disabled,
-.context-menu button:disabled,
-.palette-select-menu button:disabled {
+.context-menu button:disabled {
   color: var(--bridge-muted);
   cursor: not-allowed;
 }
 .account-menu button[aria-current="true"],
-.location-menu button[aria-selected="true"],
-.palette-select-menu button[aria-selected="true"] {
+.location-menu button[aria-selected="true"] {
   color: var(--color-primary);
   background: var(--color-bg-panel);
   font-weight: 600;
@@ -453,7 +405,6 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .workspace-card,
 .share-link-card,
 .queue-item,
-.session-card,
 .archive-format-option {
   background: rgba(3, 19, 33, .28);
 }
@@ -464,9 +415,6 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
   .file-tile:hover, .commandbar button:active:not(:disabled), .navigation button:active:not(:disabled) { transform: none; }
 }
 @media (max-width: 720px) {
-  .titlebar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; padding: 8px 12px; gap: 8px; }
-  .app-name { max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .titlebar-account .account-role { display: none; }
   .desktop-workspace { gap: 8px; padding: 8px; }
   .desktop-folder-tree, .desktop-content, .local-pane { border-radius: var(--bridge-radius-sm); }
   .terminal-dock { margin: 0 8px 8px; }

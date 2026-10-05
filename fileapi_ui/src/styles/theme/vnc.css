@@ -11,10 +11,8 @@
   background: var(--color-bg-panel);
 }
 :where(.explorer) .vnc-entry,
-:where(.explorer) .vnc-vm-list button,
 :where(.explorer) .vnc-display-toolbar button { color: var(--color-text); background: var(--color-bg-panel-strong); }
 :where(.explorer) .vnc-entry:hover,
-:where(.explorer) .vnc-vm-list button:hover,
 :where(.explorer) .vnc-display-toolbar button:hover:not(:disabled) { border-color: var(--color-primary); }
 :where(.explorer) .vnc-entry.active { border-color: var(--color-primary); box-shadow: inset 3px 0 var(--color-primary); }
 

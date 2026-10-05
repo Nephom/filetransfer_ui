@@ -47,9 +47,11 @@ Changing Location via `selectLocation()` resets paths/selections/tree state of t
 
 The desktop UI is the Pane Style window desktop (`src/pane/`); there is no mode switcher or Classic layout. `PaneDesktop` owns the window list (`usePaneWindows`, persisted as `fileapi-pane-layout`) and reports the open and focused windows to `DesktopApp` through `onWindowState`. A window id is either its kind (`local`, `remote`, `vnc`, `rest`, `terminal`, one of each) or `sftp:<entryId>` (one per SSH entry; the CSS class is `pane-window-sftp`, the id is exposed as `data-window-id`). SFTP windows are never written to `fileapi-pane-layout` and are dropped when their SSH entry is removed. Minimizing hides a window with `visibility: hidden` and keeps it mounted, so REST/VNC connections and polling continue; closing a REST or VNC window unmounts it and ends that connection. The Terminal window is never unmounted: closing it only hides it, and its SSH tabs and sessions stay alive.
 
-The Functions button in the dock lists Location, VNC and RestAPI (VNC and RestAPI only when enabled in Settings). Location opens a list of Local, every API Location from `GET /api/locations` (offline ones disabled) and every SSH entry from the Workspace Manager (enabled once it is connected in the Terminal). Choosing a Remote entry runs `selectLocation()` and opens the Remote window; choosing an SFTP entry opens (or raises) that entry's own SFTP window. Two entries with the same name are shown as `name (user@host)`.
+The Functions button in the dock lists Location, VNC and RestAPI (VNC and RestAPI only when enabled in Settings). Location opens a list of Local, every API Location from `GET /api/locations` (offline ones disabled) and every SSH entry from the Workspace Manager (enabled once it is connected in the Terminal). Choosing a Remote entry runs `selectLocation()` and opens the Remote window; choosing an SFTP entry opens (or raises) that entry's own SFTP window. An SSH entry counts as connected (`pane/sftp-availability.ts`) when the main window's Terminal has a connected tab for it **or** a native "Open in New Window" SSH window for it reports `connected` through `ssh-popup-state` (those windows have their own webview, so the main window only learns about them from `ssh-popup-registry`; after a reload the registry broadcasts `ssh-popup-state-request` and every popup re-reports). Two entries with the same name are shown as `name (user@host)`.
 
 The focused Location window decides `activePane`: focusing Local makes it `"local"`, focusing Remote makes it `"remote"`, and New folder, Rename, Delete, View, Select all and Refresh act on that pane. SFTP windows have their own command bar and do not use `activePane`. Each Location window has its own command bar; REST and VNC portal their tools into their own window's command bar. Dragging between the Local and Remote windows uses the same drag state as before, so Upload and Download by drag still work across windows.
+
+The dock strip is fully transparent: there is no bar background, no line above Functions / Terminal and no divider before the taskbar tabs. The launchers and the tabs float on their own raised surfaces (always shadowed, independent of Settings) and overlap the bottom edge of the window area by `var(--space-3)`; the empty part of the strip has `pointer-events: none`, so clicks reach the windows behind it. Desktop windows have a drop shadow that falls to the right and below (`.pane-window`); Settings → Color theme → **Window shadows** (`paneShadowEnabled`, default on) adds `pane-shadow-off` to the shell, which removes the blurred window shadows to save GPU work and leaves only the focus ring on the active window. The window layer uses `overflow: visible` so a window touching the right or bottom edge keeps its shadow.
 
 SSH "Open in New Window" terminals are native Tauri windows. The main window tracks them in `pane/ssh-popup-registry.ts` (created handles, `tauri://destroyed`, `WebviewWindow.getAll()` reconciliation, and `ssh-popup-state` events emitted by the popup) so the taskbar can focus or close them. Closing the main window first closes every popup, asking once if a recording would be discarded.
 
@@ -211,7 +213,7 @@ Location mode does not have one feature-local stylesheet. Its styles are assembl
 | `styles/tokens.css` | Shared colors, spacing, type, control heights, radii, shadows, transitions, and z-index tokens. |
 | `styles/desktop-ui.css` | App shell, title bar, navigation, folder/file workspace, generic modals, status bar, terminal dock, and base desktop geometry. |
 | `styles/pane-style.css` | Pane desktop: wallpaper, window frames and resize grips, dock, Functions flyout, taskbar, top-right pills, wallpaper editor. |
-| `styles/location-control.css` | Location selector, menu, selected/online states, health dot, and chevron. |
+| `styles/location-control.css` | Location dropdown menu surface (`.location-menu`) used by the account and picker menus. |
 | `styles/commandbar.css` | Location action bar, overflow menu, divider, active-pane indicator, and view switch. |
 | `styles/context-picker.css` | Context/location/SSH picker popover, groups, selected check mark, and keyboard-friendly options. |
 | `styles/account-menu.css` | Account button, role/summary, and account popover. |
@@ -225,12 +227,12 @@ Location mode does not have one feature-local stylesheet. Its styles are assembl
 | `styles/layout/terminal.css` | SSH terminal dock and terminal controls embedded in the desktop shell. |
 | `styles/layout/queue-settings-dialogs.css` | Queue modal, transfer cards, progress, and queue-related settings surfaces. |
 | `styles/layout/panes.css` | LOCAL pane sizing, folder pane, active pane, and resize handles. |
-| `styles/layout/collapse-controls.css` | Location main-pane collapse/restore rail and shared collapse semantics. |
+| `styles/layout/modal-shell.css` | Generic `.modal` / `.modal-cover` shell. |
 | `styles/layout/buttons.css` | Shared primary/confirm/danger/neutral button semantics. |
 | `styles/starship-bridge.css` | Bridge visual profile and base surface/palette compatibility rules. |
 | `styles/vnc-interactions.css` | Shared interaction states used by VNC and shell surfaces; harmless in Location mode. |
 | `styles/theme/base.css` | Final theme base colors/surfaces. |
-| `styles/theme/location-controls.css` | Final theme overrides for Location controls and mode-specific shell controls. |
+| `styles/theme/location-controls.css` | Final theme overrides for the ContextPicker trigger, account control and dropdown-like popovers. |
 | `styles/theme/location-panes.css` | Final theme overrides for folder/file/local/remote panes and tables. |
 | `styles/theme/dialogs.css` | Final theme overrides for shared dialogs and modal surfaces. |
 | `styles/theme/help.css`, `styles/theme/log-view.css` | Final theme overrides for Help and operation-log overlays opened from Location mode. |

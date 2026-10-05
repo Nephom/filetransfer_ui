@@ -25,7 +25,6 @@
  * there are enough entries to exceed the available height) and leaves any
  * true leftover space at the bottom of the pane instead. */
 .vnc-entry-list { flex: 0 1 auto; min-height: 0; padding-top: 10px; overflow: auto; }
-.vnc-entry-choice { display: none; }
 .vnc-entry-row { position: relative; display: flex; align-items: center; gap: var(--space-1); width: 100%; }
 .vnc-entry-row + .vnc-entry-row { margin-top: var(--space-1); }
 /* T-219: Edit/Remove used to be two always-visible text buttons; in a
@@ -97,11 +96,7 @@
 .vnc-vm-ssh-window-actions { display: flex; justify-content: flex-end; }
 .vnc-vm-ssh-window .modal-actions { display: flex; justify-content: flex-end; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-top: 1px solid var(--color-border); }
 .vnc-warning { margin-top: 9px; color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 14%, var(--color-bg-panel)); border-color: var(--color-warning); }
-.vnc-vm-list { display: grid; gap: var(--space-1); max-height: clamp(120px, 16vh, 150px); margin: 0 var(--space-5) var(--space-3); overflow: auto; }
-.vnc-vm-list button { display: flex; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-2); border: 1px solid var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); text-align: left; }
-.vnc-vm-list button:hover { border-color: var(--color-warning); }
-.vnc-vm-list span { color: var(--color-text-muted); font-size: var(--font-size-small); }
-@media (max-width: 720px) { .mode-buttons { min-width: 0; }.mode-switcher { gap: 4px; }.vnc-workspace { flex-direction: column; overflow: auto; }.vnc-entry-pane { flex: 0 0 auto; max-height: 210px; border-right: 0; border-bottom: 1px solid var(--color-border); }.vnc-auth-grid { grid-template-columns: 1fr; }.vnc-screen { min-height: 280px; height: 58vh; } }
+@media (max-width: 720px) { .vnc-workspace { flex-direction: column; overflow: auto; }.vnc-entry-pane { flex: 0 0 auto; max-height: 210px; border-right: 0; border-bottom: 1px solid var(--color-border); }.vnc-auth-grid { grid-template-columns: 1fr; }.vnc-screen { min-height: 280px; height: 58vh; } }
 @media (max-width: 720px) { .direct-vnc-card { padding-inline: var(--space-2); }.direct-vnc-card small { display: none; } }
 .vnc-entry-pane, .vnc-reader { border: 1px solid var(--color-border); border-radius: var(--radius-md); background: linear-gradient(135deg, rgba(112, 226, 246, .12), transparent 30%), linear-gradient(315deg, rgba(49, 139, 255, .12), transparent 46%), rgba(8, 27, 46, .28); box-shadow: var(--shadow-panel), var(--shadow-inset); backdrop-filter: blur(18px) saturate(125%); }
 /* T-220: Connection Controls <-> VNC screen used to be split by a

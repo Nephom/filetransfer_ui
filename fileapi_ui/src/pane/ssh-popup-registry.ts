@@ -3,8 +3,8 @@
 // live inside the Pane desktop; instead the main window keeps a registry so
 // the taskbar can list, focus and close them.
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { SSH_POPUP_PREFIX, SSH_POPUP_STATE_EVENT, type SshPopupStatePayload } from "./ssh-popup-contracts";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { SSH_POPUP_PREFIX, SSH_POPUP_STATE_EVENT, SSH_POPUP_STATE_REQUEST_EVENT, type SshPopupStatePayload } from "./ssh-popup-contracts";
 
 export type SshPopupInfo = {
   label: string;
@@ -70,11 +70,14 @@ export async function reconcileSshPopups() {
     }
   }
   if (changed) publish();
+  // Popups that survived a reload of this window cannot be matched to an SSH
+  // entry from the handle alone; ask each of them to report its state again.
+  if (alive.size > 0) void emit(SSH_POPUP_STATE_REQUEST_EVENT).catch(() => undefined);
 }
 
 /** Listen for state reports from the popups. Returns the disposer. */
 export async function startSshPopupBridge(): Promise<UnlistenFn> {
-  return listen<SshPopupStatePayload>(SSH_POPUP_STATE_EVENT, (event) => {
+  const unlisten = await listen<SshPopupStatePayload>(SSH_POPUP_STATE_EVENT, (event) => {
     const payload = event.payload;
     if (!payload?.label || !payload.label.startsWith(SSH_POPUP_PREFIX)) return;
     const current = popups.get(payload.label);
@@ -87,6 +90,9 @@ export async function startSshPopupBridge(): Promise<UnlistenFn> {
     });
     publish();
   });
+  // The bridge is now listening: collect the state of popups opened earlier.
+  void emit(SSH_POPUP_STATE_REQUEST_EVENT).catch(() => undefined);
+  return unlisten;
 }
 
 /** Bring a popup to the front: restore it when minimized, show it, focus it. */

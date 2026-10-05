@@ -34,7 +34,6 @@
 .queue-status.running::before { content: ""; display: inline-block; width: var(--space-2); height: var(--space-2); margin-right: var(--space-1); border: 1px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: queue-spin .8s linear infinite; vertical-align: -1px; }
 @keyframes queue-spin { to { transform: rotate(360deg); } }
 .recording-indicator { color: var(--color-danger); font-size: var(--font-size-small); font-weight: 700; }
-.recording-log-location { color: var(--color-text-muted); font-size: var(--font-size-small); }
 .saved-log-paths { display: grid; gap: var(--space-1); flex-basis: 100%; color: var(--color-primary); font-size: var(--font-size-small); }
 .saved-log-paths code { color: var(--color-text-muted); overflow-wrap: anywhere; }
 .saved-log-paths button { background: transparent; border: 0; color: inherit; cursor: pointer; text-align: left; padding: 0; }
@@ -50,6 +49,4 @@
 .log-name-modal { width: min(520px, calc(100vw - 32px)); }
 .log-name-modal p { color: var(--color-text-muted); line-height: 1.5; }
 .log-name-modal input { width: 100%; margin-top: var(--space-1); padding: var(--space-2); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; }
-.terminal-restore { order: 10; flex: 0 0 var(--space-6); width: 100%; padding: var(--space-1); border: 0; border-top: 1px solid var(--color-border); border-radius: 0; color: var(--color-text-muted); background: var(--color-bg); }
 .explorer > .statusbar { order: 20; }
-.terminal-restore:hover { color: var(--color-text); background: var(--color-bg-panel); }

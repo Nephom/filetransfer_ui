@@ -67,8 +67,6 @@
 .ssh-quick-list-entry-popup { flex: 0 0 auto; width: 30px; padding: var(--space-1); border: 0; border-radius: 0 4px 4px 0; background: transparent; color: var(--color-text-muted); cursor: pointer; }
 .ssh-quick-list-entry-popup:hover, .ssh-quick-list-entry-popup:focus-visible { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, transparent); outline: 0; }
 .ssh-quick-list-entry-row.active { box-shadow: inset 2px 0 var(--color-primary); }
-.terminal-placeholder { align-items: flex-start; justify-content: center; color: var(--color-text-muted); }
-.terminal-placeholder p { margin: 0; }
 .terminal-inline-note { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-small); }
 .ssh-terminal-content { gap: var(--space-1); }
 .ssh-terminal-popup { display: flex; flex-direction: column; width: 100vw; height: 100vh; min-width: 0; min-height: 0; color: var(--color-text); background: var(--color-bg); }
@@ -83,18 +81,9 @@
 .ssh-popup-saved-logs { flex: 0 0 auto; padding: var(--space-2) var(--space-3); overflow-wrap: anywhere; color: var(--color-primary); font-size: var(--font-size-small); }
 .ssh-controls { display: flex; align-items: end; gap: var(--space-1); flex-wrap: wrap; }
 .ssh-controls .palette-select-control, .ssh-controls > button { width: 92px; min-width: 92px; box-sizing: border-box; }
-.ssh-controls .palette-select { padding: var(--space-1) var(--space-2); font-size: var(--font-size-small); }
 .ssh-controls label { min-width: clamp(180px, 18vw, 220px); margin: 0; }
 .palette-select-control { position: relative; min-width: clamp(180px, 18vw, 220px); }
-.palette-select { width: 100%; min-width: 0; max-width: none; padding: var(--space-2); border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-panel-strong); font-size: var(--font-size-base); font-weight: 400; }
-.palette-select:hover { border-color: var(--color-primary); background: var(--color-bg-panel); }
-.palette-select-menu { top: calc(100% + var(--space-1)); right: 0; left: 0; min-width: 100%; max-width: none; }
-.palette-select-menu.menu-up { top: auto; bottom: calc(100% + var(--space-1)); max-height: clamp(140px, 18vh, 180px); overflow-y: auto; }
 .ssh-controls .dropdown { width: 92px; margin-top: var(--space-1); }
-.ssh-profile-form input { width: 100%; margin-top: var(--space-1); }
-.ssh-controls .dropdown-trigger, .ssh-profile-form input { padding: var(--space-2); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; }
+.ssh-controls .dropdown-trigger { padding: var(--space-2); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; }
 .ssh-output { flex: 1; min-height: clamp(60px, 8vh, 80px); overflow: auto; margin: 0; padding: var(--space-3); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); white-space: pre-wrap; font: var(--ui-font-size, var(--font-size-base))/1.45 var(--font-family-mono); }
-.ssh-profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); overflow: auto; }
-.ssh-profile-form label { margin: 0; }
-.ssh-profile-form label:last-of-type { grid-column: 1 / -1; }
 .ssh-recording-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }

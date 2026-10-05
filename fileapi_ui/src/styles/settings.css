@@ -43,10 +43,6 @@
 .settings-modal.settings-panel-sharing .settings-section:not(:nth-of-type(4)),
 .settings-modal.settings-panel-history .settings-section:not(:nth-of-type(5)) { display: none; }
 .settings-subpanel-back { align-self: flex-start; margin-bottom: var(--space-2); }
-.settings-subpanel { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: auto; padding: var(--ui-panel-padding); animation: settings-subpanel-in 160ms ease-out both; }
-.settings-subpanel-heading { display: flex; align-items: center; gap: var(--ui-control-gap); margin-bottom: var(--ui-section-gap); }
-.settings-subpanel-heading button { min-height: var(--ui-button-height); }
-.settings-subpanel-heading strong { color: var(--color-text); font-size: var(--font-size-heading); }
 .settings-actions { gap: var(--ui-control-gap); margin-top: var(--ui-section-gap); }
 @keyframes settings-subpanel-in { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
 

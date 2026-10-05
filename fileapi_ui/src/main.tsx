@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -48,7 +48,8 @@ import { PaneTopRight } from "./pane/PaneTopRight";
 import { type PaneLocationChoice } from "./pane/PaneDock";
 import { sftpWindowId, type PaneWindowId } from "./pane/pane-window-model";
 import { SftpWindow, type SftpDndBridge, type SftpTransferBridge } from "./features/sftp/SftpWindow";
-import { trackSshPopup } from "./pane/ssh-popup-registry";
+import { trackSshPopup, subscribeSshPopups, getSshPopupSnapshot } from "./pane/ssh-popup-registry";
+import { isSshEntryConnected } from "./pane/sftp-availability";
 import { SSH_POPUP_PREFIX } from "./pane/ssh-popup-contracts";
 import { useCommandbarOverflow } from "./pane/useCommandbarOverflow";
 import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
@@ -3883,12 +3884,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       ? `${base} (${entry.username}@${entry.host})`
       : base;
   };
+  // Native "Open in New Window" terminals report their connection state here.
+  const sshPopups = useSyncExternalStore(subscribeSshPopups, getSshPopupSnapshot, getSshPopupSnapshot);
   const paneSftpChoices: PaneLocationChoice[] = sshEntries.map(({ entry, workspaceName }) => ({
     id: entry.id,
     label: sshEntryLabel(entry),
     detail: `${workspaceName} · ${entry.username}@${entry.host}`,
-    available: sshTabs.some((tab) => tab.sshEntryId === entry.id && tab.connected),
-    disabledReason: "Not connected - connect it in Terminal first",
+    available: isSshEntryConnected(entry.id, sshTabs, sshPopups),
+    disabledReason: "Not connected - connect it in Terminal (or its own SSH window) first",
     selected: paneOpenIds.includes(sftpWindowId(entry.id)),
   }));
   const remoteWindowTitle = `Remote · ${activeLocation?.displayName || session.locationId || "No Location"}`;
@@ -4566,7 +4569,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   };
 
   return (
-    <AppShell style={themeVariables} className={`explorer pane-style ${desktopSettings.glassMainEnabled ? "" : "glass-main-off"} ${desktopSettings.glassMenusEnabled ? "" : "glass-menus-off"} ${desktopSettings.glassDialogsEnabled ? "" : "glass-dialogs-off"}`}>
+    <AppShell style={themeVariables} className={`explorer pane-style ${desktopSettings.glassMainEnabled ? "" : "glass-main-off"} ${desktopSettings.paneShadowEnabled ? "" : "pane-shadow-off"} ${desktopSettings.glassMenusEnabled ? "" : "glass-menus-off"} ${desktopSettings.glassDialogsEnabled ? "" : "glass-dialogs-off"}`}>
       <Suspense fallback={null}>
       <PaneDesktop
         restEnabled={desktopSettings.restApiModeEnabled}

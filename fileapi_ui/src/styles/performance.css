@@ -1,7 +1,6 @@
 /* Optional visual-cost controls. These rules keep the theme colors and layout
    intact while replacing background blur with stable surfaces on slower devices. */
 
-:root:has(.glass-main-off) .titlebar,
 :root:has(.glass-main-off) .commandbar,
 :root:has(.glass-main-off) .navigation,
 :root:has(.glass-main-off) .statusbar,
@@ -9,7 +8,6 @@
 :root:has(.glass-main-off) .desktop-content,
 :root:has(.glass-main-off) .local-pane,
 :root:has(.glass-main-off) .terminal-dock,
-:root:has(.glass-main-off) .titlebar-main .mode-switcher,
 :root:has(.glass-main-off) .rest-entry-pane,
 :root:has(.glass-main-off) .rest-reader,
 :root:has(.glass-main-off) .vnc-entry-pane,
@@ -24,8 +22,7 @@
 :root:has(.glass-menus-off) .context-menu,
 :root:has(.glass-menus-off) .context-picker-popover,
 :root:has(.glass-menus-off) .dropdown-menu,
-:root:has(.glass-menus-off) .mobile-choice-options,
-:root:has(.glass-menus-off) .palette-select-menu {
+:root:has(.glass-menus-off) .mobile-choice-options {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   background: var(--color-bg-panel-strong);

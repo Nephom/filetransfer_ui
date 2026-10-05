@@ -2,37 +2,27 @@
  * editor, response viewer, tools, and dialogs. Split out of the former
  * theme-overrides.css and surface-overrides.css (T-202). See
  * styles/theme/README.md. */
-:where(.explorer) .mode-switcher,
-:where(.explorer) .workspace-select-wrap,
 :where(.explorer) .rest-entry-pane,
 :where(.explorer) .rest-reader,
 :where(.explorer) .rest-auth-panel,
 :where(.explorer) .rest-history,
 :where(.explorer) .rest-links,
 :where(.explorer) .rest-response { border-color: var(--color-border); background: var(--color-bg-panel); }
-:where(.explorer) .mode-switch-button,
-:where(.explorer) .workspace-select,
 :where(.explorer) .rest-entry,
 :where(.explorer) .rest-section-toggle,
 :where(.explorer) .rest-history-toggle,
 :where(.explorer) .rest-history-item,
 :where(.explorer) .rest-link-button,
 :where(.explorer) .rest-view-tabs button { color: var(--color-text); background: transparent; }
-:where(.explorer) .mode-switch-button:hover,
-:where(.explorer) .mode-switch-button.selected,
 :where(.explorer) .rest-entry:hover,
 :where(.explorer) .rest-entry.active,
 :where(.explorer) .rest-history-item:hover,
 :where(.explorer) .rest-link-button:hover,
-:where(.explorer) .rest-json-row:hover,
 :where(.explorer) .rest-view-tabs button:hover,
 :where(.explorer) .rest-view-tabs button.active { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 15%, var(--color-bg-panel-strong)); }
 :where(.explorer) .mode-switch-dot,
 :where(.explorer) .rest-entry-dot { background: var(--color-text-muted); }
-:where(.explorer) .rest-active .mode-switch-dot,
 :where(.explorer) .rest-entry.active .rest-entry-dot { background: var(--color-success); }
-:where(.explorer) .location-active .mode-switch-dot { background: var(--color-primary); }
-:where(.explorer) .vnc-active .mode-switch-dot { background: var(--color-warning); }
 :where(.explorer) .rest-entry-copy strong,
 :where(.explorer) .rest-reader-heading h1,
 :where(.explorer) .rest-response-heading strong,
@@ -57,13 +47,8 @@
 :where(.explorer) .rest-response,
 :where(.explorer) .rest-code,
 :where(.explorer) .rest-iml-terminal { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg); }
-:where(.explorer) .rest-vendor-toggle,
 :where(.explorer) .rest-vendor-capsule { border-color: var(--color-border); background: var(--color-bg-panel); }
-:where(.explorer) .rest-vendor-toggle button.selected,
-:where(.explorer) .rest-vendor-preset:hover,
 :where(.explorer) .rest-vendor-capsule button.selected { color: var(--color-bg); background: var(--color-primary); }
-:where(.explorer) .rest-vendor-toggle button,
-:where(.explorer) .rest-vendor-preset,
 :where(.explorer) .rest-vendor-capsule button { border-color: var(--color-border); color: var(--color-text-muted); background: transparent; }
 :where(.explorer) .rest-actions,
 :where(.explorer) .rest-action-button { border-color: color-mix(in srgb, var(--color-warning) 55%, var(--color-border)); color: var(--color-text); background: color-mix(in srgb, var(--color-warning) 12%, var(--color-bg-panel)); }
@@ -73,12 +58,8 @@
 :where(.explorer) .rest-action-dialog-heading { color: var(--color-warning); }
 :where(.explorer) .rest-response-heading,
 :where(.explorer) .rest-view-tabs,
-:where(.explorer) .rest-json-row,
 :where(.explorer) .rest-headers div { border-color: var(--color-border); }
-:where(.explorer) .rest-json-row,
 :where(.explorer) .rest-link-button span { color: var(--color-text); }
-:where(.explorer) .rest-json-row small,
-:where(.explorer) .rest-json-row code,
 :where(.explorer) .rest-link-button small,
 :where(.explorer) .rest-link-button code { color: var(--color-primary); }
 :where(.explorer) .rest-status-ok { color: var(--color-success); }
@@ -98,7 +79,6 @@
 }
 
 :where(.explorer) .rest-vendor-capsule,
-:where(.explorer) .rest-vendor-toggle,
 :where(.explorer) .rest-response,
 :where(.explorer) .rest-code,
 :where(.explorer) .rest-iml-terminal,
