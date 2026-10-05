@@ -15,13 +15,14 @@ type Props = {
   onChangePassword: () => void;
   onOpenLogView: () => void;
   onOpenHelp: () => void;
+  onOpenWelcomeTutorial: () => void;
   onSignOut: () => void;
 };
 
 /** Pills in the top-right corner of the desktop: transfer queue, settings and the account menu. */
 export function PaneTopRight({
   session, accountOpen, accountControl, accountMenuStyle, activeQueueCount,
-  onOpenQueue, onAccountToggle, onOpenSessions, onOpenSettings, onChangePassword, onOpenLogView, onOpenHelp, onSignOut,
+  onOpenQueue, onAccountToggle, onOpenSessions, onOpenSettings, onChangePassword, onOpenLogView, onOpenHelp, onOpenWelcomeTutorial, onSignOut,
 }: Props) {
   const roleLabel = session.role === "admin" ? "Admin" : session.role === "superuser" ? "Superuser" : "User";
   const roleDescription = session.role === "admin" ? "System administrator" : session.role === "superuser" ? "Superuser" : "Standard user";
@@ -57,6 +58,7 @@ export function PaneTopRight({
             {session.role !== "admin" && <button role="menuitem" onClick={onChangePassword}>Change password</button>}
             <button role="menuitem" onClick={onOpenLogView}>LogView</button>
             <button role="menuitem" onClick={onOpenHelp}>Help</button>
+            <button role="menuitem" onClick={onOpenWelcomeTutorial}>Welcome tutorial</button>
             <hr />
             <button className="danger" role="menuitem" onClick={onSignOut}>Log out</button>
           </div>,

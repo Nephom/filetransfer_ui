@@ -85,6 +85,7 @@ const VncEntryDialog = lazy(() => import("./features/sessions/VncEntryDialog").t
 const SharePasswordDialog = lazy(() => import("./features/share-links/SharePasswordDialog").then(({ SharePasswordDialog: component }) => ({ default: component })));
 const ShareLinksModal = lazy(() => import("./features/share-links/ShareLinksModal").then(({ ShareLinksModal: component }) => ({ default: component })));
 const ArchiveFormatDialog = lazy(() => import("./features/queue/ArchiveFormatDialog").then(({ ArchiveFormatDialog: component }) => ({ default: component })));
+const WELCOME_TUTORIAL_STORAGE_KEY = "fileapi-welcome-tutorial";
 
 // `Location` here is the REMOTE (API Location) entry type main.tsx has
 // used since before the Phase 5 refactor (GitHub issue #229) started;
@@ -579,6 +580,29 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [accountOpen, setAccountOpen] = useState(false);
   const [accountMenuStyle, setAccountMenuStyle] = useState<React.CSSProperties>({});
   const [helpOpen, setHelpOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(() => {
+    try {
+      return localStorage.getItem(WELCOME_TUTORIAL_STORAGE_KEY) !== "dismissed";
+    } catch {
+      return true;
+    }
+  });
+  const [welcomeOnlyFirstLaunch, setWelcomeOnlyFirstLaunch] = useState(() => {
+    try {
+      return localStorage.getItem(WELCOME_TUTORIAL_STORAGE_KEY) !== "always";
+    } catch {
+      return true;
+    }
+  });
+  const dismissWelcome = (onlyFirstLaunch: boolean) => {
+    setWelcomeOnlyFirstLaunch(onlyFirstLaunch);
+    try {
+      localStorage.setItem(WELCOME_TUTORIAL_STORAGE_KEY, onlyFirstLaunch ? "dismissed" : "always");
+    } catch {
+      /* storage may be unavailable; the guide is still dismissed for this session */
+    }
+    setWelcomeOpen(false);
+  };
   const [logViewOpen, setLogViewOpen] = useState(false);
   const [operationLogRecords, setOperationLogRecords] = useState<OperationLogRecord[]>([]);
   const [selectedHelpPageId, setSelectedHelpPageId] = useState("login");
@@ -4416,6 +4440,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       <PaneDesktop
         restEnabled={desktopSettings.restApiModeEnabled}
         vncEnabled={desktopSettings.proxmoxVncModeEnabled}
+        welcomeOpen={welcomeOpen}
+        welcomeOnlyFirstLaunch={welcomeOnlyFirstLaunch}
+        onWelcomeDismiss={dismissWelcome}
         openRef={paneOpenWindowRef}
         titles={paneTitles}
         subtitles={paneSubtitles}
@@ -4448,6 +4475,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             onChangePassword={() => { setAccountOpen(false); setChangePasswordOpen(true); }}
             onOpenLogView={openLogView}
             onOpenHelp={() => { setAccountOpen(false); setHelpOpen(true); }}
+            onOpenWelcomeTutorial={() => { setAccountOpen(false); setWelcomeOpen(true); }}
             onSignOut={signOut}
           />
         }

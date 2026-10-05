@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PaneDock, type PaneLocationChoice, type PaneTerminalWorkspace } from "./PaneDock";
 import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
@@ -17,6 +17,8 @@ import {
   startSshPopupBridge,
   subscribeSshPopups,
 } from "./ssh-popup-registry";
+
+const WelcomeWizard = lazy(() => import("./WelcomeWizard").then(({ WelcomeWizard: component }) => ({ default: component })));
 
 /** Marks the content of one window (by window id); PaneDesktop places it inside that window's frame. */
 export function PaneBody({ children }: { id: PaneWindowId; children: React.ReactNode }) {
@@ -44,6 +46,9 @@ type Props = {
   /** SSH entries that still exist; an open SFTP or SSH window whose entry is gone is dropped. */
   entryIds: readonly string[];
   busy: boolean;
+  welcomeOpen: boolean;
+  welcomeOnlyFirstLaunch: boolean;
+  onWelcomeDismiss: (onlyFirstLaunch: boolean) => void;
   /** Pills in the top-right corner (queue, account, ...). */
   topRight: React.ReactNode;
   onSelectRemote: (locationId: string) => void;
@@ -85,7 +90,7 @@ function Wallpaper() {
 }
 
 export function PaneDesktop({
-  restEnabled, vncEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, topRight,
+  restEnabled, vncEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, welcomeOpen, welcomeOnlyFirstLaunch, onWelcomeDismiss, topRight,
   onSelectRemote, onOpenLocalShell, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onWindowState, onRequestClose, hasUnsavedPaneRecording, confirmDiscardRecordings,
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -117,17 +122,6 @@ export function PaneDesktop({
   }, []);
 
   openRef.current = open;
-
-  // First launch (nothing stored): start with Local and Remote side by side.
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (seededRef.current || layer.w <= 0 || layer.h <= 0) return;
-    seededRef.current = true;
-    if (layout.windows.length === 0) {
-      open("local");
-      open("remote");
-    }
-  }, [layer.w, layer.h, layout.windows.length, open]);
 
   const openIds = layout.windows.filter((win) => win.open).map((win) => win.id);
   const openKey = openIds.join(",");
@@ -218,6 +212,7 @@ export function PaneDesktop({
         <div className="pane-topright">{topRight}</div>
       </div>
       <div className="pane-window-layer" ref={layerRef}>
+        {welcomeOpen && <Suspense fallback={null}><WelcomeWizard initialOnlyFirstLaunch={welcomeOnlyFirstLaunch} onDismiss={onWelcomeDismiss} /></Suspense>}
         {layout.windows.map((win) => {
           const kind = kindOf(win.id);
           if (!kind || !isAvailable(win.id)) return null;

@@ -294,6 +294,77 @@
   color: var(--color-text-muted);
 }
 
+/* First-run guide shown over the window layer without changing a saved layout. */
+.pane-welcome-overlay {
+  position: absolute;
+  z-index: 9999;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: clamp(16px, 3vw, 36px);
+  background: color-mix(in srgb, var(--color-bg) 94%, transparent);
+}
+.pane-welcome-card {
+  display: grid;
+  gap: var(--space-4);
+  box-sizing: border-box;
+  width: min(720px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: clamp(22px, 4vw, 40px);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 42%, var(--color-border));
+  border-radius: 16px;
+  color: var(--color-text);
+  background: linear-gradient(145deg, var(--color-bg-panel-strong), var(--color-bg-panel));
+  box-shadow: 0 24px 64px color-mix(in srgb, var(--color-bg) 60%, transparent), inset 0 1px color-mix(in srgb, white 8%, transparent);
+}
+.pane-welcome-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.pane-welcome-eyebrow { color: var(--color-primary); font-size: var(--ui-small-font-size); font-weight: 800; letter-spacing: .12em; }
+.pane-welcome-heading h1 { margin: var(--space-2) 0 0; color: var(--color-text); font-size: clamp(1.5rem, 3vw, 2.1rem); }
+.pane-welcome-step { flex: 0 0 auto; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-text-muted); font-size: var(--ui-small-font-size); }
+.pane-welcome-content { min-height: 170px; color: var(--color-text-muted); font-size: var(--ui-font-size); line-height: 1.65; }
+.pane-welcome-hero { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-4); padding: var(--space-3); border: 1px solid color-mix(in srgb, var(--color-primary) 32%, var(--color-border)); border-radius: 12px; background: color-mix(in srgb, var(--color-primary) 8%, var(--color-bg-panel)); }
+.pane-welcome-hero-icon { display: grid; flex: 0 0 64px; place-items: center; width: 64px; height: 64px; border: 1px solid color-mix(in srgb, var(--color-primary) 48%, var(--color-border)); border-radius: 16px; color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
+.pane-welcome-hero > div { display: grid; gap: var(--space-1); }
+.pane-welcome-hero > div strong { color: var(--color-text); font-size: 1.1em; }
+.pane-welcome-hero > div span { color: var(--color-text-muted); }
+.pane-welcome-content p { margin: 0 0 var(--space-3); }
+.pane-welcome-content p:last-child { margin-bottom: 0; }
+.pane-welcome-content .pane-welcome-lead { color: var(--color-text); font-size: 1.12em; }
+.pane-welcome-content ul,
+.pane-welcome-content ol { display: grid; gap: var(--space-2); margin: 0 0 var(--space-3); padding-left: 1.5em; }
+.pane-welcome-content li { padding-left: var(--space-1); }
+.pane-welcome-content strong { color: var(--color-text); }
+.pane-welcome-feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-2); margin: var(--space-3) 0; }
+.pane-welcome-feature { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--space-2); min-width: 0; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 10px; background: color-mix(in srgb, var(--color-bg-panel-strong) 82%, transparent); }
+.pane-welcome-feature-location { grid-column: 1 / -1; }
+.pane-welcome-feature-icon { display: grid; flex: 0 0 auto; place-items: center; width: 40px; height: 40px; border: 1px solid color-mix(in srgb, var(--color-primary) 38%, var(--color-border)); border-radius: 10px; color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-panel)); }
+.pane-welcome-feature > div:not(.pane-welcome-location-icons) { display: grid; gap: var(--space-1); min-width: 0; }
+.pane-welcome-feature > div:not(.pane-welcome-location-icons) span { color: var(--color-text-muted); font-size: var(--ui-small-font-size); }
+.pane-welcome-location-icons { grid-column: 2; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+.pane-welcome-location-icons span { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--color-text-muted); font-size: var(--ui-small-font-size); }
+.pane-welcome-location-icons svg { color: var(--color-primary); }
+.pane-welcome-content .pane-welcome-steps { list-style: none; margin: 0 0 var(--space-3); padding: 0; }
+.pane-welcome-steps li { display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: start; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--color-border); border-radius: 9px; background: color-mix(in srgb, var(--color-bg-panel-strong) 82%, transparent); }
+.pane-welcome-step-icon { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid color-mix(in srgb, var(--color-primary) 38%, var(--color-border)); border-radius: 9px; color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 10%, var(--color-bg-panel)); }
+.pane-welcome-steps li > div { display: grid; gap: var(--space-1); }
+.pane-welcome-steps li > div > span { color: var(--color-text-muted); font-size: var(--ui-small-font-size); }
+.pane-welcome-steps li > div svg { vertical-align: -0.2em; color: var(--color-primary); }
+.pane-welcome-progress { display: flex; justify-content: center; gap: var(--space-2); }
+.pane-welcome-progress span { width: 8px; height: 8px; border-radius: 999px; background: var(--color-border-strong); transition: width var(--motion-fast), background var(--motion-fast); }
+.pane-welcome-progress span.active { width: 24px; background: var(--color-primary); }
+.pane-welcome-progress span.complete { background: color-mix(in srgb, var(--color-primary) 55%, var(--color-border)); }
+.pane-welcome-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
+.pane-welcome-once { display: inline-flex; flex: 1 1 230px; align-items: center; gap: var(--space-2); margin: 0; color: var(--color-text-muted); font-size: var(--ui-small-font-size); cursor: pointer; }
+.pane-welcome-once input { flex: 0 0 auto; width: var(--space-4); min-height: 0; margin: 0; accent-color: var(--color-primary); }
+.pane-welcome-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
+.pane-welcome-actions button { min-width: 88px; }
+.pane-welcome-actions .pane-welcome-skip { border-color: transparent; color: var(--color-text-muted); background: transparent; }
+.pane-welcome-actions .pane-welcome-skip:hover:not(:disabled) { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+
 /* resize grips: thin edges and larger corners */
 .pane-win-grip {
   position: absolute;

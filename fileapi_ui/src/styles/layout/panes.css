@@ -64,6 +64,7 @@
 .local-pane.privileged .tree-node.drop-target { color: var(--color-text); background: color-mix(in srgb, var(--color-danger) 25%, var(--color-bg-panel)); border-color: var(--color-danger); box-shadow: inset 3px 0 var(--color-danger); }
 .privileged-badge { color: var(--color-danger); font-weight: 700; }
 .local-pane-tree { flex: 0 0 auto; min-width: min(80px, 100%); min-height: 0; overflow-y: auto; padding: var(--space-2); }
+.local-file-grid { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
 .local-file-list { flex: 1; min-height: 0; overflow: auto; padding: var(--space-2); }
 .local-file { display: grid; grid-template-columns: clamp(18px, 2vw, 22px) minmax(0, 1fr) auto; gap: var(--space-2); align-items: center; width: 100%; padding: var(--space-2) var(--space-2); border: 1px solid transparent; border-radius: 4px; color: var(--color-text); background: transparent; text-align: left; cursor: pointer; }
 .file-row, .local-file, .file-tile { content-visibility: auto; contain-intrinsic-size: 40px; }
