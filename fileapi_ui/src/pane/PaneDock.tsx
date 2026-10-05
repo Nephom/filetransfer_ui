@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { PaneLayout, PaneWindowId, PaneWindowKind } from "./pane-window-model";
-import { PANE_SINGLETON_KINDS, kindOf } from "./pane-window-model";
+import { PANE_SINGLETON_KINDS, isEntryWindow, kindOf, sshPaneEntryIdOf } from "./pane-window-model";
 import type { SshPopupInfo } from "./ssh-popup-registry";
 import { EntryManagerIcon, ExternalWindowIcon, FunctionsIcon, LocalIcon, LocationIcon, RemoteIcon, RestIcon, SftpIcon, SshEntriesIcon, TerminalIcon, VncIcon } from "./pane-icons";
 import { CommandPromptIcon, WindowsTerminalIcon } from "../ui/icons";
@@ -41,11 +41,15 @@ type Props = {
   terminalWorkspaces: PaneTerminalWorkspace[];
   /** Windows Terminal / Command Prompt can only be launched on Windows. */
   localShellsAvailable: boolean;
+  /** Live state of each open SSH pane by entry id (taskbar status dot / unsaved-recording marker). */
+  sshPaneStates: Readonly<Record<string, { connected: boolean; recordingUnsaved: boolean } | undefined>>;
   popups: readonly SshPopupInfo[];
   busy: boolean;
   onOpenLocal: () => void;
   onOpenLocalShell: (kind: LocalTerminalKind) => void;
-  onOpenSshInPane: (workspaceId: string, entryId: string) => void;
+  /** Open (or raise) the entry's SSH pane in the main window. */
+  onOpenSshInPane: (entryId: string) => void;
+  /** Open the entry in its own native window. */
   onOpenSshWindow: (workspaceId: string, entryId: string) => void;
   /** Opens the Workspace Manager (optionally focused on one Workspace). */
   onOpenEntryManager: (workspaceId?: string) => void;
@@ -64,12 +68,12 @@ const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
   remote: <RemoteIcon size={18} />,
   vnc: <VncIcon size={18} />,
   rest: <RestIcon size={18} />,
-  terminal: <TerminalIcon size={18} />,
   sftp: <SftpIcon size={18} />,
+  ssh: <TerminalIcon size={18} />,
 };
 
 export function PaneDock({
-  layout, titles, restEnabled, vncEnabled, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, popups, busy,
+  layout, titles, restEnabled, vncEnabled, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, popups, busy,
   onOpenLocal, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onOpenRemote, onOpenSftp, onActivate, onCloseWindow, onFocusPopup, onClosePopup,
 }: Props) {
   const [functionsOpen, setFunctionsOpen] = useState(false);
@@ -114,6 +118,7 @@ export function PaneDock({
   const windowOf = (id: PaneWindowId) => layout.windows.find((win) => win.id === id);
   const isOpen = (id: PaneWindowId) => Boolean(windowOf(id)?.open);
   const anySftpOpen = layout.windows.some((win) => win.open && kindOf(win.id) === "sftp");
+  const anySshOpen = layout.windows.some((win) => win.open && kindOf(win.id) === "ssh");
 
   const flyoutItems: { key: string; label: string; icon: React.ReactNode; open: boolean; onClick: () => void; hasMenu?: boolean; expanded?: boolean }[] = [
     {
@@ -234,10 +239,10 @@ export function PaneDock({
     ));
   };
 
-  // Singleton windows keep a fixed order; SFTP windows follow in the order they were opened.
+  // Singleton windows keep a fixed order; SSH and SFTP windows follow in the order they were opened.
   const taskbarIds: PaneWindowId[] = [
     ...PANE_SINGLETON_KINDS.filter(isOpen),
-    ...layout.windows.filter((win) => win.open && kindOf(win.id) === "sftp").map((win) => win.id),
+    ...layout.windows.filter((win) => win.open && isEntryWindow(win.id)).map((win) => win.id),
   ];
 
   return (
@@ -313,7 +318,7 @@ export function PaneDock({
                           <span className="pane-menu-icon"><ExternalWindowIcon size={18} /></span>
                           <span className="pane-menu-text"><strong>Open a new Window</strong></span>
                         </button>
-                        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenSshInPane(activeEntry.workspaceId, activeEntry.entryId); closeMenus(); }}>
+                        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenSshInPane(activeEntry.entryId); closeMenus(); }}>
                           <span className="pane-menu-icon"><TerminalIcon size={18} /></span>
                           <span className="pane-menu-text"><strong>Open SSH</strong></span>
                         </button>
@@ -326,7 +331,7 @@ export function PaneDock({
           </div>
           <button
             type="button"
-            className={`pane-dock-button pane-terminal-button${isOpen("terminal") ? " is-open" : ""}${terminalOpen ? " is-expanded" : ""}`}
+            className={`pane-dock-button pane-terminal-button${anySshOpen ? " is-open" : ""}${terminalOpen ? " is-expanded" : ""}`}
             aria-haspopup="menu"
             aria-expanded={terminalOpen}
             onClick={() => { setTerminalOpen((value) => !value); setFunctionsOpen(false); setLocationOpen(false); setSshListOpen(false); setActiveEntry(null); }}
@@ -343,6 +348,8 @@ export function PaneDock({
           const win = windowOf(id)!;
           const active = layout.activeId === id;
           const title = titles[id] || id;
+          const sshEntryId = sshPaneEntryIdOf(id);
+          const sshState = sshEntryId ? sshPaneStates[sshEntryId] : undefined;
           return (
             <span key={id} className={`pane-task${active ? " is-active" : ""}${win.minimized ? " is-minimized" : ""}`}>
               <button
@@ -354,7 +361,9 @@ export function PaneDock({
                 onClick={() => onActivate(id)}
               >
                 {KIND_ICON[kindOf(id) || "local"]}
+                {sshEntryId && <span className={`pane-status-dot${sshState?.connected ? " is-online" : ""}`} aria-hidden="true" />}
                 <span className="pane-task-title">{title}</span>
+                {sshState?.recordingUnsaved && <span className="pane-task-rec" title="Unsaved recording">REC</span>}
               </button>
               <button type="button" className="pane-task-close" aria-label={`Close ${title}`} onClick={() => onCloseWindow(id)}>×</button>
             </span>

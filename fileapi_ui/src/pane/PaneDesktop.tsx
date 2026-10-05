@@ -4,7 +4,7 @@ import { PaneDock, type PaneLocationChoice, type PaneTerminalWorkspace } from ".
 import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
 import { PaneWindow } from "./PaneWindow";
 import { usePaneWindows } from "./usePaneWindows";
-import { PANE_SINGLETON_KINDS, kindOf, sftpWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
+import { PANE_SINGLETON_KINDS, kindOf, sftpWindowId, sshWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
 import { LocalIcon, RemoteIcon, RestIcon, SftpIcon, TerminalIcon, VncIcon } from "./pane-icons";
 import { loadWallpaper, useWallpaper, wallpaperCssVariables } from "./pane-wallpaper-store";
 import {
@@ -28,7 +28,7 @@ type Props = {
   vncEnabled: boolean;
   /** One <PaneBody id=...> child per window. The elements keep their identity while a window is dragged, so dragging never re-renders their contents. */
   children: React.ReactNode;
-  /** Window titles / subtitles by window id (`local`, `remote`, ..., `sftp:<entryId>`). */
+  /** Window titles / subtitles by window id (`local`, `remote`, ..., `sftp:<entryId>`, `ssh:<entryId>`). */
   titles: Record<string, string>;
   subtitles: Partial<Record<string, string>>;
   remoteChoices: PaneLocationChoice[];
@@ -37,15 +37,15 @@ type Props = {
   terminalWorkspaces: PaneTerminalWorkspace[];
   /** Windows Terminal / Command Prompt can only be launched on Windows. */
   localShellsAvailable: boolean;
-  /** SSH entries that still exist; an open SFTP window whose entry is gone is dropped. */
-  sftpEntryIds: readonly string[];
+  /** Live state of each open SSH pane by entry id. */
+  sshPaneStates: Readonly<Record<string, { connected: boolean; recordingUnsaved: boolean } | undefined>>;
+  /** SSH entries that still exist; an open SFTP or SSH window whose entry is gone is dropped. */
+  entryIds: readonly string[];
   busy: boolean;
   /** Pills in the top-right corner (queue, account, ...). */
   topRight: React.ReactNode;
   onSelectRemote: (locationId: string) => void;
   onOpenLocalShell: (kind: LocalTerminalKind) => void;
-  /** Connect the entry inside the main window's Terminal pane (the pane is opened first). */
-  onOpenSshInPane: (workspaceId: string, entryId: string) => void;
   /** Connect the entry in its own native window. */
   onOpenSshWindow: (workspaceId: string, entryId: string) => void;
   onOpenEntryManager: (workspaceId?: string) => void;
@@ -54,6 +54,10 @@ type Props = {
   openRef: React.MutableRefObject<(id: PaneWindowId) => void>;
   /** Called when the set of open windows or the focused window changes. */
   onWindowState: (openIds: PaneWindowId[], activeId: PaneWindowId | null) => void;
+  /** Asked before a window is closed (title bar X or taskbar x); resolve false to keep it open. */
+  onRequestClose: (id: PaneWindowId) => Promise<boolean>;
+  /** true while an SSH pane holds a recording that was not saved. */
+  hasUnsavedPaneRecording: () => boolean;
   /** Resolves true when the user agrees to close the app although SSH windows hold unsaved recordings. */
   confirmDiscardRecordings: () => Promise<boolean>;
 };
@@ -63,11 +67,9 @@ const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
   remote: <RemoteIcon size={16} />,
   vnc: <VncIcon size={16} />,
   rest: <RestIcon size={16} />,
-  terminal: <TerminalIcon size={16} />,
   sftp: <SftpIcon size={16} />,
+  ssh: <TerminalIcon size={16} />,
 };
-
-const KEEP_MOUNTED: Partial<Record<PaneWindowKind, boolean>> = { terminal: true };
 
 function Wallpaper() {
   const { config, imageUrl } = useWallpaper();
@@ -81,14 +83,15 @@ function Wallpaper() {
 }
 
 export function PaneDesktop({
-  restEnabled, vncEnabled, openRef, children, titles, subtitles, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sftpEntryIds, busy, topRight,
-  onSelectRemote, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onWindowState, confirmDiscardRecordings,
+  restEnabled, vncEnabled, openRef, children, titles, subtitles, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, topRight,
+  onSelectRemote, onOpenLocalShell, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onWindowState, onRequestClose, hasUnsavedPaneRecording, confirmDiscardRecordings,
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const [layer, setLayer] = useState({ w: 0, h: 0 });
   const available: PaneWindowId[] = [
     ...PANE_SINGLETON_KINDS.filter((kind) => (kind === "vnc" ? vncEnabled : kind === "rest" ? restEnabled : true)),
-    ...sftpEntryIds.map(sftpWindowId),
+    ...entryIds.map(sftpWindowId),
+    ...entryIds.map(sshWindowId),
   ];
   const { layout, open, focus, minimize, toggleMaximize, close, setRect } = usePaneWindows(available, layer);
   const bodies: Partial<Record<string, React.ReactNode>> = {};
@@ -145,20 +148,30 @@ export function PaneDesktop({
   }, []);
 
   // Closing the main window closes every SSH popup first (asking once when a
-  // recording would be lost) so no orphaned native window keeps running.
+  // recording would be lost) so no orphaned native window keeps running. An SSH
+  // pane with an unsaved recording is asked about in the same single prompt.
   const confirmRef = useRef(confirmDiscardRecordings);
   confirmRef.current = confirmDiscardRecordings;
+  const unsavedPaneRef = useRef(hasUnsavedPaneRecording);
+  unsavedPaneRef.current = hasUnsavedPaneRecording;
   useEffect(() => {
     const current = getCurrentWebviewWindow();
     const unlisten = current.onCloseRequested(async (event) => {
-      if (getSshPopupSnapshot().length === 0) return;
+      const paneUnsaved = unsavedPaneRef.current();
+      if (getSshPopupSnapshot().length === 0 && !paneUnsaved) return;
       event.preventDefault();
-      if (hasUnsavedSshPopupRecording() && !(await confirmRef.current())) return;
+      if ((paneUnsaved || hasUnsavedSshPopupRecording()) && !(await confirmRef.current())) return;
       await closeAllSshPopups(true);
       await current.destroy();
     });
     return () => { void unlisten.then((dispose) => dispose()); };
   }, []);
+
+  const requestCloseRef = useRef(onRequestClose);
+  requestCloseRef.current = onRequestClose;
+  const requestClose = useCallback((id: PaneWindowId) => {
+    void requestCloseRef.current(id).then((allowed) => { if (allowed) close(id); });
+  }, [close]);
 
   const activate = useCallback((id: PaneWindowId) => {
     const win = layout.windows.find((item) => item.id === id);
@@ -187,11 +200,10 @@ export function PaneDesktop({
               icon={KIND_ICON[kind]}
               active={layout.activeId === win.id}
               layer={layer}
-              keepMounted={KEEP_MOUNTED[kind]}
               onFocus={() => focus(win.id)}
               onMinimize={() => minimize(win.id)}
               onToggleMaximize={() => toggleMaximize(win.id)}
-              onClose={() => close(win.id)}
+              onClose={() => requestClose(win.id)}
               onRect={(rect) => setRect(win.id, rect)}
             >
               {bodies[win.id]}
@@ -208,18 +220,19 @@ export function PaneDesktop({
         sftpChoices={sftpChoices}
         terminalWorkspaces={terminalWorkspaces}
         localShellsAvailable={localShellsAvailable}
+        sshPaneStates={sshPaneStates}
         popups={popups}
         busy={busy}
         onOpenLocal={() => open("local")}
         onOpenLocalShell={onOpenLocalShell}
-        onOpenSshInPane={(workspaceId, entryId) => { open("terminal"); onOpenSshInPane(workspaceId, entryId); }}
+        onOpenSshInPane={(entryId) => open(sshWindowId(entryId))}
         onOpenSshWindow={onOpenSshWindow}
         onOpenEntryManager={onOpenEntryManager}
         onCreateWorkspace={onCreateWorkspace}
         onOpenRemote={(id) => { onSelectRemote(id); open("remote"); }}
         onOpenSftp={(entryId) => open(sftpWindowId(entryId))}
         onActivate={activate}
-        onCloseWindow={close}
+        onCloseWindow={requestClose}
         onFocusPopup={(label) => { void focusSshPopup(label).catch(() => undefined); }}
         onClosePopup={(label) => { void closeSshPopup(label).catch(() => undefined); }}
       />

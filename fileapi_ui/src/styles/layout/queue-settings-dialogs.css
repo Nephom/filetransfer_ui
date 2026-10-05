@@ -1,9 +1,5 @@
 /* Explorer layout, part 6: Queue modal, Settings modal, Viewer modal,
- * archive-format and log-name dialogs, recording indicators, and the
- * terminal-dock restore/collapse strip (kept here rather than in
- * terminal.css to preserve its original cascade position, immediately
- * after the log-name dialog rules, from the former monolithic
- * explorer-parity.css). See styles/layout/README.md. */
+ * archive-format and log-name dialogs. See styles/layout/README.md. */
 .queue-modal { width: min(900px, calc(100vw - 32px)); max-height: min(680px, calc(100vh - 40px)); overflow: auto; }
 .queue-item { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); margin: var(--space-2) 0; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-bg); }
 .queue-item-header { display: flex; align-items: center; justify-content: flex-start; gap: var(--space-3); min-width: 0; }
@@ -33,10 +29,6 @@
 .queue-status.running { color: var(--color-primary); }
 .queue-status.running::before { content: ""; display: inline-block; width: var(--space-2); height: var(--space-2); margin-right: var(--space-1); border: 1px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: queue-spin .8s linear infinite; vertical-align: -1px; }
 @keyframes queue-spin { to { transform: rotate(360deg); } }
-.recording-indicator { color: var(--color-danger); font-size: var(--font-size-small); font-weight: 700; }
-.saved-log-paths { display: grid; gap: var(--space-1); flex-basis: 100%; color: var(--color-primary); font-size: var(--font-size-small); }
-.saved-log-paths code { color: var(--color-text-muted); overflow-wrap: anywhere; }
-.saved-log-paths button { background: transparent; border: 0; color: inherit; cursor: pointer; text-align: left; padding: 0; }
 .viewer-modal { width: min(900px, calc(100vw - 32px)); }
 .file-viewer { width: 100%; min-height: min(65vh, 560px); resize: vertical; background: var(--color-bg); color: var(--color-text); border: 1px solid var(--color-border); border-radius: 6px; padding: var(--space-3); font: var(--ui-small-font-size, var(--font-size-small))/1.5 var(--font-family-mono); }
 .archive-format-modal { width: min(560px, calc(100vw - 32px)); }

@@ -71,20 +71,6 @@
    scoped by .ui-layout-mobile) -- the duplicate that used to be here,
    gated by a raw @media (max-width: 720px) query, is removed rather than
    migrated. */
-/* Issue #219 follow-up: Large/Mobile profile used to force
-   .terminal-header into `flex-direction: column` (tabs row on top,
-   actions row below) unconditionally, i.e. regardless of the window
-   actually being narrow. Since .terminal-tabs/.terminal-actions here
-   were then reset back to their own fixed/left-aligned sizing to fit that
-   column, the net effect at a normal (non-narrow) window size was a
-   single overlong flex row that looked like it "wrapped" into two lines
-   with a huge blank gap in between -- not a clean stacked layout. The
-   shared desktop rule (styles/layout/terminal.css: .terminal-tabs grows
-   and centers itself with its own overflow-x:auto scroll for when there
-   are more tabs than fit, .terminal-actions stays a fixed cluster pinned
-   to the right) is already safe at any width, narrow included, so Large
-   profile now just reuses it instead of carrying its own now-redundant
-   column layout. */
 
 
 /* max-width: 100% overrides the desktop-only T-209 safety-net ceiling

@@ -1,62 +1,11 @@
-/* Explorer layout, part 5: the SSH terminal dock, tabs, quick list, and
- * profile selector. Split out of the former monolithic explorer-parity.css
+/* Explorer layout, part 5: the SSH entry terminals -- the native
+ * "Open a new Window" window (.ssh-terminal-popup*) and the in-app SSH pane
+ * (.ssh-entry-pane*). Both share one header layout (entry name, status,
+ * Connect/Disconnect, Record, Save Log) and one xterm host; only the look
+ * differs. Split out of the former monolithic explorer-parity.css
  * (T-202 follow-up). See styles/layout/README.md. */
-.terminal-embedded {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-.terminal-dock { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--color-bg); }
-.terminal-header { display: flex; align-items: center; min-height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-3); border-bottom: 1px solid var(--color-border); }
-.terminal-tabs, .terminal-actions { display: flex; align-items: center; gap: var(--space-2); }
-/* T-219: the header used to be `justify-content: space-between` across
- * ::before ("COMMAND DECK"), .terminal-tabs, and .terminal-actions -- on a
- * maximized window that put ALL of the free width into a single gap
- * between the last SSH tab and .terminal-actions. Growing .terminal-tabs
- * itself instead (and centering its own buttons) turns that one lopsided
- * gap into two smaller, auto-sized ones on either side of the tab
- * cluster, while .terminal-actions keeps hugging the right edge exactly
- * like before (see issue #219). */
-.terminal-tabs { flex: 1 1 auto; min-width: 0; justify-content: center; overflow-x: auto; }
-.terminal-actions { flex: 0 0 auto; }
-.terminal-tabs button, .terminal-actions button { padding: var(--space-1) var(--space-3); border: 1px solid transparent; color: var(--color-text-muted); background: transparent; }
-.terminal-tabs button.active, .terminal-tabs button:hover, .terminal-actions button:hover { color: var(--color-text); border-color: var(--color-border); background: var(--color-bg-panel); }
-.ssh-tab { display: inline-flex; align-items: center; gap: 0; border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-panel-strong); }
-.ssh-tab.active { border-color: var(--color-primary); background: var(--color-bg-panel); }
-.ssh-tab.dragging { opacity: .45; }
-.ssh-tab.drop-target { box-shadow: inset 3px 0 var(--color-primary); }
-.terminal-context-menu { position: fixed; z-index: 200; min-width: 190px; padding: var(--space-1); border: 1px solid var(--color-border); border-radius: 4px; background: var(--color-bg-panel-strong); box-shadow: 0 8px 24px rgba(0, 0, 0, .28); }
-.terminal-context-menu button { display: block; width: 100%; padding: var(--space-2) var(--space-3); border: 0; color: var(--color-text); text-align: left; background: transparent; white-space: nowrap; }
-.terminal-context-menu button:hover, .terminal-context-menu button:focus-visible { color: var(--color-text); background: var(--color-bg-panel); outline: 0; }
-.ssh-tab > button:first-child { border: 0; padding-right: var(--space-1); }
-.ssh-tab-status { display: inline-block; width: var(--space-2); height: var(--space-2); margin-right: var(--space-2); border-radius: 50%; vertical-align: 1px; }
-.ssh-tab-status.connected { background: var(--color-success); box-shadow: 0 0 6px rgba(65, 217, 138, .75); }
-.ssh-tab-status.disconnected { background: var(--color-danger); box-shadow: 0 0 6px rgba(239, 98, 98, .65); }
-.ssh-tab .ssh-tab-close { min-width: var(--space-5); padding: var(--space-1) var(--space-2); border: 0; color: var(--color-text-muted); }
-.ssh-tab .ssh-tab-close:hover { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 14%, var(--color-bg-panel)); }
-.terminal-content { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-3) var(--space-3); }
-/* Issue #239: each SSH tab has its own permanently-mounted .xterm-host
- * (see TerminalWorkspace.tsx/useTerminalLifecycle) stacked on top of one
- * another inside this relatively-positioned frame -- switching tabs only
- * toggles which one carries `.active`. `visibility: hidden` (not
- * `display: none`) is deliberate: a `display: none` host's
- * offsetWidth/offsetHeight collapse to 0 while hidden, which would make
- * xterm's FitAddon compute a bogus size for a backgrounded tab the moment
- * it becomes active again; `visibility: hidden` keeps its layout box (and
- * therefore its measured size) identical to the visible one the whole
- * time it's hidden. */
-.xterm-host-stack { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; padding: var(--space-2); background: var(--color-bg); border: 1px solid var(--color-border); }
-.xterm-host { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
-.xterm-host.active { visibility: visible; pointer-events: auto; }
-.xterm-host .xterm { height: 100%; }
-.xterm-host-empty { display: flex; align-items: center; justify-content: center; height: 100%; }
-.terminal-content { position: relative; }
-.terminal-body { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
-.terminal-inline-note { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-small); }
-.ssh-terminal-content { gap: var(--space-1); }
+
+/* ---- native window ------------------------------------------------- */
 .ssh-terminal-popup { display: flex; flex-direction: column; width: 100vw; height: 100vh; min-width: 0; min-height: 0; color: var(--color-text); background: var(--color-bg); }
 .ssh-terminal-popup-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-3); border-bottom: 1px solid var(--color-border); }
 .ssh-terminal-popup-header h1 { min-width: 0; margin: 0; overflow: hidden; font-size: var(--font-size-base); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -67,8 +16,22 @@
 .ssh-terminal-popup-host { flex: 1 1 auto; min-width: 0; min-height: 0; padding: var(--space-3); background: #020a12; }
 .ssh-terminal-popup-host .xterm { width: 100%; height: 100%; }
 .ssh-popup-saved-logs { flex: 0 0 auto; padding: var(--space-2) var(--space-3); overflow-wrap: anywhere; color: var(--color-primary); font-size: var(--font-size-small); }
-.ssh-controls { display: flex; align-items: end; gap: var(--space-1); flex-wrap: wrap; }
-.ssh-controls > button { width: 92px; min-width: 92px; box-sizing: border-box; }
-.ssh-controls label { min-width: clamp(180px, 18vw, 220px); margin: 0; }
-.ssh-output { flex: 1; min-height: clamp(60px, 8vh, 80px); overflow: auto; margin: 0; padding: var(--space-3); color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); white-space: pre-wrap; font: var(--ui-font-size, var(--font-size-base))/1.45 var(--font-family-mono); }
-.ssh-recording-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+/* ---- in-app SSH pane (ssh:<entryId> window) ----------------------- */
+/* A minimized pane keeps its layout box (visibility, not display:none), so the
+ * host below is never measured as 0x0 and the remote PTY is not resized. */
+.ssh-entry-pane { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; color: var(--color-text); background: var(--color-bg); }
+.ssh-entry-pane-header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: var(--ui-button-height, var(--control-height-base)); padding: var(--space-1) var(--space-3); border-bottom: 1px solid var(--color-border); background: var(--color-bg-panel); }
+.ssh-entry-pane-title { min-width: 0; overflow: hidden; font-size: var(--ui-font-size, var(--font-size-base)); font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.ssh-entry-pane-status { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
+.ssh-entry-pane-status > span { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--color-text-muted); font-size: var(--ui-small-font-size, var(--font-size-small)); text-overflow: ellipsis; white-space: nowrap; }
+.ssh-entry-pane-button { flex: 0 0 auto; min-height: 0; padding: var(--space-1) var(--space-3); border: 1px solid var(--color-border); border-radius: 8px; color: var(--color-text); background: var(--color-bg-panel-strong); font-size: var(--ui-small-font-size, var(--font-size-small)); cursor: pointer; }
+.ssh-entry-pane-button:hover:not(:disabled), .ssh-entry-pane-button:focus-visible { color: var(--color-primary); border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel-strong)); outline: none; }
+.ssh-entry-pane-button:disabled { opacity: .5; cursor: not-allowed; }
+.ssh-entry-pane-button.is-connect { border-color: color-mix(in srgb, var(--color-primary) 60%, var(--color-border)); background: color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-panel-strong)); }
+.ssh-entry-pane-button.is-danger:hover:not(:disabled), .ssh-entry-pane-button.is-danger:focus-visible { color: var(--color-text); border-color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 35%, var(--color-bg-panel-strong)); }
+.ssh-entry-pane-button.is-danger { color: var(--color-danger); border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border)); }
+.ssh-entry-pane-button.ssh-entry-pane-record.recording, .ssh-entry-pane-button.ssh-entry-pane-record.recording:hover:not(:disabled) { color: var(--color-text); border-color: var(--color-danger); background: var(--color-danger); box-shadow: 0 0 12px color-mix(in srgb, var(--color-danger) 55%, transparent); }
+.ssh-entry-pane-host { flex: 1 1 auto; min-width: 0; min-height: 0; padding: var(--space-2); background: #020a12; }
+.ssh-entry-pane-host .xterm { width: 100%; height: 100%; }
+.ssh-entry-pane-saved { flex: 0 0 auto; padding: var(--space-1) var(--space-3); overflow-wrap: anywhere; border-top: 1px solid var(--color-border); color: var(--color-primary); font-size: var(--ui-small-font-size, var(--font-size-small)); }

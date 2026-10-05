@@ -31,7 +31,6 @@
   --ui-control-gap: clamp(3.2px, calc(0.8px + 0.4vmin), 9.6px);
   --ui-section-gap: clamp(4.8px, calc(1.6px + 0.64vmin), 16px);
   --ui-panel-padding: clamp(6.4px, calc(2.4px + 0.72vmin), 17.6px);
-  --ui-terminal-min-height: clamp(128px, calc(80px + 4.8vmin), 208px);
   --ui-heading-font: clamp(16px, calc(8px + 1.1vmin), 22.4px);
 }
 
@@ -98,35 +97,6 @@
   padding: var(--space-2) var(--space-3);
 }
 
-.terminal-dock {
-  min-height: var(--ui-terminal-min-height);
-}
-
-.terminal-content {
-  gap: var(--ui-control-gap);
-  padding: var(--ui-panel-padding);
-  overflow: auto;
-}
-
-.xterm-host {
-  min-height: clamp(80px, 10vh, 100px);
-}
-
-.ssh-controls,
-.ssh-recording-actions {
-  gap: var(--ui-control-gap);
-}
-
-.ssh-controls {
-  align-items: center;
-}
-
-.ssh-controls label {
-  line-height: 1.2;
-}
-
-.ssh-recording-actions > button,
-.ssh-controls > button,
 .modal-actions button {
   min-height: var(--ui-button-height);
   padding: var(--ui-button-padding-y) var(--ui-button-padding-x);

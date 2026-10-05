@@ -4,6 +4,7 @@ import {
   STORAGE_KEY,
   clampRect,
   defaultRect,
+  isEntryWindow,
   kindOf,
   loadStoredLayout,
   minSizeOf,
@@ -62,9 +63,9 @@ export function paneReducer(layout: PaneLayout, action: Action): PaneLayout {
       return withActive(update(layout, action.id, (win) => ({ ...win, maximized: !win.maximized, minimized: false, z })));
     }
     case "close":
-      // An SFTP window belongs to one live connection, so closing it discards it
+      // An SFTP or SSH window belongs to one live connection, so closing it discards it
       // (its body unmounts and disconnects); other kinds keep their geometry.
-      if (kindOf(action.id) === "sftp") return withActive(layout.windows.filter((win) => win.id !== action.id));
+      if (isEntryWindow(action.id)) return withActive(layout.windows.filter((win) => win.id !== action.id));
       return withActive(update(layout, action.id, (win) => ({ ...win, open: false, minimized: false })));
     case "setRect":
       return {
@@ -87,8 +88,8 @@ export function paneReducer(layout: PaneLayout, action: Action): PaneLayout {
       const windows: PaneWindowState[] = [];
       for (const win of layout.windows) {
         if (action.available.includes(win.id)) { windows.push(win); continue; }
-        // An unavailable SFTP window (its SSH entry was removed) is dropped; other kinds are just closed.
-        if (kindOf(win.id) === "sftp") { changed = true; continue; }
+        // An unavailable SFTP/SSH window (its SSH entry was removed) is dropped; other kinds are just closed.
+        if (isEntryWindow(win.id)) { changed = true; continue; }
         if (!win.open) { windows.push(win); continue; }
         changed = true;
         windows.push({ ...win, open: false, minimized: false });

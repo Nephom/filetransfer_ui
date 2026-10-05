@@ -149,7 +149,6 @@ selectors and newer selectors share one sizing vocabulary:
 | `--ui-control-height`, `--ui-control-gap` | Control height and gap. |
 | `--ui-button-height`, `--ui-button-padding-x`, `--ui-button-padding-y` | Button geometry. |
 | `--ui-panel-padding`, `--ui-section-gap` | Panel/section spacing. |
-| `--ui-terminal-min-height` | Terminal minimum. |
 | `--pane-wallpaper-image`, `--pane-wallpaper-size`, `--pane-wallpaper-position`, `--pane-wallpaper-scale` | Set inline on `.pane-wallpaper` (and the Settings preview) from the stored wallpaper placement; consumed by `.pane-wallpaper-image`. |
 
 `--ui-x` is mentioned in an old explanatory comment in `desktop-ui.css` but

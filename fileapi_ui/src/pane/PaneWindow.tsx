@@ -8,8 +8,6 @@ type Props = {
   icon: React.ReactNode;
   active: boolean;
   layer: PaneSize;
-  /** Keep the body mounted (hidden) while the window is closed, e.g. the SSH terminal. */
-  keepMounted?: boolean;
   onFocus: () => void;
   onMinimize: () => void;
   onToggleMaximize: () => void;
@@ -32,11 +30,11 @@ const EDGE_HANDLES: { name: string; edges: ResizeEdges }[] = [
   { name: "sw", edges: { s: true, w: true } },
 ];
 
-export function PaneWindow({ win, title, subtitle, icon, active, layer, keepMounted, onFocus, onMinimize, onToggleMaximize, onClose, onRect, children }: Props) {
+export function PaneWindow({ win, title, subtitle, icon, active, layer, onFocus, onMinimize, onToggleMaximize, onClose, onRect, children }: Props) {
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
   const visible = win.open && !win.minimized;
-  if (!win.open && !keepMounted) return null;
+  if (!win.open) return null;
 
   const beginDrag = (event: React.PointerEvent<HTMLElement>) => {
     if (event.button !== 0 || win.maximized) return;

@@ -145,9 +145,10 @@ type TerminalInstance = {
 // the tab first appears and disposed only when the tab is closed (or the
 // owning application is unmounted). Switching tabs and collapsing the dock
 // are just CSS visibility toggles
-// (see terminal.css's `.xterm-host`/`.xterm-host.active`) plus a same-size
+// plus a same-size
 // check before ever touching the remote PTY -- there is no more
-// destroy/rebuild/replay cycle on the common tab-switch path.
+// destroy/rebuild/replay cycle on the common tab-switch path. (Each SSH entry
+// window now owns exactly one tab -- see useSshEntryTerminal.)
 export function useTerminalLifecycle({
   enabled,
   layoutKey,
@@ -222,9 +223,9 @@ export function useTerminalLifecycle({
     let disposed = false;
     const createFor = (tabId: string) => {
       const host = hostRefsRef.current.get(tabId);
-      // Host div not mounted yet -- TerminalWorkspace renders one per id
-      // in `tabIds`, so this should be rare/transient; a later re-run of
-      // this effect (next tabIds change) will pick it up.
+      // Host div not mounted yet -- the owner (SshEntryTerminalView) renders one
+      // per id in `tabIds`, so this should be rare/transient; a later re-run of
+      // this effect (next `enabled` change) will pick it up.
       if (!enabled || !host || instancesRef.current.has(tabId)) return;
       void loadXtermModules().then(({ Terminal: TerminalCtor, FitAddon: FitAddonCtor, WebglAddonCtor }) => {
         if (disposed || instancesRef.current.has(tabId)) return;

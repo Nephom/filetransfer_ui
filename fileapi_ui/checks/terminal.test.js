@@ -35,7 +35,7 @@ test("recording plain transcript keeps raw recording behavior isolated", () => {
   assert.equal(utils.stripAnsi("one\u001b[1Ptwo"), "onetwo");
 });
 
-// Small effect/ref runner: dependency changes clean up effects, not persistent refs.
+// Small state/effect/ref runner: dependency changes clean up effects, not persistent refs.
 // The hook bodies, clipboard policy, VT parser, paste API and onData are production code.
 function hookRunner() {
   const slots = [];
@@ -43,6 +43,11 @@ function hookRunner() {
   return {
     react: {
       useRef(value) { return (slots[index++] ??= ref(value)); },
+      useState(initial) {
+        const slot = slots[index++] ??= { value: typeof initial === "function" ? initial() : initial };
+        return [slot.value, (update) => { slot.value = typeof update === "function" ? update(slot.value) : update; }];
+      },
+      useCallback(fn) { slots[index++] ??= {}; return fn; },
       useEffect(effect, deps) {
         const slot = slots[index++] ??= {};
         if (!slot.deps || deps.some((value, i) => !Object.is(value, slot.deps[i]))) {
@@ -53,14 +58,15 @@ function hookRunner() {
     render(body) {
       index = 0;
       pending = [];
-      body();
+      const result = body();
       for (const { slot } of pending) slot.cleanup?.();
       for (const { slot, effect, deps } of pending) {
         slot.deps = deps;
         slot.cleanup = effect();
       }
+      return result;
     },
-    unmount() { for (const slot of slots) slot.cleanup?.(); },
+    unmount() { for (const slot of slots) slot?.cleanup?.(); },
   };
 }
 
@@ -87,22 +93,20 @@ class Host {
   }
 }
 
-const makeTab = (id) => ({
-  id, title: id, workspaceId: "workspace", sshEntryId: "profile",
-  sessionId: `${id}-session`, connected: true, connecting: false, output: "",
-  recording: false, recordingStartedAt: null, recordingRawBytes: 10,
-  recordingPlainBytes: 10, recordingCommandCount: 0, savedLogPaths: [],
-});
+const PROFILE = { id: "profile", name: "Server", host: "host", port: 22, username: "user" };
 
-async function harness(t, initial = {}) {
+// Drives the production useSshEntryTerminal hook (the terminal of one SSH entry, shared by the
+// native window and the SSH pane) with the real useTerminalLifecycle and a real xterm.js Terminal.
+// Only Tauri commands/events and the browser shell are replaced.
+async function harness(t, { connect = "a-session", onStateChange, onOperationLog } = {}) {
   const hooks = hookRunner();
-  const calls = [], notices = [], copies = [], reads = [], pastes = [], writes = [], actions = [];
+  const calls = [], notices = [], copies = [], reads = [], pastes = [], writes = [], states = [], logs = [];
   const instances = [], focused = [];
   const fitCalls = [];
   let selection = "", selectedTextarea, clipboard = "clipboard", picker = "";
   const documentListeners = new Map();
   const windowListeners = new Map();
-  let bridge, connectResult = "new-session", disconnectResult;
+  let bridge, connectResult = connect, disconnectResult;
   class Terminal extends RealTerminal {
     constructor(options) { super(options); instances.push(this); }
     open() {
@@ -121,18 +125,11 @@ async function harness(t, initial = {}) {
   }
   class FitAddon { activate() {} fit() { fitCalls.push(true); } dispose() {} }
   class WebglAddon { activate() {} onContextLoss() {} dispose() {} }
-  const tabsRef = ref(initial.tabs || [makeTab("a"), makeTab("b")]);
-  const terminalsRef = ref(new Map());
-  const hostRefsRef = ref(new Map(tabsRef.current.map((tab) => [tab.id, new Host()])));
-  const activeTabIdRef = ref("a");
-  const pendingRequestsRef = ref({}), connectingRef = ref(false), recordingWriteQueuesRef = ref(new Map());
+  const host = new Host();
   const props = {
-    enabled: true, activeTabId: "a", bracketedPasteControlEnabled: false,
-    tabsRef, terminalsRef, hostRefsRef, activeTabIdRef, pendingRequestsRef, connectingRef,
-    recordingWriteQueuesRef, writeQueuesRef: ref(new Map()), recordingRef: ref(false),
-    outputRef: ref(""), sessionIdRef: ref(""), secretPromptRef: ref(false), shellInputRef: ref(""),
-    setTabs(update) { tabsRef.current = typeof update === "function" ? update(tabsRef.current) : update; },
-    setConnected() {}, setNotice(message) { notices.push(message); },
+    profile: PROFILE, title: "Server", source: "SSH test", autoConnect: true, bracketedPasteControlEnabled: false,
+    onStateChange(state) { states.push(state); onStateChange?.(state); },
+    onOperationLog(...args) { logs.push(args); onOperationLog?.(...args); },
   };
   const mocks = {
     react: hooks.react,
@@ -148,8 +145,9 @@ async function harness(t, initial = {}) {
       if (command === "ssh_connect") return connectResult;
       if (command === "ssh_disconnect") return disconnectResult;
       if (command === "save_ssh_logs") return { raw: "raw", plain: "plain", commands: "commands", metadata: "metadata" };
-      if (command === "append_ssh_recording") return { rawBytes: 20, plainBytes: 18, commandCount: 0 };
-      if (command === "append_ssh_recording_command") return { rawBytes: 20, plainBytes: 18, commandCount: 1 };
+      if (command === "start_ssh_recording") return { rawBytes: 20, plainBytes: 18, commandCount: 0 };
+      if (command === "append_ssh_recording") return { rawBytes: 40, plainBytes: 36, commandCount: 0 };
+      if (command === "append_ssh_recording_command") return { rawBytes: 40, plainBytes: 36, commandCount: 1 };
     } },
   };
   const globals = {
@@ -170,38 +168,42 @@ async function harness(t, initial = {}) {
     },
     navigator: {},
   };
-  const { useSshTerminal } = loadTypeScript("features/terminal/useSshTerminal.ts", { mocks, globals });
-  const { useSshTerminalActions } = loadTypeScript("features/terminal/useSshTerminalActions.ts", { mocks, globals });
+  const { useSshEntryTerminal } = loadTypeScript("features/terminal/useSshEntryTerminal.ts", { mocks, globals });
   const lifecycle = loadTypeScript("features/terminal/useTerminalLifecycle.ts", { mocks, globals });
-  const actionState = { destination: "old", nameOpen: false, name: "" };
+  let controller;
   const api = {
-     props, tabsRef, terminalsRef, hostRefsRef, calls, notices, copies, reads, pastes, writes, instances, focused, fitCalls, actionState,
+    props, host, calls, notices, copies, reads, pastes, writes, instances, focused, fitCalls, states, logs, lifecycle,
     get bridge() { return bridge; },
-    get terminal() { return terminalsRef.current.get(props.activeTabId); },
+    get ctl() { return controller; },
+    get terminal() { return instances[0]; },
     get sent() { return calls.filter((call) => call.command === "ssh_write"); },
+    requestId(n = -1) { return calls.filter((call) => call.command === "ssh_connect").at(n).args.requestId; },
     setClipboard(value) { clipboard = value; },
     setPicker(value) { picker = value; },
     setConnectResult(value) { connectResult = value; },
     setDisconnectResult(value) { disconnectResult = value; },
     setSelection(value) { selection = value; },
-    lifecycle,
+    screen() {
+      const buffer = this.terminal.buffer.active;
+      return Array.from({ length: buffer.length }, (_, i) => buffer.getLine(i)?.translateToString(true) ?? "").join("\n");
+    },
     render(changes = {}) {
       Object.assign(props, changes);
-      props.tabIds = tabsRef.current.map((tab) => tab.id);
-      activeTabIdRef.current = props.activeTabId;
-      for (const id of props.tabIds) if (!hostRefsRef.current.has(id)) hostRefsRef.current.set(id, new Host());
-      hooks.render(() => useSshTerminal(props));
+      controller = hooks.render(() => useSshEntryTerminal(props));
+      return controller;
     },
+    detachHost() { controller.setHost(null); api.render(); },
+    attachHost() { controller.setHost(host); api.render(); },
     async settle() {
       // Imports, xterm's asynchronous write parser, and the SSH promise queue.
       for (let i = 0; i < 4; i++) {
         await new Promise((resolve) => setImmediate(resolve));
         await Promise.all(writes.splice(0));
-        await Promise.all(props.writeQueuesRef.current.values());
       }
+      api.render();
     },
-    native(text, id = props.activeTabId) {
-      return hostRefsRef.current.get(id).fire("paste", { clipboardData: text === undefined ? undefined : { getData(type) { assert.equal(type, "text/plain"); return text; } } });
+    native(text) {
+      return host.fire("paste", { clipboardData: text === undefined ? undefined : { getData(type) { assert.equal(type, "text/plain"); return text; } } });
     },
     documentMouseup(changes = {}) {
       const event = { button: 0, ...changes };
@@ -213,29 +215,12 @@ async function harness(t, initial = {}) {
       windowListeners.get(type)?.(event);
       return event;
     },
-    rightClick(id = props.activeTabId) { return hostRefsRef.current.get(id).fire("contextmenu", { button: 2 }); },
-    actions() {
-      return useSshTerminalActions({
-        tabs: tabsRef.current, setTabs: props.setTabs, activeTabId: props.activeTabId,
-        terminalInstancesRef: terminalsRef, connectAttemptRef: api.connectAttemptRef,
-        pendingRequestsRef, connectingRef, recordingWriteQueuesRef,
-        workspaces: [{ id: "workspace", sshEntries: [{ id: "profile", name: "Server", host: "host", username: "user", port: 22 }] }],
-        workspaceId: "workspace", selectedEntryId: "profile",
-        setActiveTabId(id) { props.activeTabId = id; }, setWorkspaceId() {}, setSelectedEntryId() {},
-        setSshProfileId() {}, setTerminalOpen() {}, loadSshProfileDraft() {}, onOpenWorkspaceManager() {},
-        onNotify() {}, onSetNotice: props.setNotice, onWriteOperationLog() {}, describeError: String,
-        run(action) { actions.push(action()); },
-        saveLogNameDraft: actionState.name, setSaveLogNameDraft(value) { actionState.name = value; },
-        saveLogDestinationPath: actionState.destination, setSaveLogDestinationPath(value) { actionState.destination = value; },
-        saveLogNameOpen: actionState.nameOpen, setSaveLogNameOpen(value) { actionState.nameOpen = value; },
-      });
-    },
-    connectAttemptRef: ref({}),
-    async finishActions() { await Promise.all(actions.splice(0)); await api.settle(); },
+    rightClick() { return host.fire("contextmenu", { button: 2 }); },
     unmount() { hooks.unmount(); },
   };
   t.after(() => api.unmount());
-  api.render(initial.props);
+  api.render();            // mounts: the entry connects on its own
+  api.attachHost();        // the xterm host is mounted
   await api.settle();
   return api;
 }
@@ -270,6 +255,20 @@ test("an older reset callback cannot make a newer connection boundary ready", ()
   assert.equal(second.ready, false);
   callbacks[1]();
   assert.equal(second.ready, true);
+});
+
+test("an SSH entry connects on its own and reports the connection to its owner", async (t) => {
+  const h = await harness(t);
+  const connectCalls = h.calls.filter((call) => call.command === "ssh_connect");
+  assert.equal(connectCalls.length, 1);
+  assert.deepEqual(connectCalls[0].args.profile, { id: "profile", name: "Server", host: "host", port: 22, username: "user", privateKeyPath: null });
+  assert.equal(h.ctl.connected, true);
+  assert.equal(h.ctl.connecting, false);
+  assert.equal(h.ctl.status, "Connected");
+  assert.deepEqual(h.states.at(0), { connected: false, connecting: false, recordingUnsaved: false }, "starts before the connection exists");
+  assert.ok(h.states.some((state) => state.connecting && !state.connected), "reports the connecting phase");
+  assert.deepEqual(h.states.at(-1), { connected: true, connecting: false, recordingUnsaved: false });
+  assert.ok(h.calls.some((call) => call.command === "ssh_resize" && call.args.sessionId === "a-session"), "the known xterm size is handed to the remote PTY once the session exists");
 });
 
 test("all paste routes preserve Python indentation and logical newlines in one xterm input", async (t) => {
@@ -325,7 +324,8 @@ test("unprotected line breaks and tabs send zero bytes through every route, with
   }
   assert.equal(h.sent.length, 0);
   assert.equal(h.pastes.length, 0);
-  assert.equal(h.notices.length, 27);
+  assert.match(h.ctl.status, /Paste blocked/, "the user is told why nothing was pasted");
+  assert.equal(h.ctl.connected, true, "a blocked paste does not end the session");
   h.native("  echo safe  ");
   await h.settle();
   assert.equal(h.sent[0].args.data, "  echo safe  ");
@@ -377,56 +377,45 @@ test("checked sanitation removes only outer visible markers and real controls, n
   assert.equal(normalize("[200~[200~abc[201~[201~", true), "abc");
 });
 
-test("surviving handlers work after collapse, create, delete and reorder", async (t) => {
+test("the xterm instance and its handlers survive the host being detached and mounted again", async (t) => {
   const h = await harness(t);
   const original = h.terminal;
-  h.render({ enabled: false });
+  h.detachHost();
   h.native("hidden");
   h.rightClick();
-  h.render({ enabled: true });
+  h.attachHost();
   h.native("reopened");
-  h.tabsRef.current.push(makeTab("c"));
-  h.render();
   await h.settle();
-  h.native("created");
-  h.tabsRef.current.reverse();
-  h.render();
-  h.native("reordered");
-  h.tabsRef.current = h.tabsRef.current.filter((tab) => tab.id !== "c");
-  h.render();
-  h.setClipboard("deleted");
+  h.setClipboard("again");
   h.rightClick();
   await h.settle();
   assert.equal(h.terminal, original);
-  assert.deepEqual(h.sent.map(({ args }) => args.data), ["reopened", "created", "reordered", "deleted"]);
-  assert.equal(h.hostRefsRef.current.get("c").listeners.size, 0);
-  assert.equal(h.instances.length, 3);
+  assert.deepEqual(h.sent.map(({ args }) => args.data), ["reopened", "again"]);
+  assert.equal(h.instances.length, 1, "no second xterm is created for the same entry");
 });
 
-test("selecting a tab focuses that tab's xterm instance", async (t) => {
+test("focusing the entry terminal focuses its xterm instance", async (t) => {
   const h = await harness(t);
-  const target = h.tabsRef.current[1];
-  h.actions().selectSshTab(target);
-  assert.equal(h.focused.at(-1), h.instances[1]);
+  h.ctl.focus();
+  assert.equal(h.focused.at(-1), h.terminal);
 });
 
 test("stale reads are cancelled after context changes, without poisoning later pastes", async (t) => {
   const h = await harness(t);
   for (const transition of [
-    () => { h.render({ activeTabId: "b" }); h.render({ activeTabId: "a" }); },
-    () => { h.render({ enabled: false }); h.render({ enabled: true }); },
-    () => {
-      h.tabsRef.current[0].sessionId = "new-session";
-      h.render();
-      h.tabsRef.current[0].sessionId = "a-session";
-      h.render();
+    async () => { h.detachHost(); h.attachHost(); },
+    async () => { utils.resetTerminalConnection(h.terminal); },
+    async () => {
+      await h.ctl.disconnect();
+      h.setConnectResult("a-session");
+      h.ctl.connect();
+      await h.settle();
     },
-    () => { utils.resetTerminalConnection(h.terminal); },
   ]) {
     const pending = deferred();
     h.setClipboard(pending.promise);
     h.rightClick();
-    transition();
+    await transition();
     pending.resolve("stale");
     await h.settle();
     assert.equal(h.sent.some(({ args }) => args.data === "stale"), false);
@@ -434,28 +423,27 @@ test("stale reads are cancelled after context changes, without poisoning later p
     h.terminal.keyHandler(key());
     await h.settle();
   }
-  assert.equal(h.sent.length, 4);
+  assert.equal(h.sent.length, 3);
   const late = deferred();
   h.setClipboard(late.promise);
   h.rightClick();
-  h.render({ enabled: false });
+  h.detachHost();
   late.reject(new Error("denied"));
   await h.settle();
-  assert.equal(h.notices.length, 0);
-  h.render({ enabled: true });
+  assert.equal(h.ctl.status.includes("Unable to read"), false);
+  h.attachHost();
   h.setClipboard(Promise.reject(new Error("denied")));
   h.rightClick();
   await h.settle();
-  assert.match(h.notices[0], /Unable to read/);
+  assert.match(h.ctl.status, /Unable to read/);
 });
 
-test("clipboard reads cannot follow a closed tab or an unmounted instance", async (t) => {
+test("clipboard reads cannot follow a closed window or an unmounted instance", async (t) => {
   const h = await harness(t);
   const pending = deferred();
   h.setClipboard(pending.promise);
   h.rightClick();
-  h.tabsRef.current = [makeTab("b")];
-  h.render({ activeTabId: "b" });
+  await h.ctl.dispose();
   pending.resolve("closed");
   await h.settle();
   assert.equal(h.sent.length, 0);
@@ -468,16 +456,18 @@ test("clipboard reads cannot follow a closed tab or an unmounted instance", asyn
   assert.equal(h.sent.length, 0);
 });
 
-test("live session state blocks disconnected, connecting and inactive native input", async (t) => {
-  const h = await harness(t);
-  h.native("inactive", "b");
-  h.tabsRef.current[0].connected = false;
-  h.native("disconnected");
-  h.rightClick();
-  h.tabsRef.current[0].connected = true;
-  h.tabsRef.current[0].connecting = true;
+test("live session state blocks connecting and disconnected native input", async (t) => {
+  const connect = deferred();
+  const h = await harness(t, { connect: connect.promise });
+  assert.equal(h.ctl.connecting, true);
+  assert.equal(h.ctl.status, "Connecting…");
   h.native("connecting");
-  h.tabsRef.current[0].connecting = false;
+  h.rightClick();
+  await h.settle();
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.reads.length, 0);
+  connect.resolve("a-session");
+  await h.settle();
   const event = h.native(undefined);
   assert.equal(event.prevented, true);
   assert.equal(event.stopped, true);
@@ -487,26 +477,32 @@ test("live session state blocks disconnected, connecting and inactive native inp
   h.native("connected");
   await h.settle();
   assert.equal(h.sent[0].args.data, "connected");
+  await h.ctl.disconnect();
+  await h.settle();
+  h.native("disconnected");
+  h.rightClick();
+  await h.settle();
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.reads.length, 0);
 });
 
 test("left-button selection-copy and OSC52 set remain intact; OSC52 query never reads", async (t) => {
   const h = await harness(t);
-  const host = h.hostRefsRef.current.get("a");
   h.setSelection("old");
-  host.fire("mousedown");
-  host.fire("mouseup");
+  h.host.fire("mousedown");
+  h.host.fire("mouseup");
   // The host capture listener runs before xterm's document mouseup handler.
   // Update the fake selection after the host event to model xterm finishing
   // its selection before the deferred clipboard read.
   h.setSelection("  new selection\n\ttext");
   await h.settle();
   assert.deepEqual(h.copies, ["  new selection\n\ttext"]);
-  host.fire("mousedown");
-  host.fire("mouseup");
+  h.host.fire("mousedown");
+  h.host.fire("mouseup");
   await h.settle();
-  host.fire("mousedown", { button: 2 });
+  h.host.fire("mousedown", { button: 2 });
   h.setSelection("not a left selection");
-  host.fire("mouseup", { button: 2 });
+  h.host.fire("mouseup", { button: 2 });
   await h.settle();
   assert.equal(h.copies.length, 1);
   const text = "remote selection \u4e2d\u6587";
@@ -520,23 +516,22 @@ test("left-button selection-copy and OSC52 set remain intact; OSC52 query never 
 
 test("selection-copy finishes when the pointer is released outside the terminal host", async (t) => {
   const h = await harness(t);
-  const host = h.hostRefsRef.current.get("a");
   h.setSelection("old");
-  host.fire("mousedown");
+  h.host.fire("mousedown");
   h.documentMouseup();
   h.setSelection("  multiple lines\nsecond line");
   await h.settle();
   assert.deepEqual(h.copies, ["  multiple lines\nsecond line"]);
 
   // A non-left button must never finish a left-button selection session.
-  host.fire("mousedown", { button: 2 });
+  h.host.fire("mousedown", { button: 2 });
   h.setSelection("right click selection");
   h.documentMouseup({ button: 2 });
   await h.settle();
   assert.deepEqual(h.copies, ["  multiple lines\nsecond line"]);
 
-  host.fire("mousedown");
-  host.fire("mousedown", { button: 1 });
+  h.host.fire("mousedown");
+  h.host.fire("mousedown", { button: 1 });
   h.setSelection("middle click selection");
   h.documentMouseup();
   await h.settle();
@@ -552,27 +547,23 @@ test("native window resize re-fits xterm and reports the new PTY size", async (t
   h.windowEvent("resize");
 
   assert.ok(h.fitCalls.length > fitCallsBefore);
-  assert.ok(h.calls.filter(({ command }) => command === "ssh_resize").length > resizeCallsBefore);
-});
-
-test("selection-copy is cancelled when the originating tab is no longer active", async (t) => {
-  const h = await harness(t);
-  const host = h.hostRefsRef.current.get("a");
-  h.setSelection("old");
-  host.fire("mousedown");
-  h.render({ activeTabId: "b" });
-  h.documentMouseup();
-  h.setSelection("stale selection");
-  await h.settle();
-  assert.equal(h.copies.length, 0);
+  const resizes = h.calls.filter(({ command }) => command === "ssh_resize");
+  assert.ok(resizes.length > resizeCallsBefore);
+  assert.deepEqual(
+    { sessionId: resizes.at(-1).args.sessionId, source: resizes.at(-1).args.source, cols: resizes.at(-1).args.cols, rows: resizes.at(-1).args.rows },
+    { sessionId: "a-session", source: "SSH test", cols: h.terminal.cols, rows: h.terminal.rows },
+  );
+  // An unchanged size is not sent to the remote PTY again.
+  const before = h.calls.filter(({ command }) => command === "ssh_resize").length;
+  h.windowEvent("resize");
+  assert.equal(h.calls.filter(({ command }) => command === "ssh_resize").length, before);
 });
 
 test("selection-copy is cancelled by window blur or pointer cancellation", async (t) => {
   for (const cancelEvent of ["blur", "pointercancel"]) {
     const h = await harness(t);
-    const host = h.hostRefsRef.current.get("a");
     h.setSelection("old");
-    host.fire("mousedown");
+    h.host.fire("mousedown");
     h.windowEvent(cancelEvent);
     h.documentMouseup();
     h.setSelection("cancelled selection");
@@ -581,68 +572,72 @@ test("selection-copy is cancelled by window blur or pointer cancellation", async
   }
 });
 
-test("real xterm replay retains DEC 2004; only connection boundaries reset it", async (t) => {
-  const a = { ...makeTab("a"), output: "prompt\x1b[?2004h" };
-  const h = await harness(t, { tabs: [a, makeTab("b")] });
+test("real xterm keeps DEC 2004 while the host is detached; only connection boundaries reset it", async (t) => {
+  const h = await harness(t);
+  h.bridge.onOutput("x", { sessionId: "a-session", requestId: h.requestId(), data: "prompt\x1b[?2004h" });
+  await h.settle();
   assert.equal(h.terminal.modes.bracketedPasteMode, true);
-  h.render({ enabled: false });
-  h.render({ enabled: true });
-  h.render({ activeTabId: "b" });
-  h.render({ activeTabId: "a" });
+  h.detachHost();
+  h.attachHost();
   assert.equal(h.terminal.modes.bracketedPasteMode, true);
   const pending = deferred();
   h.setClipboard(pending.promise);
   h.rightClick();
-  h.bridge.onExit("a", { sessionId: "a-session", data: "exit" });
+  h.bridge.onExit("x", { sessionId: "a-session", requestId: h.requestId(), data: "exit" });
   pending.resolve("stale exit");
   await h.settle();
   assert.equal(h.terminal.modes.bracketedPasteMode, false);
-  assert.ok(h.tabsRef.current[0].output.includes(utils.SSH_SESSION_BOUNDARY_GUARD));
+  assert.equal(h.ctl.connected, false, "the remote exit ends the session");
+  assert.equal(h.ctl.status, "exit");
   assert.equal(h.sent.length, 0);
   h.terminal.write("\x1b[?2004h");
   await h.settle();
   const connect = deferred();
   h.setConnectResult(connect.promise);
-  h.actions().performSshConnect("a", { id: "profile", username: "user", host: "host", port: 22 });
+  h.ctl.connect();
   // Pending reset must block paste even before the async parser sees DEC 2004 off.
   assert.equal(utils.getTerminalConnectionBoundary(h.terminal).ready, false);
   h.native("no race\n");
   await h.settle();
   assert.equal(h.terminal.modes.bracketedPasteMode, false);
   // Login output can enable the mode before ssh_connect resolves. Do not reset on success.
-  h.bridge.onOutput("a", { sessionId: "new-session", data: "\x1b[?2004h" });
+  h.bridge.onOutput("x", { sessionId: "new-session", requestId: h.requestId(), data: "\x1b[?2004h" });
   connect.resolve("new-session");
-  await h.finishActions();
+  await h.settle();
   assert.equal(h.terminal.modes.bracketedPasteMode, true);
   h.native("  fresh\n\tcode");
   await h.settle();
   assert.equal(h.sent.length, 1);
   assert.equal(h.sent[0].args.sessionId, "new-session");
   assert.equal(h.sent[0].args.data, "\x1b[200~  fresh\r\tcode\x1b[201~");
-  h.actions().disconnectSsh();
-  await h.finishActions();
+  await h.ctl.disconnect();
+  await h.settle();
   assert.equal(h.terminal.modes.bracketedPasteMode, false);
 });
 
 test("connect start and failure invalidate pending reads; a later connection can paste", async (t) => {
   const h = await harness(t);
+  await h.ctl.disconnect();
+  await h.settle();
   const clipboard = deferred(), connect = deferred();
   h.setClipboard(clipboard.promise);
   h.rightClick();
   h.setConnectResult(connect.promise);
-  const profile = { id: "profile", username: "user", host: "host", port: 22 };
-  h.actions().performSshConnect("a", profile);
+  h.ctl.connect();
   clipboard.resolve("stale reconnect");
   h.terminal.write("\x1b[?2004h");
   await h.settle();
   connect.reject(new Error("connect failed"));
-  await h.finishActions();
+  await h.settle();
   assert.equal(h.sent.length, 0);
   assert.equal(h.terminal.modes.bracketedPasteMode, false);
-  assert.match(h.tabsRef.current[0].output, /connect failed/);
+  assert.equal(h.ctl.connected, false);
+  assert.equal(h.ctl.connecting, false);
+  assert.match(h.ctl.status, /connect failed/);
+  assert.match(h.screen(), /connect failed/, "the reason is shown in the terminal as well");
   h.setConnectResult("later-session");
-  h.actions().performSshConnect("a", profile);
-  await h.finishActions();
+  h.ctl.connect();
+  await h.settle();
   h.setClipboard("fresh reconnect");
   h.rightClick();
   await h.settle();
@@ -658,61 +653,243 @@ test("disconnect failure cancels stale reads, but does not claim the live sessio
   h.setClipboard(clipboard.promise);
   h.rightClick();
   h.setDisconnectResult(disconnect.promise);
-  h.actions().disconnectSsh();
+  const finished = h.ctl.disconnect();
   clipboard.resolve("stale disconnect");
-  const finished = assert.rejects(() => h.finishActions(), /disconnect failed/);
   disconnect.reject(new Error("disconnect failed"));
   await finished;
   await h.settle();
   assert.equal(h.terminal.modes.bracketedPasteMode, false);
   assert.equal(h.sent.length, 0);
-  assert.equal(h.tabsRef.current[0].connected, true);
+  assert.equal(h.ctl.connected, true);
+  assert.match(h.ctl.status, /disconnect failed/);
   h.native("still connected");
   await h.settle();
   assert.equal(h.sent[0].args.data, "still connected");
 });
 
-test("copy session creates a new tab for the same SSH entry and connects independently", async (t) => {
+test("after the session ends the same window can connect again in the same terminal", async (t) => {
   const h = await harness(t);
-  const source = h.tabsRef.current[0];
-  h.actions().copySshSession(source);
-  await h.finishActions();
-  const copied = h.tabsRef.current[h.tabsRef.current.length - 1];
-  assert.ok(copied);
-  assert.notEqual(copied.id, source.id);
-  assert.equal(copied.workspaceId, source.workspaceId);
-  assert.equal(copied.sshEntryId, source.sshEntryId);
-  assert.equal(copied.sessionId, "new-session");
+  h.bridge.onOutput("x", { sessionId: "a-session", requestId: h.requestId(), data: "first session\r\n" });
+  await h.settle();
+  h.bridge.onExit("x", { sessionId: "a-session", requestId: h.requestId(), data: "Connection closed." });
+  await h.settle();
+  assert.equal(h.ctl.connected, false);
+  assert.equal(h.ctl.status, "Connection closed.");
+  assert.deepEqual(h.states.at(-1), { connected: false, connecting: false, recordingUnsaved: false });
+  assert.match(h.screen(), /first session/, "the old output stays visible");
+  h.setConnectResult("second-session");
+  h.ctl.connect();
+  await h.settle();
+  assert.equal(h.calls.filter((call) => call.command === "ssh_connect").length, 2);
+  assert.equal(h.requestId(0) === h.requestId(1), false, "every Connect uses its own request id");
+  assert.equal(h.ctl.connected, true);
+  assert.equal(h.ctl.status, "Connected");
+  assert.equal(h.instances.length, 1, "the xterm is reused");
+  assert.match(h.screen(), /first session/);
+  assert.match(h.screen(), /Connecting to user@host:22/);
+  h.native("second");
+  await h.settle();
+  assert.deepEqual(h.sent.at(-1).args, { sessionId: "second-session", data: "second" });
+});
+
+test("Connect while already connected or connecting starts nothing new", async (t) => {
+  const connect = deferred();
+  const h = await harness(t, { connect: connect.promise });
+  h.ctl.connect();
+  h.ctl.connect();
   assert.equal(h.calls.filter((call) => call.command === "ssh_connect").length, 1);
+  connect.resolve("a-session");
+  await h.settle();
+  h.ctl.connect();
+  await h.settle();
+  assert.equal(h.calls.filter((call) => call.command === "ssh_connect").length, 1);
+});
+
+test("a cancelled connection attempt is ignored and a late session is closed", async (t) => {
+  const connect = deferred();
+  const h = await harness(t, { connect: connect.promise });
+  h.ctl.cancelConnect();
+  await h.settle();
+  assert.equal(h.ctl.connecting, false);
+  assert.match(h.ctl.status, /cancelled/);
+  connect.resolve("late-session");
+  await h.settle();
+  assert.equal(h.ctl.connected, false, "a late success does not revive the cancelled attempt");
+  assert.deepEqual(h.calls.find((call) => call.command === "ssh_disconnect").args, { sessionId: "late-session" });
+  h.bridge.onOutput("x", { sessionId: "late-session", requestId: h.requestId(), data: "should not appear" });
+  await h.settle();
+  assert.doesNotMatch(h.screen(), /should not appear/);
+});
+
+test("output of another or an older session never reaches the terminal", async (t) => {
+  const h = await harness(t);
+  h.bridge.onOutput("x", { sessionId: "other-session", requestId: "other-request", data: "intruder" });
+  h.bridge.onOutput("x", { sessionId: "a-session", requestId: h.requestId(), data: "mine" });
+  await h.settle();
+  assert.doesNotMatch(h.screen(), /intruder/);
+  assert.match(h.screen(), /mine/);
+  const firstRequest = h.requestId();
+  await h.ctl.disconnect();
+  h.setConnectResult("b-session");
+  h.ctl.connect();
+  await h.settle();
+  h.bridge.onOutput("x", { sessionId: "a-session", requestId: firstRequest, data: "late output of the old session" });
+  await h.settle();
+  assert.doesNotMatch(h.screen(), /late output of the old session/);
 });
 
 test("recording output is appended through the disk-backed recording command", async (t) => {
   const h = await harness(t);
-  h.tabsRef.current[0].recording = true;
-  h.props.recordingRef.current = true;
-  h.bridge.onOutput("a", { sessionId: "a-session", requestId: "recording", data: "recorded output" });
+  await h.ctl.startRecording();
+  await h.settle();
+  assert.equal(h.ctl.recording, true);
+  assert.equal(h.ctl.status, "Recording");
+  const started = h.calls.find(({ command }) => command === "start_ssh_recording");
+  h.bridge.onOutput("x", { sessionId: "a-session", requestId: h.requestId(), data: "recorded output" });
   await h.settle();
   const recordingCall = h.calls.find(({ command }) => command === "append_ssh_recording");
   assert.ok(recordingCall);
-  assert.equal(recordingCall.args.tabId, "a");
+  assert.equal(recordingCall.args.tabId, started.args.tabId);
   assert.equal(recordingCall.args.rawChunk, "recorded output");
   assert.equal(recordingCall.args.plainChunk, "recorded output");
+  assert.ok(h.logs.some(([operation, status]) => operation === "ssh_recording" && status === "started"));
+});
+
+test("Record needs a live session, and typed commands are recorded without secrets", async (t) => {
+  const h = await harness(t);
+  await h.ctl.disconnect();
+  await h.settle();
+  await h.ctl.startRecording();
+  assert.equal(h.calls.some(({ command }) => command === "start_ssh_recording"), false, "no session, no recording");
+  h.setConnectResult("again");
+  h.ctl.connect();
+  await h.settle();
+  await h.ctl.startRecording();
+  await h.settle();
+  // Typed input arrives key by key through xterm's onData, like real typing.
+  const type = (...keys) => { for (const typed of keys) h.terminal._core.coreService.triggerDataEvent(typed, true); };
+  type("l", "s", "\r");
+  await h.settle();
+  const command = h.calls.find(({ command: name }) => name === "append_ssh_recording_command");
+  assert.ok(command);
+  assert.match(command.args.line, /^\[\d{4}-.*\] ls\n$/);
+  h.bridge.onOutput("x", { sessionId: "again", requestId: h.requestId(), data: "Password: " });
+  type("h", "u", "n", "t", "e", "r", "2", "\r");
+  await h.settle();
+  assert.equal(h.calls.filter(({ command: name }) => name === "append_ssh_recording_command").length, 1, "text typed at a password prompt is not recorded");
+  assert.deepEqual(h.sent.map(({ args }) => args.data).slice(0, 3), ["l", "s", "\r"], "everything typed still reaches the session");
+});
+
+test("a session that ends while recording keeps the recording so it can still be saved", async (t) => {
+  const h = await harness(t);
+  await h.ctl.startRecording();
+  await h.settle();
+  h.bridge.onExit("x", { sessionId: "a-session", requestId: h.requestId(), data: "gone" });
+  await h.settle();
+  assert.equal(h.ctl.connected, false);
+  assert.equal(h.ctl.recording, false, "the recording is stopped");
+  assert.ok(h.calls.some(({ command }) => command === "stop_ssh_recording"));
+  assert.equal(h.calls.some(({ command }) => command === "discard_ssh_recording"), false, "but not discarded");
+  assert.equal(h.ctl.hasRecordedOutput, true);
+  assert.equal(h.ctl.hasUnsavedRecording(), true);
+  assert.equal(h.states.at(-1).recordingUnsaved, true, "the owner is told an unsaved recording exists");
+  h.setPicker("logs");
+  await h.ctl.openSaveLogDialog();
+  await h.settle();
+  assert.equal(h.ctl.saveLogDialog.open, true);
 });
 
 test("Save Log picker always starts at HOME; empty HOME selection is not cancellation", async (t) => {
   const h = await harness(t);
+  await h.ctl.startRecording();
+  await h.ctl.stopRecording();
+  await h.settle();
+  assert.equal(h.ctl.recording, false);
   for (const selected of [null, "", "logs", ""]) {
-    h.actionState.nameOpen = false;
+    h.ctl.saveLogDialog.close();
+    await h.settle();
     h.setPicker(selected);
-    h.actions().openSaveLogDialog();
-    await h.finishActions();
+    await h.ctl.openSaveLogDialog();
+    await h.settle();
     assert.deepEqual(h.calls.filter(({ command }) => command === "pick_local_directory").at(-1).args, { path: "" });
-    assert.equal(h.actionState.nameOpen, selected !== null);
-    if (selected !== null) assert.equal(h.actionState.destination, selected);
+    assert.equal(h.ctl.saveLogDialog.open, selected !== null);
+    if (selected !== null) assert.equal(h.ctl.saveLogDialog.destination, selected);
   }
-  h.actions().saveSshLogs();
-  await h.finishActions();
-  assert.equal(h.calls.find(({ command }) => command === "save_ssh_logs").args.destinationPath, "");
-  assert.equal(h.actionState.nameOpen, false);
-  assert.deepEqual(h.tabsRef.current[0].savedLogPaths, ["raw", "plain", "commands", "metadata"]);
+  assert.equal(h.ctl.saveLogDialog.name, "Server");
+  h.ctl.saveLogDialog.setName("My log");
+  await h.settle();
+  await h.ctl.saveLog();
+  await h.settle();
+  const save = h.calls.find(({ command }) => command === "save_ssh_logs");
+  assert.equal(save.args.destinationPath, "");
+  assert.equal(save.args.profileName, "My log");
+  assert.equal(save.args.host, "host");
+  assert.equal(h.ctl.saveLogDialog.open, false);
+  assert.deepEqual(h.ctl.savedLogPaths, ["raw", "plain", "commands", "metadata"]);
+  assert.equal(h.ctl.hasUnsavedRecording(), false, "a saved recording no longer blocks closing");
+  assert.equal(h.states.at(-1).recordingUnsaved, false);
+  assert.ok(h.logs.some(([operation, status]) => operation === "ssh_recording" && status === "saved"));
+});
+
+test("Save Log passes every kind of destination to save, and no picker opens for a running or empty recording", async (t) => {
+  for (const destination of ["", "Documents/logs", "D:/Logs", "//server/share/logs"]) {
+    const h = await harness(t);
+    await h.ctl.startRecording();
+    await h.ctl.stopRecording();
+    await h.settle();
+    h.setPicker(destination);
+    await h.ctl.openSaveLogDialog();
+    await h.settle();
+    assert.deepEqual(h.calls.find(({ command }) => command === "pick_local_directory").args, { path: "" });
+    assert.equal(h.ctl.saveLogDialog.open, true);
+    assert.equal(h.ctl.saveLogDialog.destination, destination);
+    await h.ctl.saveLog();
+    await h.settle();
+    const save = h.calls.find(({ command }) => command === "save_ssh_logs");
+    assert.equal(save.args.destinationPath, destination);
+    assert.equal(save.args.profileName, "Server");
+    assert.equal(h.ctl.saveLogDialog.open, false);
+    assert.deepEqual(h.ctl.savedLogPaths, ["raw", "plain", "commands", "metadata"]);
+  }
+  // Nothing recorded yet: Save Log does nothing.
+  const empty = await harness(t);
+  await empty.ctl.openSaveLogDialog();
+  await empty.settle();
+  assert.equal(empty.calls.some(({ command }) => command === "pick_local_directory"), false);
+  assert.equal(empty.ctl.saveLogDialog.open, false);
+  assert.equal(empty.ctl.hasRecordedOutput, false);
+  // A recording that is still running cannot be saved.
+  const running = await harness(t);
+  await running.ctl.startRecording();
+  await running.settle();
+  await running.ctl.openSaveLogDialog();
+  await running.settle();
+  assert.equal(running.calls.some(({ command }) => command === "pick_local_directory"), false);
+  assert.equal(running.ctl.saveLogDialog.open, false);
+  await running.ctl.saveLog();
+  assert.equal(running.calls.some(({ command }) => command === "save_ssh_logs"), false);
+});
+
+test("closing the window disconnects, and discards a recording that was never saved", async (t) => {
+  const h = await harness(t);
+  await h.ctl.startRecording();
+  await h.settle();
+  assert.equal(h.ctl.hasUnsavedRecording(), true);
+  assert.equal(h.states.at(-1).recordingUnsaved, true);
+  await h.ctl.dispose();
+  const names = h.calls.map(({ command }) => command);
+  assert.ok(names.includes("stop_ssh_recording"));
+  assert.ok(names.includes("discard_ssh_recording"));
+  assert.deepEqual(h.calls.find(({ command }) => command === "ssh_disconnect").args, { sessionId: "a-session" });
+  assert.equal(h.ctl.hasUnsavedRecording(), false);
+});
+
+test("closing while the connection is still being made closes the session that arrives later", async (t) => {
+  const connect = deferred();
+  const h = await harness(t, { connect: connect.promise });
+  await h.ctl.dispose();
+  connect.resolve("arrives-late");
+  await h.settle();
+  assert.deepEqual(h.calls.find(({ command }) => command === "ssh_disconnect").args, { sessionId: "arrives-late" });
+  assert.equal(h.ctl.connected, false);
 });

@@ -15,9 +15,9 @@ App
    │  ├─ PaneBody "local"                -- commandbar + LOCAL pane
    │  ├─ PaneBody "remote"               -- commandbar + Folders tree + API REMOTE file pane (API Location only)
    │  ├─ PaneBody "sftp:<entryId>" × N   -- SftpWindow: one self-contained SFTP browser per SSH entry
+   │  ├─ PaneBody "ssh:<entryId>" × N    -- SshEntryPane: one SSH terminal per SSH entry
    │  ├─ PaneBody "rest"                 -- RestApiWorkspace (lazy)
-   │  ├─ PaneBody "vnc"                  -- VncWorkspaceController (lazy)
-   │  └─ PaneBody "terminal"             -- TerminalWorkspace (always mounted)
+   │  └─ PaneBody "vnc"                  -- VncWorkspaceController (lazy)
    └─ portals: settings, queue, viewer, help, logs, sessions, shares, editors
 ```
 
@@ -45,15 +45,24 @@ Changing Location via `selectLocation()` resets paths/selections/tree state of t
 
 ### Pane desktop windows
 
-The desktop UI is the Pane Style window desktop (`src/pane/`); there is no mode switcher or Classic layout. `PaneDesktop` owns the window list (`usePaneWindows`, persisted as `fileapi-pane-layout`) and reports the open and focused windows to `DesktopApp` through `onWindowState`. A window id is either its kind (`local`, `remote`, `vnc`, `rest`, `terminal`, one of each) or `sftp:<entryId>` (one per SSH entry; the CSS class is `pane-window-sftp`, the id is exposed as `data-window-id`). SFTP windows are never written to `fileapi-pane-layout` and are dropped when their SSH entry is removed. Minimizing hides a window with `visibility: hidden` and keeps it mounted, so REST/VNC connections and polling continue; closing a REST or VNC window unmounts it and ends that connection. The Terminal window is never unmounted: closing it only hides it, and its SSH tabs and sessions stay alive.
+The desktop UI is the Pane Style window desktop (`src/pane/`); there is no mode switcher or Classic layout. `PaneDesktop` owns the window list (`usePaneWindows`, persisted as `fileapi-pane-layout`) and reports the open and focused windows to `DesktopApp` through `onWindowState`. A window id is either its kind (`local`, `remote`, `vnc`, `rest`, one of each), `sftp:<entryId>` or `ssh:<entryId>` (one of each per SSH entry; the CSS classes are `pane-window-sftp` / `pane-window-ssh`, the id is exposed as `data-window-id`). SFTP and SSH windows are never written to `fileapi-pane-layout` and are dropped when their SSH entry is removed; a stored `terminal` window from an older version is not a valid id any more and is ignored. Minimizing hides a window with `visibility: hidden` and keeps it mounted, so REST/VNC connections and polling continue and an SSH pane keeps its session; closing a REST or VNC window unmounts it and ends that connection, and closing an SSH or SFTP window discards it (an SSH pane disconnects and drops a recording that was never saved, after a confirmation, see `onRequestClose`).
 
-The Functions button in the dock lists Location, VNC and RestAPI (VNC and RestAPI only when enabled in Settings). Location opens a list of Local, every API Location from `GET /api/locations` (offline ones disabled) and every SSH entry from the Workspace Manager (enabled once it is connected in the Terminal). Choosing a Remote entry runs `selectLocation()` and opens the Remote window; choosing an SFTP entry opens (or raises) that entry's own SFTP window. An SSH entry counts as connected (`pane/sftp-availability.ts`) when the main window's Terminal has a connected tab for it **or** a native "Open in New Window" SSH window for it reports `connected` through `ssh-popup-state` (those windows have their own webview, so the main window only learns about them from `ssh-popup-registry`; after a reload the registry broadcasts `ssh-popup-state-request` and every popup re-reports). Two entries with the same name are shown as `name (user@host)`.
+The Functions button in the dock lists Location, VNC and RestAPI (VNC and RestAPI only when enabled in Settings). Location opens a list of Local, every API Location from `GET /api/locations` (offline ones disabled) and every SSH entry from the Workspace Manager (enabled once it is connected in its SSH pane or its own SSH window). Choosing a Remote entry runs `selectLocation()` and opens the Remote window; choosing an SFTP entry opens (or raises) that entry's own SFTP window. An SSH entry counts as connected (`pane/sftp-availability.ts`) when the SSH pane of the entry in the main window reports `connected` (`sshPaneStates` in `main.tsx`) **or** a native "Open a new Window" SSH window for it reports `connected` through `ssh-popup-state` (those windows have their own webview, so the main window only learns about them from `ssh-popup-registry`; after a reload the registry broadcasts `ssh-popup-state-request` and every popup re-reports). Two entries with the same name are shown as `name (user@host)`.
 
 The focused Location window decides `activePane`: focusing Local makes it `"local"`, focusing Remote makes it `"remote"`, and New folder, Rename, Delete, View, Select all and Refresh act on that pane. SFTP windows have their own command bar and do not use `activePane`. Each Location window has its own command bar; REST and VNC portal their tools into their own window's command bar. Dragging between the Local and Remote windows uses the same drag state as before, so Upload and Download by drag still work across windows.
 
 The dock strip is fully transparent: there is no bar background, no line above Functions / Terminal and no divider before the taskbar tabs. The launchers and the tabs float on their own raised surfaces (always shadowed, independent of Settings) and overlap the bottom edge of the window area by `var(--space-3)`; the empty part of the strip has `pointer-events: none`, so clicks reach the windows behind it. Desktop windows have a drop shadow that falls to the right and below (`.pane-window`); Settings → Color theme → **Window shadows** (`paneShadowEnabled`, default on) adds `pane-shadow-off` to the shell, which removes the blurred window shadows to save GPU work and leaves only the focus ring on the active window. The window layer uses `overflow: visible` so a window touching the right or bottom edge keeps its shadow.
 
-SSH "Open in New Window" terminals are native Tauri windows. The main window tracks them in `pane/ssh-popup-registry.ts` (created handles, `tauri://destroyed`, `WebviewWindow.getAll()` reconciliation, and `ssh-popup-state` events emitted by the popup) so the taskbar can focus or close them. Closing the main window first closes every popup, asking once if a recording would be discarded.
+SSH "Open a new Window" terminals are native Tauri windows. The main window tracks them in `pane/ssh-popup-registry.ts` (created handles, `tauri://destroyed`, `WebviewWindow.getAll()` reconciliation, and `ssh-popup-state` events emitted by the popup) so the taskbar can focus or close them. Closing the main window first closes every popup, asking once if a recording would be discarded; an SSH pane in the main window with an unsaved recording is covered by the same single prompt.
+
+#### SSH terminals (native window and SSH pane)
+
+Both kinds of SSH terminal are the same component logic: `useSshEntryTerminal` (connection, xterm, recording, Save Log) rendered by `SshEntryTerminalView`. `SshTerminalPopup` is the thin native shell (window title, close request, `ssh-popup-state` reports); `SshEntryPane` is the body of an `ssh:<entryId>` pane window. The header is identical in both: entry name, status, **Connect / Disconnect** (Cancel while connecting), **Record**, **Save Log**; only the styling differs (`.ssh-terminal-popup*` keeps the dark native look, `.ssh-entry-pane*` follows the app theme variables).
+
+- A terminal connects when it opens. When the session ends (remote exit or Disconnect) the window **stays open**, keeps its output, and Connect starts a new session in the same xterm: it resets the VT parser (`SSH_SESSION_BOUNDARY_GUARD`), uses a new request id, and re-reads the saved entry, so an edited host or key applies. Output of a cancelled attempt or an older session is ignored; a session that arrives after Cancel or close is disconnected.
+- A running recording is stopped when the session ends but kept, so Save Log still works; closing the window disconnects and discards a recording that was never saved (after a confirmation).
+- Each entry has at most one SSH pane; choosing it again from the Terminal menu raises it. Use Open a new Window for a second session of the same entry.
+- The pane reports `{ connected, connecting, recordingUnsaved }` to `main.tsx` (`sshPaneStates`); this drives the SFTP availability, the taskbar status dot / REC marker and the close confirmation.
 
 The cookie/origin, Location revision, reservation, and server cancellation contracts in this document apply to the Location API Remote. They do not replace REST API workspace authentication, Proxmox VNC sessions, or SSH/SFTP credentials and executors. LOCAL browsing follows native OS access checks. Sharing a shell or secret-storage command does not merge these window boundaries.
 
@@ -132,7 +141,7 @@ The share router also rejects stale `X-Location-Revision` or changed root/permis
 
 ## SSH integration
 
-SSH profiles live inside managed Workspaces. An SSH entry that is connected in the Terminal can be opened as an SFTP window. `findSshProfileById()` resolves the profile; the Functions → Location → SFTP list enables an entry only while a connected terminal tab exists for it. The SSH entry editor and password commands are owned by `main.tsx`; terminal lifecycle/event bridging is delegated to `useTerminalLifecycle` and `useSshEventBridge`.
+SSH profiles live inside managed Workspaces. An SSH entry that is connected (its SSH pane or its own SSH window) can be opened as an SFTP window. `findSshProfileById()` resolves the profile; the Functions → Location → SFTP list enables an entry only while such a connection exists. The SSH entry editor and password commands are owned by `main.tsx`; terminal lifecycle/event bridging is delegated to `useTerminalLifecycle` and `useSshEventBridge`.
 
 ### SFTP windows (`features/sftp/SftpWindow.tsx`)
 
@@ -156,20 +165,21 @@ reversed because `.pane-flyout` uses `column-reverse`).
 - `Terminal` and `CMD` are rendered only when `navigator.userAgent` contains
   `Windows` (`localShellsAvailable` in `main.tsx`). They are shortcuts, not
   Workspace Entries, so they do not enter `ManagedSession`, local storage, SSH
-  password handling, or SSH tab lifecycle. The frontend sends only the fixed
+  password handling, or the SSH terminals. The frontend sends only the fixed
   terminal kind and the current LOCAL pane path to `open_local_terminal`.
 - `SSH Entries` opens a list grouped by Workspace. With no Workspace at all it
   shows a "No Workspace yet" item that starts the Create Workspace dialog; with
   Workspaces but no SSH entry it shows "No SSH Entry yet" that opens Entry
   Manager on the first Workspace. Choosing an entry opens a sibling panel
   (`.pane-entry-actions`) with **Open a new Window** (native Tauri window,
-  `openSshEntryInNewWindow`) and **Open SSH** (opens the Terminal pane, then
-  `quickConnectSsh`). The panel is a sibling of the scrolling list so the list
-  never clips it.
+  `openSshEntryInNewWindow`) and **Open SSH** (opens, or raises, the entry's
+  own `ssh:<entryId>` pane, which connects by itself). The panel is a sibling of
+  the scrolling list so the list never clips it.
 - `Entry Manager` opens the Workspace Manager (`SessionsModal`).
 
-The Terminal window itself only holds the SSH tabs, Connect/Disconnect/Cancel,
-Transfer Queue and recording controls; entries are never picked inside it.
+There is no shared Terminal window and no tab strip any more: every SSH entry
+is its own window (see "SSH terminals" above) and entries are never picked
+inside it.
 
 Rust resolves the path with the same read-only LOCAL directory resolver used by
 the file browser. An empty path means HOME; `..`, missing directories, files,
@@ -183,9 +193,9 @@ platform error.
 
 ### Terminal paste contract
 
-Each tab keeps its xterm instance through dock collapse and tab changes. Instance disposal is separate from cancellation of asynchronous creation. Pending clipboard reads also capture the active paste context, session ID, and connection-boundary token: switching away and back, reconnecting, closing, or collapsing cannot deliver an old clipboard result into a new context.
+Each SSH terminal keeps its xterm instance for as long as its window exists, also across Disconnect/Connect and while its host is detached. Instance disposal is separate from cancellation of asynchronous creation. Pending clipboard reads also capture the paste context, session ID, and connection-boundary token: reconnecting, disconnecting, closing, or detaching the host cannot deliver an old clipboard result into a new context.
 
-Keyboard paste, right-click paste, and native paste events share one validation and dispatch path. Accepted text goes through one `terminal.paste()` call and the existing per-session SSH write queue. Spaces, indentation, tabs, blank lines, trailing whitespace, and logical line breaks are preserved. CRLF/CR are normalized to LF before xterm performs its normal terminal newline conversion. No line is sent separately and no Enter or newline is appended. Left-button selection-copy and OSC 52 clipboard-set behavior are unchanged; selection copies rendered terminal text, not original file bytes. Left-button selection tracking temporarily follows the originating tab through document-level mouseup so a release outside the host still copies the completed selection, while right-button events and stale/closed tabs are ignored. Selecting a tab focuses its active xterm for immediate keyboard input; no global Ctrl+Tab shortcut is installed.
+Keyboard paste, right-click paste, and native paste events share one validation and dispatch path. Accepted text goes through one `terminal.paste()` call and the existing per-session SSH write queue. Spaces, indentation, tabs, blank lines, trailing whitespace, and logical line breaks are preserved. CRLF/CR are normalized to LF before xterm performs its normal terminal newline conversion. No line is sent separately and no Enter or newline is appended. Left-button selection-copy and OSC 52 clipboard-set behavior are unchanged; selection copies rendered terminal text, not original file bytes. Left-button selection tracking temporarily follows the originating terminal through document-level mouseup so a release outside the host still copies the completed selection, while right-button events and closed terminals are ignored. Clicking the terminal focuses its xterm for immediate keyboard input; no global Ctrl+Tab shortcut is installed.
 
 | Input and setting | Behavior |
 |---|---|

@@ -46,21 +46,17 @@ import { AppShell } from "./app/AppShell";
 import { PaneBody, PaneDesktop } from "./pane/PaneDesktop";
 import { PaneTopRight } from "./pane/PaneTopRight";
 import { type PaneLocationChoice, type PaneTerminalWorkspace } from "./pane/PaneDock";
-import { sftpWindowId, type PaneWindowId } from "./pane/pane-window-model";
+import { sftpWindowId, sshPaneEntryIdOf, sshWindowId, type PaneWindowId } from "./pane/pane-window-model";
 import { SftpWindow, type SftpDndBridge, type SftpTransferBridge } from "./features/sftp/SftpWindow";
 import { trackSshPopup, subscribeSshPopups, getSshPopupSnapshot } from "./pane/ssh-popup-registry";
 import { isSshEntryConnected } from "./pane/sftp-availability";
 import { SSH_POPUP_PREFIX } from "./pane/ssh-popup-contracts";
 import { useCommandbarOverflow } from "./pane/useCommandbarOverflow";
-import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
 import { isSshTerminalPopup, SshTerminalPopup } from "./features/terminal/SshTerminalPopup";
+import { SshEntryPane } from "./features/terminal/SshEntryPane";
+import type { SshEntryTerminalState } from "./features/terminal/useSshEntryTerminal";
 import type { SshProfile } from "./features/ssh/ssh-contracts";
-import type { LocalTerminalKind } from "./features/terminal/terminal-contracts";
-import { appendSshTabOutput, makeSshTabId } from "./features/terminal/terminal-utils";
-import { useSshTerminal } from "./features/terminal/useSshTerminal";
-import { useSshTerminalState } from "./features/terminal/useSshTerminalState";
-import { useSshTerminalActions } from "./features/terminal/useSshTerminalActions";
-import { formatSize } from "./format-utils";
+import type { LocalTerminalKind } from "./features/terminal/terminal-contracts";import { formatSize } from "./format-utils";
 import { useDesktopSettings } from "./features/settings/useDesktopSettings";
 import { defaultDesktopSettings, desktopSettingsKey, normalizeDesktopSettings, type DesktopSettings, type OperationStorageInfo } from "./features/settings/settings-contracts";
 import { useSessionsState } from "./features/sessions/useSessionsState";
@@ -69,7 +65,7 @@ import { type ManagedSession } from "./features/sessions/sessions-contracts";
 import { useShareLinksState } from "./features/share-links/useShareLinksState";
 import { useShareLinksActions } from "./features/share-links/useShareLinksActions";
 import type { FileItem } from "./file-item-contracts";
-import { downloadPath, isAbsoluteLocalPath, localBreadcrumbSegments, localParentPath as getLocalParentPath, showLocalUp as canNavigateLocalUp } from "./path-utils";
+import { downloadPath, localBreadcrumbSegments, localParentPath as getLocalParentPath, showLocalUp as canNavigateLocalUp } from "./path-utils";
 import { useTransferQueueState } from "./features/queue/useTransferQueueState";
 import { useTransferQueueActions } from "./features/queue/useTransferQueueActions";
 import type { TransferQueueItem } from "./features/queue/queue-contracts";
@@ -589,9 +585,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [expandedHelpSections, setExpandedHelpSections] = useState<string[]>(["getting-started"]);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
-  const [saveLogNameOpen, setSaveLogNameOpen] = useState(false);
-  const [saveLogNameDraft, setSaveLogNameDraft] = useState("");
-  const [saveLogDestinationPath, setSaveLogDestinationPath] = useState("");
   const [namePrompt, setNamePrompt] = useState<NamePromptRequest | null>(null);
   const [namePromptDraft, setNamePromptDraft] = useState("");
   const namePromptResolver = useRef<((value: string | null) => void) | null>(null);
@@ -712,23 +705,24 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     vncEntryDraft, setVncEntryDraft,
     vncEntryModalTab, setVncEntryModalTab,
   } = useSessionsState();
-  const terminalState = useSshTerminalState();
-  const {
-    terminalOpen, setTerminalOpen, sshTabs, setSshTabs, activeSshTabId, setActiveSshTabId,
-    sshConnected, setSshConnected, sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
-    terminalHostRefsRef, terminalInstancesRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
-    recordingWriteQueuesRef, recordingPlainTranscriptsRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
-    pendingSshConnectRequestsRef, connectAttemptRef, sshTabsRef, shellInputRef,
-  } = terminalState;
-  // Issue #239: registers/unregisters each SSH tab's host div into the
-  // shared per-tab Map as TerminalWorkspace mounts/unmounts them (React
-  // calls a callback ref with `null` right before the node it was
-  // attached to unmounts, e.g. when a tab is closed) -- see
-  // useTerminalLifecycle for how these are consumed.
-  const registerSshTerminalHostRef = (tabId: string, el: HTMLDivElement | null) => {
-    if (el) terminalHostRefsRef.current.set(tabId, el);
-    else terminalHostRefsRef.current.delete(tabId);
-  };
+  // Live state of each open SSH pane (window id `ssh:<entryId>`), reported by its
+  // terminal. It enables SFTP for connected entries, drives the taskbar dot / REC
+  // marker and decides whether closing the window needs a confirmation.
+  const [sshPaneStates, setSshPaneStates] = useState<Record<string, SshEntryTerminalState | undefined>>({});
+  const sshPaneStatesRef = useRef(sshPaneStates);
+  sshPaneStatesRef.current = sshPaneStates;
+  const handleSshPaneState = useCallback((entryId: string, state: SshEntryTerminalState | null) => {
+    setSshPaneStates((current) => {
+      if (state === null) {
+        if (!(entryId in current)) return current;
+        const { [entryId]: _removed, ...rest } = current;
+        return rest;
+      }
+      const previous = current[entryId];
+      if (previous && previous.connected === state.connected && previous.connecting === state.connecting && previous.recordingUnsaved === state.recordingUnsaved) return current;
+      return { ...current, [entryId]: state };
+    });
+  }, []);
   const [folderPaneWidth, setFolderPaneWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-folder-pane-width")) || 250,
   );
@@ -1046,8 +1040,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         setSharePasswordOpen(false);
       } else if (changePasswordOpen) {
         setChangePasswordOpen(false);
-      } else if (saveLogNameOpen) {
-        setSaveLogNameOpen(false);
       } else if (shareLinksOpen) {
         setShareLinksOpen(false);
       } else if (sessionsOpen) {
@@ -1104,7 +1096,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     locationMenuOpen,
     queueOpen,
     restEntryDialogOpen,
-    saveLogNameOpen,
     sessionsOpen,
     settingsOpen,
     shareLinksOpen,
@@ -1114,24 +1105,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     viewerOpen,
     workspaceNameDialogOpen,
   ]);
-
-  useEffect(() => {
-    sshTabsRef.current = sshTabs;
-  }, [sshTabs]);
-
-  useEffect(() => {
-    activeSshTabIdRef.current = activeSshTabId;
-    const tab = sshTabs.find((item) => item.id === activeSshTabId);
-    setSshConnected(Boolean(tab?.connected));
-    setRecording(Boolean(tab?.recording));
-    setSavedLogPaths(tab?.savedLogPaths || []);
-    sshSessionIdRef.current = tab?.sessionId || "";
-    sshOutputRef.current = tab?.output || "";
-  }, [activeSshTabId, sshTabs]);
-
-  useEffect(() => {
-    recordingRef.current = recording;
-  }, [recording]);
 
   useEffect(() => () => window.clearTimeout(noticeTimer.current), []);
 
@@ -1200,38 +1173,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     setLocalTreeWidth((current) => Math.min(current, maxTreeWidth));
   }, [viewport.width]);
 
-
-  useSshTerminal({
-    enabled: terminalOpen,
-    activeTabId: activeSshTabId,
-    activeSessionId: sshTabs.find((tab) => tab.id === activeSshTabId)?.sessionId || "",
-    tabIds: sshTabs.map((tab) => tab.id),
-    bracketedPasteControlEnabled: desktopSettings.bracketedPasteControlEnabled,
-    setTabs: setSshTabs,
-    setConnected: setSshConnected,
-    setNotice,
-    tabsRef: sshTabsRef,
-    pendingRequestsRef: pendingSshConnectRequestsRef,
-    terminalsRef: terminalInstancesRef,
-    hostRefsRef: terminalHostRefsRef,
-    activeTabIdRef: activeSshTabIdRef,
-    outputRef: sshOutputRef,
-    sessionIdRef: sshSessionIdRef,
-    connectingRef: sshConnectingRef,
-    writeQueuesRef: sshWriteQueuesRef,
-    recordingWriteQueuesRef,
-    recordingPlainTranscriptsRef,
-    recordingRef,
-    secretPromptRef: sshSecretPromptRef,
-    shellInputRef,
-  });
   useEffect(() => {
     const closeAccountMenu = (event: MouseEvent) => {
       if (!accountControl.current?.contains(event.target as Node) && !(event.target as HTMLElement).closest(".account-menu"))
         setAccountOpen(false);
       if (!locationControl.current?.contains(event.target as Node))
         setLocationMenuOpen(false);
-      if (!(event.target as HTMLElement).closest(".context-menu, .terminal-context-menu, .account-menu, .context-picker-popover"))
+      if (!(event.target as HTMLElement).closest(".context-menu, .account-menu, .context-picker-popover"))
         setContextMenu(null);
     };
     window.addEventListener("click", closeAccountMenu);
@@ -1886,8 +1834,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     saveWorkspaceName,
     openWorkspaceNameDialog,
     removeSession,
-    loadSshProfileDraft,
-    selectWorkspaceSession,
     openSessionsModal,
     startNewWorkspace,
     startNewSshEntry,
@@ -1916,8 +1862,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     installVncSshKey,
     selectRestWorkspace,
     selectVncWorkspace,
-    workspaceSessions,
-    activeWorkspaceSession,
     activeManagedWorkspace,
     restWorkspace,
     vncWorkspace,
@@ -1943,60 +1887,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     vncEntryDraft, setVncEntryDraft, setVncEntryDialogOpen, setVncEntryModalTab,
     activeVncEntryId, setActiveVncEntryId,
     hostSshPasswordDraft, setHostSshPasswordDraft, hostSshPasswordSaved, setHostSshPasswordSaved,
-  });
-
-  const {
-    activeTab: activeSshTab,
-    recordingHasOutput,
-    createSshTab,
-    closeSshTab,
-    selectSshTab,
-    performSshConnect,
-    cancelSshConnect,
-    quickConnectSsh,
-    copySshSession,
-    reorderSshTabs,
-    connectSsh,
-    disconnectSsh,
-    startRecording,
-    stopRecording,
-    saveSshLogs,
-    openSaveLogDialog,
-  } = useSshTerminalActions({
-    tabs: sshTabs,
-    setTabs: setSshTabs,
-    activeTabId: activeSshTabId,
-    setActiveTabId: setActiveSshTabId,
-    terminalInstancesRef,
-    connectAttemptRef,
-    pendingRequestsRef: pendingSshConnectRequestsRef,
-
-    connectingRef: sshConnectingRef,
-    recordingWriteQueuesRef,
-    recordingPlainTranscriptsRef,
-    workspaces: managedSessions,
-    workspaceId: workspaceSessionId,
-    setWorkspaceId: setWorkspaceSessionId,
-    selectedEntryId: selectedSshEntryId,
-    setSelectedEntryId: setSelectedSshEntryId,
-    setSshProfileId,
-    setTerminalOpen: (open: boolean) => {
-      if (open) paneOpenWindowRef.current("terminal");
-      setTerminalOpen(open);
-    },
-    loadSshProfileDraft,
-    onOpenWorkspaceManager: () => openSessionsModal(),
-    onNotify: notify,
-    onSetNotice: setNotice,
-    run: (action) => { void run(action); },
-    onWriteOperationLog: (...args: Parameters<typeof writeOperationLog>) => writeOperationLog(...args),
-    describeError: (error: unknown) => describeError(error),
-    saveLogNameDraft,
-    setSaveLogNameDraft,
-    saveLogDestinationPath,
-    setSaveLogDestinationPath,
-    saveLogNameOpen,
-    setSaveLogNameOpen,
   });
 
   const openSshEntryInNewWindow = async (workspaceId: string, entryId: string) => {
@@ -2043,39 +1933,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     });
   };
 
-  const installSshKey = () => {
-    const tabId = activeSshTabId || createSshTab();
-    const tab = sshTabs.find((item) => item.id === tabId);
-    const workspace = managedSessions.find((item) => item.id === (tab?.workspaceId || workspaceSessionId));
-    const profile = workspace?.sshEntries.find((item) => item.id === (tab?.sshEntryId || selectedSshEntryId));
-    if (!tabId || !workspace || !profile) {
-      openSessionsModal();
-      setNotice("Select an SSH entry before installing its key.");
-      return;
-    }
-    void run(async () => {
-      setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `Installing SSH key for ${profile.username}@${profile.host}:${profile.port} using the saved password...\n`) }));
-      try {
-        const message = await invoke<string>("ssh_install_key", {
-          profile: {
-            id: profile.id,
-            name: profile.name,
-            host: profile.host,
-            port: profile.port,
-            username: profile.username,
-            privateKeyPath: profile.privateKeyPath || null,
-          },
-        });
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${message}\n`) }));
-        notify(message);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        setSshTabs((current) => current.map((item) => item.id !== tabId ? item : { ...item, output: appendSshTabOutput(item.output, `${detail}\n`) }));
-        setNotice(detail);
-      }
-    });
-  };
-
   const operationIds = useRef(new Map<string, { id: string; lastAt: number; startedAt: number }>());
   const writeOperationLog = (operation: string, status: string, sourceLabel: string, destinationLabel: string, detail: string, level: DesktopSettings["operationLogLevel"] = "INFO") => {
     if (!desktopSettings.operationLogEnabled) return;
@@ -2105,7 +1962,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const archiveName = detail.match(/(?:created|extracted)\s+([^\s.]+(?:\.[a-z0-9.]+)?)/i)?.[1];
     const sourceType = /\b(local|ssh|remote|api)\b/i.exec(sourceLabel)?.[1]?.toUpperCase();
     const destinationType = /\b(local|ssh|remote|api|external)\b/i.exec(destinationLabel)?.[1]?.toUpperCase();
-    const activeTab = sshTabs.find((tab) => tab.id === activeSshTabId);
     void invoke("append_structured_operation_log", {
       level,
       mode: "desktop",
@@ -2119,8 +1975,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       timestamp: new Date().toISOString(),
       operationId: structuredDetail.operationId || operationId,
       correlationId: crypto.randomUUID(),
-      ...(activeTab?.id ? { tabId: activeTab.id } : {}),
-      ...(activeTab?.sessionId ? { sessionId: activeTab.sessionId } : {}),
       ...(errorMessage ? { errorMessage } : {}),
       ...(structuredDetail.sourcePath === undefined ? { sourcePath: sourceLabel } : {}),
       ...(structuredDetail.destinationPath === undefined ? { destinationPath: destinationLabel } : {}),
@@ -3454,12 +3308,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     }
   }, [localWindowOpen]);
 
-  // Opening the Terminal window enables xterm creation; closing it later keeps
-  // every SSH tab and session alive (only hidden), like the old collapse did.
-  useEffect(() => {
-    if (paneOpenIds.includes("terminal")) setTerminalOpen(true);
-  }, [paneOpenIds]);
-
   // The focused Location window decides which pane the toolbar, menus and
   // keyboard-less actions (rename, delete, new folder, ...) act on.
   useEffect(() => {
@@ -3888,8 +3736,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     id: entry.id,
     label: sshEntryLabel(entry),
     detail: `${workspaceName} · ${entry.username}@${entry.host}`,
-    available: isSshEntryConnected(entry.id, sshTabs, sshPopups),
-    disabledReason: "Not connected - connect it in Terminal (or its own SSH window) first",
+    available: isSshEntryConnected(entry.id, sshPaneStates, sshPopups),
+    disabledReason: "Not connected - connect it from the Terminal menu (SSH pane or its own SSH window) first",
     selected: paneOpenIds.includes(sftpWindowId(entry.id)),
   }));
   // Terminal menu in the dock: every Workspace (also the empty ones, so the menu
@@ -3901,19 +3749,29 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       entryId: entry.id,
       label: sshEntryLabel(entry),
       detail: `${entry.username}@${entry.host}${entry.port && entry.port !== 22 ? `:${entry.port}` : ""}`,
-      connected: isSshEntryConnected(entry.id, sshTabs, sshPopups),
+      connected: isSshEntryConnected(entry.id, sshPaneStates, sshPopups),
     })),
   }));
   // Windows Terminal / Command Prompt are launched through the Windows-only `open_local_terminal`.
   const localShellsAvailable = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
   const remoteWindowTitle = `Remote · ${activeLocation?.displayName || session.locationId || "No Location"}`;
-  const sftpEntryIds = sshEntries.map(({ entry }) => entry.id);
-  const paneTitles: Record<string, string> = { local: "Local", remote: remoteWindowTitle, rest: "RestAPI", vnc: "VNC", terminal: "Terminal" };
+  const entryIds = sshEntries.map(({ entry }) => entry.id);
+  const paneTitles: Record<string, string> = { local: "Local", remote: remoteWindowTitle, rest: "RestAPI", vnc: "VNC" };
   const paneSubtitles: Record<string, string> = { local: localPath ? `~/${localPath}` : "~", remote: path ? `/${path}` : "/" };
   for (const { entry } of sshEntries) {
     paneTitles[sftpWindowId(entry.id)] = `SFTP · ${sshEntryLabel(entry)}`;
     paneSubtitles[sftpWindowId(entry.id)] = sftpPaths[entry.id] || "/";
+    paneTitles[sshWindowId(entry.id)] = `SSH · ${sshEntryLabel(entry)}`;
+    paneSubtitles[sshWindowId(entry.id)] = `${entry.username}@${entry.host}`;
   }
+
+  // Closing an SSH pane ends its session; a recording that was never saved is only discarded after a confirmation.
+  const requestPaneClose = async (id: PaneWindowId) => {
+    const entryId = sshPaneEntryIdOf(id);
+    if (!entryId || !sshPaneStatesRef.current[entryId]?.recordingUnsaved) return true;
+    return requestConfirmation(`${paneTitles[id] || "This SSH window"} has a recording that was not saved. Close it and discard the recording?`, "Close SSH window");
+  };
+  const hasUnsavedPaneRecording = () => Object.values(sshPaneStatesRef.current).some((state) => Boolean(state?.recordingUnsaved));
 
   // Each Location window has its own toolbar. `pane` replaces the shared
   // `activePane` for what the toolbar *shows*; clicking anywhere in a window
@@ -4525,32 +4383,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
   };
 
-  const terminalBody = (
-    <TerminalWorkspace
-        tabs={sshTabs}
-        activeTabId={activeSshTabId}
-        activeTab={activeSshTab}
-        connected={sshConnected}
-        recording={recording}
-        recordingHasOutput={recordingHasOutput}
-        savedLogPaths={savedLogPaths}
-        activeQueueCount={transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length}
-        registerHostRef={registerSshTerminalHostRef}
-        onSelectTab={selectSshTab}
-        onCopySession={copySshSession}
-        onReorderTabs={reorderSshTabs}
-        onCloseTab={closeSshTab}
-        onConnect={connectSsh}
-        onDisconnect={disconnectSsh}
-        onCancelConnect={cancelSshConnect}
-        onStartRecording={startRecording}
-        onStopRecording={stopRecording}
-        onSaveLog={openSaveLogDialog}
-        onOpenSavedLog={openLocalViewer}
-        onOpenQueue={() => setQueueOpen(true)}
-    />
-  );
-
   const sftpDnd: SftpDndBridge = {
     dragItems,
     itemsRef: dragItemsRef,
@@ -4582,12 +4414,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         sftpChoices={paneSftpChoices}
         terminalWorkspaces={paneTerminalWorkspaces}
         localShellsAvailable={localShellsAvailable}
+        sshPaneStates={sshPaneStates}
         onOpenLocalShell={openLocalTerminal}
-        onOpenSshInPane={quickConnectSsh}
         onOpenSshWindow={(workspaceId, entryId) => { void openSshEntryInNewWindow(workspaceId, entryId); }}
         onOpenEntryManager={(workspaceId) => { void openSessionsModal(workspaceId); }}
         onCreateWorkspace={startNewWorkspace}
-        sftpEntryIds={sftpEntryIds}
+        entryIds={entryIds}
         busy={busy}
         topRight={
           <PaneTopRight
@@ -4611,13 +4443,25 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         }
         onSelectRemote={(locationId) => { void selectLocation(locationId); }}
         onWindowState={handlePaneWindowState}
+        onRequestClose={requestPaneClose}
+        hasUnsavedPaneRecording={hasUnsavedPaneRecording}
         confirmDiscardRecordings={() => requestConfirmation("An SSH window has a recording that was not saved. Close nFterm and discard it?", "Close nFterm")}
       >
         <PaneBody id="local">{renderLocalWindow()}</PaneBody>
         <PaneBody id="remote">{renderRemoteWindow()}</PaneBody>
         <PaneBody id="rest">{renderRestWindow()}</PaneBody>
         <PaneBody id="vnc">{renderVncWindow()}</PaneBody>
-        <PaneBody id="terminal">{terminalBody}</PaneBody>
+        {sshEntries.map(({ entry }) => (
+          <PaneBody key={`ssh-${entry.id}`} id={sshWindowId(entry.id)}>
+            <SshEntryPane
+              profile={entry}
+              title={sshEntryLabel(entry)}
+              bracketedPasteControlEnabled={desktopSettings.bracketedPasteControlEnabled}
+              onStateChange={handleSshPaneState}
+              onOperationLog={writeOperationLog}
+            />
+          </PaneBody>
+        ))}
         {sshEntries.map(({ entry }) => (
           <PaneBody key={entry.id} id={sftpWindowId(entry.id)}>
             <SftpWindow
@@ -4840,32 +4684,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             onCreate={(password) => void createShareLink(password)}
           />
         )}
-       {saveLogNameOpen && (
-         <div className="modal-cover" onMouseDown={() => setSaveLogNameOpen(false)}>
-           <div className="modal log-name-modal" onMouseDown={(event) => event.stopPropagation()}>
-             <h2>Name SSH log package</h2>
-             <p>Choose the base name for the raw output, text, command, and metadata files. The application removes unsafe filename characters and adds the file extensions automatically.</p>
-             <form onSubmit={(event) => { event.preventDefault(); saveSshLogs(); }}>
-               <label>
-                 Log name
-                 <input
-                   autoFocus
-                   value={saveLogNameDraft}
-                   onChange={(event) => setSaveLogNameDraft(event.target.value)}
-                   placeholder="Production console 2026-08-06"
-                   maxLength={120}
-                   required
-                 />
-               </label>
-                <small className="field-help">Save location: LOCAL {isAbsoluteLocalPath(saveLogDestinationPath) ? saveLogDestinationPath : `~/${saveLogDestinationPath}`}</small>
-               <div className="modal-actions">
-                 <button type="button" onClick={() => setSaveLogNameOpen(false)}>Cancel</button>
-                 <button className="confirm" type="submit">Save Log</button>
-               </div>
-             </form>
-           </div>
-         </div>
-       )}
         {settingsOpen && (
           <SettingsModal
             desktopSettings={desktopSettings}

@@ -7,7 +7,6 @@
 :root:has(.glass-main-off) .desktop-folder-tree,
 :root:has(.glass-main-off) .desktop-content,
 :root:has(.glass-main-off) .local-pane,
-:root:has(.glass-main-off) .terminal-dock,
 :root:has(.glass-main-off) .rest-entry-pane,
 :root:has(.glass-main-off) .rest-reader,
 :root:has(.glass-main-off) .vnc-entry-pane,
