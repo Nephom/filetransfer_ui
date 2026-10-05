@@ -37,11 +37,11 @@
 .settings-panel-card small { color: var(--color-text-muted); font-size: var(--font-size-small); }
 .settings-panel-card b { position: absolute; top: 50%; right: var(--space-3); font-size: var(--icon-size-lg); font-weight: 400; transform: translateY(-50%); }
 .settings-panel-menu + .settings-section, .settings-modal.settings-panel-menu .settings-section { display: none; }
-.settings-modal.settings-panel-theme .settings-section:not(:nth-of-type(1)),
-.settings-modal.settings-panel-features .settings-section:not(:nth-of-type(2)),
-.settings-modal.settings-panel-confirmations .settings-section:not(:nth-of-type(3)),
-.settings-modal.settings-panel-sharing .settings-section:not(:nth-of-type(4)),
-.settings-modal.settings-panel-history .settings-section:not(:nth-of-type(5)) { display: none; }
+.settings-modal.settings-panel-theme .settings-section:not(.settings-section-theme),
+.settings-modal.settings-panel-features .settings-section:not(.settings-section-features),
+.settings-modal.settings-panel-confirmations .settings-section:not(.settings-section-confirmations),
+.settings-modal.settings-panel-sharing .settings-section:not(.settings-section-sharing),
+.settings-modal.settings-panel-history .settings-section:not(.settings-section-history) { display: none; }
 .settings-subpanel-back { align-self: flex-start; margin-bottom: var(--space-2); }
 .settings-actions { gap: var(--ui-control-gap); margin-top: var(--ui-section-gap); }
 @keyframes settings-subpanel-in { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }

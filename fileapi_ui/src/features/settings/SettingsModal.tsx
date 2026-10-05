@@ -85,7 +85,7 @@ export function SettingsModal({
           </button>
         </div>
       )}
-      <section className="settings-section">
+      <section className="settings-section settings-section-theme">
         <h3>Color theme</h3>
         <div className="settings-check settings-theme-row">
           <span><strong>Application palette</strong><small>Changes the shared colors used by the main view, overlays, buttons, and status states. Selecting a theme previews it immediately; use Revert below to go back to what was active before you opened Settings.</small></span>
@@ -148,7 +148,7 @@ export function SettingsModal({
         })()}
       </section>
       <WallpaperSettings />
-      <section className="settings-section">
+      <section className="settings-section settings-section-features">
         <h3>Interface features</h3>
         <label className="settings-check">
           <input type="checkbox" checked={desktopSettings.restApiModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, restApiModeEnabled: event.target.checked }))} />
@@ -171,7 +171,7 @@ export function SettingsModal({
           <span><strong>Allow legacy SSH algorithms for older servers</strong><small>Lets the SSH terminal, SFTP browser, and key install fall back to older key exchange, cipher, and MAC algorithms (e.g. diffie-hellman-group14-sha1, aes-cbc, hmac-sha1) when a server is too old to speak anything stronger. Only enable this if you need to reach such a server -- it weakens the connection's cryptography.</small></span>
         </label>
       </section>
-      <section className="settings-section">
+      <section className="settings-section settings-section-confirmations">
         <h3>Risk confirmations</h3>
         {([
           ["delete", "Delete", "Deleting files or folders can permanently remove data."],
@@ -190,7 +190,7 @@ export function SettingsModal({
         ))}
         <button type="button" onClick={() => setDesktopSettings((current) => ({ ...current, confirmations: { ...defaultDesktopSettings.confirmations } }))}>Restore safe confirmations</button>
       </section>
-      <section className="settings-section">
+      <section className="settings-section settings-section-sharing">
         <h3>Sharing</h3>
         <label className="settings-check">
           <input
@@ -230,7 +230,7 @@ export function SettingsModal({
           <button type="button" onClick={onManageShareLinks} disabled={!canManageShareLinks}>Manage Share Links</button>
         </div>
       </section>
-      <section className="settings-section">
+      <section className="settings-section settings-section-history">
         <h3>History and operation log</h3>
         <p>Both are enabled by default. Undo records are reserved for reliable, verifiable reversals. The operation log is append-only, excludes secrets, rotates at 10 MB, and retains at most three files total.</p>
         <label className="settings-check"><input type="checkbox" checked={desktopSettings.undoHistoryEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, undoHistoryEnabled: event.target.checked }))} /><span><strong>Enable undo history</strong><small>Disabling this stops new undo records; it does not delete files.</small></span></label>

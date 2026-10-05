@@ -298,6 +298,26 @@ try {
   await shot("09-shadows-off");
   await page.locator(".settings-check", { hasText: "Window shadows" }).locator("input").check();
   assert.equal(await page.locator(".explorer.pane-shadow-off").count(), 0, "switching back on restores the shadows");
+
+  // Every Settings panel shows exactly its own sections (Interface features keeps the REST API / VNC switches).
+  const visibleHeadings = () => page.locator(".settings-modal .settings-section h3:visible").allTextContents();
+  await page.locator(".settings-subpanel-back").first().click();
+  const panels = [
+    ["Color theme", ["Color theme", "Desktop wallpaper"]],
+    ["Interface features", ["Interface features"]],
+    ["Risk confirmations", ["Risk confirmations"]],
+    ["Sharing", ["Sharing"]],
+    ["History and operation log", ["History and operation log"]],
+  ];
+  for (const [card, headings] of panels) {
+    await page.locator(".settings-panel-card", { hasText: card }).first().click();
+    assert.deepEqual(await visibleHeadings(), headings, `${card} panel shows its own sections`);
+    if (card === "Interface features") {
+      assert.equal(await page.locator(".settings-check", { hasText: "Enable REST API mode" }).count(), 1, "REST API switch is in Interface features");
+      assert.equal(await page.locator(".settings-check", { hasText: "Enable Proxmox VNC mode" }).count(), 1, "VNC switch is in Interface features");
+    }
+    await page.locator(".settings-subpanel-back").first().click();
+  }
   await page.keyboard.press("Escape");
   await page.locator(".modal-cover, .floating-dialog-layer").first().waitFor({ state: "detached", timeout: 3000 }).catch(() => undefined);
 

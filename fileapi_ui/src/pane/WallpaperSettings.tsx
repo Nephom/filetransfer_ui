@@ -56,7 +56,7 @@ export function WallpaperSettings() {
   const move = (dx: number, dy: number) => updateWallpaperConfig({ x: config.x - dx, y: config.y - dy });
 
   return (
-    <section className="settings-section wallpaper-settings">
+    <section className="settings-section settings-section-theme wallpaper-settings">
       <h3>Desktop wallpaper</h3>
       <div className="settings-check">
         <span>
