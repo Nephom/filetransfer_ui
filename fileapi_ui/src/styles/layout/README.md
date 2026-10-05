@@ -21,13 +21,12 @@ byte-for-byte unchanged from before the split):
    links, SSH/REST/VNC entry editor dialogs.
 4. `file-table.css` -- Details-view file table, column sorting, the
    directory-first toggle.
-5. `terminal.css` -- SSH terminal dock, tabs, quick list, profile
-   selector.
+5. `terminal.css` -- SSH terminal (embedded in its Pane window), tabs,
+   quick list, profile selector.
 6. `queue-settings-dialogs.css` -- Queue modal, Settings modal, Viewer
    modal, archive-format and log-name dialogs.
-7. `panes.css` -- persistent scrollbar rail, Split mode's LOCAL pane
-   (breadcrumbs/actions/tree/file list/privileged styling), Mobile/Large
-   narrow-window stacking rules.
+7. `panes.css` -- persistent scrollbar rail, the LOCAL pane
+   (breadcrumbs/actions/tree/file list/privileged styling).
 8. `collapse-controls.css` -- Location's [<]/[>] pane-collapse rail,
    native `<select>` styling, the generic `.modal`/`.modal-cover` shell.
 9. `buttons.css` -- generic desktop button semantics (confirm/danger/

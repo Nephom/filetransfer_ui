@@ -11,8 +11,8 @@ semantic values when a theme is selected.
 1. **Bridge palette (`--bridge-*`)** contains the visual material values.
 2. **Semantic tokens (`--color-*`, spacing, typography, controls, surfaces)**
    are what feature CSS should use.
-3. **Profile aliases (`--ui-*`)** are set by `styles/mobile-ui.css` for the
-   Large profile and otherwise fall back to the base tokens.
+3. **Window-scaled aliases (`--ui-*`)** are set once on `:root` by
+   `styles/desktop-ui.css` and scale continuously with the window size.
 4. **Component-local runtime variables** are temporary layout values owned by
    a component (for example REST dialog offsets), not theme tokens.
 
@@ -82,39 +82,34 @@ consume the semantic aliases above.
 | `--space-4` | Large spacing step (12.8px). |
 | `--space-5` | Extra-large spacing step (19.2px), outer margins. |
 | `--space-6` | Largest spacing step (25.6px), roomy dialog/panel spacing. |
-| `--font-size-base` | Fluid Auto-profile body/control text (`clamp`). |
+| `--font-size-base` | Fluid body/control text (`clamp`). |
 | `--font-size-small` | Fluid helper/label/small text. |
 | `--font-size-heading` | Fluid section/reader heading text. |
-| `--font-size-mobile-base` | Fixed 12.8px Large-profile base text. |
-| `--font-size-mobile-small` | Fixed 11.2px Large-profile small text. |
-| `--font-size-mobile-heading` | Fixed 22.4px Large-profile heading text. |
-| `--font-size-mobile-narrow-small` | Narrow/short Large-profile small-text floor (9.6px). |
+| `--font-size-mobile-base` | Fixed 12.8px base text (historic `mobile` name; the Large profile no longer exists). |
+| `--font-size-mobile-small` | Fixed 11.2px small text (same historic name). |
 | `--font-family-ui` | UI font stack: Segoe UI/system sans. |
 | `--font-family-mono` | Code/path/terminal font stack. |
 
-`ui-layout-mobile` means the project's **Large** profile. It enlarges the
-normal desktop UI; it is not a phone breakpoint. Actual stacking still uses
-media queries in the relevant layout files.
+The Large profile (`ui-layout-mobile`, `mobile-ui.css`, the login "Interface
+profile" menu) was removed with the Pane desktop; the `-mobile` suffix on a few
+tokens is historic. Actual stacking still uses media queries in the relevant
+layout files.
 
 ## Control, panel, and icon tokens
 
 | Variable | Purpose |
 |---|---|
-| `--control-height-base` | Fluid Auto-profile button/input height (24–32px). |
+| `--control-height-base` | Fluid button/input height (24–32px). |
 | `--button-height-base` | Alias of `--control-height-base` for button rules. |
 | `--control-gap-base` | Fluid standard gap between controls. |
 | `--panel-padding-base` | Fluid standard panel padding. |
 | `--control-height-mobile` | Fixed 32px common toolbar/control height. |
-| `--control-height-mobile-lg` | Fixed 35.2px comfortable Large-profile target. |
+| `--control-height-mobile-lg` | Fixed 35.2px comfortable control target. |
 | `--control-focus-ring` | Shared focus ring (`2px solid --color-primary`). |
 | `--icon-size` | Normal inline icon size (14.4px). |
 | `--icon-size-lg` | Large pane-collapse/toolbar icon size (27.2px). |
-| `--app-mark-width` / `--app-mark-height` | Titlebar app-mark dimensions. |
-| `--terminal-min-height-mobile` | Minimum terminal height in Large profile. |
-| `--pane-min-size-mobile` | Minimum Location split-pane footprint (208px). |
-| `--file-table-header-height-mobile` | Large-profile file-table header height (33.6px). |
-| `--file-row-padding-inline-mobile` | Large-profile file-row horizontal padding (8px). |
-| `--folder-tree-max-height-mobile-narrow` | Folder-tree height ceiling in narrow Large windows (176px). |
+| `--app-mark-width` / `--app-mark-height` | Desktop app-mark dimensions. |
+| `--pane-min-size-mobile` | Minimum Location pane footprint (208px). |
 | `--radius-sm` / `--radius-md` | Compact control and normal panel radii. |
 | `--shadow-panel` / `--shadow-inset` / `--shadow-glow` | Shared panel elevation, inset highlight, and accent glow. |
 | `--transition-fast` | Shared fast interaction transition. |
@@ -137,38 +132,33 @@ media queries in the relevant layout files.
 | `--z-modal` | Modal/floating dialog layer (500). |
 | `--z-toast` | Notification/toast layer (600). |
 
-`Dropdown`, `ContextPicker`, `MobileChoiceMenu`, and
+`Dropdown`, `ContextPicker`, and
 `CommandBarOverflowMenu` must use this contract so their popovers remain
 visually interchangeable.
 
-## Profile aliases and feature-local variables
+## Window-scaled aliases and feature-local variables
 
-`styles/desktop-ui.css` defines the Auto profile's fluid `--ui-*` values on
-`:root`; `styles/mobile-ui.css` replaces them with fixed Large-profile values.
-The semantic `--font-size-base`, `--font-size-small`, and
+`styles/desktop-ui.css` defines the fluid `--ui-*` values on `:root`. The
+semantic `--font-size-base`, `--font-size-small`, and
 `--font-size-heading` tokens resolve to these aliases, so older feature
 selectors and newer selectors share one sizing vocabulary:
 
 | Variable | Purpose |
 |---|---|
-| `--ui-font-size`, `--ui-small-font-size`, `--ui-heading-font` | Auto-profile fluid body, small, and heading text; replaced by fixed Large-profile values when that profile is active. |
-| `--ui-control-height`, `--ui-control-gap` | Large-profile control height and gap. |
-| `--ui-button-height`, `--ui-button-padding-x`, `--ui-button-padding-y` | Large-profile button geometry. |
-| `--ui-panel-padding`, `--ui-section-gap` | Large-profile panel/section spacing. |
-| `--ui-terminal-min-height` | Large-profile terminal minimum. |
-| `--mobile-ui-background`, `--mobile-ui-border`, `--mobile-ui-control-height`, `--mobile-ui-focus` | Mobile/large component background, border, height, and focus aliases. |
-| `--mobile-ui-font`, `--mobile-ui-secondary-font`, `--mobile-ui-heading-font` | Large-profile typography aliases. |
-| `--mobile-ui-gap`, `--mobile-ui-padding` | Large-profile gap and padding aliases. |
-| `--mobile-ui-menu-z` | Large-profile popup stacking alias. |
+| `--ui-font-size`, `--ui-small-font-size`, `--ui-heading-font` | Fluid body, small, and heading text. |
+| `--ui-control-height`, `--ui-control-gap` | Control height and gap. |
+| `--ui-button-height`, `--ui-button-padding-x`, `--ui-button-padding-y` | Button geometry. |
+| `--ui-panel-padding`, `--ui-section-gap` | Panel/section spacing. |
+| `--ui-terminal-min-height` | Terminal minimum. |
+| `--pane-wallpaper-image`, `--pane-wallpaper-size`, `--pane-wallpaper-position`, `--pane-wallpaper-scale` | Set inline on `.pane-wallpaper` (and the Settings preview) from the stored wallpaper placement; consumed by `.pane-wallpaper-image`. |
 
 `--ui-x` is mentioned in an old explanatory comment in `desktop-ui.css` but
 is not defined or consumed by the current stylesheet; it is not a supported
 custom-property token.
 
-Auto-profile Workspace, Entry, modal, log, and terminal text should consume
+Workspace, Entry, modal, log, and terminal text should consume
 the `--ui-font-size`, `--ui-small-font-size`, or `--ui-heading-font` aliases.
-Those aliases scale with the actual window dimensions. Large-profile rules in
-`mobile-ui.css` continue to apply the fixed Large-profile text floor.
+Those aliases scale with the actual window dimensions.
 
 `--controls-row` and `--screen-row` are optional fallback variables consumed
 by `styles/vnc-interactions.css` to divide the VNC display between controls and
@@ -209,7 +199,7 @@ bypass or change action permissions.
   colors, surfaces, borders, shadows, and final theme overrides.
 - `styles/layout/*.css`: Location/Explorer geometry and component layout.
 - `rest-api.css` and `proxmox-vnc.css`: feature-local geometry and states.
-- `mobile-ui.css`: Large profile aliases/overrides.
+- `pane-style.css`: Pane desktop (wallpaper, windows, dock, taskbar).
 
 `styles/layout/panes.css` owns LOCAL and REMOTE pane geometry, including LOCAL
 breadcrumb sizing. That layout uses `--space-2` for its gutter and

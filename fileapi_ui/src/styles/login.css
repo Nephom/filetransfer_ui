@@ -21,12 +21,10 @@ body {
    wrapper (via its className prop) for width/flex layout in
    .login-toggle-row; the trigger/menu surfaces themselves come from
    ui/dropdown.css's --dropdown-* tokens, same as every other Dropdown. */
-.login-profile-menu { flex: 0 1 auto; min-width: 0; max-width: clamp(130px, 16vw, 165px); }
-.login-profile-menu .dropdown-menu button[role="option"] { min-height: var(--control-height-mobile-lg); font-size: var(--font-size-mobile-base); }
 
-@media (max-width: 720px) {
-  .login-profile-menu { max-width: clamp(110px, 14vw, 130px); }
-}
+
+
+
 
 /* Login always uses the same viewport-driven layout regardless of the
    selected uiProfile (Auto or Large/mobile) -- Large's uniform enlargement
@@ -36,14 +34,14 @@ body {
    is still driven by the shared isMobileViewport() resolver (T-027/T-036),
    so both profiles enlarge together only when the *window* is actually
    small, not whenever Large happens to be selected. */
-.login.ui-layout-mobile :is(h1, h2, h3, p, label, button, input, select, textarea, output, span, small, strong) { font-size: var(--font-size-mobile-base) !important; }
-.login.ui-layout-mobile h1 { font-size: var(--font-size-mobile-heading) !important; }
-.login.ui-layout-mobile small { font-size: var(--font-size-mobile-small) !important; }
+
+
+
 /* A fixed flex-basis keeps the trigger label ("Large") readable instead of
    losing a `flex: 1 1 0` shrink contest against the two toggle buttons. */
-.login.ui-layout-mobile .login-toggle-row { flex-wrap: wrap; align-items: stretch; }
-.login.ui-layout-mobile .login-profile-menu { flex: 0 0 auto; min-width: clamp(90px, 11vw, 110px); max-width: clamp(130px, 16vw, 165px); }
-.login.ui-layout-mobile .login-profile-menu .dropdown-trigger { width: 100%; min-width: 0; font-size: var(--font-size-mobile-base); }
+
+
+
 
 .login form {
   width: min(470px, 100%);

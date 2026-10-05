@@ -145,7 +145,17 @@ function desktop(handler = () => undefined) {
     password: "", setPassword() {}, busy: false, setBusy(value) { props.busy = value; }, notice: "", setNotice(value) { props.notice = value; },
     refreshSessionToken: async () => { props.refreshes = (props.refreshes || 0) + 1; return "refreshed"; }, logoutSession: async () => {}, invalidateCredentials: async () => {},
   };
-  const render = () => driver.render(() => DesktopApp(props));
+  // The Pane desktop renders one <PaneBody> per window. These tests exercise
+  // the Remote window, so the other windows' bodies are pruned from the tree
+  // (otherwise the Local window's own toolbar would be found first).
+  const onlyRemoteWindow = (tree) => {
+    if (Array.isArray(tree)) return tree.map(onlyRemoteWindow).filter((child) => child !== null);
+    if (!tree || typeof tree !== "object") return tree;
+    if (typeof tree.type === "function" && tree.type.name === "PaneBody" && tree.props.kind !== "remote") return null;
+    if (!tree.props || tree.props.children === undefined) return tree;
+    return { ...tree, props: { ...tree.props, children: onlyRemoteWindow(tree.props.children) } };
+  };
+  const render = () => onlyRemoteWindow(driver.render(() => DesktopApp(props)));
   const search = (value) => {
     const field = nodes(render(), (node) => node.type === "input" && node.props.placeholder === "Search files")[0];
     assert.ok(field, "production search field"); field.props.onChange({ target: { value } });
@@ -327,7 +337,8 @@ test("password rejection 401 is not replayed; ordinary expired-session reads ret
     if (args.url?.includes("/search?") && ++searches === 1) return nativeJson({ error: "expired" }, 401);
     if (args.url?.includes("/search?")) return nativeJson({ files: [] });
   });
-  nodes(app.render(), (node) => Boolean(node.props?.onChangePassword))[0].props.onChangePassword();
+  // The account menu lives in the Pane desktop's top-right pills.
+  nodes(app.render(), (node) => typeof node.type === "function" && node.type.name === "PaneDesktop")[0].props.topRight.props.onChangePassword();
   nodes(app.render(), (node) => node.type === "form")[0].props.onSubmit({ preventDefault() {}, currentTarget: { currentPassword: "wrong", newPassword: "new", confirmPassword: "new" } });
   await tick();
   assert.equal(app.calls.filter((call) => call.args.url?.endsWith("/auth/change-password")).length, 1);

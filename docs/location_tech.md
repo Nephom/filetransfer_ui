@@ -10,14 +10,13 @@ This document describes the Location workspace in the Tauri desktop client. The 
 App
 ├─ LoginScreen                         -- API login and saved credential option
 └─ DesktopApp
-   ├─ AppShell + DesktopTitlebar
-   ├─ commandbar                       -- mode/context/actions
-   ├─ Location workspace
-   │  ├─ LOCAL pane (optional in split mode)
-   │  ├─ Folders tree (REMOTE)
-   │  └─ REMOTE file pane
-   ├─ RestApiWorkspace (lazy)
-   ├─ VncWorkspaceController (lazy)
+   ├─ AppShell (.explorer.pane-style)
+   ├─ PaneDesktop                        -- wallpaper, top-right pills, window layer, dock/taskbar
+   │  ├─ PaneBody "local"                -- commandbar + LOCAL pane
+   │  ├─ PaneBody "remote"               -- commandbar + Folders tree + REMOTE file pane (API Location or SFTP)
+   │  ├─ PaneBody "rest"                 -- RestApiWorkspace (lazy)
+   │  ├─ PaneBody "vnc"                  -- VncWorkspaceController (lazy)
+   │  └─ PaneBody "terminal"             -- TerminalWorkspace (always mounted)
    └─ portals: settings, queue, viewer, help, logs, sessions, shares, editors
 ```
 
@@ -31,7 +30,7 @@ The `Session` object contains `host`, `port`, the authentication `token`/marker,
 
 Login first calls `create_api_session` with the fixed server origin and TLS policy, then sends `POST /auth/login` through `api_request` with that session ID. Login validates the returned account, including administrator ID `0`; refresh must preserve the same account identity. A failed or superseded initial login clears its native handle. `ApiResponse` wraps the native byte response and exposes `text()`, `json()`, and `arrayBuffer()`. `readError()` understands the server's nested `error.message`, `error`, and `message` shapes. `IGNORE SSL` is passed as `ignoreTlsErrors`; it does not change server authorization. Native Location sessions reject mismatched origins/TLS policies and cross-origin redirects.
 
-Saved Location API credentials use the OS credential store through `rest_load_secret`, `rest_save_secret`, and `rest_forget_secret`, keyed by server host/port and account. These command names do not make the credentials part of the REST API workspace. Changing the login target invalidates pending credential loads and login results. `nfterm-session` contains connection preferences but not the password. `fileapi-app-mode`, `nfterm-settings`, and other keys described below are local UI state, not server configuration.
+Saved Location API credentials use the OS credential store through `rest_load_secret`, `rest_save_secret`, and `rest_forget_secret`, keyed by server host/port and account. These command names do not make the credentials part of the REST API workspace. Changing the login target invalidates pending credential loads and login results. `nfterm-session` contains connection preferences but not the password. `fileapi-pane-layout`, `nfterm-settings`, and other keys described below are local UI state, not server configuration.
 
 Ordinary API `401` responses share one refresh attempt and retry once while their original context is current. `/auth/` failures, including a wrong current password, are not automatically replayed. Refresh uses saved credentials only for the captured server/account. Logout invalidates pending authentication work, sends `POST /auth/logout`, and clears the native cookie session even if the server is unreachable. A successful password change invalidates the saved credentials and requires login again. A local logout is not a claim of global token revocation.
 
@@ -43,15 +42,21 @@ Ordinary API `401` responses share one refresh attempt and retry once while thei
 
 Changing Location via `selectLocation()` clears the SSH browse source, resets paths/selections/tree state, records an operation-log entry, updates `session.locationId`, and reloads the remote root and folder tree. A Location health failure is displayed as an error; it is not treated as an empty folder.
 
-### Three application modes
+### Pane desktop windows
 
-`appMode` is `location | rest | vnc` and is persisted as `fileapi-app-mode`. VNC can only be restored when `desktopSettings.proxmoxVncModeEnabled` is enabled; disabling that setting forces Location mode. The context picker shows Location ids and connected SSH browse targets in Location mode, REST entries in REST mode, and VNC entries in VNC mode.
+The desktop UI is the Pane Style window desktop (`src/pane/`); there is no mode switcher or Classic layout. `PaneDesktop` owns the window list (`usePaneWindows`, persisted as `fileapi-pane-layout`) and reports the open and focused windows to `DesktopApp` through `onWindowState`. The windows are `local`, `remote`, `vnc`, `rest` and `terminal`, one of each. Minimizing hides a window with `visibility: hidden` and keeps it mounted, so REST/VNC connections and polling continue; closing a REST or VNC window unmounts it and ends that connection. The Terminal window is never unmounted: closing it only hides it, and its SSH tabs and sessions stay alive.
 
-The cookie/origin, Location revision, reservation, and server cancellation contracts in this document apply to the Location API Remote. They do not replace REST API workspace authentication, Proxmox VNC sessions, or SSH/SFTP credentials and executors. LOCAL browsing remains read-only and follows native OS access checks. Sharing a shell or secret-storage command does not merge these mode boundaries.
+The Functions button in the dock lists Location, VNC and RestAPI (VNC and RestAPI only when enabled in Settings). Location opens a list of Local, every API Location from `GET /api/locations` (offline ones disabled) and every SSH entry from the Workspace Manager (enabled once it is connected in the Terminal). Choosing a Remote or SFTP entry runs `selectLocation()` / `selectSshBrowse()` and opens the Remote window. Phase 2 has a single Remote window, so SFTP and API Remote share it.
 
-`splitMode` is persisted as `file-layout-mode`. In split mode the workspace has LOCAL and REMOTE panes and `activePane` determines where New folder, Rename, Delete, View, and Select all apply. `collapseMainPaneEnabled` replaces the main pane resize bars with explicit collapse/restore controls. The setting is intentionally global to Location, REST, and VNC, while LOCAL's internal tree resize remains available.
+The focused Location window decides `activePane`: focusing Local makes it `"local"`, focusing Remote makes it `"remote"`, and New folder, Rename, Delete, View, Select all and Refresh act on that pane. Each Location window has its own command bar; REST and VNC portal their tools into their own window's command bar. Dragging between the Local and Remote windows uses the same drag state as before, so Upload and Download by drag still work across windows.
 
-The Location command bar measures its rendered action buttons with `ResizeObserver`. In the Auto profile's desktop layout, action buttons retain their intrinsic label width during measurement so flex-shrink cannot hide an overflow condition. When the available width would truncate an action label, it keeps Upload visible and moves the remaining file actions, including Refresh, into the accessible `More actions` menu instead of rendering an ellipsis label. The Large profile continues to use the same overflow menu directly through its profile layout.
+SSH "Open in New Window" terminals are native Tauri windows. The main window tracks them in `pane/ssh-popup-registry.ts` (created handles, `tauri://destroyed`, `WebviewWindow.getAll()` reconciliation, and `ssh-popup-state` events emitted by the popup) so the taskbar can focus or close them. Closing the main window first closes every popup, asking once if a recording would be discarded.
+
+The cookie/origin, Location revision, reservation, and server cancellation contracts in this document apply to the Location API Remote. They do not replace REST API workspace authentication, Proxmox VNC sessions, or SSH/SFTP credentials and executors. LOCAL browsing follows native OS access checks. Sharing a shell or secret-storage command does not merge these window boundaries.
+
+`collapseMainPaneEnabled` replaces the resize bars with explicit collapse/restore controls in the RestAPI and VNC windows. LOCAL's internal tree resize remains available.
+
+The command bar of each Location window measures its rendered action buttons with `ResizeObserver` (`useCommandbarOverflow`). Action buttons retain their intrinsic label width during measurement so flex-shrink cannot hide an overflow condition. When the available width would truncate an action label, it keeps Upload visible and moves the remaining file actions, including Refresh, into the accessible `More actions` menu instead of rendering an ellipsis label.
 
 ## File data and navigation
 
@@ -72,7 +77,7 @@ Important helpers:
 
 REMOTE directory/search requests share an invalidation generation. Tree loads have per-path request guards. Viewer, drag, share, and API undo work retain their original session/Location context; stale results must not populate a different Location or SSH view. Clearing search, changing Location/root, and leaving the session invalidate related work. These are client safeguards, not substitutes for server authorization.
 
-REMOTE file search is a case-insensitive partial match on the file name. The query is normalized by the desktop client and both cache implementations, so `Startup.nsh` and `startup` return the same `startup.nsh` result. On the desktop Auto profile the search control keeps a fixed width beside the breadcrumbs; the Large profile stacks it full-width only when its layout rules require stacking.
+REMOTE file search is a case-insensitive partial match on the file name. The query is normalized by the desktop client and both cache implementations, so `Startup.nsh` and `startup` return the same `startup.nsh` result. On the desktop the search control keeps a fixed width beside the breadcrumbs.
 
 The LOCAL tree starts with the `HOMEDIR/` node. On Windows, `list_local_roots` adds non-HOME drive roots that the current process can enumerate for regular users; the HOME drive remains represented only by `HOMEDIR/` unless the process is elevated. Unix/macOS also expose `/` as a read-only root. `local_home_path` remains available for HOME-relative breadcrumb handling. Local tree expansion is lazy; remote and local folder nodes expand after a 650 ms drag hover, and drop targets auto-scroll when the pointer approaches a scroll boundary.
 
@@ -94,7 +99,7 @@ All long-running transfers are represented by the shared queue (`TransferQueueIt
 
 API uploads create a durable `POST /api/upload/sessions` session before manifest pages or file bytes are sent. The Desktop Queue captures the original server, owner, Location, revision, local roots and `sessionId`. `inspect_upload_paths` records source snapshots; `build_api_upload_manifest` computes per-chunk SHA-256 values in bounded memory; `api_upload_chunk` seeks to the requested source offset and streams that range to the API. The server validates the range/hash and persists the offset in SQLite. Up to two 500-file children run concurrently; same-destination paths retain manifest order. Lost responses query the same session offset, completed files are skipped, and resume after restart requires an explicit user action and a fresh source-manifest verification. Incomplete sessions expire after four hours. See [queue.md](./queue.md) and [upload.md](./api/upload.md). API downloads use `download_to_disk`/`download_to_disk_at` with the captured native session; SSH continues to use its existing `ssh_upload_path`, `ssh_download_path`, and staging commands outside this API upload protocol. Single files and folders have different queue kinds (`download` versus `download-set`), and guest/remote archive behaviour is kept out of the UI thread.
 
-LOCAL browser mutations remain disabled: new folder, rename, delete, LOCAL-to-LOCAL move, compression, extraction, and LOCAL undo. A readable LOCAL file or directory may still be uploaded to REMOTE, subject to API capabilities or the SSH account's permissions. `ssh_upload_path`, `scp_upload`, and `proxmox_agent_upload_file` validate their existing source through `resolve_local_read_entry`, as API upload inspection already does. File/directory and Guest Agent size limits still apply. REMOTE-to-LOCAL downloads retain their separate writable destination checks.
+LOCAL browser mutations (new folder, rename, delete, LOCAL-to-LOCAL move, compression, extraction, and LOCAL undo) are available within the allowed LOCAL scope. Compression and extraction run through `local_compress_paths`/`local_extract_archive`; the REMOTE pane offers them only for SSH connections. A readable LOCAL file or directory may still be uploaded to REMOTE, subject to API capabilities or the SSH account's permissions. `ssh_upload_path`, `scp_upload`, and `proxmox_agent_upload_file` validate their existing source through `resolve_local_read_entry`, as API upload inspection already does. File/directory and Guest Agent size limits still apply. REMOTE-to-LOCAL downloads retain their separate writable destination checks.
 
 External editing is distinct from browser mutations. The LOCAL viewer's Edit action opens the original file in Notepad on Windows without a write-permission precheck or fallback copy. OS/share permissions and the editor determine whether saving succeeds. The built-in viewer's size/encoding limits still apply to reaching that action.
 
@@ -194,8 +199,7 @@ Location mode does not have one feature-local stylesheet. Its styles are assembl
 | `styles/index.css` | Ordered import contract; keeps base, layout, feature, and final theme layers deterministic. |
 | `styles/tokens.css` | Shared colors, spacing, type, control heights, radii, shadows, transitions, and z-index tokens. |
 | `styles/desktop-ui.css` | App shell, title bar, navigation, folder/file workspace, generic modals, status bar, terminal dock, and base desktop geometry. |
-| `styles/mobile-ui.css` | The `ui-layout-mobile` Large profile: enlarged controls/type and narrow/short viewport stacking. Not a phone-only layout. |
-| `styles/mode-switcher.css` | Location/REST/VNC mode switcher, selected buttons, and status dots. |
+| `styles/pane-style.css` | Pane desktop: wallpaper, window frames and resize grips, dock, Functions flyout, taskbar, top-right pills, wallpaper editor. |
 | `styles/location-control.css` | Location selector, menu, selected/online states, health dot, and chevron. |
 | `styles/commandbar.css` | Location action bar, overflow menu, divider, active-pane indicator, and view switch. |
 | `styles/context-picker.css` | Context/location/SSH picker popover, groups, selected check mark, and keyboard-friendly options. |
@@ -209,7 +213,7 @@ Location mode does not have one feature-local stylesheet. Its styles are assembl
 | `styles/layout/file-table.css` | REMOTE table, sortable/resizable columns, rows, selection, file glyphs, and grid/details parity. |
 | `styles/layout/terminal.css` | SSH terminal dock and terminal controls embedded in the desktop shell. |
 | `styles/layout/queue-settings-dialogs.css` | Queue modal, transfer cards, progress, and queue-related settings surfaces. |
-| `styles/layout/panes.css` | LOCAL/REMOTE pane sizing, split mode, folder pane, active pane, and resize handles. |
+| `styles/layout/panes.css` | LOCAL pane sizing, folder pane, active pane, and resize handles. |
 | `styles/layout/collapse-controls.css` | Location main-pane collapse/restore rail and shared collapse semantics. |
 | `styles/layout/buttons.css` | Shared primary/confirm/danger/neutral button semantics. |
 | `styles/starship-bridge.css` | Bridge visual profile and base surface/palette compatibility rules. |

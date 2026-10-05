@@ -1809,35 +1809,34 @@ fn add_path_to_zip<W: std::io::Write + std::io::Seek>(
     Ok(())
 }
 
-/// Compress `paths` (each a file/folder already inside `destination_folder`)
-/// into a new `<archive_name>.zip` in `destination_folder`. Collision
-/// avoidance auto-appends "_(n)" to the archive name -- it never prompts.
-#[tauri::command]
-#[allow(unreachable_code, unused_variables)]
-fn local_compress_paths(
-    paths: Vec<String>,
-    destination_folder: String,
-    archive_name: String,
-) -> Result<String, String> {
-    return Err("LOCAL is read-only".to_string());
-    #[allow(unreachable_code)]
-    let destination_dir = resolve_local_transfer_path(&destination_folder)?;
-    if !destination_dir.is_dir() {
-        return Err("Destination is not a folder".to_string());
-    }
-    let items = paths
-        .iter()
-        .map(|item| {
-            let resolved = resolve_local_transfer_path(item)?;
-            let name = resolved
-                .file_name()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| "Invalid local path".to_string())?
-                .to_string();
-            Ok::<_, String>((resolved, name))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+/// Upper bounds applied while extracting a local archive so that a hostile
+/// or corrupt archive (zip bomb) cannot fill the disk.
+const MAX_EXTRACT_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_EXTRACT_ENTRIES: usize = 200_000;
 
+/// Create `<archive_name>.zip` inside `destination_dir` from `items`
+/// (`(absolute path, name inside the archive)`). Collision avoidance
+/// auto-appends "_(n)". A partially written archive is removed on failure.
+fn compress_items_blocking(
+    destination_dir: &Path,
+    items: &[(PathBuf, String)],
+    archive_name: &str,
+) -> Result<String, String> {
+    if items.is_empty() {
+        return Err("Select at least one item to compress".to_string());
+    }
+    for (resolved, _) in items {
+        if resolved.parent() != Some(destination_dir) {
+            return Err("Compress items must be inside the current folder".to_string());
+        }
+        let metadata = std::fs::symlink_metadata(resolved).map_err(|error| error.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Cannot compress a symbolic link: {}",
+                resolved.display()
+            ));
+        }
+    }
     let base_name = sanitize_archive_name(if archive_name.trim().is_empty() {
         "Archive"
     } else {
@@ -1856,29 +1855,43 @@ fn local_compress_paths(
     }
 
     let archive_path = destination_dir.join(&final_name);
-    let file = std::fs::File::create(&archive_path).map_err(|error| error.to_string())?;
-    let mut writer = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    for (resolved, name) in &items {
-        add_path_to_zip(&mut writer, resolved, name, options)?;
+    let result = (|| -> Result<(), String> {
+        let file = std::fs::File::create(&archive_path).map_err(|error| error.to_string())?;
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (resolved, name) in items {
+            add_path_to_zip(&mut writer, resolved, name, options)?;
+        }
+        writer.finish().map_err(|error| error.to_string())?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&archive_path);
+        return Err(error);
     }
-    writer.finish().map_err(|error| error.to_string())?;
     Ok(final_name)
 }
 
-/// Extract a local `.zip` archive into a new deduped subfolder of
-/// `destination_folder` (named after the archive) -- never overwriting an
-/// existing folder of that name, and never prompting the user about it.
-#[tauri::command]
-#[allow(unreachable_code, unused_variables)]
-fn local_extract_archive(path: String, destination_folder: String) -> Result<String, String> {
-    return Err("LOCAL is read-only".to_string());
-    #[allow(unreachable_code)]
-    let archive_path = resolve_local_transfer_path(&path)?;
-    let destination_dir = resolve_local_transfer_path(&destination_folder)?;
-    let file = std::fs::File::open(&archive_path).map_err(|error| error.to_string())?;
+/// Extract `archive_path` into a new deduped subfolder of `destination_dir`
+/// named after the archive. Enforces `MAX_EXTRACT_*` using the number of
+/// bytes actually written (not the sizes declared in the archive headers),
+/// and removes the partial output folder on any failure.
+fn extract_zip_blocking(
+    archive_path: &Path,
+    destination_dir: &Path,
+    max_total_bytes: u64,
+    max_entries: usize,
+) -> Result<String, String> {
+    let file = std::fs::File::open(archive_path).map_err(|error| error.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|error| error.to_string())?;
+    if archive.len() > max_entries {
+        return Err(format!(
+            "Archive has {} entries, more than the {} entry limit",
+            archive.len(),
+            max_entries
+        ));
+    }
 
     let stem = archive_path
         .file_stem()
@@ -1894,24 +1907,96 @@ fn local_extract_archive(path: String, destination_folder: String) -> Result<Str
     let target_root = destination_dir.join(&final_name);
     std::fs::create_dir_all(&target_root).map_err(|error| error.to_string())?;
 
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
-        let Some(entry_path) = entry.enclosed_name() else {
-            continue;
-        };
-        let out_path = target_root.join(entry_path);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&out_path).map_err(|error| error.to_string())?;
-        } else {
+    let result = (|| -> Result<(), String> {
+        let mut written_total: u64 = 0;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+            let Some(entry_path) = entry.enclosed_name() else {
+                continue;
+            };
+            let out_path = target_root.join(entry_path);
+            if entry.is_dir() {
+                std::fs::create_dir_all(&out_path).map_err(|error| error.to_string())?;
+                continue;
+            }
             if let Some(parent) = out_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
             }
             let mut out_file =
                 std::fs::File::create(&out_path).map_err(|error| error.to_string())?;
-            std::io::copy(&mut entry, &mut out_file).map_err(|error| error.to_string())?;
+            let remaining = max_total_bytes.saturating_sub(written_total);
+            let mut limited = (&mut entry).take(remaining.saturating_add(1));
+            let written = std::io::copy(&mut limited, &mut out_file)
+                .map_err(|error| error.to_string())?;
+            written_total = written_total.saturating_add(written);
+            if written_total > max_total_bytes {
+                return Err(format!(
+                    "Archive expands to more than {} bytes; extraction aborted",
+                    max_total_bytes
+                ));
+            }
         }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = std::fs::remove_dir_all(&target_root);
+        return Err(error);
     }
     Ok(final_name)
+}
+
+/// Compress `paths` (each a file/folder already inside `destination_folder`)
+/// into a new `<archive_name>.zip` in `destination_folder`. Collision
+/// avoidance auto-appends "_(n)" to the archive name -- it never prompts.
+#[tauri::command]
+async fn local_compress_paths(
+    paths: Vec<String>,
+    destination_folder: String,
+    archive_name: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let destination_dir = resolve_local_transfer_path(&destination_folder)?;
+        if !destination_dir.is_dir() {
+            return Err("Destination is not a folder".to_string());
+        }
+        let items = paths
+            .iter()
+            .map(|item| {
+                let resolved = resolve_local_transfer_path(item)?;
+                let name = resolved
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| "Invalid local path".to_string())?
+                    .to_string();
+                Ok::<_, String>((resolved, name))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        compress_items_blocking(&destination_dir, &items, &archive_name)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Extract a local `.zip` archive into a new deduped subfolder of
+/// `destination_folder` (named after the archive) -- never overwriting an
+/// existing folder of that name, and never prompting the user about it.
+#[tauri::command]
+async fn local_extract_archive(path: String, destination_folder: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let archive_path = resolve_local_transfer_path(&path)?;
+        let destination_dir = resolve_local_transfer_path(&destination_folder)?;
+        if !destination_dir.is_dir() {
+            return Err("Destination is not a folder".to_string());
+        }
+        extract_zip_blocking(
+            &archive_path,
+            &destination_dir,
+            MAX_EXTRACT_TOTAL_BYTES,
+            MAX_EXTRACT_ENTRIES,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -4472,7 +4557,8 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize, dedupe_candidate_name, is_elevated, is_local_read_scope,
+        canonicalize, compress_items_blocking, dedupe_candidate_name, extract_zip_blocking,
+        is_elevated, is_local_read_scope, MAX_EXTRACT_TOTAL_BYTES,
         is_within_home_or_elevated, local_create_directory, local_delete_path, local_display_path,
         local_list_directory, local_rename_path, local_roots, local_transfer_path,
         parse_local_terminal_kind, resolve_local_download_destination, resolve_local_download_file,
@@ -4853,5 +4939,97 @@ mod tests {
     fn queued_download_paths_reject_absolute_and_parent_components() {
         assert!(resolve_local_download_file(".", "../outside.txt").is_err());
         assert!(resolve_local_download_file(".", "/outside.txt").is_err());
+    }
+
+    fn archive_test_dir(label: &str) -> std::path::PathBuf {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("nfterm-archive-{label}-{suffix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn compress_then_extract_round_trips_file_contents() {
+        let dir = archive_test_dir("roundtrip");
+        std::fs::create_dir_all(dir.join("album/sub")).unwrap();
+        std::fs::write(dir.join("album/a.txt"), b"alpha").unwrap();
+        std::fs::write(dir.join("album/sub/b.bin"), vec![7u8; 4096]).unwrap();
+        std::fs::write(dir.join("single.txt"), b"single").unwrap();
+
+        let items = vec![
+            (dir.join("album"), "album".to_string()),
+            (dir.join("single.txt"), "single.txt".to_string()),
+        ];
+        let name = compress_items_blocking(&dir, &items, "bundle").unwrap();
+        assert_eq!(name, "bundle.zip");
+        let second = compress_items_blocking(&dir, &items, "bundle").unwrap();
+        assert_eq!(second, "bundle_(1).zip");
+
+        let extracted =
+            extract_zip_blocking(&dir.join("bundle.zip"), &dir, MAX_EXTRACT_TOTAL_BYTES, 100)
+                .unwrap();
+        assert_eq!(extracted, "bundle");
+        let root = dir.join(&extracted);
+        assert_eq!(std::fs::read(root.join("album/a.txt")).unwrap(), b"alpha");
+        assert_eq!(
+            std::fs::read(root.join("album/sub/b.bin")).unwrap(),
+            vec![7u8; 4096]
+        );
+        assert_eq!(std::fs::read(root.join("single.txt")).unwrap(), b"single");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compress_rejects_items_outside_the_destination_folder() {
+        let dir = archive_test_dir("outside");
+        let other = archive_test_dir("outside-other");
+        std::fs::write(other.join("x.txt"), b"x").unwrap();
+        let items = vec![(other.join("x.txt"), "x.txt".to_string())];
+        assert!(compress_items_blocking(&dir, &items, "bad").is_err());
+        assert!(!dir.join("bad.zip").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compress_rejects_symbolic_links_without_leaving_an_archive() {
+        let dir = archive_test_dir("symlink");
+        std::fs::write(dir.join("real.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
+        let items = vec![(dir.join("link.txt"), "link.txt".to_string())];
+        assert!(compress_items_blocking(&dir, &items, "bad").is_err());
+        assert!(!dir.join("bad.zip").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_aborts_and_cleans_up_when_output_exceeds_the_byte_limit() {
+        let dir = archive_test_dir("limit");
+        std::fs::write(dir.join("big.bin"), vec![0u8; 10_000]).unwrap();
+        let items = vec![(dir.join("big.bin"), "big.bin".to_string())];
+        compress_items_blocking(&dir, &items, "big").unwrap();
+        let result = extract_zip_blocking(&dir.join("big.zip"), &dir, 1_000, 100);
+        assert!(result.is_err());
+        assert!(!dir.join("big").exists(), "partial output must be removed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_rejects_archives_with_too_many_entries() {
+        let dir = archive_test_dir("entries");
+        for index in 0..3 {
+            std::fs::write(dir.join(format!("f{index}.txt")), b"x").unwrap();
+        }
+        let items = (0..3)
+            .map(|index| (dir.join(format!("f{index}.txt")), format!("f{index}.txt")))
+            .collect::<Vec<_>>();
+        compress_items_blocking(&dir, &items, "many").unwrap();
+        assert!(extract_zip_blocking(&dir.join("many.zip"), &dir, MAX_EXTRACT_TOTAL_BYTES, 2).is_err());
+        assert!(!dir.join("many").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

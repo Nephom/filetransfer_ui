@@ -37,7 +37,7 @@
    the viewport-driven layout regardless of the selected uiProfile, and a
    fixed flex-basis here keeps the trigger label ("Large") readable instead
    of losing a `flex: 1 1 0` shrink contest against the two toggle buttons. */
-.login.ui-layout-mobile .login-toggle-button { font-size: var(--font-size-mobile-base); }
+
 
 .login .login-toggle-button {
   display: inline-flex;

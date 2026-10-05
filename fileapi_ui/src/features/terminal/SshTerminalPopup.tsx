@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
+import { emitTo } from "@tauri-apps/api/event";
+import { SSH_POPUP_STATE_EVENT, type SshPopupStatePayload } from "../../pane/ssh-popup-contracts";
 import { useSshEventBridge, type SshEventPayload } from "./useSshEventBridge";
 import { useTerminalLifecycle } from "./useTerminalLifecycle";
 import { RecordingPlainTranscript, VT_SESSION_BOUNDARY_GUARD, appendSshTabOutput, stripAnsi } from "./terminal-utils";
@@ -276,6 +278,20 @@ export function SshTerminalPopup() {
       setSavingLog(false);
     }
   };
+
+  // Report connection / unsaved-recording state to the main window so its
+  // taskbar can show this native window next to the in-app Pane windows.
+  const recordingUnsaved = recording || (recordingRawBytes > 0 && savedLogPaths.length === 0);
+  useEffect(() => {
+    const payload: SshPopupStatePayload = {
+      label: currentWindow.label,
+      title,
+      entryId: profile?.id || "",
+      connected: Boolean(sessionId),
+      recordingUnsaved,
+    };
+    void emitTo("main", SSH_POPUP_STATE_EVENT, payload).catch(() => undefined);
+  }, [sessionId, recordingUnsaved, title, profile?.id]);
 
   useEffect(() => {
     document.title = title;

@@ -14,6 +14,7 @@ import { locationHeaders, remoteParent, groupRemoteDeletes, remoteMutationResult
 import { useRemoteApiActions } from "./features/remote-browser/useRemoteApiActions";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon, CollapseIcon, ExpandIcon, SortAscIcon, SortDescIcon, WarningIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
+import "./ui/overflow-menu.css";
 // `@xterm/xterm`/`@xterm/addon-fit` (and their CSS) are dynamically
 // imported inside the terminal-setup effect below instead of eagerly here:
 // they're only ever needed once the user actually opens the SSH terminal
@@ -37,15 +38,20 @@ import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 import { FloatingWindow } from "./ui/FloatingWindow";
 import { AppShell } from "./app/AppShell";
-import { DesktopTitlebar } from "./app/DesktopTitlebar";
-import { isMobileViewport } from "./styles/breakpoints";
+import { PaneBody, PaneDesktop } from "./pane/PaneDesktop";
+import { PaneTopRight } from "./pane/PaneTopRight";
+import { type PaneLocationChoice } from "./pane/PaneDock";
+import { type PaneWindowKind } from "./pane/pane-window-model";
+import { trackSshPopup } from "./pane/ssh-popup-registry";
+import { SSH_POPUP_PREFIX } from "./pane/ssh-popup-contracts";
+import { useCommandbarOverflow } from "./pane/useCommandbarOverflow";
 import { TerminalWorkspace } from "./features/terminal/TerminalWorkspace";
 import { isSshTerminalPopup, SshTerminalPopup } from "./features/terminal/SshTerminalPopup";
 import type { SshProfile } from "./features/ssh/ssh-contracts";
 import type { LocalTerminalKind } from "./features/terminal/terminal-contracts";
 import { appendSshTabOutput, makeSshTabId } from "./features/terminal/terminal-utils";
 import { useSshTerminal } from "./features/terminal/useSshTerminal";
-import { terminalHeightBounds, terminalTitlebarHeight, useSshTerminalState } from "./features/terminal/useSshTerminalState";
+import { useSshTerminalState } from "./features/terminal/useSshTerminalState";
 import { useSshTerminalActions } from "./features/terminal/useSshTerminalActions";
 import { formatSize } from "./format-utils";
 import { useDesktopSettings } from "./features/settings/useDesktopSettings";
@@ -663,31 +669,12 @@ type LoginScreenProps = {
   setPassword: React.Dispatch<React.SetStateAction<string>>;
   busy: boolean;
   notice: string;
-  uiProfile: "auto" | "mobile";
   glassMenusEnabled: boolean;
   glassDialogsEnabled: boolean;
-  onUiProfileChange: (profile: "auto" | "mobile") => void;
   onSubmit: (event: React.FormEvent) => void;
 };
 
-function LoginScreen({ session, setSession, password, setPassword, busy, notice, uiProfile, glassMenusEnabled, glassDialogsEnabled, onUiProfileChange, onSubmit }: LoginScreenProps) {
-  // Auto profile sizing must flip to Mobile at the exact same threshold as
-  // DesktopApp's own mobileLayout check, via the one shared resolver --
-  // not a hand-copied CSS media query mirroring the same numbers (T-027).
-  const [loginViewport, setLoginViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
-  useEffect(() => {
-    const updateViewport = () => setLoginViewport({ width: window.innerWidth, height: window.innerHeight });
-    window.addEventListener("resize", updateViewport);
-    return () => window.removeEventListener("resize", updateViewport);
-  }, []);
-  // The login screen always uses Auto's viewport-driven layout, even when
-  // uiProfile is "mobile" (Large) -- Large's uniform text/control scale-up
-  // was the direct cause of the login form overflowing the app's default
-  // window (bottom border clipped) and the profile Dropdown being squeezed.
-  // Login only has 4 fields + 2 toggles + 1 button, so it is already fully
-  // usable at 800x600 without Large's enlargement; DesktopApp (post-login)
-  // is unaffected and still honors the selected uiProfile normally.
-  const loginMobileLayout = isMobileViewport(loginViewport);
+function LoginScreen({ session, setSession, password, setPassword, busy, notice, glassMenusEnabled, glassDialogsEnabled, onSubmit }: LoginScreenProps) {
   const updateSaveUserInformation = (enabled: boolean) => {
     setSession((current) => ({ ...current, saveUserInformation: enabled }));
     if (!enabled) {
@@ -699,7 +686,7 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
   };
 
   return (
-    <main className={`login ui-profile-${uiProfile} ui-layout-${loginMobileLayout ? "mobile" : "desktop"} ${glassMenusEnabled ? "" : "glass-menus-off"} ${glassDialogsEnabled ? "" : "glass-dialogs-off"}`}>
+    <main className={`login ${glassMenusEnabled ? "" : "glass-menus-off"} ${glassDialogsEnabled ? "" : "glass-dialogs-off"}`}>
       <form onSubmit={onSubmit}>
         <h1>nFterm {appVersion && <small className="login-version">{appVersion}</small>}</h1>
         <label className="login-field-server">Server address<input placeholder="files.example.internal" value={session.host} onChange={(event) => setSession((current) => ({ ...current, host: event.target.value }))} /></label>
@@ -714,16 +701,6 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
           <button type="button" className={`login-toggle-button${session.saveUserInformation ? " enabled" : ""}`} aria-pressed={session.saveUserInformation} onClick={() => updateSaveUserInformation(!session.saveUserInformation)} title="Save the API username and password in the OS credential store">
             <span className="mode-switch-dot" aria-hidden="true" /><span>SAVE USER INFO</span>
           </button>
-          <Dropdown
-            className="login-profile-menu"
-            label="Interface profile"
-            value={uiProfile}
-            onChange={(profile) => onUiProfileChange(profile as "auto" | "mobile")}
-            options={[
-              { value: "auto", label: "Auto" },
-              { value: "mobile", label: "Large" },
-            ]}
-          />
         </div>
         {notice && <output role="alert">{notice}</output>}
       </form>
@@ -784,24 +761,6 @@ export function App() {
   }, [session.saveUserInformation, session.host, session.port, session.username]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
-  const [uiProfile, setUiProfile] = useState<DesktopSettings["uiProfile"]>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
-      return saved?.uiProfile === "mobile" ? "mobile" : "auto";
-    } catch {
-      return "auto";
-    }
-  });
-  const changeUiProfile = (profile: DesktopSettings["uiProfile"]) => {
-    setUiProfile(profile);
-    try {
-      const saved = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
-      localStorage.setItem(desktopSettingsKey, JSON.stringify({ ...(saved || {}), uiProfile: profile }));
-    } catch {
-      localStorage.setItem(desktopSettingsKey, JSON.stringify({ uiProfile: profile }));
-    }
-  };
-
   useEffect(() => {
     localStorage.setItem("nfterm-session", JSON.stringify({
       host: session.host,
@@ -934,7 +893,7 @@ export function App() {
   } catch {
     // Keep the same safe defaults used by the settings hook when storage is invalid.
   }
-  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} uiProfile={uiProfile} glassMenusEnabled={savedAppearance.glassMenusEnabled} glassDialogsEnabled={savedAppearance.glassDialogsEnabled} onUiProfileChange={changeUiProfile} onSubmit={login} />;
+  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} glassMenusEnabled={savedAppearance.glassMenusEnabled} glassDialogsEnabled={savedAppearance.glassDialogsEnabled} onSubmit={login} />;
   return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} refreshSessionToken={refreshSessionToken} logoutSession={logoutSession} invalidateCredentials={invalidateCredentials} />;
 }
 
@@ -958,20 +917,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [localHomeAbsolute, setLocalHomeAbsolute] = useState("");
   const [locations, setLocations] = useState<Location[]>([]);
   const [locationsLoading, setLocationsLoading] = useState(false);
-  const [appMode, setAppMode] = useState<"location" | "rest" | "vnc">(() => {
-    const saved = localStorage.getItem("fileapi-app-mode");
-    let vncEnabled = false;
-    let restEnabled = false;
-    try {
-      const parsed = JSON.parse(localStorage.getItem(desktopSettingsKey) || "null");
-      vncEnabled = parsed?.proxmoxVncModeEnabled === true;
-      restEnabled = parsed?.restApiModeEnabled === true;
-    } catch {
-      vncEnabled = false;
-      restEnabled = false;
-    }
-    return (saved === "rest" && restEnabled) || (saved === "vnc" && vncEnabled) ? saved : "location";
-  });
   const [path, setPath] = useState("");
   const [remoteSshEntryId, setRemoteSshEntryId] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
@@ -1032,10 +977,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     themeVariables,
     storageInfo, setStorageInfo,
   } = useDesktopSettings({ setNotice });
-  useEffect(() => {
-    if (!desktopSettings.proxmoxVncModeEnabled && appMode === "vnc") setAppMode("location");
-    if (!desktopSettings.restApiModeEnabled && appMode === "rest") setAppMode("location");
-  }, [desktopSettings.proxmoxVncModeEnabled, desktopSettings.restApiModeEnabled, appMode]);
   const [viewport, setViewport] = useState(() => ({
     width: window.innerWidth,
     height: window.innerHeight,
@@ -1071,11 +1012,17 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [localViewMode, setLocalViewMode] = useState<"details" | "grid">(() =>
     localStorage.getItem("local-file-view-mode") === "grid" ? "grid" : "details",
   );
-  const [splitMode, setSplitMode] = useState(() =>
-    localStorage.getItem("file-layout-mode") === "split",
-  );
-  const [locationPaneCollapsed, setLocationPaneCollapsed] = useState<"left" | "right" | null>(null);
-  useEffect(() => { setLocationPaneCollapsed(null); }, [splitMode, appMode]);
+  // Pane desktop: which windows are open / focused (reported by PaneDesktop).
+  // The Local and Remote windows are two independent panes of the Location
+  // browser; the focused one decides what the toolbar and menus act on.
+  const [paneOpenKinds, setPaneOpenKinds] = useState<PaneWindowKind[]>([]);
+  const [paneActiveKind, setPaneActiveKind] = useState<PaneWindowKind | null>(null);
+  const paneOpenWindowRef = useRef<(kind: PaneWindowKind) => void>(() => undefined);
+  const localWindowOpen = paneOpenKinds.includes("local");
+  const handlePaneWindowState = useCallback((kinds: PaneWindowKind[], active: PaneWindowKind | null) => {
+    setPaneOpenKinds(kinds);
+    setPaneActiveKind(active);
+  }, []);
   const {
     managedSessions, setManagedSessions,
     activeRestEntryId, setActiveRestEntryId,
@@ -1107,9 +1054,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const terminalState = useSshTerminalState();
   const {
     terminalOpen, setTerminalOpen, sshTabs, setSshTabs, activeSshTabId, setActiveSshTabId,
-    sshQuickListOpen, setSshQuickListOpen, terminalMaximized, setTerminalMaximized,
-    previousTerminalHeightRef, terminalHeight, setTerminalHeight, terminalResizeRef,
-    stopTerminalResize, resizeTerminal, beginTerminalResize, toggleTerminalMaximized,
+    sshQuickListOpen, setSshQuickListOpen,
     sshConnected, setSshConnected, sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
     terminalHostRefsRef, terminalInstancesRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
     recordingWriteQueuesRef, recordingPlainTranscriptsRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
@@ -1124,9 +1069,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     if (el) terminalHostRefsRef.current.set(tabId, el);
     else terminalHostRefsRef.current.delete(tabId);
   };
-  const [localPaneWidth, setLocalPaneWidth] = useState(() =>
-    Number(localStorage.getItem("fileapi-local-pane-width")) || 380,
-  );
   const [folderPaneWidth, setFolderPaneWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-folder-pane-width")) || 250,
   );
@@ -1540,17 +1482,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   }, [localViewMode]);
 
   useEffect(() => {
-    localStorage.setItem("file-layout-mode", splitMode ? "split" : "single");
-  }, [splitMode]);
-
-  useEffect(() => {
-    if (!terminalMaximized) localStorage.setItem("fileapi-terminal-height", String(terminalHeight));
-  }, [terminalHeight, terminalMaximized]);
-
-  useEffect(() => {
-    localStorage.setItem("fileapi-local-pane-width", String(localPaneWidth));
-  }, [localPaneWidth]);
-  useEffect(() => {
     localStorage.setItem("fileapi-folder-pane-width", String(folderPaneWidth));
   }, [folderPaneWidth]);
 
@@ -1563,7 +1494,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   }, [columnWidths]);
 
   useEffect(() => {
-    if (!splitMode) return;
+    if (!localWindowOpen) return;
     if (!localPath) {
       void run(async () => {
         await loadLocalFiles("");
@@ -1577,24 +1508,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       });
     }, 5000);
     return () => window.clearInterval(refreshTimer);
-  }, [splitMode, localPath]);
-
-  useEffect(() => {
-    localStorage.setItem("fileapi-app-mode", appMode);
-  }, [appMode]);
+  }, [localWindowOpen, localPath]);
 
   useEffect(() => {
     const updateViewport = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
     window.addEventListener("resize", updateViewport);
     return () => window.removeEventListener("resize", updateViewport);
   }, []);
-
-  useEffect(() => {
-    const { min: minimumHeight, max: availableHeight } = terminalHeightBounds(viewport.height);
-    setTerminalHeight((current) => terminalMaximized
-      ? availableHeight
-      : Math.min(availableHeight, Math.max(minimumHeight, current)));
-  }, [viewport.height, terminalMaximized]);
 
   // T-206/T-207: localPaneWidth (Split mode's LOCAL pane) and
   // folderPaneWidth (non-split mode's REMOTE folder tree) were previously
@@ -1606,7 +1526,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // maxWidth formula resizePane already uses at drag time.
   useEffect(() => {
     const maxWidth = Math.max(220, Math.min(720, viewport.width - 300));
-    setLocalPaneWidth((current) => Math.min(current, maxWidth));
     setFolderPaneWidth((current) => Math.min(current, maxWidth));
   }, [viewport.width]);
 
@@ -1615,14 +1534,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // localPaneWidth any time either the window or the LOCAL pane itself
   // shrinks, using the same ceiling formula resizeLocalTree already uses.
   useEffect(() => {
-    const maxTreeWidth = Math.max(80, Math.min(Math.max(160, localPaneWidth - 160), viewport.width));
+    const maxTreeWidth = Math.max(80, Math.min(Math.max(160, viewport.width / 2 - 160), viewport.width));
     setLocalTreeWidth((current) => Math.min(current, maxTreeWidth));
-  }, [viewport.width, localPaneWidth]);
+  }, [viewport.width]);
 
 
   useSshTerminal({
     enabled: terminalOpen,
-    terminalLayoutKey: `${sshQuickListOpen}:${terminalMaximized}`,
+    terminalLayoutKey: `${sshQuickListOpen}`,
     activeTabId: activeSshTabId,
     activeSessionId: sshTabs.find((tab) => tab.id === activeSshTabId)?.sessionId || "",
     tabIds: sshTabs.map((tab) => tab.id),
@@ -1902,7 +1821,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   };
 
   const refreshActivePane = () =>
-    splitMode && activePane === "local" ? refreshLocalFiles() : refreshRemoteFiles();
+    activePane === "local" ? refreshLocalFiles() : refreshRemoteFiles();
 
   // Where "up" from `path` should go for the LOCAL pane. Non-elevated
   // sessions can enter other Windows drive roots, but HOME remains the only
@@ -2313,12 +2232,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     if (!start) return;
     const maxWidth = Math.min(720, window.innerWidth - 300);
     const nextWidth = Math.max(220, Math.min(maxWidth, start.startWidth + (event.clientX - start.startX)));
-    if (splitMode) setLocalPaneWidth(nextWidth);
-    else setFolderPaneWidth(nextWidth);
+    setFolderPaneWidth(nextWidth);
   };
   const beginPaneResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
-    paneResizeRef.current = { startX: event.clientX, startWidth: splitMode ? localPaneWidth : folderPaneWidth };
+    paneResizeRef.current = { startX: event.clientX, startWidth: folderPaneWidth };
     window.addEventListener("pointermove", resizePane);
     window.addEventListener("pointerup", stopPaneResize);
   };
@@ -2332,7 +2250,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const start = localTreeResizeRef.current;
     if (!start) return;
     setLocalTreeWidth(
-      Math.max(80, Math.min(Math.max(160, localPaneWidth - 160), start.startWidth + (event.clientX - start.startX))),
+      Math.max(80, Math.min(Math.max(160, viewport.width / 2 - 160), start.startWidth + (event.clientX - start.startX))),
     );
   };
   const beginLocalTreeResize = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -2475,7 +2393,10 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     selectedEntryId: selectedSshEntryId,
     setSelectedEntryId: setSelectedSshEntryId,
     setSshProfileId,
-    setTerminalOpen,
+    setTerminalOpen: (open: boolean) => {
+      if (open) paneOpenWindowRef.current("terminal");
+      setTerminalOpen(open);
+    },
     loadSshProfileDraft,
     onOpenWorkspaceManager: () => openSessionsModal(),
     onNotify: notify,
@@ -2507,7 +2428,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       username: entry.username,
       privateKeyPath: entry.privateKeyPath || null,
     };
-    const label = `ssh-entry-popup-${entry.id}-${crypto.randomUUID()}`;
+    const label = `${SSH_POPUP_PREFIX}${entry.id}-${crypto.randomUUID()}`;
     const url = new URL(window.location.href);
     url.search = new URLSearchParams({ sshPopup: "1", title, profile: JSON.stringify(profile) }).toString();
     url.hash = "";
@@ -2521,6 +2442,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       resizable: true,
       center: true,
     });
+    trackSshPopup(popup, { label, title, entryId: entry.id });
     popup.once("tauri://error", (event) => {
       setNotice(`Unable to open SSH terminal window: ${String(event.payload)}`);
     });
@@ -3770,7 +3692,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       const folderName = await requestName("New folder", "");
       if (!folderName?.trim()) return;
       const name = folderName.trim();
-      if (splitMode && activePane === "local") {
+      if (activePane === "local") {
         const target = joinLocalPath(localPath, name);
         await invoke("local_create_directory", { path: target });
         await loadLocalFiles(localPath);
@@ -3816,12 +3738,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   const rename = () =>
     run(async () => {
-      const item = splitMode && activePane === "local" ? localSelectedItems[0] : selectedItems[0];
-      if (!item || (splitMode && activePane === "local" ? localSelectedItems.length !== 1 : selectedItems.length !== 1)) return;
+      const item = activePane === "local" ? localSelectedItems[0] : selectedItems[0];
+      if (!item || (activePane === "local" ? localSelectedItems.length !== 1 : selectedItems.length !== 1)) return;
       const newName = await requestName("Rename", item.name);
       if (!newName?.trim() || newName === item.name) return;
       const trimmedName = newName.trim();
-      if (splitMode && activePane === "local") {
+      if (activePane === "local") {
         if (/[\\/]/.test(trimmedName) || trimmedName === "." || trimmedName === "..") throw new Error("Enter a filename, not a path.");
         const newPath = joinLocalPath(parentPath(item.path), trimmedName);
         const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
@@ -3872,7 +3794,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   const remove = () =>
     run(async () => {
-      if (splitMode && activePane === "local") {
+      if (activePane === "local") {
         if (!localSelectedItems.length) return;
         if (desktopSettings.confirmations.delete && !await requestConfirmation(`Delete ${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"}? This cannot be undone.`, "Delete local items")) return;
         for (const item of localSelectedItems) await invoke("local_delete_path", { path: item.path, isDirectory: item.isDirectory });
@@ -3966,16 +3888,52 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   });
 
 
-  // .zip compression/extraction. LOCAL archives use the active Session name
-  // and local timestamp; Rust adds the collision suffix without prompting.
+  // .zip compression/extraction. The archive name is requested through the
+  // in-app name dialog (window.prompt is not available in the Tauri
+  // webview); Rust appends the collision suffix without prompting.
   const compressLocalItems = () =>
     run(async () => {
-      notify("LOCAL is read-only.");
+      if (!localSelectedItems.length) return;
+      const defaultName = localSelectedItems.length === 1
+        ? localSelectedItems[0].name.replace(/\.[^./]+$/, "")
+        : "Archive";
+      const archiveName = await requestName("Archive name", defaultName);
+      if (!archiveName?.trim()) return;
+      const sourceLabel = `${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"}`;
+      const destinationLabel = `LOCAL: ~/${localPath || ""}`;
+      try {
+        const finalName = await invoke<string>("local_compress_paths", {
+          paths: localSelectedItems.map((item) => item.path),
+          destinationFolder: localPath,
+          archiveName: archiveName.trim(),
+        });
+        await loadLocalFiles(localPath);
+        writeOperationLog("compress", "completed", sourceLabel, destinationLabel, `Created ${finalName} locally.`);
+        notify(`Created ${finalName}.`);
+      } catch (error) {
+        writeOperationLog("compress", "failed", sourceLabel, destinationLabel, `Failed to create archive locally: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
 
   const extractLocalArchive = () =>
     run(async () => {
-      notify("LOCAL is read-only.");
+      if (localSelectedItems.length !== 1) return;
+      const item = localSelectedItems[0];
+      const sourceLabel = `LOCAL: ~/${item.path}`;
+      const destinationLabel = `LOCAL: ~/${localPath || ""}`;
+      try {
+        const finalName = await invoke<string>("local_extract_archive", {
+          path: item.path,
+          destinationFolder: localPath,
+        });
+        await loadLocalFiles(localPath);
+        writeOperationLog("extract", "completed", sourceLabel, destinationLabel, `Extracted ${item.name} to ${finalName} locally.`);
+        notify(`Extracted to ${finalName}.`);
+      } catch (error) {
+        writeOperationLog("extract", "failed", sourceLabel, destinationLabel, `Failed to extract ${item.name} locally: ${describeError(error)}`, "ERROR");
+        throw error;
+      }
     });
 
   const compressRemoteItems = () =>
@@ -3986,7 +3944,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       const defaultName = selectedItems.length === 1
         ? selectedItems[0].name.replace(/\.[^./]+$/, "")
         : "Archive";
-      const archiveName = window.prompt("Archive name", defaultName);
+      const archiveName = await requestName("Archive name", defaultName);
       if (!archiveName?.trim()) return;
       const sourceLabel = `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`;
       const destinationLabel = `SSH: ${profile.name}:${path || "/"}`;
@@ -4128,19 +4086,25 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     </div>
   );
 
-  const toggleSplitMode = () => {
-    const nextMode = !splitMode;
-    setSplitMode(nextMode);
-    if (nextMode && !localTrees[0].loaded) {
+  // The LOCAL folder tree is loaded lazily the first time a Local window opens.
+  useEffect(() => {
+    if (localWindowOpen && !localTrees[0].loaded) {
       void run(() => loadLocalTreeChildren("", true));
     }
-    if (!nextMode) {
-      // The LOCAL pane (and its breadcrumb) only exists while split mode is
-      // on; leaving split mode with activePane still "local" would strand
-      // the top breadcrumb showing an now-invisible LOCAL path.
-      setActivePane("remote");
-    }
-  };
+  }, [localWindowOpen]);
+
+  // Opening the Terminal window enables xterm creation; closing it later keeps
+  // every SSH tab and session alive (only hidden), like the old collapse did.
+  useEffect(() => {
+    if (paneOpenKinds.includes("terminal")) setTerminalOpen(true);
+  }, [paneOpenKinds]);
+
+  // The focused Location window decides which pane the toolbar, menus and
+  // keyboard-less actions (rename, delete, new folder, ...) act on.
+  useEffect(() => {
+    if (paneActiveKind === "local") setActivePane("local");
+    else if (paneActiveKind === "remote") setActivePane("remote");
+  }, [paneActiveKind]);
 
   const renderLocalTreeNode = (node: FolderNode): React.ReactNode => (
     <div className="folder-tree" key={node.path}>
@@ -4257,7 +4221,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     <section
       className={`local-pane ${activePane === "local" ? "active-pane" : ""} ${isLocalElevated ? "privileged" : ""}`}
       aria-label="Local files"
-      style={{ flexBasis: `${localPaneWidth}px` }}
       onMouseDownCapture={() => setActivePane("local")}
     >
       <div className="local-pane-heading">
@@ -4511,128 +4474,75 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     </section>
   );
 
-  const mobileLayout = desktopSettings.uiProfile === "mobile"
-    || (desktopSettings.uiProfile === "auto" && isMobileViewport(viewport));
-  const commandbarRef = useRef<HTMLElement | null>(null);
-  const [commandbarHost, setCommandbarHost] = useState<HTMLElement | null>(null);
-  const setCommandbarElement = useCallback((element: HTMLElement | null) => {
-    commandbarRef.current = element;
-    setCommandbarHost(element);
-  }, []);
-  const [commandBarOverflow, setCommandBarOverflow] = useState(false);
-  const commandBarOverflowRef = useRef(false);
-  const commandBarRequiredWidthRef = useRef<number | null>(null);
-  useEffect(() => {
-    const commandbar = commandbarRef.current;
-    if (!commandbar) return undefined;
-    const measure = () => {
-      const actionButtons = Array.from(commandbar.querySelectorAll<HTMLButtonElement>(":scope > button"));
-      if (commandBarOverflowRef.current && commandBarRequiredWidthRef.current !== null) {
-        // This width was measured while every action was rendered, so it is
-        // the minimum width needed to restore the full toolbar safely.
-        if (commandbar.clientWidth < commandBarRequiredWidthRef.current) return;
-        commandBarOverflowRef.current = false;
-        commandBarRequiredWidthRef.current = null;
-        setCommandBarOverflow(false);
-        return;
-      }
-      const nonActionWidth = Array.from(commandbar.children)
-        .filter((child) => !(child instanceof HTMLButtonElement) && !child.classList.contains("divider"))
-        .reduce((width, child) => width + child.getBoundingClientRect().width, 0);
-      const dividerWidth = Array.from(commandbar.children)
-        .filter((child) => child.classList.contains("divider"))
-        .reduce((width, child) => width + child.getBoundingClientRect().width, 0);
-      const gap = Number.parseFloat(getComputedStyle(commandbar).gap) || 0;
-      const requiredWidth = nonActionWidth
-        + actionButtons.reduce((width, button) => width + button.scrollWidth, 0)
-        + dividerWidth
-        + (commandbar.children.length - 1) * gap;
-      // The intrinsic-width sum is the stable overflow signal. The flex
-      // container's scrollWidth and each button's clientWidth can describe
-      // intermediate flex layout states, which made a visually available
-      // toolbar collapse into More actions on first render.
-      const overflow = requiredWidth > commandbar.clientWidth + 1;
-      commandBarOverflowRef.current = overflow;
-      commandBarRequiredWidthRef.current = overflow ? requiredWidth : null;
-      setCommandBarOverflow(overflow);
+  const localBar = useCommandbarOverflow();
+  const remoteBar = useCommandbarOverflow();
+  const [restBarHost, setRestBarHost] = useState<HTMLElement | null>(null);
+  const [vncBarHost, setVncBarHost] = useState<HTMLElement | null>(null);
+
+  // Context pickers: the Remote window picks an API Location or an SSH entry,
+  // the REST and VNC windows pick one of the Workspace's saved entries.
+  const remoteContextValue = remoteSshEntryId
+    ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}`
+    : activeLocation?.id || session.locationId || "No Location";
+  const remoteContextGroups: ContextPickerGroup[] = [{
+    label: "Locations",
+    options: [
+      ...locations.map((location) => ({ id: `location:${location.id}`, label: location.displayName, detail: location.id, selected: !remoteSshEntryId && location.id === session.locationId })),
+      ...connectedSshBrowseOptions().map((entry) => ({ id: `ssh:${entry.id}`, label: `SSH: ${entry.name}`, selected: entry.id === remoteSshEntryId })),
+    ],
+  }];
+  const selectRemoteContext = (id: string) => {
+    if (id.startsWith("location:")) void selectLocation(id.slice("location:".length));
+    else if (id.startsWith("ssh:")) selectSshBrowse(id.slice("ssh:".length));
+  };
+  const renderEntryPicker = (kind: "rest" | "vnc") => {
+    const activeId = kind === "rest" ? activeRestEntryId : activeVncEntryId;
+    const entriesOf = (workspace: ManagedSession) => (kind === "rest" ? workspace.restApiEntries : workspace.proxmoxVncEntries);
+    const activeEntry = (kind === "rest" ? restWorkspace : vncWorkspace) && entriesOf((kind === "rest" ? restWorkspace : vncWorkspace)!).find((entry) => entry.id === activeId);
+    const groups: ContextPickerGroup[] = managedSessions
+      .map((workspace) => ({ label: workspace.name, options: entriesOf(workspace).map((entry) => ({ id: entry.id, label: entry.name, detail: entry.baseUrl, selected: entry.id === activeId })) }))
+      .filter((group) => group.options.length);
+    const select = (id: string) => {
+      const owner = managedSessions.find((item) => entriesOf(item).some((entry) => entry.id === id));
+      if (!owner) return;
+      setWorkspaceSessionId(owner.id);
+      if (kind === "rest") setActiveRestEntryId(id);
+      else setActiveVncEntryId(id);
     };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(commandbar);
-    window.addEventListener("resize", measure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-    };
-  }, [mobileLayout, appMode, splitMode]);
-  const contextLabel = appMode === "location" ? "LocationID" : appMode === "rest" ? "REST Entry" : "VNC Entry";
-  const contextValue = appMode === "location"
-    ? remoteSshEntryId ? `SSH: ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}` : activeLocation?.id || session.locationId || "No Location"
-    : appMode === "rest"
-      ? restWorkspace?.restApiEntries.find((entry) => entry.id === activeRestEntryId)?.name || "No REST Entry"
-      : vncWorkspace?.proxmoxVncEntries.find((entry) => entry.id === activeVncEntryId)?.name || "No VNC Entry";
-  const contextGroups: ContextPickerGroup[] = appMode === "location"
-    ? [{ label: "Locations", options: [...locations.map((location) => ({ id: `location:${location.id}`, label: location.displayName, detail: location.id, selected: !remoteSshEntryId && location.id === session.locationId })), ...connectedSshBrowseOptions().map((entry) => ({ id: `ssh:${entry.id}`, label: `SSH: ${entry.name}`, selected: entry.id === remoteSshEntryId }))] }]
-    : managedSessions.map((workspace) => ({ label: workspace.name, options: (appMode === "rest" ? workspace.restApiEntries : workspace.proxmoxVncEntries).map((entry) => ({ id: entry.id, label: entry.name, detail: entry.baseUrl, selected: entry.id === (appMode === "rest" ? activeRestEntryId : activeVncEntryId) })) })).filter((group) => group.options.length);
-  const selectContext = (id: string) => {
-    if (appMode === "location") {
-      if (id.startsWith("location:")) void selectLocation(id.slice("location:".length));
-      else if (id.startsWith("ssh:")) selectSshBrowse(id.slice("ssh:".length));
-      return;
-    }
-    const workspace = managedSessions.find((item) => (appMode === "rest" ? item.restApiEntries : item.proxmoxVncEntries).some((entry) => entry.id === id));
-    if (!workspace) return;
-    setWorkspaceSessionId(workspace.id);
-    if (appMode === "rest") setActiveRestEntryId(id);
-    else setActiveVncEntryId(id);
+    return <ContextPicker label={kind === "rest" ? "REST Entry" : "VNC Entry"} value={activeEntry?.name || (kind === "rest" ? "No REST Entry" : "No VNC Entry")} groups={groups} onSelect={select} disabled={busy} />;
   };
 
-  const openLogView = () => {
-    setAccountOpen(false);
-    void run(async () => {
-      const records = await invoke<OperationLogRecord[]>("read_operation_logs");
-      setOperationLogRecords(records);
-      setLogViewOpen(true);
-    });
-  };
+  // What the Functions menu offers: every API Location (offline ones disabled)
+  // and every saved SSH entry (usable once it is connected in the Terminal).
+  const paneRemoteChoices: PaneLocationChoice[] = locations.map((location) => ({
+    id: location.id,
+    label: location.displayName,
+    detail: location.id,
+    available: location.status === "online",
+    disabledReason: `${location.displayName} is ${location.status || "unavailable"}`,
+    selected: !remoteSshEntryId && location.id === session.locationId,
+  }));
+  const paneSftpChoices: PaneLocationChoice[] = managedSessions.flatMap((workspace) => workspace.sshEntries.map((entry) => ({
+    id: entry.id,
+    label: entry.name || `${entry.username}@${entry.host}`,
+    detail: `${workspace.name} · ${entry.username}@${entry.host}`,
+    available: sshTabs.some((tab) => tab.sshEntryId === entry.id && tab.connected),
+    disabledReason: "Not connected - connect it in Terminal first",
+    selected: entry.id === remoteSshEntryId,
+  })));
+  const remoteWindowTitle = remoteSshEntryId
+    ? `SFTP · ${findSshProfileById(remoteSshEntryId)?.name || "Unknown"}`
+    : `Remote · ${activeLocation?.displayName || session.locationId || "No Location"}`;
 
-  const exportOperationLog = () => {
-    const content = operationLogRecords.map((record) => JSON.stringify(record)).join("\n");
-    void invoke<string | null>("save_text_file", { name: "nfterm-operations.jsonl", content })
-      .then((savedPath) => { if (savedPath) notify(`Operation log exported to ${savedPath}`); })
-      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
-  };
-
-      return (
-    <AppShell style={themeVariables} className={`explorer ui-profile-${desktopSettings.uiProfile} ui-layout-${mobileLayout ? "mobile" : "desktop"} ${desktopSettings.glassMainEnabled ? "" : "glass-main-off"} ${desktopSettings.glassMenusEnabled ? "" : "glass-menus-off"} ${desktopSettings.glassDialogsEnabled ? "" : "glass-dialogs-off"} ${appMode === "rest" ? "rest-mode" : ""} ${appMode === "vnc" ? "vnc-mode" : ""}`}>
-      <Suspense fallback={null}>
-      <DesktopTitlebar
-        appMode={appMode}
-        vncEnabled={desktopSettings.proxmoxVncModeEnabled}
-        restEnabled={desktopSettings.restApiModeEnabled}
-        session={session}
-        accountOpen={accountOpen}
-        accountControl={accountControl}
-        accountMenuStyle={accountMenuStyle}
-        mobileLayout={mobileLayout}
-        onModeChange={setAppMode}
-        onAccountToggle={(event) => {
-          event.stopPropagation();
-          setAccountOpen((open) => !open);
-        }}
-        onOpenSessions={() => { setAccountOpen(false); openSessionsModal(); }}
-        onOpenSettings={() => { setAccountOpen(false); setSettingsOpen(true); refreshStorageInfo(); }}
-        onChangePassword={() => { setAccountOpen(false); setChangePasswordOpen(true); }}
-        onOpenLogView={openLogView}
-        onOpenHelp={() => { setAccountOpen(false); setHelpOpen(true); }}
-        onSignOut={signOut}
-      />
-      <nav ref={setCommandbarElement} className="commandbar" aria-label={appMode === "rest" ? "REST API actions" : "File actions"}>
-        {splitMode && (
-          <span className="active-pane-indicator" title="New folder/Rename/Delete/View/Select all act on this pane">
-            <strong>{activePane === "local" ? "LOCAL" : "REMOTE"}</strong>
-          </span>
-        )}
+  // Each Location window has its own toolbar. `pane` replaces the shared
+  // `activePane` for what the toolbar *shows*; clicking anywhere in a window
+  // also makes it the active pane, so the actions act on the same pane.
+  const renderCommandbar = (pane: "local" | "remote") => {
+    const activePane = pane;
+    const bar = pane === "local" ? localBar : remoteBar;
+    const commandBarOverflow = bar.overflow;
+    return (
+      <nav ref={bar.setRef} className="commandbar" aria-label="File actions" onPointerDownCapture={() => setActivePane(pane)}>
         <button
           className="primary"
           onClick={() => {
@@ -4640,7 +4550,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             // LOCAL active, Upload sends the LOCAL selection into the current
             // REMOTE folder (mirrors dragging LOCAL -> REMOTE); otherwise it
             // falls back to the plain file-picker upload.
-            if (splitMode && remoteSshEntryId && activePane === "local" && localSelected.length) {
+            if (remoteSshEntryId && activePane === "local" && localSelected.length) {
               uploadLocalItemsToRemote(localSelectedItems, path);
             } else {
               void upload();
@@ -4648,11 +4558,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           }}
           disabled={
             busy ||
-            (splitMode && remoteSshEntryId
+            (remoteSshEntryId
               ? activePane !== "local"
                : !(remoteSshEntryId ? true : Boolean(session.locationId)))
           }
-          title={splitMode && remoteSshEntryId ? "Send the LOCAL selection to the current REMOTE folder" : undefined}
+          title={remoteSshEntryId ? "Send the LOCAL selection to the current REMOTE folder" : undefined}
         >
           Upload
         </button>
@@ -4660,7 +4570,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           <button
             onClick={createFolder}
             disabled={
-              splitMode && activePane === "local"
+              activePane === "local"
                 ? localReadOnly || busy
                  : busy || !(remoteSshEntryId ? true : Boolean(session.locationId))
             }
@@ -4671,7 +4581,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           <button
             disabled={
               busy ||
-              (splitMode && remoteSshEntryId
+              (remoteSshEntryId
                 ? activePane !== "remote" || !selectedItems.length
                 : !selectedItems.length || !(remoteSshEntryId ? true : locationOnline && hasCapability("read")))
             }
@@ -4680,13 +4590,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               // REMOTE active, Download brings the REMOTE selection straight
               // into the current LOCAL folder (mirrors dragging REMOTE ->
               // LOCAL) instead of queuing it to the Downloads folder.
-              if (splitMode && remoteSshEntryId && activePane === "remote" && selectedItems.length) {
+              if (remoteSshEntryId && activePane === "remote" && selectedItems.length) {
                 downloadRemoteItemsToLocal(selectedItems);
               } else {
                 download();
               }
             }}
-            title={splitMode && remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined}
+            title={remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined}
           >
             Download
           </button>
@@ -4698,7 +4608,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               {
                 key: "new-folder",
                 label: "New folder",
-                disabled: splitMode && activePane === "local"
+                disabled: activePane === "local"
                   ? localReadOnly || busy
                    : busy || !(remoteSshEntryId ? true : Boolean(session.locationId)),
                 onClick: createFolder,
@@ -4708,12 +4618,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 label: "Download",
                 disabled:
                   busy ||
-                  (splitMode && remoteSshEntryId
+                  (remoteSshEntryId
                     ? activePane !== "remote" || !selectedItems.length
                     : !selectedItems.length || !(remoteSshEntryId ? true : locationOnline && hasCapability("read"))),
-                title: splitMode && remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined,
+                title: remoteSshEntryId ? "Bring the REMOTE selection into the current LOCAL folder" : undefined,
                 onClick: () => {
-                  if (splitMode && remoteSshEntryId && activePane === "remote" && selectedItems.length) {
+                  if (remoteSshEntryId && activePane === "remote" && selectedItems.length) {
                     downloadRemoteItemsToLocal(selectedItems);
                   } else {
                     download();
@@ -4723,7 +4633,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               {
                 key: "view",
                 label: "View",
-                disabled: splitMode && activePane === "local"
+                disabled: activePane === "local"
                   ? busy || localSelectedItems.length !== 1 || localSelectedItems[0].isDirectory
                   : busy ||
                     !locationOnline ||
@@ -4732,14 +4642,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                     !!remoteSshEntryId ||
                     !hasCapability("read"),
                 onClick: () =>
-                  splitMode && activePane === "local"
+                  activePane === "local"
                     ? openLocalViewer(localSelectedItems[0].path)
                     : openRemoteViewer(selectedItems[0]),
               },
               {
                 key: "rename",
                 label: "Rename",
-                disabled: splitMode && activePane === "local"
+                disabled: activePane === "local"
                   ? localReadOnly || busy || localSelectedItems.length !== 1
                   : busy ||
                     selectedItems.length !== 1 ||
@@ -4751,7 +4661,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 label: "Share",
                 disabled:
                   busy ||
-                  (splitMode && activePane === "local") ||
+                  (activePane === "local") ||
                   !locationOnline ||
                   selectedItems.length !== 1 ||
                   selectedItems[0].isDirectory ||
@@ -4762,7 +4672,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               {
                 key: "delete",
                 label: "Delete",
-                disabled: splitMode && activePane === "local"
+                disabled: activePane === "local"
                   ? localReadOnly || busy || !localSelectedItems.length
                   : busy ||
                     !selectedItems.length ||
@@ -4780,7 +4690,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 key: "select-all",
                 label: "Select all",
                 onClick: () =>
-                  splitMode && activePane === "local"
+                  activePane === "local"
                     ? setLocalSelected(
                         localSelected.length === localFiles.length
                           ? []
@@ -4804,7 +4714,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           <>
             <button
               disabled={
-                splitMode && activePane === "local"
+                activePane === "local"
                   ? busy || localSelectedItems.length !== 1 || localSelectedItems[0].isDirectory
                   : busy ||
                     !locationOnline ||
@@ -4814,7 +4724,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                     !hasCapability("read")
               }
               onClick={() =>
-                splitMode && activePane === "local"
+                activePane === "local"
                   ? openLocalViewer(localSelectedItems[0].path)
                   : openRemoteViewer(selectedItems[0])
               }
@@ -4823,7 +4733,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             </button>
             <button
               disabled={
-                splitMode && activePane === "local"
+                activePane === "local"
                   ? localReadOnly || busy || localSelectedItems.length !== 1
                   : busy ||
                     selectedItems.length !== 1 ||
@@ -4836,7 +4746,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             <button
               disabled={
                 busy ||
-                (splitMode && activePane === "local") ||
+                (activePane === "local") ||
                 !locationOnline ||
                 selectedItems.length !== 1 ||
                 selectedItems[0].isDirectory ||
@@ -4849,7 +4759,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             </button>
             <button
               disabled={
-                splitMode && activePane === "local"
+                activePane === "local"
                   ? localReadOnly || busy || !localSelectedItems.length
                   : busy ||
                     !selectedItems.length ||
@@ -4869,7 +4779,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             <span className="divider" />
             <button
               onClick={() =>
-                splitMode && activePane === "local"
+                activePane === "local"
                   ? setLocalSelected(
                       localSelected.length === localFiles.length
                         ? []
@@ -4886,7 +4796,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             </button>
           </>
         )}
-        <span className="view-switch">
+        {pane === "remote" && <span className="view-switch">
           <button
             className={viewMode === "details" ? "active" : ""}
             onClick={() => setViewMode("details")}
@@ -4899,96 +4809,27 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           >
             Grid
           </button>
-          <button
-            className={splitMode ? "active" : ""}
-            onClick={toggleSplitMode}
-            aria-pressed={splitMode}
-          >
-            Split
-          </button>
-        </span>
+        </span>}
         {!commandBarOverflow && <button onClick={() => void run(refreshActivePane)} disabled={busy}>Refresh</button>}
-         <ContextPicker label={contextLabel} value={contextValue} groups={contextGroups} onSelect={selectContext} disabled={busy} />
+        {pane === "remote" && <ContextPicker label="LocationID" value={remoteContextValue} groups={remoteContextGroups} onSelect={selectRemoteContext} disabled={busy} />}
       </nav>
-       <div className={appMode === "location" ? `desktop-workspace${splitMode ? " split-workspace" : ""}${locationPaneCollapsed ? ` pane-collapse-${locationPaneCollapsed}` : ""}` : "mode-workspace"}>
-         {appMode === "rest" ? (
-          <RestApiWorkspace
-            workspaceName={restWorkspace?.name || "No Workspace"}
-            entries={restWorkspace?.restApiEntries || []}
-             activeEntryId={activeRestEntryId}
-             secrets={restSecrets}
-             sessionHeaders={restSessionHeaders}
-             collapseMainPaneEnabled={desktopSettings.collapseMainPaneEnabled}
-            onSelectEntry={setActiveRestEntryId}
-            onChangeEntries={(entries) => {
-              if (restWorkspace) {
-                setManagedSessions((current) => current.map((workspace) => workspace.id === restWorkspace.id ? { ...workspace, restApiEntries: entries } : workspace));
-                return;
-              }
-              const id = crypto.randomUUID();
-      setManagedSessions([{ id, name: "Default", sshEntries: [], restApiEntries: entries, proxmoxVncEntries: [] }]);
-              setWorkspaceSessionId(id);
-            }}
-            onChangeSecret={(entryId, secret) => {
-              setRestSecrets((current) => ({ ...current, [entryId]: secret }));
-              (Object.keys(secret) as (keyof RestApiSecret)[]).forEach((kind) => {
-                const value = secret[kind];
-                if (value) {
-                  void invoke("rest_save_secret", { entryId, kind, value });
-                } else {
-                  void invoke("rest_forget_secret", { entryId, kind });
-                }
-              });
-            }}
-            onChangeSessionHeaders={(entryId, headers) => {
-              const token = headers["X-Auth-Token"] || "";
-              setRestSessionHeaders((current) => ({ ...current, [entryId]: token }));
-              if (token) void invoke("rest_save_secret", { entryId, kind: "token", value: token });
-              else void invoke("rest_forget_secret", { entryId, kind: "token" });
-            }}
-            onAddEntry={() => openAddRestEntryDialog(ensureRestWorkspaceId())}
-            onEditEntry={(entry) => restWorkspace && openEditRestEntryDialog(restWorkspace.id, entry)}
-            onRemoveEntry={(entry) => restWorkspace && removeRestEntryDirect(restWorkspace.id, entry)}
-          />
-         ) : appMode === "vnc" ? (
-            <VncWorkspaceController
-              key={vncWorkspace?.id || "default-vnc-workspace"}
-              workspaceName={vncWorkspace?.name || "No Workspace"}
-              entries={vncWorkspace?.proxmoxVncEntries || []}
-              activeEntryId={activeVncEntryId}
-              secrets={vncSecrets}
-              commandbarHost={commandbarHost}
-              collapseMainPaneEnabled={desktopSettings.collapseMainPaneEnabled}
-              onSelectEntry={setActiveVncEntryId}
-              onChangeEntries={(entries) => {
-                if (vncWorkspace) {
-                 setManagedSessions((current) => current.map((workspace) => workspace.id === vncWorkspace.id ? { ...workspace, proxmoxVncEntries: entries } : workspace));
-                 return;
-               }
-               const id = crypto.randomUUID();
-               setManagedSessions([{ id, name: "Default", sshEntries: [], restApiEntries: [], proxmoxVncEntries: entries }]);
-               setWorkspaceSessionId(id);
-             }}
-             onChangeSecret={(entryId, secret) => {
-               setVncSecrets((current) => ({ ...current, [entryId]: secret }));
-               if (secret.password) void invoke("proxmox_save_secret", { entryId, kind: "password", value: secret.password });
-               else void invoke("proxmox_forget_secret", { entryId, kind: "password" });
-             }}
-             onAddEntry={() => openAddVncEntryDialog(ensureVncWorkspaceId())}
-             onEditEntry={(entry) => vncWorkspace && openEditVncEntryDialog(vncWorkspace.id, entry)}
-             onRemoveEntry={(entry) => vncWorkspace && removeVncEntryDirect(vncWorkspace.id, entry)}
-           />
-         ) : <>
-        {splitMode && renderLocalPane()}
-         {desktopSettings.collapseMainPaneEnabled ? (
-           <div className="location-main-pane-collapse-controls" role="group" aria-label="Location pane visibility">
-             <button type="button" onClick={() => setLocationPaneCollapsed(locationPaneCollapsed === "right" ? null : "left")} disabled={locationPaneCollapsed === "left"} aria-label={locationPaneCollapsed === "right" ? "Restore REMOTE pane" : "Collapse left Location pane"}><ChevronLeftIcon /></button>
-             <button type="button" onClick={() => setLocationPaneCollapsed(locationPaneCollapsed === "left" ? null : "right")} disabled={!splitMode && locationPaneCollapsed !== "left" || locationPaneCollapsed === "right"} aria-label={locationPaneCollapsed === "left" ? "Restore LOCAL pane" : "Collapse right Location pane"}><ChevronRightIcon /></button>
-           </div>
-         ) : splitMode ? (
-           <PaneResizeHandle ariaLabel="Resize LOCAL and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />
-         ) : null}
-        <aside className="desktop-folder-tree" style={!splitMode ? { flexBasis: `${folderPaneWidth}px`, width: `${folderPaneWidth}px` } : undefined} onMouseDownCapture={() => setActivePane("remote")}>
+    );
+  };
+
+  const renderLocalWindow = () => (
+    <div className="pane-window-content">
+      {renderCommandbar("local")}
+      <div className="desktop-workspace pane-local-workspace">
+        {renderLocalPane()}
+      </div>
+    </div>
+  );
+
+  const renderRemoteWindow = () => (
+    <div className="pane-window-content">
+      {renderCommandbar("remote")}
+      <div className="desktop-workspace pane-remote-workspace">
+        <aside className="desktop-folder-tree" style={{ flexBasis: `${folderPaneWidth}px`, width: `${folderPaneWidth}px` }} onMouseDownCapture={() => setActivePane("remote")}>
           <span className="sidebar-label">Folders</span>
           <div className="folder-pane">
             <div
@@ -5004,9 +4845,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
           </div>
         </aside>
-         {!splitMode && !desktopSettings.collapseMainPaneEnabled && <PaneResizeHandle ariaLabel="Resize Folders and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />}
+         {!!desktopSettings.collapseMainPaneEnabled && <PaneResizeHandle ariaLabel="Resize Folders and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />}
         <section
-          className={`desktop-content ${splitMode && activePane === "remote" ? "active-pane" : ""}`}
+          className={`desktop-content ${activePane === "remote" ? "active-pane" : ""}`}
           onMouseDownCapture={() => setActivePane("remote")}
         >
           <div className="content-heading">
@@ -5332,14 +5173,208 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             <PersistentScrollbar targetRef={fileAreaRef} label="Files" />
           </div>
         </section>
-        </>}
       </div>
       <footer className="statusbar">
-        <span>
-          {appMode === "rest" ? `${restWorkspace?.restApiEntries.length || 0} REST entr${restWorkspace?.restApiEntries.length === 1 ? "y" : "ies"}` : `${files.length} item${files.length === 1 ? "" : "s"}`}
-        </span>
-        <span>{appMode === "rest" ? "REST API reader" : searching ? "Search results" : path ? `/${path}` : "/"}</span>
+        <span>{files.length} item{files.length === 1 ? "" : "s"}</span>
+        <span>{searching ? "Search results" : path ? `/${path}` : "/"}</span>
       </footer>
+    </div>
+  );
+
+  const renderRestWindow = () => (
+    <div className="pane-window-content rest-window">
+      <nav ref={setRestBarHost} className="commandbar" aria-label="REST API actions">
+        {renderEntryPicker("rest")}
+      </nav>
+      <div className="mode-workspace">
+        <Suspense fallback={<div className="pane-loading">Loading REST API…</div>}>
+          <RestApiWorkspace
+            workspaceName={restWorkspace?.name || "No Workspace"}
+            entries={restWorkspace?.restApiEntries || []}
+             activeEntryId={activeRestEntryId}
+             secrets={restSecrets}
+             sessionHeaders={restSessionHeaders}
+             toolbarHost={restBarHost}
+            collapseMainPaneEnabled={desktopSettings.collapseMainPaneEnabled}
+            onSelectEntry={setActiveRestEntryId}
+            onChangeEntries={(entries) => {
+              if (restWorkspace) {
+                setManagedSessions((current) => current.map((workspace) => workspace.id === restWorkspace.id ? { ...workspace, restApiEntries: entries } : workspace));
+                return;
+              }
+              const id = crypto.randomUUID();
+      setManagedSessions([{ id, name: "Default", sshEntries: [], restApiEntries: entries, proxmoxVncEntries: [] }]);
+              setWorkspaceSessionId(id);
+            }}
+            onChangeSecret={(entryId, secret) => {
+              setRestSecrets((current) => ({ ...current, [entryId]: secret }));
+              (Object.keys(secret) as (keyof RestApiSecret)[]).forEach((kind) => {
+                const value = secret[kind];
+                if (value) {
+                  void invoke("rest_save_secret", { entryId, kind, value });
+                } else {
+                  void invoke("rest_forget_secret", { entryId, kind });
+                }
+              });
+            }}
+            onChangeSessionHeaders={(entryId, headers) => {
+              const token = headers["X-Auth-Token"] || "";
+              setRestSessionHeaders((current) => ({ ...current, [entryId]: token }));
+              if (token) void invoke("rest_save_secret", { entryId, kind: "token", value: token });
+              else void invoke("rest_forget_secret", { entryId, kind: "token" });
+            }}
+            onAddEntry={() => openAddRestEntryDialog(ensureRestWorkspaceId())}
+            onEditEntry={(entry) => restWorkspace && openEditRestEntryDialog(restWorkspace.id, entry)}
+            onRemoveEntry={(entry) => restWorkspace && removeRestEntryDirect(restWorkspace.id, entry)}
+          />
+        </Suspense>
+      </div>
+      <footer className="statusbar">
+        <span>{restWorkspace?.restApiEntries.length || 0} REST entr{restWorkspace?.restApiEntries.length === 1 ? "y" : "ies"}</span>
+        <span>REST API reader</span>
+      </footer>
+    </div>
+  );
+
+  const renderVncWindow = () => (
+    <div className="pane-window-content vnc-window">
+      <nav ref={setVncBarHost} className="commandbar" aria-label="VNC actions">
+        {renderEntryPicker("vnc")}
+      </nav>
+      <div className="mode-workspace">
+        <Suspense fallback={<div className="pane-loading">Loading VNC…</div>}>
+            <VncWorkspaceController
+              key={vncWorkspace?.id || "default-vnc-workspace"}
+              workspaceName={vncWorkspace?.name || "No Workspace"}
+              entries={vncWorkspace?.proxmoxVncEntries || []}
+              activeEntryId={activeVncEntryId}
+              secrets={vncSecrets}
+              commandbarHost={vncBarHost}
+              collapseMainPaneEnabled={desktopSettings.collapseMainPaneEnabled}
+              onSelectEntry={setActiveVncEntryId}
+              onChangeEntries={(entries) => {
+                if (vncWorkspace) {
+                 setManagedSessions((current) => current.map((workspace) => workspace.id === vncWorkspace.id ? { ...workspace, proxmoxVncEntries: entries } : workspace));
+                 return;
+               }
+               const id = crypto.randomUUID();
+               setManagedSessions([{ id, name: "Default", sshEntries: [], restApiEntries: [], proxmoxVncEntries: entries }]);
+               setWorkspaceSessionId(id);
+             }}
+             onChangeSecret={(entryId, secret) => {
+               setVncSecrets((current) => ({ ...current, [entryId]: secret }));
+               if (secret.password) void invoke("proxmox_save_secret", { entryId, kind: "password", value: secret.password });
+               else void invoke("proxmox_forget_secret", { entryId, kind: "password" });
+             }}
+             onAddEntry={() => openAddVncEntryDialog(ensureVncWorkspaceId())}
+             onEditEntry={(entry) => vncWorkspace && openEditVncEntryDialog(vncWorkspace.id, entry)}
+             onRemoveEntry={(entry) => vncWorkspace && removeVncEntryDirect(vncWorkspace.id, entry)}
+           />
+        </Suspense>
+      </div>
+      <footer className="statusbar">
+        <span>{vncWorkspace?.proxmoxVncEntries.length || 0} VNC entr{vncWorkspace?.proxmoxVncEntries.length === 1 ? "y" : "ies"}</span>
+        <span>{vncWorkspace?.name || "No Workspace"}</span>
+      </footer>
+    </div>
+  );
+
+  const openLogView = () => {
+    setAccountOpen(false);
+    void run(async () => {
+      const records = await invoke<OperationLogRecord[]>("read_operation_logs");
+      setOperationLogRecords(records);
+      setLogViewOpen(true);
+    });
+  };
+
+  const exportOperationLog = () => {
+    const content = operationLogRecords.map((record) => JSON.stringify(record)).join("\n");
+    void invoke<string | null>("save_text_file", { name: "nfterm-operations.jsonl", content })
+      .then((savedPath) => { if (savedPath) notify(`Operation log exported to ${savedPath}`); })
+      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+  };
+
+  const terminalBody = (
+    <TerminalWorkspace
+        quickListOpen={sshQuickListOpen}
+        tabs={sshTabs}
+        activeTabId={activeSshTabId}
+        activeTab={activeSshTab}
+        workspaces={workspaceSessions}
+        activeWorkspaceId={workspaceSessionId}
+        activeWorkspace={activeWorkspaceSession}
+        connected={sshConnected}
+        recording={recording}
+        recordingHasOutput={recordingHasOutput}
+        savedLogPaths={savedLogPaths}
+        activeQueueCount={transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length}
+        registerHostRef={registerSshTerminalHostRef}
+        onToggleQuickList={() => setSshQuickListOpen((open) => !open)}
+        onOpenLocalTerminal={openLocalTerminal}
+        onSelectTab={selectSshTab}
+        onCopySession={copySshSession}
+        onReorderTabs={reorderSshTabs}
+        onCloseTab={closeSshTab}
+        onCreateTab={() => { createSshTab(); }}
+        onQuickConnect={quickConnectSsh}
+        onOpenEntryInNewWindow={(workspaceId, entryId) => { void openSshEntryInNewWindow(workspaceId, entryId); }}
+        onSelectWorkspace={selectWorkspaceSession}
+        onConnect={connectSsh}
+        onDisconnect={disconnectSsh}
+        onCancelConnect={cancelSshConnect}
+        onStartRecording={startRecording}
+        onStopRecording={stopRecording}
+        onSaveLog={openSaveLogDialog}
+        onOpenSavedLog={openLocalViewer}
+        onOpenWorkspaceManager={() => { void openSessionsModal(); }}
+        onOpenQueue={() => setQueueOpen(true)}
+    />
+  );
+
+  return (
+    <AppShell style={themeVariables} className={`explorer pane-style ${desktopSettings.glassMainEnabled ? "" : "glass-main-off"} ${desktopSettings.glassMenusEnabled ? "" : "glass-menus-off"} ${desktopSettings.glassDialogsEnabled ? "" : "glass-dialogs-off"}`}>
+      <Suspense fallback={null}>
+      <PaneDesktop
+        restEnabled={desktopSettings.restApiModeEnabled}
+        vncEnabled={desktopSettings.proxmoxVncModeEnabled}
+        openRef={paneOpenWindowRef}
+        titles={{ local: "Local", remote: remoteWindowTitle, rest: "RestAPI", vnc: "VNC", terminal: "Terminal" }}
+        subtitles={{ local: localPath ? `~/${localPath}` : "~", remote: remoteSshEntryId ? path || "/" : path ? `/${path}` : "/" }}
+        remoteChoices={paneRemoteChoices}
+        sftpChoices={paneSftpChoices}
+        busy={busy}
+        topRight={
+          <PaneTopRight
+            session={session}
+            accountOpen={accountOpen}
+            accountControl={accountControl}
+            accountMenuStyle={accountMenuStyle}
+            activeQueueCount={activeTransferQueue.length}
+            onOpenQueue={() => setQueueOpen(true)}
+            onAccountToggle={(event) => {
+              event.stopPropagation();
+              setAccountOpen((open) => !open);
+            }}
+            onOpenSessions={() => { setAccountOpen(false); openSessionsModal(); }}
+            onOpenSettings={() => { setAccountOpen(false); setSettingsOpen(true); refreshStorageInfo(); }}
+            onChangePassword={() => { setAccountOpen(false); setChangePasswordOpen(true); }}
+            onOpenLogView={openLogView}
+            onOpenHelp={() => { setAccountOpen(false); setHelpOpen(true); }}
+            onSignOut={signOut}
+          />
+        }
+        onSelectRemote={(locationId) => { void selectLocation(locationId); }}
+        onSelectSftp={selectSshBrowse}
+        onWindowState={handlePaneWindowState}
+        confirmDiscardRecordings={() => requestConfirmation("An SSH window has a recording that was not saved. Close nFterm and discard it?", "Close nFterm")}
+      >
+        <PaneBody kind="local">{renderLocalWindow()}</PaneBody>
+        <PaneBody kind="remote">{renderRemoteWindow()}</PaneBody>
+        <PaneBody kind="rest">{renderRestWindow()}</PaneBody>
+        <PaneBody kind="vnc">{renderVncWindow()}</PaneBody>
+        <PaneBody kind="terminal">{terminalBody}</PaneBody>
+      </PaneDesktop>
       {marqueeRect && (
         <div
           className="marquee-select"
@@ -5363,7 +5398,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           style={contextMenuStyle}
           onClick={(event) => event.stopPropagation()}
         >
-          {splitMode && activePane === "local" ? (
+          {activePane === "local" ? (
             <>
               <button
                 disabled={!canDragLocalToRemote || !localSelectedItems.length}
@@ -5463,27 +5498,29 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               >
                 Share
               </button>
-              <hr />
-              <button
-                disabled={!selectedItems.length || !remoteSshEntryId}
-                title={!remoteSshEntryId ? "Compression is only available for an SSH REMOTE connection." : undefined}
-                onClick={() => {
-                  setContextMenu(null);
-                  void compressRemoteItems();
-                }}
-              >
-                Compress to .zip
-              </button>
-              <button
-                disabled={selectedItems.length !== 1 || !remoteSshEntryId || !isZipFile(selectedItems[0])}
-                title={!remoteSshEntryId ? "Extraction is only available for an SSH REMOTE connection." : undefined}
-                onClick={() => {
-                  setContextMenu(null);
-                  void extractRemoteArchive();
-                }}
-              >
-                Extract here
-              </button>
+              {remoteSshEntryId && (
+                <>
+                  <hr />
+                  <button
+                    disabled={!selectedItems.length}
+                    onClick={() => {
+                      setContextMenu(null);
+                      void compressRemoteItems();
+                    }}
+                  >
+                    Compress to .zip
+                  </button>
+                  <button
+                    disabled={selectedItems.length !== 1 || !isZipFile(selectedItems[0])}
+                    onClick={() => {
+                      setContextMenu(null);
+                      void extractRemoteArchive();
+                    }}
+                  >
+                    Extract here
+                  </button>
+                </>
+              )}
               <hr />
               <button
                 disabled={!selectedItems.length}
@@ -5637,7 +5674,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             setWorkspaceSessionId={setWorkspaceSessionId}
             setActiveRestEntryId={setActiveRestEntryId}
             setActiveVncEntryId={setActiveVncEntryId}
-            setAppMode={setAppMode}
+            openMode={(mode) => paneOpenWindowRef.current(mode === "location" ? "remote" : mode)}
             startNewWorkspace={startNewWorkspace}
             openWorkspaceNameDialog={openWorkspaceNameDialog}
             removeSession={removeSession}
@@ -5717,56 +5754,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           vncUsernameParts={vncUsernameParts}
         />
       )}
-      <TerminalWorkspace
-        open={terminalOpen}
-        height={terminalHeight}
-        titlebarHeight={terminalTitlebarHeight()}
-        maximized={terminalMaximized}
-        quickListOpen={sshQuickListOpen}
-        tabs={sshTabs}
-        activeTabId={activeSshTabId}
-        activeTab={activeSshTab}
-        workspaces={workspaceSessions}
-        activeWorkspaceId={workspaceSessionId}
-        activeWorkspace={activeWorkspaceSession}
-        connected={sshConnected}
-        recording={recording}
-        recordingHasOutput={recordingHasOutput}
-        savedLogPaths={savedLogPaths}
-        activeQueueCount={transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length}
-        registerHostRef={registerSshTerminalHostRef}
-        onToggleQuickList={() => setSshQuickListOpen((open) => !open)}
-        onOpenLocalTerminal={openLocalTerminal}
-        onResizeStart={beginTerminalResize}
-        onSelectTab={selectSshTab}
-        onCopySession={copySshSession}
-        onReorderTabs={reorderSshTabs}
-        onCloseTab={closeSshTab}
-        onCreateTab={() => { createSshTab(); }}
-        onQuickConnect={quickConnectSsh}
-        onOpenEntryInNewWindow={(workspaceId, entryId) => { void openSshEntryInNewWindow(workspaceId, entryId); }}
-        onSelectWorkspace={selectWorkspaceSession}
-        onConnect={connectSsh}
-        onDisconnect={disconnectSsh}
-        onCancelConnect={cancelSshConnect}
-        onStartRecording={startRecording}
-        onStopRecording={stopRecording}
-        onSaveLog={openSaveLogDialog}
-        onOpenSavedLog={openLocalViewer}
-        onOpenWorkspaceManager={() => { void openSessionsModal(); }}
-        onOpenQueue={() => setQueueOpen(true)}
-        onToggleMaximized={toggleTerminalMaximized}
-        onClose={() => {
-          if (terminalMaximized) setTerminalHeight(previousTerminalHeightRef.current);
-          setTerminalMaximized(false);
-          setTerminalOpen(false);
-        }}
-        onRestore={() => {
-          setTerminalHeight(previousTerminalHeightRef.current);
-          setTerminalMaximized(false);
-          setTerminalOpen(true);
-        }}
-      />
       {archiveFormatOpen && (
         <ArchiveFormatDialog
           archiveFormatDraft={archiveFormatDraft}

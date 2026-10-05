@@ -2,14 +2,13 @@ import { themePresets, type ThemePreset } from "../../styles/theme";
 
 // localStorage key that holds the serialized DesktopSettings object. Also
 // read directly (without going through normalizeDesktopSettings) by
-// main.tsx's top-level App() component to seed the "uiProfile" toggle
-// before login, and by DesktopApp's appMode initializer before the
-// useDesktopSettings hook itself has run -- so this constant must stay
-// exported and stable, not folded away as a private detail of the hook.
+// main.tsx's top-level App() component to seed the login screen's glass
+// toggles before the useDesktopSettings hook itself has run -- so this
+// constant must stay exported and stable, not folded away as a private
+// detail of the hook.
 export const desktopSettingsKey = "nfterm-settings";
 
 export type DesktopSettings = {
-  uiProfile: "auto" | "mobile";
   theme: ThemePreset;
   accentColor: string;
   glassMainEnabled: boolean;
@@ -47,7 +46,6 @@ export type OperationStorageInfo = {
 };
 
 export const defaultDesktopSettings: DesktopSettings = {
-  uiProfile: "auto",
   theme: "bridge",
   accentColor: "#63e6ff",
   glassMainEnabled: true,
@@ -86,7 +84,6 @@ export const normalizeDesktopSettings = (raw: unknown): DesktopSettings => {
   return {
     ...defaultDesktopSettings,
     ...saved,
-    uiProfile: pick(saved.uiProfile, (value) => value === "auto" || value === "mobile", defaultDesktopSettings.uiProfile),
     theme: pick(
       saved.theme,
       (value) => typeof value === "string" && Object.prototype.hasOwnProperty.call(themePresets, value),

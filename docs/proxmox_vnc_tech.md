@@ -25,9 +25,9 @@ Shared color, spacing, typography, control, profile, theme, and stacking tokens
 are documented in [CSS Tokens](./css_tokens.md). VNC styles use those semantic
 variables and keep component-specific layout rules in `proxmox-vnc.css`.
 
-The class name `ui-layout-mobile` refers to the project's **Large** profile,
-not a phone-sized layout. It enlarges the regular desktop controls, icons, and
-text; actual narrow-screen behavior is defined by the relevant media queries.
+The Large profile (`ui-layout-mobile`) no longer exists; the VNC window uses the
+same fluid desktop sizing as every other Pane window, and narrow-window behavior
+is defined by the relevant media queries.
 
 ## Proxmox VNC workspace (`proxmox-vnc.tsx` + `proxmox-vnc.css`)
 

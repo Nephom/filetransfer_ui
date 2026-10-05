@@ -1,0 +1,682 @@
+/* Pane Style desktop: wallpaper, floating windows, bottom dock with the
+ * Functions flyout, taskbar tabs and the top-right pills.
+ *
+ * Every colour comes from the shared theme tokens (--color-*, --bridge-*),
+ * so all theme presets and the accent colour keep working.
+ *
+ * Layout contract (see pane/PaneDesktop.tsx):
+ *   .pane-desktop = grid: [topbar] [window layer 1fr] [dock]
+ * Windows are positioned with left/top/width/height only - never with
+ * transform / filter / backdrop-filter on an ancestor of window content,
+ * because those would turn `position: fixed` dialogs inside a window
+ * (REST/VNC dialogs) into window-relative boxes. */
+
+.explorer.pane-style {
+  background: var(--color-bg);
+}
+.explorer.pane-style::before,
+.explorer.pane-style::after {
+  display: none;
+}
+
+.pane-desktop {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+/* ---- wallpaper ------------------------------------------------------ */
+.pane-wallpaper {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 78% 8%, color-mix(in srgb, var(--color-secondary) 30%, transparent), transparent 36%),
+    radial-gradient(circle at 14% 92%, color-mix(in srgb, var(--color-primary) 20%, transparent), transparent 40%),
+    linear-gradient(135deg, var(--bridge-void, var(--color-bg)) 0%, var(--bridge-space, var(--color-bg)) 58%, var(--bridge-void, var(--color-bg)) 100%);
+}
+.pane-wallpaper::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: .22;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-primary) 12%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 12%, transparent) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, .8), transparent 90%);
+}
+.pane-wallpaper-image {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(var(--pane-wallpaper-scale, 1));
+  background-image: linear-gradient(135deg, rgba(2, 7, 17, .34), rgba(2, 7, 17, .5)), var(--pane-wallpaper-image, none);
+  background-size: cover, var(--pane-wallpaper-size, cover);
+  background-position: center, var(--pane-wallpaper-position, 50% 50%);
+  background-repeat: no-repeat;
+  transition: opacity .35s ease, transform .18s ease, background-position .18s ease;
+}
+.pane-wallpaper.has-image .pane-wallpaper-image {
+  opacity: 1;
+}
+
+/* ---- top bar -------------------------------------------------------- */
+.pane-topbar {
+  position: relative;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4) 0;
+}
+.pane-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text);
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-shadow: 0 1px 8px color-mix(in srgb, var(--color-bg) 80%, transparent);
+}
+.pane-topright {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.explorer.pane-style .pane-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: clamp(30px, calc(18px + 2vmin), 40px);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-bg-panel-strong) 82%, transparent);
+  box-shadow: var(--shadow-inset);
+  backdrop-filter: blur(14px) saturate(140%);
+  cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast), transform var(--motion-fast);
+}
+.explorer.pane-style .pane-pill:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel-strong));
+}
+.explorer.pane-style .pane-pill:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.explorer.pane-style .pane-pill-icon {
+  padding: 0;
+  width: clamp(30px, calc(18px + 2vmin), 40px);
+  justify-content: center;
+}
+.explorer.pane-style .pane-pill.is-busy {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-inset), 0 0 14px color-mix(in srgb, var(--color-primary) 40%, transparent);
+}
+.pane-pill-count {
+  min-width: 1.4em;
+  padding: 0 var(--space-1);
+  border-radius: 999px;
+  color: var(--color-bg);
+  background: var(--color-primary);
+  font-size: var(--ui-small-font-size);
+  font-weight: 800;
+  text-align: center;
+}
+.explorer.pane-style .pane-topright .account-control {
+  position: relative;
+}
+.pane-account-name {
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- window layer & windows ---------------------------------------- */
+.pane-window-layer {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.pane-window {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-bg) 94%, transparent);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .38), 0 2px 0 color-mix(in srgb, var(--color-bg) 60%, transparent);
+  opacity: 1;
+  transition: opacity .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+.pane-window.is-active {
+  border-color: var(--color-primary);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .5), 0 0 0 1px color-mix(in srgb, var(--color-primary) 55%, transparent), 0 0 24px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+.pane-window.is-maximized {
+  inset: 0;
+  border-radius: 0;
+  border-width: 0;
+}
+/* Hidden windows keep their layout box (visibility, not display:none), so the
+   SSH terminal's xterm does not measure a 0x0 host and resize the remote PTY. */
+.pane-window.is-hidden {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+.pane-window-titlebar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: clamp(32px, calc(20px + 2vmin), 42px);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)), var(--color-bg-panel-strong));
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.pane-window-titlebar:active {
+  cursor: grabbing;
+}
+.pane-window.is-maximized .pane-window-titlebar {
+  cursor: default;
+}
+.pane-window-icon {
+  display: inline-flex;
+  color: var(--color-primary);
+}
+.pane-window-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--ui-font-size);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-window-subtitle {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--ui-small-font-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-window-controls {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 2px;
+}
+.explorer.pane-style .pane-window-control {
+  display: inline-grid;
+  place-items: center;
+  width: clamp(24px, calc(14px + 1.8vmin), 32px);
+  height: clamp(24px, calc(14px + 1.8vmin), 32px);
+  min-height: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--color-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.explorer.pane-style .pane-window-control:hover:not(:disabled) {
+  border-color: var(--color-border);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+}
+.explorer.pane-style .pane-window-close:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 55%, transparent);
+}
+.pane-window-control svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.pane-window-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.pane-window-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pane-loading {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-muted);
+}
+
+/* resize grips: thin edges and larger corners */
+.pane-win-grip {
+  position: absolute;
+  z-index: 6;
+  touch-action: none;
+}
+.pane-win-grip-n { top: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
+.pane-win-grip-s { bottom: 0; left: 12px; right: 12px; height: 5px; cursor: ns-resize; }
+.pane-win-grip-e { right: 0; top: 12px; bottom: 12px; width: 5px; cursor: ew-resize; }
+.pane-win-grip-w { left: 0; top: 12px; bottom: 12px; width: 5px; cursor: ew-resize; }
+.pane-win-grip-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.pane-win-grip-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.pane-win-grip-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.pane-win-grip-se { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; }
+.pane-win-grip-se::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--color-border-strong);
+  border-bottom: 2px solid var(--color-border-strong);
+  opacity: .55;
+}
+
+/* Location panes inside their windows */
+.pane-local-workspace .local-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  border-right: 0;
+}
+.pane-remote-workspace .desktop-folder-tree {
+  order: 0;
+  max-width: 60%;
+}
+.pane-window .commandbar,
+.pane-window .statusbar {
+  backdrop-filter: none;
+}
+
+/* ---- dock ----------------------------------------------------------- */
+.pane-dock {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-4) var(--space-2);
+  border-top: 1px solid var(--color-border);
+  background: linear-gradient(0deg, color-mix(in srgb, var(--color-bg-panel-strong) 92%, transparent), color-mix(in srgb, var(--color-bg-panel) 62%, transparent));
+  backdrop-filter: blur(16px) saturate(140%);
+}
+.pane-dock-launchers {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.pane-functions {
+  position: relative;
+}
+.explorer.pane-style .pane-dock-button,
+.explorer.pane-style .pane-dock-button:hover:not(:disabled) {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: clamp(58px, calc(40px + 3vmin), 78px);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  color: var(--color-text);
+  background: transparent;
+  cursor: pointer;
+}
+.pane-dock-icon {
+  display: grid;
+  place-items: center;
+  width: clamp(40px, calc(26px + 2.4vmin), 56px);
+  height: clamp(40px, calc(26px + 2.4vmin), 56px);
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  color: var(--color-text);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--color-bg-panel-strong) 94%, white 4%), color-mix(in srgb, var(--color-bg-panel-strong) 86%, transparent));
+  box-shadow: 0 3px 0 color-mix(in srgb, var(--color-bg) 75%, transparent), var(--shadow-inset);
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease, color .16s ease;
+}
+.pane-dock-button:hover:not(:disabled) .pane-dock-icon,
+.pane-dock-button:focus-visible .pane-dock-icon {
+  transform: translateY(-3px);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  box-shadow: 0 6px 0 color-mix(in srgb, var(--color-bg) 70%, transparent), 0 0 16px color-mix(in srgb, var(--color-primary) 30%, transparent);
+}
+.pane-dock-button:active .pane-dock-icon {
+  transform: translateY(1px);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-bg) 75%, transparent);
+}
+.pane-dock-button.is-expanded .pane-dock-icon,
+.pane-dock-button.is-open .pane-dock-icon {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.pane-dock-button.is-open::after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  box-shadow: 0 0 8px var(--color-primary);
+}
+.pane-dock-label {
+  font-size: var(--ui-small-font-size);
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-shadow: 0 1px 6px color-mix(in srgb, var(--color-bg) 85%, transparent);
+  white-space: nowrap;
+}
+
+/* Functions flyout: the buttons rise out of the Functions button one after
+   another (stagger via --i), and fall back when it closes. */
+.pane-flyout {
+  position: absolute;
+  bottom: calc(100% + var(--space-3));
+  left: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--space-3);
+}
+.pane-flyout:not(.is-open) {
+  visibility: hidden;
+  transition: visibility 0s linear .25s;
+}
+.pane-flyout-slot {
+  position: relative;
+  opacity: 0;
+  transform: translateY(18px) scale(.82);
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+}
+.pane-flyout.is-open .pane-flyout-slot {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  transition: opacity .2s ease, transform .28s cubic-bezier(.2, .9, .3, 1.25);
+  transition-delay: calc(var(--i, 0) * 55ms);
+}
+.pane-location-menu {
+  position: absolute;
+  left: calc(100% + var(--space-3));
+  bottom: 0;
+  width: clamp(240px, 26vw, 340px);
+  max-height: min(60vh, 460px);
+  overflow-y: auto;
+  padding: var(--space-2);
+  border: 1px solid var(--bridge-popover-border, var(--color-border));
+  border-radius: 14px;
+  background: var(--color-bg-popover);
+  box-shadow: var(--shadow-panel);
+  animation: pane-menu-in .18s cubic-bezier(.2, .9, .3, 1.15) both;
+}
+.pane-menu-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2) var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--ui-small-font-size);
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.pane-menu-empty {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--ui-small-font-size);
+}
+.explorer.pane-style .pane-menu-item,
+.pane-location-menu .pane-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--color-text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.explorer.pane-style .pane-menu-item:hover:not(:disabled),
+.explorer.pane-style .pane-menu-item:focus-visible {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent);
+}
+.explorer.pane-style .pane-menu-item:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+.pane-menu-item.is-current {
+  box-shadow: inset 3px 0 var(--color-primary);
+}
+.pane-menu-icon {
+  display: inline-flex;
+  color: var(--color-primary);
+}
+.pane-menu-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+.pane-menu-text strong {
+  overflow: hidden;
+  font-size: var(--ui-font-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-menu-text small {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--ui-small-font-size);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-status-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  opacity: .7;
+}
+.pane-status-dot.is-online {
+  background: var(--color-success);
+  opacity: 1;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-success) 70%, transparent);
+}
+@keyframes pane-menu-in {
+  from { opacity: 0; transform: translateX(-8px) scale(.96); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---- taskbar -------------------------------------------------------- */
+.pane-taskbar {
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-left: var(--space-4);
+  border-left: 1px solid var(--color-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.pane-taskbar::-webkit-scrollbar {
+  display: none;
+}
+.pane-taskbar-empty {
+  color: var(--color-text-muted);
+  font-size: var(--ui-small-font-size);
+}
+.pane-task {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-bg-panel-strong) 86%, transparent);
+  overflow: hidden;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
+}
+.pane-task.is-active {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-bg-panel-strong));
+  box-shadow: inset 0 -2px var(--color-primary);
+}
+.pane-task.is-minimized {
+  border-style: dashed;
+  opacity: .78;
+}
+.pane-task.is-external {
+  border-color: color-mix(in srgb, var(--color-warning) 55%, var(--color-border));
+}
+.explorer.pane-style .pane-task-main,
+.explorer.pane-style .pane-task-main:hover:not(:disabled) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: clamp(30px, calc(18px + 2vmin), 40px);
+  max-width: 230px;
+  padding: 0 var(--space-3);
+  border: 0;
+  color: var(--color-text);
+  background: transparent;
+  cursor: pointer;
+}
+.explorer.pane-style .pane-task-main:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+}
+.pane-task-title {
+  overflow: hidden;
+  font-size: var(--ui-small-font-size);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-task-rec {
+  padding: 0 var(--space-1);
+  border-radius: 4px;
+  color: var(--color-text);
+  background: var(--color-danger);
+  font-size: var(--ui-small-font-size);
+  font-weight: 800;
+}
+.explorer.pane-style .pane-task-close,
+.explorer.pane-style .pane-task-close:hover:not(:disabled) {
+  width: clamp(22px, calc(12px + 1.6vmin), 28px);
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--color-border);
+  border-radius: 0;
+  color: var(--color-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.explorer.pane-style .pane-task-close:hover:not(:disabled) {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-danger) 50%, transparent);
+}
+
+.glass-main-off .pane-dock,
+.glass-main-off .pane-pill {
+  backdrop-filter: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pane-flyout-slot,
+  .pane-flyout.is-open .pane-flyout-slot,
+  .pane-window,
+  .pane-dock-icon,
+  .pane-wallpaper-image {
+    transition: none;
+    transition-delay: 0s;
+  }
+  .pane-location-menu {
+    animation: none;
+  }
+}
+
+/* ---- Settings: wallpaper editor ------------------------------------ */
+.wallpaper-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: var(--space-2);
+}
+.wallpaper-editor {
+  display: grid;
+  grid-template-columns: minmax(140px, 200px) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-3) 0 0;
+}
+.wallpaper-preview.pane-wallpaper {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+}
+.wallpaper-controls {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.wallpaper-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 150px) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: center;
+  margin: 0;
+}
+.wallpaper-row > span:first-child {
+  color: var(--color-text-muted);
+  font-size: var(--ui-small-font-size);
+}
+.wallpaper-nudge {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}

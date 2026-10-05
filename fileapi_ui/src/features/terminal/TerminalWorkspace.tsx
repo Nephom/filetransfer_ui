@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ChevronDownIcon, CloseIcon, CollapseIcon, ExpandIcon, ChevronUpIcon, WindowsTerminalIcon, CommandPromptIcon } from "../../ui/icons";
+import { CloseIcon, WindowsTerminalIcon, CommandPromptIcon } from "../../ui/icons";
 import { Dropdown } from "../../ui/Dropdown";
 import type { LocalTerminalKind, SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
 
@@ -7,10 +7,6 @@ type TerminalTab = SshTerminalTab;
 type TerminalWorkspaceGroup = TerminalWorkspaceSession;
 
 type Props = {
-  open: boolean;
-  height: number;
-  titlebarHeight: number;
-  maximized: boolean;
   quickListOpen: boolean;
   tabs: TerminalTab[];
   activeTabId: string;
@@ -26,7 +22,6 @@ type Props = {
   registerHostRef: (tabId: string, el: HTMLDivElement | null) => void;
   onToggleQuickList: () => void;
   onOpenLocalTerminal: (kind: LocalTerminalKind) => void;
-  onResizeStart: (event: React.PointerEvent<HTMLDivElement>) => void;
   onSelectTab: (tab: TerminalTab) => void;
   onCopySession: (tab: TerminalTab) => void;
   onReorderTabs: (draggedId: string, targetId: string) => void;
@@ -44,16 +39,9 @@ type Props = {
   onOpenSavedLog: (path: string) => void;
   onOpenWorkspaceManager: () => void;
   onOpenQueue: () => void;
-  onToggleMaximized: () => void;
-  onClose: () => void;
-  onRestore: () => void;
 };
 
 export function TerminalWorkspace({
-  open,
-  height,
-  titlebarHeight,
-  maximized,
   quickListOpen,
   tabs,
   activeTabId,
@@ -69,7 +57,6 @@ export function TerminalWorkspace({
   registerHostRef,
   onToggleQuickList,
   onOpenLocalTerminal,
-  onResizeStart,
   onSelectTab,
   onCopySession,
   onReorderTabs,
@@ -87,9 +74,6 @@ export function TerminalWorkspace({
   onOpenSavedLog,
   onOpenWorkspaceManager,
   onOpenQueue,
-  onToggleMaximized,
-  onClose,
-  onRestore,
 }: Props) {
   const draggedTabIdRef = useRef<string | null>(null);
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
@@ -110,13 +94,8 @@ export function TerminalWorkspace({
     };
   }, [contextMenu]);
 
-  return <div className="terminal-layer">
-    {!open && <button className="terminal-restore" onClick={onRestore} aria-label="Restore terminal">
-      Terminal <ChevronUpIcon size={12} />
-    </button>}
-    {open && maximized && <div className="terminal-resize-handle terminal-maximized-resize-handle" style={{ top: `${titlebarHeight}px` }} onPointerDown={onResizeStart} role="separator" aria-label="Resize terminal" />}
-    <section className={`terminal-dock${maximized ? " terminal-maximized" : ""}${open ? "" : " terminal-collapsed"}`} style={{ top: maximized ? `${titlebarHeight}px` : undefined, height: !open ? "0px" : maximized ? undefined : `${height}px` }} aria-label="Terminal panel" aria-hidden={!open}>
-    {!maximized && <div className="terminal-resize-handle" onPointerDown={onResizeStart} role="separator" aria-label="Resize terminal" />}
+  return <div className="terminal-embedded">
+    <section className="terminal-dock">
     <header className="terminal-header">
       <div className="terminal-tabs">
         <button className={quickListOpen ? "active" : ""} aria-pressed={quickListOpen} onClick={onToggleQuickList}>
@@ -190,8 +169,6 @@ export function TerminalWorkspace({
       <div className="terminal-actions">
         <button onClick={onOpenWorkspaceManager}>Workspace Manager</button>
         <button onClick={onOpenQueue}>Transfer Queue ({activeQueueCount})</button>
-        <button aria-label={maximized ? "Restore terminal size" : "Maximize terminal"} aria-pressed={maximized} onClick={onToggleMaximized}>{maximized ? <CollapseIcon /> : <ExpandIcon />}</button>
-        <button aria-label="Collapse terminal" onClick={onClose}><ChevronDownIcon /></button>
       </div>
     </header>
     <div className="terminal-body">

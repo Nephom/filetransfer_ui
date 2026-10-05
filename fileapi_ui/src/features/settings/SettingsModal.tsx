@@ -4,6 +4,7 @@ import { Dropdown } from "../../ui/Dropdown";
 import { ChevronLeftIcon, ChevronRightIcon, CloseIcon, WarningIcon } from "../../ui/icons";
 import { accentCollidesWithSemanticColor, themePresets, type ThemePreset } from "../../styles/theme";
 import { formatSize } from "../../format-utils";
+import { WallpaperSettings } from "../../pane/WallpaperSettings";
 import { defaultDesktopSettings, type DesktopSettings, type OperationStorageInfo, type SettingsPanel } from "./settings-contracts";
 
 type SettingsModalProps = {
@@ -142,19 +143,20 @@ export function SettingsModal({
           );
         })()}
       </section>
+      <WallpaperSettings />
       <section className="settings-section">
         <h3>Interface features</h3>
         <label className="settings-check">
           <input type="checkbox" checked={desktopSettings.restApiModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, restApiModeEnabled: event.target.checked }))} />
-          <span><strong>Enable REST API mode</strong><small>Show the REST API workspace and its mode switcher.</small></span>
+          <span><strong>Enable REST API mode</strong><small>Show RestAPI in the Functions menu.</small></span>
         </label>
         <label className="settings-check">
           <input type="checkbox" checked={desktopSettings.proxmoxVncModeEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, proxmoxVncModeEnabled: event.target.checked }))} />
-          <span><strong>Enable Proxmox VNC mode</strong><small>Show the Proxmox VNC workspace and its mode switcher.</small></span>
+          <span><strong>Enable Proxmox VNC mode</strong><small>Show VNC in the Functions menu.</small></span>
         </label>
         <label className="settings-check">
           <input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} />
-          <span><strong>Use collapse controls instead of split resizebars</strong><small>Apply the main collapse/restore pane controls globally in Location, REST API, and VNC. LOCAL's internal tree controls are unchanged.</small></span>
+          <span><strong>Use collapse controls instead of split resizebars</strong><small>Apply the main collapse/restore pane controls in the RestAPI and VNC windows. Location windows and LOCAL's internal tree controls are unchanged.</small></span>
         </label>
         <label className="settings-check">
           <input type="checkbox" checked={desktopSettings.bracketedPasteControlEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, bracketedPasteControlEnabled: event.target.checked }))} />

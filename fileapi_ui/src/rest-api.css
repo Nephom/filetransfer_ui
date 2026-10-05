@@ -1,23 +1,13 @@
-.mode-switcher { display: flex; flex: 0 0 auto; align-items: center; gap: var(--space-2); width: fit-content; max-width: 100%; min-width: 0; margin-left: 0; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel); }
-.mode-buttons { display: flex; flex: 0 0 auto; gap: var(--space-1); }
-.mode-switch-button { display: inline-flex; flex: 0 0 auto; min-width: 0; align-items: center; justify-content: center; gap: var(--space-2); min-height: var(--control-height-mobile); padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 999px; color: var(--color-text); background: var(--color-bg); cursor: pointer; font-size: var(--ui-small-font-size, var(--font-size-small)); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-.mode-switch-button span { margin-left: 0; }
-.mode-switch-button { gap: var(--space-1); }
-.mode-switch-button:hover, .mode-switch-button.selected { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 15%, var(--color-bg-panel-strong)); }
 .mode-switch-dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: var(--color-text-muted); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-text-muted) 16%, transparent); }
 .rest-active .mode-switch-dot { background: var(--color-success); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 20%, transparent), 0 0 10px color-mix(in srgb, var(--color-success) 35%, transparent); }
 .location-active .mode-switch-dot { background: var(--color-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 18%, transparent); }
 .vnc-active .mode-switch-dot { background: var(--color-warning); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-warning) 20%, transparent), 0 0 10px color-mix(in srgb, var(--color-warning) 35%, transparent); }
 .workspace-select-wrap { display: flex; flex: 1 1 0; align-items: center; gap: var(--space-2); min-width: 0; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: 5px; background: var(--color-bg-panel); }
 .workspace-select { min-width: 0; max-width: none; min-height: var(--control-height-mobile); padding: var(--space-1) var(--space-2); border: 0; border-radius: 4px; color: var(--color-text); background: transparent; cursor: pointer; font-size: var(--ui-font-size, var(--font-size-base)); font-weight: 600; }
-.mode-switcher .location-control { flex: 1 1 0; }
-.mode-switcher .location-select,
-.mode-switcher .workspace-select { width: 100%; flex: 1 1 auto; }
 .workspace-select:focus-visible { outline: 1px solid var(--color-primary); outline-offset: 2px; }
-.rest-mode .commandbar { display: flex; align-items: center; }
-.rest-mode .commandbar > :not([data-context-picker="true"]):not([data-rest-toolbar="true"]) { display: none; }
-.rest-mode .commandbar > [data-rest-toolbar="true"] { order: 1; flex: 0 1 auto; min-width: 0; margin: 0; padding: var(--space-2) var(--space-3); overflow: visible; }
-.rest-mode .commandbar > [data-context-picker="true"] { order: 2; margin-left: auto; }
+.rest-window .commandbar { display: flex; align-items: center; }
+.rest-window .commandbar > [data-rest-toolbar="true"] { order: 1; flex: 0 1 auto; min-width: 0; margin: 0; padding: var(--space-2) var(--space-3); overflow: visible; }
+.rest-window .commandbar > [data-context-picker="true"] { order: 2; margin-left: auto; }
 .rest-workspace { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; gap: var(--space-3); padding: var(--space-3) var(--space-3) var(--space-3); }
 .rest-entry-pane { display: flex; flex: 0 0 270px; flex-direction: column; min-width: 0; min-height: 0; padding: var(--space-3) var(--space-2); overflow: hidden; border-right: 1px solid var(--color-border); background: var(--color-bg-panel); }
 .rest-entry-pane-shell { display: flex; flex: 0 0 380px; min-width: clamp(180px, 20vw, 220px); min-height: 0; overflow: hidden; }
@@ -269,13 +259,13 @@
 @media (max-width: 600px) { .rest-bios-grid { grid-template-columns: 1fr; } }
 
 /* Mobile profile is a readable, mouse-friendly compact workspace, not a touch-only mode. */
-.explorer.ui-layout-mobile .rest-workspace { gap: var(--space-2); padding: var(--space-2); }
-.explorer.ui-layout-mobile .rest-entry-pane-shell { flex-basis: var(--pane-min-size-mobile); }
-.explorer.ui-layout-mobile .rest-entry-pane { flex-basis: calc(var(--pane-min-size-mobile) - var(--space-4)); padding: var(--space-3) var(--space-3); }
-.explorer.ui-layout-mobile .rest-entry { min-height: var(--control-height-mobile-lg) !important; padding: var(--space-2) !important; }
-.explorer.ui-layout-mobile .rest-entry-copy strong { font-size: var(--ui-font-size); }
-.explorer.ui-layout-mobile .rest-entry-copy small { font-size: var(--ui-small-font-size); overflow-wrap: anywhere; white-space: normal; }
-.explorer.ui-layout-mobile .rest-entry-choice { display: inline-flex; width: 100%; margin-top: 10px; }
+
+
+
+
+
+
+
 /* T-219: this used to be `display: none`, hiding the whole per-entry row
  * list (and with it, the only way to reach Edit/Remove) whenever Large
  * profile/mobile layout was active. Edit/Remove now live behind the
@@ -283,21 +273,14 @@
  * always-visible text buttons, so the list fits this narrower pane width
  * fine and can stay visible -- MobileChoiceMenu (.rest-entry-choice)
  * above is left untouched as the existing quick-switch shortcut. */
-.explorer.ui-layout-mobile .rest-reader-heading h1 { font-size: var(--mobile-ui-heading-font, var(--font-size-heading)); }
-.explorer.ui-layout-mobile .rest-auth-fields,
-.explorer.ui-layout-mobile .rest-login-config { grid-template-columns: 1fr; }
-.explorer.ui-layout-mobile .rest-url-row { flex-wrap: wrap; }
-.explorer.ui-layout-mobile .rest-url-row input { flex-basis: calc(100% - clamp(78px, 9vw, 93px)); }
-.explorer.ui-layout-mobile .rest-action-button,
-.explorer.ui-layout-mobile .rest-link-button { min-height: var(--control-height-mobile-lg) !important; }
-.explorer.ui-layout-mobile .rest-response { min-height: var(--pane-min-size-mobile); }
 
-@media (max-width: 720px), (max-height: 520px) {
-  .explorer.ui-layout-mobile .rest-workspace { flex-direction: column; overflow: auto; }
-  .explorer.ui-layout-mobile .rest-entry-pane-shell { order: 2; flex: 0 0 auto; max-height: min(34vh, 250px); }
-  .explorer.ui-layout-mobile .rest-entry-pane { flex: 0 0 auto; border-right: 0; border-top: 1px solid var(--color-border); }
-  .explorer.ui-layout-mobile .rest-reader { order: 1; min-height: 0; overflow: visible; }
-}
+
+
+
+
+
+
+
 .rest-reader[data-raw-request-open="false"] > .rest-url-row, .rest-reader[data-raw-request-open="false"] > .rest-body-editor, .rest-reader[data-raw-request-open="false"] > .rest-query-editor { display: none; }
 .rest-hardware-dialog:has(#firmware-title) .rest-hardware-toolbar > button:not(:first-of-type) { display: none; }
 .rest-hardware-dialog:has(#firmware-title) > .modal-actions > .danger { font-size: 0; }

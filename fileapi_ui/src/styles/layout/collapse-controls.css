@@ -26,8 +26,8 @@
 .desktop-workspace.pane-collapse-right.split-workspace .local-pane { flex: 1 1 auto; }
 .desktop-workspace.pane-collapse-left .location-main-pane-collapse-controls button:first-child,
 .desktop-workspace.pane-collapse-right .location-main-pane-collapse-controls button:last-child { opacity: .38; }
-.explorer.ui-layout-mobile .location-main-pane-collapse-controls { flex-basis: calc(var(--control-height-mobile-lg) + var(--space-2)); }
-.explorer.ui-layout-mobile .location-main-pane-collapse-controls button { width: var(--control-height-mobile-lg); min-width: var(--control-height-mobile-lg); min-height: var(--control-height-mobile-lg) !important; font-size: var(--icon-size-lg) !important; }
+
+
 
 /* Sessions and the queue must float over the workspace and terminal, never join their flex flow. */
 .modal-cover { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: var(--space-5); background: rgba(0, 6, 14, .72); backdrop-filter: blur(7px); }

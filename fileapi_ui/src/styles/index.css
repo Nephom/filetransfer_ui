@@ -26,7 +26,7 @@
  *
  * Component-scoped CSS that a single feature file imports directly next to
  * its own .tsx (log-view.css, proxmox-vnc.css, rest-api.css,
- * ui/dropdown.css, ui/mobile-choice-menu.css, help/help.css) intentionally
+ * ui/dropdown.css, ui/overflow-menu.css, help/help.css) intentionally
  * stays colocated with that component instead of moving here -- this
  * file's contract is for *global* stylesheets only, i.e. anything wired
  * through this one ordered entry point rather than a component's own
@@ -65,10 +65,9 @@
 @import "./layout/buttons.css";
 @import "./desktop-ui.css";
 @import "./starship-bridge.css";
-@import "./mode-switcher.css";
 @import "./vnc-interactions.css";
 @import "./commandbar.css";
-@import "./mobile-ui.css";
+@import "./pane-style.css";
 
 @import "./theme/base.css";
 @import "./theme/location-controls.css";

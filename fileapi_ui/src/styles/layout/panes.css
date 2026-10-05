@@ -94,25 +94,20 @@
    profile now just reuses it instead of carrying its own now-redundant
    column layout. */
 
-.explorer.ui-layout-mobile .split-workspace { gap: var(--space-2); overflow: auto; }
+
 /* max-width: 100% overrides the desktop-only T-209 safety-net ceiling
    above -- Mobile/Large's split-workspace stacks LOCAL/REMOTE vertically
    (each taking the full row width in turn), so the desktop assumption of
    "leave 300px for a horizontal sibling" does not apply here. */
-.explorer.ui-layout-mobile .split-workspace .local-pane { min-width: var(--pane-min-size-mobile); max-width: 100%; flex: 0 0 100%; min-height: var(--pane-min-size-mobile); }
-.explorer.ui-layout-mobile .split-workspace .desktop-folder-tree { flex: 0 0 100%; }
-.explorer.ui-layout-mobile .local-pane-actions { flex-wrap: wrap; gap: var(--space-2); }
-.explorer.ui-layout-mobile .local-pane-actions button { min-height: var(--control-height-mobile); }
-.explorer.ui-layout-mobile .file-table th { height: var(--file-table-header-height-mobile); font-size: var(--ui-small-font-size); }
-.explorer.ui-layout-mobile .file-row { height: var(--control-height-mobile-lg); }
-.explorer.ui-layout-mobile .file-row td { padding-inline: var(--file-row-padding-inline-mobile); }
+
+
+
+
+
+
+
 
 /* Large changes control density, not the two-pane orientation. Keep the
    workspace horizontal at the 937x588-sized window used by the desktop
    layout; stack only when the width is genuinely too narrow for both panes. */
-@media (max-width: 720px), (max-height: 520px) {
-  .explorer.ui-layout-mobile .desktop-workspace { flex-direction: column; }
-  .explorer.ui-layout-mobile .split-workspace { flex-direction: column; }
-  .explorer.ui-layout-mobile .split-workspace .local-pane { flex: 0 0 auto; min-height: var(--pane-min-size-mobile); }
-  .explorer.ui-layout-mobile .desktop-folder-tree { flex: 0 0 auto; max-height: var(--folder-tree-max-height-mobile-narrow); }
-}
+

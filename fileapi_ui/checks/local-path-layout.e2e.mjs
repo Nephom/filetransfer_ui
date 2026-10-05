@@ -17,7 +17,7 @@ const metrics = [];
 try {
   for (const viewport of [{ width: 1440, height: 900 }, { width: 937, height: 588 }]) {
     await page.setViewportSize(viewport);
-    for (const profile of ["desktop", "mobile"]) {
+    for (const profile of ["desktop"]) {
       for (const width of [220, 300, 450]) {
         for (const longNames of [false, true]) {
           const root = longNames ? `//server/${"LongShareName".repeat(12)}` : "HOMEDIR/";
@@ -27,8 +27,8 @@ try {
           // Match renderLocalPane/renderLocalBreadcrumbs and the REMOTE heading hierarchy.
           // Inline flex-basis is the same pane-width state applied by the application.
           await page.setContent(`<!doctype html><html><head><style>${css}</style></head><body>
-            <div class="explorer ui-layout-${profile}">
-              <div class="desktop-workspace split-workspace">
+            <div class="explorer">
+              <div class="desktop-workspace">
                 <section class="local-pane" aria-label="Local files" style="flex-basis:${width}px">
                   <div class="local-pane-heading"><span class="sidebar-label">LOCAL</span>
                     <div class="pane-breadcrumbs crumbs" aria-label="LOCAL path">${crumbs}</div>
@@ -102,7 +102,7 @@ try {
               `${label}: breadcrumb button stays within bar`);
             assert.equal(button.textOverflow, "ellipsis");
           }
-          metrics.push({ viewport: `${viewport.width}x${viewport.height}`, profile: profile === "mobile" ? "Large" : "Auto",
+          metrics.push({ viewport: `${viewport.width}x${viewport.height}`, profile: "Desktop",
             paneBasis: width, paneOuter: actual.pane.width, names: longNames ? "long" : "short", before: +before.local.width.toFixed(3),
             after: +actual.local.width.toFixed(3), gutter: +(actual.contentRight - actual.local.right).toFixed(3) });
         }

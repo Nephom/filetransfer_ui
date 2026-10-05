@@ -53,9 +53,9 @@
    so Location was the only mode still switching to a top/bottom layout at
    normal desktop window sizes. Moved the flex-direction: column switch
    into that same narrow-window media query below to match. */
-.explorer.ui-layout-mobile .desktop-folder-tree { order: 0; flex: 0 0 auto; width: auto; max-height: calc(4 * var(--control-height-mobile) + var(--space-3)); }
-.explorer.ui-layout-mobile .desktop-content { margin-left: 0; }
-.explorer.ui-layout-mobile .navigation { flex-wrap: wrap; }
-.explorer.ui-layout-mobile .remote-navigation-row { flex-wrap: wrap; }
-.explorer.ui-layout-mobile .remote-navigation-row .pane-breadcrumbs, .explorer.ui-layout-mobile .remote-navigation-row .search-control { flex-basis: 100%; width: 100%; }
-.explorer.ui-layout-mobile .search-control { order: 3; width: 100%; flex-basis: 100%; }
+
+
+
+
+
+

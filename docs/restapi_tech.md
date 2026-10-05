@@ -176,8 +176,7 @@ Effects reset path/request/response when the active entry or auth mode changes; 
 
 | Selector family | Responsibility |
 |---|---|
-| `.mode-switcher`, `.mode-switch-button`, `.rest-active` | Global mode switch styling and active REST status dot. |
-| `.rest-mode .commandbar` | Hides Location command actions and reserves slots for REST toolbar/context picker. |
+| `.rest-window .commandbar` | Reserves slots for the REST toolbar and context picker inside the RestAPI window's own command bar (the toolbar is portaled into the `toolbarHost` prop). |
 | `.rest-workspace`, `.rest-entry-pane-shell`, `.rest-entry-pane`, `.rest-entry-*` | Two-column workspace, resizable entry sidebar, active rows, empty state, Add, and mobile quick switcher. |
 | `.rest-main-pane-collapse-controls` | 48px collapse/restore rail used instead of `PaneResizeHandle` when the global preference is enabled. |
 | `.rest-reader`, `.rest-reader-heading`, `.rest-reader-tools`, `.rest-session-status` | Main reader surface, title, vendor capsule, and authentication status. |
@@ -190,19 +189,18 @@ Effects reset path/request/response when the active entry or auth mode changes; 
 | `.rest-response*`, `.rest-view-tabs`, `.rest-code`, `.rest-json-*`, `.rest-headers` | Resizable response panel and Pretty/Raw/Headers views. |
 | `.rest-hardware-*`, `.hardware-summary-*`, `.rest-resource-catalog*` | Resizable inventory/resource dialogs, tables, raw JSON sections, and exports. |
 | `.rest-iml-*`, `.rest-power-*`, `.rest-bios-*`, `.rest-firmware-*`, `.rest-reset-*` | Tool-specific controls and fixed live IML terminal. |
-| `.explorer.ui-layout-mobile .rest-*` | Large profile sizing and compact single-column behaviour; this is not a phone breakpoint. |
 
-The stylesheet has responsive rules at 900px, 720px, 600px, and 540px. At 720px the reader is shown first and the entry list moves below it; at 540px the heading/tools stack. The explicit Large profile uses the same layout until a narrow viewport/short height also requires stacking. `ui-layout-mobile` means the project’s Large profile, not a separate phone design.
+The stylesheet has responsive rules at 900px, 720px, 600px, and 540px. At 720px the reader is shown first and the entry list moves below it; at 540px the heading/tools stack. The Large profile (`ui-layout-mobile`) was removed, so these media queries are the only source of stacking.
 
 ### CSS dependencies and layering
 
 REST mode also consumes shared styles loaded by `styles/index.css`:
 
 - `tokens.css`, `starship-bridge.css`, and `styles/theme/*.css`: tokens, palette, and final theme overrides;
-- `desktop-ui.css`, `mobile-ui.css`, `mode-switcher.css`, `commandbar.css`: shell, profile, mode, and command bar;
+- `desktop-ui.css`, `commandbar.css`, `pane-style.css`: shell, command bar, and Pane window frame;
 - `location-control.css`, `context-picker.css`, `settings.css`, `account-menu.css`, `tls.css`: shared shell controls and modal semantics;
 - `styles/layout/buttons.css`, `workspace-dialogs.css`, `collapse-controls.css`, and `panes.css`: shared controls and pane conventions;
-- `ui/dropdown.css`, `ui/mobile-choice-menu.css`, `ui/entry-actions-menu.css`: shared popup and entry action controls.
+- `ui/dropdown.css`, `ui/overflow-menu.css`, `ui/entry-actions-menu.css`: shared popup and entry action controls.
 
 Do not duplicate global token, dropdown, popup, or modal rules in `rest-api.css`. Feature-specific selectors belong here; cross-feature rules belong in the shared module or in the appropriate final theme override. `rest-api.css` is loaded before no additional REST theme overrides because the theme layer is already loaded last through `styles/index.css`.
 

@@ -19,7 +19,7 @@
   white-space: nowrap;
 }
 
-.explorer.ui-layout-desktop .commandbar > button.primary {
+.explorer .commandbar > button.primary {
   max-width: 12ch;
 }
 

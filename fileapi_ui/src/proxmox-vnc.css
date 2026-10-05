@@ -1,6 +1,5 @@
-.vnc-mode .commandbar { display: flex; align-items: center; }
-.vnc-mode .commandbar > :not([data-context-picker="true"]):not([data-direct-vnc-action="true"]) { display: none; }
-.vnc-mode .commandbar > [data-context-picker="true"] { margin-left: 0; }
+.vnc-window .commandbar { display: flex; align-items: center; }
+.vnc-window .commandbar > [data-context-picker="true"] { margin-left: 0; }
 .direct-vnc-card { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--ui-button-height); padding: var(--space-1) var(--space-3); border: 1px solid color-mix(in srgb, var(--color-warning) 45%, var(--color-border)); border-radius: var(--radius-sm); color: var(--color-text); background: linear-gradient(135deg, color-mix(in srgb, var(--color-warning) 18%, var(--color-bg-panel-strong)), var(--color-bg-panel)); cursor: pointer; text-align: left; }
 .direct-vnc-card:hover, .direct-vnc-card.active { border-color: var(--color-warning); box-shadow: var(--shadow-inset), 0 0 14px color-mix(in srgb, var(--color-warning) 22%, transparent); }
 .direct-vnc-card > span:last-child { display: grid; gap: 1px; }
@@ -194,34 +193,29 @@
 .vnc-main-pane-collapse-controls button:disabled { cursor: not-allowed; opacity: .38; }
 .vnc-workspace.vnc-entry-pane-collapsed .vnc-entry-pane-shell { display: none; }
 
-.explorer.ui-layout-mobile .vnc-workspace { gap: var(--space-2); padding: var(--space-2); }
-.explorer.ui-layout-mobile .vnc-entry-pane-shell { flex-basis: var(--pane-min-size-mobile); }
-.explorer.ui-layout-mobile .vnc-entry-pane { flex-basis: calc(var(--pane-min-size-mobile) - var(--space-4)); padding: var(--space-3) var(--space-3); }
-.explorer.ui-layout-mobile .vnc-entry { min-height: var(--control-height-mobile-lg); padding: var(--space-2) !important; }
-.explorer.ui-layout-mobile .vnc-entry-copy strong { font-size: var(--ui-font-size); }
-.explorer.ui-layout-mobile .vnc-entry-copy small { font-size: var(--ui-small-font-size); overflow-wrap: anywhere; white-space: normal; }
-.explorer.ui-layout-mobile .vnc-auth-grid { grid-template-columns: 1fr; }
-.explorer.ui-layout-mobile .vnc-screen-shell { min-height: var(--pane-min-size-mobile); }
+
+
+
+
+
+
+
+
 /* Issue #232 follow-up: Large profile enlarges every control's touch
  * target (--control-height-mobile-lg / --icon-size-lg tokens), so the
  * left-edge drawer handle and its button stack need to grow to match --
  * otherwise the handle stays thumb-unfriendly while everything else in
  * this profile scales up. */
-.explorer.ui-layout-mobile .vnc-display-toolbar-handle { width: 28px; height: var(--control-height-mobile-lg); }
-.explorer.ui-layout-mobile .vnc-display-toolbar-handle svg { width: var(--icon-size-lg); height: var(--icon-size-lg); }
-.explorer.ui-layout-mobile .vnc-display-toolbar button { min-height: var(--control-height-mobile-lg) !important; font-size: var(--ui-font-size) !important; }
-.explorer.ui-layout-mobile .vnc-files-toolbar button { min-height: var(--control-height-mobile-lg) !important; font-size: var(--ui-font-size) !important; }
-.explorer.ui-layout-mobile .vnc-files-breadcrumb, .explorer.ui-layout-mobile .vnc-reachability-status { font-size: var(--ui-small-font-size); }
-.explorer.ui-layout-mobile .queue-item { font-size: var(--ui-small-font-size); }
 
-@media (max-width: 720px), (max-height: 520px) {
-  .explorer.ui-layout-mobile .vnc-workspace { flex-direction: column; overflow: auto; }
-  .explorer.ui-layout-mobile .vnc-entry-pane-shell { order: 2; flex: 0 0 auto; max-height: min(34vh, 250px); }
-  .explorer.ui-layout-mobile .vnc-entry-pane { flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--color-border); }
-  .explorer.ui-layout-mobile .vnc-reader { order: 1; min-height: 0; }
-}
 
-.explorer.ui-layout-mobile .vnc-entry-choice { display: inline-flex; width: 100%; margin-top: 10px; }
+
+
+
+
+
+
+
+
 /* T-219: this used to be `display: none`, hiding the whole per-entry row
  * list (and with it, the only way to reach Edit/Remove) whenever Large
  * profile/mobile layout was active. Edit/Remove now live behind the

@@ -1,63 +1,15 @@
 /* Explorer layout, part 5: the SSH terminal dock, tabs, quick list, and
  * profile selector. Split out of the former monolithic explorer-parity.css
  * (T-202 follow-up). See styles/layout/README.md. */
-.terminal-layer {
-  position: fixed;
+.terminal-embedded {
+  position: absolute;
   inset: 0;
-  z-index: 100;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
-  justify-content: flex-end;
   min-width: 0;
   min-height: 0;
-  pointer-events: none;
 }
-.terminal-layer > .terminal-restore,
-.terminal-layer > .terminal-dock,
-.terminal-layer > .terminal-maximized-resize-handle,
-.terminal-layer > .terminal-context-menu { pointer-events: auto; }
-.terminal-dock { position: relative; flex: 0 0 auto; min-height: var(--terminal-min-height-mobile); display: flex; flex-direction: column; background: var(--color-bg); border-top: 1px solid var(--color-border); box-shadow: 0 -10px 25px rgba(0, 0, 0, .2); }
-.terminal-dock { z-index: 10; }
-.terminal-dock.terminal-maximized {
-  position: absolute;
-  top: clamp(44px, calc(30px + 4vmin), 56px);
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 100;
-  width: auto;
-  height: auto !important;
-  min-height: 0;
-  margin: 0;
-}
-.terminal-dock.terminal-collapsed {
-  position: relative;
-  inset: auto;
-  z-index: 10;
-  min-height: 0;
-  height: 0 !important;
-  border-top: 0;
-  box-shadow: none;
-  overflow: hidden;
-  pointer-events: none;
-  visibility: hidden;
-}
-.terminal-resize-handle { position: absolute; top: 0; right: 0; left: 0; z-index: 20; height: var(--space-2); border-radius: var(--space-1); background: color-mix(in srgb, var(--color-border) 70%, transparent); cursor: row-resize; opacity: .9; }
-.terminal-layer > .terminal-maximized-resize-handle {
-  position: fixed;
-  top: clamp(44px, calc(30px + 4vmin), 56px);
-  right: 0;
-  left: 0;
-  z-index: 120;
-  height: var(--space-2);
-  background: var(--color-primary);
-  box-shadow: 0 0 0 1px var(--color-primary), 0 0 12px color-mix(in srgb, var(--color-primary) 65%, transparent);
-  opacity: 1;
-  pointer-events: auto;
-  touch-action: none;
-}
-.terminal-resize-handle:hover { background: var(--color-primary); }
+.terminal-dock { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--color-bg); }
 .terminal-header { display: flex; align-items: center; min-height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-3); border-bottom: 1px solid var(--color-border); }
 .terminal-tabs, .terminal-actions { display: flex; align-items: center; gap: var(--space-2); }
 /* T-219: the header used to be `justify-content: space-between` across
@@ -115,7 +67,6 @@
 .ssh-quick-list-entry-popup { flex: 0 0 auto; width: 30px; padding: var(--space-1); border: 0; border-radius: 0 4px 4px 0; background: transparent; color: var(--color-text-muted); cursor: pointer; }
 .ssh-quick-list-entry-popup:hover, .ssh-quick-list-entry-popup:focus-visible { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, transparent); outline: 0; }
 .ssh-quick-list-entry-row.active { box-shadow: inset 2px 0 var(--color-primary); }
-.terminal-maximized .terminal-resize-handle { background: var(--color-border); }
 .terminal-placeholder { align-items: flex-start; justify-content: center; color: var(--color-text-muted); }
 .terminal-placeholder p { margin: 0; }
 .terminal-inline-note { margin: 0; color: var(--color-text-muted); font-size: var(--font-size-small); }

@@ -84,7 +84,7 @@ export const helpSections: HelpSection[] = [
   {
     id: "ssh-terminal", title: "SSH Terminal", icon: "terminal", pages: [
       { id: "terminal", title: "Connect and use the terminal", summary: "Open SSH sessions and work with terminal tabs.", content: <Page><p>Select an SSH Entry and open the terminal. nFterm supports multiple tabs, reconnect-aware output, terminal resizing, disconnect, and command input. Collapse <strong>Workspaces</strong> to give the active SSH terminal the full available width. The terminal is re-fitted and the remote PTY size is updated automatically. SFTP browsing can be used alongside the terminal session.</p></Page> },
-      { id: "sftp", title: "SFTP file operations", summary: "Browse, upload, download, and manage SSH files.", content: <Page><p>Connected SSH locations support directory listing, create directory, rename, delete, archive compression/extraction, upload, download, and drag staging. Remote paths are validated before local writes.</p></Page> },
+      { id: "sftp", title: "SFTP file operations", summary: "Browse, upload, download, and manage SSH files.", content: <Page><p>Connected SSH locations support directory listing, create directory, rename, delete, archive compression/extraction (requires zip/unzip on the host), upload, download, and drag staging. Remote paths are validated before local writes.</p></Page> },
       { id: "ssh-logs", title: "SSH log packages", summary: "Save raw output, readable text, commands, and metadata.", content: <Page><p>Recordings can be saved as a package containing raw output, plain text, command log, and metadata. The package can remain local or be uploaded through a configured API Remote Session.</p></Page> },
     ],
   },

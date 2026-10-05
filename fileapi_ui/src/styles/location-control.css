@@ -24,6 +24,5 @@
 .health-dot.online { background: var(--color-success); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 18%, transparent); }
 @media (max-width: 720px) { .location-control { margin-left: auto; } .location-label { display: none; } .location-select, .location-single { min-width: 78px; max-width: 120px; } }
 
-.explorer.ui-layout-mobile .location-select,
-.explorer.ui-layout-mobile .location-single { min-height: var(--ui-control-height); min-width: clamp(100px, 12vw, 120px); max-width: clamp(200px, 24vw, 240px); font-size: var(--ui-font-size); }
-.explorer.ui-layout-mobile .location-label { font-size: var(--ui-small-font-size); }
+
+

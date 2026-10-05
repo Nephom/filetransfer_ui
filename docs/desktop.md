@@ -51,7 +51,12 @@ outside HOME. Unix non-elevated writes remain HOME-scoped. Expanding readable
 upload sources does not expand download or recording-save destination rights.
 
 LOCAL browser create, rename, delete, move, compress, extract, and undo mutations
-remain disabled. External editing is different: the viewer's Edit action opens
+are available inside the user's home directory (or anywhere when the app is
+elevated). `local_compress_paths` and `local_extract_archive` run on a blocking
+worker; extraction aborts and removes its partial output once more than 8 GiB
+or 200,000 entries have actually been written. Compress/Extract on a REMOTE
+pane exist for SSH connections only (they need `zip`/`unzip` on the host) and are
+hidden for API Remotes. External editing is different: the viewer's Edit action opens
 the original file in Notepad on Windows, without an app-level writability gate,
 elevation, or automatic copy. The OS/editor decides whether a save is allowed;
 this does not bypass Windows ACLs. The built-in viewer still has its existing

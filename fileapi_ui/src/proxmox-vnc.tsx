@@ -4,7 +4,6 @@ import "./proxmox-vnc.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PaneResizeHandle } from "./resizable-pane";
-import { MobileChoiceMenu } from "./ui/MobileChoiceMenu";
 import { EntryActionsMenu } from "./ui/EntryActionsMenu";
 import { ChevronLeftIcon, ChevronRightIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
@@ -277,7 +276,6 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditE
         : <span className="sidebar-label">PROXMOX VNC ENTRIES</span>}
       <button type="button" className="vnc-entry-add" onClick={onAddEntry}>+ Add</button>
     </div>
-    <MobileChoiceMenu className="vnc-entry-choice" label="VNC entry" currentId={activeEntryId} options={entries.map((entry) => ({ id: entry.id, label: entry.name }))} onSelect={onSelectEntry} />
     <div className="vnc-entry-list">
       {!entries.length && <div className="vnc-empty">No Proxmox VNC entries yet. Use the Add button above to create one.</div>}
       {entries.map((entry) => <div className="vnc-entry-row" key={entry.id}>

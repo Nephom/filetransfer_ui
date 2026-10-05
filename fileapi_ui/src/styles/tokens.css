@@ -32,31 +32,13 @@
   --button-height-base: var(--control-height-base);
   --control-gap-base: clamp(4.8px, calc(3.2px + 0.2vmin), 8px);
   --panel-padding-base: clamp(7.2px, calc(5.6px + 0.32vmin), 12px);
+  /* Fixed comfortable control height (the old `-mobile` suffix is historic;
+     there is no Large profile any more). */
   --control-height-mobile: 32px;
-  /* Roomier fixed mobile/Large touch-target height used by dropdown options
-     and other "comfortable" mobile controls that were already 44px before
-     token conversion (kept as its own token instead of forcing every 44px
-     control down to the 40px floor). */
+  /* Roomier fixed control height used by dropdown options. */
   --control-height-mobile-lg: 35.2px;
-  --font-size-mobile-heading: 22.4px;
-  /* Narrow-window (<=900x640) Mobile/Large floor is intentionally smaller
-     than the standard Mobile/Large floor above -- it only affects text/
-     controls not already pinned by styles/mobile-ui.css's !important
-     text-floor rules, which stay at font-size-mobile-base/-small
-     regardless of window width. */
-  --font-size-mobile-narrow-small: 9.6px;
-  --terminal-min-height-mobile: 144px;
-  /* Location Split-mode LOCAL pane minimum footprint under Mobile/Large,
-     where LOCAL/REMOTE stack vertically instead of sitting side by side. */
+  /* Minimum footprint of a Location pane inside its window. */
   --pane-min-size-mobile: 208px;
-  /* Mobile/Large's file-table header row height and stacked-row inline
-     padding; kept as their own tokens (not reused from control-height-
-     mobile-lg/space-3) because they were already distinct fixed values
-     before token conversion. */
-  --file-table-header-height-mobile: 33.6px;
-  --file-row-padding-inline-mobile: 8px;
-  /* Narrow-window (<=900x640) folder-tree ceiling under Mobile/Large. */
-  --folder-tree-max-height-mobile-narrow: 176px;
   --control-focus-ring: 2px solid var(--color-primary);
   --icon-size: 14.4px;
   --icon-size-lg: 27.2px;

@@ -5,7 +5,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { PaneResizeHandle } from "./resizable-pane";
 import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, CloseIcon } from "./ui/icons";
 import { Dropdown } from "./ui/Dropdown";
-import { MobileChoiceMenu } from "./ui/MobileChoiceMenu";
 import { EntryActionsMenu } from "./ui/EntryActionsMenu";
 import { ImlMonitorController } from "./iml-monitor";
 import { monitorRedfishTask } from "./rest-task";
@@ -25,6 +24,8 @@ type Props = {
   activeEntryId: string;
   secrets: Record<string, RestApiSecret>;
   sessionHeaders: Record<string, string>;
+  /** The window's toolbar element; the REST tools are portaled into it. */
+  toolbarHost: HTMLElement | null;
   collapseMainPaneEnabled: boolean;
   onSelectEntry: (id: string) => void;
   onChangeEntries: (entries: RestApiEntry[]) => void;
@@ -329,7 +330,6 @@ function RestEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEdit
       <span className="sidebar-label">REST API ENTRIES</span>
       <button type="button" className="rest-entry-add" onClick={onAddEntry}>+ Add</button>
     </div>
-    <MobileChoiceMenu className="rest-entry-choice" label="REST API entry" currentId={activeEntryId} options={entries.map((entry) => ({ id: entry.id, label: entry.name }))} onSelect={onSelectEntry} />
     <div className="rest-entry-list">
       {!entries.length && <div className="rest-empty">No REST API entries yet. Use the Add button above to create one.</div>}
       {entries.map((entry) => <div className="rest-entry-row" key={entry.id}>
@@ -477,7 +477,7 @@ export function RestApiWorkspace(props: Props) {
   const [entryPaneWidth, setEntryPaneWidth] = useState(() => Number(localStorage.getItem("fileapi-rest-entry-pane-width")) || 380);
   const [entryPaneCollapsed, setEntryPaneCollapsed] = useState(false);
   const entryPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null);
+  const toolbarHost = props.toolbarHost;
   const restDialogDragRef = useRef<RestDialogDragSession | null>(null);
 
   const stopEntryPaneResize = () => {
@@ -500,10 +500,6 @@ export function RestApiWorkspace(props: Props) {
   useEffect(() => {
     localStorage.setItem("fileapi-rest-entry-pane-width", String(entryPaneWidth));
   }, [entryPaneWidth]);
-  useEffect(() => {
-    setToolbarHost(document.querySelector<HTMLElement>(".commandbar"));
-    return () => setToolbarHost(null);
-  }, []);
   useEffect(() => {
     const stopDragging = () => {
       const active = restDialogDragRef.current;
@@ -1850,7 +1846,7 @@ export function RestApiWorkspace(props: Props) {
           </div>}
         </nav>, toolbarHost)}
      <section className="rest-reader" aria-label="REST API reader" data-raw-request-open={rawRequestOpen}>
-         <div className="rest-reader-heading"><div><span className="eyebrow">REST API mode · {props.workspaceName}</span><h1>{entry?.name || "REST API reader"}</h1></div><div className="rest-reader-tools"><MobileChoiceMenu className="rest-vendor-choice" label="REST toolbar" currentId={vendor} options={[{ id: "hpe", label: "HPE" }, { id: "openbmc", label: "OpenBMC" }]} onSelect={(id) => launchVendor(id as RestVendor)} /><div className="rest-vendor-capsule" role="group" aria-label="REST toolbar vendor"><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => launchVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => launchVendor("openbmc")}>OpenBMC</button></div><span className="rest-session-status">{entry && (session["X-Auth-Token"] || secret.cookie) ? "Authenticated" : "Not authenticated"}</span></div></div>
+         <div className="rest-reader-heading"><div><span className="eyebrow">REST API mode · {props.workspaceName}</span><h1>{entry?.name || "REST API reader"}</h1></div><div className="rest-reader-tools"><div className="rest-vendor-capsule" role="group" aria-label="REST toolbar vendor"><button type="button" className={vendor === "hpe" ? "selected" : ""} onClick={() => launchVendor("hpe")}>HPE</button><button type="button" className={vendor === "openbmc" ? "selected" : ""} onClick={() => launchVendor("openbmc")}>OpenBMC</button></div><span className="rest-session-status">{entry && (session["X-Auth-Token"] || secret.cookie) ? "Authenticated" : "Not authenticated"}</span></div></div>
       {entry && <>
         <section className={`rest-auth-panel${authOpen ? " open" : ""}`}>
              <div className="rest-section-toggle"><button type="button" onClick={() => { if (authOpen) { setSessionHelpOpen(false); setTokenPathHelpOpen(false); } setAuthOpen((value) => !value); }} aria-label={`${authOpen ? "Collapse" : "Expand"} Authentication`} title={`${authOpen ? "Collapse" : "Expand"} Authentication`}><span>Authentication</span><span aria-hidden="true">{authOpen ? "−" : "+"}</span></button></div>
