@@ -160,7 +160,7 @@ export function SettingsModal({
         </label>
         <label className="settings-check">
           <input type="checkbox" checked={desktopSettings.collapseMainPaneEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, collapseMainPaneEnabled: event.target.checked }))} />
-          <span><strong>Use collapse controls instead of split resizebars</strong><small>Apply the main collapse/restore pane controls in the RestAPI and VNC windows. Location windows and LOCAL's internal tree controls are unchanged.</small></span>
+          <span><strong>Use collapse controls instead of split resizebars</strong><small>Apply collapse/restore controls to the Remote Folders pane and the RestAPI/VNC entry panes. LOCAL's internal tree controls are unchanged.</small></span>
         </label>
         <label className="settings-check">
           <input type="checkbox" checked={desktopSettings.bracketedPasteControlEnabled} onChange={(event) => setDesktopSettings((current) => ({ ...current, bracketedPasteControlEnabled: event.target.checked }))} />

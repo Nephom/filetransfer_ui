@@ -66,7 +66,7 @@ Both kinds of SSH terminal are the same component logic: `useSshEntryTerminal` (
 
 The cookie/origin, Location revision, reservation, and server cancellation contracts in this document apply to the Location API Remote. They do not replace REST API workspace authentication, Proxmox VNC sessions, or SSH/SFTP credentials and executors. LOCAL browsing follows native OS access checks. Sharing a shell or secret-storage command does not merge these window boundaries.
 
-`collapseMainPaneEnabled` replaces the resize bars with explicit collapse/restore controls in the RestAPI and VNC windows. LOCAL's internal tree resize remains available.
+`collapseMainPaneEnabled` replaces the splitter with explicit collapse/restore controls in the Remote window's Folders pane and the entry panes in the RestAPI and VNC windows. Collapsing Remote Folders preserves its configured width for restore. LOCAL's internal tree resize remains available.
 
 The command bar of each Location window measures its rendered action buttons with `ResizeObserver` (`useCommandbarOverflow`). Action buttons retain their intrinsic label width during measurement so flex-shrink cannot hide an overflow condition. When the available width would truncate an action label, it keeps Upload visible and moves the remaining file actions, including Refresh, into the accessible `More actions` menu instead of rendering an ellipsis label.
 

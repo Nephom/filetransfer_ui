@@ -35,6 +35,7 @@
 .commandbar .view-switch button { border: 0; border-radius: 0; padding: var(--space-2) var(--space-2); }
 .commandbar .view-switch button.active { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 35%, var(--color-bg-panel-strong)); box-shadow: inset 0 -2px var(--color-primary); }
 .file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(clamp(140px, 14vw, 165px), 1fr)); gap: var(--space-3); padding: var(--space-1); }
+.local-file-grid { grid-template-columns: repeat(auto-fill, minmax(min(120px, 100%), 1fr)); }
 .file-tile { display: flex; flex-direction: column; min-height: clamp(130px, 13vw, 152px); gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-bg-panel-strong); color: var(--color-text); cursor: grab; overflow: hidden; }
 .file-tile:hover { border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border)); background: var(--color-bg-panel); }
 .file-tile.selected { border-color: var(--color-primary); background: var(--color-bg-panel); box-shadow: inset 3px 0 var(--color-primary); }
@@ -53,7 +54,6 @@
    so Location was the only mode still switching to a top/bottom layout at
    normal desktop window sizes. Moved the flex-direction: column switch
    into that same narrow-window media query below to match. */
-
 
 
 

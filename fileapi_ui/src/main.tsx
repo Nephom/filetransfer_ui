@@ -727,6 +727,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [folderPaneWidth, setFolderPaneWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-folder-pane-width")) || 250,
   );
+  const [remoteFolderPaneCollapsed, setRemoteFolderPaneCollapsed] = useState(false);
   const [localTreeWidth, setLocalTreeWidth] = useState(() =>
     Number(localStorage.getItem("fileapi-local-tree-width")) || 130,
   );
@@ -3685,16 +3686,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [restBarHost, setRestBarHost] = useState<HTMLElement | null>(null);
   const [vncBarHost, setVncBarHost] = useState<HTMLElement | null>(null);
 
-  // Context pickers: the Remote window picks an API Location, the REST and
-  // VNC windows pick one of the Workspace's saved entries.
-  const remoteContextValue = activeLocation?.id || session.locationId || "No Location";
-  const remoteContextGroups: ContextPickerGroup[] = [{
-    label: "Locations",
-    options: locations.map((location) => ({ id: `location:${location.id}`, label: location.displayName, detail: location.id, selected: location.id === session.locationId })),
-  }];
-  const selectRemoteContext = (id: string) => {
-    if (id.startsWith("location:")) void selectLocation(id.slice("location:".length));
-  };
+  // REST and VNC windows pick one of the Workspace's saved entries.
   const renderEntryPicker = (kind: "rest" | "vnc") => {
     const activeId = kind === "rest" ? activeRestEntryId : activeVncEntryId;
     const entriesOf = (workspace: ManagedSession) => (kind === "rest" ? workspace.restApiEntries : workspace.proxmoxVncEntries);
@@ -3912,7 +3904,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           </button>
         </span>}
         {!commandBarOverflow && <button onClick={() => void run(refreshActivePane)} disabled={busy}>Refresh</button>}
-        {pane === "remote" && <ContextPicker label="LocationID" value={remoteContextValue} groups={remoteContextGroups} onSelect={selectRemoteContext} disabled={busy} />}
       </nav>
     );
   };
@@ -3929,8 +3920,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const renderRemoteWindow = () => (
     <div className="pane-window-content">
       {renderCommandbar("remote")}
-      <div className="desktop-workspace pane-remote-workspace">
-        <aside className="desktop-folder-tree" style={{ flexBasis: `${folderPaneWidth}px`, width: `${folderPaneWidth}px` }} onMouseDownCapture={() => setActivePane("remote")}>
+      <div className={`desktop-workspace pane-remote-workspace${desktopSettings.collapseMainPaneEnabled && remoteFolderPaneCollapsed ? " remote-folder-pane-collapsed" : ""}`}>
+        <aside aria-hidden={desktopSettings.collapseMainPaneEnabled && remoteFolderPaneCollapsed} className="desktop-folder-tree" style={{ flexBasis: `${folderPaneWidth}px`, width: `${folderPaneWidth}px` }} onMouseDownCapture={() => setActivePane("remote")}>
           <span className="sidebar-label">Folders</span>
           <div className="folder-pane">
             <div
@@ -3946,7 +3937,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
           </div>
         </aside>
-         {!!desktopSettings.collapseMainPaneEnabled && <PaneResizeHandle ariaLabel="Resize Folders and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />}
+        {desktopSettings.collapseMainPaneEnabled
+          ? <div className="remote-main-pane-collapse-controls" role="group" aria-label="Remote folder pane visibility">
+              <button type="button" onClick={() => setRemoteFolderPaneCollapsed(true)} disabled={remoteFolderPaneCollapsed} aria-label="Collapse Remote folders pane" title="Collapse Remote folders pane"><ChevronLeftIcon /></button>
+              <button type="button" onClick={() => setRemoteFolderPaneCollapsed(false)} disabled={!remoteFolderPaneCollapsed} aria-label="Restore Remote folders pane" title="Restore Remote folders pane"><ChevronRightIcon /></button>
+            </div>
+          : <PaneResizeHandle ariaLabel="Resize Folders and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />}
         <section
           className={`desktop-content ${activePane === "remote" ? "active-pane" : ""}`}
           onMouseDownCapture={() => setActivePane("remote")}
