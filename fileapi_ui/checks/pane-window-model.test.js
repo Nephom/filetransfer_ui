@@ -77,28 +77,36 @@ test("stored layouts are validated before use", () => {
   assert.equal(model.loadStoredLayout({ getItem: () => "{not json" }), null);
 });
 
-test("window ids: singleton kinds keep their id, SFTP windows are sftp:<entryId>, SSH windows are ssh:<entryId>", () => {
+test("window ids: singleton kinds keep their id, SFTP windows are sftp:<entryId>, SSH windows are ssh:<entryId>#<n>", () => {
   assert.equal(model.sftpWindowId("entry-1"), "sftp:entry-1");
   assert.equal(model.sshEntryIdOf("sftp:entry-1"), "entry-1");
   assert.equal(model.sshEntryIdOf("sftp:"), null);
   assert.equal(model.sshEntryIdOf("local"), null);
-  assert.equal(model.sshEntryIdOf("ssh:entry-1"), null, "an SSH window is not an SFTP window");
-  assert.equal(model.sshWindowId("entry-1"), "ssh:entry-1");
-  assert.equal(model.sshPaneEntryIdOf("ssh:entry-1"), "entry-1");
-  assert.equal(model.sshPaneEntryIdOf("ssh:"), null);
+  assert.equal(model.sshEntryIdOf("ssh:entry-1#1"), null, "an SSH window is not an SFTP window");
+  assert.equal(model.sshWindowId("entry-1", 1), "ssh:entry-1#1");
+  assert.equal(model.sshWindowId("entry-1", 12), "ssh:entry-1#12");
+  assert.equal(model.sshPaneEntryIdOf("ssh:entry-1#2"), "entry-1");
+  assert.equal(model.sshPaneInstanceOf("ssh:entry-1#2"), 2);
+  assert.equal(model.sshPaneEntryIdOf("ssh:a#b#3"), "a#b", "the number is whatever follows the last #");
+  assert.equal(model.sshPaneInstanceOf("ssh:a#b#3"), 3);
+  for (const malformed of ["ssh:", "ssh:#1", "ssh:entry-1", "ssh:entry-1#", "ssh:entry-1#0", "ssh:entry-1#x", "ssh:entry-1#-2", "ssh:entry-1#1.5", "ssh:entry-1#01"]) {
+    assert.equal(model.sshPaneEntryIdOf(malformed), null, malformed);
+    assert.equal(model.sshPaneInstanceOf(malformed), null, malformed);
+    assert.equal(model.kindOf(malformed), null, malformed);
+  }
   assert.equal(model.sshPaneEntryIdOf("sftp:entry-1"), null);
+  assert.equal(model.sshPaneInstanceOf("local"), null);
   for (const id of ["local", "remote", "vnc", "rest"]) assert.equal(model.kindOf(id), id);
   assert.equal(model.kindOf("terminal"), null, "the shared Terminal window no longer exists");
   assert.equal(model.kindOf("sftp:entry-1"), "sftp");
-  assert.equal(model.kindOf("ssh:entry-1"), "ssh");
+  assert.equal(model.kindOf("ssh:entry-1#1"), "ssh");
   assert.equal(model.kindOf("sftp:"), null);
-  assert.equal(model.kindOf("ssh:"), null);
   assert.equal(model.kindOf("bogus"), null);
   assert.equal(model.kindOf(undefined), null);
   assert.deepEqual(model.minSizeOf("sftp:entry-1"), model.PANE_MIN_SIZE.sftp);
-  assert.deepEqual(model.minSizeOf("ssh:entry-1"), model.PANE_MIN_SIZE.ssh);
+  assert.deepEqual(model.minSizeOf("ssh:entry-1#1"), model.PANE_MIN_SIZE.ssh);
   assert.equal(model.isEntryWindow("sftp:a"), true);
-  assert.equal(model.isEntryWindow("ssh:a"), true);
+  assert.equal(model.isEntryWindow("ssh:a#1"), true);
   assert.equal(model.isEntryWindow("local"), false);
 });
 
@@ -142,7 +150,7 @@ test("closing an SFTP window discards it; other kinds keep their geometry", () =
 
 test("closeUnavailable drops SFTP windows whose SSH entry was removed", () => {
   let layout = open(open(open(empty(), "local"), "sftp:a"), "sftp:b");
-  layout = paneReducer(layout, { type: "closeUnavailable", available: ["local", "sftp:a"] });
+  layout = paneReducer(layout, { type: "closeUnavailable", available: ["local", "sftp:a"], entryIds: [] });
   assert.ok(win(layout, "sftp:a"));
   assert.equal(win(layout, "sftp:b"), undefined);
 });
@@ -157,26 +165,28 @@ test("SFTP windows are never persisted or restored", () => {
   assert.notEqual(restored.activeId, "sftp:a");
 });
 
-test("SSH windows are per entry: one window each, raised when opened again", () => {
-  let layout = open(open(empty(), "local"), "ssh:a");
-  layout = open(layout, "ssh:b");
-  assert.equal(layout.windows.filter((item) => model.kindOf(item.id) === "ssh").length, 2);
-  assert.equal(layout.activeId, "ssh:b");
-  layout = paneReducer(layout, { type: "focus", id: "ssh:a" });
+test("the same SSH entry can be opened any number of times: every ssh:<entryId>#<n> is its own window", () => {
+  let layout = open(open(empty(), "local"), "ssh:a#1");
+  layout = open(layout, "ssh:a#2");
+  layout = open(layout, "ssh:b#1");
+  assert.equal(layout.windows.filter((item) => model.kindOf(item.id) === "ssh").length, 3);
+  assert.equal(layout.windows.filter((item) => model.sshPaneEntryIdOf(item.id) === "a").length, 2, "one entry, two terminals");
+  assert.equal(layout.activeId, "ssh:b#1");
+  layout = paneReducer(layout, { type: "focus", id: "ssh:a#1" });
   const count = layout.windows.length;
-  layout = open(layout, "ssh:b");
-  assert.equal(layout.windows.length, count, "opening an entry that already has a window adds no second one");
-  assert.equal(layout.activeId, "ssh:b");
-  // an entry may have both an SSH window and an SFTP window
+  layout = open(layout, "ssh:a#2");
+  assert.equal(layout.windows.length, count, "opening a window id that exists raises it instead of adding another");
+  assert.equal(layout.activeId, "ssh:a#2");
+  // an entry may have SSH windows and an SFTP window at the same time
   layout = open(layout, "sftp:a");
-  assert.ok(win(layout, "ssh:a") && win(layout, "sftp:a"));
+  assert.ok(win(layout, "ssh:a#1") && win(layout, "ssh:a#2") && win(layout, "sftp:a"));
 });
 
 test("new SSH windows are cascaded and stay inside the layer", () => {
-  let layout = open(open(open(empty(), "local"), "remote"), "ssh:a");
-  layout = open(layout, "ssh:b");
-  const first = win(layout, "ssh:a");
-  const second = win(layout, "ssh:b");
+  let layout = open(open(open(empty(), "local"), "remote"), "ssh:a#1");
+  layout = open(layout, "ssh:a#2");
+  const first = win(layout, "ssh:a#1");
+  const second = win(layout, "ssh:a#2");
   assert.ok(second.x !== first.x || second.y !== first.y, "the second SSH window does not sit exactly on the first");
   for (const item of [first, second]) {
     assert.ok(item.x >= 0 && item.y >= 0 && item.x + item.w <= layer.w && item.y + item.h <= layer.h);
@@ -184,23 +194,30 @@ test("new SSH windows are cascaded and stay inside the layer", () => {
   }
 });
 
-test("closing an SSH window discards it, and a removed SSH entry drops its window", () => {
-  let layout = open(open(empty(), "local"), "ssh:a");
-  layout = open(layout, "ssh:b");
-  layout = paneReducer(layout, { type: "close", id: "ssh:a" });
-  assert.equal(win(layout, "ssh:a"), undefined);
-  layout = paneReducer(layout, { type: "closeUnavailable", available: ["local"] });
-  assert.equal(win(layout, "ssh:b"), undefined, "its entry no longer exists");
+test("closing one SSH window discards only that one; a removed SSH entry drops all of its windows", () => {
+  let layout = open(open(empty(), "local"), "ssh:a#1");
+  layout = open(layout, "ssh:a#2");
+  layout = open(layout, "ssh:b#1");
+  layout = paneReducer(layout, { type: "close", id: "ssh:a#1" });
+  assert.equal(win(layout, "ssh:a#1"), undefined);
+  assert.ok(win(layout, "ssh:a#2") && win(layout, "ssh:b#1"), "the other terminals stay");
+  // SSH windows are not listed in `available`: they stay while their entry exists.
+  layout = paneReducer(layout, { type: "closeUnavailable", available: ["local"], entryIds: ["a", "b"] });
+  assert.ok(win(layout, "ssh:a#2") && win(layout, "ssh:b#1"));
+  layout = paneReducer(layout, { type: "closeUnavailable", available: ["local"], entryIds: ["b"] });
+  assert.equal(win(layout, "ssh:a#2"), undefined, "its entry no longer exists");
+  assert.ok(win(layout, "ssh:b#1"));
   assert.equal(win(layout, "local").open, true);
 });
 
 test("SSH windows and the removed shared Terminal window are never restored", () => {
-  const layout = open(open(open(empty(), "local"), "remote"), "ssh:a");
+  const layout = open(open(open(empty(), "local"), "remote"), "ssh:a#1");
   const stored = JSON.parse(model.serializeLayout(layout));
   assert.deepEqual(stored.windows.map((item) => item.id).sort(), ["local", "remote"]);
   const old = { version: 1, windows: [
     ...stored.windows,
-    { id: "ssh:a", x: 0, y: 0, w: 500, h: 400, z: 98, open: true },
+    { id: "ssh:a#1", x: 0, y: 0, w: 500, h: 400, z: 98, open: true },
+    { id: "ssh:a", x: 0, y: 0, w: 500, h: 400, z: 97, open: true },
     { id: "terminal", x: 0, y: 0, w: 500, h: 400, z: 99, open: true },
   ] };
   const restored = model.normalizeStoredLayout(old);

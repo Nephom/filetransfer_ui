@@ -3,15 +3,16 @@
 // unit tested and reused by the reducer in usePaneWindows.ts.
 
 /**
- * Window kinds. "sftp" and "ssh" windows are per SSH entry: their ids are
- * `sftp:<entryId>` / `ssh:<entryId>` (see sftpWindowId / sshWindowId) so
- * several can be open at once. Every other kind has exactly one window whose
- * id is the kind itself.
+ * Window kinds. "sftp" and "ssh" windows belong to an SSH entry: `sftp:<entryId>`
+ * (one per entry, see sftpWindowId) and `ssh:<entryId>#<n>` (one per opened SSH
+ * terminal, `n` = 1, 2, 3, ... so the same entry can be opened any number of
+ * times, see sshWindowId). Every other kind has exactly one window whose id is
+ * the kind itself.
  */
 export type PaneWindowKind = "local" | "remote" | "vnc" | "rest" | "sftp" | "ssh";
 
 export type PaneSftpWindowId = `sftp:${string}`;
-export type PaneSshWindowId = `ssh:${string}`;
+export type PaneSshWindowId = `ssh:${string}#${number}`;
 export type PaneEntryWindowKind = "sftp" | "ssh";
 export type PaneWindowId = Exclude<PaneWindowKind, PaneEntryWindowKind> | PaneSftpWindowId | PaneSshWindowId;
 
@@ -24,23 +25,38 @@ const SFTP_PREFIX = "sftp:";
 const SSH_PREFIX = "ssh:";
 
 export const sftpWindowId = (entryId: string): PaneSftpWindowId => `${SFTP_PREFIX}${entryId}`;
-export const sshWindowId = (entryId: string): PaneSshWindowId => `${SSH_PREFIX}${entryId}`;
+export const sshWindowId = (entryId: string, instance: number): PaneSshWindowId => `${SSH_PREFIX}${entryId}#${instance}`;
 
 /** The SSH entry id behind a `sftp:<entryId>` window id (null for every other window). */
 export function sshEntryIdOf(id: string): string | null {
   return id.startsWith(SFTP_PREFIX) && id.length > SFTP_PREFIX.length ? id.slice(SFTP_PREFIX.length) : null;
 }
 
-/** The SSH entry id behind a `ssh:<entryId>` terminal window id (null for every other window). */
+/** Splits a `ssh:<entryId>#<n>` terminal window id (null for every other window or a malformed id). */
+function parseSshWindowId(id: string): { entryId: string; instance: number } | null {
+  if (!id.startsWith(SSH_PREFIX)) return null;
+  const separator = id.lastIndexOf("#");
+  if (separator <= SSH_PREFIX.length) return null;
+  const counter = id.slice(separator + 1);
+  if (!/^[1-9]\d*$/.test(counter)) return null;
+  return { entryId: id.slice(SSH_PREFIX.length, separator), instance: Number(counter) };
+}
+
+/** The SSH entry id behind a `ssh:<entryId>#<n>` terminal window id (null for every other window). */
 export function sshPaneEntryIdOf(id: string): string | null {
-  return id.startsWith(SSH_PREFIX) && id.length > SSH_PREFIX.length ? id.slice(SSH_PREFIX.length) : null;
+  return parseSshWindowId(id)?.entryId ?? null;
+}
+
+/** The instance number (1, 2, 3, ...) of a `ssh:<entryId>#<n>` terminal window id (null for every other window). */
+export function sshPaneInstanceOf(id: string): number | null {
+  return parseSshWindowId(id)?.instance ?? null;
 }
 
 /** Window kind for an id, or null when the id is not a valid window id. */
 export function kindOf(id: unknown): PaneWindowKind | null {
   if (typeof id !== "string") return null;
   if (sshEntryIdOf(id)) return "sftp";
-  if (sshPaneEntryIdOf(id)) return "ssh";
+  if (parseSshWindowId(id)) return "ssh";
   return (PANE_SINGLETON_KINDS as readonly string[]).includes(id) ? (id as PaneWindowKind) : null;
 }
 

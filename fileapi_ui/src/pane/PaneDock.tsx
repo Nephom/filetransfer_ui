@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type { PaneLayout, PaneWindowId, PaneWindowKind } from "./pane-window-model";
-import { PANE_SINGLETON_KINDS, isEntryWindow, kindOf, sshPaneEntryIdOf } from "./pane-window-model";
+import { PANE_SINGLETON_KINDS, isEntryWindow, kindOf } from "./pane-window-model";
 import type { SshPopupInfo } from "./ssh-popup-registry";
 import { EntryManagerIcon, ExternalWindowIcon, FunctionsIcon, LocalIcon, LocationIcon, RemoteIcon, RestIcon, SftpIcon, SshEntriesIcon, TerminalIcon, VncIcon } from "./pane-icons";
 import { CommandPromptIcon, WindowsTerminalIcon } from "../ui/icons";
@@ -41,7 +41,7 @@ type Props = {
   terminalWorkspaces: PaneTerminalWorkspace[];
   /** Windows Terminal / Command Prompt can only be launched on Windows. */
   localShellsAvailable: boolean;
-  /** Live state of each open SSH pane by entry id (taskbar status dot / unsaved-recording marker). */
+  /** Live state of each open SSH pane by window id (taskbar status dot / unsaved-recording marker). */
   sshPaneStates: Readonly<Record<string, { connected: boolean; recordingUnsaved: boolean } | undefined>>;
   popups: readonly SshPopupInfo[];
   busy: boolean;
@@ -348,8 +348,8 @@ export function PaneDock({
           const win = windowOf(id)!;
           const active = layout.activeId === id;
           const title = titles[id] || id;
-          const sshEntryId = sshPaneEntryIdOf(id);
-          const sshState = sshEntryId ? sshPaneStates[sshEntryId] : undefined;
+          const isSshWindow = kindOf(id) === "ssh";
+          const sshState = isSshWindow ? sshPaneStates[id] : undefined;
           return (
             <span key={id} className={`pane-task${active ? " is-active" : ""}${win.minimized ? " is-minimized" : ""}`}>
               <button
@@ -361,7 +361,7 @@ export function PaneDock({
                 onClick={() => onActivate(id)}
               >
                 {KIND_ICON[kindOf(id) || "local"]}
-                {sshEntryId && <span className={`pane-status-dot${sshState?.connected ? " is-online" : ""}`} aria-hidden="true" />}
+                {isSshWindow && <span className={`pane-status-dot${sshState?.connected ? " is-online" : ""}`} aria-hidden="true" />}
                 <span className="pane-task-title">{title}</span>
                 {sshState?.recordingUnsaved && <span className="pane-task-rec" title="Unsaved recording">REC</span>}
               </button>

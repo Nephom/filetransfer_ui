@@ -4,7 +4,7 @@ import { PaneDock, type PaneLocationChoice, type PaneTerminalWorkspace } from ".
 import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
 import { PaneWindow } from "./PaneWindow";
 import { usePaneWindows } from "./usePaneWindows";
-import { PANE_SINGLETON_KINDS, kindOf, sftpWindowId, sshWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
+import { PANE_SINGLETON_KINDS, kindOf, sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, sshWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
 import { LocalIcon, RemoteIcon, RestIcon, SftpIcon, TerminalIcon, VncIcon } from "./pane-icons";
 import { loadWallpaper, useWallpaper, wallpaperCssVariables } from "./pane-wallpaper-store";
 import {
@@ -28,9 +28,11 @@ type Props = {
   vncEnabled: boolean;
   /** One <PaneBody id=...> child per window. The elements keep their identity while a window is dragged, so dragging never re-renders their contents. */
   children: React.ReactNode;
-  /** Window titles / subtitles by window id (`local`, `remote`, ..., `sftp:<entryId>`, `ssh:<entryId>`). */
+  /** Window titles / subtitles by window id (`local`, `remote`, ..., `sftp:<entryId>`). SSH windows are named through `sshPaneInfo`. */
   titles: Record<string, string>;
   subtitles: Partial<Record<string, string>>;
+  /** Name and subtitle of the SSH window `ssh:<entryId>#<instance>` (null when its entry no longer exists). */
+  sshPaneInfo: (entryId: string, instance: number) => { name: string; subtitle: string } | null;
   remoteChoices: PaneLocationChoice[];
   sftpChoices: PaneLocationChoice[];
   /** Every Workspace with its SSH entries (Terminal menu in the dock). */
@@ -83,7 +85,7 @@ function Wallpaper() {
 }
 
 export function PaneDesktop({
-  restEnabled, vncEnabled, openRef, children, titles, subtitles, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, topRight,
+  restEnabled, vncEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, topRight,
   onSelectRemote, onOpenLocalShell, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onWindowState, onRequestClose, hasUnsavedPaneRecording, confirmDiscardRecordings,
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -91,9 +93,10 @@ export function PaneDesktop({
   const available: PaneWindowId[] = [
     ...PANE_SINGLETON_KINDS.filter((kind) => (kind === "vnc" ? vncEnabled : kind === "rest" ? restEnabled : true)),
     ...entryIds.map(sftpWindowId),
-    ...entryIds.map(sshWindowId),
   ];
-  const { layout, open, focus, minimize, toggleMaximize, close, setRect } = usePaneWindows(available, layer);
+  // SSH windows (`ssh:<entryId>#<n>`) are opened on demand, any number per entry, so they are not listed
+  // here: one is available as long as its SSH entry exists (checked against `entryIds`).
+  const { layout, open, focus, minimize, toggleMaximize, close, setRect } = usePaneWindows(available, entryIds, layer);
   const bodies: Partial<Record<string, React.ReactNode>> = {};
   React.Children.forEach(children, (child) => {
     if (React.isValidElement<{ id: PaneWindowId; children: React.ReactNode }>(child)) bodies[child.props.id] = child.props.children;
@@ -180,6 +183,33 @@ export function PaneDesktop({
     else open(id);
   }, [layout, minimize, open]);
 
+  // "Open SSH" always starts a new terminal: the same entry can be opened any number of
+  // times, numbered 1, 2, 3, ... (the lowest number not used by a window that still exists).
+  const openSsh = (entryId: string) => {
+    const used = new Set(layout.windows.map((win) => (sshPaneEntryIdOf(win.id) === entryId ? sshPaneInstanceOf(win.id) : null)));
+    let instance = 1;
+    while (used.has(instance)) instance += 1;
+    open(sshWindowId(entryId, instance));
+  };
+
+  const isAvailable = (id: PaneWindowId) => {
+    const sshEntryId = sshPaneEntryIdOf(id);
+    return sshEntryId !== null ? entryIds.includes(sshEntryId) : available.includes(id);
+  };
+
+  // SSH windows are named here, from the layout itself, so a window that was just opened
+  // already has its title (`SSH · test_1`) in the very first frame.
+  const sshInfoOf = (id: PaneWindowId) => {
+    const entryId = sshPaneEntryIdOf(id);
+    const instance = sshPaneInstanceOf(id);
+    return entryId === null || instance === null ? null : sshPaneInfo(entryId, instance);
+  };
+  const allTitles: Record<string, string> = { ...titles };
+  for (const win of layout.windows) {
+    const info = sshInfoOf(win.id);
+    if (info) allTitles[win.id] = `SSH · ${info.name}`;
+  }
+
   return (
     <div className="pane-desktop">
       <Wallpaper />
@@ -190,13 +220,13 @@ export function PaneDesktop({
       <div className="pane-window-layer" ref={layerRef}>
         {layout.windows.map((win) => {
           const kind = kindOf(win.id);
-          if (!kind || !available.includes(win.id)) return null;
+          if (!kind || !isAvailable(win.id)) return null;
           return (
             <PaneWindow
               key={win.id}
               win={win}
-              title={titles[win.id] || win.id}
-              subtitle={subtitles[win.id]}
+              title={allTitles[win.id] || win.id}
+              subtitle={sshInfoOf(win.id)?.subtitle ?? subtitles[win.id]}
               icon={KIND_ICON[kind]}
               active={layout.activeId === win.id}
               layer={layer}
@@ -213,7 +243,7 @@ export function PaneDesktop({
       </div>
       <PaneDock
         layout={layout}
-        titles={titles}
+        titles={allTitles}
         restEnabled={restEnabled}
         vncEnabled={vncEnabled}
         remoteChoices={remoteChoices}
@@ -225,7 +255,7 @@ export function PaneDesktop({
         busy={busy}
         onOpenLocal={() => open("local")}
         onOpenLocalShell={onOpenLocalShell}
-        onOpenSshInPane={(entryId) => open(sshWindowId(entryId))}
+        onOpenSshInPane={openSsh}
         onOpenSshWindow={onOpenSshWindow}
         onOpenEntryManager={onOpenEntryManager}
         onCreateWorkspace={onCreateWorkspace}

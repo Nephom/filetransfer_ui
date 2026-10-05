@@ -11,6 +11,7 @@ import {
   nextZ,
   pickActive,
   serializeLayout,
+  sshPaneEntryIdOf,
   type PaneLayout,
   type PaneRect,
   type PaneSize,
@@ -26,7 +27,7 @@ type Action =
   | { type: "close"; id: PaneWindowId }
   | { type: "setRect"; id: PaneWindowId; rect: PaneRect; layer: PaneSize }
   | { type: "layerResized"; layer: PaneSize }
-  | { type: "closeUnavailable"; available: readonly PaneWindowId[] };
+  | { type: "closeUnavailable"; available: readonly PaneWindowId[]; entryIds: readonly string[] };
 
 const update = (layout: PaneLayout, id: PaneWindowId, change: (win: PaneWindowState) => PaneWindowState): PaneWindowState[] =>
   layout.windows.map((win) => (win.id === id ? change(win) : win));
@@ -87,7 +88,10 @@ export function paneReducer(layout: PaneLayout, action: Action): PaneLayout {
       let changed = false;
       const windows: PaneWindowState[] = [];
       for (const win of layout.windows) {
-        if (action.available.includes(win.id)) { windows.push(win); continue; }
+        // SSH windows are opened on demand (any number per entry), so they are available as long as their entry exists.
+        const sshEntryId = sshPaneEntryIdOf(win.id);
+        const isAvailable = sshEntryId !== null ? action.entryIds.includes(sshEntryId) : action.available.includes(win.id);
+        if (isAvailable) { windows.push(win); continue; }
         // An unavailable SFTP/SSH window (its SSH entry was removed) is dropped; other kinds are just closed.
         if (isEntryWindow(win.id)) { changed = true; continue; }
         if (!win.open) { windows.push(win); continue; }
@@ -103,7 +107,7 @@ export function paneReducer(layout: PaneLayout, action: Action): PaneLayout {
 
 const initialLayout = (): PaneLayout => loadStoredLayout() || { windows: [], activeId: null };
 
-export function usePaneWindows(available: readonly PaneWindowId[], layer: PaneSize) {
+export function usePaneWindows(available: readonly PaneWindowId[], entryIds: readonly string[], layer: PaneSize) {
 
   const [layout, dispatch] = useReducer(paneReducer, undefined, initialLayout);
 
@@ -121,9 +125,10 @@ export function usePaneWindows(available: readonly PaneWindowId[], layer: PaneSi
   }, [layer.w, layer.h]);
 
   const availableKey = available.join(",");
+  const entryKey = entryIds.join(",");
   useEffect(() => {
-    dispatch({ type: "closeUnavailable", available });
-  }, [availableKey]);
+    dispatch({ type: "closeUnavailable", available, entryIds });
+  }, [availableKey, entryKey]);
 
   const open = useCallback((id: PaneWindowId) => dispatch({ type: "open", id, layer }), [layer.w, layer.h]);
   const focus = useCallback((id: PaneWindowId) => dispatch({ type: "focus", id }), []);

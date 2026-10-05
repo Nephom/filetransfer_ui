@@ -35,6 +35,7 @@ const bridge = () => {
     { name: "archive.zip", path: "archive.zip", isDirectory: false, size: 99999, modified: 1_700_000_000_000 },
   ];
   window.__calls = [];
+  let sshSessions = 0;
   const handler = (cmd, args) => {
     window.__calls.push(cmd);
     switch (cmd) {
@@ -51,7 +52,7 @@ const bridge = () => {
         return json({ success: true });
       }
       case "local_list_directory": return { path: args.path || "", files };
-      case "ssh_connect": return `ssh-session-${args.profile.id}`;
+      case "ssh_connect": return `ssh-session-${args.profile.id}-${++sshSessions}`;
       case "ssh_list_directory": {
         // Each SSH entry has its own tree so the windows can be told apart.
         const own = args.profile.id === "ssh-1" ? "alpha-only.txt" : "beta-only.txt";
@@ -223,16 +224,16 @@ try {
   await page.keyboard.press("Escape");
 
   // Open SSH: one pane per SSH entry (no shared multi-tab Terminal window any more).
-  const alphaWin = '.pane-window-ssh[data-window-id="ssh:ssh-1"]';
-  const betaWin = '.pane-window-ssh[data-window-id="ssh:ssh-2"]';
+  const alphaWin = '.pane-window-ssh[data-window-id="ssh:ssh-1#1"]';
+  const betaWin = '.pane-window-ssh[data-window-id="ssh:ssh-2#1"]';
   const headerButtons = (win) => page.locator(`${win} .ssh-entry-pane-header button`).allTextContents();
   const sshConnects = () => page.evaluate(() => window.__calls.filter((cmd) => cmd === "ssh_connect").length);
   await openSshEntry("Alpha");
   await page.locator(`${alphaWin}:not(.is-hidden)`).waitFor();
   assert.equal(await page.locator(".pane-window-terminal").count(), 0, "the old shared Terminal window is gone");
   assert.equal(await page.locator(`${alphaWin} .terminal-tabs, ${alphaWin} .ssh-quick-list`).count(), 0, "the SSH pane has no tab strip or entry list");
-  assert.equal((await page.locator(`${alphaWin} .pane-window-title`).textContent()).trim(), "SSH · Alpha", "the pane is titled after its entry");
-  assert.equal((await page.locator(`${alphaWin} .ssh-entry-pane-title`).textContent()).trim(), "Alpha", "the header shows the entry name");
+  assert.equal((await page.locator(`${alphaWin} .pane-window-title`).textContent()).trim(), "SSH · Alpha_1", "the pane is titled after its entry and number");
+  assert.equal((await page.locator(`${alphaWin} .ssh-entry-pane-title`).textContent()).trim(), "Alpha_1", "the header shows the entry name and number");
   await page.waitForFunction((selector) => document.querySelector(`${selector} .ssh-entry-pane-status span`)?.textContent === "Connected", alphaWin, { timeout: 8000 });
   assert.deepEqual(await headerButtons(alphaWin), ["Disconnect", "Record", "Save Log"], "header: Connect/Disconnect, Record, Save Log");
   assert.equal(await page.locator(`${alphaWin} .ssh-entry-pane-header button`, { hasText: "Record" }).isEnabled(), true, "Record works while connected");
@@ -249,19 +250,46 @@ try {
   await page.locator(`${alphaWin} .ssh-entry-pane-header button`, { hasText: "Connect" }).click();
   await page.waitForFunction((selector) => document.querySelector(`${selector} .ssh-entry-pane-status span`)?.textContent === "Connected", alphaWin, { timeout: 8000 });
   assert.equal(await sshConnects(), 2, "Connect started a second session for the same pane");
-  assert.equal(await page.locator(".pane-task", { hasText: "SSH · Alpha" }).count(), 1, "the pane has one taskbar tab");
+  assert.equal(await page.locator(".pane-task", { hasText: "SSH · Alpha_1" }).count(), 1, "the pane has one taskbar tab");
 
-  // Choosing the same entry again raises its pane instead of opening another one.
+  // Choosing the same entry again opens another, independent terminal: Alpha_1, Alpha_2, ...
   await openSshEntry("Alpha");
-  await page.waitForTimeout(250);
-  assert.equal(await page.locator(".pane-window-ssh").count(), 1, "re-opening an entry does not duplicate its pane");
-  assert.equal(await sshConnects(), 2, "and does not connect again");
+  const alpha2Win = '.pane-window-ssh[data-window-id="ssh:ssh-1#2"]';
+  await page.locator(`${alpha2Win}:not(.is-hidden)`).waitFor();
+  assert.equal(await page.locator(".pane-window-ssh").count(), 2, "re-opening an entry opens a second pane");
+  assert.equal((await page.locator(`${alpha2Win} .pane-window-title`).textContent()).trim(), "SSH · Alpha_2", "numbered after the first one");
+  assert.equal((await page.locator(`${alpha2Win} .ssh-entry-pane-title`).textContent()).trim(), "Alpha_2");
+  await page.waitForFunction((selector) => document.querySelector(`${selector} .ssh-entry-pane-status span`)?.textContent === "Connected", alpha2Win, { timeout: 8000 });
+  assert.equal(await sshConnects(), 3, "the second pane has its own session");
+  assert.equal(await page.locator(".pane-task", { hasText: "SSH · Alpha_1" }).count(), 1);
+  assert.equal(await page.locator(".pane-task", { hasText: "SSH · Alpha_2" }).count(), 1, "each pane has its own taskbar tab");
+  // They are independent: ending one does not touch the other.
+  await page.locator(`${alpha2Win} .ssh-entry-pane-header button`, { hasText: "Disconnect" }).click();
+  await page.waitForFunction((selector) => document.querySelector(`${selector} .ssh-entry-pane-status span`)?.textContent === "Disconnected.", alpha2Win, { timeout: 8000 });
+  assert.equal(await page.locator(`${alphaWin} .ssh-entry-pane-status span`).textContent(), "Connected", "Alpha_1 stays connected");
+  await page.locator(`${alpha2Win} .ssh-entry-pane-header button`, { hasText: "Connect" }).click();
+  await page.waitForFunction((selector) => document.querySelector(`${selector} .ssh-entry-pane-status span`)?.textContent === "Connected", alpha2Win, { timeout: 8000 });
+  assert.equal(await sshConnects(), 4);
+  // Closing one terminal ends only its session and removes only its pane.
+  const alphaDisconnectsBefore = await page.evaluate(() => window.__calls.filter((cmd) => cmd === "ssh_disconnect").length);
+  await page.locator(".pane-task", { hasText: "SSH · Alpha_2" }).locator(".pane-task-close").click();
+  await page.waitForFunction(() => document.querySelectorAll(".pane-window-ssh").length === 1);
+  await page.waitForFunction((before) => window.__calls.filter((cmd) => cmd === "ssh_disconnect").length === before + 1, alphaDisconnectsBefore);
+  assert.equal(await page.locator(alphaWin).count(), 1, "Alpha_1 stays open");
+  assert.equal(await page.locator(`${alphaWin} .ssh-entry-pane-status span`).textContent(), "Connected");
+  // The freed number is used again by the next terminal of that entry.
+  await openSshEntry("Alpha");
+  await page.locator(`${alpha2Win}:not(.is-hidden)`).waitFor();
+  assert.equal((await page.locator(`${alpha2Win} .pane-window-title`).textContent()).trim(), "SSH · Alpha_2");
+  await page.waitForFunction((selector) => document.querySelector(`${selector} .ssh-entry-pane-status span`)?.textContent === "Connected", alpha2Win, { timeout: 8000 });
+  await page.locator(".pane-task", { hasText: "SSH · Alpha_2" }).locator(".pane-task-close").click();
+  await page.waitForFunction(() => document.querySelectorAll(".pane-window-ssh").length === 1);
 
   const sshBefore = await rect(alphaWin);
   await page.locator(`${alphaWin} .pane-window-control`).first().click();
   const sshHidden = await rect(alphaWin);
   assert.deepEqual(sshHidden, sshBefore, "a minimized SSH pane keeps its layout box (xterm is not resized to 0)");
-  await page.locator(".pane-task", { hasText: "SSH · Alpha" }).locator(".pane-task-main").click();
+  await page.locator(".pane-task", { hasText: "SSH · Alpha_1" }).locator(".pane-task-main").click();
 
   // REST and VNC open from Functions and stay out of the way of the dock.
   for (const [label, cls] of [["RestAPI", "rest"], ["VNC", "vnc"]]) {
@@ -332,11 +360,11 @@ try {
 
   // Closing an SSH pane ends only that entry's session and removes only its tab.
   const sshDisconnectsBefore = await page.evaluate(() => window.__calls.filter((cmd) => cmd === "ssh_disconnect").length);
-  await page.locator(".pane-task", { hasText: "SSH · Beta" }).locator(".pane-task-close").click();
+  await page.locator(".pane-task", { hasText: "SSH · Beta_1" }).locator(".pane-task-close").click();
   await page.waitForFunction(() => document.querySelectorAll(".pane-window-ssh").length === 1);
   await page.waitForFunction((before) => window.__calls.filter((cmd) => cmd === "ssh_disconnect").length === before + 1, sshDisconnectsBefore);
-  assert.equal(await page.locator(".pane-task", { hasText: "SSH · Beta" }).count(), 0, "closing removes that SSH tab");
-  assert.equal(await page.locator(".pane-task", { hasText: "SSH · Alpha" }).count(), 1, "the other SSH pane stays");
+  assert.equal(await page.locator(".pane-task", { hasText: "SSH · Beta_1" }).count(), 0, "closing removes that SSH tab");
+  assert.equal(await page.locator(".pane-task", { hasText: "SSH · Alpha_1" }).count(), 1, "the other SSH pane stays");
 
   // Closing a window removes its tab.
   await page.locator(".pane-task", { hasText: "VNC" }).locator(".pane-task-close").click();

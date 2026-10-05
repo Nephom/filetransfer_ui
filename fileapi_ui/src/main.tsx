@@ -46,7 +46,7 @@ import { AppShell } from "./app/AppShell";
 import { PaneBody, PaneDesktop } from "./pane/PaneDesktop";
 import { PaneTopRight } from "./pane/PaneTopRight";
 import { type PaneLocationChoice, type PaneTerminalWorkspace } from "./pane/PaneDock";
-import { sftpWindowId, sshPaneEntryIdOf, sshWindowId, type PaneWindowId } from "./pane/pane-window-model";
+import { sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, type PaneWindowId } from "./pane/pane-window-model";
 import { SftpWindow, type SftpDndBridge, type SftpTransferBridge } from "./features/sftp/SftpWindow";
 import { trackSshPopup, subscribeSshPopups, getSshPopupSnapshot } from "./pane/ssh-popup-registry";
 import { isSshEntryConnected } from "./pane/sftp-availability";
@@ -705,22 +705,23 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     vncEntryDraft, setVncEntryDraft,
     vncEntryModalTab, setVncEntryModalTab,
   } = useSessionsState();
-  // Live state of each open SSH pane (window id `ssh:<entryId>`), reported by its
-  // terminal. It enables SFTP for connected entries, drives the taskbar dot / REC
-  // marker and decides whether closing the window needs a confirmation.
-  const [sshPaneStates, setSshPaneStates] = useState<Record<string, SshEntryTerminalState | undefined>>({});
+  // Live state of each open SSH pane (window id `ssh:<entryId>#<n>`), reported by its
+  // terminal. An entry can have several panes. It enables SFTP for connected entries,
+  // drives the taskbar dot / REC marker and decides whether closing a window needs a
+  // confirmation.
+  const [sshPaneStates, setSshPaneStates] = useState<Record<string, (SshEntryTerminalState & { entryId: string }) | undefined>>({});
   const sshPaneStatesRef = useRef(sshPaneStates);
   sshPaneStatesRef.current = sshPaneStates;
-  const handleSshPaneState = useCallback((entryId: string, state: SshEntryTerminalState | null) => {
+  const handleSshPaneState = useCallback((windowId: string, entryId: string, state: SshEntryTerminalState | null) => {
     setSshPaneStates((current) => {
       if (state === null) {
-        if (!(entryId in current)) return current;
-        const { [entryId]: _removed, ...rest } = current;
+        if (!(windowId in current)) return current;
+        const { [windowId]: _removed, ...rest } = current;
         return rest;
       }
-      const previous = current[entryId];
-      if (previous && previous.connected === state.connected && previous.connecting === state.connecting && previous.recordingUnsaved === state.recordingUnsaved) return current;
-      return { ...current, [entryId]: state };
+      const previous = current[windowId];
+      if (previous && previous.entryId === entryId && previous.connected === state.connected && previous.connecting === state.connecting && previous.recordingUnsaved === state.recordingUnsaved) return current;
+      return { ...current, [windowId]: { ...state, entryId } };
     });
   }, []);
   const [folderPaneWidth, setFolderPaneWidth] = useState(() =>
@@ -3761,15 +3762,27 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   for (const { entry } of sshEntries) {
     paneTitles[sftpWindowId(entry.id)] = `SFTP · ${sshEntryLabel(entry)}`;
     paneSubtitles[sftpWindowId(entry.id)] = sftpPaths[entry.id] || "/";
-    paneTitles[sshWindowId(entry.id)] = `SSH · ${sshEntryLabel(entry)}`;
-    paneSubtitles[sshWindowId(entry.id)] = `${entry.username}@${entry.host}`;
   }
+  // Every "Open SSH" is its own terminal window: `ssh:<entryId>#<n>` is shown as `<entry>_<n>`.
+  // PaneDesktop asks for the name of every SSH window it renders, so a new window is titled
+  // from its first frame (the list of open ids below only reaches this component afterwards).
+  const sshEntryById = new Map(sshEntries.map(({ entry }) => [entry.id, entry]));
+  const sshPaneInfo = (entryId: string, instance: number) => {
+    const entry = sshEntryById.get(entryId);
+    return entry ? { entry, name: `${sshEntryLabel(entry)}_${instance}`, subtitle: `${entry.username}@${entry.host}` } : null;
+  };
+  const openSshPanes = paneOpenIds.flatMap((id) => {
+    const entryId = sshPaneEntryIdOf(id);
+    const instance = sshPaneInstanceOf(id);
+    const info = entryId === null || instance === null ? null : sshPaneInfo(entryId, instance);
+    return info ? [{ id, entry: info.entry, name: info.name }] : [];
+  });
 
   // Closing an SSH pane ends its session; a recording that was never saved is only discarded after a confirmation.
   const requestPaneClose = async (id: PaneWindowId) => {
-    const entryId = sshPaneEntryIdOf(id);
-    if (!entryId || !sshPaneStatesRef.current[entryId]?.recordingUnsaved) return true;
-    return requestConfirmation(`${paneTitles[id] || "This SSH window"} has a recording that was not saved. Close it and discard the recording?`, "Close SSH window");
+    if (!sshPaneStatesRef.current[id]?.recordingUnsaved) return true;
+    const name = openSshPanes.find((pane) => pane.id === id)?.name;
+    return requestConfirmation(`${name ? `SSH · ${name}` : "This SSH window"} has a recording that was not saved. Close it and discard the recording?`, "Close SSH window");
   };
   const hasUnsavedPaneRecording = () => Object.values(sshPaneStatesRef.current).some((state) => Boolean(state?.recordingUnsaved));
 
@@ -4410,6 +4423,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         openRef={paneOpenWindowRef}
         titles={paneTitles}
         subtitles={paneSubtitles}
+        sshPaneInfo={sshPaneInfo}
         remoteChoices={paneRemoteChoices}
         sftpChoices={paneSftpChoices}
         terminalWorkspaces={paneTerminalWorkspaces}
@@ -4451,11 +4465,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         <PaneBody id="remote">{renderRemoteWindow()}</PaneBody>
         <PaneBody id="rest">{renderRestWindow()}</PaneBody>
         <PaneBody id="vnc">{renderVncWindow()}</PaneBody>
-        {sshEntries.map(({ entry }) => (
-          <PaneBody key={`ssh-${entry.id}`} id={sshWindowId(entry.id)}>
+        {openSshPanes.map(({ id, entry, name }) => (
+          <PaneBody key={id} id={id as PaneWindowId}>
             <SshEntryPane
+              windowId={id}
               profile={entry}
-              title={sshEntryLabel(entry)}
+              title={name}
               bracketedPasteControlEnabled={desktopSettings.bracketedPasteControlEnabled}
               onStateChange={handleSshPaneState}
               onOperationLog={writeOperationLog}

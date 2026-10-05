@@ -1,10 +1,10 @@
 # SSH Terminal feature
 
-Every SSH entry has its own terminal. It is shown either in the main window as an `ssh:<entryId>` pane window or in a separate native Tauri window ("Open a new Window"); both use the same logic and header.
+Every SSH entry can be opened as any number of terminals. Each one is shown either in the main window as an `ssh:<entryId>#<n>` pane window or in a separate native Tauri window ("Open a new Window"); both use the same logic and header.
 
 - `useSshEntryTerminal.ts` owns one entry's connection (connect, cancel, disconnect, reconnect), xterm/SSH event routing, recording and Save Log.
 - `SshEntryTerminalView.tsx` renders the header (entry name, status, Connect/Disconnect, Record, Save Log), the xterm host and the Save Log name dialog. `variant="native"` keeps the dark native look, `variant="pane"` follows the app theme.
-- `SshEntryPane.tsx` is the body of an `ssh:<entryId>` pane window; `SshTerminalPopup.tsx` is the shell of the native window (title, close request, `ssh-popup-state` reports).
+- `SshEntryPane.tsx` is the body of an `ssh:<entryId>#<n>` pane window; `SshTerminalPopup.tsx` is the shell of the native window (title, close request, `ssh-popup-state` reports).
 - `useTerminalLifecycle.ts` creates and keeps the xterm instance, clipboard/selection/paste handling and resize. `useSshEventBridge.ts` routes the Rust `ssh-output` / `ssh-exit` events.
 - `terminal-contracts.ts` and `terminal-utils.ts` contain shared data contracts and pure terminal helpers.
 
