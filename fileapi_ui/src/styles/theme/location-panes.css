@@ -67,12 +67,4 @@
 :where(.explorer) .ssh-tab-status.disconnected { background: var(--color-danger); box-shadow: 0 0 6px color-mix(in srgb, var(--color-danger) 65%, transparent); }
 :where(.explorer) .xterm-host,
 :where(.explorer) .ssh-output { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg); }
-:where(.explorer) .ssh-quick-list { border-color: var(--color-border); background: var(--color-bg-panel); }
-:where(.explorer) .ssh-quick-list-heading,
-:where(.explorer) .ssh-quick-list-group-label { color: var(--color-text-muted); }
-:where(.explorer) .ssh-quick-list-entry { color: var(--color-text); }
-:where(.explorer) .ssh-quick-list-entry-row:hover,
-:where(.explorer) .ssh-quick-list-entry-row.active { background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-panel-strong)); }
-:where(.explorer) .ssh-quick-list-entry-row.active { box-shadow: inset 2px 0 var(--color-primary); }
 :where(.explorer) .terminal-inline-note { color: var(--color-text-muted); }
-:where(.explorer) .ssh-controls .dropdown-trigger { border-color: var(--color-border); color: var(--color-text); background: var(--color-bg-panel-strong); }

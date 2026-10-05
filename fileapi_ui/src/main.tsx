@@ -45,7 +45,7 @@ import { FloatingWindow } from "./ui/FloatingWindow";
 import { AppShell } from "./app/AppShell";
 import { PaneBody, PaneDesktop } from "./pane/PaneDesktop";
 import { PaneTopRight } from "./pane/PaneTopRight";
-import { type PaneLocationChoice } from "./pane/PaneDock";
+import { type PaneLocationChoice, type PaneTerminalWorkspace } from "./pane/PaneDock";
 import { sftpWindowId, type PaneWindowId } from "./pane/pane-window-model";
 import { SftpWindow, type SftpDndBridge, type SftpTransferBridge } from "./features/sftp/SftpWindow";
 import { trackSshPopup, subscribeSshPopups, getSshPopupSnapshot } from "./pane/ssh-popup-registry";
@@ -715,7 +715,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const terminalState = useSshTerminalState();
   const {
     terminalOpen, setTerminalOpen, sshTabs, setSshTabs, activeSshTabId, setActiveSshTabId,
-    sshQuickListOpen, setSshQuickListOpen,
     sshConnected, setSshConnected, sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
     terminalHostRefsRef, terminalInstancesRef, sshSessionIdRef, sshConnectingRef, sshWriteQueuesRef,
     recordingWriteQueuesRef, recordingPlainTranscriptsRef, recordingRef, sshSecretPromptRef, activeSshTabIdRef,
@@ -1204,7 +1203,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   useSshTerminal({
     enabled: terminalOpen,
-    terminalLayoutKey: `${sshQuickListOpen}`,
     activeTabId: activeSshTabId,
     activeSessionId: sshTabs.find((tab) => tab.id === activeSshTabId)?.sessionId || "",
     tabIds: sshTabs.map((tab) => tab.id),
@@ -3894,6 +3892,20 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     disabledReason: "Not connected - connect it in Terminal (or its own SSH window) first",
     selected: paneOpenIds.includes(sftpWindowId(entry.id)),
   }));
+  // Terminal menu in the dock: every Workspace (also the empty ones, so the menu
+  // can tell "no Workspace" from "no SSH entry") with its entries' live state.
+  const paneTerminalWorkspaces: PaneTerminalWorkspace[] = managedSessions.map((workspace) => ({
+    id: workspace.id,
+    name: workspace.name,
+    entries: workspace.sshEntries.map((entry) => ({
+      entryId: entry.id,
+      label: sshEntryLabel(entry),
+      detail: `${entry.username}@${entry.host}${entry.port && entry.port !== 22 ? `:${entry.port}` : ""}`,
+      connected: isSshEntryConnected(entry.id, sshTabs, sshPopups),
+    })),
+  }));
+  // Windows Terminal / Command Prompt are launched through the Windows-only `open_local_terminal`.
+  const localShellsAvailable = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
   const remoteWindowTitle = `Remote · ${activeLocation?.displayName || session.locationId || "No Location"}`;
   const sftpEntryIds = sshEntries.map(({ entry }) => entry.id);
   const paneTitles: Record<string, string> = { local: "Local", remote: remoteWindowTitle, rest: "RestAPI", vnc: "VNC", terminal: "Terminal" };
@@ -4515,29 +4527,19 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   const terminalBody = (
     <TerminalWorkspace
-        quickListOpen={sshQuickListOpen}
         tabs={sshTabs}
         activeTabId={activeSshTabId}
         activeTab={activeSshTab}
-        workspaces={workspaceSessions}
-        activeWorkspaceId={workspaceSessionId}
-        activeWorkspace={activeWorkspaceSession}
         connected={sshConnected}
         recording={recording}
         recordingHasOutput={recordingHasOutput}
         savedLogPaths={savedLogPaths}
         activeQueueCount={transferQueue.filter((item) => ["queued", "running", "retrying", "needs_user_action"].includes(item.status)).length}
         registerHostRef={registerSshTerminalHostRef}
-        onToggleQuickList={() => setSshQuickListOpen((open) => !open)}
-        onOpenLocalTerminal={openLocalTerminal}
         onSelectTab={selectSshTab}
         onCopySession={copySshSession}
         onReorderTabs={reorderSshTabs}
         onCloseTab={closeSshTab}
-        onCreateTab={() => { createSshTab(); }}
-        onQuickConnect={quickConnectSsh}
-        onOpenEntryInNewWindow={(workspaceId, entryId) => { void openSshEntryInNewWindow(workspaceId, entryId); }}
-        onSelectWorkspace={selectWorkspaceSession}
         onConnect={connectSsh}
         onDisconnect={disconnectSsh}
         onCancelConnect={cancelSshConnect}
@@ -4545,7 +4547,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         onStopRecording={stopRecording}
         onSaveLog={openSaveLogDialog}
         onOpenSavedLog={openLocalViewer}
-        onOpenWorkspaceManager={() => { void openSessionsModal(); }}
         onOpenQueue={() => setQueueOpen(true)}
     />
   );
@@ -4579,6 +4580,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         subtitles={paneSubtitles}
         remoteChoices={paneRemoteChoices}
         sftpChoices={paneSftpChoices}
+        terminalWorkspaces={paneTerminalWorkspaces}
+        localShellsAvailable={localShellsAvailable}
+        onOpenLocalShell={openLocalTerminal}
+        onOpenSshInPane={quickConnectSsh}
+        onOpenSshWindow={(workspaceId, entryId) => { void openSshEntryInNewWindow(workspaceId, entryId); }}
+        onOpenEntryManager={(workspaceId) => { void openSessionsModal(workspaceId); }}
+        onCreateWorkspace={startNewWorkspace}
         sftpEntryIds={sftpEntryIds}
         busy={busy}
         topRight={

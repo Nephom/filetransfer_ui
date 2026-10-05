@@ -232,7 +232,6 @@ textarea:focus { border-color: var(--bridge-cyan); box-shadow: 0 0 0 2px rgba(99
 .ssh-tab.active { border-color: var(--bridge-cyan); background: rgba(99, 230, 255, .16); box-shadow: 0 0 14px rgba(99, 230, 255, .12); }
 .xterm-host,
 .ssh-output { border-color: var(--bridge-line); background: rgba(1, 7, 14, .88); }
-.ssh-quick-list { border-color: var(--bridge-line); background: rgba(5, 25, 42, .8); }
 
 .modal-cover { background: rgba(0, 5, 13, .7); backdrop-filter: blur(10px) saturate(125%); }
 .modal,

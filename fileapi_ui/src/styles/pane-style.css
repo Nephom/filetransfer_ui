@@ -366,7 +366,8 @@
   align-items: flex-end;
   gap: var(--space-3);
 }
-.pane-functions {
+.pane-functions,
+.pane-terminal {
   position: relative;
 }
 .explorer.pane-style .pane-dock-button,
@@ -471,6 +472,35 @@
   background: var(--color-bg-popover);
   box-shadow: var(--shadow-panel);
   animation: pane-menu-in .18s cubic-bezier(.2, .9, .3, 1.15) both;
+}
+/* Terminal -> SSH Entries: the entry list and the per-entry actions are two
+   sibling panels in one row, so the scrolling list never clips the actions. */
+.pane-ssh-menu-wrap {
+  position: absolute;
+  left: calc(100% + var(--space-3));
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.pane-ssh-menu-wrap .pane-ssh-menu {
+  position: static;
+  flex: 0 0 auto;
+}
+.pane-entry-actions {
+  flex: 0 0 auto;
+  width: clamp(200px, 20vw, 260px);
+  padding: var(--space-2);
+  border: 1px solid var(--bridge-popover-border, var(--color-border));
+  border-radius: 14px;
+  background: var(--color-bg-popover);
+  box-shadow: var(--shadow-panel);
+  animation: pane-menu-in .18s cubic-bezier(.2, .9, .3, 1.15) both;
+}
+.pane-entry-actions .pane-menu-heading {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .pane-menu-heading {
   display: flex;
@@ -661,7 +691,8 @@
     transition: none;
     transition-delay: 0s;
   }
-  .pane-location-menu {
+  .pane-location-menu,
+  .pane-entry-actions {
     animation: none;
   }
 }

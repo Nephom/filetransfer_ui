@@ -164,7 +164,7 @@ export function useTerminalLifecycle({
   onNotice,
 }: {
   enabled: boolean;
-  layoutKey: string;
+  layoutKey?: string;
   tabIds: string[];
   activeTabId: string;
   hostRefsRef: MutableRefObject<Map<string, HTMLDivElement>>;

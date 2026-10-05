@@ -7,7 +7,6 @@ export function useSshTerminalState() {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [sshTabs, setSshTabs] = useState<SshTerminalTab[]>([]);
   const [activeSshTabId, setActiveSshTabId] = useState("");
-  const [sshQuickListOpen, setSshQuickListOpen] = useState(true);
   const [sshConnected, setSshConnected] = useState(false);
   const sshOutputRef = useRef("");
   const [recording, setRecording] = useState(false);
@@ -34,7 +33,7 @@ export function useSshTerminalState() {
 
   return {
     terminalOpen, setTerminalOpen, sshTabs, setSshTabs, activeSshTabId, setActiveSshTabId,
-    sshQuickListOpen, setSshQuickListOpen, sshConnected, setSshConnected,
+    sshConnected, setSshConnected,
     sshOutputRef, recording, setRecording, savedLogPaths, setSavedLogPaths,
     saveLogNameOpen, setSaveLogNameOpen, saveLogNameDraft, setSaveLogNameDraft,
     saveLogDestinationPath, setSaveLogDestinationPath,

@@ -25,7 +25,7 @@ type NativeRefs = {
 
 type Props = NativeRefs & {
   enabled: boolean;
-  terminalLayoutKey: string;
+  terminalLayoutKey?: string;
   activeTabId: string;
   activeSessionId: string;
   tabIds: string[];

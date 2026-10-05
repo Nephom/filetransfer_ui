@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { PaneDock, type PaneLocationChoice } from "./PaneDock";
+import { PaneDock, type PaneLocationChoice, type PaneTerminalWorkspace } from "./PaneDock";
+import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
 import { PaneWindow } from "./PaneWindow";
 import { usePaneWindows } from "./usePaneWindows";
 import { PANE_SINGLETON_KINDS, kindOf, sftpWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
@@ -32,12 +33,23 @@ type Props = {
   subtitles: Partial<Record<string, string>>;
   remoteChoices: PaneLocationChoice[];
   sftpChoices: PaneLocationChoice[];
+  /** Every Workspace with its SSH entries (Terminal menu in the dock). */
+  terminalWorkspaces: PaneTerminalWorkspace[];
+  /** Windows Terminal / Command Prompt can only be launched on Windows. */
+  localShellsAvailable: boolean;
   /** SSH entries that still exist; an open SFTP window whose entry is gone is dropped. */
   sftpEntryIds: readonly string[];
   busy: boolean;
   /** Pills in the top-right corner (queue, account, ...). */
   topRight: React.ReactNode;
   onSelectRemote: (locationId: string) => void;
+  onOpenLocalShell: (kind: LocalTerminalKind) => void;
+  /** Connect the entry inside the main window's Terminal pane (the pane is opened first). */
+  onOpenSshInPane: (workspaceId: string, entryId: string) => void;
+  /** Connect the entry in its own native window. */
+  onOpenSshWindow: (workspaceId: string, entryId: string) => void;
+  onOpenEntryManager: (workspaceId?: string) => void;
+  onCreateWorkspace: () => void;
   /** Receives the "open this window" function so the app can open windows (e.g. from the Workspace Manager). */
   openRef: React.MutableRefObject<(id: PaneWindowId) => void>;
   /** Called when the set of open windows or the focused window changes. */
@@ -69,8 +81,8 @@ function Wallpaper() {
 }
 
 export function PaneDesktop({
-  restEnabled, vncEnabled, openRef, children, titles, subtitles, remoteChoices, sftpChoices, sftpEntryIds, busy, topRight,
-  onSelectRemote, onWindowState, confirmDiscardRecordings,
+  restEnabled, vncEnabled, openRef, children, titles, subtitles, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sftpEntryIds, busy, topRight,
+  onSelectRemote, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onWindowState, confirmDiscardRecordings,
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const [layer, setLayer] = useState({ w: 0, h: 0 });
@@ -194,9 +206,16 @@ export function PaneDesktop({
         vncEnabled={vncEnabled}
         remoteChoices={remoteChoices}
         sftpChoices={sftpChoices}
+        terminalWorkspaces={terminalWorkspaces}
+        localShellsAvailable={localShellsAvailable}
         popups={popups}
         busy={busy}
         onOpenLocal={() => open("local")}
+        onOpenLocalShell={onOpenLocalShell}
+        onOpenSshInPane={(workspaceId, entryId) => { open("terminal"); onOpenSshInPane(workspaceId, entryId); }}
+        onOpenSshWindow={onOpenSshWindow}
+        onOpenEntryManager={onOpenEntryManager}
+        onCreateWorkspace={onCreateWorkspace}
         onOpenRemote={(id) => { onSelectRemote(id); open("remote"); }}
         onOpenSftp={(entryId) => open(sftpWindowId(entryId))}
         onActivate={activate}

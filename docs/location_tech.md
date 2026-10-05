@@ -146,14 +146,30 @@ On the Rust side (`ssh/sftp.rs`) the SFTP connections are `Arc<SftpConnection>` 
 
 Closing an SFTP window releases its connection and discards the window. SFTP transfers retain the profile id and use SFTP-native operations; they do not send `X-Location-ID`.
 
-### Local terminal launch cards
+### Terminal dock menu and local terminal launchers
 
-The Terminal header keeps two small local-launch cards between the `Workspaces`
-button and the SSH tabs: Windows Terminal and Command Prompt. They are
-shortcuts, not Workspace Entries, so they do not enter `ManagedSession`, local
-storage, SSH password handling, or SSH tab lifecycle. Each card has an
-accessible label and a native `title` tip. The frontend sends only the fixed
-terminal kind and the current LOCAL pane path to `open_local_terminal`.
+The dock's Terminal button no longer toggles a window; it opens a flyout built
+like Functions. From top to bottom it lists `Terminal`, `CMD`, `SSH Entries` and
+`Entry Manager` (Entry Manager is nearest the dock button; the DOM order is
+reversed because `.pane-flyout` uses `column-reverse`).
+
+- `Terminal` and `CMD` are rendered only when `navigator.userAgent` contains
+  `Windows` (`localShellsAvailable` in `main.tsx`). They are shortcuts, not
+  Workspace Entries, so they do not enter `ManagedSession`, local storage, SSH
+  password handling, or SSH tab lifecycle. The frontend sends only the fixed
+  terminal kind and the current LOCAL pane path to `open_local_terminal`.
+- `SSH Entries` opens a list grouped by Workspace. With no Workspace at all it
+  shows a "No Workspace yet" item that starts the Create Workspace dialog; with
+  Workspaces but no SSH entry it shows "No SSH Entry yet" that opens Entry
+  Manager on the first Workspace. Choosing an entry opens a sibling panel
+  (`.pane-entry-actions`) with **Open a new Window** (native Tauri window,
+  `openSshEntryInNewWindow`) and **Open SSH** (opens the Terminal pane, then
+  `quickConnectSsh`). The panel is a sibling of the scrolling list so the list
+  never clips it.
+- `Entry Manager` opens the Workspace Manager (`SessionsModal`).
+
+The Terminal window itself only holds the SSH tabs, Connect/Disconnect/Cancel,
+Transfer Queue and recording controls; entries are never picked inside it.
 
 Rust resolves the path with the same read-only LOCAL directory resolver used by
 the file browser. An empty path means HOME; `..`, missing directories, files,

@@ -1,35 +1,23 @@
 import React, { useEffect, useRef, useState } from "react";
-import { CloseIcon, WindowsTerminalIcon, CommandPromptIcon } from "../../ui/icons";
-import { Dropdown } from "../../ui/Dropdown";
-import type { LocalTerminalKind, SshTerminalTab, TerminalWorkspaceSession } from "./terminal-contracts";
+import { CloseIcon } from "../../ui/icons";
+import type { SshTerminalTab } from "./terminal-contracts";
 
 type TerminalTab = SshTerminalTab;
-type TerminalWorkspaceGroup = TerminalWorkspaceSession;
 
 type Props = {
-  quickListOpen: boolean;
   tabs: TerminalTab[];
   activeTabId: string;
   activeTab?: TerminalTab;
-  workspaces: TerminalWorkspaceGroup[];
-  activeWorkspaceId: string;
-  activeWorkspace?: TerminalWorkspaceGroup;
   connected: boolean;
   recording: boolean;
   recordingHasOutput: boolean;
   savedLogPaths: string[];
   activeQueueCount: number;
   registerHostRef: (tabId: string, el: HTMLDivElement | null) => void;
-  onToggleQuickList: () => void;
-  onOpenLocalTerminal: (kind: LocalTerminalKind) => void;
   onSelectTab: (tab: TerminalTab) => void;
   onCopySession: (tab: TerminalTab) => void;
   onReorderTabs: (draggedId: string, targetId: string) => void;
   onCloseTab: (tabId: string) => void;
-  onCreateTab: () => void;
-  onQuickConnect: (workspaceId: string, entryId: string) => void;
-  onOpenEntryInNewWindow: (workspaceId: string, entryId: string) => void;
-  onSelectWorkspace: (id: string) => void;
   onConnect: () => void;
   onDisconnect: () => void;
   onCancelConnect: (tabId: string) => void;
@@ -37,34 +25,23 @@ type Props = {
   onStopRecording: () => void;
   onSaveLog: () => void;
   onOpenSavedLog: (path: string) => void;
-  onOpenWorkspaceManager: () => void;
   onOpenQueue: () => void;
 };
 
 export function TerminalWorkspace({
-  quickListOpen,
   tabs,
   activeTabId,
   activeTab,
-  workspaces,
-  activeWorkspaceId,
-  activeWorkspace,
   connected,
   recording,
   recordingHasOutput,
   savedLogPaths,
   activeQueueCount,
   registerHostRef,
-  onToggleQuickList,
-  onOpenLocalTerminal,
   onSelectTab,
   onCopySession,
   onReorderTabs,
   onCloseTab,
-  onCreateTab,
-  onQuickConnect,
-  onOpenEntryInNewWindow,
-  onSelectWorkspace,
   onConnect,
   onDisconnect,
   onCancelConnect,
@@ -72,7 +49,6 @@ export function TerminalWorkspace({
   onStopRecording,
   onSaveLog,
   onOpenSavedLog,
-  onOpenWorkspaceManager,
   onOpenQueue,
 }: Props) {
   const draggedTabIdRef = useRef<string | null>(null);
@@ -98,27 +74,6 @@ export function TerminalWorkspace({
     <section className="terminal-dock">
     <header className="terminal-header">
       <div className="terminal-tabs">
-        <button className={quickListOpen ? "active" : ""} aria-pressed={quickListOpen} onClick={onToggleQuickList}>
-          Workspaces
-        </button>
-        <button
-          type="button"
-          className="local-terminal-card"
-          aria-label="Open Windows Terminal in the current LOCAL folder"
-          title="Open Windows Terminal in the current LOCAL folder"
-          onClick={() => onOpenLocalTerminal("windowsTerminal")}
-        >
-          <WindowsTerminalIcon size={14} />
-        </button>
-        <button
-          type="button"
-          className="local-terminal-card"
-          aria-label="Open Command Prompt in the current LOCAL folder"
-          title="Open Command Prompt in the current LOCAL folder"
-          onClick={() => onOpenLocalTerminal("cmd")}
-        >
-          <CommandPromptIcon size={14} />
-        </button>
         {tabs.map((tab) => (
           <span
             className={`ssh-tab ${tab.id === activeTabId ? "active" : ""}${tab.id === draggedTabId ? " dragging" : ""}${tab.id === dropTargetId ? " drop-target" : ""}`}
@@ -164,48 +119,20 @@ export function TerminalWorkspace({
             <button type="button" className="ssh-tab-close" aria-label={`Close ${tab.title}`} draggable={false} onClick={() => onCloseTab(tab.id)}><CloseIcon size={11} /></button>
           </span>
         ))}
-        <button type="button" aria-label="New SSH terminal tab" onClick={onCreateTab}>+</button>
       </div>
       <div className="terminal-actions">
-        <button onClick={onOpenWorkspaceManager}>Workspace Manager</button>
         <button onClick={onOpenQueue}>Transfer Queue ({activeQueueCount})</button>
       </div>
     </header>
     <div className="terminal-body">
-      {quickListOpen && <aside className="ssh-quick-list" aria-label="Saved SSH sessions">
-        <div className="ssh-quick-list-heading">Workspaces</div>
-        {workspaces.length === 0 && <p className="terminal-inline-note">No saved SSH entries yet. Use Workspace Manager to add one.</p>}
-        {workspaces.map((workspace) => <div className="ssh-quick-list-group" key={workspace.id}>
-          <span className="ssh-quick-list-group-label">{workspace.name}</span>
-          {workspace.sshEntries.map((entry) => {
-            const entryConnected = tabs.some((tab) => tab.workspaceId === workspace.id && tab.sshEntryId === entry.id && tab.connected);
-            const isActive = activeTab?.workspaceId === workspace.id && activeTab?.sshEntryId === entry.id;
-            return <div className={`ssh-quick-list-entry-row ${isActive ? "active" : ""}`} key={entry.id}>
-              <button type="button" className="ssh-quick-list-entry" onClick={() => onQuickConnect(workspace.id, entry.id)}>
-                <span className={`ssh-tab-status ${entryConnected ? "connected" : "disconnected"}`} aria-hidden="true" />
-                {entry.name}
-              </button>
-              <button
-                type="button"
-                className="ssh-quick-list-entry-popup"
-                aria-label={`Open ${entry.name} in new window`}
-                title="Open in New Window"
-                onClick={() => onOpenEntryInNewWindow(workspace.id, entry.id)}
-              >↗</button>
-            </div>;
-          })}
-        </div>)}
-      </aside>}
       <div className="terminal-content ssh-terminal-content">
-        <div className="ssh-controls">
-          <Dropdown className="palette-select-control" label="Select a Workspace" value={activeWorkspaceId} options={workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name }))} onChange={onSelectWorkspace} />
-          {!activeTab?.connected ? <button className="confirm" onClick={onConnect} disabled={activeTab?.connecting}>{activeTab?.connecting ? "Connecting…" : "Connect"}</button> : <button className="danger" onClick={onDisconnect}>Disconnect</button>}
-          {activeTab?.connecting && <button className="danger" onClick={() => onCancelConnect(activeTab.id)}>Cancel</button>}
-        </div>
-        {!activeWorkspace && <p className="terminal-inline-note">Create or open a Session with an SSH connection before connecting.</p>}
+        {activeTab && <div className="ssh-controls">
+          {!activeTab.connected ? <button className="confirm" onClick={onConnect} disabled={activeTab.connecting}>{activeTab.connecting ? "Connecting…" : "Connect"}</button> : <button className="danger" onClick={onDisconnect}>Disconnect</button>}
+          {activeTab.connecting && <button className="danger" onClick={() => onCancelConnect(activeTab.id)}>Cancel</button>}
+        </div>}
         <div className="xterm-host-stack">
           {tabs.length === 0
-            ? <div className="xterm-host-empty"><p className="terminal-inline-note">Select a saved SSH session or open the Session manager to add one.</p></div>
+            ? <div className="xterm-host-empty"><p className="terminal-inline-note">Use the Terminal button on the dock to pick an SSH Entry.</p></div>
             // Issue #239: every tab keeps its own permanently-mounted host
             // div/Terminal instance (see useTerminalLifecycle) -- switching
             // tabs only toggles which one has the `active` class (see

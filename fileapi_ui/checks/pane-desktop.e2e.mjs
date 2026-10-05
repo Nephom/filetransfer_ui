@@ -199,10 +199,31 @@ try {
   await shot("05-maximized");
   await page.locator(".pane-window-remote .pane-window-control", { has: page.locator("svg") }).nth(1).click();
 
-  // Terminal window: opens from the dock, hides with its tab and keeps its box when minimized.
-  await page.locator(".pane-dock-launchers > .pane-dock-button", { hasText: "Terminal" }).click();
+  // Terminal flyout: Terminal -> CMD (Windows only) -> SSH Entries -> Entry Manager (nearest the dock button).
+  // Choosing an SSH entry offers "Open a new Window" and "Open SSH"; Open SSH opens the Terminal pane.
+  const openSshEntry = async (name) => {
+    await page.locator(".pane-terminal-button").click();
+    await page.waitForTimeout(450);
+    await page.locator(".pane-terminal .pane-flyout-button", { hasText: "SSH Entries" }).click();
+    await page.locator(".pane-ssh-menu .pane-menu-item", { hasText: name }).click();
+    await page.locator(".pane-entry-actions").waitFor();
+    assert.equal(await page.locator(".pane-entry-actions .pane-menu-item").count(), 2, "an SSH entry offers exactly two actions");
+    assert.ok(await page.locator(".pane-entry-actions .pane-menu-item", { hasText: "Open a new Window" }).count() === 1, "Open a new Window is offered");
+    await page.locator(".pane-entry-actions .pane-menu-item", { hasText: "Open SSH" }).click();
+  };
+  await page.locator(".pane-terminal-button").click();
+  await page.waitForTimeout(450);
+  const terminalLabels = await page.locator(".pane-terminal .pane-flyout.is-open .pane-flyout-button .pane-dock-label").allTextContents();
+  const windowsHost = /Windows/i.test(await page.evaluate(() => navigator.userAgent));
+  assert.deepEqual(terminalLabels.reverse(), windowsHost ? ["Terminal", "CMD", "SSH Entries", "Entry Manager"] : ["SSH Entries", "Entry Manager"], "flyout order is Terminal, CMD, SSH Entries, Entry Manager (top to bottom)");
+  const flyoutBoxes = await page.locator(".pane-terminal .pane-flyout.is-open .pane-flyout-button").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().top));
+  assert.ok(flyoutBoxes.every((top, index) => index === 0 || top < flyoutBoxes[index - 1]), "Entry Manager is the lowest button (nearest the dock); the others stack above it");
+  await page.locator(".pane-terminal .pane-flyout-button", { hasText: "Entry Manager" }).click();
+  await page.locator(".sessions-modal").waitFor();
+  await page.keyboard.press("Escape");
+  await openSshEntry("Alpha");
   await page.waitForTimeout(250);
-  assert.equal(await page.locator(".pane-window-terminal:not(.is-hidden)").count(), 1, "Terminal window opens");
+  assert.equal(await page.locator(".pane-window-terminal:not(.is-hidden)").count(), 1, "Open SSH opens the Terminal window");
   const terminalBefore = await rect(".pane-window-terminal");
   await page.locator(".pane-window-terminal .pane-window-control").first().click();
   const terminalHidden = await rect(".pane-window-terminal");
@@ -236,7 +257,7 @@ try {
   await page.locator(".pane-functions-button").click();
   await page.waitForTimeout(450);
   await page.locator(".pane-flyout-button", { hasText: "Location" }).click();
-  const alphaBefore = page.locator(".pane-location-menu .pane-menu-item", { hasText: "Alpha" });
+  const alphaBefore = page.locator(".pane-location-menu .pane-menu-item", { hasText: "Beta" });
   assert.equal(await alphaBefore.isDisabled(), true, "an SSH entry that is not connected cannot be opened as SFTP");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
@@ -245,12 +266,9 @@ try {
   await page.waitForTimeout(250);
   if (await page.locator(".pane-window-terminal.is-hidden").count()) { await terminalTab.click(); await page.waitForTimeout(250); }
   await page.locator(".pane-window-terminal:not(.is-hidden)").waitFor();
-  // The Workspaces quick list is open by default; connect both saved entries from it.
-  await page.locator(".pane-window-terminal .ssh-quick-list").waitFor();
-  for (const name of ["Alpha", "Beta"]) {
-    await page.locator(".ssh-quick-list-entry", { hasText: name }).click();
-    await page.waitForTimeout(300);
-  }
+  // Connect both saved entries through the Terminal flyout (Alpha is already connected above).
+  await openSshEntry("Beta");
+  await page.waitForTimeout(300);
   const openSftp = async (name) => {
     await page.locator(".pane-functions-button").click();
     await page.waitForTimeout(450);
