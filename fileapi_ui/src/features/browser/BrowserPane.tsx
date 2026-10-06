@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ChevronLeftIcon, ChevronRightIcon, RefreshIcon, StopIcon } from "../../ui/icons";
 import type { PaneBrowserWindowId } from "../../pane/pane-window-model";
-import type { BrowserBounds, BrowserBoundsReadback, BrowserNavigationState, BrowserNewPaneEvent, BrowserViewStateEvent } from "./browser-contracts";
+import type { BrowserBounds, BrowserNavigationState, BrowserNewPaneEvent, BrowserViewStateEvent } from "./browser-contracts";
 import { BROWSER_NEW_PANE_EVENT, BROWSER_VIEW_STATE_EVENT } from "./browser-contracts";
 import "./browser-pane.css";
 
@@ -60,45 +59,33 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
   onInitialUrlConsumedRef.current = onInitialUrlConsumed;
   onOpenNewPaneRef.current = onOpenNewPane;
 
-  const reportBoundsReadback = useCallback((readback: BrowserBoundsReadback) => {
-    if (!import.meta.env.DEV) return;
-    const delta = Math.max(
-      Math.abs(readback.requested.x - readback.actual.x),
-      Math.abs(readback.requested.y - readback.actual.y),
-      Math.abs(readback.requested.width - readback.actual.width),
-      Math.abs(readback.requested.height - readback.actual.height),
-    );
-    if (delta > 1) console.warn(`Browser pane ${paneId} native bounds differ from the requested rectangle`, readback);
-  }, [paneId]);
-
   const readBounds = useCallback((): BrowserBounds | null => {
     const anchor = anchorRef.current;
     if (!anchor) return null;
     const rect = anchor.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
+    if (rect.width < 2 || rect.height < 2) return null;
+    // Keep the native child surface just inside the DOM pane body border.
     return {
-      x: rect.left,
-      y: rect.top,
-      width: rect.width,
-      height: rect.height,
-      devicePixelRatio: window.devicePixelRatio || 1,
+      x: Math.round(rect.left + 1),
+      y: Math.round(rect.top + 1),
+      width: Math.max(1, Math.floor(rect.width - 2)),
+      height: Math.max(1, Math.floor(rect.height - 2)),
     };
   }, []);
 
   const scheduleBounds = useCallback(() => {
     const bounds = readBounds();
     if (!bounds) return;
-    const serialized = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}:${bounds.devicePixelRatio}`;
+    const serialized = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
     if (serialized === lastBoundsRef.current) return;
     lastBoundsRef.current = serialized;
     boundsQueueRef.current = boundsQueueRef.current
       .then(async () => {
         if (!createdRef.current) return;
-        const readback = await invoke<BrowserBoundsReadback>("browser_set_bounds", { paneId, bounds });
-        reportBoundsReadback(readback);
+        await invoke("browser_set_bounds", { paneId, bounds });
       })
       .catch(() => undefined);
-  }, [paneId, readBounds, reportBoundsReadback]);
+  }, [paneId, readBounds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -129,14 +116,13 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
       const bounds = readBounds();
       if (!bounds) throw new Error("Browser pane has no visible content area.");
       const url = initialUrlRef.current ? normalizeBrowserUrl(initialUrlRef.current) : "about:blank";
-      const readback = await invoke<BrowserBoundsReadback>("browser_create", { paneId, initialUrl: url, bounds, visible: visibleRef.current });
-      reportBoundsReadback(readback);
+      await invoke("browser_create", { paneId, initialUrl: url, bounds, visible: visibleRef.current });
       if (cancelled) {
         await invoke("browser_destroy", { paneId }).catch(() => undefined);
         return;
       }
       createdRef.current = true;
-      lastBoundsRef.current = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}:${bounds.devicePixelRatio}`;
+      lastBoundsRef.current = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
       setViewReady(true);
       onInitialUrlConsumedRef.current();
     };
@@ -154,7 +140,7 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
         void invoke("browser_destroy", { paneId }).catch(() => undefined);
       }
     };
-  }, [paneId, readBounds, reportBoundsReadback]);
+  }, [paneId, readBounds]);
 
   useEffect(() => {
     if (!viewReady) return;
@@ -166,16 +152,8 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
     const mutationObserver = pane ? new MutationObserver(scheduleBounds) : null;
     mutationObserver?.observe(pane!, { attributes: true, attributeFilter: ["class", "style"] });
     window.addEventListener("resize", scheduleBounds);
-    let disposed = false;
-    let unlistenScaleChange: (() => void) | undefined;
-    void getCurrentWebviewWindow().onScaleChanged(() => scheduleBounds()).then((unlisten) => {
-      if (disposed) unlisten();
-      else unlistenScaleChange = unlisten;
-    }).catch(() => undefined);
     scheduleBounds();
     return () => {
-      disposed = true;
-      unlistenScaleChange?.();
       resizeObserver.disconnect();
       mutationObserver?.disconnect();
       window.removeEventListener("resize", scheduleBounds);
