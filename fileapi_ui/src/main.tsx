@@ -35,7 +35,6 @@ import type { Terminal } from "@xterm/xterm";
 // full contract and why the previous 18 separate imports here were
 // consolidated, and how the override layer is split into modules (T-202).
 import "./styles/index.css";
-import { helpPages, helpSections } from "./help/help-content";
 import type { OperationLogRecord } from "./log-view";
 import type { RestApiSecret } from "./rest-api";
 import type { FileBrowserProps, ProxmoxVncEntry, ProxmoxVncSecret, ProxmoxVmSummary } from "./proxmox-vnc";
@@ -3499,10 +3498,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     void logoutSession().catch(() => setNotice("Signed out locally. The server logout request could not be confirmed."));
   };
 
-  const selectedHelpPage = helpPages.find((page) => page.id === selectedHelpPageId) || helpPages[0];
-  const selectedHelpSection = helpSections.find((section) => section.pages.some((page) => page.id === selectedHelpPage.id)) || helpSections[0];
-  const selectedHelpIndex = helpPages.findIndex((page) => page.id === selectedHelpPage.id);
-
   const renderTreeNode = (node: FolderNode) => (
     <div className="folder-tree" key={node.path}>
       <div
@@ -5190,7 +5185,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       {queueOpen && <QueueModal items={transferQueue} activeItems={activeTransferQueue} historyItems={transferHistory} renderItem={(item) => renderDesktopQueueItem(item as TransferQueueItem)} modalStyle={modalStyle("queue")} onDragStart={beginModalDrag("queue")} onClose={() => setQueueOpen(false)} onClearStatus={clearQueueStatus} onClearHistory={clearFinishedQueue} />}
       {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={closeViewer} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
       {logViewOpen && <LogView records={operationLogRecords} modalStyle={modalStyle("log-view")} onDragStart={beginModalDrag("log-view")} onClose={() => setLogViewOpen(false)} onExport={exportOperationLog} />}
-      {helpOpen && <HelpModal sections={helpSections} pages={helpPages} selectedPage={selectedHelpPage} selectedSection={selectedHelpSection} selectedIndex={selectedHelpIndex} expandedSections={expandedHelpSections} modalStyle={modalStyle("help")} onDragStart={beginModalDrag("help")} onClose={() => setHelpOpen(false)} onToggleSection={(id) => setExpandedHelpSections((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onSelectPage={setSelectedHelpPageId} />}
+      {helpOpen && <HelpModal selectedPageId={selectedHelpPageId} expandedSections={expandedHelpSections} modalStyle={modalStyle("help")} onDragStart={beginModalDrag("help")} onClose={() => setHelpOpen(false)} onToggleSection={(id) => setExpandedHelpSections((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onSelectPage={setSelectedHelpPageId} />}
       {namePrompt && <FloatingWindow
         ariaLabel={namePrompt.title}
         className="name-prompt-dialog"

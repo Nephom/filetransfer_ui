@@ -58,7 +58,7 @@ export function PaneTopRight({
             {!session.localOnly && session.role !== "admin" && <button role="menuitem" onClick={onChangePassword}>Change password</button>}
             <button role="menuitem" onClick={onOpenLogView}>LogView</button>
             <button role="menuitem" onClick={onOpenHelp}>Help</button>
-            <button role="menuitem" onClick={onOpenWelcomeTutorial}>Welcome tutorial</button>
+            <button role="menuitem" onClick={onOpenWelcomeTutorial}>Tutorial</button>
             <hr />
             <button className="danger" role="menuitem" onClick={onSignOut}>Log out</button>
           </div>,

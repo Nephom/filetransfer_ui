@@ -1,15 +1,11 @@
 import React from "react";
 import "../../help/help.css";
-import { HelpIcon, type HelpPage, type HelpSection } from "../../help/help-content";
+import { HelpIcon, helpPages, helpSections } from "../../help/help-content";
 import { FloatingWindow } from "../../ui/FloatingWindow";
 import { CloseIcon } from "../../ui/icons";
 
 type HelpModalProps = {
-  sections: HelpSection[];
-  pages: HelpPage[];
-  selectedPage: HelpPage;
-  selectedSection: HelpSection;
-  selectedIndex: number;
+  selectedPageId: string;
   expandedSections: string[];
   modalStyle: React.CSSProperties;
   onDragStart: (event: React.MouseEvent<HTMLElement>) => void;
@@ -18,7 +14,11 @@ type HelpModalProps = {
   onSelectPage: (id: string) => void;
 };
 
-export function HelpModal({ sections, pages, selectedPage, selectedSection, selectedIndex, expandedSections, modalStyle, onDragStart, onClose, onToggleSection, onSelectPage }: HelpModalProps) {
+export function HelpModal({ selectedPageId, expandedSections, modalStyle, onDragStart, onClose, onToggleSection, onSelectPage }: HelpModalProps) {
+  const selectedPage = helpPages.find((page) => page.id === selectedPageId) || helpPages[0];
+  const selectedSection = helpSections.find((section) => section.pages.some((page) => page.id === selectedPage.id)) || helpSections[0];
+  const selectedIndex = helpPages.findIndex((page) => page.id === selectedPage.id);
+
   return (
     <FloatingWindow
       ariaLabel="nFterm Help"
@@ -35,10 +35,10 @@ export function HelpModal({ sections, pages, selectedPage, selectedSection, sele
       )}
       footer={(
         <footer className="help-footer">
-          <span>頁面 {selectedIndex + 1} / {pages.length}</span>
+          <span>頁面 {selectedIndex + 1} / {helpPages.length}</span>
           <div className="help-page-nav">
-            <button type="button" disabled={selectedIndex <= 0} onClick={() => onSelectPage(pages[selectedIndex - 1].id)}>Previous</button>
-            <button type="button" disabled={selectedIndex >= pages.length - 1} onClick={() => onSelectPage(pages[selectedIndex + 1].id)}>Next</button>
+            <button type="button" disabled={selectedIndex <= 0} onClick={() => onSelectPage(helpPages[selectedIndex - 1].id)}>Previous</button>
+            <button type="button" disabled={selectedIndex >= helpPages.length - 1} onClick={() => onSelectPage(helpPages[selectedIndex + 1].id)}>Next</button>
             <button type="button" onClick={onClose}>Close</button>
           </div>
         </footer>
@@ -46,7 +46,7 @@ export function HelpModal({ sections, pages, selectedPage, selectedSection, sele
     >
       <div className="help-layout">
         <nav className="help-tree" aria-label="Help topics">
-          {sections.map((section) => {
+          {helpSections.map((section) => {
             const expanded = expandedSections.includes(section.id);
             return <div className="help-tree-section" key={section.id}>
               <button type="button" className="help-tree-toggle" aria-expanded={expanded} onClick={() => onToggleSection(section.id)}>
