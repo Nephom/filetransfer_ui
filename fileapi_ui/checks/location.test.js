@@ -164,6 +164,14 @@ function desktop(handler = () => undefined) {
   return { props, calls, render, search, driver, window, storage };
 }
 
+const paneDesktop = (app) => nodes(app.render(), (node) => typeof node.type === "function" && node.type.name === "PaneDesktop")[0];
+const selectRemoteLocation = (app, locationId) => {
+  const pane = paneDesktop(app);
+  assert.ok(pane, "Pane desktop");
+  pane.props.onSelectRemote(locationId);
+  app.render();
+};
+
 test("desktop enabled Rename, Move, Undo and Delete operate on actual backend files", { timeout: 30000 }, async (t) => {
   const parent = join(tmpdir(), "opencode");
   await mkdir(parent, { recursive: true });
@@ -294,7 +302,7 @@ test("production search ignores out-of-order responses, clearing, and Location s
   const switched = deferred();
   const changed = desktop((_command, args) => args.url?.includes("/search?") ? switched.promise : undefined);
   changed.search("pending");
-  nodes(changed.render(), (node) => node.props?.label === "LocationID")[0].props.onSelect("location:B"); changed.render();
+  selectRemoteLocation(changed, "location:B");
   switched.resolve(nativeJson({ files: [{ path: "a/stale", name: "stale", isDirectory: false, size: 1 }] })); await tick();
   assert.doesNotMatch(text(changed.render()), /stale/);
 });
@@ -433,7 +441,7 @@ test("viewer responses cannot cross a Location switch", async () => {
   app.search("file"); await tick();
   nodes(app.render(), (node) => node.props?.["data-path"] === "a/file")[0].props.onClick({});
   nodes(app.render(), (node) => node.type === "button" && text(node) === "View")[0].props.onClick();
-  nodes(app.render(), (node) => node.props?.label === "LocationID")[0].props.onSelect("location:B"); app.render();
+  selectRemoteLocation(app, "location:B");
   pending.resolve(nativeJson({ content: "stale viewer" })); await tick();
   assert.equal(nodes(app.render(), (node) => node.props?.content === "stale viewer").length, 0);
 });
@@ -455,21 +463,21 @@ test("remote search normalizes case while retaining partial filename matching", 
   assert.equal(nodes(app.render(), (node) => node.props?.["data-path"] === "startup.nsh").length, 1);
 });
 
-test("the API Remote window no longer offers SSH entries and never lists SFTP directories", async () => {
+test("Functions Location keeps API Locations and SFTP Entries in separate choices", () => {
   const app = desktop();
   app.storage.set("fileapi-session-registry", JSON.stringify([{ id: "workspace", name: "test", sshEntries: [{ id: "ssh-A", name: "SSH A", host: "ssh.test", port: 22, username: "user" }] }]));
-  const picker = nodes(app.render(), (node) => node.props?.label === "LocationID")[0];
-  const offered = picker.props.groups.flatMap((group) => group.options.map((option) => option.id));
-  assert.ok(offered.every((id) => id.startsWith("location:")), "only API Locations are selectable");
-  picker.props.onSelect("ssh:ssh-A"); app.render(); await tick();
-  assert.equal(app.calls.filter((call) => call.command === "ssh_list_directory").length, 0);
+  const pane = paneDesktop(app);
+  assert.ok(pane, "Pane desktop");
+  assert.ok(pane.props.remoteChoices.every((choice) => choice.id !== "ssh-A"), "SSH entries are not API Remote Locations");
+  assert.deepEqual(pane.props.sftpChoices.map((choice) => choice.id), ["ssh-A"], "SFTP entries appear in their own Location group");
 });
 
 test("late folder-tree replies cannot cross a Location switch", async () => {
   const tree = deferred();
   const app = desktop((_command, args) => args.url?.endsWith("&sort=name&order=asc") ? tree.promise : undefined);
-  nodes(app.render(), (node) => node.props?.label === "LocationID")[0].props.onSelect("location:A"); app.render(); await tick();
-  nodes(app.render(), (node) => node.props?.label === "LocationID")[0].props.onSelect("location:B"); app.render();
+  selectRemoteLocation(app, "A"); await tick();
+  assert.ok(app.calls.some((call) => call.args?.url?.endsWith("&sort=name&order=asc")), "folder-tree request started");
+  selectRemoteLocation(app, "B");
   tree.resolve(nativeJson({ files: [{ name: "stale-tree", path: "stale-tree", isDirectory: true, size: 0 }] })); await tick();
   assert.doesNotMatch(text(app.render()), /stale-tree/);
 });
