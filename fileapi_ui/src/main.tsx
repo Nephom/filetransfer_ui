@@ -98,6 +98,7 @@ type Session = {
   host: string;
   port: string;
   token: string;
+  localOnly: boolean;
   nativeSessionId?: string;
   locationRevision?: string;
   username: string;
@@ -214,6 +215,7 @@ const initialSession: Session = {
   host: defaultHost,
   port: defaultPort,
   token: "",
+  localOnly: false,
   username: "",
   userId: null,
   role: "",
@@ -262,6 +264,8 @@ const sessionArchiveName = (sessionName: string) =>
 
 const serverUrl = (session: Session) =>
   `https://${session.host.trim()}:${session.port.trim()}`;
+// Only this exact loopback IPv4 literal selects Local-only mode; other loopback spellings remain API hosts.
+const isLocalOnlyHost = (session: Session) => session.host.trim() === "127.0.0.1";
 
 class ApiResponse {
   readonly ok: boolean;
@@ -450,7 +454,7 @@ export function App() {
       const authenticatedUsername = data.user.username;
       // The marker is not a bearer token. Cookies live only in this native session's jar.
       const sessionMarker = typeof data.token === "string" && data.token ? data.token : "cookie";
-      setSession((current) => ({ ...current, nativeSessionId, token: sessionMarker, username: authenticatedUsername, userId: data.user.id, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
+      setSession((current) => ({ ...current, nativeSessionId, token: sessionMarker, localOnly: false, username: authenticatedUsername, userId: data.user.id, role: data.user.role ?? "user", permissions: data.user.permissions ?? [] }));
       // Return the new token immediately for a retry, without waiting for React's render.
       return { username: authenticatedUsername, token: sessionMarker };
     } catch (error) {
@@ -464,6 +468,26 @@ export function App() {
     setBusy(true);
     setNotice("");
     try {
+      if (isLocalOnlyHost(sessionRef.current)) {
+        authGeneration.current++;
+        credentialsInvalid.current = false;
+        setSession((current) => ({
+          ...current,
+          host: current.host.trim(),
+          token: "",
+          nativeSessionId: undefined,
+          locationRevision: undefined,
+          localOnly: true,
+          username: "Local",
+          userId: null,
+          role: "local",
+          permissions: [],
+          locationId: "",
+          saveUserInformation: false,
+        }));
+        setPassword("");
+        return;
+      }
       const { username: authenticatedUsername } = await performLogin(session.username, password);
       credentialsInvalid.current = false;
       const credentialId = apiCredentialEntryId({ ...session, username: authenticatedUsername });
@@ -522,7 +546,7 @@ export function App() {
   const logoutSession = async () => {
     const captured = sessionRef.current;
     authGeneration.current++;
-    setSession({ ...captured, token: "", nativeSessionId: undefined, userId: null, role: "", permissions: [], locationId: "", locationRevision: undefined });
+    setSession({ ...captured, token: "", localOnly: false, nativeSessionId: undefined, userId: null, role: "", permissions: [], locationId: "", locationRevision: undefined });
     setPassword("");
     // Clear the native cookie jar even when the server cannot be reached.
     try {
@@ -541,7 +565,7 @@ export function App() {
   } catch {
     // Keep the same safe defaults used by the settings hook when storage is invalid.
   }
-  if (!session.token) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} glassMenusEnabled={savedAppearance.glassMenusEnabled} glassDialogsEnabled={savedAppearance.glassDialogsEnabled} onSubmit={login} />;
+  if (!session.token && !session.localOnly) return <LoginScreen session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} notice={notice} glassMenusEnabled={savedAppearance.glassMenusEnabled} glassDialogsEnabled={savedAppearance.glassDialogsEnabled} onSubmit={login} />;
   return <DesktopApp session={session} setSession={setSession} password={password} setPassword={setPassword} busy={busy} setBusy={setBusy} notice={notice} setNotice={setNotice} refreshSessionToken={refreshSessionToken} logoutSession={logoutSession} invalidateCredentials={invalidateCredentials} />;
 }
 
@@ -1696,7 +1720,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   }, [session.token, session.saveUserInformation]);
 
   useEffect(() => {
-    if (!session.token) return undefined;
+    if (!session.token && !session.localOnly) return undefined;
     void (async () => {
       try {
         await loadLocalFiles("");
@@ -1705,10 +1729,10 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       }
     })();
     return undefined;
-  }, [session.token]);
+  }, [session.token, session.localOnly]);
 
   useEffect(() => {
-    if (!session.token) return undefined;
+    if (!session.token && !session.localOnly) return undefined;
     void (async () => {
       try {
         const elevated = await invoke<boolean>("is_local_elevated");
@@ -1726,7 +1750,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       }
     })();
     return undefined;
-  }, [session.token]);
+  }, [session.token, session.localOnly]);
 
   useEffect(() => {
     if (session.token && session.locationId) {
@@ -3731,7 +3755,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // What the Functions menu offers: every API Location (offline ones disabled)
   // and every saved SSH entry (openable once it is connected in the Terminal;
   // one SFTP window per entry).
-  const paneRemoteChoices: PaneLocationChoice[] = locations.map((location) => ({
+  const paneRemoteChoices: PaneLocationChoice[] = session.localOnly ? [] : locations.map((location) => ({
     id: location.id,
     label: location.displayName,
     detail: location.id,
@@ -4445,6 +4469,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       <PaneDesktop
         restEnabled={desktopSettings.restApiModeEnabled}
         vncEnabled={desktopSettings.proxmoxVncModeEnabled}
+        remoteEnabled={!session.localOnly}
         appOverlayOpen={browserOverlayOpen}
         welcomeOpen={welcomeOpen}
         welcomeOnlyFirstLaunch={welcomeOnlyFirstLaunch}

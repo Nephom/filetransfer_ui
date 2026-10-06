@@ -30,6 +30,7 @@ export function PaneBody({ children }: { id: PaneWindowId; children: React.React
 type Props = {
   restEnabled: boolean;
   vncEnabled: boolean;
+  remoteEnabled: boolean;
   /** One <PaneBody id=...> child per window. The elements keep their identity while a window is dragged, so dragging never re-renders their contents. */
   children: React.ReactNode;
   /** Window titles / subtitles by window id (`local`, `remote`, ..., `sftp:<entryId>`). SSH windows are named through `sshPaneInfo`. */
@@ -95,7 +96,7 @@ function Wallpaper() {
 }
 
 export function PaneDesktop({
-  restEnabled, vncEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, appOverlayOpen, welcomeOpen, welcomeOnlyFirstLaunch, onWelcomeDismiss, topRight,
+  restEnabled, vncEnabled, remoteEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, appOverlayOpen, welcomeOpen, welcomeOnlyFirstLaunch, onWelcomeDismiss, topRight,
   onSelectRemote, onOpenLocalShell, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onWindowState, onRequestClose, hasUnsavedPaneRecording, confirmDiscardRecordings,
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -117,7 +118,7 @@ export function PaneDesktop({
     setDesktopContextMenu({ x: event.clientX, y: event.clientY });
   }, [closeDesktopContextMenu]);
   const available: PaneWindowId[] = [
-    ...PANE_SINGLETON_KINDS.filter((kind) => (kind === "vnc" ? vncEnabled : kind === "rest" ? restEnabled : true)),
+    ...PANE_SINGLETON_KINDS.filter((kind) => (kind === "remote" ? remoteEnabled : kind === "vnc" ? vncEnabled : kind === "rest" ? restEnabled : true)),
     ...entryIds.map(sftpWindowId),
   ];
   // SSH windows (`ssh:<entryId>#<n>`) are opened on demand, any number per entry, so they are not listed
@@ -302,6 +303,7 @@ export function PaneDesktop({
         titles={allTitles}
         restEnabled={restEnabled}
         vncEnabled={vncEnabled}
+        remoteEnabled={remoteEnabled}
         remoteChoices={remoteChoices}
         sftpChoices={sftpChoices}
         terminalWorkspaces={terminalWorkspaces}

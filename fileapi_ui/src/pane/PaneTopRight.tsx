@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { AccountIcon, QueueIcon, SettingsIcon } from "./pane-icons";
 
 type Props = {
-  session: { username: string; role: string };
+  session: { username: string; role: string; localOnly: boolean };
   accountOpen: boolean;
   accountControl: React.Ref<HTMLDivElement>;
   accountMenuStyle: React.CSSProperties;
@@ -24,8 +24,8 @@ export function PaneTopRight({
   session, accountOpen, accountControl, accountMenuStyle, activeQueueCount,
   onOpenQueue, onAccountToggle, onOpenSessions, onOpenSettings, onChangePassword, onOpenLogView, onOpenHelp, onOpenWelcomeTutorial, onSignOut,
 }: Props) {
-  const roleLabel = session.role === "admin" ? "Admin" : session.role === "superuser" ? "Superuser" : "User";
-  const roleDescription = session.role === "admin" ? "System administrator" : session.role === "superuser" ? "Superuser" : "Standard user";
+  const roleLabel = session.localOnly ? "Local" : session.role === "admin" ? "Admin" : session.role === "superuser" ? "Superuser" : "User";
+  const roleDescription = session.localOnly ? "Local-only mode" : session.role === "admin" ? "System administrator" : session.role === "superuser" ? "Superuser" : "Standard user";
   return (
     <>
       <button
@@ -55,7 +55,7 @@ export function PaneTopRight({
             </div>
             <button role="menuitem" onClick={onOpenSessions}>Workspace Manager</button>
             <button role="menuitem" onClick={onOpenSettings}>Settings</button>
-            {session.role !== "admin" && <button role="menuitem" onClick={onChangePassword}>Change password</button>}
+            {!session.localOnly && session.role !== "admin" && <button role="menuitem" onClick={onChangePassword}>Change password</button>}
             <button role="menuitem" onClick={onOpenLogView}>LogView</button>
             <button role="menuitem" onClick={onOpenHelp}>Help</button>
             <button role="menuitem" onClick={onOpenWelcomeTutorial}>Welcome tutorial</button>

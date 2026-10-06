@@ -53,6 +53,23 @@ test("Location login accepts cookie admin id 0 and uses an opaque native session
   assert.doesNotMatch(app.storage.get("nfterm-session"), /opaque-|test-password|cookie/);
 });
 
+test("127.0.0.1 signs in locally without validating port or contacting the API", async () => {
+  const app = harness();
+  app.configure({ host: " 127.0.0.1 ", port: "not-a-port", username: "" });
+  await app.login();
+
+  const desktop = app.render();
+  assert.equal(desktop.session.localOnly, true);
+  assert.equal(desktop.session.host, "127.0.0.1");
+  assert.equal(desktop.session.token, "");
+  assert.equal(desktop.session.nativeSessionId, undefined);
+  assert.equal(desktop.session.username, "Local");
+  assert.equal(desktop.session.userId, null);
+  assert.equal(desktop.session.saveUserInformation, false);
+  assert.ok("refreshSessionToken" in desktop, "Local-only sign-in renders the desktop app");
+  assert.equal(app.calls.filter((call) => ["create_api_session", "api_request", "rest_save_secret"].includes(call.command)).length, 0);
+});
+
 test("Bearer login is preserved; malformed successful responses cannot authenticate", async () => {
   for (const data of [{ user: { id: 0, username: "admin" }, token: "bearer" }, {}, { user: { username: "admin" } }, { success: false, user: { id: 0, username: "admin" } }]) {
     const app = harness((command, args) => command === "api_request" ? nativeJson(data) : undefined);

@@ -36,6 +36,7 @@ type Props = {
   titles: Record<string, string>;
   restEnabled: boolean;
   vncEnabled: boolean;
+  remoteEnabled: boolean;
   remoteChoices: PaneLocationChoice[];
   sftpChoices: PaneLocationChoice[];
   /** Every Workspace (also the ones without SSH entries) with its SSH entries. */
@@ -83,7 +84,7 @@ const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
 };
 
 export function PaneDock({
-  layout, titles, restEnabled, vncEnabled, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, browserSupported, sshPaneStates, popups, busy,
+  layout, titles, restEnabled, vncEnabled, remoteEnabled, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, browserSupported, sshPaneStates, popups, busy,
   desktopContextMenu, onCloseDesktopContextMenu,
   onOpenLocal, onOpenBrowser, onNativeViewOcclusionChange, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onOpenRemote, onOpenSftp, onActivate, onCloseWindow, onFocusPopup, onClosePopup,
 }: Props) {
@@ -416,8 +417,10 @@ export function PaneDock({
                       <span className="pane-menu-icon"><LocalIcon size={18} /></span>
                       <span className="pane-menu-text"><strong>Local</strong><small>This computer</small></span>
                     </button>
-                    <div className="pane-menu-heading"><RemoteIcon size={14} /> Remote</div>
-                    {renderChoices(remoteChoices, chooseRemote, "No remote locations")}
+                    {remoteEnabled && <>
+                      <div className="pane-menu-heading"><RemoteIcon size={14} /> Remote</div>
+                      {renderChoices(remoteChoices, chooseRemote, "No remote locations")}
+                    </>}
                     <div className="pane-menu-heading"><SftpIcon size={14} /> SFTP</div>
                     {renderChoices(sftpChoices, chooseSftp, "No SSH entries in the Workspace Manager")}
                   </div>
@@ -566,8 +569,10 @@ export function PaneDock({
               <span className="pane-menu-icon"><LocalIcon size={18} /></span>
               <span className="pane-menu-text"><strong>Local</strong><small>This computer</small></span>
             </button>
-            <div className="pane-menu-heading"><RemoteIcon size={14} /> Remote</div>
-            {renderChoices(remoteChoices, chooseContextRemote, "No remote locations")}
+            {remoteEnabled && <>
+              <div className="pane-menu-heading"><RemoteIcon size={14} /> Remote</div>
+              {renderChoices(remoteChoices, chooseContextRemote, "No remote locations")}
+            </>}
             <div className="pane-menu-heading"><SftpIcon size={14} /> SFTP</div>
             {renderChoices(sftpChoices, chooseContextSftp, "No SSH entries in the Workspace Manager")}
           </div>

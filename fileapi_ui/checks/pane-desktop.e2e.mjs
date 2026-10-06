@@ -91,6 +91,12 @@ await context.addInitScript(bridge);
 await context.addInitScript(() => {
   // Show the Functions menu entries for REST and VNC too.
   localStorage.setItem("nfterm-settings", JSON.stringify({ restApiModeEnabled: true, proxmoxVncModeEnabled: true }));
+  localStorage.setItem("fileapi-welcome-tutorial", "dismissed");
+  // The desktop intentionally starts with no windows unless a layout was saved.
+  localStorage.setItem("fileapi-pane-layout", JSON.stringify({ version: 1, windows: [
+    { id: "local", x: 12, y: 12, w: 620, h: 680, z: 1, open: true, minimized: false, maximized: false },
+    { id: "remote", x: 644, y: 12, w: 620, h: 680, z: 2, open: true, minimized: false, maximized: false },
+  ] }));
   // Two saved SSH entries for the SFTP window checks.
   localStorage.setItem("fileapi-session-registry", JSON.stringify([{
     id: "ws-1", name: "Lab", restApiEntries: [], proxmoxVncEntries: [],
@@ -403,6 +409,42 @@ try {
   }
   await page.keyboard.press("Escape");
   await page.locator(".modal-cover, .floating-dialog-layer").first().waitFor({ state: "detached", timeout: 3000 }).catch(() => undefined);
+
+  // 127.0.0.1 is the explicit Local-only sign-in: credentials and port are ignored,
+  // API auth/location requests are skipped, and both Location menus omit Remote.
+  await page.locator(".pane-topright .account").click();
+  await page.locator(".account-menu button", { hasText: "Log out" }).click();
+  await page.locator(".login-field-server input").waitFor();
+  await page.locator(".login-field-server input").fill("127.0.0.1");
+  await page.locator(".login-field-port input").fill("not-a-port");
+  await page.locator(".login-field-username input").fill("");
+  await page.locator(".login-field-password input").fill("");
+  const apiCallsBeforeLocalLogin = await page.evaluate(() => window.__calls.filter((cmd) => cmd === "create_api_session" || cmd === "api_request").length);
+  await page.locator("button.login-submit-button").click();
+  await page.locator(".pane-desktop").waitFor();
+  await page.waitForFunction(() => !document.querySelector(".pane-window-remote"));
+  assert.equal(await page.locator(".pane-window-local").count(), 1, "Local remains available in Local-only mode");
+  assert.equal(await page.evaluate(() => window.__calls.filter((cmd) => cmd === "create_api_session" || cmd === "api_request").length), apiCallsBeforeLocalLogin, "Local-only sign-in makes no API session or HTTP request");
+
+  const openLocation = async () => {
+    await page.locator(".pane-functions-button").click();
+    await page.locator(".pane-flyout-button", { hasText: "Location" }).click();
+    await page.locator(".pane-location-menu").waitFor();
+  };
+  await openLocation();
+  assert.equal(await page.locator(".pane-location-menu .pane-menu-item", { hasText: "Local" }).count(), 1, "Location keeps Local");
+  assert.equal(await page.locator(".pane-location-menu .pane-menu-heading", { hasText: /^Remote$/ }).count(), 0, "Location hides Remote");
+  assert.equal(await page.locator(".pane-location-menu .pane-menu-heading", { hasText: "SFTP" }).count(), 1, "Location keeps SFTP");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+
+  await page.locator(".pane-desktop").click({ button: "right", position: { x: 4, y: 4 } });
+  await page.locator(".pane-desktop-context-choice", { hasText: "Location" }).focus();
+  const contextLocation = page.locator('.pane-desktop-context-submenu[aria-label="Location choices"]');
+  await contextLocation.waitFor();
+  assert.equal(await contextLocation.locator(".pane-menu-heading", { hasText: /^Remote$/ }).count(), 0, "desktop context Location also hides Remote");
+  assert.equal(await contextLocation.locator(".pane-menu-heading", { hasText: "SFTP" }).count(), 1, "desktop context Location keeps SFTP");
+  await page.keyboard.press("Escape");
 
   const ignorable = /Failed to load resource|ResizeObserver|favicon/;
   const real = errors.filter((message) => !ignorable.test(message));
