@@ -95,6 +95,18 @@ export function PaneDesktop({
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const [layer, setLayer] = useState({ w: 0, h: 0 });
+  const [desktopContextMenu, setDesktopContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const closeDesktopContextMenu = useCallback(() => setDesktopContextMenu(null), []);
+  const handleDesktopContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest(".pane-desktop-context-layer")) return;
+    if (target.closest(".pane-window")) {
+      closeDesktopContextMenu();
+      return;
+    }
+    event.preventDefault();
+    setDesktopContextMenu({ x: event.clientX, y: event.clientY });
+  }, [closeDesktopContextMenu]);
   const available: PaneWindowId[] = [
     ...PANE_SINGLETON_KINDS.filter((kind) => (kind === "vnc" ? vncEnabled : kind === "rest" ? restEnabled : true)),
     ...entryIds.map(sftpWindowId),
@@ -205,7 +217,7 @@ export function PaneDesktop({
   }
 
   return (
-    <div className="pane-desktop">
+    <div className="pane-desktop" onContextMenu={handleDesktopContextMenu}>
       <Wallpaper />
       <div className="pane-topbar">
         <span className="pane-brand"><span className="app-mark" aria-hidden="true" />nFterm</span>
@@ -248,6 +260,8 @@ export function PaneDesktop({
         sshPaneStates={sshPaneStates}
         popups={popups}
         busy={busy}
+        desktopContextMenu={desktopContextMenu}
+        onCloseDesktopContextMenu={closeDesktopContextMenu}
         onOpenLocal={() => open("local")}
         onOpenLocalShell={onOpenLocalShell}
         onOpenSshInPane={openSsh}

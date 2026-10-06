@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { PaneLayout, PaneWindowId, PaneWindowKind } from "./pane-window-model";
 import { PANE_SINGLETON_KINDS, isEntryWindow, kindOf } from "./pane-window-model";
 import type { SshPopupInfo } from "./ssh-popup-registry";
@@ -45,6 +46,8 @@ type Props = {
   sshPaneStates: Readonly<Record<string, { connected: boolean; recordingUnsaved: boolean } | undefined>>;
   popups: readonly SshPopupInfo[];
   busy: boolean;
+  desktopContextMenu: { x: number; y: number } | null;
+  onCloseDesktopContextMenu: () => void;
   onOpenLocal: () => void;
   onOpenLocalShell: (kind: LocalTerminalKind) => void;
   /** Open (or raise) the entry's SSH pane in the main window. */
@@ -74,6 +77,7 @@ const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
 
 export function PaneDock({
   layout, titles, restEnabled, vncEnabled, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, popups, busy,
+  desktopContextMenu, onCloseDesktopContextMenu,
   onOpenLocal, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onOpenRemote, onOpenSftp, onActivate, onCloseWindow, onFocusPopup, onClosePopup,
 }: Props) {
   const [functionsOpen, setFunctionsOpen] = useState(false);
@@ -81,7 +85,24 @@ export function PaneDock({
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [sshListOpen, setSshListOpen] = useState(false);
   const [activeEntry, setActiveEntry] = useState<{ workspaceId: string; entryId: string } | null>(null);
+  const [desktopContextBranch, setDesktopContextBranch] = useState<"location" | "ssh" | null>(null);
+  const [desktopContextMenuStyle, setDesktopContextMenuStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
+  const [desktopContextSubmenuStyle, setDesktopContextSubmenuStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
+  const [contextMenuPortalHost, setContextMenuPortalHost] = useState<HTMLElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const desktopContextLayerRef = useRef<HTMLDivElement | null>(null);
+  const desktopContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const desktopContextSubmenuRef = useRef<HTMLDivElement | null>(null);
+  const desktopContextOptionRefs = useRef<Record<"location" | "ssh", HTMLButtonElement | null>>({ location: null, ssh: null });
+  const ignoreInitialContextHoverRef = useRef(false);
+
+  useEffect(() => {
+    setContextMenuPortalHost(rootRef.current?.closest<HTMLElement>(".pane-desktop") || null);
+  }, []);
+
+  useLayoutEffect(() => {
+    ignoreInitialContextHoverRef.current = desktopContextMenu !== null;
+  }, [desktopContextMenu]);
 
   const closeMenus = () => {
     setFunctionsOpen(false);
@@ -91,14 +112,39 @@ export function PaneDock({
     setActiveEntry(null);
   };
 
-  const anyMenuOpen = functionsOpen || terminalOpen;
+  useLayoutEffect(() => {
+    if (!desktopContextMenu) {
+      setDesktopContextBranch(null);
+      setDesktopContextMenuStyle({ visibility: "hidden" });
+      setDesktopContextSubmenuStyle({ visibility: "hidden" });
+      return;
+    }
+    setFunctionsOpen(false);
+    setLocationOpen(false);
+    setTerminalOpen(false);
+    setSshListOpen(false);
+    setActiveEntry(null);
+    setDesktopContextBranch(null);
+    setDesktopContextSubmenuStyle({ visibility: "hidden" });
+  }, [desktopContextMenu]);
+
+  const anyMenuOpen = functionsOpen || terminalOpen || desktopContextMenu !== null;
   useEffect(() => {
     if (!anyMenuOpen) return undefined;
     const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) closeMenus();
+      const target = event.target as Node;
+      const insideContextLayer = desktopContextLayerRef.current?.contains(target) || false;
+      if (desktopContextMenu && !insideContextLayer) onCloseDesktopContextMenu();
+      if (!rootRef.current?.contains(target) && !insideContextLayer) closeMenus();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (desktopContextMenu) {
+        event.stopPropagation();
+        if (desktopContextBranch) setDesktopContextBranch(null);
+        else onCloseDesktopContextMenu();
+        return;
+      }
       // Escape peels one layer: the entry actions, then the Location / SSH list, then the flyout.
       event.stopPropagation();
       if (activeEntry) setActiveEntry(null);
@@ -113,7 +159,51 @@ export function PaneDock({
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("keydown", onKeyDown, true);
     };
-  }, [anyMenuOpen, functionsOpen, locationOpen, terminalOpen, sshListOpen, activeEntry]);
+  }, [anyMenuOpen, functionsOpen, locationOpen, terminalOpen, sshListOpen, activeEntry, desktopContextMenu, desktopContextBranch, onCloseDesktopContextMenu]);
+
+  useLayoutEffect(() => {
+    if (!desktopContextMenu) return undefined;
+    const reposition = () => {
+      const menu = desktopContextMenuRef.current;
+      if (!menu) return;
+      const rect = menu.getBoundingClientRect();
+      const edge = 8;
+      const left = Math.min(Math.max(desktopContextMenu.x, edge), Math.max(edge, window.innerWidth - rect.width - edge));
+      const top = Math.min(Math.max(desktopContextMenu.y, edge), Math.max(edge, window.innerHeight - rect.height - edge));
+      setDesktopContextMenuStyle({ left, top, visibility: "visible" });
+    };
+    reposition();
+    window.addEventListener("resize", reposition);
+    return () => window.removeEventListener("resize", reposition);
+  }, [desktopContextMenu]);
+
+  useLayoutEffect(() => {
+    if (!desktopContextMenu || !desktopContextBranch) return undefined;
+    const reposition = () => {
+      const root = desktopContextMenuRef.current;
+      const submenu = desktopContextSubmenuRef.current;
+      const option = desktopContextOptionRefs.current[desktopContextBranch];
+      if (!root || !submenu || !option) return;
+      const rootRect = root.getBoundingClientRect();
+      const submenuRect = submenu.getBoundingClientRect();
+      const optionRect = option.getBoundingClientRect();
+      const edge = 8;
+      const gap = 8;
+      const roomRight = window.innerWidth - rootRect.right - edge;
+      const roomLeft = rootRect.left - edge;
+      const preferredLeft = roomRight >= submenuRect.width || roomRight >= roomLeft
+        ? rootRect.right + gap
+        : rootRect.left - submenuRect.width - gap;
+      const maxLeft = Math.max(edge, window.innerWidth - submenuRect.width - edge);
+      const left = Math.min(Math.max(preferredLeft, edge), maxLeft);
+      const maxTop = Math.max(edge, window.innerHeight - submenuRect.height - edge);
+      const top = Math.min(Math.max(optionRect.top, edge), maxTop);
+      setDesktopContextSubmenuStyle({ left, top, visibility: "visible" });
+    };
+    reposition();
+    window.addEventListener("resize", reposition);
+    return () => window.removeEventListener("resize", reposition);
+  }, [desktopContextMenu, desktopContextBranch, desktopContextMenuStyle.left, desktopContextMenuStyle.top, activeEntry]);
 
   const windowOf = (id: PaneWindowId) => layout.windows.find((win) => win.id === id);
   const isOpen = (id: PaneWindowId) => Boolean(windowOf(id)?.open);
@@ -136,6 +226,31 @@ export function PaneDock({
 
   const chooseRemote = (choice: PaneLocationChoice) => { onOpenRemote(choice.id); closeMenus(); };
   const chooseSftp = (choice: PaneLocationChoice) => { onOpenSftp(choice.id); closeMenus(); };
+  const closeDesktopMenus = () => {
+    closeMenus();
+    onCloseDesktopContextMenu();
+  };
+  const chooseContextRemote = (choice: PaneLocationChoice) => {
+    onOpenRemote(choice.id);
+    closeDesktopMenus();
+  };
+  const chooseContextSftp = (choice: PaneLocationChoice) => {
+    onOpenSftp(choice.id);
+    closeDesktopMenus();
+  };
+  const enterDesktopContextBranch = (branch: "location" | "ssh") => {
+    if (desktopContextBranch !== branch) setActiveEntry(null);
+    setDesktopContextBranch(branch);
+  };
+  const handleDesktopContextOptionHover = (branch: "location" | "ssh") => {
+    if (!ignoreInitialContextHoverRef.current) enterDesktopContextBranch(branch);
+  };
+  const handleDesktopContextPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!desktopContextMenu) return;
+    ignoreInitialContextHoverRef.current = false;
+    const branch = (event.target as HTMLElement).closest<HTMLElement>("[data-context-branch]")?.dataset.contextBranch;
+    if (branch === "location" || branch === "ssh") enterDesktopContextBranch(branch);
+  };
 
   const renderChoices = (choices: PaneLocationChoice[], onChoose: (choice: PaneLocationChoice) => void, empty: string) =>
     choices.length === 0
@@ -162,6 +277,23 @@ export function PaneDock({
   const activeEntryInfo = activeEntry
     ? terminalWorkspaces.find((workspace) => workspace.id === activeEntry.workspaceId)?.entries.find((entry) => entry.entryId === activeEntry.entryId)
     : undefined;
+
+  const renderEntryActions = (dismiss: () => void, className = "pane-entry-actions") => {
+    if (!activeEntry || !activeEntryInfo) return null;
+    return (
+      <div className={className} role="menu" aria-label={`${activeEntryInfo.label} actions`}>
+        <div className="pane-menu-heading">{activeEntryInfo.label}</div>
+        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenSshWindow(activeEntry.workspaceId, activeEntry.entryId); dismiss(); }}>
+          <span className="pane-menu-icon"><ExternalWindowIcon size={18} /></span>
+          <span className="pane-menu-text"><strong>Open a new Window</strong></span>
+        </button>
+        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenSshInPane(activeEntry.entryId); dismiss(); }}>
+          <span className="pane-menu-icon"><TerminalIcon size={18} /></span>
+          <span className="pane-menu-text"><strong>Open SSH</strong></span>
+        </button>
+      </div>
+    );
+  };
 
   const terminalFlyoutItems: { key: string; label: string; icon: React.ReactNode; hasMenu?: boolean; expanded?: boolean; onClick: () => void }[] = [
     {
@@ -194,10 +326,10 @@ export function PaneDock({
     ] : []),
   ];
 
-  const renderSshEntries = () => {
+  const renderSshEntries = (dismiss: () => void = closeMenus) => {
     if (terminalWorkspaces.length === 0) {
       return (
-        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onCreateWorkspace(); closeMenus(); }}>
+        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onCreateWorkspace(); dismiss(); }}>
           <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
           <span className="pane-menu-text"><strong>No Workspace yet</strong><small>Create a Workspace first</small></span>
         </button>
@@ -205,7 +337,7 @@ export function PaneDock({
     }
     if (totalEntries === 0) {
       return (
-        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenEntryManager(terminalWorkspaces[0].id); closeMenus(); }}>
+        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenEntryManager(terminalWorkspaces[0].id); dismiss(); }}>
           <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
           <span className="pane-menu-text"><strong>No SSH Entry yet</strong><small>Add one in Entry Manager</small></span>
         </button>
@@ -246,6 +378,7 @@ export function PaneDock({
   ];
 
   return (
+    <>
     <nav className="pane-dock" aria-label="Desktop dock">
       <div className="pane-dock-launchers" ref={rootRef}>
         <div className="pane-functions">
@@ -311,19 +444,7 @@ export function PaneDock({
                     <div className="pane-location-menu pane-ssh-menu" role="menu" aria-label="SSH Entries">
                       {renderSshEntries()}
                     </div>
-                    {activeEntry && activeEntryInfo && (
-                      <div className="pane-entry-actions" role="menu" aria-label={`${activeEntryInfo.label} actions`}>
-                        <div className="pane-menu-heading">{activeEntryInfo.label}</div>
-                        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenSshWindow(activeEntry.workspaceId, activeEntry.entryId); closeMenus(); }}>
-                          <span className="pane-menu-icon"><ExternalWindowIcon size={18} /></span>
-                          <span className="pane-menu-text"><strong>Open a new Window</strong></span>
-                        </button>
-                        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenSshInPane(activeEntry.entryId); closeMenus(); }}>
-                          <span className="pane-menu-icon"><TerminalIcon size={18} /></span>
-                          <span className="pane-menu-text"><strong>Open SSH</strong></span>
-                        </button>
-                      </div>
-                    )}
+                    {renderEntryActions(closeMenus)}
                   </div>
                 )}
               </div>
@@ -382,5 +503,81 @@ export function PaneDock({
         ))}
       </div>
     </nav>
+    {contextMenuPortalHost && desktopContextMenu && createPortal(
+      <div ref={desktopContextLayerRef} className="pane-desktop-context-layer" onPointerMove={handleDesktopContextPointerMove}>
+        <div
+          ref={desktopContextMenuRef}
+          className="context-menu pane-desktop-context-menu"
+          role="menu"
+          aria-label="Desktop shortcuts"
+          style={desktopContextMenuStyle}
+        >
+          <button
+            ref={(element) => { desktopContextOptionRefs.current.location = element; }}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={desktopContextBranch === "location"}
+            className="pane-desktop-context-choice"
+            data-context-branch="location"
+            onPointerEnter={() => handleDesktopContextOptionHover("location")}
+            onFocus={() => enterDesktopContextBranch("location")}
+          >
+            <LocationIcon size={18} />
+            <span>Location</span>
+          </button>
+          <button
+            ref={(element) => { desktopContextOptionRefs.current.ssh = element; }}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            aria-expanded={desktopContextBranch === "ssh"}
+            className="pane-desktop-context-choice"
+            data-context-branch="ssh"
+            onPointerEnter={() => handleDesktopContextOptionHover("ssh")}
+            onFocus={() => enterDesktopContextBranch("ssh")}
+          >
+            <SshEntriesIcon size={18} />
+            <span>SSH Entries</span>
+          </button>
+        </div>
+        {desktopContextBranch === "location" && (
+          <div
+            ref={desktopContextSubmenuRef}
+            className="context-menu pane-desktop-context-submenu pane-desktop-context-submenu-location"
+            role="menu"
+            aria-label="Location choices"
+            style={desktopContextSubmenuStyle}
+          >
+            <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenLocal(); closeDesktopMenus(); }}>
+              <span className="pane-menu-icon"><LocalIcon size={18} /></span>
+              <span className="pane-menu-text"><strong>Local</strong><small>This computer</small></span>
+            </button>
+            <div className="pane-menu-heading"><RemoteIcon size={14} /> Remote</div>
+            {renderChoices(remoteChoices, chooseContextRemote, "No remote locations")}
+            <div className="pane-menu-heading"><SftpIcon size={14} /> SFTP</div>
+            {renderChoices(sftpChoices, chooseContextSftp, "No SSH entries in the Workspace Manager")}
+          </div>
+        )}
+        {desktopContextBranch === "ssh" && (
+          <div
+            ref={desktopContextSubmenuRef}
+            className={`context-menu pane-desktop-context-submenu pane-desktop-context-submenu-ssh${activeEntryInfo ? " has-active-entry" : ""}`}
+            role="menu"
+            aria-label="SSH Entries"
+            style={desktopContextSubmenuStyle}
+          >
+            <div className="pane-context-ssh-wrap">
+              <div className="pane-context-ssh-list" role="menu" aria-label="SSH Entry list">
+                {renderSshEntries(closeDesktopMenus)}
+              </div>
+              {renderEntryActions(closeDesktopMenus, "pane-entry-actions pane-context-entry-actions")}
+            </div>
+          </div>
+        )}
+      </div>,
+      contextMenuPortalHost,
+    )}
+    </>
   );
 }

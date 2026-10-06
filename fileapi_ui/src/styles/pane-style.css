@@ -652,6 +652,76 @@
   opacity: 1;
   box-shadow: 0 0 6px color-mix(in srgb, var(--color-success) 70%, transparent);
 }
+.pane-desktop-context-layer {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  pointer-events: none;
+}
+.pane-desktop-context-menu,
+.pane-desktop-context-submenu {
+  position: fixed;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  pointer-events: auto;
+}
+.pane-desktop-context-menu {
+  display: grid;
+  gap: var(--space-1);
+  width: 190px;
+}
+.pane-desktop-context-choice {
+  display: flex !important;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-height-base);
+  padding: var(--space-2) var(--space-3) !important;
+  border: 1px solid transparent !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--color-text);
+  background: transparent;
+  cursor: default !important;
+  text-align: left;
+}
+.pane-desktop-context-choice:hover,
+.pane-desktop-context-choice:focus-visible {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent) !important;
+  background: color-mix(in srgb, var(--color-primary) 16%, transparent) !important;
+}
+.pane-desktop-context-choice svg {
+  flex: 0 0 auto;
+  color: var(--color-primary);
+}
+.pane-desktop-context-submenu-location {
+  width: clamp(240px, 26vw, 320px);
+}
+.pane-desktop-context-submenu-ssh {
+  width: min(320px, calc(100vw - 16px));
+}
+.pane-desktop-context-submenu-ssh.has-active-entry {
+  width: min(560px, calc(100vw - 16px));
+}
+.pane-context-ssh-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.pane-context-ssh-list {
+  flex: 1 1 300px;
+  min-width: 0;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+.pane-desktop-context-submenu .pane-context-entry-actions {
+  flex: 1 1 200px;
+  width: 220px;
+  min-width: 180px;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
 @keyframes pane-menu-in {
   from { opacity: 0; transform: translateX(-8px) scale(.96); }
   to { opacity: 1; transform: none; }
