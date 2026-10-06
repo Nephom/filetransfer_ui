@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import type { RestApiEntry, RestApiSecret } from "../../rest-api";
-import type { ProxmoxVncEntry, ProxmoxVncSecret } from "../../proxmox-vnc";
+import type { ProxmoxVncEntry } from "../../proxmox-vnc";
 import {
   normalizeManagedSessions,
   sessionRegistryKey,
@@ -46,7 +46,6 @@ export function useSessionsState() {
   const [restSecrets, setRestSecrets] = useState<Record<string, RestApiSecret>>({});
   const [restSessionHeaders, setRestSessionHeaders] = useState<Record<string, string>>({});
   const [activeVncEntryId, setActiveVncEntryId] = useState("");
-  const [vncSecrets, setVncSecrets] = useState<Record<string, ProxmoxVncSecret>>({});
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [workspaceNameDialogOpen, setWorkspaceNameDialogOpen] = useState(false);
   const [sessionFormError, setSessionFormError] = useState("");
@@ -95,6 +94,9 @@ export function useSessionsState() {
   const [restEntryDraft, setRestEntryDraft] = useState<RestApiEntry | null>(null);
   const [vncEntryDialogOpen, setVncEntryDialogOpen] = useState(false);
   const [vncEntryDraft, setVncEntryDraft] = useState<ProxmoxVncEntry | null>(null);
+  const [vncEntryPasswordDraft, setVncEntryPasswordDraft] = useState("");
+  const [vncEntryPasswordSaved, setVncEntryPasswordSaved] = useState(false);
+  const [vncEntryPasswordSaving, setVncEntryPasswordSaving] = useState(false);
   // Which section of the Add/Edit Proxmox VNC Entry modal is showing --
   // "default" is the original Proxmox connection identity fields (host,
   // port, username, PVE version); "hostSsh" is the entry-scoped jump-host
@@ -130,14 +132,6 @@ export function useSessionsState() {
   }, [managedSessions.map((workspace) => workspace.restApiEntries.map((entry) => entry.id).join(",")).join("|")]);
 
   useEffect(() => {
-    const entries = managedSessions.flatMap((workspace) => workspace.proxmoxVncEntries);
-    void Promise.all(entries.map(async (entry) => {
-      const value = await invoke<string | null>("proxmox_load_secret", { entryId: entry.id, kind: "password" }).catch(() => null);
-      if (value !== null) setVncSecrets((current) => ({ ...current, [entry.id]: { ...current[entry.id], password: value } }));
-    }));
-  }, [managedSessions]);
-
-  useEffect(() => {
     localStorage.setItem("fileapi-ssh-profiles", JSON.stringify(sshProfiles));
   }, [sshProfiles]);
 
@@ -166,7 +160,6 @@ export function useSessionsState() {
     restSecrets, setRestSecrets,
     restSessionHeaders, setRestSessionHeaders,
     activeVncEntryId, setActiveVncEntryId,
-    vncSecrets, setVncSecrets,
     sessionsOpen, setSessionsOpen,
     workspaceNameDialogOpen, setWorkspaceNameDialogOpen,
     sessionFormError, setSessionFormError,
@@ -187,6 +180,9 @@ export function useSessionsState() {
     restEntryDraft, setRestEntryDraft,
     vncEntryDialogOpen, setVncEntryDialogOpen,
     vncEntryDraft, setVncEntryDraft,
+    vncEntryPasswordDraft, setVncEntryPasswordDraft,
+    vncEntryPasswordSaved, setVncEntryPasswordSaved,
+    vncEntryPasswordSaving, setVncEntryPasswordSaving,
     vncEntryModalTab, setVncEntryModalTab,
   };
 }

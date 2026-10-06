@@ -297,20 +297,35 @@ try {
   assert.deepEqual(sshHidden, sshBefore, "a minimized SSH pane keeps its layout box (xterm is not resized to 0)");
   await page.locator(".pane-task", { hasText: "SSH · Alpha_1" }).locator(".pane-task-main").click();
 
-  // REST and VNC open from Functions and stay out of the way of the dock.
-  for (const [label, cls] of [["RestAPI", "rest"], ["VNC", "vnc"]]) {
-    await page.locator(".pane-functions-button").click();
-    await page.waitForTimeout(450);
-    await page.locator(".pane-flyout-button", { hasText: label }).click();
-    await page.locator(`.pane-window-${cls}:not(.is-hidden)`).waitFor();
-    const win = await rect(`.pane-window-${cls}`);
-    const dock = await rect(".pane-dock");
-    const layerNow = await rect(".pane-window-layer");
-    // The launchers float over the bottom edge of the window area by a small, fixed amount;
-    // a window never leaves the window area, so it never reaches below that overlap.
-    assert.ok(win.b <= layerNow.b + 1, `${label} window stays inside the window area`);
-    assert.ok(layerNow.b - dock.y <= 16, `${label}: the floating dock overlaps the window area by at most 16px`);
-  }
+  // REST remains a singleton mode window. VNC now opens its own menu and independent setup panes.
+  await page.locator(".pane-functions-button").click();
+  await page.waitForTimeout(450);
+  await page.locator(".pane-flyout-button", { hasText: "RestAPI" }).click();
+  await page.locator(".pane-window-rest:not(.is-hidden)").waitFor();
+  const restWin = await rect(".pane-window-rest");
+  const restDock = await rect(".pane-dock");
+  const restLayer = await rect(".pane-window-layer");
+  assert.ok(restWin.b <= restLayer.b + 1, "RestAPI window stays inside the window area");
+  assert.ok(restLayer.b - restDock.y <= 16, "RestAPI window remains above the dock overlap");
+
+  await page.locator(".pane-functions-button").click();
+  await page.waitForTimeout(450);
+  await page.locator(".pane-flyout-button", { hasText: "VNC" }).click();
+  await page.locator(".pane-vnc-menu").waitFor();
+  await page.locator('.pane-vnc-menu .pane-menu-item[aria-haspopup="menu"]').click();
+  await page.locator(".pane-vnc-entries-menu").waitFor();
+  assert.equal(await page.locator(".pane-vnc-entries-menu .pane-menu-item", { hasText: "No Proxmox VNC Entry yet" }).count(), 1, "empty VNC Entries menu directs the user to Workspace Manager");
+  await page.locator(".pane-vnc-menu .pane-menu-item", { hasText: "Direct mode" }).click();
+  const directSetup = '.pane-window-vnc-picker[data-window-id="vnc-picker:direct"]';
+  await page.locator(`${directSetup}:not(.is-hidden)`).waitFor();
+  await page.locator(`${directSetup} h1`, { hasText: "Connect to a VNC host" }).waitFor();
+  assert.equal(await page.locator(`${directSetup} h1`, { hasText: "Connect to a VNC host" }).count(), 1, "Direct mode opens a separate setup pane");
+  const directWin = await rect(directSetup);
+  const directLayer = await rect(".pane-window-layer");
+  const directDock = await rect(".pane-dock");
+  assert.ok(directWin.b <= directLayer.b + 1, "Direct VNC setup stays inside the window area");
+  assert.ok(directLayer.b - directDock.y <= 16, "Direct VNC setup remains above the dock overlap");
+  await page.locator(`${directSetup} .pane-window-close`).click();
   await shot("07-rest-vnc");
 
   // Right-click inside a window opens the Location context menu without a native menu.
@@ -371,10 +386,6 @@ try {
   await page.waitForFunction((before) => window.__calls.filter((cmd) => cmd === "ssh_disconnect").length === before + 1, sshDisconnectsBefore);
   assert.equal(await page.locator(".pane-task", { hasText: "SSH · Beta_1" }).count(), 0, "closing removes that SSH tab");
   assert.equal(await page.locator(".pane-task", { hasText: "SSH · Alpha_1" }).count(), 1, "the other SSH pane stays");
-
-  // Closing a window removes its tab.
-  await page.locator(".pane-task", { hasText: "VNC" }).locator(".pane-task-close").click();
-  assert.equal(await page.locator(".pane-task", { hasText: "VNC" }).count(), 0, "closing removes the taskbar tab");
 
   // Settings -> Window shadows switches the window shadows off, but never the dock / tab shadows.
   await page.locator('button[aria-label="Settings"]').click();

@@ -5,6 +5,8 @@
  * styles/theme/README.md. */
 :where(.explorer) .vnc-entry-pane,
 :where(.explorer) .vnc-reader,
+:where(.explorer) .vnc-picker-pane,
+:where(.explorer) .vnc-files-pane,
 :where(.explorer) .vnc-auth-panel,
 :where(.explorer) .vnc-entry-auth {
   border-color: var(--color-border);
@@ -18,6 +20,8 @@
 
 /* VNC keeps its layout rules local while all theme-sensitive surfaces stay here. */
 :where(.explorer) .vnc-entry-pane,
-:where(.explorer) .vnc-reader { border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-bg-panel) 88%, var(--color-bg)); box-shadow: var(--shadow-panel), var(--shadow-inset); }
+:where(.explorer) .vnc-reader,
+:where(.explorer) .vnc-picker-pane,
+:where(.explorer) .vnc-files-pane { border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-bg-panel) 88%, var(--color-bg)); box-shadow: var(--shadow-panel), var(--shadow-inset); }
 :where(.explorer) .vnc-auth-panel { border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }
 :where(.explorer) .vnc-display-toolbar { border-radius: var(--radius-sm); background: var(--color-bg-panel-strong); }

@@ -10,6 +10,8 @@
 :root:has(.glass-main-off) .rest-entry-pane,
 :root:has(.glass-main-off) .rest-reader,
 :root:has(.glass-main-off) .vnc-entry-pane,
+:root:has(.glass-main-off) .vnc-picker-pane,
+:root:has(.glass-main-off) .vnc-files-pane,
 :root:has(.glass-main-off) .vnc-reader {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;

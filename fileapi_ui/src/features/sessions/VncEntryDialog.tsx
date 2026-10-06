@@ -10,6 +10,11 @@ type VncEntryDialogProps = {
   setVncEntryDraft: (draft: ProxmoxVncEntry) => void;
   vncEntryModalTab: "default" | "hostSsh";
   setVncEntryModalTab: (tab: "default" | "hostSsh") => void;
+  vncEntryPasswordDraft: string;
+  setVncEntryPasswordDraft: (value: string) => void;
+  vncEntryPasswordSaved: boolean;
+  vncEntryPasswordSaving: boolean;
+  vncEntryPasswordRequired: boolean;
   hostSshPasswordDraft: string;
   setHostSshPasswordDraft: (value: string) => void;
   hostSshPasswordSaved: boolean;
@@ -17,6 +22,7 @@ type VncEntryDialogProps = {
   onDragStart: (event: React.MouseEvent<HTMLElement>) => void;
   onClose: () => void;
   onInstallHostKey: () => void;
+  onForgetVncPassword: () => void;
   onRemove: () => void;
   onSave: () => void;
   vncEndpointParts: (baseUrl: string) => { host: string; port: string };
@@ -31,6 +37,11 @@ export function VncEntryDialog({
   setVncEntryDraft,
   vncEntryModalTab,
   setVncEntryModalTab,
+  vncEntryPasswordDraft,
+  setVncEntryPasswordDraft,
+  vncEntryPasswordSaved,
+  vncEntryPasswordSaving,
+  vncEntryPasswordRequired,
   hostSshPasswordDraft,
   setHostSshPasswordDraft,
   hostSshPasswordSaved,
@@ -38,6 +49,7 @@ export function VncEntryDialog({
   onDragStart,
   onClose,
   onInstallHostKey,
+  onForgetVncPassword,
   onRemove,
   onSave,
   vncEndpointParts,
@@ -72,7 +84,13 @@ export function VncEntryDialog({
           </div>
           <label>PVE version<Dropdown label="PVE version" value={vncEntryDraft.proxmoxVersion} onChange={(nextVersion) => setVncEntryDraft({ ...vncEntryDraft, proxmoxVersion: nextVersion as ProxmoxVncEntry["proxmoxVersion"] })} options={[{ value: "auto", label: "Auto detect" }, { value: "6.4", label: "6.4" }, { value: "7.x", label: "7.x" }, { value: "8.x", label: "8.x" }, { value: "9.x", label: "9.x" }]} /></label>
           <label className="tls-option"><input type="checkbox" checked={vncEntryDraft.ignoreTlsErrors} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, ignoreTlsErrors: event.target.checked })} /> Ignore TLS certificate errors</label>
-          <small className="field-help">Password, node, and VM selection are configured from the entry's own connection controls once this entry is selected in the VNC mode.</small>
+          <label>Proxmox password<input type="password" value={vncEntryPasswordDraft} onChange={(event) => setVncEntryPasswordDraft(event.target.value)} placeholder={vncEntryPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" aria-required={vncEntryPasswordRequired} /></label>
+          <div className="vnc-password-status-row">
+            <small className="field-help">The password is stored in the system credential store, not the Workspace file.</small>
+            {vncEntryPasswordSaved && <button type="button" onClick={onForgetVncPassword} disabled={vncEntryPasswordSaving}>Forget password</button>}
+          </div>
+          {vncEntryPasswordRequired && !vncEntryPasswordSaved && <small className="field-help" role="status">Enter and save the password to continue connecting to this Entry.</small>}
+          <small className="field-help">Node and VM selection are saved after choosing the Entry and opening its VM picker.</small>
         </>}
         {vncEntryModalTab === "hostSsh" && <>
           <strong>File transfer: Host SSH (jump)</strong>
@@ -88,7 +106,7 @@ export function VncEntryDialog({
         <div className="modal-actions">
           <button type="button" onClick={onClose}>Cancel</button>
           {isEditing && <button type="button" className="session-delete" onClick={onRemove}>Remove</button>}
-          <button type="button" className="confirm" onClick={onSave}>Save</button>
+          <button type="button" className="confirm" onClick={onSave} disabled={vncEntryPasswordSaving}>{vncEntryPasswordSaving ? "Saving…" : "Save"}</button>
         </div>
       </div>
     </div>

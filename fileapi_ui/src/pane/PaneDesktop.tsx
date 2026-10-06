@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { PaneDock, type PaneLocationChoice, type PaneTerminalWorkspace } from "./PaneDock";
+import { PaneDock, type PaneLocationChoice, type PaneTerminalWorkspace, type PaneVncWorkspace } from "./PaneDock";
 import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
 import { PaneWindow } from "./PaneWindow";
 import { usePaneWindows } from "./usePaneWindows";
@@ -42,6 +42,10 @@ type Props = {
   sftpChoices: PaneLocationChoice[];
   /** Every Workspace with its SSH entries (Terminal menu in the dock). */
   terminalWorkspaces: PaneTerminalWorkspace[];
+  /** Every Workspace with its Proxmox VNC entries (Functions > VNC > Entries). */
+  vncWorkspaces: PaneVncWorkspace[];
+  /** Dynamic VNC picker, screen, and file panes which still have backing state. */
+  vncFlowWindowIds: readonly PaneWindowId[];
   /** Windows Terminal / Command Prompt can only be launched on Windows. */
   localShellsAvailable: boolean;
   /** Live state of each open SSH pane by entry id. */
@@ -60,6 +64,8 @@ type Props = {
   onOpenLocalShell: (kind: LocalTerminalKind) => void;
   /** Connect the entry in its own native window. */
   onOpenSshWindow: (workspaceId: string, entryId: string) => void;
+  onSelectVncEntry: (workspaceId: string, entryId: string) => void;
+  onOpenDirectVnc: () => void;
   onOpenEntryManager: (workspaceId?: string) => void;
   onCreateWorkspace: () => void;
   /** Receives the "open this window" function so the app can open windows (e.g. from the Workspace Manager). */
@@ -77,11 +83,13 @@ type Props = {
 const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
   local: <LocalIcon size={16} />,
   remote: <RemoteIcon size={16} />,
-  vnc: <VncIcon size={16} />,
   rest: <RestIcon size={16} />,
   browser: <BrowserIcon size={16} />,
   sftp: <SftpIcon size={16} />,
   ssh: <TerminalIcon size={16} />,
+  "vnc-picker": <VncIcon size={16} />,
+  "vnc-screen": <VncIcon size={16} />,
+  "vnc-files": <SftpIcon size={16} />,
 };
 
 function Wallpaper() {
@@ -96,8 +104,8 @@ function Wallpaper() {
 }
 
 export function PaneDesktop({
-  restEnabled, vncEnabled, remoteEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, appOverlayOpen, welcomeOpen, welcomeOnlyFirstLaunch, onWelcomeDismiss, topRight,
-  onSelectRemote, onOpenLocalShell, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onWindowState, onRequestClose, hasUnsavedPaneRecording, confirmDiscardRecordings,
+  restEnabled, vncEnabled, remoteEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, vncWorkspaces, vncFlowWindowIds, localShellsAvailable, sshPaneStates, entryIds, busy, appOverlayOpen, welcomeOpen, welcomeOnlyFirstLaunch, onWelcomeDismiss, topRight,
+  onSelectRemote, onOpenLocalShell, onOpenSshWindow, onSelectVncEntry, onOpenDirectVnc, onOpenEntryManager, onCreateWorkspace, onWindowState, onRequestClose, hasUnsavedPaneRecording, confirmDiscardRecordings,
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const [layer, setLayer] = useState({ w: 0, h: 0 });
@@ -118,8 +126,9 @@ export function PaneDesktop({
     setDesktopContextMenu({ x: event.clientX, y: event.clientY });
   }, [closeDesktopContextMenu]);
   const available: PaneWindowId[] = [
-    ...PANE_SINGLETON_KINDS.filter((kind) => (kind === "remote" ? remoteEnabled : kind === "vnc" ? vncEnabled : kind === "rest" ? restEnabled : true)),
+    ...PANE_SINGLETON_KINDS.filter((kind) => (kind === "remote" ? remoteEnabled : kind === "rest" ? restEnabled : true)),
     ...entryIds.map(sftpWindowId),
+    ...vncFlowWindowIds,
   ];
   // SSH windows (`ssh:<entryId>#<n>`) are opened on demand, any number per entry, so they are not listed
   // here: one is available as long as its SSH entry exists (checked against `entryIds`).
@@ -307,6 +316,7 @@ export function PaneDesktop({
         remoteChoices={remoteChoices}
         sftpChoices={sftpChoices}
         terminalWorkspaces={terminalWorkspaces}
+        vncWorkspaces={vncWorkspaces}
         localShellsAvailable={localShellsAvailable}
         browserSupported={localShellsAvailable && browserCleanupReady}
         sshPaneStates={sshPaneStates}
@@ -320,6 +330,8 @@ export function PaneDesktop({
         onOpenLocalShell={onOpenLocalShell}
         onOpenSshInPane={openSsh}
         onOpenSshWindow={onOpenSshWindow}
+        onSelectVncEntry={onSelectVncEntry}
+        onOpenDirectVnc={onOpenDirectVnc}
         onOpenEntryManager={onOpenEntryManager}
         onCreateWorkspace={onCreateWorkspace}
         onOpenRemote={(id) => { onSelectRemote(id); open("remote"); }}

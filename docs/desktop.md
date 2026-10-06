@@ -210,7 +210,7 @@ VM being reachable. This is pure-Rust `russh`, never a system
 `ssh`/`ping`/`telnet` binary, so behavior is identical across Windows,
 macOS, and Linux clients. Host SSH (jump) identity fields remain on the
 `ProxmoxVncEntry`; VM SSH identity fields are stored in the selected VM's
-profile from Connection Controls. Their passwords are never
+profile from the VM picker. Their passwords are never
 stored in Session data -- they live in the OS keyring under the VM-scoped and
 entry-scoped synthetic profile ids `vncvm:<entryId>:<node>:<vmid>` /
 `vncjump:<entryId>` (`vmSshProfileId` /
@@ -226,19 +226,16 @@ unreachable; only green means the Guest Agent Windows file-transfer route is
 available. Network-interface discovery is optional for this check, so a
 successful agent ping remains usable even when the guest cannot report an IP.
 
-When a VM has a saved VM SFTP profile, the client additionally detects direct
-SFTP and then host-jump SFTP after VNC connects. For a VM without a saved
-profile, direct SFTP and host-jump probing are not started automatically.
-Connection Controls provides a compact **Try Host Jump** action; only that
-explicit action attempts the host-jump route for the selected VM. If the
-attempt fails, the Entry list remains visible with the diagnostic error.
-Once a route is found, the VNC workspace's left sidebar swaps its Proxmox
-entries list for a multi-select remote file browser (Upload / Download /
-Refresh toolbar, breadcrumb, and a file table identical to LOCATION mode's
-own) so files can be browsed and transferred without ever unmounting the
-Connection Controls + VNC screen on the right -- disconnecting, or clicking
-"&larr; Entries" in the sidebar, returns to the entries list without logging
-out of the Proxmox web session. See
+When a VM has a saved VM SFTP profile, the client detects direct SFTP and then
+host-jump SFTP after VNC connects. For a VM without a saved profile, direct
+SFTP and host-jump probing are not started automatically. The user can
+explicitly choose **Try Host Jump** from that VM's independent Files window.
+After connecting, a small **Files** button at the upper-left of the VNC display
+opens a separate file-transfer pane with the reachability state, multi-select
+file table (Upload / Download / Refresh), breadcrumb, and transfer queue.
+Closing or reopening that Files pane does not unmount the VNC screen or discard
+its transfer queue. Closing the VNC screen closes its associated Files pane.
+See
 the mode-specific frontend references ([Location](./location_tech.md),
 [REST API](./restapi_tech.md), and [Proxmox VNC](./proxmox_vnc_tech.md)) for the
 component/state breakdown of this screen.

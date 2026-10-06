@@ -30,6 +30,12 @@ export type PaneTerminalWorkspace = {
   entries: PaneTerminalEntry[];
 };
 
+export type PaneVncWorkspace = {
+  id: string;
+  name: string;
+  entries: { entryId: string; label: string; detail: string }[];
+};
+
 type Props = {
   layout: PaneLayout;
   /** Window titles by window id. */
@@ -41,6 +47,8 @@ type Props = {
   sftpChoices: PaneLocationChoice[];
   /** Every Workspace (also the ones without SSH entries) with its SSH entries. */
   terminalWorkspaces: PaneTerminalWorkspace[];
+  /** Every Workspace with its Proxmox VNC entries. */
+  vncWorkspaces: PaneVncWorkspace[];
   /** Windows Terminal / Command Prompt can only be launched on Windows. */
   localShellsAvailable: boolean;
   /** Browser support is Windows-only and enabled after stale native child views are cleaned up. */
@@ -61,6 +69,10 @@ type Props = {
   onOpenSshInPane: (entryId: string) => void;
   /** Open the entry in its own native window. */
   onOpenSshWindow: (workspaceId: string, entryId: string) => void;
+  /** Select a Proxmox entry and begin automatic login. */
+  onSelectVncEntry: (workspaceId: string, entryId: string) => void;
+  /** Open Direct VNC's independent setup pane. */
+  onOpenDirectVnc: () => void;
   /** Opens the Workspace Manager (optionally focused on one Workspace). */
   onOpenEntryManager: (workspaceId?: string) => void;
   onCreateWorkspace: () => void;
@@ -76,22 +88,26 @@ type Props = {
 const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
   local: <LocalIcon size={18} />,
   remote: <RemoteIcon size={18} />,
-  vnc: <VncIcon size={18} />,
   rest: <RestIcon size={18} />,
   browser: <BrowserIcon size={18} />,
   sftp: <SftpIcon size={18} />,
   ssh: <TerminalIcon size={18} />,
+  "vnc-picker": <VncIcon size={18} />,
+  "vnc-screen": <VncIcon size={18} />,
+  "vnc-files": <SftpIcon size={18} />,
 };
 
 export function PaneDock({
-  layout, titles, restEnabled, vncEnabled, remoteEnabled, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, browserSupported, sshPaneStates, popups, busy,
+  layout, titles, restEnabled, vncEnabled, remoteEnabled, remoteChoices, sftpChoices, terminalWorkspaces, vncWorkspaces, localShellsAvailable, browserSupported, sshPaneStates, popups, busy,
   desktopContextMenu, onCloseDesktopContextMenu,
-  onOpenLocal, onOpenBrowser, onNativeViewOcclusionChange, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onOpenRemote, onOpenSftp, onActivate, onCloseWindow, onFocusPopup, onClosePopup,
+  onOpenLocal, onOpenBrowser, onNativeViewOcclusionChange, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onSelectVncEntry, onOpenDirectVnc, onOpenEntryManager, onCreateWorkspace, onOpenRemote, onOpenSftp, onActivate, onCloseWindow, onFocusPopup, onClosePopup,
 }: Props) {
   const [functionsOpen, setFunctionsOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [sshListOpen, setSshListOpen] = useState(false);
+  const [vncOpen, setVncOpen] = useState(false);
+  const [vncEntriesOpen, setVncEntriesOpen] = useState(false);
   const [activeEntry, setActiveEntry] = useState<{ workspaceId: string; entryId: string } | null>(null);
   const [desktopContextBranch, setDesktopContextBranch] = useState<"location" | "ssh" | null>(null);
   const [desktopContextMenuStyle, setDesktopContextMenuStyle] = useState<React.CSSProperties>({ visibility: "hidden" });
@@ -117,6 +133,8 @@ export function PaneDock({
     setLocationOpen(false);
     setTerminalOpen(false);
     setSshListOpen(false);
+    setVncOpen(false);
+    setVncEntriesOpen(false);
     setActiveEntry(null);
   };
 
@@ -131,6 +149,8 @@ export function PaneDock({
     setLocationOpen(false);
     setTerminalOpen(false);
     setSshListOpen(false);
+    setVncOpen(false);
+    setVncEntriesOpen(false);
     setActiveEntry(null);
     setDesktopContextBranch(null);
     setDesktopContextSubmenuStyle({ visibility: "hidden" });
@@ -158,10 +178,12 @@ export function PaneDock({
         else onCloseDesktopContextMenu();
         return;
       }
-      // Escape peels one layer: the entry actions, then the Location / SSH list, then the flyout.
+      // Escape peels one layer: entry actions, an Entries list, a mode menu, then the flyout.
       event.stopPropagation();
       if (activeEntry) setActiveEntry(null);
       else if (sshListOpen) setSshListOpen(false);
+      else if (vncEntriesOpen) setVncEntriesOpen(false);
+      else if (vncOpen) setVncOpen(false);
       else if (locationOpen) setLocationOpen(false);
       else if (terminalOpen) setTerminalOpen(false);
       else setFunctionsOpen(false);
@@ -172,7 +194,7 @@ export function PaneDock({
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("keydown", onKeyDown, true);
     };
-  }, [anyMenuOpen, functionsOpen, locationOpen, terminalOpen, sshListOpen, activeEntry, desktopContextMenu, desktopContextBranch, onCloseDesktopContextMenu]);
+  }, [anyMenuOpen, functionsOpen, locationOpen, terminalOpen, sshListOpen, vncOpen, vncEntriesOpen, activeEntry, desktopContextMenu, desktopContextBranch, onCloseDesktopContextMenu]);
 
   useLayoutEffect(() => {
     if (!desktopContextMenu) return undefined;
@@ -234,7 +256,7 @@ export function PaneDock({
       onClick: () => setLocationOpen((value) => !value),
     },
     ...(browserSupported ? [{ key: "browser", label: "Browser", icon: <BrowserIcon size={26} />, open: layout.windows.some((win) => win.open && kindOf(win.id) === "browser"), onClick: () => { onOpenBrowser(); closeMenus(); } }] : []),
-    ...(vncEnabled ? [{ key: "vnc", label: "VNC", icon: <VncIcon size={26} />, open: isOpen("vnc"), onClick: () => { onActivate("vnc"); closeMenus(); } }] : []),
+    ...(vncEnabled ? [{ key: "vnc", label: "VNC", icon: <VncIcon size={26} />, open: layout.windows.some((win) => win.open && ["vnc-picker", "vnc-screen", "vnc-files"].includes(kindOf(win.id) || "")), hasMenu: true, expanded: vncOpen, onClick: () => { setVncOpen((value) => !value); setVncEntriesOpen(false); setLocationOpen(false); } }] : []),
     ...(restEnabled ? [{ key: "rest", label: "RestAPI", icon: <RestIcon size={26} />, open: isOpen("rest"), onClick: () => { onActivate("rest"); closeMenus(); } }] : []),
   ];
 
@@ -385,6 +407,44 @@ export function PaneDock({
     ));
   };
 
+  const totalVncEntries = vncWorkspaces.reduce((count, workspace) => count + workspace.entries.length, 0);
+  const renderVncEntries = (dismiss: () => void = closeMenus) => {
+    if (vncWorkspaces.length === 0) {
+      return (
+        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onCreateWorkspace(); dismiss(); }}>
+          <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
+          <span className="pane-menu-text"><strong>No Workspace yet</strong><small>Create a Workspace first</small></span>
+        </button>
+      );
+    }
+    if (totalVncEntries === 0) {
+      return (
+        <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenEntryManager(vncWorkspaces[0].id); dismiss(); }}>
+          <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
+          <span className="pane-menu-text"><strong>No Proxmox VNC Entry yet</strong><small>Add one in Workspace Manager</small></span>
+        </button>
+      );
+    }
+    return vncWorkspaces.filter((workspace) => workspace.entries.length > 0).map((workspace) => (
+      <React.Fragment key={workspace.id}>
+        <div className="pane-menu-heading">{workspace.name}</div>
+        {workspace.entries.map((entry) => (
+          <button
+            key={entry.entryId}
+            type="button"
+            role="menuitem"
+            className="pane-menu-item"
+            title={entry.detail}
+            onClick={() => { onSelectVncEntry(workspace.id, entry.entryId); dismiss(); }}
+          >
+            <span className="pane-status-dot" aria-hidden="true" />
+            <span className="pane-menu-text"><strong>{entry.label}</strong><small>{entry.detail}</small></span>
+          </button>
+        ))}
+      </React.Fragment>
+    ));
+  };
+
   // Singleton windows keep a fixed order; SSH and SFTP windows follow in the order they were opened.
   const taskbarIds: PaneWindowId[] = [
     ...PANE_SINGLETON_KINDS.filter(isOpen),
@@ -425,6 +485,32 @@ export function PaneDock({
                     {renderChoices(sftpChoices, chooseSftp, "No SSH entries in the Workspace Manager")}
                   </div>
                 )}
+                {item.key === "vnc" && vncOpen && (
+                  <div className="pane-vnc-menu-wrap">
+                    <div className="pane-location-menu pane-vnc-menu" role="menu" aria-label="VNC">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        aria-haspopup="menu"
+                        aria-expanded={vncEntriesOpen}
+                        className={`pane-menu-item${vncEntriesOpen ? " is-current" : ""}`}
+                        onClick={() => setVncEntriesOpen((value) => !value)}
+                      >
+                        <span className="pane-menu-icon"><VncIcon size={18} /></span>
+                        <span className="pane-menu-text"><strong>Entries</strong><small>Choose a Proxmox connection</small></span>
+                      </button>
+                      <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenDirectVnc(); closeMenus(); }}>
+                        <span className="pane-menu-icon"><VncIcon size={18} /></span>
+                        <span className="pane-menu-text"><strong>Direct mode</strong><small>Connect to a VNC host directly</small></span>
+                      </button>
+                      <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenEntryManager(); closeMenus(); }}>
+                        <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
+                        <span className="pane-menu-text"><strong>Entry Manager</strong><small>Add or edit Proxmox entries</small></span>
+                      </button>
+                    </div>
+                    {vncEntriesOpen && <div className="pane-location-menu pane-vnc-entries-menu" role="menu" aria-label="Proxmox VNC Entries">{renderVncEntries()}</div>}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -433,7 +519,7 @@ export function PaneDock({
             className={`pane-dock-button pane-functions-button${functionsOpen ? " is-expanded" : ""}`}
             aria-haspopup="menu"
             aria-expanded={functionsOpen}
-            onClick={() => { setFunctionsOpen((value) => !value); setLocationOpen(false); setTerminalOpen(false); setSshListOpen(false); setActiveEntry(null); }}
+            onClick={() => { setFunctionsOpen((value) => !value); setLocationOpen(false); setTerminalOpen(false); setSshListOpen(false); setVncOpen(false); setVncEntriesOpen(false); setActiveEntry(null); }}
           >
             <span className="pane-dock-icon"><FunctionsIcon size={26} /></span>
             <span className="pane-dock-label">Functions</span>
@@ -471,7 +557,7 @@ export function PaneDock({
             className={`pane-dock-button pane-terminal-button${anySshOpen ? " is-open" : ""}${terminalOpen ? " is-expanded" : ""}`}
             aria-haspopup="menu"
             aria-expanded={terminalOpen}
-            onClick={() => { setTerminalOpen((value) => !value); setFunctionsOpen(false); setLocationOpen(false); setSshListOpen(false); setActiveEntry(null); }}
+            onClick={() => { setTerminalOpen((value) => !value); setFunctionsOpen(false); setLocationOpen(false); setSshListOpen(false); setVncOpen(false); setVncEntriesOpen(false); setActiveEntry(null); }}
           >
             <span className="pane-dock-icon"><TerminalIcon size={26} /></span>
             <span className="pane-dock-label">Terminal</span>

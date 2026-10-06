@@ -558,6 +558,22 @@
   position: static;
   flex: 0 0 auto;
 }
+/* Functions -> VNC -> Entries: the mode menu and grouped Workspace list are
+   siblings so long Entry lists scroll without clipping the Direct/Manager actions. */
+.pane-vnc-menu-wrap {
+  position: absolute;
+  left: calc(100% + var(--space-3));
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.pane-vnc-menu-wrap > .pane-location-menu {
+  position: static;
+  flex: 0 0 auto;
+}
+.pane-vnc-menu { width: clamp(240px, 24vw, 310px); }
+.pane-vnc-entries-menu { width: clamp(260px, 28vw, 360px); }
 .pane-entry-actions {
   flex: 0 0 auto;
   width: clamp(200px, 20vw, 260px);

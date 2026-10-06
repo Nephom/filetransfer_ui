@@ -29,24 +29,27 @@ The Large profile (`ui-layout-mobile`) no longer exists; the VNC window uses the
 same fluid desktop sizing as every other Pane window, and narrow-window behavior
 is defined by the relevant media queries.
 
-## Proxmox VNC workspace (`proxmox-vnc.tsx` + `proxmox-vnc.css`)
+## Proxmox VNC flow (`pane/PaneDock.tsx`, `features/vnc/`, `proxmox-vnc.tsx`)
 
-### Direct VNC toggle
+### Entry → VM picker → VNC screen
 
-The VNC workspace portals one **Direct VNC** card into the shared top
-commandbar. This is a workspace presentation toggle, not a third application
-mode and not a second entry list. When active, the Proxmox entry pane and its
-resize controls are hidden, the VNC reader fills the available width, and the
-Connection Controls panel is replaced with Direct VNC host and port fields.
-Credential fields appear only after the server requests them. The noVNC screen element remains mounted so changing the
-connection source does not invalidate the RFB DOM target.
+The dock's **Functions → VNC** menu contains **Entries**, **Direct mode**, and
+**Entry Manager**. Entries are grouped by Workspace, like Terminal's SSH list.
+Selecting a Proxmox entry reads its password from the OS credential store and
+logs in without an extra Login action. If no password is saved, the app opens
+the Workspace Manager with that entry's edit form and password field; saving a
+password resumes login and VM discovery.
 
-The toggle confirms before disconnecting an active Proxmox or Direct VNC RFB
-session. It never reconnects the previous source after switching. Direct VNC
-uses a local one-time WebSocket relay whose upstream is the configured TCP VNC
-endpoint; the relay validates its path and token before opening the remote
-socket. Direct VNC intentionally skips Proxmox VM discovery, QEMU Guest Agent
-checks, and VNC file-transfer detection.
+Each entry has a `vnc-picker:<entryId>` pane with Node/VM selectors and
+Connect. Connect creates a new `vnc-screen:<sessionId>` pane containing only
+that connection's VNC display and controls. The picker remains independently
+available. Closing a screen releases its RFB client and relay; picker and
+screen windows are transient and are never restored from persisted geometry.
+
+**Direct mode** opens a separate setup pane for host/port. Connect opens its
+own VNC screen pane. Direct mode uses a local one-time WebSocket relay whose
+upstream is the configured TCP VNC endpoint; it skips Proxmox discovery and
+file-transfer detection.
 
 ### Negotiated Direct VNC credentials
 
@@ -64,8 +67,7 @@ negotiate authentication without speculative credentials. The
 An account request does not identify the server OS or uniquely identify ARD.
 Direct VNC is therefore labeled Remote desktop, with conditional macOS guidance.
 The credential dialog uses the existing FloatingWindow layout and is portaled
-inside the active VNC fullscreen root when needed. Collapsing Connection
-Controls does not hide it. Continue submits the current complete draft once;
+inside the active VNC fullscreen root when needed. Continue submits the current complete draft once;
 Cancel stops the attempt. Saved credentials are never submitted automatically,
 and rejected credentials require an explicit reconnect rather than an automatic
 retry. The Proxmox branch continues to supply only the relay response's
@@ -118,38 +120,29 @@ input handling.
 ### Workspace layout
 
 ```
-.vnc-workspace (flex row)
-├── .vnc-entry-pane-shell (resizable, 220–720px wide)
-│   └── <VncEntries>                              -- left sidebar, one of:
-│       ├── Entries list mode                     -- when no VM file-transfer route detected yet
-│       │   (.vnc-entry-pane)                        entries list + Login/Logout (Proxmox web session)
-│       └── File browser mode                     -- once detectTransferMode() finds a route
-│           (.vnc-entry-pane.vnc-entry-pane-files)    "← Entries" back button, Upload/Download/Refresh
-│                                                      toolbar, multi-select file table, transfer queue
-├── pane-collapse chevrons OR PaneResizeHandle     -- collapses/resizes the sidebar itself
-└── <section className="vnc-reader">               -- right side, ALWAYS mounted (never unmounts VNC)
-    ├── .vnc-reader-heading                        -- workspace name, entry name, session status
-    └── .vnc-display-split (flex column)
-        ├── .vnc-auth-panel(.open|.collapsed)       -- Connection controls: Node/VM pickers and actions
-        └── .vnc-screen-shell                       -- persistent noVNC canvas + display controls
+Functions → VNC → Entries                     -- dock menu grouped by Workspace
+├── vnc-picker:<entryId>                      -- Node/VM selection + Connect
+└── vnc-screen:<sessionId>                    -- one noVNC display and its controls
+    └── Files button (upper-left, Proxmox only)
+        └── vnc-files:<sessionId>               -- separate file list and transfer queue
 ```
 
-The VNC reader and noVNC screen remain mounted while the left sidebar switches
-between the Proxmox entry list and the VM file browser. This keeps the RFB
-canvas target stable during file browsing and transfer operations.
+The screen owns the noVNC RFB client and file-transfer detection/queue state.
+The Files pane reads that screen's transfer state and sends actions back to the
+same owner. Closing Files only unmounts its view; it does not close the RFB
+client or clear the queue. Closing the screen closes its associated Files pane.
+Direct VNC screens do not expose a Files button.
 
-### Collapse/Expand sizing (`.vnc-auth-panel` / `.vnc-screen-shell`)
+### Independent pane sizing and controls
 
-- **Expanded** (`.vnc-auth-panel` without `.collapsed`): grows to fit the
-  Node/VM dropdowns, Connect/Disconnect/Logout buttons, and any TLS/error
-  notices, capped at `max-height: min(56vh, 640px)` with its own
-  `overflow-y: auto` when the available window height is short.
-- **Collapsed** (`.vnc-auth-panel.collapsed`): shrinks to its heading strip;
-  the sibling `.vnc-screen-shell` gets `flex: 0 0 80%` via
-  `.vnc-display-split.controls-collapsed .vnc-screen-shell`, i.e. the VNC
-  screen claims 80% of `.vnc-reader`'s available height.
-- Connecting a VNC session auto-collapses Connection Controls
-  (`rfb.addEventListener("connect", ...)` calls `setControlsOpen(false)`).
+- The VM picker owns Node/VM selection, VM SFTP settings, Connect, and Logout.
+- The VNC screen fills its pane with the noVNC canvas; Disconnect and Reconnect
+  are in the heading, with the existing drawer for Focus, View only,
+  Ctrl+Alt+Del, and Fullscreen.
+- The compact Files button sits in the heading at upper left, outside the guest
+  canvas so it does not cover the remote desktop.
+- Each Files pane uses its own window bounds and scroll containers for the file
+  table and transfer queue.
 
 ### `proxmox-vnc.tsx` reference
 
@@ -163,31 +156,40 @@ canvas target stable during file browsing and transfer operations.
 | `formatModifiedDate(millis)` | Locale date/time string for a file's modified timestamp. |
 | `transferModeLabel(mode)` | Human label for a `VncTransferMode` (e.g. `"SFTP (direct)"`, `"Guest Agent (limited)"`). |
 | `formatQueueDetailProgress(progress)` | Renders a queue item's `(NN%) · rate · ETA` detail suffix from a `QueueProgress`. |
+| `loginProxmoxVncEntry(entry, operations)` (`VncWorkspaceController.tsx`) | Checks the credential store, authenticates, lists VMs, and logs out if discovery fails. |
 
-**`VncEntries` (left sidebar component)**
+**`VncVmPickerPane` (`features/vnc/VncWorkspaceController.tsx`)**
 
-Renders either the Proxmox entries list (Add/Edit/Remove, Login/Logout,
-`MobileChoiceMenu` quick-switch) or, when `fileBrowser.visible` is true, the
-remote file browser: "← Entries" back button + reachability badge,
-Upload/Download/Refresh toolbar + breadcrumb, detect/transfer/list error
-notices, the multi-select `.file-table` (reusing the exact same
-`.file-table`/`.file-row`/`.selection-column` styling as LOCATION mode), and
-the inline transfer queue. All of its file-browser behavior is driven by
-the `FileBrowserProps` passed down from `ProxmoxVncWorkspace` -- this
-component itself holds no state.
+Renders one authenticated Proxmox entry's node and VM selectors. Selecting a
+guest updates that entry's saved node/VMID; Connect passes the selected VM to
+the app-level screen-window creator. Its VM SFTP settings dialog stores the
+VM profile in Workspace entry data and the password in the OS credential
+store.
+
+**`ProxmoxVncScreenPane` (`proxmox-vnc.tsx`)**
+
+Owns one fixed Proxmox VM or Direct VNC endpoint, noVNC connection lifecycle,
+the screen toolbar, and the transfer-detection/queue runtime. Its upper-left
+Files action opens a sibling Files window using the same screen session id.
+
+**`VncFileTransferPane` (`features/vnc/VncFileTransferPane.tsx`)**
+
+Renders the path, reachability status, Upload/Download/Refresh and Try Host
+Jump actions, multi-select file table, errors, and transfer queue. Its data and
+actions are supplied by the corresponding VNC screen, so it has no separate
+VM identity or network connection.
 
 **`ProxmoxVncWorkspace` (top-level component) -- state**
 
 | State | Purpose |
 |---|---|
-| `password` / `loading` / `error` / `status` | Proxmox web-session login form + VNC connection status text. |
+| `password` / `loading` / `error` / `status` | Legacy combined workspace login state plus per-screen VNC connection status. |
 | `credentialRequest` / `directPassword` / `accountPassword` / `credentialNotice` | Current negotiated Direct VNC prompt, separate credential drafts, and keyring notices. |
-| `vms` | VM list for the authenticated session (`proxmox_list_vms_session`). |
-| `controlsOpen` | Connection Controls expanded/collapsed (drives `.vnc-auth-panel`/`.vnc-display-split` classes -- see sizing above). |
-| `vmSshSettingsOpen` | Opens the selected VMID's VM SFTP settings in a floating window; it resets closed whenever the VM profile changes. |
+| `vms` | VM list passed from the app-level authenticated Entry session (`proxmox_list_vms_session`). |
 | `isFullscreen` / `viewOnly` | VNC screen fullscreen + input-blocked state. |
-| `authSessions` | Map of `entryId -> Proxmox session id`, so multiple entries can stay logged in independently. |
-| `entryPaneWidth` / `entryPaneCollapsed` | Left sidebar's resizable width (persisted to `localStorage`) and collapsed state. |
+| `authSessions` | Legacy component's entry/session map. The active flow keeps Proxmox sessions in `main.tsx`, keyed by Entry. |
+| `screenMode` / `screenSessionId` | Identifies this independent screen and whether its source is Proxmox or Direct VNC. |
+| `entryPaneWidth` / `controlsOpen` / `vmSshSettingsOpen` | Retained by the legacy combined-workspace path; the new flow places VM settings in the picker and keeps the screen pane independent. |
 | `transferMode` / `transferError` / `guestIp` | File-transfer route detection result (`VncTransferMode`) and the reachable IP it settled on. |
 | `qemuAgentStatus` | Independent QEMU Guest Agent health state (`unknown`, `checking`, `up`, `down`, or `not-applicable`) shown beside the selected VM's SFTP profile. A successful ping enables the Guest Agent route even when network-interface discovery or VM SFTP credentials are unavailable. |
 | `remotePath` / `remoteFiles` / `remoteFilesLoading` / `remoteFilesError` / `selectedRemotePaths` | Current remote directory listing and the user's multi-selection for download. |
@@ -197,13 +199,9 @@ component itself holds no state.
 
 | Function | Purpose |
 |---|---|
-| `stopEntryPaneResize` / `resizeEntryPane` / `beginEntryPaneResize` | Drag-resize handlers for the left sidebar's width. |
-| `resetTransferState` | Clears all file-transfer state (mode, path, listing, selection, queue) -- called on disconnect/entry switch. |
-| `stopConnection(updateStatus?)` | Tears down the current VNC session (cancels a pending connection, disconnects the RFB client, clears VM list + view-only + transfer state). |
+| `resetTransferState` | Clears this screen's file-transfer state (mode, path, listing, selection, queue) on disconnect. |
+| `stopConnection(updateStatus?)` | Tears down this screen's VNC session (cancels a pending connection and disconnects its RFB client). |
 | `toggleFullscreen` | Requests/exits fullscreen on the VNC screen shell. |
-| `updatePassword` | Updates the Proxmox login password draft + persists it to the workspace's secret store. |
-| `loginEntry` / `logoutEntry` | Proxmox web-session login/logout (`proxmox_login`/`proxmox_logout`). |
-| `loadVms` | Fetches the VM list for the authenticated session. |
 | `detectTransferMode` | Checks QEMU Guest Agent health independently, then performs profile-gated direct-sftp → jump-sftp probing; without a VM SFTP profile it skips automatic SSH probes and uses Guest Agent when its ping is up. It sets `transferMode`/`guestIp`/`transferError`. |
 | `buildSshProfile` | Builds the `SshTransferProfile` (host/port/username/key, plus jump-host fields for `jump-sftp`) passed to `ssh_list_directory`/`ssh_upload_path`/`ssh_download_path`. |
 | `loadRemoteFiles(path)` | Lists a remote directory via the Guest Agent or SSH, depending on `transferMode`. |
@@ -212,50 +210,44 @@ component itself holds no state.
 | `addQueueItem` / `patchQueueItem` / `removeQueueItem` / `updateQueueItemProgress` | Transfer queue CRUD + progress-event handling (`proxmox-agent-upload-progress`/`-download-progress` Tauri events). |
 | `executeUpload` / `runUpload` / `pickAndUpload` | Upload one file (with retry via `classifyQueueError`/`retryDelayMs`), queue it, and the file-picker entry point. |
 | `executeDownload` / `runDownload` / `pickAndDownload` | Same, for downloads (rejects directory downloads under `guest-agent`, which has no directory API). |
-| `connect` | Starts a VNC session: requests a relay ticket, dynamically imports noVNC, wires up the `RFB` instance and its event listeners (`connect` auto-collapses Connection Controls and kicks off `detectTransferMode`). |
+| `connect` | Starts this pane's VNC session: requests a relay ticket, dynamically imports noVNC, and wires up the owned `RFB` instance. A successful Proxmox connection starts transfer detection. |
 | `credentialRequest.submit` / `forgetDirectCredential` | Submit current requested credentials once, or forget only the prompt's selected keyring entry. |
-| `selectEntry` | Switches the active Proxmox VNC entry (stops any existing connection first). |
 | `toggleViewOnly` | Flips the VNC session between interactive and view-only. |
 
 ### `proxmox-vnc.css` class map
 
 | Selector | Purpose |
 |---|---|
-| `.vnc-workspace`, `.vnc-entry-pane-shell`, `.vnc-main-pane-collapse-controls` | Top-level two-pane layout + the sidebar collapse/expand chevrons. |
-| `.vnc-entry-pane`, `.vnc-entry-list`, `.vnc-entry`, `.vnc-entry-auth` | Entries-list mode: entry rows, Login/Logout panel. |
-| `.vnc-entry-pane-files`, `.vnc-entry-back`, `.vnc-reachability-status` | File-browser mode: sidebar wrapper, back button, mode badge (`data-mode` drives the success/danger color variants). |
-| `.vnc-files-toolbar`, `.vnc-files-breadcrumb`, `.vnc-files-table-wrap`, `.vnc-files-empty`, `.vnc-file-name-cell`, `.vnc-transfer-queue` | File-browser toolbar, path breadcrumb, the file table's scroll container, empty state, name cell, and the queue list. |
-| `.vnc-reader`, `.vnc-reader-heading`, `.vnc-session-status` | Right-side wrapper, heading row, VNC session status pill. |
-| `.vnc-display-split`, `.vnc-auth-panel(.collapsed)`, `.vnc-screen-shell(.fullscreen)`, `.vnc-screen` | Connection Controls ⇄ VNC screen column layout -- see [Collapse/Expand sizing](#collapseexpand-sizing-vnc-auth-panel--vnc-screen-shell) above. |
-| `.vnc-auth-heading`, `.vnc-auth-grid`, `.vnc-actions`, `.vnc-warning` | Connection Controls' own heading, Node/VM dropdown grid, action buttons, TLS warning. |
-| `.vnc-display-toolbar` | The floating Ctrl+Alt+Del/Focus/View-only/Fullscreen toolbar overlaid on the VNC screen. |
+| `.vnc-picker-pane`, `.vnc-picker-controls`, `.vnc-picker-actions` | Independent Node/VM picker and Direct VNC setup layouts. |
+| `.vnc-workspace.vnc-screen-only`, `.vnc-reader`, `.vnc-screen-shell`, `.vnc-screen` | VNC screen pane fills its window with the remote display. |
+| `.vnc-files-open-button`, `.vnc-reader-title-group` | Small upper-left Files launcher and the screen title layout. |
+| `.vnc-files-pane`, `.vnc-files-toolbar`, `.vnc-files-breadcrumb`, `.vnc-files-table-wrap`, `.vnc-transfer-queue` | Independent VM file-transfer pane, table, path, toolbar, and transfer queue. |
+| `.vnc-display-toolbar` | The drawer for Ctrl+Alt+Del/Focus/View-only/Fullscreen over the VNC screen. |
 
 ## Add/Edit Proxmox VNC Entry modal (`main.tsx` + `styles/layout/workspace-dialogs.css`)
 
 The modal (`.vnc-entry-modal`) pages between the Proxmox host identity and
-the entry-scoped Host SSH (jump) settings. VM SSH settings are intentionally
-handled in Connection Controls because they belong to the selected guest.
+the entry-scoped Host SSH (jump) settings. The Host Entry page includes the
+Proxmox account password field; the secret is written only to the system
+credential store. VM SSH settings are handled by the VM picker because they
+belong to the selected guest.
 The tab state in `main.tsx` is `vncEntryModalTab: "default" | "hostSsh"`,
 reset to `"default"` whenever the dialog opens (`openAddVncEntryDialog`/
 `openEditVncEntryDialog`):
 
 | Tab button | Section shown |
 |---|---|
-| **Host Entry** (default) | Name, Proxmox host/port, username + realm, PVE version, Ignore-TLS checkbox. |
+| **Host Entry** (default) | Name, Proxmox host/port, username + realm, PVE version, Ignore-TLS checkbox, Proxmox password. |
 | **Host SSH (jump)** | Host SSH username/port/private-key/password, "Install SSH key on host". |
 
 `.vnc-entry-modal-tabs`/`.vnc-entry-modal-tab(.active)` in
-`workspace-dialogs.css` style the three pill buttons (same visual language
+`workspace-dialogs.css` style the pill buttons (same visual language
 as other pill-tab controls in the app). Cancel/Remove/Save stay outside the
 tabbed area so they're reachable regardless of which section is open.
 
 Each selected VM has its own VM SFTP profile, keyed by the Proxmox entry, node,
-and VMID. Connection Controls shows this profile as a compact VM SFTP card with
-the VM name/ID and reachability status; the editable fields open in a VMID-
-specific floating window so they do not expand the main controls panel. The
-profile contains the VM username, SSH port, private key path, and fallback IP.
-Its password is stored in the OS credential store under the same VM-specific
-key. A new VM does not trigger a file-transfer probe automatically; the user
-can save its profile or explicitly choose **Try Host Jump** from the floating
-window. If that button is not used, the left pane remains on the Proxmox Entry
-list.
+and VMID. **VM SFTP settings** in the picker edit the VM username, SSH port,
+private-key path, fallback IP, and password. Its password is stored in the OS
+credential store under the same VM-specific key. File-route detection begins
+after VNC connects; when a jump attempt is needed, **Try Host Jump** is in the
+independent Files pane.

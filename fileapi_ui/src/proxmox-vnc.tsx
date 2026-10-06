@@ -43,7 +43,8 @@ export type VmSshProfile = {
   fallbackIp: string;
 };
 export type ProxmoxVncSecret = { password?: string };
-type VmSummary = { vmid: number; name?: string; node: string; status?: string; guestType: string };
+export type ProxmoxVmSummary = { vmid: number; name?: string; node: string; status?: string; guestType: string };
+type VmSummary = ProxmoxVmSummary;
 type Connection = { id: string; websocketUrl: string; password: string };
 
 // --- File transfer -----------------------------------------------------
@@ -163,6 +164,14 @@ type Props = {
   onAddEntry: () => void;
   onEditEntry: (entry: ProxmoxVncEntry) => void;
   onRemoveEntry: (entry: ProxmoxVncEntry) => void;
+  screenMode?: "proxmox" | "direct";
+  screenSessionId?: string;
+  proxmoxSessionId?: string;
+  initialVms?: VmSummary[];
+  directHost?: string;
+  directPort?: number;
+  onOpenFiles?: () => void;
+  onFileTransferUpdate?: (screenSessionId: string, fileBrowser: FileBrowserProps | null) => void;
 };
 
 type EntryAuthProps = {
@@ -174,7 +183,7 @@ type EntryAuthProps = {
   onLogout: () => void;
 };
 
-type FileBrowserProps = {
+export type FileBrowserProps = {
   visible: boolean;
   hasRoute: boolean;
   loading: boolean;
@@ -187,6 +196,7 @@ type FileBrowserProps = {
   filesLoading: boolean;
   filesError: string;
   transferError: string;
+  canTryHostJump: boolean;
   selectedPaths: Set<string>;
   queue: VncQueueItem[];
   onBack: () => void;
@@ -196,7 +206,15 @@ type FileBrowserProps = {
   onUpload: () => void;
   onDownload: () => void;
   onRefresh: () => void;
+  onTryHostJump: () => void;
   onRemoveQueueItem: (id: string) => void;
+};
+
+export type VncFileTransferPaneProps = {
+  entry: ProxmoxVncEntry;
+  vmName: string;
+  vmid: number;
+  fileBrowser: FileBrowserProps;
 };
 
 // Entry management: adding a Workspace and its first entry, or bulk edits
@@ -293,7 +311,7 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditE
   </aside>;
 }
 
-export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, secrets, commandbarHost, collapseMainPaneEnabled, onSelectEntry, onChangeEntries, onChangeSecret, onAddEntry, onEditEntry, onRemoveEntry }: Props) {
+export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, secrets, commandbarHost, collapseMainPaneEnabled, onSelectEntry, onChangeEntries, onChangeSecret, onAddEntry, onEditEntry, onRemoveEntry, screenMode, screenSessionId, proxmoxSessionId, initialVms, directHost: initialDirectHost, directPort: initialDirectPort, onOpenFiles, onFileTransferUpdate }: Props) {
   const entry = entries.find((item) => item.id === activeEntryId) || entries[0];
   const secret = entry ? secrets[entry.id] || {} : {};
   const screenRef = useRef<HTMLDivElement>(null);
@@ -305,13 +323,13 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const [status, setStatus] = useState("Not connected");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [vms, setVms] = useState<VmSummary[]>([]);
+  const [vms, setVms] = useState<VmSummary[]>(() => initialVms || []);
   const [controlsOpen, setControlsOpen] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewOnly, setViewOnly] = useState(false);
-  const [directVncOpen, setDirectVncOpen] = useState(false);
-  const [directHost, setDirectHost] = useState(() => localStorage.getItem("fileapi-direct-vnc-host") || "");
-  const [directPort, setDirectPort] = useState(() => Number(localStorage.getItem("fileapi-direct-vnc-port")) || 5900);
+  const [directVncOpen, setDirectVncOpen] = useState(() => screenMode === "direct");
+  const [directHost, setDirectHost] = useState(() => initialDirectHost || localStorage.getItem("fileapi-direct-vnc-host") || "");
+  const [directPort, setDirectPort] = useState(() => initialDirectPort || Number(localStorage.getItem("fileapi-direct-vnc-port")) || 5900);
   const [directUsername, setDirectUsername] = useState(() => localStorage.getItem("fileapi-direct-vnc-username") || "");
   const [directPassword, setDirectPassword] = useState("");
   const [accountPassword, setAccountPassword] = useState("");
@@ -343,7 +361,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   useEffect(() => () => { if (toolbarHideTimerRef.current !== null) window.clearTimeout(toolbarHideTimerRef.current); }, []);
   const screenShellRef = useRef<HTMLDivElement>(null);
   const vncReaderRef = useRef<HTMLElement>(null);
-  const [authSessions, setAuthSessions] = useState<Record<string, string>>({});
+  const [authSessions, setAuthSessions] = useState<Record<string, string>>(() => proxmoxSessionId && activeEntryId ? { [activeEntryId]: proxmoxSessionId } : {});
   const [entryPaneWidth, setEntryPaneWidth] = useState(() => Number(localStorage.getItem("fileapi-vnc-entry-pane-width")) || 380);
   const [entryPaneCollapsed, setEntryPaneCollapsed] = useState(false);
   const entryPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -498,9 +516,14 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   };
 
   const updatePassword = (value: string) => { setPassword(value); if (entry) onChangeSecret(entry.id, { password: value }); };
-  const isDirectVnc = directVncOpen;
+  const isDirectVnc = screenMode === "direct" || directVncOpen;
   const nativeEntry = entry ? { ...entry, guestType: entry.guestType, ignoreTlsErrors: entry.ignoreTlsErrors } : null;
-  const authenticated = Boolean(entry && authSessions[entry.id]);
+  const sessionForEntry = (entryId: string) => {
+    const localSession = authSessions[entryId];
+    if (localSession) return localSession;
+    return entryId === activeEntryId ? proxmoxSessionId || undefined : undefined;
+  };
+  const authenticated = Boolean(entry && sessionForEntry(entry.id));
   const loginEntry = async () => {
     if (!nativeEntry || !password) return;
     setLoading(true); setError("");
@@ -515,11 +538,11 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     if (!entry) return;
     stopConnection();
     setVms([]);
-    const sessionId = authSessions[entry.id];
+    const sessionId = sessionForEntry(entry.id);
     if (sessionId) await invoke("proxmox_logout", { sessionId }).catch(() => undefined);
     setAuthSessions((current) => { const next = { ...current }; delete next[entry.id]; return next; });
   };
-  const loadVms = async (sessionId = nativeEntry ? authSessions[nativeEntry.id] : undefined, targetEntry = nativeEntry) => {
+  const loadVms = async (sessionId = nativeEntry ? sessionForEntry(nativeEntry.id) : undefined, targetEntry = nativeEntry) => {
     if (!targetEntry || !sessionId) { setError("Log in to this Proxmox entry first."); return; }
     setLoading(true); setError("");
     try { setVms(await invoke<VmSummary[]>("proxmox_list_vms_session", { entry: targetEntry, sessionId })); }
@@ -552,6 +575,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const storedVmProfile = entry?.vmSshProfiles?.[selectedVmKey];
   const vmSshProfile = storedVmProfile || { username: "root", port: 22, privateKeyPath: "", fallbackIp: "" };
   const vmSshConfigured = Boolean(storedVmProfile);
+  const vmSshProfileSignatureRef = useRef(JSON.stringify(storedVmProfile || null));
 
   useEffect(() => {
     setVmSshPassword("");
@@ -600,7 +624,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     setTransferError("");
     setGuestIp("");
     setPreferEntriesList(false);
-    const sessionId = authSessions[entry.id];
+    const sessionId = sessionForEntry(entry.id);
     const proxmoxHost = proxmoxHostFromBaseUrl(entry.baseUrl);
 
     const isQemu = entry.guestType === "qemu";
@@ -673,6 +697,17 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     );
   };
 
+  useEffect(() => {
+    const nextSignature = JSON.stringify(storedVmProfile || null);
+    if (vmSshProfileSignatureRef.current === nextSignature) return;
+    vmSshProfileSignatureRef.current = nextSignature;
+    const nextProfile = storedVmProfile || { username: "root", port: 22, privateKeyPath: "", fallbackIp: "" };
+    setVmSshDraft(nextProfile);
+    if (screenMode === "proxmox" && status === "Connected") {
+      void detectTransferMode(false, nextProfile);
+    }
+  }, [storedVmProfile, screenMode, status]);
+
   // Once a transfer route is found, load the file list for "/" -- this is
   // what makes the sidebar automatically switch to the VM's filesystem
   // once VNC connects. Depends on transferMode/guestIp directly (not
@@ -715,7 +750,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     setRemoteFilesError("");
     try {
       const result = transferMode === "guest-agent"
-        ? await invoke<{ path: string; files: VmFileEntry[] }>("proxmox_agent_list_directory", { entry: nativeEntry, sessionId: authSessions[nativeEntry.id], path })
+        ? await invoke<{ path: string; files: VmFileEntry[] }>("proxmox_agent_list_directory", { entry: nativeEntry, sessionId: sessionForEntry(nativeEntry.id), path })
         : await invoke<{ path: string; files: VmFileEntry[] }>("ssh_list_directory", { profile: buildSshProfile(), path });
       const sorted = result.files.slice().sort((left, right) => Number(right.isDirectory) - Number(left.isDirectory) || left.name.localeCompare(right.name));
       setRemoteFiles(sorted);
@@ -780,7 +815,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         if (!nativeEntry) throw new Error("Proxmox entry is unavailable");
         await invoke("proxmox_agent_upload_file", {
           entry: nativeEntry,
-          sessionId: authSessions[nativeEntry.id],
+          sessionId: sessionForEntry(nativeEntry.id),
           transferId: id,
           localPath,
           remotePath: `${destinationPath.replace(/\/$/, "")}/${fileName}`,
@@ -827,7 +862,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         if (!nativeEntry) throw new Error("Proxmox entry is unavailable");
         await invoke("proxmox_agent_download_file", {
           entry: nativeEntry,
-          sessionId: authSessions[nativeEntry.id],
+          sessionId: sessionForEntry(nativeEntry.id),
           transferId: id,
           remotePath: item.path,
           remoteSize: item.size,
@@ -934,7 +969,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       if (!isCurrent()) return;
       const connection = isDirectVnc
         ? await invoke<Connection>("direct_vnc_start", { host: directHost.trim(), port: directPort })
-        : await invoke<Connection>("proxmox_vnc_start_session", { entry: nativeEntry, sessionId: authSessions[nativeEntry!.id] });
+        : await invoke<Connection>("proxmox_vnc_start_session", { entry: nativeEntry, sessionId: sessionForEntry(nativeEntry!.id) });
       if (!isCurrent()) {
         void invoke(cancelCommand, { connectionId: connection.id }).catch(() => undefined);
         return;
@@ -1019,6 +1054,18 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       fail(value instanceof Error ? value.message : String(value));
     }
   };
+
+  useEffect(() => {
+    if (!screenMode) return;
+    if (screenMode === "proxmox" && (!nativeEntry || !authenticated || !selectedVm)) {
+      setError("The selected Proxmox VM session is unavailable. Return to the VM picker and connect again.");
+      return;
+    }
+    void connect();
+    // A screen window owns one immutable VM or Direct endpoint for its lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenMode, screenSessionId]);
+
   const selectEntry = (id: string) => {
     if (id !== activeEntryId) stopConnection();
     onSelectEntry(id);
@@ -1060,9 +1107,43 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         ? "QEMU Guest Agent is only available for QEMU guests."
         : "QEMU Guest Agent is DOWN or not installed. Only green means Windows file transfer is available.";
 
+  const fileBrowser: FileBrowserProps = {
+    visible: fileBrowserVisible,
+    hasRoute: hasFileRoute,
+    loading: transferMode === "detecting",
+    modeLabel: transferModeLabel(transferMode),
+    mode: transferMode,
+    guestIp,
+    filesReady,
+    path: remotePath,
+    files: remoteFiles,
+    filesLoading: remoteFilesLoading,
+    filesError: remoteFilesError,
+    transferError,
+    canTryHostJump: Boolean(entry?.hostSshUsername?.trim() && (transferMode === "guest-agent" || transferMode === "unavailable")),
+    selectedPaths: selectedRemotePaths,
+    queue: vncQueue,
+    onBack: () => setPreferEntriesList(true),
+    onReturn: () => setPreferEntriesList(false),
+    onNavigate: selectRemotePath,
+    onToggleSelect: toggleRemoteSelection,
+    onUpload: () => void pickAndUpload(),
+    onDownload: () => void pickAndDownload(),
+    onRefresh: () => void loadRemoteFiles(remotePath),
+    onTryHostJump: () => void detectTransferMode(true),
+    onRemoveQueueItem: removeQueueItem,
+  };
+  useEffect(() => {
+    if (screenMode !== "proxmox" || !screenSessionId || !onFileTransferUpdate) return;
+    onFileTransferUpdate(screenSessionId, fileBrowser);
+  }, [screenMode, screenSessionId, onFileTransferUpdate, fileBrowser.visible, fileBrowser.hasRoute, fileBrowser.loading, fileBrowser.modeLabel, fileBrowser.mode, fileBrowser.guestIp, fileBrowser.filesReady, fileBrowser.path, fileBrowser.files, fileBrowser.filesLoading, fileBrowser.filesError, fileBrowser.transferError, fileBrowser.canTryHostJump, fileBrowser.selectedPaths, fileBrowser.queue]);
+  useEffect(() => () => {
+    if (screenMode === "proxmox" && screenSessionId) onFileTransferUpdate?.(screenSessionId, null);
+  }, [screenMode, screenSessionId, onFileTransferUpdate]);
+
   return <>
-    {commandbarHost && createPortal(<button type="button" data-direct-vnc-action="true" className={`direct-vnc-card${directVncOpen ? " active" : ""}`} aria-pressed={directVncOpen} onClick={toggleDirectVnc}><span className="direct-vnc-card-icon" aria-hidden="true" /><span><strong>Direct VNC</strong><small>Remote desktop</small></span></button>, commandbarHost)}
-    <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}${directVncOpen ? " direct-vnc-open" : ""}`}>
+    {screenMode !== "proxmox" && screenMode !== "direct" && commandbarHost && createPortal(<button type="button" data-direct-vnc-action="true" className={`direct-vnc-card${directVncOpen ? " active" : ""}`} aria-pressed={directVncOpen} onClick={toggleDirectVnc}><span className="direct-vnc-card-icon" aria-hidden="true" /><span><strong>Direct VNC</strong><small>Remote desktop</small></span></button>, commandbarHost)}
+    <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}${directVncOpen ? " direct-vnc-open" : ""}${screenMode ? " vnc-screen-only" : ""}`}>
     <div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}>
       <VncEntries
         entries={entries}
@@ -1077,38 +1158,26 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         onPasswordChange={updatePassword}
         onLogin={() => void loginEntry()}
         onLogout={() => void logoutEntry()}
-        fileBrowser={{
-          visible: fileBrowserVisible,
-          hasRoute: hasFileRoute,
-          loading: transferMode === "detecting",
-          modeLabel: transferModeLabel(transferMode),
-          mode: transferMode,
-          guestIp,
-          filesReady,
-          path: remotePath,
-          files: remoteFiles,
-          filesLoading: remoteFilesLoading,
-          filesError: remoteFilesError,
-          transferError,
-          selectedPaths: selectedRemotePaths,
-          queue: vncQueue,
-          onBack: () => setPreferEntriesList(true),
-          onReturn: () => setPreferEntriesList(false),
-          onNavigate: selectRemotePath,
-          onToggleSelect: toggleRemoteSelection,
-          onUpload: () => void pickAndUpload(),
-          onDownload: () => void pickAndDownload(),
-          onRefresh: () => void loadRemoteFiles(remotePath),
-          onRemoveQueueItem: removeQueueItem,
-        }}
+        fileBrowser={fileBrowser}
       />
     </div>
     {collapseMainPaneEnabled
       ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane"><ChevronRightIcon /></button></div>
       : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
     <section ref={vncReaderRef} className="vnc-reader" aria-label="Proxmox VNC workspace">
-      <div className="vnc-reader-heading"><div><span className="eyebrow">{isDirectVnc ? "Direct VNC" : `VNC mode · ${workspaceName}`}</span><h1>{isDirectVnc ? "Direct VNC" : entry?.name || "Proxmox VNC"}</h1></div><span className="vnc-session-status">{status}</span></div>
+      <div className="vnc-reader-heading">
+        <div className="vnc-reader-title-group">
+          {screenMode === "proxmox" && <button type="button" className="vnc-files-open-button" onClick={onOpenFiles} disabled={status !== "Connected"} title="Open VM file transfer">Files</button>}
+          <div><span className="eyebrow">{isDirectVnc ? "Direct VNC" : screenMode ? "Proxmox VNC" : `VNC mode · ${workspaceName}`}</span><h1>{isDirectVnc ? "Direct VNC" : entry?.name || "Proxmox VNC"}{screenMode === "proxmox" && selectedVm ? ` · ${selectedVm.name || `VM ${selectedVm.vmid}`}` : ""}</h1></div>
+        </div>
+        <div className="vnc-reader-status-actions">
+          <span className="vnc-session-status">{status}</span>
+          {screenMode && !rfbRef.current && status !== "Connecting..." && status !== "Connected" && <button type="button" className="confirm" onClick={() => void connect()} disabled={loading}>{loading ? "Connecting…" : "Reconnect"}</button>}
+          {screenMode && <button type="button" onClick={() => stopConnection()} disabled={!connectionCleanupRef.current}>Disconnect</button>}
+        </div>
+      </div>
       {credentialNotice && <div className="notice vnc-warning">{credentialNotice}</div>}
+      {screenMode && error && <div className="notice rest-error" role="alert">{error}</div>}
       <div className={`vnc-display-split${controlsOpen ? "" : " controls-collapsed"}`}>
         <div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}>
           <div className="vnc-auth-heading">
@@ -1206,4 +1275,41 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     </section>
     </div>
   </>;
+}
+
+export type ProxmoxVncScreenPaneProps = {
+  /** One immutable target; opening another target creates another screen pane. */
+  screenSessionId: string;
+  entry: ProxmoxVncEntry | null;
+  proxmoxSessionId?: string;
+  vms?: VmSummary[];
+  directHost?: string;
+  directPort?: number;
+  onOpenFiles?: () => void;
+  onFileTransferUpdate?: (screenSessionId: string, fileBrowser: FileBrowserProps | null) => void;
+};
+
+export function ProxmoxVncScreenPane({ screenSessionId, entry, proxmoxSessionId, vms = [], directHost, directPort, onOpenFiles, onFileTransferUpdate }: ProxmoxVncScreenPaneProps) {
+  return <ProxmoxVncWorkspace
+    workspaceName="Proxmox VNC"
+    entries={entry ? [entry] : []}
+    activeEntryId={entry?.id || ""}
+    secrets={{}}
+    commandbarHost={null}
+    collapseMainPaneEnabled={false}
+    onSelectEntry={() => undefined}
+    onChangeEntries={() => undefined}
+    onChangeSecret={() => undefined}
+    onAddEntry={() => undefined}
+    onEditEntry={() => undefined}
+    onRemoveEntry={() => undefined}
+    screenMode={entry ? "proxmox" : "direct"}
+    screenSessionId={screenSessionId}
+    proxmoxSessionId={proxmoxSessionId}
+    initialVms={vms}
+    directHost={directHost}
+    directPort={directPort}
+    onOpenFiles={onOpenFiles}
+    onFileTransferUpdate={onFileTransferUpdate}
+  />;
 }

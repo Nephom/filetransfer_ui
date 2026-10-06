@@ -6,30 +6,61 @@
  * Window kinds. "sftp" and "ssh" windows belong to an SSH entry: `sftp:<entryId>`
  * (one per entry, see sftpWindowId) and `ssh:<entryId>#<n>` (one per opened SSH
  * terminal, `n` = 1, 2, 3, ... so the same entry can be opened any number of
- * times, see sshWindowId). Browser panes are also opened on demand and use
- * `browser:<n>` ids. Every other kind has exactly one window whose id is the
- * kind itself.
+ * times, see sshWindowId). Browser and Proxmox VNC flow panes are also opened
+ * on demand. VNC uses `vnc-picker:<entryId>`, `vnc-screen:<sessionId>`, and
+ * `vnc-files:<sessionId>` so each stage has an independent window. Every other
+ * kind has exactly one window whose id is the kind itself.
  */
-export type PaneWindowKind = "local" | "remote" | "vnc" | "rest" | "browser" | "sftp" | "ssh";
+export type PaneWindowKind = "local" | "remote" | "rest" | "browser" | "sftp" | "ssh" | "vnc-picker" | "vnc-screen" | "vnc-files";
 
 export type PaneSftpWindowId = `sftp:${string}`;
 export type PaneSshWindowId = `ssh:${string}#${number}`;
 export type PaneBrowserWindowId = `browser:${number}`;
+export type PaneVncPickerWindowId = `vnc-picker:${string}`;
+export type PaneVncScreenWindowId = `vnc-screen:${string}`;
+export type PaneVncFilesWindowId = `vnc-files:${string}`;
 export type PaneEntryWindowKind = "sftp" | "ssh";
-export type PaneWindowId = Exclude<PaneWindowKind, PaneEntryWindowKind | "browser"> | PaneBrowserWindowId | PaneSftpWindowId | PaneSshWindowId;
+type PaneVncWindowKind = "vnc-picker" | "vnc-screen" | "vnc-files";
+type PaneSingletonWindowKind = Exclude<PaneWindowKind, PaneEntryWindowKind | "browser" | PaneVncWindowKind>;
+export type PaneWindowId = PaneSingletonWindowKind | PaneBrowserWindowId | PaneSftpWindowId | PaneSshWindowId | PaneVncPickerWindowId | PaneVncScreenWindowId | PaneVncFilesWindowId;
 
-export const PANE_WINDOW_KINDS: readonly PaneWindowKind[] = ["local", "remote", "vnc", "rest", "browser", "sftp", "ssh"];
+export const PANE_WINDOW_KINDS: readonly PaneWindowKind[] = ["local", "remote", "rest", "browser", "sftp", "ssh", "vnc-picker", "vnc-screen", "vnc-files"];
 
 /** Kinds that only ever have one window (id === kind). */
-export const PANE_SINGLETON_KINDS: readonly Exclude<PaneWindowKind, PaneEntryWindowKind | "browser">[] = ["local", "remote", "vnc", "rest"];
+export const PANE_SINGLETON_KINDS: readonly PaneSingletonWindowKind[] = ["local", "remote", "rest"];
 
 const SFTP_PREFIX = "sftp:";
 const SSH_PREFIX = "ssh:";
 const BROWSER_PREFIX = "browser:";
+const VNC_PICKER_PREFIX = "vnc-picker:";
+const VNC_SCREEN_PREFIX = "vnc-screen:";
+const VNC_FILES_PREFIX = "vnc-files:";
 
 export const sftpWindowId = (entryId: string): PaneSftpWindowId => `${SFTP_PREFIX}${entryId}`;
 export const sshWindowId = (entryId: string, instance: number): PaneSshWindowId => `${SSH_PREFIX}${entryId}#${instance}`;
 export const browserWindowId = (instance: number): PaneBrowserWindowId => `${BROWSER_PREFIX}${instance}`;
+export const vncPickerWindowId = (entryId: string): PaneVncPickerWindowId => `${VNC_PICKER_PREFIX}${entryId}`;
+export const vncScreenWindowId = (sessionId: string): PaneVncScreenWindowId => `${VNC_SCREEN_PREFIX}${sessionId}`;
+export const vncFilesWindowId = (sessionId: string): PaneVncFilesWindowId => `${VNC_FILES_PREFIX}${sessionId}`;
+
+const suffixOf = (id: string, prefix: string): string | null =>
+  id.startsWith(prefix) && id.length > prefix.length ? id.slice(prefix.length) : null;
+
+/** Proxmox entry id behind a VNC VM-picker window. */
+export const vncPickerEntryIdOf = (id: string): string | null => suffixOf(id, VNC_PICKER_PREFIX);
+
+/** Session id behind a VNC screen window. */
+export const vncScreenSessionIdOf = (id: string): string | null => suffixOf(id, VNC_SCREEN_PREFIX);
+
+/** Session id behind a VNC file-transfer window. */
+export const vncFilesSessionIdOf = (id: string): string | null => suffixOf(id, VNC_FILES_PREFIX);
+
+/** True for any dynamic VNC flow window. */
+export function isVncFlowWindow(id: unknown): boolean {
+  return typeof id === "string" && (
+    vncPickerEntryIdOf(id) !== null || vncScreenSessionIdOf(id) !== null || vncFilesSessionIdOf(id) !== null
+  );
+}
 
 /** The instance number of a `browser:<n>` window id (null for malformed ids). */
 export function browserPaneInstanceOf(id: string): number | null {
@@ -75,6 +106,9 @@ export function kindOf(id: unknown): PaneWindowKind | null {
   if (sshEntryIdOf(id)) return "sftp";
   if (parseSshWindowId(id)) return "ssh";
   if (browserPaneInstanceOf(id) !== null) return "browser";
+  if (vncPickerEntryIdOf(id) !== null) return "vnc-picker";
+  if (vncScreenSessionIdOf(id) !== null) return "vnc-screen";
+  if (vncFilesSessionIdOf(id) !== null) return "vnc-files";
   return (PANE_SINGLETON_KINDS as readonly string[]).includes(id) ? (id as PaneWindowKind) : null;
 }
 
@@ -90,7 +124,7 @@ export function isEntryWindow(id: unknown): boolean {
 
 /** Browser panes, like SSH/SFTP panes, are session-only and are never restored. */
 export function isTransientWindow(id: unknown): boolean {
-  return isEntryWindow(id) || kindOf(id) === "browser";
+  return isEntryWindow(id) || kindOf(id) === "browser" || isVncFlowWindow(id);
 }
 
 /** Dynamic windows that are rendered in the taskbar instead of the singleton group. */
@@ -118,21 +152,25 @@ export type PaneLayout = {
 export const PANE_MIN_SIZE: Record<PaneWindowKind, PaneSize> = {
   local: { w: 360, h: 260 },
   remote: { w: 460, h: 280 },
-  vnc: { w: 520, h: 340 },
   rest: { w: 520, h: 340 },
   sftp: { w: 460, h: 280 },
   ssh: { w: 460, h: 280 },
   browser: { w: 560, h: 360 },
+  "vnc-picker": { w: 440, h: 320 },
+  "vnc-screen": { w: 620, h: 380 },
+  "vnc-files": { w: 540, h: 320 },
 };
 
 export const PANE_KIND_LABEL: Record<PaneWindowKind, string> = {
   local: "Local",
   remote: "Remote",
-  vnc: "VNC",
   rest: "RestAPI",
   sftp: "SFTP",
   ssh: "SSH",
   browser: "Browser",
+  "vnc-picker": "VNC VM",
+  "vnc-screen": "VNC",
+  "vnc-files": "VNC Files",
 };
 
 /** Minimum size of the window with this id (unknown ids fall back to the smallest kind minimum). */
@@ -225,8 +263,8 @@ export function normalizeStoredLayout(raw: unknown): PaneLayout | null {
     if (!item || typeof item !== "object") continue;
     const win = item as Record<string, unknown>;
     const id = win.id as PaneWindowId;
-    // SSH/SFTP and Browser windows are transient, so only durable singleton kinds are restored.
-    // A window id from an older version (e.g. the removed shared "terminal" window) is not a valid id and is dropped here.
+    // SSH/SFTP, Browser, and VNC flow windows are transient, so only durable singleton kinds are restored.
+    // A window id from an older version (e.g. the former shared "vnc" workspace) is dropped here.
     if (kindOf(id) === null || isTransientWindow(id) || windows.some((existing) => existing.id === id)) continue;
     if (![win.x, win.y, win.w, win.h, win.z].every(isFiniteNumber)) continue;
     windows.push({

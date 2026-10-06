@@ -77,7 +77,7 @@ test("stored layouts are validated before use", () => {
   assert.equal(model.loadStoredLayout({ getItem: () => "{not json" }), null);
 });
 
-test("window ids: singleton kinds keep their id, Browser panes use browser:<n>, SFTP windows are sftp:<entryId>, SSH windows are ssh:<entryId>#<n>", () => {
+test("window ids: singleton, Browser, SSH/SFTP, and VNC flow windows use their distinct ids", () => {
   assert.equal(model.sftpWindowId("entry-1"), "sftp:entry-1");
   assert.equal(model.sshEntryIdOf("sftp:entry-1"), "entry-1");
   assert.equal(model.sshEntryIdOf("sftp:"), null);
@@ -103,11 +103,23 @@ test("window ids: singleton kinds keep their id, Browser panes use browser:<n>, 
   assert.equal(model.browserPaneInstanceOf("browser:01"), null);
   assert.equal(model.browserPaneInstanceOf("browser:abc"), null);
   assert.equal(model.browserPaneInstanceOf("browser:9007199254740992"), null);
-  for (const id of ["local", "remote", "vnc", "rest"]) assert.equal(model.kindOf(id), id);
+  assert.equal(model.vncPickerWindowId("pve-1"), "vnc-picker:pve-1");
+  assert.equal(model.vncPickerEntryIdOf("vnc-picker:pve-1"), "pve-1");
+  assert.equal(model.vncScreenWindowId("session-1"), "vnc-screen:session-1");
+  assert.equal(model.vncScreenSessionIdOf("vnc-screen:session-1"), "session-1");
+  assert.equal(model.vncFilesWindowId("session-1"), "vnc-files:session-1");
+  assert.equal(model.vncFilesSessionIdOf("vnc-files:session-1"), "session-1");
+  assert.equal(model.isVncFlowWindow("vnc-files:session-1"), true);
+  for (const malformed of ["vnc-picker:", "vnc-screen:", "vnc-files:"]) assert.equal(model.kindOf(malformed), null);
+  for (const id of ["local", "remote", "rest"]) assert.equal(model.kindOf(id), id);
   assert.equal(model.kindOf("terminal"), null, "the shared Terminal window no longer exists");
+  assert.equal(model.kindOf("vnc"), null, "the former combined VNC workspace is no longer a pane");
   assert.equal(model.kindOf("sftp:entry-1"), "sftp");
   assert.equal(model.kindOf("ssh:entry-1#1"), "ssh");
   assert.equal(model.kindOf("browser:1"), "browser");
+  assert.equal(model.kindOf("vnc-picker:pve-1"), "vnc-picker");
+  assert.equal(model.kindOf("vnc-screen:session-1"), "vnc-screen");
+  assert.equal(model.kindOf("vnc-files:session-1"), "vnc-files");
   assert.equal(model.kindOf("browser:01"), null);
   assert.equal(model.kindOf("sftp:"), null);
   assert.equal(model.kindOf("bogus"), null);
@@ -120,6 +132,13 @@ test("window ids: singleton kinds keep their id, Browser panes use browser:<n>, 
   assert.equal(model.isTransientWindow("browser:1"), true);
   assert.equal(model.isDynamicWindow("browser:2"), true);
   assert.deepEqual(model.minSizeOf("browser:1"), model.PANE_MIN_SIZE.browser);
+  assert.deepEqual(model.minSizeOf("vnc-picker:pve-1"), model.PANE_MIN_SIZE["vnc-picker"]);
+  assert.deepEqual(model.minSizeOf("vnc-screen:session-1"), model.PANE_MIN_SIZE["vnc-screen"]);
+  assert.deepEqual(model.minSizeOf("vnc-files:session-1"), model.PANE_MIN_SIZE["vnc-files"]);
+  for (const id of ["vnc-picker:pve-1", "vnc-screen:session-1", "vnc-files:session-1"]) {
+    assert.equal(model.isTransientWindow(id), true);
+    assert.equal(model.isDynamicWindow(id), true);
+  }
 });
 
 test("Browser panes open independently, cascade, close individually, and are never persisted", () => {
@@ -230,6 +249,47 @@ test("new SSH windows are cascaded and stay inside the layer", () => {
     assert.ok(item.x >= 0 && item.y >= 0 && item.x + item.w <= layer.w && item.y + item.h <= layer.h);
     assert.ok(item.w >= model.PANE_MIN_SIZE.ssh.w && item.h >= model.PANE_MIN_SIZE.ssh.h);
   }
+});
+
+test("VNC picker, screen, and file panes are independent transient windows", () => {
+  let layout = open(empty(), "vnc-picker:pve-a");
+  layout = open(layout, "vnc-picker:pve-b");
+  layout = open(layout, "vnc-screen:session-a");
+  layout = open(layout, "vnc-files:session-a");
+  assert.equal(layout.windows.length, 4);
+  assert.equal(layout.activeId, "vnc-files:session-a");
+  assert.ok(win(layout, "vnc-picker:pve-a") && win(layout, "vnc-picker:pve-b"));
+  assert.ok(win(layout, "vnc-screen:session-a") && win(layout, "vnc-files:session-a"));
+  for (const item of layout.windows) {
+    assert.ok(item.x >= 0 && item.y >= 0 && item.x + item.w <= layer.w && item.y + item.h <= layer.h);
+    assert.ok(item.w >= model.minSizeOf(item.id).w && item.h >= model.minSizeOf(item.id).h);
+  }
+
+  layout = paneReducer(layout, { type: "close", id: "vnc-files:session-a" });
+  assert.equal(win(layout, "vnc-files:session-a"), undefined);
+  assert.ok(win(layout, "vnc-screen:session-a"), "closing Files leaves the connected screen open");
+
+  layout = paneReducer(layout, { type: "closeUnavailable", available: ["vnc-picker:pve-a", "vnc-picker:pve-b", "vnc-screen:session-a"] });
+  assert.equal(win(layout, "vnc-picker:pve-a").open, true);
+  assert.equal(win(layout, "vnc-picker:pve-b").open, true);
+  assert.equal(win(layout, "vnc-screen:session-a").open, true);
+});
+
+test("VNC flow windows are never persisted or restored", () => {
+  const layout = open(open(open(empty(), "local"), "vnc-screen:session-a"), "vnc-files:session-a");
+  const stored = JSON.parse(model.serializeLayout(layout));
+  assert.deepEqual(stored.windows.map((item) => item.id), ["local"]);
+  const restored = model.normalizeStoredLayout({
+    version: 1,
+    windows: [
+      ...stored.windows,
+      { id: "vnc-picker:pve-a", x: 0, y: 0, w: 500, h: 360, z: 2, open: true },
+      { id: "vnc-screen:session-a", x: 0, y: 0, w: 700, h: 500, z: 3, open: true },
+      { id: "vnc-files:session-a", x: 0, y: 0, w: 600, h: 400, z: 4, open: true },
+      { id: "vnc", x: 0, y: 0, w: 700, h: 500, z: 5, open: true },
+    ],
+  });
+  assert.deepEqual(restored.windows.map((item) => item.id), ["local"]);
 });
 
 test("closing one SSH window discards only that one; a removed SSH entry drops all of its windows", () => {

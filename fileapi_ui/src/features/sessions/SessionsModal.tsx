@@ -18,7 +18,8 @@ type SessionsModalProps = {
   setWorkspaceSessionId: (id: string) => void;
   setActiveRestEntryId: (id: string) => void;
   setActiveVncEntryId: (id: string) => void;
-  openMode: (mode: "location" | "rest" | "vnc") => void;
+  openMode: (mode: "location" | "rest") => void;
+  onSelectVncEntry: (workspaceId: string, entryId: string) => void;
   startNewWorkspace: () => void;
   openWorkspaceNameDialog: (workspace: ManagedSession) => void;
   removeSession: (id: string) => void;
@@ -48,6 +49,7 @@ export function SessionsModal({
   setActiveRestEntryId,
   setActiveVncEntryId,
   openMode,
+  onSelectVncEntry,
   startNewWorkspace,
   openWorkspaceNameDialog,
   removeSession,
@@ -118,7 +120,7 @@ export function SessionsModal({
                 <ol className="workspace-entry-list">
                   {managedSession.proxmoxVncEntries.map((entry) => (
                     <li key={entry.id}>
-                      <button type="button" className="workspace-entry-button" onClick={() => { setWorkspaceSessionId(managedSession.id); setActiveVncEntryId(entry.id); openMode("vnc"); onClose(); }}>
+                      <button type="button" className="workspace-entry-button" onClick={() => { setWorkspaceSessionId(managedSession.id); setActiveVncEntryId(entry.id); onSelectVncEntry(managedSession.id, entry.id); onClose(); }}>
                         <strong>{entry.name}</strong>
                         <span>{entry.baseUrl} · {entry.node || "No node"}/{entry.vmid || "No VMID"}</span>
                       </button>
@@ -133,7 +135,7 @@ export function SessionsModal({
                 {restApiModeEnabled && <button type="button" className="confirm" onClick={() => openAddRestEntryDialog(managedSession.id)}>Add REST API Entry</button>}
                 {proxmoxVncModeEnabled && <button type="button" className="confirm" onClick={() => openAddVncEntryDialog(managedSession.id)}>Add Proxmox VNC Entry</button>}
                 {restApiModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); openMode("rest"); onClose(); }}>Open REST API</button>}
-                {proxmoxVncModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); openMode("vnc"); onClose(); }}>Open VNC</button>}
+                {proxmoxVncModeEnabled && managedSession.proxmoxVncEntries[0] && <button type="button" onClick={() => { const entry = managedSession.proxmoxVncEntries[0]; setWorkspaceSessionId(managedSession.id); setActiveVncEntryId(entry.id); onSelectVncEntry(managedSession.id, entry.id); onClose(); }}>Open VNC</button>}
               </div>
             </article>
           ))}

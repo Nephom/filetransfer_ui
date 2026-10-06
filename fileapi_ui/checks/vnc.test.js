@@ -83,6 +83,9 @@ function workspace(options = {}) {
   const props = {
     workspaceName: "Test", entries: [entry], activeEntryId: entry.id, secrets: { pve: { password: "pve-login" } },
     commandbarHost: { name: "commandbar" }, collapseMainPaneEnabled: false,
+    screenMode: options.screenMode, screenSessionId: options.screenSessionId, proxmoxSessionId: options.proxmoxSessionId,
+    initialVms: options.initialVms, directHost: options.directHost, directPort: options.directPort,
+    onOpenFiles: options.onOpenFiles, onFileTransferUpdate: options.onFileTransferUpdate,
     onSelectEntry(id) { props.activeEntryId = id; dirty = true; },
     onChangeEntries(entries) { props.entries = entries; dirty = true; },
     onChangeSecret() {}, onAddEntry() {}, onEditEntry() {}, onRemoveEntry() {},
@@ -624,4 +627,198 @@ test("late startup rejection and save rejection cannot change a replacement's st
   assert.doesNotMatch(app.text(), /failure|could not be saved/);
   assert.equal(app.commands("proxmox_save_secret")[0].args.value, "successful-snapshot");
   app.unmount();
+});
+
+const vncController = loadTypeScript("features/vnc/VncWorkspaceController.tsx", {
+  mocks: {
+    react: { useState() {}, useEffect() {} },
+    "react/jsx-runtime": { jsx: () => null, jsxs: () => null },
+    "@tauri-apps/api/core": { invoke: async () => undefined },
+    "../../ui/FloatingWindow": { FloatingWindow: () => null },
+    "../../proxmox-vnc": {
+      ProxmoxVncWorkspace: () => null,
+      vmSshProfileId: (entryId, node, vmid) => `${entryId}:${node}:${vmid}`,
+      vmSshProfileKey: (node, vmid) => `${node}:${vmid}`,
+    },
+  },
+});
+
+test("choosing a VNC Entry loads its saved password, logs in, then fetches VMs", async () => {
+  const entry = { id: "pve", name: "PVE", baseUrl: "https://pve.local:8006", username: "root@pam", node: "node", vmid: null, guestType: "qemu", proxmoxVersion: "auto", ignoreTlsErrors: false };
+  const calls = [];
+  const result = await vncController.loginProxmoxVncEntry(entry, {
+    async loadPassword(id) { calls.push(["load", id]); return "stored-password"; },
+    async login(value, password) { calls.push(["login", value.id, password]); return "pve-session"; },
+    async listVms(value, sessionId) { calls.push(["list", value.id, sessionId]); return [{ vmid: 101, node: "node", guestType: "qemu" }]; },
+    async logout(sessionId) { calls.push(["logout", sessionId]); },
+  });
+  assert.equal(result.kind, "ready");
+  assert.equal(result.sessionId, "pve-session");
+  assert.equal(result.vms[0].vmid, 101);
+  assert.deepEqual(calls, [["load", "pve"], ["login", "pve", "stored-password"], ["list", "pve", "pve-session"]]);
+});
+
+test("VNC Entry login reports a missing password without starting an API session", async () => {
+  let loginCalls = 0;
+  const result = await vncController.loginProxmoxVncEntry({ id: "pve" }, {
+    async loadPassword() { return null; },
+    async login() { loginCalls++; return "should-not-start"; },
+    async listVms() { throw new Error("should not list"); },
+    async logout() {},
+  });
+  assert.deepEqual(result, { kind: "missing-password" });
+  assert.equal(loginCalls, 0);
+});
+
+test("VM-list failure logs out the newly authenticated Proxmox session", async () => {
+  const calls = [];
+  await assert.rejects(vncController.loginProxmoxVncEntry({ id: "pve" }, {
+    async loadPassword() { return "stored-password"; },
+    async login() { return "pve-session"; },
+    async listVms() { throw new Error("VM list unavailable"); },
+    async logout(sessionId) { calls.push(sessionId); },
+  }), /VM list unavailable/);
+  assert.deepEqual(calls, ["pve-session"]);
+});
+
+test("VM picker Connect passes the currently selected node and guest", () => {
+  const jsx = (type, props) => ({ type, props: props || {} });
+  const react = { useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}], useEffect() {} };
+  const { VncVmPickerPane } = loadTypeScript("features/vnc/VncWorkspaceController.tsx", {
+    mocks: {
+      react,
+      "react/jsx-runtime": { jsx, jsxs: jsx },
+      "@tauri-apps/api/core": { invoke: async () => false },
+      "../../ui/FloatingWindow": { FloatingWindow: () => null },
+      "../../proxmox-vnc": {
+        ProxmoxVncWorkspace: () => null,
+        vmSshProfileId: () => "vm-profile",
+        vmSshProfileKey: (node, vmid) => `${node}:${vmid}`,
+      },
+    },
+  });
+  const vm = { vmid: 100, node: "node-a", name: "Guest A", status: "running", guestType: "qemu" };
+  let connectedVm = null;
+  const tree = VncVmPickerPane({
+    entry: { id: "pve", name: "PVE", baseUrl: "https://pve.local", node: "node-a", vmid: 100 },
+    vms: [vm], authenticated: true, loading: false, error: "", onChangeEntry() {}, onConnect: (selected) => { connectedVm = selected; }, onRetry() {}, onLogout() {}, onEditEntry() {},
+  });
+  const collect = (node, predicate, output = []) => {
+    if (Array.isArray(node)) { node.forEach((child) => collect(child, predicate, output)); return output; }
+    if (!node || typeof node !== "object") return output;
+    if (predicate(node)) output.push(node);
+    collect(node.props?.children, predicate, output);
+    return output;
+  };
+  const connect = collect(tree, (node) => node.type === "button" && node.props.children === "Connect")[0];
+  assert.ok(connect);
+  assert.equal(connect.props.disabled, false);
+  connect.props.onClick();
+  assert.equal(connectedVm, vm);
+});
+
+test("Proxmox screen is an independent viewer using the selected VM session and Files action", async () => {
+  let openFiles = 0;
+  const updates = [];
+  const app = workspace({
+    screenMode: "proxmox",
+    screenSessionId: "screen-one",
+    proxmoxSessionId: "pve-session",
+    initialVms: [{ vmid: 100, node: "node", guestType: "lxc", name: "Guest" }],
+    onOpenFiles: () => { openFiles++; },
+    onFileTransferUpdate: (sessionId, state) => updates.push([sessionId, state]),
+  });
+  await app.settle();
+  assert.equal(app.commands("proxmox_login").length, 0, "the screen reuses the VM picker session");
+  assert.deepEqual(app.commands("proxmox_vnc_start_session")[0].args, {
+    entry: { ...app.props.entries[0], guestType: "lxc", ignoreTlsErrors: false },
+    sessionId: "pve-session",
+  });
+  const client = app.clients[0];
+  assert.ok(client);
+  client.emit("connect"); await app.settle();
+  const filesButton = app.button("Files");
+  assert.equal(filesButton.props.disabled, false);
+  filesButton.props.onClick();
+  assert.equal(openFiles, 1);
+  assert.equal(client.disconnects, 0, "opening the file pane does not disconnect the VNC client");
+  assert.ok(updates.some(([id, state]) => id === "screen-one" && state?.mode === "unavailable"));
+  app.unmount();
+});
+
+test("Direct setup screen connects to its configured host and has no Files action", async () => {
+  const app = workspace({ screenMode: "direct", screenSessionId: "direct-screen", directHost: "mac.local", directPort: 5901 });
+  await app.settle();
+  assert.deepEqual(app.commands("direct_vnc_start")[0].args, { host: "mac.local", port: 5901 });
+  assert.equal(app.all((node) => node.type === "button" && app.text(node) === "Files").length, 0);
+  app.unmount();
+});
+
+test("Direct VNC setup keeps host and port settings and opens a screen with those values", () => {
+  const jsx = (type, props) => ({ type, props: props || {} });
+  const stored = new Map([["fileapi-direct-vnc-host", "mac.local"], ["fileapi-direct-vnc-port", "5902"]]);
+  const { VncDirectSetupPane } = loadTypeScript("features/vnc/VncWorkspaceController.tsx", {
+    mocks: {
+      react: { useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}], useEffect() {} },
+      "react/jsx-runtime": { jsx, jsxs: jsx },
+      "@tauri-apps/api/core": { invoke: async () => undefined },
+      "../../ui/FloatingWindow": { FloatingWindow: () => null },
+      "../../proxmox-vnc": {
+        ProxmoxVncWorkspace: () => null,
+        ProxmoxVncScreenPane: () => null,
+        vmSshProfileId: () => "vm-profile",
+        vmSshProfileKey: () => "vm-key",
+      },
+    },
+    globals: { localStorage: { getItem: (key) => stored.get(key) || null, setItem: (key, value) => stored.set(key, value) } },
+  });
+  let target = null;
+  const tree = VncDirectSetupPane({ onConnect: (host, port) => { target = { host, port }; } });
+  const collect = (node, predicate, output = []) => {
+    if (Array.isArray(node)) { node.forEach((child) => collect(child, predicate, output)); return output; }
+    if (!node || typeof node !== "object") return output;
+    if (predicate(node)) output.push(node);
+    collect(node.props?.children, predicate, output);
+    return output;
+  };
+  const connect = collect(tree, (node) => node.type === "button" && node.props.children === "Connect")[0];
+  assert.ok(connect);
+  assert.equal(connect.props.disabled, false);
+  connect.props.onClick();
+  assert.deepEqual(target, { host: "mac.local", port: 5902 });
+});
+
+test("independent Files pane routes navigation, selection, and upload actions to its VM session", () => {
+  const jsx = (type, props) => ({ type, props: props || {} });
+  const { VncFileTransferPane } = loadTypeScript("features/vnc/VncFileTransferPane.tsx", {
+    mocks: {
+      react: {},
+      "react/jsx-runtime": { jsx, jsxs: jsx },
+    },
+  });
+  const actions = [];
+  const fileBrowser = {
+    visible: true, hasRoute: true, loading: false, modeLabel: "SFTP (direct)", mode: "direct-sftp", guestIp: "10.0.0.8", filesReady: true,
+    path: "/home/foo/", files: [{ name: "notes.txt", path: "/home/foo/notes.txt", isDirectory: false, size: 8, modified: 1 }],
+    filesLoading: false, filesError: "", transferError: "", canTryHostJump: false, selectedPaths: new Set(["/home/foo/notes.txt"]), queue: [],
+    onBack() {}, onReturn() {}, onNavigate(path) { actions.push(["navigate", path]); }, onToggleSelect(path) { actions.push(["select", path]); },
+    onUpload() { actions.push(["upload"]); }, onDownload() { actions.push(["download"]); }, onRefresh() {}, onTryHostJump() {}, onRemoveQueueItem() {},
+  };
+  const tree = VncFileTransferPane({ entry: { name: "PVE" }, vmName: "Guest", vmid: 100, fileBrowser });
+  const collect = (node, predicate, output = []) => {
+    if (Array.isArray(node)) { node.forEach((child) => collect(child, predicate, output)); return output; }
+    if (!node || typeof node !== "object") return output;
+    if (predicate(node)) output.push(node);
+    collect(node.props?.children, predicate, output);
+    return output;
+  };
+  const buttons = collect(tree, (node) => node.type === "button");
+  const upload = buttons.find((button) => button.props.children === "Upload");
+  assert.ok(upload);
+  upload.props.onClick();
+  const folderButton = buttons.find((button) => button.props.className === "tree-folder");
+  folderButton.props.onClick();
+  const checkbox = collect(tree, (node) => node.type === "input" && node.props.type === "checkbox")[0];
+  checkbox.props.onChange();
+  assert.deepEqual(actions, [["upload"], ["navigate", "/home"], ["select", "/home/foo/notes.txt"]]);
 });

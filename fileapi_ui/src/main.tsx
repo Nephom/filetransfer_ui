@@ -38,15 +38,15 @@ import "./styles/index.css";
 import { helpPages, helpSections } from "./help/help-content";
 import type { OperationLogRecord } from "./log-view";
 import type { RestApiSecret } from "./rest-api";
-import type { ProxmoxVncSecret } from "./proxmox-vnc";
+import type { FileBrowserProps, ProxmoxVncEntry, ProxmoxVncSecret, ProxmoxVmSummary } from "./proxmox-vnc";
 import { PaneResizeHandle } from "./resizable-pane";
 import { ContextPicker, type ContextPickerGroup } from "./context-picker";
 import { FloatingWindow } from "./ui/FloatingWindow";
 import { AppShell } from "./app/AppShell";
 import { PaneBody, PaneDesktop } from "./pane/PaneDesktop";
 import { PaneTopRight } from "./pane/PaneTopRight";
-import { type PaneLocationChoice, type PaneTerminalWorkspace } from "./pane/PaneDock";
-import { sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, type PaneWindowId } from "./pane/pane-window-model";
+import { type PaneLocationChoice, type PaneTerminalWorkspace, type PaneVncWorkspace } from "./pane/PaneDock";
+import { sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, vncFilesWindowId, vncPickerWindowId, vncScreenSessionIdOf, vncScreenWindowId, type PaneWindowId } from "./pane/pane-window-model";
 import { SftpWindow, type SftpDndBridge, type SftpTransferBridge } from "./features/sftp/SftpWindow";
 import { trackSshPopup, subscribeSshPopups, getSshPopupSnapshot } from "./pane/ssh-popup-registry";
 import { isSshEntryConnected } from "./pane/sftp-availability";
@@ -71,7 +71,10 @@ import { useTransferQueueActions } from "./features/queue/useTransferQueueAction
 import type { TransferQueueItem } from "./features/queue/queue-contracts";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
-const VncWorkspaceController = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncWorkspaceController: component }) => ({ default: component })));
+const VncVmPickerPane = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncVmPickerPane: component }) => ({ default: component })));
+const VncDirectSetupPane = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncDirectSetupPane: component }) => ({ default: component })));
+const ProxmoxVncScreenPane = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ ProxmoxVncScreenPane: component }) => ({ default: component })));
+const VncFileTransferPane = lazy(() => import("./features/vnc/VncFileTransferPane").then(({ VncFileTransferPane: component }) => ({ default: component })));
 const QueueModal = lazy(() => import("./features/queue/QueueModal").then(({ QueueModal: component }) => ({ default: component })));
 const ViewerModal = lazy(() => import("./features/viewer/ViewerModal").then(({ ViewerModal: component }) => ({ default: component })));
 const HelpModal = lazy(() => import("./features/help/HelpModal").then(({ HelpModal: component }) => ({ default: component })));
@@ -110,6 +113,17 @@ type Session = {
   saveUserInformation: boolean;
 };
 type NativeApiResponse = { status: number; body: number[]; headers?: [string, string][] };
+/** Immutable target snapshot for one independently owned VNC screen window. */
+type VncScreenSession = {
+  id: string;
+  workspaceId: string;
+  entry: ProxmoxVncEntry | null;
+  proxmoxSessionId?: string;
+  vms: ProxmoxVmSummary[];
+  vm?: ProxmoxVmSummary;
+  directHost?: string;
+  directPort?: number;
+};
 type UploadSummary = { files: number; directories: number; totalSize: number; sources: { path: string; size: number; modified: number }[] };
 type LocalDirectoryChildren = {
   path: string;
@@ -715,6 +729,16 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [paneOpenIds, setPaneOpenIds] = useState<PaneWindowId[]>([]);
   const [paneActiveId, setPaneActiveId] = useState<PaneWindowId | null>(null);
   const paneOpenWindowRef = useRef<(id: PaneWindowId) => void>(() => undefined);
+  const [vncAuthSessions, setVncAuthSessions] = useState<Record<string, string>>({});
+  const [vncVmLists, setVncVmLists] = useState<Record<string, ProxmoxVmSummary[]>>({});
+  const [vncPickerEntryIds, setVncPickerEntryIds] = useState<string[]>([]);
+  const [vncPickerLoading, setVncPickerLoading] = useState<Record<string, boolean>>({});
+  const [vncPickerErrors, setVncPickerErrors] = useState<Record<string, string>>({});
+  const [vncScreenSessions, setVncScreenSessions] = useState<Record<string, VncScreenSession>>({});
+  const [vncFileBrowsers, setVncFileBrowsers] = useState<Record<string, FileBrowserProps>>({});
+  const [vncPasswordResumeEntryId, setVncPasswordResumeEntryId] = useState("");
+  const [vncPasswordSavedResumeEntryId, setVncPasswordSavedResumeEntryId] = useState("");
+  const vncLoginPendingRef = useRef(new Set<string>());
   const localWindowOpen = paneOpenIds.includes("local");
   const handlePaneWindowState = useCallback((ids: PaneWindowId[], active: PaneWindowId | null) => {
     setPaneOpenIds(ids);
@@ -731,7 +755,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     restSecrets, setRestSecrets,
     restSessionHeaders, setRestSessionHeaders,
     activeVncEntryId, setActiveVncEntryId,
-    vncSecrets, setVncSecrets,
     sessionsOpen, setSessionsOpen,
     workspaceNameDialogOpen, setWorkspaceNameDialogOpen,
     sessionFormError, setSessionFormError,
@@ -751,8 +774,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     restEntryDraft, setRestEntryDraft,
     vncEntryDialogOpen, setVncEntryDialogOpen,
     vncEntryDraft, setVncEntryDraft,
+    vncEntryPasswordDraft, setVncEntryPasswordDraft,
+    vncEntryPasswordSaved, setVncEntryPasswordSaved,
+    vncEntryPasswordSaving, setVncEntryPasswordSaving,
     vncEntryModalTab, setVncEntryModalTab,
   } = useSessionsState();
+  const managedSessionsRef = useRef(managedSessions);
+  managedSessionsRef.current = managedSessions;
   // Live state of each open SSH pane (window id `ssh:<entryId>#<n>`), reported by its
   // terminal. An entry can have several panes. It enables SFTP for connected entries,
   // drives the taskbar dot / REC marker and decides whether closing a window needs a
@@ -1907,16 +1935,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     vncEndpointParts,
     vncUsernameParts,
     saveVncEntry,
+    forgetVncPassword,
     removeVncEntry,
     removeVncEntryDirect,
     installVncSshKey,
     selectRestWorkspace,
-    selectVncWorkspace,
     activeManagedWorkspace,
     restWorkspace,
-    vncWorkspace,
     ensureRestWorkspaceId,
-    ensureVncWorkspaceId,
   } = useSessionsActions({
     run, notify, setNotice,
     managedSessions, setManagedSessions,
@@ -1935,9 +1961,198 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     restEntryDraft, setRestEntryDraft, setRestEntryDialogOpen,
     activeRestEntryId, setActiveRestEntryId,
     vncEntryDraft, setVncEntryDraft, setVncEntryDialogOpen, setVncEntryModalTab,
+    vncEntryPasswordDraft, setVncEntryPasswordDraft,
+    vncEntryPasswordSaved, setVncEntryPasswordSaved, setVncEntryPasswordSaving,
     activeVncEntryId, setActiveVncEntryId,
     hostSshPasswordDraft, setHostSshPasswordDraft, hostSshPasswordSaved, setHostSshPasswordSaved,
+    onVncEntrySaved: (entryId) => {
+      if (vncPasswordResumeEntryId === entryId) {
+        setVncPasswordResumeEntryId("");
+        setVncPasswordSavedResumeEntryId(entryId);
+        setSessionsOpen(false);
+      }
+    },
   });
+
+  const beginVncEntryLogin = async (workspaceId: string, entryId: string) => {
+    if (!desktopSettings.proxmoxVncModeEnabled) return;
+    const workspace = managedSessions.find((item) => item.id === workspaceId);
+    const entry = workspace?.proxmoxVncEntries.find((item) => item.id === entryId);
+    if (!workspace || !entry) {
+      setNotice("The selected Proxmox VNC entry is no longer available.");
+      return;
+    }
+    setWorkspaceSessionId(workspace.id);
+    setActiveVncEntryId(entry.id);
+    const openPicker = () => paneOpenWindowRef.current(vncPickerWindowId(entry.id));
+    const currentSession = vncAuthSessions[entry.id];
+    if (currentSession && vncVmLists[entry.id]) {
+      setVncPickerEntryIds((current) => current.includes(entry.id) ? current : [...current, entry.id]);
+      openPicker();
+      return;
+    }
+    if (vncLoginPendingRef.current.has(entry.id)) return;
+
+    const nativeEntry = { ...entry, guestType: entry.guestType, ignoreTlsErrors: entry.ignoreTlsErrors };
+    vncLoginPendingRef.current.add(entry.id);
+    setVncPickerLoading((current) => ({ ...current, [entry.id]: true }));
+    setVncPickerErrors((current) => ({ ...current, [entry.id]: "" }));
+    try {
+      const { loginProxmoxVncEntry } = await import("./features/vnc/VncWorkspaceController");
+      const result = await loginProxmoxVncEntry(nativeEntry, {
+        loadPassword: async (targetEntryId) => {
+          const password = await invoke<string | null>("proxmox_load_secret", { entryId: targetEntryId, kind: "password" }).catch(() => null);
+          if (password) {
+            setVncPickerEntryIds((current) => current.includes(entry.id) ? current : [...current, entry.id]);
+            openPicker();
+          }
+          return password;
+        },
+        login: (targetEntry, password) => invoke<string>("proxmox_login", { entry: targetEntry, password }),
+        listVms: (targetEntry, sessionId) => invoke<ProxmoxVmSummary[]>("proxmox_list_vms_session", { entry: targetEntry, sessionId }),
+        logout: (sessionId) => invoke("proxmox_logout", { sessionId }),
+      });
+      if (!desktopSettings.proxmoxVncModeEnabled || !managedSessionsRef.current.some((item) => item.proxmoxVncEntries.some((candidate) => candidate.id === entry.id))) {
+        if (result.kind === "ready") await invoke("proxmox_logout", { sessionId: result.sessionId }).catch(() => undefined);
+        return;
+      }
+      if (result.kind === "missing-password") {
+        setVncPasswordResumeEntryId(entry.id);
+        void openSessionsModal(workspace.id);
+        openEditVncEntryDialog(workspace.id, entry);
+        return;
+      }
+      setVncAuthSessions((current) => ({ ...current, [entry.id]: result.sessionId }));
+      setVncVmLists((current) => ({ ...current, [entry.id]: result.vms }));
+      setVncPickerEntryIds((current) => current.includes(entry.id) ? current : [...current, entry.id]);
+      openPicker();
+    } catch (loginError) {
+      setVncPickerErrors((current) => ({ ...current, [entry.id]: loginError instanceof Error ? loginError.message : String(loginError) }));
+    } finally {
+      vncLoginPendingRef.current.delete(entry.id);
+      setVncPickerLoading((current) => ({ ...current, [entry.id]: false }));
+    }
+  };
+
+  useEffect(() => {
+    if (!vncPasswordSavedResumeEntryId) return;
+    const owner = managedSessionsRef.current.find((workspace) => workspace.proxmoxVncEntries.some((entry) => entry.id === vncPasswordSavedResumeEntryId));
+    if (owner) void beginVncEntryLogin(owner.id, vncPasswordSavedResumeEntryId);
+    setVncPasswordSavedResumeEntryId("");
+    // The saved password is loaded again from the credential store by the login routine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vncPasswordSavedResumeEntryId]);
+
+  const logoutVncEntry = async (entryId: string) => {
+    const sessionId = vncAuthSessions[entryId];
+    setVncAuthSessions((current) => { const next = { ...current }; delete next[entryId]; return next; });
+    setVncVmLists((current) => { const next = { ...current }; delete next[entryId]; return next; });
+    setVncPickerEntryIds((current) => current.filter((id) => id !== entryId));
+    setVncScreenSessions((current) => Object.fromEntries(Object.entries(current).filter(([, screen]) => screen.entry?.id !== entryId)));
+    setVncFileBrowsers((current) => Object.fromEntries(Object.entries(current).filter(([screenId]) => vncScreenSessions[screenId]?.entry?.id !== entryId)));
+    if (sessionId) await invoke("proxmox_logout", { sessionId }).catch(() => undefined);
+  };
+
+  const openDirectVncSetup = () => paneOpenWindowRef.current(vncPickerWindowId("direct"));
+  const startDirectVnc = (host: string, port: number) => {
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) return;
+    const id = crypto.randomUUID();
+    setVncScreenSessions((current) => ({ ...current, [id]: { id, workspaceId: "direct", entry: null, vms: [], directHost: host, directPort: port } }));
+    paneOpenWindowRef.current(vncScreenWindowId(id));
+  };
+
+  const openVncScreen = (entryId: string, vm: ProxmoxVmSummary) => {
+    const workspace = managedSessions.find((item) => item.proxmoxVncEntries.some((entry) => entry.id === entryId));
+    const entry = workspace?.proxmoxVncEntries.find((item) => item.id === entryId);
+    const sessionId = vncAuthSessions[entryId];
+    if (!entry || !workspace || !sessionId) {
+      setVncPickerErrors((current) => ({ ...current, [entryId]: "The Proxmox login expired. Select this Entry again to reconnect." }));
+      return;
+    }
+    const selectedEntry = { ...entry, node: vm.node, vmid: vm.vmid, guestType: vm.guestType as "qemu" | "lxc" };
+    setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : {
+      ...item,
+      proxmoxVncEntries: item.proxmoxVncEntries.map((candidate) => candidate.id === entryId ? selectedEntry : candidate),
+    }));
+    // Every Connect action gets its own screen id, including repeated Connects
+    // to the same VM, so noVNC and Files state never share a window instance.
+    const id = crypto.randomUUID();
+    setVncScreenSessions((current) => ({ ...current, [id]: { id, workspaceId: workspace.id, entry: selectedEntry, proxmoxSessionId: sessionId, vms: vncVmLists[entryId] || [], vm } }));
+    paneOpenWindowRef.current(vncScreenWindowId(id));
+  };
+
+  const updateVncPickerEntry = (workspaceId: string, entryId: string, updates: Partial<ProxmoxVncEntry>) => {
+    setManagedSessions((current) => current.map((item) => item.id !== workspaceId ? item : {
+      ...item,
+      proxmoxVncEntries: item.proxmoxVncEntries.map((candidate) => candidate.id === entryId ? { ...candidate, ...updates } : candidate),
+    }));
+    if (Object.hasOwn(updates, "vmSshProfiles")) {
+      setVncScreenSessions((current) => Object.fromEntries(Object.entries(current).map(([screenId, screen]) => [
+        screenId,
+        screen.entry?.id === entryId ? { ...screen, entry: { ...screen.entry, vmSshProfiles: updates.vmSshProfiles } } : screen,
+      ])));
+    }
+  };
+
+  const updateVncFileTransfer = useCallback((sessionId: string, fileBrowser: FileBrowserProps | null) => {
+    setVncFileBrowsers((current) => {
+      if (!fileBrowser) {
+        if (!(sessionId in current)) return current;
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      }
+      const previous = current[sessionId];
+      if (previous
+        && previous.visible === fileBrowser.visible
+        && previous.hasRoute === fileBrowser.hasRoute
+        && previous.loading === fileBrowser.loading
+        && previous.mode === fileBrowser.mode
+        && previous.modeLabel === fileBrowser.modeLabel
+        && previous.guestIp === fileBrowser.guestIp
+        && previous.filesReady === fileBrowser.filesReady
+        && previous.path === fileBrowser.path
+        && previous.files === fileBrowser.files
+        && previous.filesLoading === fileBrowser.filesLoading
+        && previous.filesError === fileBrowser.filesError
+        && previous.transferError === fileBrowser.transferError
+        && previous.canTryHostJump === fileBrowser.canTryHostJump
+        && previous.selectedPaths === fileBrowser.selectedPaths
+        && previous.queue === fileBrowser.queue) return current;
+      return { ...current, [sessionId]: fileBrowser };
+    });
+  }, []);
+
+  const vncEntryIdentityKey = managedSessions.map((workspace) => workspace.proxmoxVncEntries.map((entry) => entry.id).join(",")).join("|");
+  useEffect(() => {
+    if (!desktopSettings.proxmoxVncModeEnabled) {
+      vncLoginPendingRef.current.clear();
+      Object.values(vncAuthSessions).forEach((sessionId) => { void invoke("proxmox_logout", { sessionId }).catch(() => undefined); });
+      setVncAuthSessions({});
+      setVncVmLists({});
+      setVncPickerEntryIds([]);
+      setVncScreenSessions({});
+      setVncFileBrowsers({});
+      return;
+    }
+    const liveEntryIds = new Set(managedSessions.flatMap((workspace) => workspace.proxmoxVncEntries.map((entry) => entry.id)));
+    for (const entryId of vncLoginPendingRef.current) {
+      if (!liveEntryIds.has(entryId)) vncLoginPendingRef.current.delete(entryId);
+    }
+    for (const [entryId, sessionId] of Object.entries(vncAuthSessions)) {
+      if (!liveEntryIds.has(entryId)) void invoke("proxmox_logout", { sessionId }).catch(() => undefined);
+    }
+    setVncAuthSessions((current) => Object.fromEntries(Object.entries(current).filter(([entryId]) => liveEntryIds.has(entryId))));
+    setVncVmLists((current) => Object.fromEntries(Object.entries(current).filter(([entryId]) => liveEntryIds.has(entryId))));
+    setVncPickerEntryIds((current) => current.filter((entryId) => liveEntryIds.has(entryId)));
+    setVncScreenSessions((current) => Object.fromEntries(Object.entries(current).filter(([, screen]) => !screen.entry || liveEntryIds.has(screen.entry.id))));
+    setVncFileBrowsers((current) => Object.fromEntries(Object.entries(current).filter(([sessionId]) => {
+      const screen = vncScreenSessions[sessionId];
+      return Boolean(screen && (!screen.entry || liveEntryIds.has(screen.entry.id)));
+    })));
+    // Entry removal logs out and removes its picker and screen panes; editing does not reset sessions.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vncEntryIdentityKey, desktopSettings.proxmoxVncModeEnabled]);
 
   const openSshEntryInNewWindow = async (workspaceId: string, entryId: string) => {
     const workspace = managedSessions.find((item) => item.id === workspaceId);
@@ -3732,24 +3947,19 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const localBar = useCommandbarOverflow();
   const remoteBar = useCommandbarOverflow();
   const [restBarHost, setRestBarHost] = useState<HTMLElement | null>(null);
-  const [vncBarHost, setVncBarHost] = useState<HTMLElement | null>(null);
 
-  // REST and VNC windows pick one of the Workspace's saved entries.
-  const renderEntryPicker = (kind: "rest" | "vnc") => {
-    const activeId = kind === "rest" ? activeRestEntryId : activeVncEntryId;
-    const entriesOf = (workspace: ManagedSession) => (kind === "rest" ? workspace.restApiEntries : workspace.proxmoxVncEntries);
-    const activeEntry = (kind === "rest" ? restWorkspace : vncWorkspace) && entriesOf((kind === "rest" ? restWorkspace : vncWorkspace)!).find((entry) => entry.id === activeId);
+  const renderRestEntryPicker = () => {
     const groups: ContextPickerGroup[] = managedSessions
-      .map((workspace) => ({ label: workspace.name, options: entriesOf(workspace).map((entry) => ({ id: entry.id, label: entry.name, detail: entry.baseUrl, selected: entry.id === activeId })) }))
+      .map((workspace) => ({ label: workspace.name, options: workspace.restApiEntries.map((entry) => ({ id: entry.id, label: entry.name, detail: entry.baseUrl, selected: entry.id === activeRestEntryId })) }))
       .filter((group) => group.options.length);
+    const activeEntry = (restWorkspace?.restApiEntries || []).find((entry) => entry.id === activeRestEntryId);
     const select = (id: string) => {
-      const owner = managedSessions.find((item) => entriesOf(item).some((entry) => entry.id === id));
+      const owner = managedSessions.find((item) => item.restApiEntries.some((entry) => entry.id === id));
       if (!owner) return;
       setWorkspaceSessionId(owner.id);
-      if (kind === "rest") setActiveRestEntryId(id);
-      else setActiveVncEntryId(id);
+      setActiveRestEntryId(id);
     };
-    return <ContextPicker label={kind === "rest" ? "REST Entry" : "VNC Entry"} value={activeEntry?.name || (kind === "rest" ? "No REST Entry" : "No VNC Entry")} groups={groups} onSelect={select} disabled={busy} />;
+    return <ContextPicker label="REST Entry" value={activeEntry?.name || "No REST Entry"} groups={groups} onSelect={select} disabled={busy} />;
   };
 
   // What the Functions menu offers: every API Location (offline ones disabled)
@@ -3793,15 +4003,67 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       connected: isSshEntryConnected(entry.id, sshPaneStates, sshPopups),
     })),
   }));
+  const vncEntriesByWorkspace = managedSessions.map((workspace) => ({ workspace, entries: workspace.proxmoxVncEntries }));
+  const allVncEntries = vncEntriesByWorkspace.flatMap(({ workspace, entries }) => entries.map((entry) => ({ workspace, entry })));
+  const vncEntryLabel = (entry: ProxmoxVncEntry) => {
+    const duplicates = allVncEntries.filter((candidate) => candidate.entry.name === entry.name);
+    return duplicates.length > 1 ? `${entry.name} (${entry.baseUrl})` : entry.name;
+  };
+  const paneVncWorkspaces: PaneVncWorkspace[] = managedSessions.map((workspace) => ({
+    id: workspace.id,
+    name: workspace.name,
+    entries: workspace.proxmoxVncEntries.map((entry) => ({
+      entryId: entry.id,
+      label: vncEntryLabel(entry),
+      detail: `${entry.baseUrl} · ${entry.node || "No node"}/${entry.vmid || "No VMID"}`,
+    })),
+  }));
+  const vncEntryIds = allVncEntries.map(({ entry }) => entry.id);
+  const vncFlowWindowIds: PaneWindowId[] = [
+    ...(desktopSettings.proxmoxVncModeEnabled ? [vncPickerWindowId("direct")] : []),
+    ...(desktopSettings.proxmoxVncModeEnabled ? vncPickerEntryIds.filter((entryId) => vncEntryIds.includes(entryId)).map(vncPickerWindowId) : []),
+    ...(desktopSettings.proxmoxVncModeEnabled ? Object.values(vncScreenSessions).filter((screen) => !screen.entry || vncEntryIds.includes(screen.entry.id)).flatMap((screen) => [vncScreenWindowId(screen.id), ...(screen.entry ? [vncFilesWindowId(screen.id)] : [])]) : []),
+  ];
+  const vncPickerPaneEntries = allVncEntries;
+  const vncScreenPaneSessions = Object.values(vncScreenSessions).map((screen) => {
+    if (!screen.entry) return screen;
+    const latestEntry = allVncEntries.find(({ entry }) => entry.id === screen.entry!.id)?.entry;
+    if (!latestEntry) return screen;
+    return {
+      ...screen,
+      entry: {
+        ...screen.entry,
+        hostSshUsername: latestEntry.hostSshUsername,
+        hostSshPort: latestEntry.hostSshPort,
+        hostSshPrivateKeyPath: latestEntry.hostSshPrivateKeyPath,
+        vmSshProfiles: latestEntry.vmSshProfiles,
+      },
+    };
+  });
   // Windows Terminal / Command Prompt are launched through the Windows-only `open_local_terminal`.
   const localShellsAvailable = typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
   const remoteWindowTitle = `Remote · ${activeLocation?.displayName || session.locationId || "No Location"}`;
   const entryIds = sshEntries.map(({ entry }) => entry.id);
-  const paneTitles: Record<string, string> = { local: "Local", remote: remoteWindowTitle, rest: "RestAPI", vnc: "VNC" };
+  const paneTitles: Record<string, string> = { local: "Local", remote: remoteWindowTitle, rest: "RestAPI" };
   const paneSubtitles: Record<string, string> = { local: localPath ? `~/${localPath}` : "~", remote: path ? `/${path}` : "/" };
   for (const { entry } of sshEntries) {
     paneTitles[sftpWindowId(entry.id)] = `SFTP · ${sshEntryLabel(entry)}`;
     paneSubtitles[sftpWindowId(entry.id)] = sftpPaths[entry.id] || "/";
+  }
+  paneTitles[vncPickerWindowId("direct")] = "Direct VNC Setup";
+  paneSubtitles[vncPickerWindowId("direct")] = "Host and port";
+  for (const { entry } of allVncEntries) {
+    paneTitles[vncPickerWindowId(entry.id)] = `VM · ${vncEntryLabel(entry)}`;
+    paneSubtitles[vncPickerWindowId(entry.id)] = entry.baseUrl;
+  }
+  for (const screen of vncScreenPaneSessions) {
+    const title = screen.entry ? vncEntryLabel(screen.entry) : "Direct VNC";
+    paneTitles[vncScreenWindowId(screen.id)] = `VNC · ${title}`;
+    paneSubtitles[vncScreenWindowId(screen.id)] = screen.vm ? `${screen.vm.node} · VMID ${screen.vm.vmid}` : screen.directHost || "";
+    if (screen.entry && screen.vm) {
+      paneTitles[vncFilesWindowId(screen.id)] = `Files · ${screen.vm.name || `VM ${screen.vm.vmid}`}`;
+      paneSubtitles[vncFilesWindowId(screen.id)] = `${screen.entry.name} · ${screen.vm.node}`;
+    }
   }
   // Every "Open SSH" is its own terminal window: `ssh:<entryId>#<n>` is shown as `<entry>_<n>`.
   // PaneDesktop asks for the name of every SSH window it renders, so a new window is titled
@@ -3820,6 +4082,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   // Closing an SSH pane ends its session; a recording that was never saved is only discarded after a confirmation.
   const requestPaneClose = async (id: PaneWindowId) => {
+    const vncSessionId = vncScreenSessionIdOf(id);
+    if (vncSessionId) {
+      setVncScreenSessions((current) => { const next = { ...current }; delete next[vncSessionId]; return next; });
+      setVncFileBrowsers((current) => { const next = { ...current }; delete next[vncSessionId]; return next; });
+      return true;
+    }
     if (!sshPaneStatesRef.current[id]?.recordingUnsaved) return true;
     const name = openSshPanes.find((pane) => pane.id === id)?.name;
     return requestConfirmation(`${name ? `SSH · ${name}` : "This SSH window"} has a recording that was not saved. Close it and discard the recording?`, "Close SSH window");
@@ -4329,7 +4597,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const renderRestWindow = () => (
     <div className="pane-window-content rest-window">
       <nav ref={setRestBarHost} className="commandbar" aria-label="REST API actions">
-        {renderEntryPicker("rest")}
+        {renderRestEntryPicker()}
       </nav>
       <div className="mode-workspace">
         <Suspense fallback={<div className="pane-loading">Loading REST API…</div>}>
@@ -4377,49 +4645,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       <footer className="statusbar">
         <span>{restWorkspace?.restApiEntries.length || 0} REST entr{restWorkspace?.restApiEntries.length === 1 ? "y" : "ies"}</span>
         <span>REST API reader</span>
-      </footer>
-    </div>
-  );
-
-  const renderVncWindow = () => (
-    <div className="pane-window-content vnc-window">
-      <nav ref={setVncBarHost} className="commandbar" aria-label="VNC actions">
-        {renderEntryPicker("vnc")}
-      </nav>
-      <div className="mode-workspace">
-        <Suspense fallback={<div className="pane-loading">Loading VNC…</div>}>
-            <VncWorkspaceController
-              key={vncWorkspace?.id || "default-vnc-workspace"}
-              workspaceName={vncWorkspace?.name || "No Workspace"}
-              entries={vncWorkspace?.proxmoxVncEntries || []}
-              activeEntryId={activeVncEntryId}
-              secrets={vncSecrets}
-              commandbarHost={vncBarHost}
-              collapseMainPaneEnabled={desktopSettings.collapseMainPaneEnabled}
-              onSelectEntry={setActiveVncEntryId}
-              onChangeEntries={(entries) => {
-                if (vncWorkspace) {
-                 setManagedSessions((current) => current.map((workspace) => workspace.id === vncWorkspace.id ? { ...workspace, proxmoxVncEntries: entries } : workspace));
-                 return;
-               }
-               const id = crypto.randomUUID();
-               setManagedSessions([{ id, name: "Default", sshEntries: [], restApiEntries: [], proxmoxVncEntries: entries }]);
-               setWorkspaceSessionId(id);
-             }}
-             onChangeSecret={(entryId, secret) => {
-               setVncSecrets((current) => ({ ...current, [entryId]: secret }));
-               if (secret.password) void invoke("proxmox_save_secret", { entryId, kind: "password", value: secret.password });
-               else void invoke("proxmox_forget_secret", { entryId, kind: "password" });
-             }}
-             onAddEntry={() => openAddVncEntryDialog(ensureVncWorkspaceId())}
-             onEditEntry={(entry) => vncWorkspace && openEditVncEntryDialog(vncWorkspace.id, entry)}
-             onRemoveEntry={(entry) => vncWorkspace && removeVncEntryDirect(vncWorkspace.id, entry)}
-           />
-        </Suspense>
-      </div>
-      <footer className="statusbar">
-        <span>{vncWorkspace?.proxmoxVncEntries.length || 0} VNC entr{vncWorkspace?.proxmoxVncEntries.length === 1 ? "y" : "ies"}</span>
-        <span>{vncWorkspace?.name || "No Workspace"}</span>
       </footer>
     </div>
   );
@@ -4481,10 +4706,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         remoteChoices={paneRemoteChoices}
         sftpChoices={paneSftpChoices}
         terminalWorkspaces={paneTerminalWorkspaces}
+        vncWorkspaces={paneVncWorkspaces}
+        vncFlowWindowIds={vncFlowWindowIds}
         localShellsAvailable={localShellsAvailable}
         sshPaneStates={sshPaneStates}
         onOpenLocalShell={openLocalTerminal}
         onOpenSshWindow={(workspaceId, entryId) => { void openSshEntryInNewWindow(workspaceId, entryId); }}
+        onSelectVncEntry={(workspaceId, entryId) => { void beginVncEntryLogin(workspaceId, entryId); }}
+        onOpenDirectVnc={openDirectVncSetup}
         onOpenEntryManager={(workspaceId) => { void openSessionsModal(workspaceId); }}
         onCreateWorkspace={startNewWorkspace}
         entryIds={entryIds}
@@ -4519,7 +4748,62 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         <PaneBody id="local">{renderLocalWindow()}</PaneBody>
         <PaneBody id="remote">{renderRemoteWindow()}</PaneBody>
         <PaneBody id="rest">{renderRestWindow()}</PaneBody>
-        <PaneBody id="vnc">{renderVncWindow()}</PaneBody>
+        <PaneBody id={vncPickerWindowId("direct")}>
+          <Suspense fallback={<div className="pane-loading">Loading Direct VNC…</div>}>
+            <VncDirectSetupPane onConnect={startDirectVnc} />
+          </Suspense>
+        </PaneBody>
+        {vncPickerPaneEntries.map(({ workspace, entry }) => (
+          <PaneBody key={entry.id} id={vncPickerWindowId(entry.id)}>
+            <Suspense fallback={<div className="pane-loading">Loading VM picker…</div>}>
+              <VncVmPickerPane
+                entry={entry}
+                vms={vncVmLists[entry.id] || []}
+                authenticated={Boolean(vncAuthSessions[entry.id])}
+                loading={Boolean(vncPickerLoading[entry.id])}
+                error={vncPickerErrors[entry.id] || ""}
+                onChangeEntry={(updates) => updateVncPickerEntry(workspace.id, entry.id, updates)}
+                onConnect={(vm) => openVncScreen(entry.id, vm)}
+                onRetry={() => { void beginVncEntryLogin(workspace.id, entry.id); }}
+                onLogout={() => void logoutVncEntry(entry.id)}
+                onEditEntry={() => { void openSessionsModal(workspace.id); openEditVncEntryDialog(workspace.id, entry); }}
+              />
+            </Suspense>
+          </PaneBody>
+        ))}
+        {vncScreenPaneSessions.map((screen) => (
+          <PaneBody key={screen.id} id={vncScreenWindowId(screen.id)}>
+            <Suspense fallback={<div className="pane-loading">Loading VNC display…</div>}>
+              <ProxmoxVncScreenPane
+                screenSessionId={screen.id}
+                entry={screen.entry}
+                proxmoxSessionId={screen.proxmoxSessionId}
+                vms={screen.vms}
+                directHost={screen.directHost}
+                directPort={screen.directPort}
+                onOpenFiles={screen.entry ? () => paneOpenWindowRef.current(vncFilesWindowId(screen.id)) : undefined}
+                onFileTransferUpdate={updateVncFileTransfer}
+              />
+            </Suspense>
+          </PaneBody>
+        ))}
+        {vncScreenPaneSessions.filter((screen) => screen.entry && screen.vm).map((screen) => (
+          <PaneBody key={screen.id} id={vncFilesWindowId(screen.id)}>
+            <Suspense fallback={<div className="pane-loading">Loading VM files…</div>}>
+              <VncFileTransferPane
+                entry={screen.entry!}
+                vmName={screen.vm!.name || `VM ${screen.vm!.vmid}`}
+                vmid={screen.vm!.vmid}
+                fileBrowser={vncFileBrowsers[screen.id] || {
+                  visible: false, hasRoute: false, loading: false, modeLabel: "Not connected", mode: "unknown", guestIp: "", filesReady: false,
+                  path: "/", files: [], filesLoading: false, filesError: "", transferError: "", canTryHostJump: false, selectedPaths: new Set(), queue: [],
+                  onBack: () => undefined, onReturn: () => undefined, onNavigate: () => undefined, onToggleSelect: () => undefined,
+                  onUpload: () => undefined, onDownload: () => undefined, onRefresh: () => undefined, onTryHostJump: () => undefined, onRemoveQueueItem: () => undefined,
+                }}
+              />
+            </Suspense>
+          </PaneBody>
+        ))}
         {openSshPanes.map(({ id, entry, name }) => (
           <PaneBody key={id} id={id as PaneWindowId}>
             <SshEntryPane
@@ -4806,6 +5090,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             setActiveRestEntryId={setActiveRestEntryId}
             setActiveVncEntryId={setActiveVncEntryId}
             openMode={(mode) => paneOpenWindowRef.current(mode === "location" ? "remote" : mode)}
+            onSelectVncEntry={(workspaceId, entryId) => { void beginVncEntryLogin(workspaceId, entryId); }}
             startNewWorkspace={startNewWorkspace}
             openWorkspaceNameDialog={openWorkspaceNameDialog}
             removeSession={removeSession}
@@ -4872,15 +5157,21 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           setVncEntryDraft={setVncEntryDraft}
           vncEntryModalTab={vncEntryModalTab}
           setVncEntryModalTab={setVncEntryModalTab}
+          vncEntryPasswordDraft={vncEntryPasswordDraft}
+          setVncEntryPasswordDraft={setVncEntryPasswordDraft}
+          vncEntryPasswordSaved={vncEntryPasswordSaved}
+          vncEntryPasswordSaving={vncEntryPasswordSaving}
+          vncEntryPasswordRequired={vncPasswordResumeEntryId === vncEntryDraft.id}
           hostSshPasswordDraft={hostSshPasswordDraft}
           setHostSshPasswordDraft={setHostSshPasswordDraft}
           hostSshPasswordSaved={hostSshPasswordSaved}
           modalStyle={modalStyle("vnc-entry")}
           onDragStart={beginModalDrag("vnc-entry")}
-          onClose={() => setVncEntryDialogOpen(false)}
+          onClose={() => { setVncEntryDialogOpen(false); setVncPasswordResumeEntryId(""); }}
           onInstallHostKey={() => void installVncSshKey()}
+          onForgetVncPassword={() => void forgetVncPassword()}
           onRemove={removeVncEntry}
-          onSave={saveVncEntry}
+          onSave={() => void saveVncEntry(vncPasswordResumeEntryId === vncEntryDraft.id)}
           vncEndpointParts={vncEndpointParts}
           vncUsernameParts={vncUsernameParts}
         />

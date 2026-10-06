@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import type { RestApiEntry } from "../../rest-api";
@@ -47,12 +48,18 @@ export type UseSessionsActionsParams = {
   setVncEntryDraft: React.Dispatch<React.SetStateAction<ProxmoxVncEntry | null>>;
   setVncEntryDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setVncEntryModalTab: React.Dispatch<React.SetStateAction<"default" | "hostSsh">>;
+  vncEntryPasswordDraft: string;
+  setVncEntryPasswordDraft: React.Dispatch<React.SetStateAction<string>>;
+  vncEntryPasswordSaved: boolean;
+  setVncEntryPasswordSaved: React.Dispatch<React.SetStateAction<boolean>>;
+  setVncEntryPasswordSaving: React.Dispatch<React.SetStateAction<boolean>>;
   activeVncEntryId: string;
   setActiveVncEntryId: React.Dispatch<React.SetStateAction<string>>;
   hostSshPasswordDraft: string;
   setHostSshPasswordDraft: React.Dispatch<React.SetStateAction<string>>;
   hostSshPasswordSaved: boolean;
   setHostSshPasswordSaved: React.Dispatch<React.SetStateAction<boolean>>;
+  onVncEntrySaved?: (entryId: string) => void;
 };
 
 // Owns every handler behind Workspaces (the "Session Manager"): creating,
@@ -82,9 +89,12 @@ export function useSessionsActions({
   restEntryDraft, setRestEntryDraft, setRestEntryDialogOpen,
   activeRestEntryId, setActiveRestEntryId,
   vncEntryDraft, setVncEntryDraft, setVncEntryDialogOpen, setVncEntryModalTab,
+  vncEntryPasswordDraft, setVncEntryPasswordDraft, vncEntryPasswordSaved, setVncEntryPasswordSaved, setVncEntryPasswordSaving,
   activeVncEntryId, setActiveVncEntryId,
   hostSshPasswordDraft, setHostSshPasswordDraft, hostSshPasswordSaved, setHostSshPasswordSaved,
+  onVncEntrySaved,
 }: UseSessionsActionsParams) {
+  const vncPasswordLoadGenerationRef = useRef(0);
   // Creates or renames a Workspace. SSH entries are added or edited
   // afterwards in their own floating dialog.
   const saveWorkspaceName = (form?: HTMLFormElement) => {
@@ -424,8 +434,12 @@ export function useSessionsActions({
   });
 
   const openAddVncEntryDialog = (workspaceId: string) => {
+    vncPasswordLoadGenerationRef.current += 1;
     setWorkspaceSessionId(workspaceId);
     setVncEntryDraft(emptyVncEntry());
+    setVncEntryPasswordDraft("");
+    setVncEntryPasswordSaved(false);
+    setVncEntryPasswordSaving(false);
     setHostSshPasswordDraft("");
     setHostSshPasswordSaved(false);
     setSessionFormError("");
@@ -434,8 +448,15 @@ export function useSessionsActions({
   };
 
   const openEditVncEntryDialog = (workspaceId: string, entry: ProxmoxVncEntry) => {
+    const generation = ++vncPasswordLoadGenerationRef.current;
     setWorkspaceSessionId(workspaceId);
     setVncEntryDraft(entry);
+    setVncEntryPasswordDraft("");
+    setVncEntryPasswordSaved(false);
+    setVncEntryPasswordSaving(false);
+    void invoke<string | null>("proxmox_load_secret", { entryId: entry.id, kind: "password" })
+      .then((password) => { if (generation === vncPasswordLoadGenerationRef.current) setVncEntryPasswordSaved(password !== null); })
+      .catch(() => { if (generation === vncPasswordLoadGenerationRef.current) setVncEntryPasswordSaved(false); });
     setHostSshPasswordDraft("");
     setHostSshPasswordSaved(false);
     void invoke<boolean>("ssh_has_password", { entryId: hostSshProfileId(entry.id) }).then(setHostSshPasswordSaved).catch(() => setHostSshPasswordSaved(false));
@@ -456,7 +477,7 @@ export function useSessionsActions({
     return { account, realm: realm === "pve" ? "pve" : "pam" };
   };
 
-  const saveVncEntry = () => {
+  const saveVncEntry = async (passwordRequired = false) => {
     const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
     const draft = vncEntryDraft;
     const endpoint = draft ? vncEndpointParts(draft.baseUrl) : null;
@@ -470,7 +491,23 @@ export function useSessionsActions({
       setSessionFormError("Connection name, Proxmox host, and a valid port are required.");
       return;
     }
+    if (passwordRequired && !vncEntryPasswordDraft && !vncEntryPasswordSaved) {
+      setSessionFormError("A Proxmox password is required to connect. Enter it and save this entry first.");
+      return;
+    }
     const wasEditing = isEditingVncEntry(workspace, draft);
+    setVncEntryPasswordSaving(true);
+    setSessionFormError("");
+    try {
+      if (vncEntryPasswordDraft) {
+        await invoke("proxmox_save_secret", { entryId: draft.id, kind: "password", value: vncEntryPasswordDraft });
+        setVncEntryPasswordSaved(true);
+      }
+    } catch (saveError) {
+      setSessionFormError(`Unable to save the Proxmox password: ${saveError instanceof Error ? saveError.message : String(saveError)}`);
+      setVncEntryPasswordSaving(false);
+      return;
+    }
     setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : {
       ...item,
       proxmoxVncEntries: wasEditing
@@ -483,11 +520,27 @@ export function useSessionsActions({
         .then(() => setHostSshPasswordSaved(true))
         .catch((saveError) => setNotice(saveError instanceof Error ? saveError.message : String(saveError)));
     }
+    setVncEntryPasswordDraft("");
+    setVncEntryPasswordSaving(false);
     setHostSshPasswordDraft("");
     setVncEntryDraft(null);
     setSessionFormError("");
     setVncEntryDialogOpen(false);
     notify(`${wasEditing ? "Updated" : "Added"} Proxmox VNC entry: ${draft.name}`);
+    if (vncEntryPasswordDraft || vncEntryPasswordSaved) onVncEntrySaved?.(draft.id);
+  };
+
+  const forgetVncPassword = async () => {
+    const draft = vncEntryDraft;
+    if (!draft) return;
+    try {
+      await invoke("proxmox_forget_secret", { entryId: draft.id, kind: "password" });
+      setVncEntryPasswordDraft("");
+      setVncEntryPasswordSaved(false);
+      setSessionFormError("");
+    } catch (forgetError) {
+      setSessionFormError(`Unable to forget the Proxmox password: ${forgetError instanceof Error ? forgetError.message : String(forgetError)}`);
+    }
   };
 
   const removeVncEntry = () => {
@@ -499,6 +552,8 @@ export function useSessionsActions({
     void invoke("proxmox_forget_secret", { entryId: draft.id, kind: "password" }).catch(() => {});
     void invoke("ssh_forget_password", { entryId: hostSshProfileId(draft.id) }).catch(() => {});
     setVncEntryDraft(null);
+    setVncEntryPasswordDraft("");
+    setVncEntryPasswordSaved(false);
     setVncEntryDialogOpen(false);
   };
 
@@ -514,6 +569,8 @@ export function useSessionsActions({
     void invoke("ssh_forget_password", { entryId: hostSshProfileId(entry.id) }).catch(() => {});
     if (vncEntryDraft?.id === entry.id) {
       setVncEntryDraft(null);
+      setVncEntryPasswordDraft("");
+      setVncEntryPasswordSaved(false);
       setVncEntryDialogOpen(false);
     }
     if (activeVncEntryId === entry.id) setActiveVncEntryId("");
@@ -630,6 +687,7 @@ export function useSessionsActions({
     vncEndpointParts,
     vncUsernameParts,
     saveVncEntry,
+    forgetVncPassword,
     removeVncEntry,
     removeVncEntryDirect,
     installVncSshKey,
