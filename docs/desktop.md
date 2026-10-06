@@ -271,6 +271,30 @@ IML cannot recover events that iLO loses, clears, or overwrites while the client
 is disconnected. A suspected snapshot change retains local entries and records
 a snapshot boundary; it does not claim recovery of remote history.
 
+## Browser Pane Geometry
+
+The Windows-only Browser pane draws a native WebView2 child view over an empty
+anchor element in the HTML pane (`src/features/browser/BrowserPane.tsx`). The
+anchor rectangle is read with `getBoundingClientRect()` in CSS pixels, inset by
+1 CSS pixel, and sent with `window.devicePixelRatio` to the `browser_create`
+and `browser_set_bounds` commands (`src-tauri/src/browser.rs`).
+
+The Rust side converts to physical pixels itself: left/top edges are
+`floor(css * dpr)` and right/bottom edges are `ceil((css + size) * dpr)`. The
+child is created and moved with `PhysicalPosition`/`PhysicalSize`, in one
+`Webview::set_bounds` call. Logical values are not passed to Tauri/wry because
+wry converts them with the DPI of the child HWND, which was 96 on a 125%
+display: the page was placed and sized at 80% of the pane (issue #264).
+
+The origin is 0: the main WebView is created at the window client origin, so the
+DOM viewport and the child coordinates share one origin. Do not subtract
+`Window::inner_position()`; it is in screen coordinates and moves the view out
+of the window. Both commands return the requested and the native rectangle
+(`BrowserBoundsReadback`). The pane pushes the rectangle once more when they
+differ by more than one physical pixel, logs a warning if they still differ, and
+shows a command failure in the toolbar error line. A scale change of the window
+(moving it to another display) triggers a new sync.
+
 ## Operation Logs
 
 Operation logs are JSON Lines stored in the application data directory. They

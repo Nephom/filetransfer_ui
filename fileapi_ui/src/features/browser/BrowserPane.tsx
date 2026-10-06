@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ChevronLeftIcon, ChevronRightIcon, RefreshIcon, StopIcon } from "../../ui/icons";
 import type { PaneBrowserWindowId } from "../../pane/pane-window-model";
-import type { BrowserBounds, BrowserNavigationState, BrowserNewPaneEvent, BrowserViewStateEvent } from "./browser-contracts";
+import type { BrowserBounds, BrowserBoundsReadback, BrowserNavigationState, BrowserNewPaneEvent, BrowserViewStateEvent } from "./browser-contracts";
 import { BROWSER_NEW_PANE_EVENT, BROWSER_VIEW_STATE_EVENT } from "./browser-contracts";
 import "./browser-pane.css";
 
@@ -34,11 +35,22 @@ export function normalizeBrowserUrl(value: string): string {
 
 const visibleAddress = (url: string) => url === "about:blank" ? "" : url;
 
+const boundsKey = (bounds: BrowserBounds) => `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}:${bounds.devicePixelRatio}`;
+
+/** Largest physical-pixel difference between the requested and the native rectangle. */
+const readbackDelta = ({ requested, actual }: BrowserBoundsReadback) => Math.max(
+  Math.abs(requested.x - actual.x),
+  Math.abs(requested.y - actual.y),
+  Math.abs(requested.width - actual.width),
+  Math.abs(requested.height - actual.height),
+);
+
 export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed, onOpenNewPane }: Props) {
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const createdRef = useRef(false);
   const boundsQueueRef = useRef<Promise<void>>(Promise.resolve());
   const lastBoundsRef = useRef("");
+  const boundsErrorRef = useRef(false);
   const visibleRef = useRef(visible);
   const editingRef = useRef(false);
   const initialUrlRef = useRef(initialUrl);
@@ -63,29 +75,49 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
     const anchor = anchorRef.current;
     if (!anchor) return null;
     const rect = anchor.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) return null;
-    // Keep the native child surface just inside the DOM pane body border.
+    if (rect.width < 3 || rect.height < 3) return null;
+    // CSS pixels, not rounded: the native side converts to physical pixels with
+    // devicePixelRatio. Keep the child surface 1 CSS px inside the pane border.
     return {
-      x: Math.round(rect.left + 1),
-      y: Math.round(rect.top + 1),
-      width: Math.max(1, Math.floor(rect.width - 2)),
-      height: Math.max(1, Math.floor(rect.height - 2)),
+      x: rect.left + 1,
+      y: rect.top + 1,
+      width: rect.width - 2,
+      height: rect.height - 2,
+      devicePixelRatio: window.devicePixelRatio || 1,
     };
   }, []);
+
+  const applyBounds = useCallback(async (bounds: BrowserBounds) => {
+    const first = await invoke<BrowserBoundsReadback>("browser_set_bounds", { paneId, bounds });
+    if (readbackDelta(first) <= 1) return;
+    // The native rectangle differs from the request: push it once more and
+    // report it if the second attempt still does not match.
+    const second = await invoke<BrowserBoundsReadback>("browser_set_bounds", { paneId, bounds });
+    if (readbackDelta(second) > 1) console.warn(`Browser pane ${paneId} native bounds differ from the requested rectangle`, second);
+  }, [paneId]);
 
   const scheduleBounds = useCallback(() => {
     const bounds = readBounds();
     if (!bounds) return;
-    const serialized = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
+    const serialized = boundsKey(bounds);
     if (serialized === lastBoundsRef.current) return;
     lastBoundsRef.current = serialized;
     boundsQueueRef.current = boundsQueueRef.current
       .then(async () => {
         if (!createdRef.current) return;
-        await invoke("browser_set_bounds", { paneId, bounds });
+        await applyBounds(bounds);
+        if (boundsErrorRef.current) {
+          boundsErrorRef.current = false;
+          setError("");
+        }
       })
-      .catch(() => undefined);
-  }, [paneId, readBounds]);
+      .catch((reason: unknown) => {
+        // Forget the failed rectangle so the next layout change sends it again.
+        if (lastBoundsRef.current === serialized) lastBoundsRef.current = "";
+        boundsErrorRef.current = true;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
+  }, [applyBounds, readBounds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,13 +148,14 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
       const bounds = readBounds();
       if (!bounds) throw new Error("Browser pane has no visible content area.");
       const url = initialUrlRef.current ? normalizeBrowserUrl(initialUrlRef.current) : "about:blank";
-      await invoke("browser_create", { paneId, initialUrl: url, bounds, visible: visibleRef.current });
+      const readback = await invoke<BrowserBoundsReadback>("browser_create", { paneId, initialUrl: url, bounds, visible: visibleRef.current });
       if (cancelled) {
         await invoke("browser_destroy", { paneId }).catch(() => undefined);
         return;
       }
       createdRef.current = true;
-      lastBoundsRef.current = `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`;
+      // A creation rectangle the native side did not honour is pushed again by the first sync.
+      lastBoundsRef.current = readbackDelta(readback) <= 1 ? boundsKey(bounds) : "";
       setViewReady(true);
       onInitialUrlConsumedRef.current();
     };
@@ -152,8 +185,17 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
     const mutationObserver = pane ? new MutationObserver(scheduleBounds) : null;
     mutationObserver?.observe(pane!, { attributes: true, attributeFilter: ["class", "style"] });
     window.addEventListener("resize", scheduleBounds);
+    // Moving the window to a display with another scale changes devicePixelRatio.
+    let disposed = false;
+    let unlistenScale: (() => void) | undefined;
+    void getCurrentWebviewWindow().onScaleChanged(() => scheduleBounds()).then((unlisten) => {
+      if (disposed) unlisten();
+      else unlistenScale = unlisten;
+    }).catch(() => undefined);
     scheduleBounds();
     return () => {
+      disposed = true;
+      unlistenScale?.();
       resizeObserver.disconnect();
       mutationObserver?.disconnect();
       window.removeEventListener("resize", scheduleBounds);
