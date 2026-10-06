@@ -824,8 +824,12 @@ try {
     await paneWindows.nth(4).waitFor();
     await paneWindows.nth(4).locator('button[aria-label="Close window"]').click();
     await paneWindows.nth(0).click({ button: 'right' });
+    const terminalLaunchMenu = page.locator('.pane-terminal-launch-menu');
+    await terminalLaunchMenu.waitFor();
     assert.equal(await page.locator('.pane-context-menu button').count(), 9);
     await page.locator('.pane-context-menu button').filter({ hasText: 'Refresh' }).click();
+    await page.locator('.pane-context-menu').waitFor({ state: 'detached' });
+    await terminalLaunchMenu.waitFor({ state: 'detached' });
     await page.setViewportSize({ width: 390, height: 844 });
     await frames();
     await locationPickerTrigger.waitFor({ state: 'visible' });

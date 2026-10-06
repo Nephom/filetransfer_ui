@@ -106,7 +106,7 @@ const consumePasteProgressStream = async (response, onEvent) => {
 
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
-export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onRetryUpload, onDiscardUpload, onClearNeedsAction, onClearFinished, onUploadFiles }) {
+export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onRetryUpload, onDiscardUpload, onClearNeedsAction, onClearFinished, onUploadFiles, onDismissTerminalMenu }) {
     const [locations, setLocations] = React.useState([]);
     const [locationRailOverflow, setLocationRailOverflow] = React.useState(false);
     const [locationPickerOpen, setLocationPickerOpen] = React.useState(false);
@@ -997,7 +997,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
                 })}
             </div>
         </aside>}
-        {contextMenu && <div ref={menuPosition.ref} className="pane-context-menu" style={menuPosition.style} onClick={(event) => event.stopPropagation()}>{contextMenu.type === 'location' ? <button type="button" onClick={() => { openWindow(contextMenu.locationId); closeContextMenu(); }}>Open new window</button> : <>{[['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh']].map(([action, label]) => <button type="button" key={action} onClick={() => { void runAction(contextMenu.windowId, action); closeContextMenu(); }}>{label}</button>)}</>}</div>}
+        {contextMenu && <div ref={menuPosition.ref} className="pane-context-menu" style={menuPosition.style} onClick={(event) => event.stopPropagation()}>{contextMenu.type === 'location' ? <button type="button" onClick={() => { onDismissTerminalMenu?.(); openWindow(contextMenu.locationId); closeContextMenu(); }}>Open new window</button> : <>{[['upload', 'Upload'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['move', 'Move'], ['copy', 'Copy'], ['delete', 'Delete'], ['share', 'Share'], ['download', 'Download'], ['refresh', 'Refresh']].map(([action, label]) => <button type="button" key={action} onClick={() => { onDismissTerminalMenu?.(); void runAction(contextMenu.windowId, action); closeContextMenu(); }}>{label}</button>)}</>}</div>}
         {toast && <div className="pane-toast" role="status">{toast}</div>}
         </div>;
 }
