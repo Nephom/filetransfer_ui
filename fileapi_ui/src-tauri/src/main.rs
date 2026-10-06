@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod browser;
 mod netcheck;
 mod oplog;
 mod proxmox;
@@ -4548,7 +4549,17 @@ fn main() {
             initialize_operation_log,
             append_operation_log,
             append_structured_operation_log,
-            set_operation_log_config
+            set_operation_log_config,
+            browser::browser_create,
+            browser::browser_set_bounds,
+            browser::browser_set_visible,
+            browser::browser_navigate,
+            browser::browser_history,
+            browser::browser_reload,
+            browser::browser_stop,
+            browser::browser_get_state,
+            browser::browser_destroy,
+            browser::browser_cleanup_stale,
         ])
         .run(tauri::generate_context!())
         .expect("error while running nFterm desktop application");

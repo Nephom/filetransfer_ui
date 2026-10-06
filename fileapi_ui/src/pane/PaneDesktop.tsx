@@ -1,11 +1,13 @@
 import React, { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PaneDock, type PaneLocationChoice, type PaneTerminalWorkspace } from "./PaneDock";
 import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
 import { PaneWindow } from "./PaneWindow";
 import { usePaneWindows } from "./usePaneWindows";
-import { PANE_SINGLETON_KINDS, kindOf, sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, sshWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
-import { LocalIcon, RemoteIcon, RestIcon, SftpIcon, TerminalIcon, VncIcon } from "./pane-icons";
+import { PANE_SINGLETON_KINDS, browserPaneInstanceOf, browserWindowId, isBrowserWindow, kindOf, sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, sshWindowId, type PaneBrowserWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
+import { BrowserIcon, LocalIcon, RemoteIcon, RestIcon, SftpIcon, TerminalIcon, VncIcon } from "./pane-icons";
+import { BrowserPane } from "../features/browser/BrowserPane";
 import { loadWallpaper, useWallpaper, wallpaperCssVariables } from "./pane-wallpaper-store";
 import {
   closeAllSshPopups,
@@ -46,6 +48,8 @@ type Props = {
   /** SSH entries that still exist; an open SFTP or SSH window whose entry is gone is dropped. */
   entryIds: readonly string[];
   busy: boolean;
+  /** True while a main-app dialog or top-level popover would cover a native WebView. */
+  appOverlayOpen: boolean;
   welcomeOpen: boolean;
   welcomeOnlyFirstLaunch: boolean;
   onWelcomeDismiss: (onlyFirstLaunch: boolean) => void;
@@ -74,6 +78,7 @@ const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
   remote: <RemoteIcon size={16} />,
   vnc: <VncIcon size={16} />,
   rest: <RestIcon size={16} />,
+  browser: <BrowserIcon size={16} />,
   sftp: <SftpIcon size={16} />,
   ssh: <TerminalIcon size={16} />,
 };
@@ -90,12 +95,16 @@ function Wallpaper() {
 }
 
 export function PaneDesktop({
-  restEnabled, vncEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, welcomeOpen, welcomeOnlyFirstLaunch, onWelcomeDismiss, topRight,
+  restEnabled, vncEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, entryIds, busy, appOverlayOpen, welcomeOpen, welcomeOnlyFirstLaunch, onWelcomeDismiss, topRight,
   onSelectRemote, onOpenLocalShell, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onWindowState, onRequestClose, hasUnsavedPaneRecording, confirmDiscardRecordings,
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const [layer, setLayer] = useState({ w: 0, h: 0 });
   const [desktopContextMenu, setDesktopContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [dockNativeViewOccluded, setDockNativeViewOccluded] = useState(false);
+  const [browserInitialUrls, setBrowserInitialUrls] = useState<Record<string, string>>({});
+  const [browserCleanupReady, setBrowserCleanupReady] = useState(false);
+  const browserSequenceRef = useRef(0);
   const closeDesktopContextMenu = useCallback(() => setDesktopContextMenu(null), []);
   const handleDesktopContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -119,6 +128,16 @@ export function PaneDesktop({
     if (React.isValidElement<{ id: PaneWindowId; children: React.ReactNode }>(child)) bodies[child.props.id] = child.props.children;
   });
   const popups = useSyncExternalStore(subscribeSshPopups, getSshPopupSnapshot, getSshPopupSnapshot);
+  const browserViewsOccluded = appOverlayOpen || welcomeOpen || desktopContextMenu !== null || dockNativeViewOccluded;
+
+  useEffect(() => {
+    if (!localShellsAvailable) return undefined;
+    let cancelled = false;
+    void invoke("browser_cleanup_stale").then(() => {
+      if (!cancelled) setBrowserCleanupReady(true);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [localShellsAvailable]);
 
   useEffect(() => {
     const element = layerRef.current;
@@ -198,7 +217,27 @@ export function PaneDesktop({
     open(sshWindowId(entryId, instance));
   };
 
+  const openBrowserPane = (initialUrl?: string) => {
+    const used = new Set(layout.windows.map((win) => browserPaneInstanceOf(win.id)).filter((instance): instance is number => instance !== null));
+    let instance = browserSequenceRef.current + 1;
+    while (used.has(instance)) instance += 1;
+    browserSequenceRef.current = instance;
+    const id = browserWindowId(instance);
+    if (initialUrl) setBrowserInitialUrls((current) => ({ ...current, [id]: initialUrl }));
+    open(id);
+  };
+
+  const clearBrowserInitialUrl = (id: string) => {
+    setBrowserInitialUrls((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  };
+
   const isAvailable = (id: PaneWindowId) => {
+    if (isBrowserWindow(id)) return true;
     const sshEntryId = sshPaneEntryIdOf(id);
     return sshEntryId !== null ? entryIds.includes(sshEntryId) : available.includes(id);
   };
@@ -214,6 +253,8 @@ export function PaneDesktop({
   for (const win of layout.windows) {
     const info = sshInfoOf(win.id);
     if (info) allTitles[win.id] = `SSH · ${info.name}`;
+    const browserInstance = browserPaneInstanceOf(win.id);
+    if (browserInstance !== null) allTitles[win.id] = `Browser ${browserInstance}`;
   }
 
   return (
@@ -243,7 +284,15 @@ export function PaneDesktop({
               onClose={() => requestClose(win.id)}
               onRect={(rect) => setRect(win.id, rect)}
             >
-              {bodies[win.id]}
+              {kind === "browser"
+                ? <BrowserPane
+                    paneId={win.id as PaneBrowserWindowId}
+                    initialUrl={browserInitialUrls[win.id] || ""}
+                    visible={layout.activeId === win.id && !win.minimized && !browserViewsOccluded}
+                    onInitialUrlConsumed={() => clearBrowserInitialUrl(win.id)}
+                    onOpenNewPane={openBrowserPane}
+                  />
+                : bodies[win.id]}
             </PaneWindow>
           );
         })}
@@ -257,9 +306,12 @@ export function PaneDesktop({
         sftpChoices={sftpChoices}
         terminalWorkspaces={terminalWorkspaces}
         localShellsAvailable={localShellsAvailable}
+        browserSupported={localShellsAvailable && browserCleanupReady}
         sshPaneStates={sshPaneStates}
         popups={popups}
         busy={busy}
+        onOpenBrowser={() => openBrowserPane()}
+        onNativeViewOcclusionChange={setDockNativeViewOccluded}
         desktopContextMenu={desktopContextMenu}
         onCloseDesktopContextMenu={closeDesktopContextMenu}
         onOpenLocal={() => open("local")}

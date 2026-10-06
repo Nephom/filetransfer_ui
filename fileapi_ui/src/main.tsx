@@ -4433,6 +4433,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     uploadLocalItems: uploadLocalItemsToSftp,
     downloadToLocal: (entryId, items) => downloadRemoteItemsToLocal(items, localPath, entryId),
   };
+  const browserOverlayOpen = accountOpen || Boolean(contextMenu) || changePasswordOpen || sharePasswordOpen
+    || settingsOpen || shareLinksOpen || sessionsOpen || workspaceNameDialogOpen
+    || sshEntryDialogOpen || restEntryDialogOpen || vncEntryDialogOpen
+    || archiveFormatOpen || queueOpen || viewerOpen || logViewOpen || helpOpen
+    || Boolean(namePrompt) || Boolean(confirmPrompt);
 
   return (
     <AppShell style={themeVariables} className={`explorer pane-style ${desktopSettings.glassMainEnabled ? "" : "glass-main-off"} ${desktopSettings.paneShadowEnabled ? "" : "pane-shadow-off"} ${desktopSettings.glassMenusEnabled ? "" : "glass-menus-off"} ${desktopSettings.glassDialogsEnabled ? "" : "glass-dialogs-off"}`}>
@@ -4440,6 +4445,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       <PaneDesktop
         restEnabled={desktopSettings.restApiModeEnabled}
         vncEnabled={desktopSettings.proxmoxVncModeEnabled}
+        appOverlayOpen={browserOverlayOpen}
         welcomeOpen={welcomeOpen}
         welcomeOnlyFirstLaunch={welcomeOnlyFirstLaunch}
         onWelcomeDismiss={dismissWelcome}

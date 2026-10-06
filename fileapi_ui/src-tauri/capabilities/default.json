@@ -3,6 +3,7 @@
   "identifier": "default",
   "description": "Default capability for the nFterm desktop window.",
   "windows": ["main", "*"],
+  "webviews": ["main", "ssh-entry-popup-*"],
   "permissions": [
     "core:default",
     "core:window:allow-destroy",

@@ -6,26 +6,43 @@
  * Window kinds. "sftp" and "ssh" windows belong to an SSH entry: `sftp:<entryId>`
  * (one per entry, see sftpWindowId) and `ssh:<entryId>#<n>` (one per opened SSH
  * terminal, `n` = 1, 2, 3, ... so the same entry can be opened any number of
- * times, see sshWindowId). Every other kind has exactly one window whose id is
- * the kind itself.
+ * times, see sshWindowId). Browser panes are also opened on demand and use
+ * `browser:<n>` ids. Every other kind has exactly one window whose id is the
+ * kind itself.
  */
-export type PaneWindowKind = "local" | "remote" | "vnc" | "rest" | "sftp" | "ssh";
+export type PaneWindowKind = "local" | "remote" | "vnc" | "rest" | "browser" | "sftp" | "ssh";
 
 export type PaneSftpWindowId = `sftp:${string}`;
 export type PaneSshWindowId = `ssh:${string}#${number}`;
+export type PaneBrowserWindowId = `browser:${number}`;
 export type PaneEntryWindowKind = "sftp" | "ssh";
-export type PaneWindowId = Exclude<PaneWindowKind, PaneEntryWindowKind> | PaneSftpWindowId | PaneSshWindowId;
+export type PaneWindowId = Exclude<PaneWindowKind, PaneEntryWindowKind | "browser"> | PaneBrowserWindowId | PaneSftpWindowId | PaneSshWindowId;
 
-export const PANE_WINDOW_KINDS: readonly PaneWindowKind[] = ["local", "remote", "vnc", "rest", "sftp", "ssh"];
+export const PANE_WINDOW_KINDS: readonly PaneWindowKind[] = ["local", "remote", "vnc", "rest", "browser", "sftp", "ssh"];
 
 /** Kinds that only ever have one window (id === kind). */
-export const PANE_SINGLETON_KINDS: readonly Exclude<PaneWindowKind, PaneEntryWindowKind>[] = ["local", "remote", "vnc", "rest"];
+export const PANE_SINGLETON_KINDS: readonly Exclude<PaneWindowKind, PaneEntryWindowKind | "browser">[] = ["local", "remote", "vnc", "rest"];
 
 const SFTP_PREFIX = "sftp:";
 const SSH_PREFIX = "ssh:";
+const BROWSER_PREFIX = "browser:";
 
 export const sftpWindowId = (entryId: string): PaneSftpWindowId => `${SFTP_PREFIX}${entryId}`;
 export const sshWindowId = (entryId: string, instance: number): PaneSshWindowId => `${SSH_PREFIX}${entryId}#${instance}`;
+export const browserWindowId = (instance: number): PaneBrowserWindowId => `${BROWSER_PREFIX}${instance}`;
+
+/** The instance number of a `browser:<n>` window id (null for malformed ids). */
+export function browserPaneInstanceOf(id: string): number | null {
+  if (!id.startsWith(BROWSER_PREFIX)) return null;
+  const instance = id.slice(BROWSER_PREFIX.length);
+  if (!/^[1-9]\d*$/.test(instance)) return null;
+  const number = Number(instance);
+  return Number.isSafeInteger(number) ? number : null;
+}
+
+export function isBrowserWindow(id: unknown): id is PaneBrowserWindowId {
+  return typeof id === "string" && browserPaneInstanceOf(id) !== null;
+}
 
 /** The SSH entry id behind a `sftp:<entryId>` window id (null for every other window). */
 export function sshEntryIdOf(id: string): string | null {
@@ -57,6 +74,7 @@ export function kindOf(id: unknown): PaneWindowKind | null {
   if (typeof id !== "string") return null;
   if (sshEntryIdOf(id)) return "sftp";
   if (parseSshWindowId(id)) return "ssh";
+  if (browserPaneInstanceOf(id) !== null) return "browser";
   return (PANE_SINGLETON_KINDS as readonly string[]).includes(id) ? (id as PaneWindowKind) : null;
 }
 
@@ -68,6 +86,16 @@ export function kindOf(id: unknown): PaneWindowKind | null {
 export function isEntryWindow(id: unknown): boolean {
   const kind = kindOf(id);
   return kind === "sftp" || kind === "ssh";
+}
+
+/** Browser panes, like SSH/SFTP panes, are session-only and are never restored. */
+export function isTransientWindow(id: unknown): boolean {
+  return isEntryWindow(id) || kindOf(id) === "browser";
+}
+
+/** Dynamic windows that are rendered in the taskbar instead of the singleton group. */
+export function isDynamicWindow(id: unknown): boolean {
+  return isTransientWindow(id);
 }
 
 export type PaneRect = { x: number; y: number; w: number; h: number };
@@ -94,6 +122,7 @@ export const PANE_MIN_SIZE: Record<PaneWindowKind, PaneSize> = {
   rest: { w: 520, h: 340 },
   sftp: { w: 460, h: 280 },
   ssh: { w: 460, h: 280 },
+  browser: { w: 560, h: 360 },
 };
 
 export const PANE_KIND_LABEL: Record<PaneWindowKind, string> = {
@@ -103,6 +132,7 @@ export const PANE_KIND_LABEL: Record<PaneWindowKind, string> = {
   rest: "RestAPI",
   sftp: "SFTP",
   ssh: "SSH",
+  browser: "Browser",
 };
 
 /** Minimum size of the window with this id (unknown ids fall back to the smallest kind minimum). */
@@ -195,9 +225,9 @@ export function normalizeStoredLayout(raw: unknown): PaneLayout | null {
     if (!item || typeof item !== "object") continue;
     const win = item as Record<string, unknown>;
     const id = win.id as PaneWindowId;
-    // SFTP and SSH windows are never restored (they are bound to a live SSH entry), so only singleton kinds are accepted.
+    // SSH/SFTP and Browser windows are transient, so only durable singleton kinds are restored.
     // A window id from an older version (e.g. the removed shared "terminal" window) is not a valid id and is dropped here.
-    if (kindOf(id) === null || isEntryWindow(id) || windows.some((existing) => existing.id === id)) continue;
+    if (kindOf(id) === null || isTransientWindow(id) || windows.some((existing) => existing.id === id)) continue;
     if (![win.x, win.y, win.w, win.h, win.z].every(isFiniteNumber)) continue;
     windows.push({
       id,
@@ -216,7 +246,7 @@ export function normalizeStoredLayout(raw: unknown): PaneLayout | null {
 }
 
 export function serializeLayout(layout: PaneLayout): string {
-  return JSON.stringify({ version: STORAGE_VERSION, windows: layout.windows.filter((win) => !isEntryWindow(win.id)) });
+  return JSON.stringify({ version: STORAGE_VERSION, windows: layout.windows.filter((win) => !isTransientWindow(win.id)) });
 }
 
 export function loadStoredLayout(storage: Pick<Storage, "getItem"> = localStorage): PaneLayout | null {

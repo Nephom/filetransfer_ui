@@ -4,7 +4,8 @@ import {
   STORAGE_KEY,
   clampRect,
   defaultRect,
-  isEntryWindow,
+  isBrowserWindow,
+  isTransientWindow,
   kindOf,
   loadStoredLayout,
   minSizeOf,
@@ -64,9 +65,9 @@ export function paneReducer(layout: PaneLayout, action: Action): PaneLayout {
       return withActive(update(layout, action.id, (win) => ({ ...win, maximized: !win.maximized, minimized: false, z })));
     }
     case "close":
-      // An SFTP or SSH window belongs to one live connection, so closing it discards it
-      // (its body unmounts and disconnects); other kinds keep their geometry.
-      if (isEntryWindow(action.id)) return withActive(layout.windows.filter((win) => win.id !== action.id));
+      // SFTP/SSH and Browser windows are transient, so closing one unmounts its body
+      // and releases its live connection or native WebView; durable panes keep geometry.
+      if (isTransientWindow(action.id)) return withActive(layout.windows.filter((win) => win.id !== action.id));
       return withActive(update(layout, action.id, (win) => ({ ...win, open: false, minimized: false })));
     case "setRect":
       return {
@@ -88,12 +89,13 @@ export function paneReducer(layout: PaneLayout, action: Action): PaneLayout {
       let changed = false;
       const windows: PaneWindowState[] = [];
       for (const win of layout.windows) {
-        // SSH windows are opened on demand (any number per entry), so they are available as long as their entry exists.
+        // SSH windows remain available while their entry exists; Browser panes are on-demand session windows.
         const sshEntryId = sshPaneEntryIdOf(win.id);
-        const isAvailable = sshEntryId !== null ? action.entryIds.includes(sshEntryId) : action.available.includes(win.id);
+        const isAvailable = isBrowserWindow(win.id)
+          || (sshEntryId !== null ? action.entryIds.includes(sshEntryId) : action.available.includes(win.id));
         if (isAvailable) { windows.push(win); continue; }
-        // An unavailable SFTP/SSH window (its SSH entry was removed) is dropped; other kinds are just closed.
-        if (isEntryWindow(win.id)) { changed = true; continue; }
+        // An unavailable transient window is dropped; durable panes keep their geometry when closed.
+        if (isTransientWindow(win.id)) { changed = true; continue; }
         if (!win.open) { windows.push(win); continue; }
         changed = true;
         windows.push({ ...win, open: false, minimized: false });

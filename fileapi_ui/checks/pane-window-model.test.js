@@ -77,7 +77,7 @@ test("stored layouts are validated before use", () => {
   assert.equal(model.loadStoredLayout({ getItem: () => "{not json" }), null);
 });
 
-test("window ids: singleton kinds keep their id, SFTP windows are sftp:<entryId>, SSH windows are ssh:<entryId>#<n>", () => {
+test("window ids: singleton kinds keep their id, Browser panes use browser:<n>, SFTP windows are sftp:<entryId>, SSH windows are ssh:<entryId>#<n>", () => {
   assert.equal(model.sftpWindowId("entry-1"), "sftp:entry-1");
   assert.equal(model.sshEntryIdOf("sftp:entry-1"), "entry-1");
   assert.equal(model.sshEntryIdOf("sftp:"), null);
@@ -96,10 +96,19 @@ test("window ids: singleton kinds keep their id, SFTP windows are sftp:<entryId>
   }
   assert.equal(model.sshPaneEntryIdOf("sftp:entry-1"), null);
   assert.equal(model.sshPaneInstanceOf("local"), null);
+  assert.equal(model.browserWindowId(1), "browser:1");
+  assert.equal(model.browserWindowId(12), "browser:12");
+  assert.equal(model.browserPaneInstanceOf("browser:2"), 2);
+  assert.equal(model.browserPaneInstanceOf("browser:0"), null);
+  assert.equal(model.browserPaneInstanceOf("browser:01"), null);
+  assert.equal(model.browserPaneInstanceOf("browser:abc"), null);
+  assert.equal(model.browserPaneInstanceOf("browser:9007199254740992"), null);
   for (const id of ["local", "remote", "vnc", "rest"]) assert.equal(model.kindOf(id), id);
   assert.equal(model.kindOf("terminal"), null, "the shared Terminal window no longer exists");
   assert.equal(model.kindOf("sftp:entry-1"), "sftp");
   assert.equal(model.kindOf("ssh:entry-1#1"), "ssh");
+  assert.equal(model.kindOf("browser:1"), "browser");
+  assert.equal(model.kindOf("browser:01"), null);
   assert.equal(model.kindOf("sftp:"), null);
   assert.equal(model.kindOf("bogus"), null);
   assert.equal(model.kindOf(undefined), null);
@@ -108,6 +117,35 @@ test("window ids: singleton kinds keep their id, SFTP windows are sftp:<entryId>
   assert.equal(model.isEntryWindow("sftp:a"), true);
   assert.equal(model.isEntryWindow("ssh:a#1"), true);
   assert.equal(model.isEntryWindow("local"), false);
+  assert.equal(model.isTransientWindow("browser:1"), true);
+  assert.equal(model.isDynamicWindow("browser:2"), true);
+  assert.deepEqual(model.minSizeOf("browser:1"), model.PANE_MIN_SIZE.browser);
+});
+
+test("Browser panes open independently, cascade, close individually, and are never persisted", () => {
+  let layout = open(open(empty(), "browser:1"), "browser:2");
+  const first = win(layout, "browser:1");
+  const second = win(layout, "browser:2");
+  assert.ok(first && second);
+  assert.ok(second.x !== first.x || second.y !== first.y, "the second Browser pane does not sit exactly on the first");
+  assert.equal(layout.activeId, "browser:2");
+  layout = paneReducer(layout, { type: "closeUnavailable", available: ["local"], entryIds: [] });
+  assert.ok(win(layout, "browser:1") && win(layout, "browser:2"), "on-demand Browser panes stay available without entry ids");
+
+  layout = paneReducer(layout, { type: "close", id: "browser:1" });
+  assert.equal(win(layout, "browser:1"), undefined);
+  assert.ok(win(layout, "browser:2"), "closing one Browser leaves the other open");
+
+  const stored = JSON.parse(model.serializeLayout(open(open(empty(), "local"), "browser:3")));
+  assert.deepEqual(stored.windows.map((item) => item.id), ["local"]);
+  const restored = model.normalizeStoredLayout({
+    version: 1,
+    windows: [
+      ...stored.windows,
+      { id: "browser:3", x: 0, y: 0, w: 600, h: 400, z: 3, open: true },
+    ],
+  });
+  assert.deepEqual(restored.windows.map((item) => item.id), ["local"]);
 });
 
 test("several SFTP windows can be open at once, one per SSH entry", () => {

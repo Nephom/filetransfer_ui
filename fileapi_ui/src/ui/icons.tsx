@@ -50,6 +50,23 @@ export function ChevronUpIcon({ size, className }: IconProps) {
   );
 }
 
+export function RefreshIcon({ size, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M13.5 3.5L15.5 5.5L13.5 7.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15.2 5.5H8a5 5 0 1 0 4.65 6.85" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function StopIcon({ size, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="3.5" y="3.5" width="9" height="9" rx="1.3" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
 export function CloseIcon({ size, className }: IconProps) {
   return (
     <svg {...base(size)} className={className}>

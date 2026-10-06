@@ -1,9 +1,9 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PaneLayout, PaneWindowId, PaneWindowKind } from "./pane-window-model";
-import { PANE_SINGLETON_KINDS, isEntryWindow, kindOf } from "./pane-window-model";
+import { PANE_SINGLETON_KINDS, isDynamicWindow, kindOf } from "./pane-window-model";
 import type { SshPopupInfo } from "./ssh-popup-registry";
-import { EntryManagerIcon, ExternalWindowIcon, FunctionsIcon, LocalIcon, LocationIcon, RemoteIcon, RestIcon, SftpIcon, SshEntriesIcon, TerminalIcon, VncIcon } from "./pane-icons";
+import { BrowserIcon, EntryManagerIcon, ExternalWindowIcon, FunctionsIcon, LocalIcon, LocationIcon, RemoteIcon, RestIcon, SftpIcon, SshEntriesIcon, TerminalIcon, VncIcon } from "./pane-icons";
 import { CommandPromptIcon, WindowsTerminalIcon } from "../ui/icons";
 import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
 
@@ -42,6 +42,8 @@ type Props = {
   terminalWorkspaces: PaneTerminalWorkspace[];
   /** Windows Terminal / Command Prompt can only be launched on Windows. */
   localShellsAvailable: boolean;
+  /** Browser support is Windows-only and enabled after stale native child views are cleaned up. */
+  browserSupported: boolean;
   /** Live state of each open SSH pane by window id (taskbar status dot / unsaved-recording marker). */
   sshPaneStates: Readonly<Record<string, { connected: boolean; recordingUnsaved: boolean } | undefined>>;
   popups: readonly SshPopupInfo[];
@@ -49,6 +51,10 @@ type Props = {
   desktopContextMenu: { x: number; y: number } | null;
   onCloseDesktopContextMenu: () => void;
   onOpenLocal: () => void;
+  /** Open a fresh Browser pane. Only supplied on Windows. */
+  onOpenBrowser: () => void;
+  /** Hide native browser child views while a Dock overlay is open. */
+  onNativeViewOcclusionChange: (occluded: boolean) => void;
   onOpenLocalShell: (kind: LocalTerminalKind) => void;
   /** Open (or raise) the entry's SSH pane in the main window. */
   onOpenSshInPane: (entryId: string) => void;
@@ -71,14 +77,15 @@ const KIND_ICON: Record<PaneWindowKind, React.ReactNode> = {
   remote: <RemoteIcon size={18} />,
   vnc: <VncIcon size={18} />,
   rest: <RestIcon size={18} />,
+  browser: <BrowserIcon size={18} />,
   sftp: <SftpIcon size={18} />,
   ssh: <TerminalIcon size={18} />,
 };
 
 export function PaneDock({
-  layout, titles, restEnabled, vncEnabled, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, sshPaneStates, popups, busy,
+  layout, titles, restEnabled, vncEnabled, remoteChoices, sftpChoices, terminalWorkspaces, localShellsAvailable, browserSupported, sshPaneStates, popups, busy,
   desktopContextMenu, onCloseDesktopContextMenu,
-  onOpenLocal, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onOpenRemote, onOpenSftp, onActivate, onCloseWindow, onFocusPopup, onClosePopup,
+  onOpenLocal, onOpenBrowser, onNativeViewOcclusionChange, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onOpenEntryManager, onCreateWorkspace, onOpenRemote, onOpenSftp, onActivate, onCloseWindow, onFocusPopup, onClosePopup,
 }: Props) {
   const [functionsOpen, setFunctionsOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
@@ -129,6 +136,11 @@ export function PaneDock({
   }, [desktopContextMenu]);
 
   const anyMenuOpen = functionsOpen || terminalOpen || desktopContextMenu !== null;
+  useEffect(() => {
+    onNativeViewOcclusionChange(anyMenuOpen);
+    return () => onNativeViewOcclusionChange(false);
+  }, [anyMenuOpen, onNativeViewOcclusionChange]);
+
   useEffect(() => {
     if (!anyMenuOpen) return undefined;
     const onPointerDown = (event: PointerEvent) => {
@@ -220,6 +232,7 @@ export function PaneDock({
       expanded: locationOpen,
       onClick: () => setLocationOpen((value) => !value),
     },
+    ...(browserSupported ? [{ key: "browser", label: "Browser", icon: <BrowserIcon size={26} />, open: layout.windows.some((win) => win.open && kindOf(win.id) === "browser"), onClick: () => { onOpenBrowser(); closeMenus(); } }] : []),
     ...(vncEnabled ? [{ key: "vnc", label: "VNC", icon: <VncIcon size={26} />, open: isOpen("vnc"), onClick: () => { onActivate("vnc"); closeMenus(); } }] : []),
     ...(restEnabled ? [{ key: "rest", label: "RestAPI", icon: <RestIcon size={26} />, open: isOpen("rest"), onClick: () => { onActivate("rest"); closeMenus(); } }] : []),
   ];
@@ -374,7 +387,7 @@ export function PaneDock({
   // Singleton windows keep a fixed order; SSH and SFTP windows follow in the order they were opened.
   const taskbarIds: PaneWindowId[] = [
     ...PANE_SINGLETON_KINDS.filter(isOpen),
-    ...layout.windows.filter((win) => win.open && isEntryWindow(win.id)).map((win) => win.id),
+    ...layout.windows.filter((win) => win.open && isDynamicWindow(win.id)).map((win) => win.id),
   ];
 
   return (
