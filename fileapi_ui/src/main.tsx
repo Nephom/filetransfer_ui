@@ -47,7 +47,7 @@ import { PaneBody, PaneDesktop } from "./pane/PaneDesktop";
 import { PaneTopRight } from "./pane/PaneTopRight";
 import { type PaneLocationChoice, type PaneTerminalWorkspace, type PaneVncWorkspace } from "./pane/PaneDock";
 import { sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, vncFilesWindowId, vncPickerWindowId, vncScreenSessionIdOf, vncScreenWindowId, type PaneWindowId } from "./pane/pane-window-model";
-import { SftpWindow, type SftpDndBridge, type SftpTransferBridge } from "./features/sftp/SftpWindow";
+import type { SftpDndBridge, SftpTransferBridge } from "./features/sftp/SftpWindow";
 import { trackSshPopup, subscribeSshPopups, getSshPopupSnapshot } from "./pane/ssh-popup-registry";
 import { isSshEntryConnected } from "./pane/sftp-availability";
 import { SSH_POPUP_PREFIX } from "./pane/ssh-popup-contracts";
@@ -71,6 +71,7 @@ import { useTransferQueueActions } from "./features/queue/useTransferQueueAction
 import type { TransferQueueItem } from "./features/queue/queue-contracts";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
+const SftpWindow = lazy(() => import("./features/sftp/SftpWindow").then(({ SftpWindow: component }) => ({ default: component })));
 const VncVmPickerPane = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncVmPickerPane: component }) => ({ default: component })));
 const VncDirectSetupPane = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ VncDirectSetupPane: component }) => ({ default: component })));
 const ProxmoxVncScreenPane = lazy(() => import("./features/vnc/VncWorkspaceController").then(({ ProxmoxVncScreenPane: component }) => ({ default: component })));
@@ -4818,24 +4819,26 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         ))}
         {sshEntries.map(({ entry }) => (
           <PaneBody key={entry.id} id={sftpWindowId(entry.id)}>
-            <SftpWindow
-              entryId={entry.id}
-              profile={entry}
-              writeOperationLog={writeOperationLog}
-              describeError={describeError}
-              requestName={requestName}
-              requestConfirmation={requestConfirmation}
-              confirmDelete={desktopSettings.confirmations.delete}
-              folderResizeEnabled={!!desktopSettings.collapseMainPaneEnabled}
-              undoEnabled={desktopSettings.undoHistoryEnabled}
-              undoEntries={undoStack}
-              recordUndo={recordUndoEntry}
-              removeUndo={(id) => setUndoStack((current) => current.filter((item) => item.id !== id))}
-              dnd={sftpDnd}
-              transfer={sftpTransfer}
-              registerRefresh={registerSftpRefresh}
-              onPathChange={handleSftpPathChange}
-            />
+            <Suspense fallback={<div className="pane-loading">Loading SFTP…</div>}>
+              <SftpWindow
+                entryId={entry.id}
+                profile={entry}
+                writeOperationLog={writeOperationLog}
+                describeError={describeError}
+                requestName={requestName}
+                requestConfirmation={requestConfirmation}
+                confirmDelete={desktopSettings.confirmations.delete}
+                folderResizeEnabled={!!desktopSettings.collapseMainPaneEnabled}
+                undoEnabled={desktopSettings.undoHistoryEnabled}
+                undoEntries={undoStack}
+                recordUndo={recordUndoEntry}
+                removeUndo={(id) => setUndoStack((current) => current.filter((item) => item.id !== id))}
+                dnd={sftpDnd}
+                transfer={sftpTransfer}
+                registerRefresh={registerSftpRefresh}
+                onPathChange={handleSftpPathChange}
+              />
+            </Suspense>
           </PaneBody>
         ))}
       </PaneDesktop>
