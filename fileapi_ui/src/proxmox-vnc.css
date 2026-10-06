@@ -27,9 +27,8 @@
 .vnc-entry-list { flex: 0 1 auto; min-height: 0; padding-top: 10px; overflow: auto; }
 .vnc-entry-row { position: relative; display: flex; align-items: center; gap: var(--space-1); width: 100%; }
 .vnc-entry-row + .vnc-entry-row { margin-top: var(--space-1); }
-/* T-219: Edit/Remove used to be two always-visible text buttons; in a
- * narrow sidebar (or the Large profile) they didn't fit next to the
- * entry name and were the reason the whole row list got hidden there.
+/* T-219: Edit/Remove used to be two always-visible text buttons that
+ * overflowed narrow sidebars and caused the whole row list to be hidden.
  * ui/EntryActionsMenu.tsx now renders a single compact trigger + small
  * floating menu instead (shared with rest-api.tsx's RestEntries; see
  * ui/entry-actions-menu.css), so the row always fits regardless of pane
@@ -188,33 +187,7 @@
 .vnc-main-pane-collapse-controls button:disabled { cursor: not-allowed; opacity: .38; }
 .vnc-workspace.vnc-entry-pane-collapsed .vnc-entry-pane-shell { display: none; }
 
-
-
-
-
-
-
-
-
-/* Issue #232 follow-up: Large profile enlarges every control's touch
- * target (--control-height-mobile-lg / --icon-size-lg tokens), so the
- * left-edge drawer handle and its button stack need to grow to match --
- * otherwise the handle stays thumb-unfriendly while everything else in
- * this profile scales up. */
-
-
-
-
-
-
-
-
-
-
-/* T-219: this used to be `display: none`, hiding the whole per-entry row
- * list (and with it, the only way to reach Edit/Remove) whenever Large
- * profile/mobile layout was active. Edit/Remove now live behind the
- * compact EntryActionsMenu kebab (see above) instead of two
- * always-visible text buttons, so the list fits this narrower pane width
- * fine and can stay visible -- MobileChoiceMenu (.vnc-entry-choice)
- * above is left untouched as the existing quick-switch shortcut. */
+/* T-219: this used to be `display: none` at narrow widths, hiding the whole
+ * per-entry row list and its only Edit/Remove actions. The compact
+ * EntryActionsMenu trigger lets the list stay visible; MobileChoiceMenu
+ * (.vnc-entry-choice) remains the separate quick-switch shortcut. */

@@ -23,8 +23,24 @@ export type BrowserNavigationState = {
 };
 
 export type BrowserBounds = {
+  /** CSS pixels relative to the main WebView's viewport. */
   x: number;
   y: number;
   width: number;
   height: number;
+  /** Physical pixels per CSS pixel in the main WebView. */
+  devicePixelRatio: number;
+};
+
+/** Physical child-WebView bounds relative to the native parent window client area. */
+export type BrowserPhysicalBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type BrowserBoundsReadback = {
+  requested: BrowserPhysicalBounds;
+  actual: BrowserPhysicalBounds;
 };

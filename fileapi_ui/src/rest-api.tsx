@@ -732,9 +732,8 @@ export function RestApiWorkspace(props: Props) {
       if (!panel || !tokenLabel || !textNode) return;
       // Measure the actual rendered width of the "Token JSON path" text
       // (via Range, not a fixed px offset) so the (?) button sits right
-      // after the label at any font size -- Auto's clamp() scale and the
-      // Large profile's larger fixed text size both change how wide this
-      // text renders, and a literal px offset only matched one size.
+      // after the label at the current font size; a literal px offset would
+      // only match one rendered width.
       const range = document.createRange();
       range.selectNodeContents(textNode);
       const textRect = range.getBoundingClientRect();

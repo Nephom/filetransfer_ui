@@ -1,8 +1,7 @@
 /* Explorer layout, part 7: persistent scrollbar rail, remote navigation
  * items, Split mode's LOCAL pane (breadcrumbs, actions, tree, file list,
- * privileged/elevated styling), and the Mobile/Large narrow-window
- * stacking rules for the terminal and split workspace. Split out of the
- * former monolithic explorer-parity.css (T-202 follow-up). See
+ * and privileged/elevated styling. Split out of the former monolithic
+ * explorer-parity.css (T-202 follow-up). See
  * styles/layout/README.md. */
 
 /* Both panes use a custom rail so it remains visible when content fits. */
@@ -36,7 +35,7 @@
 .local-pane-heading .sidebar-label { padding: 0; color: var(--color-success); }
 .pane-breadcrumbs { width: 100%; min-width: 0; height: var(--ui-button-height, var(--control-height-base)); padding: 0 var(--space-2); }
 .pane-breadcrumbs button { overflow: hidden; max-width: clamp(140px, 18vw, 180px); text-overflow: ellipsis; white-space: nowrap; }
-/* Leave a small LOCAL-only gutter and retain the profile's breadcrumb button height. */
+/* Leave a small LOCAL-only gutter while keeping breadcrumb controls aligned. */
 .local-pane-heading .pane-breadcrumbs { box-sizing: border-box; width: calc(100% - var(--space-2)); max-width: 100%; min-width: 0; flex: 0 0 var(--ui-button-height, var(--control-height-base)); }
 .content-heading .pane-breadcrumbs { margin-top: var(--space-1); }
 .content-heading > div { min-width: 0; flex: 1 1 auto; }
@@ -72,25 +71,3 @@
 .local-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .local-file small { color: var(--color-text-muted); }
 .local-pane-footer { padding: var(--space-2) var(--space-3); color: var(--color-text-muted); border-top: 1px solid var(--color-border); font-size: var(--font-size-small); }
-/* T-038: .sessions-layout's single-column rule already lives in
-   desktop-ui.css (co-located with its base .sessions-layout rule, both
-   scoped by .ui-layout-mobile) -- the duplicate that used to be here,
-   gated by a raw @media (max-width: 720px) query, is removed rather than
-   migrated. */
-
-
-/* max-width: 100% overrides the desktop-only T-209 safety-net ceiling
-   above -- Mobile/Large's split-workspace stacks LOCAL/REMOTE vertically
-   (each taking the full row width in turn), so the desktop assumption of
-   "leave 300px for a horizontal sibling" does not apply here. */
-
-
-
-
-
-
-
-
-/* Large changes control density, not the two-pane orientation. Keep the
-   workspace horizontal at the 937x588-sized window used by the desktop
-   layout; stack only when the width is genuinely too narrow for both panes. */

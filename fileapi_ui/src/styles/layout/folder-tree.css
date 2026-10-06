@@ -44,17 +44,6 @@
 .file-tile strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-base); }
 .file-tile > span:not(.tile-icon), .file-tile small { color: var(--color-text-muted); font-size: var(--font-size-small); }
 .file-tile small { margin-top: auto; }
-/* T-038: scoped by .ui-layout-mobile instead of a raw @media (max-width:
-   720px) query -- see the longer note in desktop-ui.css next to the same
-   migration. Unlike the old raw width-based media query, this alone would
-   force Location's LOCAL+REMOTE areas to stack vertically at ANY window
-   width whenever Mobile/Large is selected -- REST and VNC only stack their
-   equivalent panes under an ADDITIONAL @media (max-width: 720px), (max-
-   height: 520px) condition (see the matching narrow-window rule below),
-   so Location was the only mode still switching to a top/bottom layout at
-   normal desktop window sizes. Moved the flex-direction: column switch
-   into that same narrow-window media query below to match. */
-
 
 
 

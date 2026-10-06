@@ -10,13 +10,9 @@
  *
  * This is a straight re-expression of main.tsx's previous 18 separate
  * `import "*.css"` statements as `@import` here, with exactly one change:
- * the override rules moved from the middle of the list to the end. That
- * move was verified safe before making it -- the only selector the override
- * modules share with anything now ordered after them
- * (`.context-picker-popover`, shared with mobile-ui.css) sets a different
- * CSS property on each side (color/background vs. a mobile-profile-only,
- * !important, higher-specificity font-size rule), so reordering them
- * changes no computed style.
+ * the override rules moved from the middle of the list to the end. The
+ * override modules now follow every global feature stylesheet in this
+ * entry point, so their rules win without relying on import order in main.tsx.
  *
  * T-201: every global stylesheet imported below now lives under this
  * styles/ directory. T-190 later deleted webui-shell.css entirely (a

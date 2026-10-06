@@ -33,12 +33,6 @@
   margin-top: var(--space-2);
 }
 
-/* See login.css's matching .ui-layout-mobile comment: login always uses
-   the viewport-driven layout regardless of the selected uiProfile, and a
-   fixed flex-basis here keeps the trigger label ("Large") readable instead
-   of losing a `flex: 1 1 0` shrink contest against the two toggle buttons. */
-
-
 .login .login-toggle-button {
   display: inline-flex;
   align-items: center;

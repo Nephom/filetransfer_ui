@@ -30,10 +30,9 @@
 .rest-entry-list { flex: 0 1 auto; min-height: 0; padding-top: 10px; overflow: auto; }
 .rest-entry-row { position: relative; display: flex; align-items: center; gap: var(--space-1); width: 100%; }
 .rest-entry-row + .rest-entry-row { margin-top: var(--space-1); }
-/* T-219: Edit/Remove used to be two always-visible text buttons; in a
- * narrow sidebar (or the Large profile) they didn't fit next to the
- * entry name and were the reason the whole row list got hidden there.
- * ui/EntryActionsMenu.tsx now renders a single compact trigger + small
+/* T-219: Edit/Remove used to be two always-visible text buttons that
+ * overflowed narrow sidebars and caused the entire row list to be hidden.
+ * ui/EntryActionsMenu.tsx now renders one compact trigger + small
  * floating menu instead (shared with proxmox-vnc.tsx's VncEntries; see
  * ui/entry-actions-menu.css), so the row always fits regardless of pane
  * width. */
@@ -220,28 +219,8 @@
 .rest-bios-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); max-height: min(48vh, 460px); overflow: auto; }.rest-bios-grid label { display: grid; gap: var(--space-1); margin: 0; color: var(--color-text-muted); font-size: var(--font-size-small); }.rest-bios-grid input { min-width: 0; color: var(--color-text); background: rgba(7, 25, 42, .76); border-color: rgba(155, 232, 255, .28); }.rest-bios-grid input[type="checkbox"] { width: var(--space-4); }
 @media (max-width: 600px) { .rest-bios-grid { grid-template-columns: 1fr; } }
 
-/* Mobile profile is a readable, mouse-friendly compact workspace, not a touch-only mode. */
-
-
-
-
-
-
-
-/* T-219: this used to be `display: none`, hiding the whole per-entry row
- * list (and with it, the only way to reach Edit/Remove) whenever Large
- * profile/mobile layout was active. Edit/Remove now live behind the
- * compact .rest-entry-actions-trigger kebab (see above) instead of two
- * always-visible text buttons, so the list fits this narrower pane width
- * fine and can stay visible -- MobileChoiceMenu (.rest-entry-choice)
- * above is left untouched as the existing quick-switch shortcut. */
-
-
-
-
-
-
-
+/* Compact Edit/Remove actions keep the entry list visible at narrow widths;
+   MobileChoiceMenu (.rest-entry-choice) remains the separate quick switch. */
 
 .rest-reader[data-raw-request-open="false"] > .rest-url-row, .rest-reader[data-raw-request-open="false"] > .rest-body-editor, .rest-reader[data-raw-request-open="false"] > .rest-query-editor { display: none; }
 .rest-hardware-dialog:has(#firmware-title) .rest-hardware-toolbar > button:not(:first-of-type) { display: none; }

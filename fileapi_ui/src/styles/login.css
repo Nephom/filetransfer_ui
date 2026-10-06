@@ -16,33 +16,6 @@ body {
   background: radial-gradient(circle at 80% -10%, var(--color-bg-panel) 0, transparent 35%), var(--color-bg);
 }
 
-/* Login profile selector (T-056): a shared Dropdown instance, not its own
-   hand-rolled trigger/menu. .login-profile-menu is only Dropdown's outer
-   wrapper (via its className prop) for width/flex layout in
-   .login-toggle-row; the trigger/menu surfaces themselves come from
-   ui/dropdown.css's --dropdown-* tokens, same as every other Dropdown. */
-
-
-
-
-
-/* Login always uses the same viewport-driven layout regardless of the
-   selected uiProfile (Auto or Large/mobile) -- Large's uniform enlargement
-   is only meaningful for DesktopApp's much bigger surface area; on the
-   login screen (4 fields + 2 toggles + 1 button) it just overflowed the
-   app's default window and squeezed the profile Dropdown. .ui-layout-mobile
-   is still driven by the shared isMobileViewport() resolver (T-027/T-036),
-   so both profiles enlarge together only when the *window* is actually
-   small, not whenever Large happens to be selected. */
-
-
-
-/* A fixed flex-basis keeps the trigger label ("Large") readable instead of
-   losing a `flex: 1 1 0` shrink contest against the two toggle buttons. */
-
-
-
-
 .login form {
   width: min(470px, 100%);
   box-sizing: border-box;

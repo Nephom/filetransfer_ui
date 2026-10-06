@@ -18,6 +18,23 @@ pub struct BrowserBounds {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    pub device_pixel_ratio: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserPhysicalBounds {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserBoundsReadback {
+    pub requested: BrowserPhysicalBounds,
+    pub actual: BrowserPhysicalBounds,
 }
 
 #[cfg(windows)]
@@ -81,6 +98,99 @@ fn parse_web_url(value: &str, allow_blank: bool) -> Result<url::Url, String> {
     Ok(url)
 }
 
+fn physical_edge_floor(value: f64) -> Result<i32, String> {
+    let edge = value.floor();
+    if !edge.is_finite() || edge < i32::MIN as f64 || edge > i32::MAX as f64 {
+        return Err("Browser view position is outside the native window bounds".to_string());
+    }
+    Ok(edge as i32)
+}
+
+fn physical_edge_ceil(value: f64) -> Result<i32, String> {
+    let edge = value.ceil();
+    if !edge.is_finite() || edge < i32::MIN as f64 || edge > i32::MAX as f64 {
+        return Err("Browser view size is outside the native window bounds".to_string());
+    }
+    Ok(edge as i32)
+}
+
+fn map_browser_bounds_to_physical(
+    bounds: &BrowserBounds,
+    root_webview_offset: (i32, i32),
+) -> Result<BrowserPhysicalBounds, String> {
+    if ![
+        bounds.x,
+        bounds.y,
+        bounds.width,
+        bounds.height,
+        bounds.device_pixel_ratio,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        || bounds.width <= 0.0
+        || bounds.height <= 0.0
+        || bounds.device_pixel_ratio <= 0.0
+    {
+        return Err("Browser view bounds or DPI scale are invalid".to_string());
+    }
+
+    let scale = bounds.device_pixel_ratio;
+    let left = f64::from(root_webview_offset.0) + bounds.x * scale;
+    let top = f64::from(root_webview_offset.1) + bounds.y * scale;
+    let right = f64::from(root_webview_offset.0) + (bounds.x + bounds.width) * scale;
+    let bottom = f64::from(root_webview_offset.1) + (bounds.y + bounds.height) * scale;
+    let x = physical_edge_floor(left)?;
+    let y = physical_edge_floor(top)?;
+    let right = physical_edge_ceil(right)?;
+    let bottom = physical_edge_ceil(bottom)?;
+    let width = i64::from(right) - i64::from(x);
+    let height = i64::from(bottom) - i64::from(y);
+    if width <= 0 || height <= 0 || width > i64::from(u32::MAX) || height > i64::from(u32::MAX) {
+        return Err("Browser view size is outside the supported native bounds".to_string());
+    }
+    Ok(BrowserPhysicalBounds {
+        x,
+        y,
+        width: width as u32,
+        height: height as u32,
+    })
+}
+
+#[cfg(windows)]
+fn browser_native_bounds(
+    webview: &Webview,
+    bounds: &BrowserBounds,
+) -> Result<BrowserPhysicalBounds, String> {
+    let webview_position = webview.position().map_err(|error| error.to_string())?;
+    let window_position = webview
+        .window()
+        .inner_position()
+        .map_err(|error| error.to_string())?;
+    let offset = (
+        webview_position
+            .x
+            .checked_sub(window_position.x)
+            .ok_or_else(|| "Browser WebView horizontal origin overflowed".to_string())?,
+        webview_position
+            .y
+            .checked_sub(window_position.y)
+            .ok_or_else(|| "Browser WebView vertical origin overflowed".to_string())?,
+    );
+    map_browser_bounds_to_physical(bounds, offset)
+}
+
+#[cfg(windows)]
+fn read_browser_native_bounds(webview: &Webview) -> Result<BrowserPhysicalBounds, String> {
+    let position = webview.position().map_err(|error| error.to_string())?;
+    let size = webview.size().map_err(|error| error.to_string())?;
+    Ok(BrowserPhysicalBounds {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    })
+}
+
 #[cfg(windows)]
 fn get_browser_webview(app: &AppHandle, pane_id: &str) -> Result<Webview, String> {
     let label = browser_view_label(pane_id)?;
@@ -96,7 +206,7 @@ pub async fn browser_create(
     initial_url: String,
     bounds: BrowserBounds,
     visible: bool,
-) -> Result<(), String> {
+) -> Result<BrowserBoundsReadback, String> {
     require_main_webview(&webview)?;
     let label = browser_view_label(&pane_id)?;
     if let Some(stale_view) = app.get_webview(&label) {
@@ -107,7 +217,9 @@ pub async fn browser_create(
     #[cfg(windows)]
     {
         use tauri::webview::{NewWindowResponse, PageLoadEvent, WebviewBuilder};
-        use tauri::{LogicalPosition, LogicalSize};
+        use tauri::{PhysicalPosition, PhysicalSize};
+
+        let native_bounds = browser_native_bounds(&webview, &bounds)?;
 
         let app_for_navigation = app.clone();
         let navigation_pane_id = pane_id.clone();
@@ -169,14 +281,18 @@ pub async fn browser_create(
         let child = parent
             .add_child(
                 builder,
-                LogicalPosition::new(bounds.x, bounds.y),
-                LogicalSize::new(bounds.width, bounds.height),
+                PhysicalPosition::new(native_bounds.x, native_bounds.y),
+                PhysicalSize::new(native_bounds.width, native_bounds.height),
             )
             .map_err(|error| error.to_string())?;
         if !visible {
             child.hide().map_err(|error| error.to_string())?;
         }
-        Ok(())
+        let actual = read_browser_native_bounds(&child)?;
+        Ok(BrowserBoundsReadback {
+            requested: native_bounds,
+            actual,
+        })
     }
 
     #[cfg(not(windows))]
@@ -192,16 +308,22 @@ pub async fn browser_set_bounds(
     webview: Webview,
     pane_id: String,
     bounds: BrowserBounds,
-) -> Result<(), String> {
+) -> Result<BrowserBoundsReadback, String> {
     require_main_webview(&webview)?;
     #[cfg(windows)]
     {
-        use tauri::{LogicalPosition, LogicalSize};
+        use tauri::{PhysicalPosition, PhysicalSize};
         let view = get_browser_webview(&app, &pane_id)?;
-        view.set_position(LogicalPosition::new(bounds.x, bounds.y))
+        let native_bounds = browser_native_bounds(&webview, &bounds)?;
+        view.set_position(PhysicalPosition::new(native_bounds.x, native_bounds.y))
             .map_err(|error| error.to_string())?;
-        view.set_size(LogicalSize::new(bounds.width, bounds.height))
-            .map_err(|error| error.to_string())
+        view.set_size(PhysicalSize::new(native_bounds.width, native_bounds.height))
+            .map_err(|error| error.to_string())?;
+        let actual = read_browser_native_bounds(&view)?;
+        Ok(BrowserBoundsReadback {
+            requested: native_bounds,
+            actual,
+        })
     }
     #[cfg(not(windows))]
     {
@@ -438,7 +560,7 @@ fn run_core_command(view: Webview, action: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{browser_view_label, parse_web_url};
+    use super::{browser_view_label, map_browser_bounds_to_physical, parse_web_url, BrowserBounds};
 
     #[test]
     fn browser_view_labels_only_accept_canonical_positive_pane_ids() {
@@ -486,6 +608,79 @@ mod tests {
             "about:blank",
         ] {
             assert!(parse_web_url(invalid, false).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn browser_dom_bounds_map_to_physical_pixels_with_origin_and_dpi() {
+        let at_100_percent = BrowserBounds {
+            x: 10.25,
+            y: 20.5,
+            width: 100.2,
+            height: 40.1,
+            device_pixel_ratio: 1.0,
+        };
+        assert_eq!(
+            map_browser_bounds_to_physical(&at_100_percent, (0, 0)).unwrap(),
+            super::BrowserPhysicalBounds {
+                x: 10,
+                y: 20,
+                width: 101,
+                height: 41,
+            }
+        );
+
+        let at_125_percent = BrowserBounds {
+            device_pixel_ratio: 1.25,
+            ..at_100_percent
+        };
+        assert_eq!(
+            map_browser_bounds_to_physical(&at_125_percent, (8, 30)).unwrap(),
+            super::BrowserPhysicalBounds {
+                x: 20,
+                y: 55,
+                width: 127,
+                height: 51,
+            }
+        );
+
+        let at_150_percent = BrowserBounds {
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 40.0,
+            device_pixel_ratio: 1.5,
+        };
+        assert_eq!(
+            map_browser_bounds_to_physical(&at_150_percent, (-4, 12)).unwrap(),
+            super::BrowserPhysicalBounds {
+                x: 11,
+                y: 42,
+                width: 150,
+                height: 60,
+            }
+        );
+    }
+
+    #[test]
+    fn browser_dom_bounds_reject_invalid_geometry_and_dpi() {
+        for bounds in [
+            BrowserBounds {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 1.0,
+                device_pixel_ratio: 1.0,
+            },
+            BrowserBounds {
+                device_pixel_ratio: 0.0,
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+        ] {
+            assert!(map_browser_bounds_to_physical(&bounds, (0, 0)).is_err());
         }
     }
 }

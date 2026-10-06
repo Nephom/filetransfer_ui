@@ -3,24 +3,11 @@
    (vmin = 1% of whichever of width/height is smaller) instead of a manual
    80/100/120% preset -- there is no ceiling tied to a fixed "Comfortable"
    step, so enlarging the window keeps making text bigger up to the clamp()
-   ceiling below. Mobile/Large keeps its own fixed touch-target sizing
-   (unrelated to reading comfort), but that fixed sizing is itself declared
-   entirely from styles/tokens.css tokens below (Q3, confirmed: convert
-   all) -- no standalone literal px value remains in this file.
+   ceiling below. Fixed control targets are separately declared in
+   styles/tokens.css; they are not a selectable interface profile.
 
-   T-221: these --ui-* variables are defined on :root, not .explorer.
-   Custom properties only inherit down the DOM tree that actually got
-   rendered -- every dropdown/context-picker/account/location menu is
-   portaled to document.body (see ui/Dropdown.tsx, context-picker.tsx,
-   app/DesktopTitlebar.tsx, main.tsx's CommandBarOverflowMenu), which puts
-   those nodes OUTSIDE .explorer's subtree entirely. Defining --ui-* on
-   .explorer meant every portaled popover fell back to each property's own
-   var(--ui-x, fallback) default (always the Auto-profile value) no matter
-   which profile was actually active, silently breaking Large/Mobile sizing
-   for exactly the surfaces most likely to need it. Defining on :root plus
-   :root:has(.explorer.ui-layout-mobile) below means every node in the
-   document -- portaled or not -- reads the same live value, with no
-   per-component `body:has(...)` patch required ever again. */
+   T-221: shared --ui-* variables live on :root so menus portaled to
+   document.body inherit the same current sizing as the Explorer surface. */
 :root {
   --ui-font-size: clamp(10.4px, calc(4.8px + 0.88vmin), 17.6px);
   --ui-small-font-size: clamp(8.8px, calc(4px + 0.72vmin), 14.4px);
@@ -34,24 +21,9 @@
   --ui-heading-font: clamp(16px, calc(8px + 1.1vmin), 22.4px);
 }
 
-
-
 .explorer {
   font-size: var(--ui-font-size);
 }
-
-/* The mobile text floor itself (button/input/label/heading font sizes,
-   including the !important overrides needed for descendant elements) is
-   declared once in styles/mobile-ui.css, not duplicated here. */
-
-/* (T-038: a `@media (max-width: 720px) { .explorer { ... } }` block used to
-   sit here, hardcoding smaller-than-Mobile-floor sizing for plain
-   `.explorer`. It was provably dead: `isMobileViewport()` treats width <=
-   1024 as Mobile, and 720 < 1024, so `.ui-layout-desktop` can never coexist
-   with a <=720px viewport -- and wherever `.ui-layout-mobile` *does* apply,
-   its 2-class selector already outranks this 1-class one on specificity
-   regardless of media query or source order. Removed rather than migrated;
-   there was no live behavior for a layout class to take over.) */
 
 :where(.explorer) button {
   min-height: var(--ui-button-height);
@@ -67,8 +39,6 @@
   line-height: 1.2;
 }
 
-
-
 :where(.explorer) :is(button, input, textarea):focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
@@ -78,7 +48,6 @@
 .navigation {
   gap: var(--ui-control-gap);
 }
-
 
 /* Keep the mode switch's Location and Workspace controls on one density scale. */
 
@@ -112,31 +81,6 @@
   max-width: calc(100vw - 24px);
   max-height: calc(100dvh - 24px);
 }
-
-
-
-
-
-
-/* T-038: these used to be gated by a raw `@media (max-width: 720px)`
-   query, which happened to give the correct result for Auto profile
-   (width <= 720 always implies isMobileViewport() = Mobile, since
-   720 < the shared 1024 threshold) but silently did nothing for a
-   *forced* Mobile profile on a window wider than 720px -- the layout
-   class is the actual profile signal, the media query was a width-only
-   proxy for it that only agreed with the real signal by coincidence in
-   the Auto case. Scoping by .ui-layout-mobile instead makes forced
-   Mobile behave the same as Auto-detected Mobile at any window size. */
-
-
-
-
-
-
-
-
-
-
 
 /* T-190: layout properties ported from the now-deleted styles/webui-shell.css
    (a stale duplicate mostly shadowed by this file / starship-bridge.css /

@@ -77,7 +77,7 @@ The CLI defaults to building; `--check` performs a read-only readiness check. `b
 
 ## Behavior And Geometry
 
-Classical and Pane styles share the authenticated API surface while keeping their own layouts and interaction state. `mobile` naming elsewhere in the repository means the Large profile, not a phone-specific browser layout.
+Classical and Pane styles share the authenticated API surface while keeping their own layouts and interaction state. The former Large/Mobile interface profile has been removed; remaining `mobile` token names are historical fixed-size names, and responsive layouts use their active media queries.
 
 - Directory loads and searches share one request generation and AbortController. Navigation invalidates at entry, before asynchronous Location metadata refresh. Clear-search, Location loss/change, session end, and unmount also invalidate stale success/error/loading/selection callbacks.
 - Actions capture their original Location/path context. Search delete groups full relative paths by actual parent and includes legacy `name`/`currentPath` fields. Rename sends `oldPath` plus its actual parent and legacy basename fields.

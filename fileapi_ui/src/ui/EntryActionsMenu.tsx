@@ -13,11 +13,9 @@ type Props = {
 // entry sidebar (rest-api.tsx's RestEntries) and the Proxmox VNC entry
 // sidebar (proxmox-vnc.tsx's VncEntries). Both used to render Edit/Remove
 // as two permanently-visible text buttons, which didn't fit next to the
-// entry name once the pane got narrow (or the Large profile's fixed
-// sizing kicked in) -- the row list ended up hidden entirely there rather
-// than clipped. This trigger opens a small floating menu instead, so the
-// row always fits regardless of pane width, and the row list no longer
-// needs hiding to avoid the overflow.
+// entry name in a narrow pane and caused the row list to be hidden. This
+// trigger opens a small floating menu instead, so the row fits regardless
+// of pane width and the list no longer needs to be hidden.
 //
 // The popover itself is portaled to document.body and positioned with
 // `position: fixed` computed from the trigger's getBoundingClientRect()

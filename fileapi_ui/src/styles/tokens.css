@@ -26,6 +26,8 @@
   --font-size-base: var(--ui-font-size, clamp(9.6px, calc(8px + 0.28vmin), 12.8px));
   --font-size-small: var(--ui-small-font-size, clamp(8px, calc(6.4px + 0.24vmin), 11.2px));
   --font-size-heading: var(--ui-heading-font, clamp(16px, calc(12.8px + 0.48vmin), 22.4px));
+  /* Legacy `mobile` suffixes below name fixed-size fallback tokens that are
+     still used by controls; they do not enable an interface profile. */
   --font-size-mobile-base: 12.8px;
   --font-size-mobile-small: 11.2px;
   --control-height-base: clamp(24px, calc(19.2px + 0.56vmin), 32px);
