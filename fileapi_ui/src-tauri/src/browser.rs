@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+use std::collections::HashMap;
 use tauri::webview::Webview;
 #[cfg(windows)]
 use tauri::Emitter;
@@ -13,6 +15,10 @@ const MAX_SCREENSHOT_DIMENSION: f64 = 16_000.0;
 const MAX_SCREENSHOT_PIXELS: f64 = 40_000_000.0;
 #[cfg(windows)]
 const MAX_SCREENSHOT_TILES: usize = 4_096;
+#[cfg(windows)]
+const MAX_SCREENSHOT_FRAMES: usize = 128;
+#[cfg(windows)]
+const MAX_SCREENSHOT_SCROLL_CONTAINERS: usize = 512;
 const MAX_SCREENSHOT_BASE64_BYTES: usize = 180 * 1024 * 1024;
 
 #[cfg(windows)]
@@ -506,14 +512,38 @@ pub async fn browser_capture_full_page(
     #[cfg(windows)]
     {
         let view = get_browser_webview(&app, &pane_id)?;
-        let initial_metrics = read_browser_page_metrics(view.clone()).await?;
-        validate_browser_screenshot_size(initial_metrics.page_width, initial_metrics.page_height)?;
-
-        let capture_result = capture_browser_page_tiles(view.clone(), initial_metrics).await;
-        let restore_result = restore_browser_scroll_position(
+        let mut frame_scroll_positions = Vec::new();
+        let mut expanded_scroll_containers = Vec::new();
+        let mut expanded_frames = Vec::new();
+        let preparation = prepare_browser_screenshot_frames(
+            view.clone(),
+            &mut frame_scroll_positions,
+            &mut expanded_scroll_containers,
+            &mut expanded_frames,
+        )
+        .await;
+        let capture_result = match preparation {
+            Ok(root_context_id) => match read_browser_page_metrics(view.clone(), root_context_id)
+                .await
+            {
+                Ok(metrics) => {
+                    match validate_browser_screenshot_size(metrics.page_width, metrics.page_height)
+                    {
+                        Ok(()) => {
+                            capture_browser_page_tiles(view.clone(), root_context_id, metrics).await
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        let restore_result = restore_browser_screenshot_frames(
             view,
-            initial_metrics.scroll_x,
-            initial_metrics.scroll_y,
+            expanded_frames,
+            expanded_scroll_containers,
+            frame_scroll_positions,
         )
         .await;
 
@@ -521,10 +551,10 @@ pub async fn browser_capture_full_page(
             (Ok(capture), Ok(())) => Ok(capture),
             (Err(capture_error), Ok(())) => Err(capture_error),
             (Ok(_), Err(restore_error)) => Err(format!(
-                "The screenshot was captured, but the page scroll position could not be restored: {restore_error}"
+                "The screenshot was captured, but the original page state could not be restored: {restore_error}"
             )),
             (Err(capture_error), Err(restore_error)) => Err(format!(
-                "{capture_error}; the page scroll position also could not be restored: {restore_error}"
+                "{capture_error}; the original page state also could not be restored: {restore_error}"
             )),
         }
     }
@@ -547,9 +577,433 @@ struct BrowserPageMetrics {
 }
 
 #[cfg(windows)]
-async fn read_browser_page_metrics(view: Webview) -> Result<BrowserPageMetrics, String> {
+#[derive(Clone)]
+struct BrowserFrameContext {
+    frame_id: String,
+    parent_frame_id: Option<String>,
+    execution_context_id: i64,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct BrowserFrameScrollPosition {
+    execution_context_id: i64,
+    x: f64,
+    y: f64,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct BrowserScrollContainerState {
+    execution_context_id: i64,
+}
+
+#[cfg(windows)]
+struct ExpandedBrowserFrame {
+    object_id: String,
+    original_width: String,
+    original_width_priority: String,
+    original_height: String,
+    original_priority: String,
+    original_max_width: String,
+    original_max_width_priority: String,
+    original_max_height: String,
+    original_max_height_priority: String,
+}
+
+#[cfg(any(windows, test))]
+fn collect_browser_frame_tree(
+    tree: &serde_json::Value,
+    parent_frame_id: Option<String>,
+    frames: &mut Vec<(String, Option<String>)>,
+) -> Result<(), String> {
+    let frame = tree
+        .get("frame")
+        .ok_or_else(|| "The browser returned an invalid frame tree".to_string())?;
+    let frame_id = frame
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "The browser returned a frame without an id".to_string())?
+        .to_string();
+    frames.push((frame_id.clone(), parent_frame_id));
+    if let Some(children) = tree
+        .get("childFrames")
+        .and_then(serde_json::Value::as_array)
+    {
+        for child in children {
+            collect_browser_frame_tree(child, Some(frame_id.clone()), frames)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn prepare_browser_screenshot_frames(
+    view: Webview,
+    scroll_positions: &mut Vec<BrowserFrameScrollPosition>,
+    expanded_scroll_containers: &mut Vec<BrowserScrollContainerState>,
+    expanded_frames: &mut Vec<ExpandedBrowserFrame>,
+) -> Result<i64, String> {
+    let tree = browser_devtools_json(view.clone(), "Page.getFrameTree", "{}".to_string()).await?;
+    let tree = tree
+        .get("frameTree")
+        .ok_or_else(|| "The browser did not return its frame tree".to_string())?;
+    let mut frame_ids = Vec::new();
+    collect_browser_frame_tree(tree, None, &mut frame_ids)?;
+    if frame_ids.is_empty() || frame_ids.len() > MAX_SCREENSHOT_FRAMES {
+        return Err("The page has too many nested frames to capture safely".to_string());
+    }
+
+    let mut contexts = Vec::with_capacity(frame_ids.len());
+    let mut context_by_frame = HashMap::with_capacity(frame_ids.len());
+    for (index, (frame_id, parent_frame_id)) in frame_ids.into_iter().enumerate() {
+        let world_name = format!("nfterm-screenshot-frame-{index}");
+        let response = browser_devtools_json(
+            view.clone(),
+            "Page.createIsolatedWorld",
+            serde_json::json!({ "frameId": frame_id, "worldName": world_name }).to_string(),
+        )
+        .await?;
+        let execution_context_id = response
+            .get("executionContextId")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| "The browser could not create a frame execution context".to_string())?;
+        context_by_frame.insert(frame_id.clone(), execution_context_id);
+        contexts.push(BrowserFrameContext {
+            frame_id,
+            parent_frame_id,
+            execution_context_id,
+        });
+    }
+
+    for context in &contexts {
+        let metrics = read_browser_page_metrics(view.clone(), context.execution_context_id).await?;
+        validate_browser_screenshot_size(metrics.page_width, metrics.page_height)?;
+        scroll_positions.push(BrowserFrameScrollPosition {
+            execution_context_id: context.execution_context_id,
+            x: metrics.scroll_x,
+            y: metrics.scroll_y,
+        });
+    }
+
+    // Put every frame at its content origin before resizing iframe owners. This
+    // keeps the screenshot aligned while nested frames are temporarily expanded.
+    for context in &contexts {
+        set_browser_scroll_position(view.clone(), context.execution_context_id, 0.0, 0.0).await?;
+    }
+
+    // Child frames are processed before parents so a parent frame's measured
+    // document height already includes any expanded descendants.
+    for context in contexts.iter().rev() {
+        expanded_scroll_containers.push(BrowserScrollContainerState {
+            execution_context_id: context.execution_context_id,
+        });
+        expand_browser_scroll_containers(view.clone(), context.execution_context_id).await?;
+        let Some(parent_frame_id) = context.parent_frame_id.as_ref() else {
+            continue;
+        };
+        let metrics = read_browser_page_metrics(view.clone(), context.execution_context_id).await?;
+        validate_browser_screenshot_size(metrics.page_width, metrics.page_height)?;
+        if metrics.page_width <= metrics.viewport_width + 1.0
+            && metrics.page_height <= metrics.viewport_height + 1.0
+        {
+            continue;
+        }
+        let parent_context_id = *context_by_frame
+            .get(parent_frame_id)
+            .ok_or_else(|| "The browser frame tree has a missing parent".to_string())?;
+        let owner = browser_devtools_json(
+            view.clone(),
+            "DOM.getFrameOwner",
+            serde_json::json!({ "frameId": context.frame_id }).to_string(),
+        )
+        .await?;
+        let backend_node_id = owner
+            .get("backendNodeId")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| "The browser could not locate an iframe owner element".to_string())?;
+        let resolved = browser_devtools_json(
+            view.clone(),
+            "DOM.resolveNode",
+            serde_json::json!({
+                "backendNodeId": backend_node_id,
+                "executionContextId": parent_context_id,
+            })
+            .to_string(),
+        )
+        .await?;
+        let object_id = resolved
+            .pointer("/object/objectId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "The browser could not resolve an iframe owner element".to_string())?
+            .to_string();
+        let original = call_browser_remote_object(
+            view.clone(),
+            &object_id,
+            "function() { return { width: this.style.getPropertyValue('width'), widthPriority: this.style.getPropertyPriority('width'), height: this.style.getPropertyValue('height'), heightPriority: this.style.getPropertyPriority('height'), maxWidth: this.style.getPropertyValue('max-width'), maxWidthPriority: this.style.getPropertyPriority('max-width'), maxHeight: this.style.getPropertyValue('max-height'), maxHeightPriority: this.style.getPropertyPriority('max-height') }; }",
+            Vec::new(),
+        )
+        .await?;
+        let expansion = ExpandedBrowserFrame {
+            object_id: object_id.clone(),
+            original_width: original
+                .get("width")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            original_width_priority: original
+                .get("widthPriority")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            original_height: original
+                .get("height")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            original_priority: original
+                .get("heightPriority")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            original_max_width: original
+                .get("maxWidth")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            original_max_width_priority: original
+                .get("maxWidthPriority")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            original_max_height: original
+                .get("maxHeight")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            original_max_height_priority: original
+                .get("maxHeightPriority")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        };
+        // Keep restoration information before mutating the live DOM so any
+        // subsequent DevTools error still restores this iframe's original style.
+        expanded_frames.push(expansion);
+        let mut resized_metrics = metrics;
+        for attempt in 0..3 {
+            let expand_width = resized_metrics.page_width > resized_metrics.viewport_width + 1.0;
+            let expand_height = resized_metrics.page_height > resized_metrics.viewport_height + 1.0;
+            if !expand_width && !expand_height {
+                break;
+            }
+            call_browser_remote_object(
+                view.clone(),
+                &object_id,
+                "function(width, height) { if (width !== null) { this.style.setProperty('width', `${width}px`, 'important'); this.style.setProperty('max-width', 'none', 'important'); } if (height !== null) { this.style.setProperty('height', `${height}px`, 'important'); this.style.setProperty('max-height', 'none', 'important'); } return true; }",
+                vec![
+                    if expand_width {
+                        serde_json::json!({ "value": resized_metrics.page_width.ceil() })
+                    } else {
+                        serde_json::json!({ "value": null })
+                    },
+                    if expand_height {
+                        serde_json::json!({ "value": resized_metrics.page_height.ceil() })
+                    } else {
+                        serde_json::json!({ "value": null })
+                    },
+                ],
+            )
+            .await?;
+            wait_browser_frame_layout(view.clone(), context.execution_context_id).await?;
+            wait_browser_frame_layout(view.clone(), parent_context_id).await?;
+            resized_metrics =
+                read_browser_page_metrics(view.clone(), context.execution_context_id).await?;
+            validate_browser_screenshot_size(
+                resized_metrics.page_width,
+                resized_metrics.page_height,
+            )?;
+            if attempt == 2
+                && (resized_metrics.page_width > resized_metrics.viewport_width + 1.0
+                    || resized_metrics.page_height > resized_metrics.viewport_height + 1.0)
+            {
+                return Err(
+                    "An iframe still has overflowing content after expanding its frame".to_string(),
+                );
+            }
+        }
+    }
+
+    contexts
+        .first()
+        .map(|root| root.execution_context_id)
+        .ok_or_else(|| "The browser did not return a root frame".to_string())
+}
+
+#[cfg(windows)]
+async fn restore_browser_screenshot_frames(
+    view: Webview,
+    expanded_frames: Vec<ExpandedBrowserFrame>,
+    expanded_scroll_containers: Vec<BrowserScrollContainerState>,
+    scroll_positions: Vec<BrowserFrameScrollPosition>,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for frame in expanded_frames.iter().rev() {
+        if let Err(error) = call_browser_remote_object(
+            view.clone(),
+            &frame.object_id,
+            "function(width, widthPriority, height, heightPriority, maxWidth, maxWidthPriority, maxHeight, maxHeightPriority) { if (width) this.style.setProperty('width', width, widthPriority); else this.style.removeProperty('width'); if (height) this.style.setProperty('height', height, heightPriority); else this.style.removeProperty('height'); if (maxWidth) this.style.setProperty('max-width', maxWidth, maxWidthPriority); else this.style.removeProperty('max-width'); if (maxHeight) this.style.setProperty('max-height', maxHeight, maxHeightPriority); else this.style.removeProperty('max-height'); return true; }",
+            vec![
+                serde_json::json!({ "value": frame.original_width }),
+                serde_json::json!({ "value": frame.original_width_priority }),
+                serde_json::json!({ "value": frame.original_height }),
+                serde_json::json!({ "value": frame.original_priority }),
+                serde_json::json!({ "value": frame.original_max_width }),
+                serde_json::json!({ "value": frame.original_max_width_priority }),
+                serde_json::json!({ "value": frame.original_max_height }),
+                serde_json::json!({ "value": frame.original_max_height_priority }),
+            ],
+        )
+        .await
+        {
+            errors.push(format!("Unable to restore an iframe's original size: {error}"));
+        }
+        let _ = browser_devtools_json(
+            view.clone(),
+            "Runtime.releaseObject",
+            serde_json::json!({ "objectId": frame.object_id }).to_string(),
+        )
+        .await;
+    }
+
+    for container in expanded_scroll_containers.iter().rev() {
+        if let Err(error) =
+            restore_browser_scroll_containers(view.clone(), container.execution_context_id).await
+        {
+            errors.push(format!(
+                "Unable to restore a frame's scrollable elements: {error}"
+            ));
+        }
+    }
+
+    for position in scroll_positions {
+        if let Err(error) = set_browser_scroll_position(
+            view.clone(),
+            position.execution_context_id,
+            position.x,
+            position.y,
+        )
+        .await
+        {
+            errors.push(format!(
+                "Unable to restore a frame's scroll position: {error}"
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+#[cfg(windows)]
+async fn expand_browser_scroll_containers(
+    view: Webview,
+    execution_context_id: i64,
+) -> Result<(), String> {
+    let expanded = evaluate_browser_javascript(
+        view,
+        execution_context_id,
+        "(() => { const key = '__nftermScreenshotScrollContainers'; const roots = new Set([document.documentElement, document.body]); const elements = Array.from(document.querySelectorAll('*')).filter(element => { if (roots.has(element)) return false; const style = getComputedStyle(element); const vertical = /^(auto|scroll|overlay)$/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1; const horizontal = /^(auto|scroll|overlay)$/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 1; return vertical || horizontal; }); elements.sort((a, b) => { const depth = element => { let count = 0; for (let node = element; node; node = node.parentElement) count++; return count; }; return depth(b) - depth(a); }); const saved = []; for (const element of elements) { const vertical = element.scrollHeight > element.clientHeight + 1; const horizontal = element.scrollWidth > element.clientWidth + 1; saved.push({ element, scrollLeft: element.scrollLeft, scrollTop: element.scrollTop, width: element.style.getPropertyValue('width'), widthPriority: element.style.getPropertyPriority('width'), height: element.style.getPropertyValue('height'), heightPriority: element.style.getPropertyPriority('height'), maxWidth: element.style.getPropertyValue('max-width'), maxWidthPriority: element.style.getPropertyPriority('max-width'), maxHeight: element.style.getPropertyValue('max-height'), maxHeightPriority: element.style.getPropertyPriority('max-height'), overflowX: element.style.getPropertyValue('overflow-x'), overflowXPriority: element.style.getPropertyPriority('overflow-x'), overflowY: element.style.getPropertyValue('overflow-y'), overflowYPriority: element.style.getPropertyPriority('overflow-y') }); if (horizontal) { element.style.setProperty('width', `${element.scrollWidth}px`, 'important'); element.style.setProperty('max-width', 'none', 'important'); element.style.setProperty('overflow-x', 'hidden', 'important'); } if (vertical) { element.style.setProperty('height', `${element.scrollHeight}px`, 'important'); element.style.setProperty('max-height', 'none', 'important'); element.style.setProperty('overflow-y', 'hidden', 'important'); } } globalThis[key] = saved; return saved.length; })()".to_string(),
+    )
+    .await?;
+    let count = expanded
+        .as_u64()
+        .ok_or_else(|| "The browser did not report expanded scroll containers".to_string())?;
+    if count > MAX_SCREENSHOT_SCROLL_CONTAINERS as u64 {
+        return Err(
+            "The page has too many nested scrollable elements to capture safely".to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn restore_browser_scroll_containers(
+    view: Webview,
+    execution_context_id: i64,
+) -> Result<(), String> {
+    evaluate_browser_javascript(
+        view,
+        execution_context_id,
+        "(() => { const key = '__nftermScreenshotScrollContainers'; const saved = globalThis[key] || []; for (const item of saved.slice().reverse()) { const { element } = item; for (const [property, value, priority] of [['width', item.width, item.widthPriority], ['height', item.height, item.heightPriority], ['max-width', item.maxWidth, item.maxWidthPriority], ['max-height', item.maxHeight, item.maxHeightPriority], ['overflow-x', item.overflowX, item.overflowXPriority], ['overflow-y', item.overflowY, item.overflowYPriority]]) { if (value) element.style.setProperty(property, value, priority); else element.style.removeProperty(property); } } for (const item of saved) { item.element.scrollLeft = item.scrollLeft; item.element.scrollTop = item.scrollTop; } delete globalThis[key]; return true; })()".to_string(),
+    )
+    .await
+    .map(|_| ())
+}
+
+#[cfg(windows)]
+async fn wait_browser_frame_layout(view: Webview, execution_context_id: i64) -> Result<(), String> {
+    evaluate_browser_javascript(
+        view,
+        execution_context_id,
+        "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))".to_string(),
+    )
+    .await
+    .map(|_| ())
+}
+
+#[cfg(windows)]
+async fn call_browser_remote_object(
+    view: Webview,
+    object_id: &str,
+    function_declaration: &str,
+    arguments: Vec<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let response = browser_devtools_json(
+        view,
+        "Runtime.callFunctionOn",
+        serde_json::json!({
+            "objectId": object_id,
+            "functionDeclaration": function_declaration,
+            "arguments": arguments,
+            "returnByValue": true,
+        })
+        .to_string(),
+    )
+    .await?;
+    if let Some(exception) = response.get("exceptionDetails") {
+        return Err(format!(
+            "The browser could not update an iframe: {exception}"
+        ));
+    }
+    response
+        .pointer("/result/value")
+        .cloned()
+        .ok_or_else(|| "The browser did not return iframe information".to_string())
+}
+
+#[cfg(windows)]
+async fn browser_devtools_json(
+    view: Webview,
+    method: &'static str,
+    parameters: String,
+) -> Result<serde_json::Value, String> {
+    let response = run_browser_devtools_method(view, method, parameters).await?;
+    serde_json::from_str(&response)
+        .map_err(|error| format!("Unable to read browser frame information: {error}"))
+}
+
+#[cfg(windows)]
+async fn read_browser_page_metrics(
+    view: Webview,
+    execution_context_id: i64,
+) -> Result<BrowserPageMetrics, String> {
     let value = evaluate_browser_javascript(
         view,
+        execution_context_id,
         "(() => { const root = document.documentElement; const body = document.body; return { pageWidth: Math.ceil(Math.max(window.innerWidth, root ? root.scrollWidth : 0, body ? body.scrollWidth : 0)), pageHeight: Math.ceil(Math.max(window.innerHeight, root ? root.scrollHeight : 0, body ? body.scrollHeight : 0)), viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, scrollX: window.scrollX, scrollY: window.scrollY }; })()".to_string(),
     )
     .await?;
@@ -623,6 +1077,7 @@ fn tile_positions(total: f64, viewport: f64) -> Vec<f64> {
 #[cfg(windows)]
 async fn capture_browser_page_tiles(
     view: Webview,
+    root_context_id: i64,
     initial_metrics: BrowserPageMetrics,
 ) -> Result<BrowserScreenshotCapture, String> {
     let mut metrics = initial_metrics;
@@ -642,7 +1097,8 @@ async fn capture_browser_page_tiles(
         let mut total_base64_bytes = 0usize;
         for y in &y_positions {
             for x in &x_positions {
-                let position = set_browser_scroll_position(view.clone(), *x, *y).await?;
+                let position =
+                    set_browser_scroll_position(view.clone(), root_context_id, *x, *y).await?;
                 let screenshot = run_browser_devtools_method(
                     view.clone(),
                     "Page.captureScreenshot",
@@ -677,7 +1133,7 @@ async fn capture_browser_page_tiles(
             }
         }
 
-        let current_metrics = read_browser_page_metrics(view.clone()).await?;
+        let current_metrics = read_browser_page_metrics(view.clone(), root_context_id).await?;
         if current_metrics.page_width == metrics.page_width
             && current_metrics.page_height == metrics.page_height
         {
@@ -699,11 +1155,16 @@ async fn capture_browser_page_tiles(
 }
 
 #[cfg(windows)]
-async fn set_browser_scroll_position(view: Webview, x: f64, y: f64) -> Result<(f64, f64), String> {
+async fn set_browser_scroll_position(
+    view: Webview,
+    execution_context_id: i64,
+    x: f64,
+    y: f64,
+) -> Result<(f64, f64), String> {
     let expression = format!(
         "(async () => {{ window.scrollTo({{ left: {x}, top: {y}, behavior: 'instant' }}); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); return {{ x: window.scrollX, y: window.scrollY }}; }})()"
     );
-    let value = evaluate_browser_javascript(view, expression).await?;
+    let value = evaluate_browser_javascript(view, execution_context_id, expression).await?;
     let x = value
         .get("x")
         .and_then(serde_json::Value::as_f64)
@@ -716,17 +1177,15 @@ async fn set_browser_scroll_position(view: Webview, x: f64, y: f64) -> Result<(f
 }
 
 #[cfg(windows)]
-async fn restore_browser_scroll_position(view: Webview, x: f64, y: f64) -> Result<(), String> {
-    set_browser_scroll_position(view, x, y).await.map(|_| ())
-}
-
 #[cfg(windows)]
 async fn evaluate_browser_javascript(
     view: Webview,
+    execution_context_id: i64,
     expression: String,
 ) -> Result<serde_json::Value, String> {
     let parameters = serde_json::json!({
         "expression": expression,
+        "contextId": execution_context_id,
         "awaitPromise": true,
         "returnByValue": true,
     })
@@ -893,8 +1352,8 @@ fn run_core_command(view: Webview, action: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        browser_view_label, map_browser_bounds_to_physical, parse_web_url, tile_positions,
-        BrowserBounds, BrowserPhysicalBounds,
+        browser_view_label, collect_browser_frame_tree, map_browser_bounds_to_physical,
+        parse_web_url, tile_positions, BrowserBounds, BrowserPhysicalBounds,
     };
 
     fn css_bounds(x: f64, y: f64, width: f64, height: f64, dpr: f64) -> BrowserBounds {
@@ -1020,5 +1479,31 @@ mod tests {
                 .last()
                 .is_some_and(|last| last + viewport >= total));
         }
+    }
+
+    #[test]
+    fn screenshot_frame_tree_keeps_nested_parent_relationships() {
+        let tree = serde_json::json!({
+            "frame": { "id": "root" },
+            "childFrames": [
+                {
+                    "frame": { "id": "child-a" },
+                    "childFrames": [{ "frame": { "id": "grandchild-a1" } }]
+                },
+                { "frame": { "id": "child-b" } }
+            ]
+        });
+        let mut frames = Vec::new();
+        collect_browser_frame_tree(&tree, None, &mut frames).unwrap();
+
+        assert_eq!(
+            frames,
+            vec![
+                ("root".to_string(), None),
+                ("child-a".to_string(), Some("root".to_string())),
+                ("grandchild-a1".to_string(), Some("child-a".to_string())),
+                ("child-b".to_string(), Some("root".to_string())),
+            ]
+        );
     }
 }
