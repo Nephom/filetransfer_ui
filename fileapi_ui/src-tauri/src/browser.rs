@@ -11,6 +11,8 @@ use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR};
 const MAX_SCREENSHOT_DIMENSION: f64 = 16_000.0;
 #[cfg(windows)]
 const MAX_SCREENSHOT_PIXELS: f64 = 40_000_000.0;
+#[cfg(windows)]
+const MAX_SCREENSHOT_TILES: usize = 4_096;
 const MAX_SCREENSHOT_BASE64_BYTES: usize = 180 * 1024 * 1024;
 
 #[cfg(windows)]
@@ -71,6 +73,26 @@ pub struct BrowserNavigationState {
     pub url: String,
     pub can_go_back: bool,
     pub can_go_forward: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserScreenshotTile {
+    pub x: f64,
+    pub y: f64,
+    pub viewport_width: f64,
+    pub viewport_height: f64,
+    pub data: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserScreenshotCapture {
+    pub page_width: f64,
+    pub page_height: f64,
+    pub viewport_width: f64,
+    pub viewport_height: f64,
+    pub tiles: Vec<BrowserScreenshotTile>,
 }
 
 #[cfg(windows)]
@@ -479,81 +501,248 @@ pub async fn browser_capture_full_page(
     app: AppHandle,
     webview: Webview,
     pane_id: String,
-) -> Result<String, String> {
+) -> Result<BrowserScreenshotCapture, String> {
     require_main_webview(&webview)?;
     #[cfg(windows)]
     {
         let view = get_browser_webview(&app, &pane_id)?;
-        let metrics =
-            run_browser_devtools_method(view, "Page.getLayoutMetrics", "{}".to_string()).await?;
-        let metrics: serde_json::Value = serde_json::from_str(&metrics)
-            .map_err(|error| format!("Unable to read full page dimensions: {error}"))?;
-        let content_size = metrics
-            .get("contentSize")
-            .ok_or_else(|| "The browser did not report the full page dimensions".to_string())?;
-        let width = content_size
-            .get("width")
-            .and_then(serde_json::Value::as_f64)
-            .ok_or_else(|| "The browser reported an invalid page width".to_string())?;
-        let height = content_size
-            .get("height")
-            .and_then(serde_json::Value::as_f64)
-            .ok_or_else(|| "The browser reported an invalid page height".to_string())?;
-        let width = width.ceil();
-        let height = height.ceil();
-        if !width.is_finite()
-            || !height.is_finite()
-            || width < 1.0
-            || height < 1.0
-            || width > MAX_SCREENSHOT_DIMENSION
-            || height > MAX_SCREENSHOT_DIMENSION
-            || width * height > MAX_SCREENSHOT_PIXELS
-        {
-            return Err(format!(
-                "The page is too large to capture as one image (maximum {} × {} pixels and {} million pixels total)",
-                MAX_SCREENSHOT_DIMENSION as u32,
-                MAX_SCREENSHOT_DIMENSION as u32,
-                (MAX_SCREENSHOT_PIXELS / 1_000_000.0) as u32,
-            ));
-        }
+        let initial_metrics = read_browser_page_metrics(view.clone()).await?;
+        validate_browser_screenshot_size(initial_metrics.page_width, initial_metrics.page_height)?;
 
-        let clip = serde_json::json!({
-            "x": 0,
-            "y": 0,
-            "width": width,
-            "height": height,
-            "scale": 1,
-        });
-        let params = serde_json::json!({
-            "format": "png",
-            "fromSurface": true,
-            "captureBeyondViewport": true,
-            "clip": clip,
-        })
-        .to_string();
-        let screenshot = run_browser_devtools_method(
-            get_browser_webview(&app, &pane_id)?,
-            "Page.captureScreenshot",
-            params,
+        let capture_result = capture_browser_page_tiles(view.clone(), initial_metrics).await;
+        let restore_result = restore_browser_scroll_position(
+            view,
+            initial_metrics.scroll_x,
+            initial_metrics.scroll_y,
         )
-        .await?;
-        let screenshot: serde_json::Value = serde_json::from_str(&screenshot)
-            .map_err(|error| format!("Unable to read the captured page image: {error}"))?;
-        let data = screenshot
-            .get("data")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| "The browser did not return a screenshot image".to_string())?;
-        if data.len() > MAX_SCREENSHOT_BASE64_BYTES {
-            return Err("The full page image is too large to preview and select".to_string());
+        .await;
+
+        match (capture_result, restore_result) {
+            (Ok(capture), Ok(())) => Ok(capture),
+            (Err(capture_error), Ok(())) => Err(capture_error),
+            (Ok(_), Err(restore_error)) => Err(format!(
+                "The screenshot was captured, but the page scroll position could not be restored: {restore_error}"
+            )),
+            (Err(capture_error), Err(restore_error)) => Err(format!(
+                "{capture_error}; the page scroll position also could not be restored: {restore_error}"
+            )),
         }
-        Ok(data)
     }
     #[cfg(not(windows))]
     {
         let _ = (app, pane_id);
         Err("Browser screenshots are supported only on Windows".to_string())
     }
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct BrowserPageMetrics {
+    page_width: f64,
+    page_height: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+    scroll_x: f64,
+    scroll_y: f64,
+}
+
+#[cfg(windows)]
+async fn read_browser_page_metrics(view: Webview) -> Result<BrowserPageMetrics, String> {
+    let value = evaluate_browser_javascript(
+        view,
+        "(() => { const root = document.documentElement; const body = document.body; return { pageWidth: Math.ceil(Math.max(window.innerWidth, root ? root.scrollWidth : 0, body ? body.scrollWidth : 0)), pageHeight: Math.ceil(Math.max(window.innerHeight, root ? root.scrollHeight : 0, body ? body.scrollHeight : 0)), viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, scrollX: window.scrollX, scrollY: window.scrollY }; })()".to_string(),
+    )
+    .await?;
+    let number = |name: &str| {
+        value
+            .get(name)
+            .and_then(serde_json::Value::as_f64)
+            .ok_or_else(|| format!("The browser reported an invalid {name}"))
+    };
+    let metrics = BrowserPageMetrics {
+        page_width: number("pageWidth")?,
+        page_height: number("pageHeight")?,
+        viewport_width: number("viewportWidth")?,
+        viewport_height: number("viewportHeight")?,
+        scroll_x: number("scrollX")?,
+        scroll_y: number("scrollY")?,
+    };
+    if ![
+        metrics.page_width,
+        metrics.page_height,
+        metrics.viewport_width,
+        metrics.viewport_height,
+        metrics.scroll_x,
+        metrics.scroll_y,
+    ]
+    .into_iter()
+    .all(f64::is_finite)
+        || metrics.viewport_width < 1.0
+        || metrics.viewport_height < 1.0
+    {
+        return Err("The browser reported invalid page or viewport dimensions".to_string());
+    }
+    Ok(metrics)
+}
+
+#[cfg(windows)]
+fn validate_browser_screenshot_size(width: f64, height: f64) -> Result<(), String> {
+    if !width.is_finite()
+        || !height.is_finite()
+        || width < 1.0
+        || height < 1.0
+        || width > MAX_SCREENSHOT_DIMENSION
+        || height > MAX_SCREENSHOT_DIMENSION
+        || width * height > MAX_SCREENSHOT_PIXELS
+    {
+        return Err(format!(
+            "The page is too large to capture as one image (maximum {} × {} pixels and {} million pixels total)",
+            MAX_SCREENSHOT_DIMENSION as u32,
+            MAX_SCREENSHOT_DIMENSION as u32,
+            (MAX_SCREENSHOT_PIXELS / 1_000_000.0) as u32,
+        ));
+    }
+    Ok(())
+}
+
+fn tile_positions(total: f64, viewport: f64) -> Vec<f64> {
+    let mut positions = vec![0.0];
+    while let Some(last) = positions.last().copied() {
+        if last + viewport >= total {
+            break;
+        }
+        let next = (last + viewport).min((total - viewport).max(0.0));
+        if next <= last {
+            break;
+        }
+        positions.push(next);
+    }
+    positions
+}
+
+#[cfg(windows)]
+async fn capture_browser_page_tiles(
+    view: Webview,
+    initial_metrics: BrowserPageMetrics,
+) -> Result<BrowserScreenshotCapture, String> {
+    let mut metrics = initial_metrics;
+    for attempt in 0..3 {
+        validate_browser_screenshot_size(metrics.page_width, metrics.page_height)?;
+        let x_positions = tile_positions(metrics.page_width, metrics.viewport_width);
+        let y_positions = tile_positions(metrics.page_height, metrics.viewport_height);
+        let tile_count = x_positions
+            .len()
+            .checked_mul(y_positions.len())
+            .ok_or_else(|| "The full page requires too many screenshot tiles".to_string())?;
+        if tile_count > MAX_SCREENSHOT_TILES {
+            return Err("The full page requires too many screenshot tiles".to_string());
+        }
+
+        let mut tiles = Vec::with_capacity(tile_count);
+        let mut total_base64_bytes = 0usize;
+        for y in &y_positions {
+            for x in &x_positions {
+                let position = set_browser_scroll_position(view.clone(), *x, *y).await?;
+                let screenshot = run_browser_devtools_method(
+                    view.clone(),
+                    "Page.captureScreenshot",
+                    serde_json::json!({ "format": "png", "fromSurface": true }).to_string(),
+                )
+                .await?;
+                let screenshot: serde_json::Value = serde_json::from_str(&screenshot)
+                    .map_err(|error| format!("Unable to read a page image tile: {error}"))?;
+                let data = screenshot
+                    .get("data")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        "The browser did not return a screenshot image tile".to_string()
+                    })?
+                    .to_string();
+                total_base64_bytes =
+                    total_base64_bytes.checked_add(data.len()).ok_or_else(|| {
+                        "The full page image is too large to preview and select".to_string()
+                    })?;
+                if total_base64_bytes > MAX_SCREENSHOT_BASE64_BYTES {
+                    return Err(
+                        "The full page image is too large to preview and select".to_string()
+                    );
+                }
+                tiles.push(BrowserScreenshotTile {
+                    x: position.0,
+                    y: position.1,
+                    viewport_width: metrics.viewport_width,
+                    viewport_height: metrics.viewport_height,
+                    data,
+                });
+            }
+        }
+
+        let current_metrics = read_browser_page_metrics(view.clone()).await?;
+        if current_metrics.page_width == metrics.page_width
+            && current_metrics.page_height == metrics.page_height
+        {
+            return Ok(BrowserScreenshotCapture {
+                page_width: metrics.page_width,
+                page_height: metrics.page_height,
+                viewport_width: metrics.viewport_width,
+                viewport_height: metrics.viewport_height,
+                tiles,
+            });
+        }
+        metrics.page_width = current_metrics.page_width;
+        metrics.page_height = current_metrics.page_height;
+        if attempt == 2 {
+            return Err("The page dimensions kept changing during capture; wait for the page to finish loading and try again".to_string());
+        }
+    }
+    Err("Unable to capture the full page".to_string())
+}
+
+#[cfg(windows)]
+async fn set_browser_scroll_position(view: Webview, x: f64, y: f64) -> Result<(f64, f64), String> {
+    let expression = format!(
+        "(async () => {{ window.scrollTo({{ left: {x}, top: {y}, behavior: 'instant' }}); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); return {{ x: window.scrollX, y: window.scrollY }}; }})()"
+    );
+    let value = evaluate_browser_javascript(view, expression).await?;
+    let x = value
+        .get("x")
+        .and_then(serde_json::Value::as_f64)
+        .ok_or_else(|| "The browser did not report its horizontal scroll position".to_string())?;
+    let y = value
+        .get("y")
+        .and_then(serde_json::Value::as_f64)
+        .ok_or_else(|| "The browser did not report its vertical scroll position".to_string())?;
+    Ok((x, y))
+}
+
+#[cfg(windows)]
+async fn restore_browser_scroll_position(view: Webview, x: f64, y: f64) -> Result<(), String> {
+    set_browser_scroll_position(view, x, y).await.map(|_| ())
+}
+
+#[cfg(windows)]
+async fn evaluate_browser_javascript(
+    view: Webview,
+    expression: String,
+) -> Result<serde_json::Value, String> {
+    let parameters = serde_json::json!({
+        "expression": expression,
+        "awaitPromise": true,
+        "returnByValue": true,
+    })
+    .to_string();
+    let response = run_browser_devtools_method(view, "Runtime.evaluate", parameters).await?;
+    let response: serde_json::Value = serde_json::from_str(&response)
+        .map_err(|error| format!("Unable to read browser page information: {error}"))?;
+    if let Some(exception) = response.get("exceptionDetails") {
+        return Err(format!(
+            "The browser could not inspect the page: {exception}"
+        ));
+    }
+    response
+        .pointer("/result/value")
+        .cloned()
+        .ok_or_else(|| "The browser did not return page information".to_string())
 }
 
 #[cfg(windows)]
@@ -704,8 +893,8 @@ fn run_core_command(view: Webview, action: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        browser_view_label, map_browser_bounds_to_physical, parse_web_url, BrowserBounds,
-        BrowserPhysicalBounds,
+        browser_view_label, map_browser_bounds_to_physical, parse_web_url, tile_positions,
+        BrowserBounds, BrowserPhysicalBounds,
     };
 
     fn css_bounds(x: f64, y: f64, width: f64, height: f64, dpr: f64) -> BrowserBounds {
@@ -811,6 +1000,25 @@ mod tests {
             css_bounds(1.0e12, 0.0, 10.0, 10.0, 1.25),
         ] {
             assert!(map_browser_bounds_to_physical(&bounds).is_err());
+        }
+    }
+
+    #[test]
+    fn screenshot_tiles_cover_the_page_using_viewport_sized_steps() {
+        assert_eq!(tile_positions(700.0, 1000.0), vec![0.0]);
+        assert_eq!(tile_positions(2000.0, 1000.0), vec![0.0, 1000.0]);
+        assert_eq!(tile_positions(2400.0, 1000.0), vec![0.0, 1000.0, 1400.0]);
+
+        for (total, viewport) in [(2400.0, 1000.0), (4097.0, 1024.0), (16000.0, 700.0)] {
+            let positions = tile_positions(total, viewport);
+            assert_eq!(positions.first(), Some(&0.0));
+            assert!(positions.windows(2).all(|pair| pair[1] > pair[0]));
+            assert!(positions
+                .windows(2)
+                .all(|pair| pair[0] + viewport >= pair[1]));
+            assert!(positions
+                .last()
+                .is_some_and(|last| last + viewport >= total));
         }
     }
 }

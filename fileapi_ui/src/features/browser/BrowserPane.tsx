@@ -17,6 +17,65 @@ type Props = {
 };
 
 type CaptureSelection = { x: number; y: number; width: number; height: number };
+type BrowserScreenshotTile = {
+  x: number;
+  y: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  data: string;
+};
+type BrowserScreenshotCapture = {
+  pageWidth: number;
+  pageHeight: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  tiles: BrowserScreenshotTile[];
+};
+
+async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promise<string> {
+  const firstTile = capture.tiles[0];
+  if (!firstTile || firstTile.viewportWidth <= 0) {
+    throw new Error("The browser did not return a usable screenshot image.");
+  }
+  const firstImage = new Image();
+  firstImage.src = `data:image/png;base64,${firstTile.data}`;
+  await firstImage.decode();
+  if (firstImage.naturalWidth <= 0) {
+    throw new Error("The browser did not return a usable screenshot image.");
+  }
+  const scale = firstImage.naturalWidth / firstTile.viewportWidth;
+  if (!Number.isFinite(scale) || scale <= 0) {
+    throw new Error("The browser returned invalid screenshot dimensions.");
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(capture.pageWidth * scale);
+  canvas.height = Math.ceil(capture.pageHeight * scale);
+  if (canvas.width < 1 || canvas.height < 1 || canvas.width * canvas.height > 40_000_000) {
+    throw new Error("The full page image is too large to preview and select.");
+  }
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Unable to prepare the full page screenshot.");
+
+  for (const [index, tile] of capture.tiles.entries()) {
+    const image = index === 0 ? firstImage : new Image();
+    if (index > 0) {
+      image.src = `data:image/png;base64,${tile.data}`;
+      await image.decode();
+    }
+    const left = Math.round(tile.x * scale);
+    const top = Math.round(tile.y * scale);
+    const width = Math.min(image.naturalWidth, canvas.width - left);
+    const height = Math.min(image.naturalHeight, canvas.height - top);
+    if (width > 0 && height > 0) {
+      context.drawImage(image, 0, 0, width, height, left, top, width, height);
+    }
+    image.removeAttribute("src");
+    tile.data = "";
+  }
+
+  return canvas.toDataURL("image/png");
+}
 
 const isHostWithPort = (value: string) => /^(?:\[[\da-f:.]+\]|[^/:?#\s]+):\d+(?:[/?#]|$)/i.test(value);
 
@@ -272,7 +331,8 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
     setCaptureNotice("");
     setError("");
     try {
-      const image = await invoke<string>("browser_capture_full_page", { paneId });
+      const capture = await invoke<BrowserScreenshotCapture>("browser_capture_full_page", { paneId });
+      const image = await stitchBrowserScreenshot(capture);
       await invoke<void>("browser_set_visible", { paneId, visible: false });
       setCaptureSelection(null);
       setCaptureImage(image);
@@ -430,7 +490,7 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
               onPointerUp={handleSelectionEnd}
               onPointerCancel={handleSelectionEnd}
             >
-              <img ref={captureImageRef} src={`data:image/png;base64,${captureImage}`} alt="Full page screenshot preview" draggable={false} />
+              <img ref={captureImageRef} src={captureImage} alt="Full page screenshot preview" draggable={false} />
               {captureSelection && <div
                 className="browser-capture-selection"
                 style={{
