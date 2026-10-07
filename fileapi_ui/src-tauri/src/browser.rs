@@ -9,16 +9,16 @@ use tauri::{AppHandle, Manager};
 #[cfg(windows)]
 use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR};
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 const MAX_SCREENSHOT_DIMENSION: f64 = 16_000.0;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 const MAX_SCREENSHOT_PIXELS: f64 = 40_000_000.0;
 #[cfg(windows)]
 const MAX_SCREENSHOT_TILES: usize = 4_096;
 #[cfg(windows)]
 const MAX_SCREENSHOT_FRAMES: usize = 128;
 #[cfg(windows)]
-const MAX_SCREENSHOT_SCROLL_CONTAINERS: usize = 512;
+const SCREENSHOT_SETTLE_MS: u32 = 150;
 const MAX_SCREENSHOT_BASE64_BYTES: usize = 180 * 1024 * 1024;
 
 #[cfg(windows)]
@@ -81,24 +81,45 @@ pub struct BrowserNavigationState {
     pub can_go_forward: bool,
 }
 
+/// Where one captured viewport image is drawn inside the scrolling region of
+/// the stitched page. Source rectangle: the region rectangle of the tile image.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserScreenshotPlacement {
+    pub tile: usize,
+    /// Destination offset inside the region content, in CSS pixels.
+    pub dst_x: f64,
+    pub dst_y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The scrolling area that was expanded, in CSS pixels of the top viewport.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BrowserScreenshotTile {
+pub struct BrowserScreenshotRegion {
     pub x: f64,
     pub y: f64,
-    pub viewport_width: f64,
-    pub viewport_height: f64,
-    pub data: String,
+    pub width: f64,
+    pub height: f64,
+    pub content_width: f64,
+    pub content_height: f64,
+    pub scrollbar_width: f64,
+    pub scrollbar_height: f64,
+    pub description: String,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserScreenshotCapture {
-    pub page_width: f64,
-    pub page_height: f64,
     pub viewport_width: f64,
     pub viewport_height: f64,
-    pub tiles: Vec<BrowserScreenshotTile>,
+    pub region: Option<BrowserScreenshotRegion>,
+    /// Base64 PNG viewport images; tile 0 is the unscrolled base image.
+    pub tiles: Vec<String>,
+    pub placements: Vec<BrowserScreenshotPlacement>,
+    pub skipped_frames: usize,
 }
 
 #[cfg(windows)]
@@ -512,40 +533,9 @@ pub async fn browser_capture_full_page(
     #[cfg(windows)]
     {
         let view = get_browser_webview(&app, &pane_id)?;
-        let mut frame_scroll_positions = Vec::new();
-        let mut expanded_scroll_containers = Vec::new();
-        let mut expanded_frames = Vec::new();
-        let preparation = prepare_browser_screenshot_frames(
-            view.clone(),
-            &mut frame_scroll_positions,
-            &mut expanded_scroll_containers,
-            &mut expanded_frames,
-        )
-        .await;
-        let capture_result = match preparation {
-            Ok(root_context_id) => match read_browser_page_metrics(view.clone(), root_context_id)
-                .await
-            {
-                Ok(metrics) => {
-                    match validate_browser_screenshot_size(metrics.page_width, metrics.page_height)
-                    {
-                        Ok(()) => {
-                            capture_browser_page_tiles(view.clone(), root_context_id, metrics).await
-                        }
-                        Err(error) => Err(error),
-                    }
-                }
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
-        };
-        let restore_result = restore_browser_screenshot_frames(
-            view,
-            expanded_frames,
-            expanded_scroll_containers,
-            frame_scroll_positions,
-        )
-        .await;
+        let mut cleanup = ScreenshotCleanup::default();
+        let capture_result = capture_browser_page(view.clone(), &mut cleanup).await;
+        let restore_result = cleanup_browser_screenshot(view, cleanup).await;
 
         match (capture_result, restore_result) {
             (Ok(capture), Ok(())) => Ok(capture),
@@ -565,50 +555,143 @@ pub async fn browser_capture_full_page(
     }
 }
 
-#[cfg(windows)]
-#[derive(Clone, Copy)]
-struct BrowserPageMetrics {
-    page_width: f64,
-    page_height: f64,
-    viewport_width: f64,
-    viewport_height: f64,
-    scroll_x: f64,
-    scroll_y: f64,
-}
-
-#[cfg(windows)]
-#[derive(Clone)]
-struct BrowserFrameContext {
-    frame_id: String,
-    parent_frame_id: Option<String>,
+/// A scrolling area found in one frame. Coordinates are CSS pixels in the top
+/// viewport (iframe offsets already added).
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Debug)]
+struct ScrollCandidate {
+    frame_index: usize,
     execution_context_id: i64,
-}
-
-#[cfg(windows)]
-#[derive(Clone, Copy)]
-struct BrowserFrameScrollPosition {
-    execution_context_id: i64,
+    index: usize,
     x: f64,
     y: f64,
+    width: f64,
+    height: f64,
+    content_width: f64,
+    content_height: f64,
+    scrollbar_width: f64,
+    scrollbar_height: f64,
+    description: String,
 }
 
-#[cfg(windows)]
-#[derive(Clone, Copy)]
-struct BrowserScrollContainerState {
-    execution_context_id: i64,
+/// Amount of content that is not visible: the larger it is, the more a
+/// scrolling area contributes to the full page.
+#[cfg(any(windows, test))]
+fn hidden_content_area(candidate: &ScrollCandidate) -> f64 {
+    let hidden_height = (candidate.content_height - candidate.height).max(0.0);
+    let hidden_width = (candidate.content_width - candidate.width).max(0.0);
+    hidden_height * candidate.width + hidden_width * candidate.height
 }
 
-#[cfg(windows)]
-struct ExpandedBrowserFrame {
-    object_id: String,
-    original_width: String,
-    original_width_priority: String,
-    original_height: String,
-    original_priority: String,
-    original_max_width: String,
-    original_max_width_priority: String,
-    original_max_height: String,
-    original_max_height_priority: String,
+/// Picks the scrolling area to expand: it has to be completely visible, large
+/// enough, and actually overflow. The one hiding the most content wins; the
+/// larger visible area breaks ties.
+#[cfg(any(windows, test))]
+fn select_scroll_candidate(
+    candidates: &[ScrollCandidate],
+    viewport_width: f64,
+    viewport_height: f64,
+) -> Option<usize> {
+    const TOLERANCE: f64 = 2.0;
+    candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| {
+            candidate.width >= 40.0
+                && candidate.height >= 40.0
+                && candidate.x >= -TOLERANCE
+                && candidate.y >= -TOLERANCE
+                && candidate.x + candidate.width <= viewport_width + TOLERANCE
+                && candidate.y + candidate.height <= viewport_height + TOLERANCE
+                && (candidate.content_width > candidate.width + 1.0
+                    || candidate.content_height > candidate.height + 1.0)
+        })
+        .max_by(|(_, left), (_, right)| {
+            hidden_content_area(left)
+                .partial_cmp(&hidden_content_area(right))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    (left.width * left.height)
+                        .partial_cmp(&(right.width * right.height))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+        .map(|(index, _)| index)
+}
+
+/// Next vertical scroll offset of a capture pass, or `None` once the end of
+/// the (possibly still growing) content has been reached.
+#[cfg(any(windows, test))]
+fn next_scroll_position(current: f64, step: f64, content: f64, client: f64) -> Option<f64> {
+    let max_scroll = (content - client).max(0.0);
+    if step < 1.0 || current + 1.0 > max_scroll {
+        return None;
+    }
+    Some((current + step).min(max_scroll))
+}
+
+/// Limits the expanded content so the stitched page stays inside the maximum
+/// image dimension and pixel budget (device pixels). Returns the capped
+/// content size and whether anything was cut off.
+#[cfg(any(windows, test))]
+fn capped_content_lengths(
+    fixed_width: f64,
+    fixed_height: f64,
+    region_width: f64,
+    region_height: f64,
+    content_width: f64,
+    content_height: f64,
+    device_pixel_ratio: f64,
+) -> (f64, f64, bool) {
+    let dpr = if device_pixel_ratio.is_finite() && device_pixel_ratio > 0.0 {
+        device_pixel_ratio
+    } else {
+        1.0
+    };
+    let max_dimension = (MAX_SCREENSHOT_DIMENSION / dpr).floor();
+    let width = content_width
+        .max(region_width)
+        .min((max_dimension - fixed_width).max(region_width));
+    let page_width = fixed_width + width;
+    let max_by_pixels = (MAX_SCREENSHOT_PIXELS / (page_width * dpr * dpr)).floor();
+    let max_page_height = max_dimension.min(max_by_pixels);
+    let height = content_height
+        .max(region_height)
+        .min((max_page_height - fixed_height).max(region_height));
+    let truncated = width + 0.5 < content_width || height + 0.5 < content_height;
+    (width, height, truncated)
+}
+
+/// Draw instructions for the captured tiles. `scroll_offsets` are the scroll
+/// positions that were actually reached (not the requested ones).
+#[cfg(any(windows, test))]
+fn region_placements(
+    scroll_offsets: &[(f64, f64)],
+    region_width: f64,
+    region_height: f64,
+    content_width: f64,
+    content_height: f64,
+) -> Vec<BrowserScreenshotPlacement> {
+    scroll_offsets
+        .iter()
+        .enumerate()
+        .filter_map(|(tile, (scroll_x, scroll_y))| {
+            let width = (content_width - scroll_x).min(region_width);
+            let height = (content_height - scroll_y).min(region_height);
+            if width <= 0.0 || height <= 0.0 {
+                None
+            } else {
+                Some(BrowserScreenshotPlacement {
+                    tile,
+                    dst_x: *scroll_x,
+                    dst_y: *scroll_y,
+                    width,
+                    height,
+                })
+            }
+        })
+        .collect()
 }
 
 #[cfg(any(windows, test))]
@@ -637,428 +720,7 @@ fn collect_browser_frame_tree(
     Ok(())
 }
 
-#[cfg(windows)]
-async fn prepare_browser_screenshot_frames(
-    view: Webview,
-    scroll_positions: &mut Vec<BrowserFrameScrollPosition>,
-    expanded_scroll_containers: &mut Vec<BrowserScrollContainerState>,
-    expanded_frames: &mut Vec<ExpandedBrowserFrame>,
-) -> Result<i64, String> {
-    let tree = browser_devtools_json(view.clone(), "Page.getFrameTree", "{}".to_string()).await?;
-    let tree = tree
-        .get("frameTree")
-        .ok_or_else(|| "The browser did not return its frame tree".to_string())?;
-    let mut frame_ids = Vec::new();
-    collect_browser_frame_tree(tree, None, &mut frame_ids)?;
-    if frame_ids.is_empty() || frame_ids.len() > MAX_SCREENSHOT_FRAMES {
-        return Err("The page has too many nested frames to capture safely".to_string());
-    }
-
-    let mut contexts = Vec::with_capacity(frame_ids.len());
-    let mut context_by_frame = HashMap::with_capacity(frame_ids.len());
-    for (index, (frame_id, parent_frame_id)) in frame_ids.into_iter().enumerate() {
-        let world_name = format!("nfterm-screenshot-frame-{index}");
-        let response = browser_devtools_json(
-            view.clone(),
-            "Page.createIsolatedWorld",
-            serde_json::json!({ "frameId": frame_id, "worldName": world_name }).to_string(),
-        )
-        .await?;
-        let execution_context_id = response
-            .get("executionContextId")
-            .and_then(serde_json::Value::as_i64)
-            .ok_or_else(|| "The browser could not create a frame execution context".to_string())?;
-        context_by_frame.insert(frame_id.clone(), execution_context_id);
-        contexts.push(BrowserFrameContext {
-            frame_id,
-            parent_frame_id,
-            execution_context_id,
-        });
-    }
-
-    for context in &contexts {
-        let metrics = read_browser_page_metrics(view.clone(), context.execution_context_id).await?;
-        validate_browser_screenshot_size(metrics.page_width, metrics.page_height)?;
-        scroll_positions.push(BrowserFrameScrollPosition {
-            execution_context_id: context.execution_context_id,
-            x: metrics.scroll_x,
-            y: metrics.scroll_y,
-        });
-    }
-
-    // Put every frame at its content origin before resizing iframe owners. This
-    // keeps the screenshot aligned while nested frames are temporarily expanded.
-    for context in &contexts {
-        set_browser_scroll_position(view.clone(), context.execution_context_id, 0.0, 0.0).await?;
-    }
-
-    // Child frames are processed before parents so a parent frame's measured
-    // document height already includes any expanded descendants.
-    for context in contexts.iter().rev() {
-        expanded_scroll_containers.push(BrowserScrollContainerState {
-            execution_context_id: context.execution_context_id,
-        });
-        expand_browser_scroll_containers(view.clone(), context.execution_context_id).await?;
-        let Some(parent_frame_id) = context.parent_frame_id.as_ref() else {
-            continue;
-        };
-        let metrics = read_browser_page_metrics(view.clone(), context.execution_context_id).await?;
-        validate_browser_screenshot_size(metrics.page_width, metrics.page_height)?;
-        if metrics.page_width <= metrics.viewport_width + 1.0
-            && metrics.page_height <= metrics.viewport_height + 1.0
-        {
-            continue;
-        }
-        let parent_context_id = *context_by_frame
-            .get(parent_frame_id)
-            .ok_or_else(|| "The browser frame tree has a missing parent".to_string())?;
-        let owner = browser_devtools_json(
-            view.clone(),
-            "DOM.getFrameOwner",
-            serde_json::json!({ "frameId": context.frame_id }).to_string(),
-        )
-        .await?;
-        let backend_node_id = owner
-            .get("backendNodeId")
-            .and_then(serde_json::Value::as_i64)
-            .ok_or_else(|| "The browser could not locate an iframe owner element".to_string())?;
-        let resolved = browser_devtools_json(
-            view.clone(),
-            "DOM.resolveNode",
-            serde_json::json!({
-                "backendNodeId": backend_node_id,
-                "executionContextId": parent_context_id,
-            })
-            .to_string(),
-        )
-        .await?;
-        let object_id = resolved
-            .pointer("/object/objectId")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "The browser could not resolve an iframe owner element".to_string())?
-            .to_string();
-        let original = call_browser_remote_object(
-            view.clone(),
-            &object_id,
-            "function() { return { width: this.style.getPropertyValue('width'), widthPriority: this.style.getPropertyPriority('width'), height: this.style.getPropertyValue('height'), heightPriority: this.style.getPropertyPriority('height'), maxWidth: this.style.getPropertyValue('max-width'), maxWidthPriority: this.style.getPropertyPriority('max-width'), maxHeight: this.style.getPropertyValue('max-height'), maxHeightPriority: this.style.getPropertyPriority('max-height') }; }",
-            Vec::new(),
-        )
-        .await?;
-        let expansion = ExpandedBrowserFrame {
-            object_id: object_id.clone(),
-            original_width: original
-                .get("width")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            original_width_priority: original
-                .get("widthPriority")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            original_height: original
-                .get("height")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            original_priority: original
-                .get("heightPriority")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            original_max_width: original
-                .get("maxWidth")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            original_max_width_priority: original
-                .get("maxWidthPriority")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            original_max_height: original
-                .get("maxHeight")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            original_max_height_priority: original
-                .get("maxHeightPriority")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        };
-        // Keep restoration information before mutating the live DOM so any
-        // subsequent DevTools error still restores this iframe's original style.
-        expanded_frames.push(expansion);
-        let mut resized_metrics = metrics;
-        for attempt in 0..3 {
-            let expand_width = resized_metrics.page_width > resized_metrics.viewport_width + 1.0;
-            let expand_height = resized_metrics.page_height > resized_metrics.viewport_height + 1.0;
-            if !expand_width && !expand_height {
-                break;
-            }
-            call_browser_remote_object(
-                view.clone(),
-                &object_id,
-                "function(width, height) { if (width !== null) { this.style.setProperty('width', `${width}px`, 'important'); this.style.setProperty('max-width', 'none', 'important'); } if (height !== null) { this.style.setProperty('height', `${height}px`, 'important'); this.style.setProperty('max-height', 'none', 'important'); } return true; }",
-                vec![
-                    if expand_width {
-                        serde_json::json!({ "value": resized_metrics.page_width.ceil() })
-                    } else {
-                        serde_json::json!({ "value": null })
-                    },
-                    if expand_height {
-                        serde_json::json!({ "value": resized_metrics.page_height.ceil() })
-                    } else {
-                        serde_json::json!({ "value": null })
-                    },
-                ],
-            )
-            .await?;
-            wait_browser_frame_layout(view.clone(), context.execution_context_id).await?;
-            wait_browser_frame_layout(view.clone(), parent_context_id).await?;
-            resized_metrics =
-                read_browser_page_metrics(view.clone(), context.execution_context_id).await?;
-            validate_browser_screenshot_size(
-                resized_metrics.page_width,
-                resized_metrics.page_height,
-            )?;
-            if attempt == 2
-                && (resized_metrics.page_width > resized_metrics.viewport_width + 1.0
-                    || resized_metrics.page_height > resized_metrics.viewport_height + 1.0)
-            {
-                return Err(
-                    "An iframe still has overflowing content after expanding its frame".to_string(),
-                );
-            }
-        }
-    }
-
-    contexts
-        .first()
-        .map(|root| root.execution_context_id)
-        .ok_or_else(|| "The browser did not return a root frame".to_string())
-}
-
-#[cfg(windows)]
-async fn restore_browser_screenshot_frames(
-    view: Webview,
-    expanded_frames: Vec<ExpandedBrowserFrame>,
-    expanded_scroll_containers: Vec<BrowserScrollContainerState>,
-    scroll_positions: Vec<BrowserFrameScrollPosition>,
-) -> Result<(), String> {
-    let mut errors = Vec::new();
-    for frame in expanded_frames.iter().rev() {
-        if let Err(error) = call_browser_remote_object(
-            view.clone(),
-            &frame.object_id,
-            "function(width, widthPriority, height, heightPriority, maxWidth, maxWidthPriority, maxHeight, maxHeightPriority) { if (width) this.style.setProperty('width', width, widthPriority); else this.style.removeProperty('width'); if (height) this.style.setProperty('height', height, heightPriority); else this.style.removeProperty('height'); if (maxWidth) this.style.setProperty('max-width', maxWidth, maxWidthPriority); else this.style.removeProperty('max-width'); if (maxHeight) this.style.setProperty('max-height', maxHeight, maxHeightPriority); else this.style.removeProperty('max-height'); return true; }",
-            vec![
-                serde_json::json!({ "value": frame.original_width }),
-                serde_json::json!({ "value": frame.original_width_priority }),
-                serde_json::json!({ "value": frame.original_height }),
-                serde_json::json!({ "value": frame.original_priority }),
-                serde_json::json!({ "value": frame.original_max_width }),
-                serde_json::json!({ "value": frame.original_max_width_priority }),
-                serde_json::json!({ "value": frame.original_max_height }),
-                serde_json::json!({ "value": frame.original_max_height_priority }),
-            ],
-        )
-        .await
-        {
-            errors.push(format!("Unable to restore an iframe's original size: {error}"));
-        }
-        let _ = browser_devtools_json(
-            view.clone(),
-            "Runtime.releaseObject",
-            serde_json::json!({ "objectId": frame.object_id }).to_string(),
-        )
-        .await;
-    }
-
-    for container in expanded_scroll_containers.iter().rev() {
-        if let Err(error) =
-            restore_browser_scroll_containers(view.clone(), container.execution_context_id).await
-        {
-            errors.push(format!(
-                "Unable to restore a frame's scrollable elements: {error}"
-            ));
-        }
-    }
-
-    for position in scroll_positions {
-        if let Err(error) = set_browser_scroll_position(
-            view.clone(),
-            position.execution_context_id,
-            position.x,
-            position.y,
-        )
-        .await
-        {
-            errors.push(format!(
-                "Unable to restore a frame's scroll position: {error}"
-            ));
-        }
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("; "))
-    }
-}
-
-#[cfg(windows)]
-async fn expand_browser_scroll_containers(
-    view: Webview,
-    execution_context_id: i64,
-) -> Result<(), String> {
-    let expanded = evaluate_browser_javascript(
-        view,
-        execution_context_id,
-        "(() => { const key = '__nftermScreenshotScrollContainers'; const roots = new Set([document.documentElement, document.body]); const elements = Array.from(document.querySelectorAll('*')).filter(element => { if (roots.has(element)) return false; const style = getComputedStyle(element); const vertical = /^(auto|scroll|overlay)$/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1; const horizontal = /^(auto|scroll|overlay)$/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 1; return vertical || horizontal; }); elements.sort((a, b) => { const depth = element => { let count = 0; for (let node = element; node; node = node.parentElement) count++; return count; }; return depth(b) - depth(a); }); const saved = []; for (const element of elements) { const vertical = element.scrollHeight > element.clientHeight + 1; const horizontal = element.scrollWidth > element.clientWidth + 1; saved.push({ element, scrollLeft: element.scrollLeft, scrollTop: element.scrollTop, width: element.style.getPropertyValue('width'), widthPriority: element.style.getPropertyPriority('width'), height: element.style.getPropertyValue('height'), heightPriority: element.style.getPropertyPriority('height'), maxWidth: element.style.getPropertyValue('max-width'), maxWidthPriority: element.style.getPropertyPriority('max-width'), maxHeight: element.style.getPropertyValue('max-height'), maxHeightPriority: element.style.getPropertyPriority('max-height'), overflowX: element.style.getPropertyValue('overflow-x'), overflowXPriority: element.style.getPropertyPriority('overflow-x'), overflowY: element.style.getPropertyValue('overflow-y'), overflowYPriority: element.style.getPropertyPriority('overflow-y') }); if (horizontal) { element.style.setProperty('width', `${element.scrollWidth}px`, 'important'); element.style.setProperty('max-width', 'none', 'important'); element.style.setProperty('overflow-x', 'hidden', 'important'); } if (vertical) { element.style.setProperty('height', `${element.scrollHeight}px`, 'important'); element.style.setProperty('max-height', 'none', 'important'); element.style.setProperty('overflow-y', 'hidden', 'important'); } } globalThis[key] = saved; return saved.length; })()".to_string(),
-    )
-    .await?;
-    let count = expanded
-        .as_u64()
-        .ok_or_else(|| "The browser did not report expanded scroll containers".to_string())?;
-    if count > MAX_SCREENSHOT_SCROLL_CONTAINERS as u64 {
-        return Err(
-            "The page has too many nested scrollable elements to capture safely".to_string(),
-        );
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-async fn restore_browser_scroll_containers(
-    view: Webview,
-    execution_context_id: i64,
-) -> Result<(), String> {
-    evaluate_browser_javascript(
-        view,
-        execution_context_id,
-        "(() => { const key = '__nftermScreenshotScrollContainers'; const saved = globalThis[key] || []; for (const item of saved.slice().reverse()) { const { element } = item; for (const [property, value, priority] of [['width', item.width, item.widthPriority], ['height', item.height, item.heightPriority], ['max-width', item.maxWidth, item.maxWidthPriority], ['max-height', item.maxHeight, item.maxHeightPriority], ['overflow-x', item.overflowX, item.overflowXPriority], ['overflow-y', item.overflowY, item.overflowYPriority]]) { if (value) element.style.setProperty(property, value, priority); else element.style.removeProperty(property); } } for (const item of saved) { item.element.scrollLeft = item.scrollLeft; item.element.scrollTop = item.scrollTop; } delete globalThis[key]; return true; })()".to_string(),
-    )
-    .await
-    .map(|_| ())
-}
-
-#[cfg(windows)]
-async fn wait_browser_frame_layout(view: Webview, execution_context_id: i64) -> Result<(), String> {
-    evaluate_browser_javascript(
-        view,
-        execution_context_id,
-        "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))".to_string(),
-    )
-    .await
-    .map(|_| ())
-}
-
-#[cfg(windows)]
-async fn call_browser_remote_object(
-    view: Webview,
-    object_id: &str,
-    function_declaration: &str,
-    arguments: Vec<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    let response = browser_devtools_json(
-        view,
-        "Runtime.callFunctionOn",
-        serde_json::json!({
-            "objectId": object_id,
-            "functionDeclaration": function_declaration,
-            "arguments": arguments,
-            "returnByValue": true,
-        })
-        .to_string(),
-    )
-    .await?;
-    if let Some(exception) = response.get("exceptionDetails") {
-        return Err(format!(
-            "The browser could not update an iframe: {exception}"
-        ));
-    }
-    response
-        .pointer("/result/value")
-        .cloned()
-        .ok_or_else(|| "The browser did not return iframe information".to_string())
-}
-
-#[cfg(windows)]
-async fn browser_devtools_json(
-    view: Webview,
-    method: &'static str,
-    parameters: String,
-) -> Result<serde_json::Value, String> {
-    let response = run_browser_devtools_method(view, method, parameters).await?;
-    serde_json::from_str(&response)
-        .map_err(|error| format!("Unable to read browser frame information: {error}"))
-}
-
-#[cfg(windows)]
-async fn read_browser_page_metrics(
-    view: Webview,
-    execution_context_id: i64,
-) -> Result<BrowserPageMetrics, String> {
-    let value = evaluate_browser_javascript(
-        view,
-        execution_context_id,
-        "(() => { const root = document.documentElement; const body = document.body; return { pageWidth: Math.ceil(Math.max(window.innerWidth, root ? root.scrollWidth : 0, body ? body.scrollWidth : 0)), pageHeight: Math.ceil(Math.max(window.innerHeight, root ? root.scrollHeight : 0, body ? body.scrollHeight : 0)), viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, scrollX: window.scrollX, scrollY: window.scrollY }; })()".to_string(),
-    )
-    .await?;
-    let number = |name: &str| {
-        value
-            .get(name)
-            .and_then(serde_json::Value::as_f64)
-            .ok_or_else(|| format!("The browser reported an invalid {name}"))
-    };
-    let metrics = BrowserPageMetrics {
-        page_width: number("pageWidth")?,
-        page_height: number("pageHeight")?,
-        viewport_width: number("viewportWidth")?,
-        viewport_height: number("viewportHeight")?,
-        scroll_x: number("scrollX")?,
-        scroll_y: number("scrollY")?,
-    };
-    if ![
-        metrics.page_width,
-        metrics.page_height,
-        metrics.viewport_width,
-        metrics.viewport_height,
-        metrics.scroll_x,
-        metrics.scroll_y,
-    ]
-    .into_iter()
-    .all(f64::is_finite)
-        || metrics.viewport_width < 1.0
-        || metrics.viewport_height < 1.0
-    {
-        return Err("The browser reported invalid page or viewport dimensions".to_string());
-    }
-    Ok(metrics)
-}
-
-#[cfg(windows)]
-fn validate_browser_screenshot_size(width: f64, height: f64) -> Result<(), String> {
-    if !width.is_finite()
-        || !height.is_finite()
-        || width < 1.0
-        || height < 1.0
-        || width > MAX_SCREENSHOT_DIMENSION
-        || height > MAX_SCREENSHOT_DIMENSION
-        || width * height > MAX_SCREENSHOT_PIXELS
-    {
-        return Err(format!(
-            "The page is too large to capture as one image (maximum {} × {} pixels and {} million pixels total)",
-            MAX_SCREENSHOT_DIMENSION as u32,
-            MAX_SCREENSHOT_DIMENSION as u32,
-            (MAX_SCREENSHOT_PIXELS / 1_000_000.0) as u32,
-        ));
-    }
-    Ok(())
-}
-
+#[cfg(any(windows, test))]
 fn tile_positions(total: f64, viewport: f64) -> Vec<f64> {
     let mut positions = vec![0.0];
     while let Some(last) = positions.last().copied() {
@@ -1074,109 +736,634 @@ fn tile_positions(total: f64, viewport: f64) -> Vec<f64> {
     positions
 }
 
+/// Everything that has to be undone after a screenshot attempt.
 #[cfg(windows)]
-async fn capture_browser_page_tiles(
-    view: Webview,
-    root_context_id: i64,
-    initial_metrics: BrowserPageMetrics,
-) -> Result<BrowserScreenshotCapture, String> {
-    let mut metrics = initial_metrics;
-    for attempt in 0..3 {
-        validate_browser_screenshot_size(metrics.page_width, metrics.page_height)?;
-        let x_positions = tile_positions(metrics.page_width, metrics.viewport_width);
-        let y_positions = tile_positions(metrics.page_height, metrics.viewport_height);
-        let tile_count = x_positions
-            .len()
-            .checked_mul(y_positions.len())
-            .ok_or_else(|| "The full page requires too many screenshot tiles".to_string())?;
-        if tile_count > MAX_SCREENSHOT_TILES {
-            return Err("The full page requires too many screenshot tiles".to_string());
-        }
+#[derive(Default)]
+struct ScreenshotCleanup {
+    dom_enabled: bool,
+    /// Isolated-world contexts where the helper object was installed.
+    contexts: Vec<i64>,
+    object_ids: Vec<String>,
+}
 
-        let mut tiles = Vec::with_capacity(tile_count);
-        let mut total_base64_bytes = 0usize;
-        for y in &y_positions {
-            for x in &x_positions {
-                let position =
-                    set_browser_scroll_position(view.clone(), root_context_id, *x, *y).await?;
-                let screenshot = run_browser_devtools_method(
-                    view.clone(),
-                    "Page.captureScreenshot",
-                    serde_json::json!({ "format": "png", "fromSurface": true }).to_string(),
-                )
-                .await?;
-                let screenshot: serde_json::Value = serde_json::from_str(&screenshot)
-                    .map_err(|error| format!("Unable to read a page image tile: {error}"))?;
-                let data = screenshot
-                    .get("data")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        "The browser did not return a screenshot image tile".to_string()
-                    })?
-                    .to_string();
-                total_base64_bytes =
-                    total_base64_bytes.checked_add(data.len()).ok_or_else(|| {
-                        "The full page image is too large to preview and select".to_string()
-                    })?;
-                if total_base64_bytes > MAX_SCREENSHOT_BASE64_BYTES {
-                    return Err(
-                        "The full page image is too large to preview and select".to_string()
-                    );
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct BrowserViewport {
+    width: f64,
+    height: f64,
+    dpr: f64,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct RegionMetrics {
+    scroll_left: f64,
+    scroll_top: f64,
+    content_width: f64,
+    content_height: f64,
+}
+
+#[cfg(windows)]
+const SCREENSHOT_WORLD_NAME: &str = "nfterm-screenshot";
+
+/// Installed into an isolated world of every frame. It finds scrolling areas
+/// (page, elements, shadow DOM) and offers scroll/sticky helpers that keep
+/// the page layout untouched. Must not contain a double quote followed by `#`.
+#[cfg(windows)]
+const SCREENSHOT_INSPECT_JS: &str = r#"(() => {
+  const previous = globalThis.__nftermShot;
+  if (previous && previous.dispose) {
+    try { previous.dispose(); } catch (error) { /* stale state of an earlier capture */ }
+  }
+  const root = document.scrollingElement || document.documentElement;
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const scrollable = (value) => /^(auto|scroll|overlay)$/.test(value);
+  const STYLE_PROPERTIES = ['position', 'top', 'right', 'bottom', 'left'];
+  const candidates = [];
+  const sticky = [];
+  const scrolled = new Set();
+
+  const describe = (element) => {
+    let text = element.tagName.toLowerCase();
+    if (element.id) {
+      text += '#' + element.id;
+    } else if (typeof element.className === 'string' && element.className.trim()) {
+      text += '.' + element.className.trim().split(/\s+/).slice(0, 2).join('.');
+    }
+    return text;
+  };
+
+  const rootAllowed = () => {
+    const html = getComputedStyle(document.documentElement);
+    const body = document.body ? getComputedStyle(document.body) : null;
+    const allow = (axis) => {
+      const value = html[axis] !== 'visible' ? html[axis] : (body ? body[axis] : 'visible');
+      return value !== 'hidden' && value !== 'clip';
+    };
+    return { allowX: allow('overflowX'), allowY: allow('overflowY') };
+  };
+
+  const rootAxes = rootAllowed();
+  if ((rootAxes.allowY && root.scrollHeight > root.clientHeight + 1) ||
+      (rootAxes.allowX && root.scrollWidth > root.clientWidth + 1)) {
+    candidates.push({
+      kind: 'root', element: root, allowX: rootAxes.allowX, allowY: rootAxes.allowY,
+      x: 0, y: 0, width: root.clientWidth, height: root.clientHeight,
+      scrollbarWidth: Math.max(0, window.innerWidth - root.clientWidth),
+      scrollbarHeight: Math.max(0, window.innerHeight - root.clientHeight),
+      description: 'page',
+    });
+  }
+
+  const addElement = (element) => {
+    if (element === root || element === document.documentElement) return;
+    if (/^(TEXTAREA|INPUT|SELECT)$/.test(element.tagName)) return;
+    if (element.scrollHeight <= element.clientHeight + 1 && element.scrollWidth <= element.clientWidth + 1) return;
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') return;
+    const allowY = scrollable(style.overflowY) && element.scrollHeight > element.clientHeight + 1;
+    const allowX = scrollable(style.overflowX) && element.scrollWidth > element.clientWidth + 1;
+    if (!allowX && !allowY) return;
+    const rect = element.getBoundingClientRect();
+    const border = (name) => parseFloat(style[name]) || 0;
+    candidates.push({
+      kind: 'element', element, allowX, allowY,
+      x: rect.left + element.clientLeft, y: rect.top + element.clientTop,
+      width: element.clientWidth, height: element.clientHeight,
+      scrollbarWidth: Math.max(0, Math.round(rect.width - element.clientWidth - border('borderLeftWidth') - border('borderRightWidth'))),
+      scrollbarHeight: Math.max(0, Math.round(rect.height - element.clientHeight - border('borderTopWidth') - border('borderBottomWidth'))),
+      description: describe(element),
+    });
+  };
+
+  const visit = (scope) => {
+    for (const element of scope.querySelectorAll('*')) {
+      addElement(element);
+      if (element.shadowRoot) visit(element.shadowRoot);
+    }
+  };
+  visit(document);
+
+  candidates.sort((a, b) => b.width * b.height - a.width * a.height);
+
+  const measure = (candidate) => {
+    const isRoot = candidate.kind === 'root';
+    const element = candidate.element;
+    return {
+      scrollLeft: isRoot ? window.scrollX : element.scrollLeft,
+      scrollTop: isRoot ? window.scrollY : element.scrollTop,
+      contentWidth: candidate.allowX ? element.scrollWidth : element.clientWidth,
+      contentHeight: candidate.allowY ? element.scrollHeight : element.clientHeight,
+      clientWidth: element.clientWidth,
+      clientHeight: element.clientHeight,
+    };
+  };
+
+  for (const candidate of candidates) {
+    const metrics = measure(candidate);
+    candidate.originalLeft = metrics.scrollLeft;
+    candidate.originalTop = metrics.scrollTop;
+  }
+
+  const scrollInstant = (candidate, left, top) => {
+    const options = { left, top, behavior: 'instant' };
+    if (candidate.kind === 'root') window.scrollTo(options);
+    else candidate.element.scrollTo(options);
+  };
+
+  const scrollTo = async (index, left, top, settleMs) => {
+    const candidate = candidates[index];
+    scrolled.add(index);
+    scrollInstant(candidate, left, top);
+    await frames();
+    await sleep(settleMs);
+    return measure(candidate);
+  };
+
+  const neutralize = (index) => {
+    const candidate = candidates[index];
+    const isRoot = candidate.kind === 'root';
+    const scopes = [isRoot ? document : candidate.element];
+    let changed = 0;
+    while (scopes.length) {
+      const scope = scopes.pop();
+      for (const element of scope.querySelectorAll('*')) {
+        if (element.shadowRoot) scopes.push(element.shadowRoot);
+        const position = getComputedStyle(element).position;
+        if (position !== 'sticky' && !(isRoot && position === 'fixed')) continue;
+        sticky.push({
+          element,
+          styles: STYLE_PROPERTIES.map((name) => [name, element.style.getPropertyValue(name), element.style.getPropertyPriority(name)]),
+        });
+        if (position === 'sticky') {
+          element.style.setProperty('position', 'relative', 'important');
+          for (const side of ['top', 'right', 'bottom', 'left']) element.style.setProperty(side, 'auto', 'important');
+        } else {
+          element.style.setProperty('position', 'absolute', 'important');
+        }
+        changed += 1;
+      }
+    }
+    return changed;
+  };
+
+  const restoreSticky = () => {
+    for (const item of sticky.splice(0).reverse()) {
+      for (const [name, value, priority] of item.styles) {
+        if (value) item.element.style.setProperty(name, value, priority);
+        else item.element.style.removeProperty(name);
+      }
+    }
+  };
+
+  const api = {
+    scrollTo,
+    neutralize,
+    dispose: () => {
+      restoreSticky();
+      for (const index of scrolled) {
+        const candidate = candidates[index];
+        scrollInstant(candidate, candidate.originalLeft, candidate.originalTop);
+      }
+      scrolled.clear();
+      if (globalThis.__nftermShot === api) delete globalThis.__nftermShot;
+    },
+  };
+  globalThis.__nftermShot = api;
+
+  return {
+    viewport: { width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio || 1 },
+    candidates: candidates.slice(0, 64).map((candidate, index) => Object.assign({
+      index,
+      x: candidate.x, y: candidate.y, width: candidate.width, height: candidate.height,
+      scrollbarWidth: candidate.scrollbarWidth, scrollbarHeight: candidate.scrollbarHeight,
+      description: candidate.description,
+    }, measure(candidate))),
+  };
+})()"#;
+
+#[cfg(windows)]
+fn json_number(value: &serde_json::Value, name: &str) -> Result<f64, String> {
+    value
+        .get(name)
+        .and_then(serde_json::Value::as_f64)
+        .filter(|number| number.is_finite())
+        .ok_or_else(|| format!("The browser reported an invalid {name}"))
+}
+
+#[cfg(windows)]
+fn parse_region_metrics(value: &serde_json::Value) -> Result<RegionMetrics, String> {
+    Ok(RegionMetrics {
+        scroll_left: json_number(value, "scrollLeft")?,
+        scroll_top: json_number(value, "scrollTop")?,
+        content_width: json_number(value, "contentWidth")?,
+        content_height: json_number(value, "contentHeight")?,
+    })
+}
+
+#[cfg(windows)]
+async fn capture_browser_page(
+    view: Webview,
+    cleanup: &mut ScreenshotCleanup,
+) -> Result<BrowserScreenshotCapture, String> {
+    browser_devtools_json(view.clone(), "DOM.enable", "{}".to_string()).await?;
+    cleanup.dom_enabled = true;
+
+    let tree = browser_devtools_json(view.clone(), "Page.getFrameTree", "{}".to_string()).await?;
+    let tree = tree
+        .get("frameTree")
+        .ok_or_else(|| "The browser did not return its frame tree".to_string())?;
+    let mut frames = Vec::new();
+    collect_browser_frame_tree(tree, None, &mut frames)?;
+    if frames.is_empty() || frames.len() > MAX_SCREENSHOT_FRAMES {
+        return Err("The page has too many nested frames to capture safely".to_string());
+    }
+
+    let mut known: HashMap<String, (i64, (f64, f64))> = HashMap::new();
+    let mut candidates = Vec::new();
+    let mut root_viewport = None;
+    let mut skipped_frames = 0usize;
+    for (index, (frame_id, parent_id)) in frames.iter().enumerate() {
+        let parent = match parent_id {
+            None => None,
+            Some(parent_id) => match known.get(parent_id) {
+                Some(parent) => Some(*parent),
+                None => {
+                    skipped_frames += 1;
+                    continue;
                 }
-                tiles.push(BrowserScreenshotTile {
-                    x: position.0,
-                    y: position.1,
-                    viewport_width: metrics.viewport_width,
-                    viewport_height: metrics.viewport_height,
-                    data,
-                });
+            },
+        };
+        match inspect_browser_frame(&view, frame_id, index, parent, cleanup).await {
+            Ok((context_id, offset, viewport, found)) => {
+                known.insert(frame_id.clone(), (context_id, offset));
+                if index == 0 {
+                    root_viewport = Some(viewport);
+                }
+                candidates.extend(found);
+            }
+            Err(error) => {
+                // A frame that cannot be inspected (for example a separate
+                // process) is skipped; only the main frame is required.
+                if index == 0 {
+                    return Err(error);
+                }
+                skipped_frames += 1;
             }
         }
+    }
 
-        let current_metrics = read_browser_page_metrics(view.clone(), root_context_id).await?;
-        if current_metrics.page_width == metrics.page_width
-            && current_metrics.page_height == metrics.page_height
-        {
-            return Ok(BrowserScreenshotCapture {
-                page_width: metrics.page_width,
-                page_height: metrics.page_height,
-                viewport_width: metrics.viewport_width,
-                viewport_height: metrics.viewport_height,
-                tiles,
-            });
+    let viewport =
+        root_viewport.ok_or_else(|| "The browser did not return a main frame".to_string())?;
+    match select_scroll_candidate(&candidates, viewport.width, viewport.height) {
+        Some(selected) => {
+            capture_browser_scroll_region(&view, viewport, &candidates[selected], skipped_frames)
+                .await
         }
-        metrics.page_width = current_metrics.page_width;
-        metrics.page_height = current_metrics.page_height;
-        if attempt == 2 {
-            return Err("The page dimensions kept changing during capture; wait for the page to finish loading and try again".to_string());
+        None => {
+            let data = capture_browser_viewport_png(&view).await?;
+            Ok(BrowserScreenshotCapture {
+                viewport_width: viewport.width,
+                viewport_height: viewport.height,
+                region: None,
+                tiles: vec![data],
+                placements: Vec::new(),
+                skipped_frames,
+            })
         }
     }
-    Err("Unable to capture the full page".to_string())
 }
 
 #[cfg(windows)]
-async fn set_browser_scroll_position(
-    view: Webview,
-    execution_context_id: i64,
+async fn inspect_browser_frame(
+    view: &Webview,
+    frame_id: &str,
+    frame_index: usize,
+    parent: Option<(i64, (f64, f64))>,
+    cleanup: &mut ScreenshotCleanup,
+) -> Result<(i64, (f64, f64), BrowserViewport, Vec<ScrollCandidate>), String> {
+    let world = browser_devtools_json(
+        view.clone(),
+        "Page.createIsolatedWorld",
+        serde_json::json!({ "frameId": frame_id, "worldName": SCREENSHOT_WORLD_NAME }).to_string(),
+    )
+    .await?;
+    let context_id = world
+        .get("executionContextId")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| "The browser could not create a frame execution context".to_string())?;
+
+    let offset = match parent {
+        None => (0.0, 0.0),
+        Some((parent_context_id, parent_offset)) => {
+            let owner = browser_devtools_json(
+                view.clone(),
+                "DOM.getFrameOwner",
+                serde_json::json!({ "frameId": frame_id }).to_string(),
+            )
+            .await?;
+            let backend_node_id = owner
+                .get("backendNodeId")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| "The browser could not locate an iframe element".to_string())?;
+            let resolved = browser_devtools_json(
+                view.clone(),
+                "DOM.resolveNode",
+                serde_json::json!({
+                    "backendNodeId": backend_node_id,
+                    "executionContextId": parent_context_id,
+                })
+                .to_string(),
+            )
+            .await?;
+            let object_id = resolved
+                .pointer("/object/objectId")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "The browser could not resolve an iframe element".to_string())?
+                .to_string();
+            cleanup.object_ids.push(object_id.clone());
+            let origin = call_browser_remote_object(
+                view.clone(),
+                &object_id,
+                "function() { const rect = this.getBoundingClientRect(); const style = getComputedStyle(this); return { x: rect.left + this.clientLeft + (parseFloat(style.paddingLeft) || 0), y: rect.top + this.clientTop + (parseFloat(style.paddingTop) || 0) }; }",
+            )
+            .await?;
+            (
+                parent_offset.0 + json_number(&origin, "x")?,
+                parent_offset.1 + json_number(&origin, "y")?,
+            )
+        }
+    };
+
+    // Registered before running the script so a half-installed helper is
+    // still disposed afterwards.
+    cleanup.contexts.push(context_id);
+    let inspected =
+        evaluate_browser_javascript(view.clone(), context_id, SCREENSHOT_INSPECT_JS.to_string())
+            .await?;
+
+    let viewport_value = inspected
+        .get("viewport")
+        .ok_or_else(|| "The browser did not report its viewport".to_string())?;
+    let viewport = BrowserViewport {
+        width: json_number(viewport_value, "width")?,
+        height: json_number(viewport_value, "height")?,
+        dpr: json_number(viewport_value, "dpr")?.max(0.1),
+    };
+    if viewport.width < 1.0 || viewport.height < 1.0 {
+        return Err("The browser reported an invalid viewport".to_string());
+    }
+
+    let mut found = Vec::new();
+    if let Some(items) = inspected
+        .get("candidates")
+        .and_then(serde_json::Value::as_array)
+    {
+        for item in items {
+            found.push(ScrollCandidate {
+                frame_index,
+                execution_context_id: context_id,
+                index: json_number(item, "index")? as usize,
+                x: json_number(item, "x")? + offset.0,
+                y: json_number(item, "y")? + offset.1,
+                width: json_number(item, "width")?,
+                height: json_number(item, "height")?,
+                content_width: json_number(item, "contentWidth")?,
+                content_height: json_number(item, "contentHeight")?,
+                scrollbar_width: json_number(item, "scrollbarWidth")?,
+                scrollbar_height: json_number(item, "scrollbarHeight")?,
+                description: item
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("scrolling area")
+                    .to_string(),
+            });
+        }
+    }
+    Ok((context_id, offset, viewport, found))
+}
+
+#[cfg(windows)]
+async fn scroll_browser_region(
+    view: &Webview,
+    context_id: i64,
+    index: usize,
     x: f64,
     y: f64,
-) -> Result<(f64, f64), String> {
-    let expression = format!(
-        "(async () => {{ window.scrollTo({{ left: {x}, top: {y}, behavior: 'instant' }}); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); return {{ x: window.scrollX, y: window.scrollY }}; }})()"
-    );
-    let value = evaluate_browser_javascript(view, execution_context_id, expression).await?;
-    let x = value
-        .get("x")
-        .and_then(serde_json::Value::as_f64)
-        .ok_or_else(|| "The browser did not report its horizontal scroll position".to_string())?;
-    let y = value
-        .get("y")
-        .and_then(serde_json::Value::as_f64)
-        .ok_or_else(|| "The browser did not report its vertical scroll position".to_string())?;
-    Ok((x, y))
+) -> Result<RegionMetrics, String> {
+    let value = evaluate_browser_javascript(
+        view.clone(),
+        context_id,
+        format!("globalThis.__nftermShot.scrollTo({index}, {x}, {y}, {SCREENSHOT_SETTLE_MS})"),
+    )
+    .await?;
+    parse_region_metrics(&value)
 }
 
 #[cfg(windows)]
+async fn capture_browser_viewport_png(view: &Webview) -> Result<String, String> {
+    let response = browser_devtools_json(
+        view.clone(),
+        "Page.captureScreenshot",
+        serde_json::json!({ "format": "png", "fromSurface": true }).to_string(),
+    )
+    .await?;
+    response
+        .get("data")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "The browser did not return a screenshot image".to_string())
+}
+
+/// Scrolls the selected area step by step and captures the unchanged viewport
+/// at each step. The page size, styles and layout are never modified (only
+/// sticky/fixed positioning is relaxed temporarily and restored afterwards).
+#[cfg(windows)]
+async fn capture_browser_scroll_region(
+    view: &Webview,
+    viewport: BrowserViewport,
+    candidate: &ScrollCandidate,
+    skipped_frames: usize,
+) -> Result<BrowserScreenshotCapture, String> {
+    let context_id = candidate.execution_context_id;
+    let fixed_width = (viewport.width - candidate.width).max(0.0);
+    let fixed_height = (viewport.height - candidate.height).max(0.0);
+    let cap = |metrics: &RegionMetrics| {
+        capped_content_lengths(
+            fixed_width,
+            fixed_height,
+            candidate.width,
+            candidate.height,
+            metrics.content_width,
+            metrics.content_height,
+            viewport.dpr,
+        )
+    };
+
+    evaluate_browser_javascript(
+        view.clone(),
+        context_id,
+        format!("globalThis.__nftermShot.neutralize({})", candidate.index),
+    )
+    .await?;
+
+    let mut metrics = scroll_browser_region(view, context_id, candidate.index, 0.0, 0.0).await?;
+    let mut tiles: Vec<String> = Vec::new();
+    let mut offsets: Vec<(f64, f64)> = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut tile_limit_reached = false;
+    let mut previous_top: Option<f64> = None;
+    let mut row_top = 0.0;
+    loop {
+        let (content_width, _, _) = cap(&metrics);
+        for x in tile_positions(content_width, candidate.width) {
+            metrics = scroll_browser_region(view, context_id, candidate.index, x, row_top).await?;
+            let data = capture_browser_viewport_png(view).await?;
+            total_bytes = total_bytes
+                .checked_add(data.len())
+                .filter(|bytes| *bytes <= MAX_SCREENSHOT_BASE64_BYTES)
+                .ok_or_else(|| {
+                    "The full page image is too large to preview and select".to_string()
+                })?;
+            offsets.push((metrics.scroll_left, metrics.scroll_top));
+            tiles.push(data);
+            if tiles.len() >= MAX_SCREENSHOT_TILES {
+                tile_limit_reached = true;
+                break;
+            }
+        }
+        if tile_limit_reached {
+            break;
+        }
+        // No progress means the area cannot scroll further.
+        if let Some(previous) = previous_top {
+            if metrics.scroll_top <= previous + 0.5 {
+                break;
+            }
+        }
+        previous_top = Some(metrics.scroll_top);
+        let (_, content_height, _) = cap(&metrics);
+        match next_scroll_position(
+            metrics.scroll_top,
+            candidate.height,
+            content_height,
+            candidate.height,
+        ) {
+            Some(next) => row_top = next,
+            None => break,
+        }
+    }
+
+    let (content_width, content_height, capped) = cap(&metrics);
+    let placements = region_placements(
+        &offsets,
+        candidate.width,
+        candidate.height,
+        content_width,
+        content_height,
+    );
+    let description = if candidate.frame_index > 0 {
+        format!("{} (iframe)", candidate.description)
+    } else {
+        candidate.description.clone()
+    };
+    Ok(BrowserScreenshotCapture {
+        viewport_width: viewport.width,
+        viewport_height: viewport.height,
+        region: Some(BrowserScreenshotRegion {
+            x: candidate.x,
+            y: candidate.y,
+            width: candidate.width,
+            height: candidate.height,
+            content_width,
+            content_height,
+            scrollbar_width: candidate.scrollbar_width,
+            scrollbar_height: candidate.scrollbar_height,
+            description,
+            truncated: capped || tile_limit_reached,
+        }),
+        tiles,
+        placements,
+        skipped_frames,
+    })
+}
+
+#[cfg(windows)]
+async fn cleanup_browser_screenshot(
+    view: Webview,
+    cleanup: ScreenshotCleanup,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for context_id in cleanup.contexts.iter().rev() {
+        if let Err(error) = evaluate_browser_javascript(
+            view.clone(),
+            *context_id,
+            "(() => { const shot = globalThis.__nftermShot; if (shot) shot.dispose(); return true; })()"
+                .to_string(),
+        )
+        .await
+        {
+            errors.push(format!("Unable to restore a frame: {error}"));
+        }
+    }
+    for object_id in &cleanup.object_ids {
+        let _ = browser_devtools_json(
+            view.clone(),
+            "Runtime.releaseObject",
+            serde_json::json!({ "objectId": object_id }).to_string(),
+        )
+        .await;
+    }
+    if cleanup.dom_enabled {
+        let _ = browser_devtools_json(view.clone(), "DOM.disable", "{}".to_string()).await;
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+#[cfg(windows)]
+async fn call_browser_remote_object(
+    view: Webview,
+    object_id: &str,
+    function_declaration: &str,
+) -> Result<serde_json::Value, String> {
+    let response = browser_devtools_json(
+        view,
+        "Runtime.callFunctionOn",
+        serde_json::json!({
+            "objectId": object_id,
+            "functionDeclaration": function_declaration,
+            "returnByValue": true,
+        })
+        .to_string(),
+    )
+    .await?;
+    if let Some(exception) = response.get("exceptionDetails") {
+        return Err(format!(
+            "The browser could not read a page element: {exception}"
+        ));
+    }
+    response
+        .pointer("/result/value")
+        .cloned()
+        .ok_or_else(|| "The browser did not return page element information".to_string())
+}
+
+#[cfg(windows)]
+async fn browser_devtools_json(
+    view: Webview,
+    method: &'static str,
+    parameters: String,
+) -> Result<serde_json::Value, String> {
+    let response = run_browser_devtools_method(view, method, parameters).await?;
+    serde_json::from_str(&response)
+        .map_err(|error| format!("Unable to read browser frame information: {error}"))
+}
+
 #[cfg(windows)]
 async fn evaluate_browser_javascript(
     view: Webview,
@@ -1194,9 +1381,12 @@ async fn evaluate_browser_javascript(
     let response: serde_json::Value = serde_json::from_str(&response)
         .map_err(|error| format!("Unable to read browser page information: {error}"))?;
     if let Some(exception) = response.get("exceptionDetails") {
-        return Err(format!(
-            "The browser could not inspect the page: {exception}"
-        ));
+        let detail = exception
+            .pointer("/exception/description")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| exception.to_string());
+        return Err(format!("The browser could not inspect the page: {detail}"));
     }
     response
         .pointer("/result/value")
@@ -1352,8 +1542,10 @@ fn run_core_command(view: Webview, action: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        browser_view_label, collect_browser_frame_tree, map_browser_bounds_to_physical,
-        parse_web_url, tile_positions, BrowserBounds, BrowserPhysicalBounds,
+        browser_view_label, capped_content_lengths, collect_browser_frame_tree,
+        map_browser_bounds_to_physical, next_scroll_position, parse_web_url, region_placements,
+        select_scroll_candidate, tile_positions, BrowserBounds, BrowserPhysicalBounds,
+        ScrollCandidate,
     };
 
     fn css_bounds(x: f64, y: f64, width: f64, height: f64, dpr: f64) -> BrowserBounds {
@@ -1505,5 +1697,137 @@ mod tests {
                 ("child-b".to_string(), Some("root".to_string())),
             ]
         );
+    }
+
+    fn candidate(
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        content_width: f64,
+        content_height: f64,
+    ) -> ScrollCandidate {
+        ScrollCandidate {
+            frame_index: 0,
+            execution_context_id: 1,
+            index: 0,
+            x,
+            y,
+            width,
+            height,
+            content_width,
+            content_height,
+            scrollbar_width: 0.0,
+            scrollbar_height: 0.0,
+            description: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn scroll_region_selection_prefers_the_area_hiding_the_most_content() {
+        let candidates = vec![
+            // The page itself scrolls by 10 px only.
+            candidate(0.0, 0.0, 1000.0, 700.0, 1000.0, 710.0),
+            // The log table hides thousands of pixels.
+            candidate(200.0, 100.0, 800.0, 500.0, 800.0, 3000.0),
+            // Hides more content but is partly outside the viewport.
+            candidate(200.0, 400.0, 800.0, 500.0, 800.0, 90000.0),
+            // Does not overflow at all.
+            candidate(0.0, 0.0, 1000.0, 700.0, 1000.0, 700.0),
+            // Too small to be the main content.
+            candidate(10.0, 10.0, 20.0, 20.0, 20.0, 5000.0),
+        ];
+        assert_eq!(select_scroll_candidate(&candidates, 1000.0, 700.0), Some(1));
+        assert_eq!(
+            select_scroll_candidate(&candidates[3..], 1000.0, 700.0),
+            None
+        );
+        assert_eq!(select_scroll_candidate(&[], 1000.0, 700.0), None);
+    }
+
+    #[test]
+    fn next_scroll_position_walks_to_the_end_and_follows_growing_content() {
+        assert_eq!(next_scroll_position(0.0, 600.0, 2000.0, 600.0), Some(600.0));
+        assert_eq!(
+            next_scroll_position(600.0, 600.0, 2000.0, 600.0),
+            Some(1200.0)
+        );
+        // The last step is clamped to the end of the content.
+        assert_eq!(
+            next_scroll_position(1200.0, 600.0, 2000.0, 600.0),
+            Some(1400.0)
+        );
+        assert_eq!(next_scroll_position(1400.0, 600.0, 2000.0, 600.0), None);
+        // Content that fits needs no scrolling.
+        assert_eq!(next_scroll_position(0.0, 600.0, 500.0, 600.0), None);
+
+        // A log that loads more rows while scrolling: 3000 px grows to 5000 px.
+        let mut positions = vec![0.0];
+        loop {
+            let content = if positions.len() >= 3 { 5000.0 } else { 3000.0 };
+            match next_scroll_position(*positions.last().unwrap(), 600.0, content, 600.0) {
+                Some(next) => positions.push(next),
+                None => break,
+            }
+            assert!(positions.len() < 100);
+        }
+        assert_eq!(positions.last(), Some(&4400.0));
+        let placements = region_placements(
+            &positions.iter().map(|top| (0.0, *top)).collect::<Vec<_>>(),
+            800.0,
+            600.0,
+            800.0,
+            5000.0,
+        );
+        // Every pixel row of the content is covered by at least one tile.
+        let mut covered_until = 0.0;
+        for placement in &placements {
+            assert!(placement.dst_y <= covered_until);
+            covered_until = f64::max(covered_until, placement.dst_y + placement.height);
+        }
+        assert_eq!(covered_until, 5000.0);
+    }
+
+    #[test]
+    fn region_placements_clip_to_the_content_and_skip_empty_tiles() {
+        let placements = region_placements(
+            &[(0.0, 0.0), (0.0, 600.0), (300.0, 1400.0), (0.0, 9000.0)],
+            800.0,
+            600.0,
+            1000.0,
+            2000.0,
+        );
+        assert_eq!(placements.len(), 3);
+        assert_eq!((placements[0].width, placements[0].height), (800.0, 600.0));
+        // Scrolled 300 px to the right: only 700 px of content remain.
+        assert_eq!((placements[2].width, placements[2].height), (700.0, 600.0));
+        assert_eq!((placements[2].dst_x, placements[2].dst_y), (300.0, 1400.0));
+    }
+
+    #[test]
+    fn capped_content_lengths_respect_dimension_and_pixel_limits() {
+        // Fits: nothing is cut off.
+        assert_eq!(
+            capped_content_lengths(200.0, 200.0, 800.0, 500.0, 800.0, 3000.0, 1.0),
+            (800.0, 3000.0, false)
+        );
+        // Too tall at 100% scale: page height is capped at 16,000 px.
+        let (_, height, truncated) =
+            capped_content_lengths(200.0, 200.0, 800.0, 500.0, 800.0, 90000.0, 1.0);
+        assert!(truncated);
+        assert_eq!(height + 200.0, 16000.0);
+        // At 125% scaling the same limit applies to device pixels.
+        let (_, height, truncated) =
+            capped_content_lengths(200.0, 200.0, 800.0, 500.0, 800.0, 90000.0, 1.25);
+        assert!(truncated);
+        assert!((height + 200.0) * 1.25 <= 16000.0);
+        // Wide pages are limited by the 40 million pixel budget.
+        let (width, height, _) =
+            capped_content_lengths(0.0, 0.0, 1000.0, 700.0, 8000.0, 90000.0, 1.0);
+        assert_eq!(width, 8000.0);
+        assert!(width * height <= 40_000_000.0);
+        // Never smaller than the visible region.
+        let (width, height, _) = capped_content_lengths(0.0, 0.0, 1000.0, 700.0, 10.0, 10.0, 1.0);
+        assert_eq!((width, height), (1000.0, 700.0));
     }
 }

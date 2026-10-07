@@ -17,64 +17,184 @@ type Props = {
 };
 
 type CaptureSelection = { x: number; y: number; width: number; height: number };
-type BrowserScreenshotTile = {
+type BrowserScreenshotPlacement = {
+  tile: number;
+  dstX: number;
+  dstY: number;
+  width: number;
+  height: number;
+};
+type BrowserScreenshotRegion = {
   x: number;
   y: number;
-  viewportWidth: number;
-  viewportHeight: number;
-  data: string;
+  width: number;
+  height: number;
+  contentWidth: number;
+  contentHeight: number;
+  scrollbarWidth: number;
+  scrollbarHeight: number;
+  description: string;
+  truncated: boolean;
 };
 type BrowserScreenshotCapture = {
-  pageWidth: number;
-  pageHeight: number;
   viewportWidth: number;
   viewportHeight: number;
-  tiles: BrowserScreenshotTile[];
+  region: BrowserScreenshotRegion | null;
+  tiles: string[];
+  placements: BrowserScreenshotPlacement[];
+  skippedFrames: number;
 };
+type StitchedScreenshot = { dataUrl: string; notice: string };
 
-async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promise<string> {
-  const firstTile = capture.tiles[0];
-  if (!firstTile || firstTile.viewportWidth <= 0) {
+const MAX_STITCHED_PIXELS = 40_000_000;
+
+async function decodeScreenshotTile(data: string): Promise<HTMLImageElement> {
+  const image = new Image();
+  image.src = `data:image/png;base64,${data}`;
+  await image.decode();
+  return image;
+}
+
+/**
+ * Builds the full page image. The first tile is the unscrolled viewport; every
+ * other tile only contributes the scrolling region at its scroll offset. All
+ * coordinates are CSS pixels, converted with one scale and rounded per edge so
+ * neighbouring pieces never leave a gap.
+ */
+async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promise<StitchedScreenshot> {
+  const baseData = capture.tiles[0];
+  if (!baseData || !(capture.viewportWidth > 0) || !(capture.viewportHeight > 0)) {
     throw new Error("The browser did not return a usable screenshot image.");
   }
-  const firstImage = new Image();
-  firstImage.src = `data:image/png;base64,${firstTile.data}`;
-  await firstImage.decode();
-  if (firstImage.naturalWidth <= 0) {
-    throw new Error("The browser did not return a usable screenshot image.");
+  const skippedNote = capture.skippedFrames > 0
+    ? ` ${capture.skippedFrames} frame(s) could not be inspected and are shown as visible.`
+    : "";
+  const region = capture.region;
+  if (!region) {
+    return {
+      dataUrl: `data:image/png;base64,${baseData}`,
+      notice: `No scrollable area was detected, so only the current view is shown.${skippedNote}`,
+    };
   }
-  const scale = firstImage.naturalWidth / firstTile.viewportWidth;
+
+  const base = await decodeScreenshotTile(baseData);
+  const scale = base.naturalWidth / capture.viewportWidth;
   if (!Number.isFinite(scale) || scale <= 0) {
     throw new Error("The browser returned invalid screenshot dimensions.");
   }
+  const extraWidth = Math.max(0, region.contentWidth - region.width);
+  const extraHeight = Math.max(0, region.contentHeight - region.height);
+  const px = (value: number) => Math.round(value * scale);
 
   const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(capture.pageWidth * scale);
-  canvas.height = Math.ceil(capture.pageHeight * scale);
-  if (canvas.width < 1 || canvas.height < 1 || canvas.width * canvas.height > 40_000_000) {
+  canvas.width = px(capture.viewportWidth + extraWidth);
+  canvas.height = px(capture.viewportHeight + extraHeight);
+  if (canvas.width < 1 || canvas.height < 1 || canvas.width * canvas.height > MAX_STITCHED_PIXELS) {
     throw new Error("The full page image is too large to preview and select.");
   }
   const context = canvas.getContext("2d");
   if (!context) throw new Error("Unable to prepare the full page screenshot.");
 
-  for (const [index, tile] of capture.tiles.entries()) {
-    const image = index === 0 ? firstImage : new Image();
-    if (index > 0) {
-      image.src = `data:image/png;base64,${tile.data}`;
-      await image.decode();
+  const copy = (image: HTMLImageElement, srcX: number, srcY: number, width: number, height: number, dstX: number, dstY: number) => {
+    const left = px(srcX);
+    const top = px(srcY);
+    const sourceWidth = px(srcX + width) - left;
+    const sourceHeight = px(srcY + height) - top;
+    if (sourceWidth <= 0 || sourceHeight <= 0) return;
+    context.drawImage(image, left, top, sourceWidth, sourceHeight, px(dstX), px(dstY), sourceWidth, sourceHeight);
+  };
+  const probe = document.createElement("canvas");
+  probe.width = 1;
+  probe.height = 1;
+  const probeContext = probe.getContext("2d");
+  const sample = (x: number, y: number): string | null => {
+    const sx = px(x);
+    const sy = px(y);
+    if (!probeContext || sx < 0 || sy < 0 || sx >= base.naturalWidth || sy >= base.naturalHeight) return null;
+    probeContext.clearRect(0, 0, 1, 1);
+    probeContext.drawImage(base, sx, sy, 1, 1, 0, 0, 1, 1);
+    const [red, green, blue] = probeContext.getImageData(0, 0, 1, 1).data;
+    return `rgb(${red}, ${green}, ${blue})`;
+  };
+  const fill = (color: string, x: number, y: number, width: number, height: number) => {
+    context.fillStyle = color;
+    context.fillRect(px(x), px(y), px(x + width) - px(x), px(y + height) - px(y));
+  };
+
+  const viewportWidth = capture.viewportWidth;
+  const viewportHeight = capture.viewportHeight;
+  const right = region.x + region.width;
+  const bottom = region.y + region.height;
+  const rightStart = right + region.scrollbarWidth;
+  const probeY = Math.max(0, bottom - 2);
+
+  // Background for the blank areas that appear where the region grew.
+  fill(sample(region.x + region.width / 2, probeY) ?? "#ffffff", 0, 0, viewportWidth + extraWidth, viewportHeight + extraHeight);
+  if (extraHeight > 0) {
+    if (region.x >= 4) {
+      const color = sample(region.x / 2, probeY);
+      if (color) fill(color, 0, bottom, region.x, extraHeight);
     }
-    const left = Math.round(tile.x * scale);
-    const top = Math.round(tile.y * scale);
-    const width = Math.min(image.naturalWidth, canvas.width - left);
-    const height = Math.min(image.naturalHeight, canvas.height - top);
-    if (width > 0 && height > 0) {
-      context.drawImage(image, 0, 0, width, height, left, top, width, height);
+    if (rightStart + 4 <= viewportWidth) {
+      const color = sample((rightStart + viewportWidth) / 2, probeY);
+      if (color) fill(color, rightStart + extraWidth, bottom, viewportWidth - rightStart, extraHeight);
     }
-    image.removeAttribute("src");
-    tile.data = "";
   }
 
-  return canvas.toDataURL("image/png");
+  // Everything around the region comes from the unscrolled base image; the
+  // parts after the region move down/right by the amount the region grew. The
+  // region's own scrollbars are left out.
+  const columns = [
+    { x: 0, width: region.x, shift: 0 },
+    { x: region.x, width: region.width, shift: 0 },
+    { x: right, width: Math.max(0, viewportWidth - right), shift: extraWidth },
+  ];
+  const rows = [
+    { y: 0, height: region.y, shift: 0 },
+    { y: region.y, height: region.height, shift: 0 },
+    { y: bottom, height: Math.max(0, viewportHeight - bottom), shift: extraHeight },
+  ];
+  rows.forEach((row, rowIndex) => {
+    columns.forEach((column, columnIndex) => {
+      if (rowIndex === 1 && columnIndex === 1) return;
+      let { x, width } = column;
+      let { y, height } = row;
+      if (rowIndex === 1 && columnIndex === 2) {
+        const skip = Math.min(width, region.scrollbarWidth);
+        x += skip;
+        width -= skip;
+      }
+      if (rowIndex === 2 && columnIndex === 1) {
+        const skip = Math.min(height, region.scrollbarHeight);
+        y += skip;
+        height -= skip;
+      }
+      if (width <= 0 || height <= 0) return;
+      copy(base, x, y, width, height, x + column.shift, y + row.shift);
+    });
+  });
+
+  // The region content: every tile contributes the region rectangle of its
+  // viewport image at the scroll offset it was captured at.
+  for (let tile = 0; tile < capture.tiles.length; tile += 1) {
+    const placements = capture.placements.filter((placement) => placement.tile === tile);
+    if (placements.length > 0) {
+      const image = tile === 0 ? base : await decodeScreenshotTile(capture.tiles[tile]);
+      for (const placement of placements) {
+        copy(image, region.x, region.y, placement.width, placement.height, region.x + placement.dstX, region.y + placement.dstY);
+      }
+      if (image !== base) image.removeAttribute("src");
+    }
+    capture.tiles[tile] = "";
+  }
+  base.removeAttribute("src");
+
+  const size = (width: number, height: number) => `${Math.round(width)}×${Math.round(height)}`;
+  const truncatedNote = region.truncated ? " Capture stopped at the maximum image size." : "";
+  return {
+    dataUrl: canvas.toDataURL("image/png"),
+    notice: `Captured scrolling area "${region.description}": ${size(region.width, region.height)} px visible, ${size(region.contentWidth, region.contentHeight)} px of content.${truncatedNote}${skippedNote}`,
+  };
 }
 
 const isHostWithPort = (value: string) => /^(?:\[[\da-f:.]+\]|[^/:?#\s]+):\d+(?:[/?#]|$)/i.test(value);
@@ -332,10 +452,11 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
     setError("");
     try {
       const capture = await invoke<BrowserScreenshotCapture>("browser_capture_full_page", { paneId });
-      const image = await stitchBrowserScreenshot(capture);
+      const stitched = await stitchBrowserScreenshot(capture);
       await invoke<void>("browser_set_visible", { paneId, visible: false });
       setCaptureSelection(null);
-      setCaptureImage(image);
+      setCaptureImage(stitched.dataUrl);
+      setCaptureNotice(stitched.notice);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
