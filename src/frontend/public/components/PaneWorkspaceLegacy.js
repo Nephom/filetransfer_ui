@@ -106,7 +106,7 @@ const consumePasteProgressStream = async (response, onEvent) => {
 
 const emptyPane = (id, locationId, z) => ({ id, locationId, path: '', files: [], selected: [], query: '', loading: true, error: '', mode: localStorage.getItem(paneViewModeKey) || 'details', minimized: false, maximized: false, z });
 
-export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onRetryUpload, onDiscardUpload, onClearNeedsAction, onClearFinished, onUploadFiles, onDismissTerminalMenu }) {
+export default function PaneWorkspace({ token, user, onLogout, onStyleChange, transferQueue = [], onCancelUpload, onResumeUpload, onRetryUpload, onDiscardUpload, onClearNeedsAction, onClearFinished, onUploadFiles, onDownloadItems, onQueueDownloadItems, onTrackTransfer, onUpdateTransfer, onFinishTransfer, collectDroppedUpload, defaultArchiveFormat = 'tar.gz', onArchiveFormatChange, onDismissTerminalMenu }) {
     const [locations, setLocations] = React.useState([]);
     const [locationRailOverflow, setLocationRailOverflow] = React.useState(false);
     const [locationPickerOpen, setLocationPickerOpen] = React.useState(false);
@@ -131,6 +131,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const [uploadQueuePosition, setUploadQueuePosition] = React.useState(null);
     const [uploadQueueSize, setUploadQueueSize] = React.useState(null);
     const [transferProgress, setTransferProgress] = React.useState(null);
+    const [downloadDialog, setDownloadDialog] = React.useState(null);
     const [clipboard, setClipboard] = React.useState(null);
     const [contextMenu, setContextMenu] = React.useState(null);
     const menuPosition = usePaneMenuPosition(contextMenu);
@@ -157,11 +158,11 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
     const terminalWindowsRef = React.useRef(terminalWindows);
     terminalWindowsRef.current = terminalWindows;
     const activeWindow = windows.find((pane) => pane.id === activeId && !pane.minimized);
-    const uploadQueueItems = transferQueue.filter((item) => item.kind === 'upload');
-    const activeUploadCount = uploadQueueItems.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length;
-    const uploadAttentionCount = uploadQueueItems.filter((item) => ['failed', 'needs_user_action'].includes(item.status)).length;
-    const uploadFinishedCount = uploadQueueItems.filter((item) => ['completed', 'cancelled'].includes(item.status)).length;
-    const uploadTotals = uploadQueueItems.reduce((totals, item) => {
+    const queueTransfers = transferQueue;
+    const activeUploadCount = queueTransfers.filter((item) => ['queued', 'running', 'retrying'].includes(item.status)).length;
+    const uploadAttentionCount = queueTransfers.filter((item) => ['failed', 'needs_user_action'].includes(item.status)).length;
+    const uploadFinishedCount = queueTransfers.filter((item) => ['completed', 'cancelled'].includes(item.status)).length;
+    const uploadTotals = queueTransfers.reduce((totals, item) => {
         const progress = item.progress || {};
         totals.files += Number(progress.totalItems) || 0;
         totals.doneFiles += item.status === 'completed' ? (Number(progress.totalItems) || 0) : (Number(progress.completedItems) || 0);
@@ -175,23 +176,25 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         if (item.status === 'completed') return 100;
         const progress = item.progress;
         if (!progress) return 0;
+        if (item.external) return progress.percentage == null ? 0 : Math.max(0, Math.min(100, Number(progress.percentage) || 0));
         if (Number(progress.totalBytes) > 0) return Math.max(0, Math.min(100, (Number(progress.completedBytes) || 0) / Number(progress.totalBytes) * 100));
         if (Number(progress.totalItems) > 0) return Math.max(0, Math.min(100, (Number(progress.completedItems) || 0) / Number(progress.totalItems) * 100));
         return 0;
     };
-    const uploadStatusLabels = { queued: 'Queued', running: 'Uploading', retrying: 'Retrying', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', needs_user_action: 'Needs action' };
+    const uploadStatusLabels = { queued: 'Queued', running: 'Transferring', retrying: 'Retrying', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled', needs_user_action: 'Needs action' };
     const locationFor = (id) => locations.find((location) => location.id === id);
     const announce = (message) => { setToast(message); window.setTimeout(() => setToast(''), 3000); };
     React.useEffect(() => {
         const previousStatuses = previousUploadStatusesRef.current;
-        const shouldOpen = uploadQueueItems.some((item) => {
+        const shouldOpen = queueTransfers.some((item) => {
+            if (item.external) return false;
             const previousStatus = previousStatuses.get(item.id);
             if (previousStatus === item.status) return false;
             return previousStatus === undefined
                 ? ['queued', 'running', 'retrying', 'failed', 'needs_user_action'].includes(item.status)
                 : ['failed', 'needs_user_action'].includes(item.status);
         });
-        previousUploadStatusesRef.current = new Map(uploadQueueItems.map((item) => [item.id, item.status]));
+        previousUploadStatusesRef.current = new Map(queueTransfers.map((item) => [item.id, item.status]));
         if (shouldOpen) setUploadQueueOpen(true);
     }, [transferQueue]);
     React.useLayoutEffect(() => {
@@ -456,11 +459,41 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             failures: [],
             message: `Preparing to ${operation === 'cut' ? 'move' : 'copy'} items...`
         });
+        const queueKind = operation === 'cut' ? 'move' : 'copy';
+        const trackId = onTrackTransfer?.({
+            kind: queueKind,
+            label: `${operationLabel} ${totalItems} item${totalItems === 1 ? '' : 's'}`,
+            detail: `Preparing to ${queueKind} items...`,
+            totalItems,
+            locationId: source.locationId,
+            locationName: sourceLocation.displayName || sourceLocation.id,
+            destinationPath: source.path,
+            targetLocationId: destination.locationId,
+            targetLocationName: destinationLocation.displayName || destinationLocation.id,
+            targetPath: destination.path
+        }) || null;
+        const trackProgress = (data) => {
+            if (!trackId) return;
+            onUpdateTransfer?.(trackId, {
+                completedItems: data.completedItems,
+                resolvedItems: data.resolvedItems,
+                totalItems: data.totalItems,
+                currentFile: data.currentName,
+                detail: data.message
+            });
+        };
         const updateProgress = (patch) => {
+            trackProgress(patch);
             if (!transferMountedRef.current) return;
             setTransferProgress((current) => current?.id === transferId ? { ...current, ...patch } : current);
         };
         const finishProgress = (status, data) => {
+            if (trackId) {
+                const queueStatus = status === 'completed' ? 'completed' : (status === 'partial' ? 'needs_user_action' : 'failed');
+                onFinishTransfer?.(trackId, queueStatus, data.message || `${operationLabel} ${status}.`, {
+                    totalItems: data.totalItems, completedItems: data.completedItems, resolvedItems: data.resolvedItems
+                });
+            }
             if (!transferMountedRef.current) return;
             clearTransferDismissTimer();
             updateProgress({
@@ -491,6 +524,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
                     } else if (event === 'item-start') {
                         updateProgress({ ...data, phase: 'transferring', status: 'running' });
                     } else if (event === 'item-result') {
+                        trackProgress(data);
                         setTransferProgress((current) => {
                             if (!transferMountedRef.current || current?.id !== transferId) return current;
                             const previousFailures = (current.failures || []).filter((result) => result.itemIndex !== data.itemIndex);
@@ -533,10 +567,12 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             }
         } catch (error) {
             clearTransferDismissTimer();
-            updateProgress({
+            const unconfirmedMessage = `${operationLabel} outcome is unconfirmed: ${error.message}. Check both Locations before retrying.`;
+            if (trackId) onFinishTransfer?.(trackId, 'failed', unconfirmedMessage, { totalItems });
+            if (transferMountedRef.current) updateProgress({
                 status: 'unconfirmed',
                 phase: 'finished',
-                message: `${operationLabel} outcome is unconfirmed: ${error.message}. Check both Locations before retrying.`
+                message: unconfirmedMessage
             });
         } finally {
             transferRunningRef.current = false;
@@ -553,7 +589,16 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             if (action === 'new-folder') { const name = window.prompt('Folder name'); if (!name?.trim()) return; const response = await fetch('/api/folders', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ folderName: name.trim(), currentPath: pane.path }) }); if (!response.ok) throw new Error('Could not create folder.'); }
             if (action === 'rename') { if (items.length !== 1) return announce('Select one item to rename.'); const name = window.prompt('New name', items[0].name); if (!name?.trim()) return; const oldPath = normalisePanePath(items[0].path || `${pane.path}/${items[0].name}`); const response = await fetch('/api/files/rename', { method: 'PUT', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ oldPath, oldName: items[0].name, newName: name.trim(), currentPath: oldPath.split('/').slice(0, -1).join('/') }) }); if (!response.ok) throw new Error('Rename failed.'); }
             if (action === 'delete') { if (!items.length || !window.confirm(`Delete ${items.length} selected item${items.length === 1 ? '' : 's'}?`)) return; const groups = new Map(); items.forEach((item) => { const path = normalisePanePath(item.path || `${pane.path}/${item.name}`); const parent = path.split('/').slice(0, -1).join('/'); if (!groups.has(parent)) groups.set(parent, []); groups.get(parent).push({ name: path.split('/').pop(), path, isDirectory: item.isDirectory }); }); for (const [currentPath, group] of groups) { const response = await fetch('/api/files/delete', { method: 'DELETE', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ currentPath, items: group }) }); if (!response.ok) throw new Error('Delete failed.'); } }
-            if (action === 'download') { if (!items.length) return announce('Select files to download.'); for (const item of items) { const response = await fetch(`/api/files/download/${encodeURIComponent(item.path)}`, { headers }); if (!response.ok) throw new Error('Download failed.'); const url = URL.createObjectURL(await response.blob()); const link = document.createElement('a'); link.href = url; link.download = item.name; link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 60000); } }
+            if (action === 'download') {
+                if (!items.length) return announce('Select files to download.');
+                if (typeof onDownloadItems !== 'function') throw new Error('The Transfer Queue is unavailable.');
+                const context = { locationId: pane.locationId, locationName: location.displayName || location.id, path: pane.path };
+                // A folder or several items need an archive/queue choice, exactly like the Classical browser.
+                if (items.length > 1 || items[0].isDirectory) { setDownloadDialog({ paneId: id, items, context, mode: defaultArchiveFormat || 'tar.gz' }); return; }
+                onDownloadItems(items, context);
+                setUploadQueueOpen(true);
+                return announce('Download added to the Transfer Queue.');
+            }
             if (action === 'share') { if (items.length !== 1 || items[0].isDirectory) return announce('Select one file to share.'); const response = await fetch('/api/files/share', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ locationId: pane.locationId, filePath: items[0].path, expiresIn: 86400, maxDownloads: 0 }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Share failed.'); if (data.data?.fullUrl) await navigator.clipboard.writeText(data.data.fullUrl); announce('Secure share link copied.'); return; }
             if (action === 'copy' || action === 'move') { if (!items.length) return announce(`Select files to ${action}.`); setClipboard({ sourceId: id, items, operation: action === 'copy' ? 'copy' : 'cut' }); return announce(`${action === 'copy' ? 'Copied' : 'Moved'} items are ready. Drop them into another open window.`); }
             announce(`${action.replace('-', ' ')} complete.`); await loadFiles(id, pane.path, pane.query);
@@ -578,7 +623,25 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
         setUploadQueueOpen(true);
         announce('Resumable upload added to the Transfer Queue.');
     };
+    const hasExternalFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files') && !Array.from(event.dataTransfer?.types || []).includes('application/x-pane-file');
+    const dropExternalFiles = async (event, destinationId) => {
+        const pane = windowsRef.current.find((item) => item.id === destinationId); const location = locationFor(pane?.locationId);
+        if (!pane || !location) return;
+        if (typeof onUploadFiles !== 'function' || typeof collectDroppedUpload !== 'function') { patchWindow(pane.id, { error: 'Resumable API upload queue is unavailable.' }); return; }
+        const dropped = await collectDroppedUpload(event.dataTransfer);
+        if (!dropped.files.length && !dropped.directories.length) return;
+        const warning = dropped.files.length > 500
+            ? '\n\nLarge uploads are split into child batches. Up to 2 batches can run concurrently; this may use more system/storage resources and can reduce overall efficiency.'
+            : '';
+        if (!window.confirm(`Upload ${dropped.files.length} file${dropped.files.length === 1 ? '' : 's'} and ${dropped.directories.length} folder${dropped.directories.length === 1 ? '' : 's'} to ${pane.path ? `/${pane.path}` : '/'}?${warning}`)) return;
+        onUploadFiles(dropped.files, dropped.directories, {
+            path: pane.path, locationId: pane.locationId, locationName: location.displayName || location.id,
+        }, () => loadFiles(pane.id, pane.path, pane.query));
+        setUploadQueueOpen(true);
+        announce('Resumable upload added to the Transfer Queue.');
+    };
     const handleDrop = (event, destinationId) => {
+        if (hasExternalFiles(event)) { event.preventDefault(); event.stopPropagation(); void dropExternalFiles(event, destinationId); return; }
         let payload; try { payload = JSON.parse(event.dataTransfer.getData('application/x-pane-file') || '{}'); } catch { return; }
         const source = windows.find((pane) => pane.id === payload.windowId); if (!source) return;
         const pending = clipboard?.sourceId === source.id ? clipboard : null;
@@ -891,6 +954,33 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
             />
         </main>
         <input ref={fileInput} type="file" multiple hidden onChange={upload} />
+        {downloadDialog && <div className="pane-download-mode-cover" onClick={() => setDownloadDialog(null)}>
+            <section className="pane-download-mode" role="dialog" aria-modal="true" aria-labelledby="pane-download-mode-title" onClick={(event) => event.stopPropagation()}>
+                <h2 id="pane-download-mode-title">Choose download mode</h2>
+                <p>Download {downloadDialog.items.length} selected item{downloadDialog.items.length === 1 ? '' : 's'} as a single archive, or queue every file individually.</p>
+                {[['tar.gz', 'tar.gz archive', ''], ['zip', 'zip archive', ''], ['queue', 'Queue (one file at a time)', "Files are downloaded individually using the browser's download settings."]].map(([mode, title, hint]) =>
+                    <label className="pane-download-mode-option" key={mode}>
+                        <input type="radio" name="paneDownloadMode" checked={downloadDialog.mode === mode} onChange={() => setDownloadDialog((current) => current && { ...current, mode })} />
+                        <span><strong>{title}</strong>{hint && <small>{hint}</small>}</span>
+                    </label>)}
+                <div className="pane-download-mode-actions">
+                    <button type="button" className="pane-download-mode-confirm" onClick={() => {
+                        const { items, context, mode } = downloadDialog;
+                        setDownloadDialog(null);
+                        if (mode === 'queue') {
+                            if (typeof onQueueDownloadItems !== 'function') { announce('The Transfer Queue is unavailable.'); return; }
+                            void onQueueDownloadItems(items, context);
+                        } else {
+                            onArchiveFormatChange?.(mode);
+                            onDownloadItems(items, context, mode);
+                        }
+                        setUploadQueueOpen(true);
+                        announce('Download added to the Transfer Queue.');
+                    }}>Start download</button>
+                    <button type="button" onClick={() => setDownloadDialog(null)}>Cancel</button>
+                </div>
+            </section>
+        </div>}
         {transferProgress && <div className="pane-transfer-cover" data-status={transferProgress.status}>
             <section className="pane-transfer-panel" role="dialog" aria-modal={transferProgress.status === 'running' ? 'true' : 'false'} aria-labelledby="pane-transfer-title" aria-describedby="pane-transfer-message">
                 <header className="pane-transfer-header">
@@ -949,15 +1039,15 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
                 <span>{activeUploadCount} active</span>
                 {uploadAttentionCount > 0 && <span className="pane-upload-queue-warn">{uploadAttentionCount} need attention</span>}
                 <span className="pane-upload-queue-summary-actions">
-                    {uploadQueueItems.some((item) => item.status === 'needs_user_action') &&
+                    {queueTransfers.some((item) => item.status === 'needs_user_action') &&
                         <button type="button" onClick={() => onClearNeedsAction?.()}>Clear needs action</button>}
                     <button type="button" disabled={uploadFinishedCount === 0} onClick={() => void onClearFinished?.()}
                         title="Clears every Completed and Cancelled record from this list. Running, failed and needs-action uploads are kept, and files that were already uploaded are not affected.">Clear list</button>
                 </span>
             </div>
             <div className="pane-upload-queue-list">
-                {uploadQueueItems.length === 0 && <p className="pane-upload-queue-empty">No uploads in the queue.</p>}
-                {uploadQueueItems.slice(-8).map((item) => {
+                {queueTransfers.length === 0 && <p className="pane-upload-queue-empty">No transfers in the queue.</p>}
+                {queueTransfers.slice(-8).map((item) => {
                     const running = ['running', 'retrying'].includes(item.status);
                     const inFlight = running || item.status === 'queued';
                     const percent = uploadItemPercent(item);
@@ -965,21 +1055,28 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, tr
                     const totalFiles = Number(progress.totalItems) || 0;
                     const doneFiles = item.status === 'completed' ? totalFiles : Math.min(totalFiles, Number(progress.completedItems) || 0);
                     const currentName = running && item.currentFile ? item.currentFile : (item.fileLabel || item.label);
-                    const destination = `${item.locationName || item.locationId || ''}:/${String(item.destinationPath || '').replace(/^\/+/, '')}`;
+                    const queuePathLabel = (name, path) => `${name || ''}:/${String(path || '').replace(/^\/+/, '')}`;
+                    const isDownload = item.kind === 'download' || item.kind === 'download-set';
+                    const isExternal = Boolean(item.external);
+                    const destination = queuePathLabel(item.locationName || item.locationId, item.destinationPath);
+                    const routeLabel = isExternal
+                        ? `${destination} \u2192 ${queuePathLabel(item.targetLocationName || item.targetLocationId, item.targetPath)}`
+                        : destination;
+                    const routeTag = isDownload || isExternal ? 'From' : 'To';
                     const showDetail = item.status !== 'completed' && !(running && item.currentFile) && item.detail;
-                    return <article className={`pane-upload-queue-item queue-status-${item.status}`} key={item.id}>
-                        <div className="pane-upload-queue-dest" title={destination}><span>To</span>{destination}</div>
+                    return <article className={`pane-upload-queue-item queue-status-${item.status} queue-kind-${item.kind}`} data-queue-kind={item.kind} key={item.id}>
+                        <div className="pane-upload-queue-dest" title={routeLabel}><span>{routeTag}</span>{routeLabel}</div>
                         <div className="pane-upload-queue-row">
                             <b className="pane-upload-queue-name" title={currentName}>{currentName}</b>
                             {running && <span className="pane-upload-queue-flow" aria-hidden="true"><i /><i /><i /></span>}
                             <span className="pane-upload-queue-state">{item.status === 'completed' ? 'Completed' : (inFlight ? `${Math.round(percent)}%` : uploadStatusLabels[item.status] || item.status)}</span>
                         </div>
-                        {inFlight && <div className="pane-upload-queue-bar" role="progressbar" aria-label={`Upload progress for ${currentName}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}><span style={{ width: `${percent}%` }} /></div>}
+                        {inFlight && <div className="pane-upload-queue-bar" role="progressbar" aria-label={`Transfer progress for ${currentName}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}><span style={{ width: `${percent}%` }} /></div>}
                         <div className="pane-upload-queue-meta">
-                            <small>{running && totalFiles ? `File ${Math.min(totalFiles, doneFiles + 1)}/${totalFiles}` : `${doneFiles}/${totalFiles} files`}{progress.totalBytes ? ` · ${formatQueueSize(item.status === 'completed' ? progress.totalBytes : progress.completedBytes || 0)} / ${formatQueueSize(progress.totalBytes)}` : ''}</small>
+                            <small>{isDownload && !totalFiles ? 'Preparing download' : running && totalFiles && !isDownload ? `${isExternal ? 'Item' : 'File'} ${Math.min(totalFiles, doneFiles + 1)}/${totalFiles}` : `${doneFiles}/${totalFiles} ${isExternal ? 'items' : 'files'}`}{progress.totalBytes ? ` · ${formatQueueSize(item.status === 'completed' ? progress.totalBytes : progress.completedBytes || 0)} / ${formatQueueSize(progress.totalBytes)}` : ''}</small>
                             <span className="pane-upload-queue-actions">
-                                {['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => onCancelUpload?.(item.id)}>Cancel</button>}
-                                {item.serverSessionId && item.status === 'needs_user_action' && <button type="button" onClick={() => {
+                                {!isExternal && ['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => onCancelUpload?.(item.id)}>Cancel</button>}
+                                {item.kind === 'upload' && item.serverSessionId && item.status === 'needs_user_action' && <button type="button" onClick={() => {
                                     if (item.errorCategory === 'validation' && onRetryUpload) return onRetryUpload(item.id);
                                     const pane = windowsRef.current.find(candidate => candidate.locationId === item.locationId) || activeWindow;
                                     onResumeUpload?.(item, pane ? () => loadFiles(pane.id, pane.path, pane.query) : undefined);

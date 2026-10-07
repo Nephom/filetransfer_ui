@@ -219,7 +219,8 @@ export default function FileBrowser({ token, user, onLogout }) {
             if (session.active) setError(handoffError.message);
         }
     };
-    queueItemsRef.current = queueItems;
+    // queueItemsRef is written by every queue mutator at the moment it calls setQueueItems. Re-assigning it from
+    // render state here could roll back a just-written update (lost progress) when a render lands in between.
     React.useEffect(() => { queueStoreRef.current.replace(queueItems); }, [queueItems]);
 
     // Each render's actions retain the revision that produced their file/selection data.
@@ -882,12 +883,68 @@ export default function FileBrowser({ token, user, onLogout }) {
         setQueueOpen(true);
         void runNextQueueItem();
     };
+    // Copy/move run in the Pane workspace over a server-sent progress stream. They have no
+    // queue job (the executor never picks them up) and cannot be cancelled; the Pane reports
+    // their lifecycle here so they appear in the shared Transfer Queue with real counts.
+    const trackExternalTransfer = (item) => {
+        if (!sessionRef.current.active) return null;
+        const id = item.id || `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const totalItems = Number(item.totalItems) || 0;
+        const entry = {
+            id, label: item.label, status: 'running', detail: item.detail || 'Preparing transfer...', kind: item.kind,
+            external: true, locationId: item.locationId, locationName: item.locationName, destinationPath: item.destinationPath,
+            targetLocationId: item.targetLocationId, targetLocationName: item.targetLocationName, targetPath: item.targetPath,
+            finishedAt: null, currentFile: null,
+            progress: { completedBytes: 0, totalBytes: null, percentage: totalItems ? 0 : null, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems, updatedAt: Date.now() }
+        };
+        const next = [...queueItemsRef.current, entry];
+        queueItemsRef.current = next;
+        queueStoreRef.current.replace(next);
+        setQueueItems(next);
+        setQueueOpen(true);
+        return id;
+    };
+    const updateExternalTransfer = (id, patch) => {
+        const current = queueItemsRef.current.find((candidate) => candidate.id === id);
+        if (!current || !current.external) return;
+        const completedItems = Number.isFinite(patch.completedItems) ? patch.completedItems : current.progress?.completedItems || 0;
+        const totalItems = Number.isFinite(patch.totalItems) ? patch.totalItems : current.progress?.totalItems || 0;
+        const resolvedItems = Number.isFinite(patch.resolvedItems) ? patch.resolvedItems : completedItems;
+        updateQueueItem(id, {
+            ...(patch.detail !== undefined ? { detail: patch.detail } : {}),
+            ...(patch.currentFile !== undefined ? { currentFile: patch.currentFile } : {}),
+            progress: { ...(current.progress || {}), completedItems, totalItems, percentage: totalItems ? Math.min(100, resolvedItems / totalItems * 100) : null, updatedAt: Date.now() }
+        });
+    };
+    const finishExternalTransfer = (id, status, detail, counts = {}) => {
+        const current = queueItemsRef.current.find((candidate) => candidate.id === id);
+        if (!current || !current.external) return;
+        const totalItems = Number.isFinite(counts.totalItems) ? counts.totalItems : current.progress?.totalItems || 0;
+        const completedItems = status === 'completed' ? totalItems : (Number.isFinite(counts.completedItems) ? counts.completedItems : current.progress?.completedItems || 0);
+        const resolvedItems = status === 'completed' ? totalItems : (Number.isFinite(counts.resolvedItems) ? counts.resolvedItems : completedItems);
+        updateQueueItem(id, { progress: { ...(current.progress || {}), completedItems, totalItems, percentage: totalItems ? Math.min(100, resolvedItems / totalItems * 100) : null, updatedAt: Date.now() } });
+        finishQueueItem(id, status, detail);
+    };
     const streamResponse = async (id, response, totalBytes = null) => {
         if (!response.body) return response.blob();
         const reader = response.body.getReader();
         const chunks = [];
         let completedBytes = 0;
         const samples = [];
+        // A queue-mode download is one record for many files: report overall bytes and file counts,
+        // not just the bytes of the file currently streaming.
+        const progressFor = (fileBytes, rate, eta, now, finished = false) => {
+            const entry = queueItemsRef.current.find((candidate) => candidate.id === id);
+            if (entry?.kind === 'download-set') {
+                const setTotal = entry.setTotalBytes ?? null;
+                const overall = (entry.baseBytes || 0) + fileBytes;
+                return { completedBytes: overall, totalBytes: setTotal, percentage: setTotal ? Math.min(100, overall / setTotal * 100) : null, bytesPerSecond: rate, etaSeconds: eta, completedItems: entry.progress?.completedItems || 0, totalItems: entry.progress?.totalItems || 0, updatedAt: now };
+            }
+            // Once the stream has ended the transferred size is the real size, whatever was declared.
+            const knownTotal = finished ? fileBytes : totalBytes;
+            const percentage = knownTotal ? Math.min(100, fileBytes / knownTotal * 100) : null;
+            return { completedBytes: fileBytes, totalBytes: knownTotal, percentage, bytesPerSecond: rate, etaSeconds: eta, completedItems: 0, totalItems: 1, updatedAt: now };
+        };
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
@@ -904,27 +961,39 @@ export default function FileBrowser({ token, user, onLogout }) {
                 const eta = totalBytes && bytesPerSecond > 0 ? (totalBytes - completedBytes) / bytesPerSecond : null;
                 updateQueueItem(id, {
                     detail: `Downloading ${formatSize(completedBytes)}${totalBytes ? ` / ${formatSize(totalBytes)}` : ''}${percentage === null ? '' : ` (${Math.round(percentage)}%)`} · ${formatRate(bytesPerSecond)}${eta === null ? '' : ` · ETA ${Math.ceil(eta)}s`}`,
-                    progress: { completedBytes, totalBytes, percentage, bytesPerSecond, etaSeconds: eta, completedItems: 0, totalItems: 1, updatedAt: now }
+                    progress: progressFor(completedBytes, bytesPerSecond, eta, now)
                 });
             }
         }
         const percentage = totalBytes ? Math.min(100, completedBytes / totalBytes * 100) : null;
         updateQueueItem(id, {
             detail: `Transferred ${formatSize(completedBytes)}${totalBytes ? ` / ${formatSize(totalBytes)}` : ''}${percentage === null ? '' : ` (${Math.round(percentage)}%)`}`,
-            progress: { completedBytes, totalBytes, percentage, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: 1, updatedAt: Date.now() }
+            progress: progressFor(completedBytes, null, null, Date.now(), true)
         });
         return new Blob(chunks);
     };
-    const download = (items = selectedItems, requestedArchiveFormat = archiveFormat) => {
+    // `context` lets another view (the Pane workspace) download from its own Location/path.
+    // Without it the Classical browser's current Location and directory are used.
+    const downloadContext = (context = {}) => {
+        const targetLocationId = context.locationId ?? locationId;
+        return {
+            locationId: targetLocationId,
+            path: context.path ?? currentPath,
+            locationName: context.locationName || locations.find(location => location.id === targetLocationId)?.displayName || targetLocationId,
+            headers: headersForLocation(targetLocationId)
+        };
+    };
+    const download = (items = selectedItems, requestedArchiveFormat = archiveFormat, context = {}) => {
         if (!items.length) return;
+        const { locationId: sourceLocationId, path: sourcePath, locationName: sourceLocationName, headers: sourceHeaders } = downloadContext(context);
         const isArchive = items.length > 1 || items[0].isDirectory;
         const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const label = isArchive ? `${items.length} selected items` : items[0].name;
         const totalBytes = !isArchive ? Number(items[0].size) || null : null;
-        enqueueTransfer({ id, label, status: 'queued', detail: 'Waiting to start', kind: 'download', finishedAt: null, progress: { completedBytes: 0, totalBytes, percentage: totalBytes ? 0 : null, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: 1, updatedAt: Date.now() } }, async (queueId, signal) => {
+        enqueueTransfer({ id, label, status: 'queued', detail: 'Waiting to start', kind: 'download', locationId: sourceLocationId, locationName: sourceLocationName, destinationPath: sourcePath, finishedAt: null, progress: { completedBytes: 0, totalBytes, percentage: totalBytes ? 0 : null, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: 1, updatedAt: Date.now() } }, async (queueId, signal) => {
             const response = isArchive
-                ? await fetch('/api/archive', { method: 'POST', headers: { ...authHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath, format: requestedArchiveFormat }), signal })
-                : await fetch(`/api/files/download/${encodeURIComponent(items[0].path)}`, { headers: authHeaders, signal });
+                ? await fetch('/api/archive', { method: 'POST', headers: { ...sourceHeaders, 'Content-Type': 'application/json' }, body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath: sourcePath, format: requestedArchiveFormat }), signal })
+                : await fetch(`/api/files/download/${encodeURIComponent(items[0].path)}`, { headers: sourceHeaders, signal });
             if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || (isArchive ? 'Archive download failed.' : 'Download failed.'));
             const disposition = response.headers.get('Content-Disposition') || '';
             const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);
@@ -939,16 +1008,17 @@ export default function FileBrowser({ token, user, onLogout }) {
     // instead of always bundling the selection into a single archive first.
     // The browser owns the destination so this flow does not request local
     // folder permissions or depend on the File System Access API.
-    const enqueueQueueDownload = async (items) => {
+    const enqueueQueueDownload = async (items, context = {}) => {
+        const { locationId: sourceLocationId, path: sourcePath, locationName: sourceLocationName, headers: sourceHeaders } = downloadContext(context);
         const id = `queue-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         const label = items.length === 1 ? items[0].name : `${items.length} selected items`;
         setModal(null);
-        enqueueTransfer({ id, label, status: 'queued', detail: 'Waiting to prepare file list...', kind: 'download-set', finishedAt: null }, async (queueId, signal) => {
+        enqueueTransfer({ id, label, status: 'queued', detail: 'Waiting to prepare file list...', kind: 'download-set', locationId: sourceLocationId, locationName: sourceLocationName, destinationPath: sourcePath, finishedAt: null }, async (queueId, signal) => {
             updateQueueItem(queueId, { detail: 'Preparing file list...' });
             const flattenResponse = await fetch('/api/files/flatten', {
                 method: 'POST',
-                headers: { ...authHeaders, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath })
+                headers: { ...sourceHeaders, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items: items.map(({ name, isDirectory, path }) => ({ name, isDirectory, path })), currentPath: sourcePath })
             });
             const flattenData = await flattenResponse.json().catch(() => ({}));
             if (!flattenResponse.ok) throw new Error(flattenData.error || 'Unable to list files for the queue.');
@@ -956,10 +1026,11 @@ export default function FileBrowser({ token, user, onLogout }) {
             if (!targetFiles.length) throw new Error('The selection has no files to download.');
             const totalBytes = targetFiles.reduce((sum, file) => sum + (Number(file.size) || 0), 0) || null;
 
+            updateQueueItem(id, { setTotalBytes: totalBytes, baseBytes: 0, progress: { completedBytes: 0, totalBytes, percentage: totalBytes ? 0 : null, bytesPerSecond: null, etaSeconds: null, completedItems: 0, totalItems: targetFiles.length, updatedAt: Date.now() } });
             let completed = 0;
             for (const file of targetFiles) {
                 updateQueueItem(id, { detail: `Downloading ${completed}/${targetFiles.length} files...` });
-                const response = await fetch(`/api/files/download/${encodeURIComponent(file.remotePath)}`, { headers: authHeaders, signal });
+                const response = await fetch(`/api/files/download/${encodeURIComponent(file.remotePath)}`, { headers: sourceHeaders, signal });
                 if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Failed to download ${file.relativePath}.`);
                 const blob = await streamResponse(queueId, response, Number(response.headers.get('Content-Length')) || file.size || null);
                 // Let the browser apply its own download-directory and
@@ -969,14 +1040,14 @@ export default function FileBrowser({ token, user, onLogout }) {
                 completed += 1;
                 const completedBytes = targetFiles.slice(0, completed).reduce((sum, current) => sum + (Number(current.size) || 0), 0);
                 const percentage = totalBytes ? completedBytes / totalBytes * 100 : null;
-                updateQueueItem(id, { detail: `Downloading ${completed}/${targetFiles.length} files${percentage === null ? '' : ` (${Math.round(percentage)}%)`}`, progress: { completedBytes, totalBytes, percentage, bytesPerSecond: null, etaSeconds: null, completedItems: completed, totalItems: targetFiles.length, updatedAt: Date.now() } });
+                updateQueueItem(id, { baseBytes: completedBytes, detail: `Downloading ${completed}/${targetFiles.length} files${percentage === null ? '' : ` (${Math.round(percentage)}%)`}`, progress: { completedBytes, totalBytes, percentage, bytesPerSecond: null, etaSeconds: null, completedItems: completed, totalItems: targetFiles.length, updatedAt: Date.now() } });
             }
             return `Downloaded ${completed} file(s) using the browser's download settings.`;
         });
     };
     const cancelQueueItem = (id) => {
         const item = queueItemsRef.current.find((candidate) => candidate.id === id);
-        if (!item || !['queued', 'running', 'retrying'].includes(item.status)) return;
+        if (!item || item.external || !['queued', 'running', 'retrying'].includes(item.status)) return;
         const controller = queueAbortControllersRef.current.get(id);
         controller?.abort();
         if (item.kind === 'upload' && controller) {
@@ -1004,7 +1075,7 @@ export default function FileBrowser({ token, user, onLogout }) {
     const discardQueueItem = async (id) => {
         const item = queueItemsRef.current.find((candidate) => candidate.id === id);
         if (item && ['queued', 'running', 'retrying'].includes(item.status)) {
-            cancelQueueItem(id);
+            if (!item.external) cancelQueueItem(id);
             return false;
         }
         if (!item) return true;
@@ -1047,7 +1118,7 @@ export default function FileBrowser({ token, user, onLogout }) {
     // "Clear list" only removes finished records (completed and cancelled). Running, failed and
     // needs-action items are kept because they may hold a resumable server session.
     const clearFinishedQueueItems = async () => {
-        const removable = queueItemsRef.current.filter((item) => item.kind === 'upload' && ['completed', 'cancelled'].includes(item.status));
+        const removable = queueItemsRef.current.filter((item) => ['completed', 'cancelled'].includes(item.status));
         await Promise.all(removable.map((item) => discardQueueItem(item.id)));
     };
     const startDownload = () => {
@@ -1727,8 +1798,9 @@ export default function FileBrowser({ token, user, onLogout }) {
         const renderQueueItem = (item) => <li key={item.id} className={`queue-panel-item queue-status-${item.status}`}>
             <strong>{item.label}</strong>
             <span role="status" aria-live="polite">{item.detail}</span>
-            {item.progress && <small>{formatSize(item.progress.completedBytes)}{item.progress.totalBytes == null ? '' : ` / ${formatSize(item.progress.totalBytes)}`}{item.progress.percentage == null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}
-            {['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}
+            {item.progress && item.external && <small>{item.progress.completedItems || 0}/{item.progress.totalItems || 0} items{item.progress.percentage == null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}
+            {item.progress && !item.external && <small>{formatSize(item.progress.completedBytes)}{item.progress.totalBytes == null ? '' : ` / ${formatSize(item.progress.totalBytes)}`}{item.progress.percentage == null ? '' : ` (${Math.round(item.progress.percentage)}%)`}</small>}
+            {!item.external && ['queued', 'running', 'retrying'].includes(item.status) && <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>}
             {item.kind === 'upload' && item.serverSessionId && item.status === 'needs_user_action' &&
                 <button type="button" onClick={() => item.errorCategory === 'validation' && queueJobsRef.current.has(item.id)
                     ? retryQueueItem(item.id) : beginResumeUpload(item)}>
@@ -1750,7 +1822,11 @@ export default function FileBrowser({ token, user, onLogout }) {
                     transferQueue={queueItems} onCancelUpload={cancelQueueItem} onResumeUpload={beginResumeUpload}
                     onRetryUpload={retryQueueItem}
                     onDiscardUpload={discardQueueItem} onClearNeedsAction={() => clearQueueStatus('needs_user_action')} onClearFinished={clearFinishedQueueItems}
-                   onUploadFiles={(items, directories, uploadContext, onComplete) => uploadFiles(items, directories, null, { ...uploadContext, onComplete })} />
+                   onUploadFiles={(items, directories, uploadContext, onComplete) => uploadFiles(items, directories, null, { ...uploadContext, onComplete })}
+                   onDownloadItems={(items, context, format) => download(items, format || archiveFormat, context)}
+                   onQueueDownloadItems={(items, context) => enqueueQueueDownload(items, context)}
+                   onTrackTransfer={trackExternalTransfer} onUpdateTransfer={updateExternalTransfer} onFinishTransfer={finishExternalTransfer}
+                   collectDroppedUpload={collectDroppedUpload} defaultArchiveFormat={archiveFormat} onArchiveFormatChange={setArchiveFormat} />
            </>;
        }
 

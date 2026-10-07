@@ -31,6 +31,7 @@ const shareCases = [
     { name: 'partial-metadata', hasPassword: false }
 ];
 let fixtureShare;
+const downloadFixtureBytes = 4096;
 let pasteMode = 'success';
 let pasteDelay = 0;
 let shareDelay = 0;
@@ -98,6 +99,8 @@ const server = http.createServer(async (req, res) => {
             if (delayRefresh) await new Promise(resolve => setTimeout(resolve, 700));
             return json({ success: true });
         }
+        if (url.pathname.startsWith('/api/files/download/')) { res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': downloadFixtureBytes, 'Cache-Control': 'no-store' }); res.end(Buffer.alloc(downloadFixtureBytes, 0x64)); return; }
+        if (url.pathname === '/api/files/flatten') return json({ files: [{ relativePath: 'folder/one.txt', remotePath: 'folder/one.txt', size: downloadFixtureBytes }, { relativePath: 'folder/two.txt', remotePath: 'folder/two.txt', size: downloadFixtureBytes }] });
         if (url.pathname === '/api/archive') {
             return send(jsonBody?.format === 'tar.gz' ? Buffer.from([0x1f, 0x8b, 0x08, 0x00]) : Buffer.from([0x50, 0x4b, 0x03, 0x04]), jsonBody?.format === 'tar.gz' ? 'application/gzip' : 'application/zip');
         }
@@ -1366,6 +1369,10 @@ try {
     await queuePanel.waitFor();
     const completedRow = queuePanel.locator('.queue-status-completed').filter({ hasText: 'pane-upload.txt' });
     await completedRow.waitFor();
+    assert.equal(await queuePanel.locator('[data-queue-kind="move"].queue-status-completed').count(), 1, 'the fully successful Pane move is recorded in the Transfer Queue as Completed');
+    assert.equal(await queuePanel.locator('[data-queue-kind="move"].queue-status-needs_user_action').count(), 1, 'the partially failed Pane move is recorded in the Transfer Queue as Needs action');
+    assert.match(await queuePanel.locator('[data-queue-kind="move"].queue-status-needs_user_action').innerText(), /^from\s*Location A:\/.*Location B:\//is, 'a move row names its source and target Location');
+    assert.match(await queuePanel.locator('[data-queue-kind="move"].queue-status-completed').innerText(), /2\/2 items/, 'a completed move shows the real item counts');
     const completedText = await completedRow.innerText();
     assert.equal((completedText.match(/completed/gi) || []).length, 1, `a completed upload shows Completed exactly once: ${completedText}`);
     assert.match(completedText, /^to\s*.+:\//i, 'the queue row names the destination Location and path');
@@ -1384,6 +1391,68 @@ try {
     await managedPane.locator('button[aria-label="Close window"]').click();
     while (await page.locator('.pane-minimized-item').count()) await page.locator('.pane-minimized-item').last().locator('.pane-minimized-close').click();
     await page.locator('.pane-minimized-dock').waitFor({ state: 'detached' });
+    // Pane download, queue-mode download and external drops share the Transfer Queue.
+    await clickPaneLocation(0);
+    const transferWindow = page.locator('.pane-window:not(.pane-terminal-window):not(.is-minimized)').last();
+    await transferWindow.locator('.pane-files tbody tr, .pane-files .pane-file-tile').first().waitFor();
+    const transferRow = transferWindow.locator('.pane-files tbody tr, .pane-files .pane-file-tile').first();
+    const transferFileName = (await transferRow.locator('td, strong').first().innerText()).trim();
+    await transferRow.dispatchEvent('click');
+    const downloadRequestCount = requests.filter(request => request.path.startsWith('/api/files/download/')).length;
+    await page.getByRole('button', { name: 'Pane Download', exact: true }).click();
+    await waitFor(() => requests.filter(request => request.path.startsWith('/api/files/download/')).length === downloadRequestCount + 1, 'Pane single-file Download did not reach the download endpoint');
+    const paneDownloadRequest = requests.findLast(request => request.path.startsWith('/api/files/download/'));
+    assert.equal(decodeURIComponent(paneDownloadRequest.path.slice('/api/files/download/'.length)), transferFileName, 'Pane Download requests the selected file');
+    assert.ok(paneDownloadRequest.headers['x-location-id'], 'Pane Download is scoped to the pane Location');
+    const transferQueuePanel = page.locator('.pane-upload-queue');
+    await transferQueuePanel.waitFor();
+    const downloadRow = transferQueuePanel.locator('[data-queue-kind="download"]').filter({ hasText: transferFileName });
+    await downloadRow.waitFor();
+    await page.waitForFunction(name => [...document.querySelectorAll('.pane-upload-queue [data-queue-kind="download"]')].some(row => row.textContent.includes(name) && row.classList.contains('queue-status-completed')), transferFileName);
+    assert.match(await downloadRow.innerText(), /^from\s*.+:\//i, 'a download row names the source Location and path');
+    assert.match(await downloadRow.locator('.pane-upload-queue-meta small').innerText(), /1\/1 files · 4\.0 KB \/ 4\.0 KB/, `a completed download reports its real byte totals: ${await downloadRow.innerText()} | ${paneDownloadRequest.path}`);
+    assert.equal(await downloadRow.locator('button', { hasText: 'Cancel' }).count(), 0, 'a finished download has no Cancel button');
+    report.checks.push('Pane Download is tracked in the shared Transfer Queue with source Location, real byte totals, and completion');
+    await transferWindow.locator('.pane-files tbody tr, .pane-files .pane-file-tile').nth(1).dispatchEvent('click', { ctrlKey: true });
+    await page.getByRole('button', { name: 'Pane Download', exact: true }).click();
+    const downloadModeDialog = page.locator('.pane-download-mode');
+    await downloadModeDialog.waitFor();
+    const archiveRequestCount = requests.filter(request => request.path === '/api/archive').length;
+    await downloadModeDialog.getByLabel('zip archive').check();
+    await downloadModeDialog.getByRole('button', { name: 'Start download', exact: true }).click();
+    await waitFor(() => requests.filter(request => request.path === '/api/archive').length === archiveRequestCount + 1, 'Pane multi-item Download did not request an archive');
+    assert.equal(requests.findLast(request => request.path === '/api/archive').body.format, 'zip', 'Pane archive download honours the selected format');
+    await transferQueuePanel.locator('[data-queue-kind="download"]').filter({ hasText: '2 selected items' }).waitFor();
+    await transferRow.dispatchEvent('click');
+    await transferWindow.locator('.pane-files tbody tr, .pane-files .pane-file-tile').nth(1).dispatchEvent('click', { ctrlKey: true });
+    await page.getByRole('button', { name: 'Pane Download', exact: true }).click();
+    await downloadModeDialog.waitFor();
+    const flattenRequestCount = requests.filter(request => request.path === '/api/files/flatten').length;
+    await downloadModeDialog.getByLabel('Queue (one file at a time)').check();
+    await downloadModeDialog.getByRole('button', { name: 'Start download', exact: true }).click();
+    await waitFor(() => requests.filter(request => request.path === '/api/files/flatten').length === flattenRequestCount + 1, 'Pane queue-mode Download did not list files');
+    const queueSetRow = transferQueuePanel.locator('[data-queue-kind="download-set"]');
+    await queueSetRow.waitFor();
+    await page.waitForFunction(() => document.querySelector('.pane-upload-queue [data-queue-kind="download-set"]')?.classList.contains('queue-status-completed'));
+    assert.match(await queueSetRow.locator('.pane-upload-queue-meta small').innerText(), /2\/2 files · 8\.0 KB \/ 8\.0 KB/, 'queue-mode download reports overall file and byte totals');
+    report.checks.push('Pane multi-item Download offers archive and queue modes, and queue mode reports overall file and byte totals');
+    const droppedBatchCount = batches.size;
+    uploadMode = 'running';
+    await transferWindow.locator('.pane-files').evaluate((target) => {
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(new File(['dropped upload'], 'dropped-upload.txt', { type: 'text/plain' }));
+        target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+    });
+    await waitFor(() => batches.size === droppedBatchCount + 1 && [...batches.values()].at(-1).status === 'completed', 'dropping an external file on a Pane window uploads it through the resumable queue');
+    await transferQueuePanel.locator('[data-queue-kind="upload"].queue-status-completed').filter({ hasText: 'dropped-upload.txt' }).waitFor();
+    report.checks.push('Dropping an external file on a Pane window uploads it through the shared resumable Transfer Queue');
+    await transferQueuePanel.getByRole('button', { name: 'Clear list', exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.pane-upload-queue .queue-status-completed').length === 0);
+    assert.equal(await transferQueuePanel.locator('[data-queue-kind="download"], [data-queue-kind="download-set"]').count(), 0, 'Clear list removes finished download records too');
+    report.checks.push('Clear list removes finished records of every transfer kind');
+    await transferQueuePanel.locator('.pane-upload-queue-close').click();
+    await transferQueuePanel.waitFor({ state: 'detached' });
+    await transferWindow.locator('button[aria-label="Close window"]').click();
     await page.locator('.account').click();
     const styleSettings = page.getByRole('button', { name: 'Style settings', exact: true });
     await styleSettings.click();

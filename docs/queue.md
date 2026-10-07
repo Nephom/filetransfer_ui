@@ -167,9 +167,29 @@ Button meaning:
 | Button | Where | Effect |
 |---|---|---|
 | `Clear` | Completed or Cancelled row | Removes only this record. Uploaded files are untouched. |
-| `Clear list` | Totals row | Removes every Completed and Cancelled upload record. Running, failed and needs-action rows are kept because they may hold a resumable server session. |
+| `Clear list` | Totals row | Removes every Completed and Cancelled record of any transfer kind. Running, failed and needs-action rows are kept because they may hold a resumable server session. |
 | `Discard` | Failed or needs-action row with a server session | Deletes the unfinished upload session on the server, so it can no longer be resumed. Published files are kept. |
 | `Remove` | Failed or needs-action row without a server session | Removes the record only. |
+
+### Transfer kinds in the Pane queue
+
+The Pane queue shows every record in the shared queue, not only uploads. Pane and
+Classical use the same queue engine in `FileBrowser.js`; Pane only supplies the
+Location and path of the window that started the transfer.
+
+| Kind (`data-queue-kind`) | Started by | Route label | Progress source |
+|---|---|---|---|
+| `upload` | `Upload`, or dropping files/folders on a Pane window | `To <Location>:/<path>` | Bytes and files from the resumable upload session |
+| `download` | `Download` on one file, or an archive (`tar.gz`/`zip`) of a folder or several items | `From <Location>:/<path>` | Streamed bytes against `Content-Length` |
+| `download-set` | `Download` > `Queue (one file at a time)` | `From <Location>:/<path>` | Overall bytes (`baseBytes` of finished files plus the streaming file) and `completedItems/totalItems` files |
+| `copy`, `move` | Dragging between Pane windows or the paste actions | `From <Location>:/<path> -> <Location>:/<path>` | Item counts from the server's `/api/files/paste` event stream |
+
+Copy and move are recorded, not scheduled. The queue executor never runs them
+(they have no job), they cannot be cancelled, and the blocking transfer panel
+still shows their live detail. Their `progress.percentage` is
+`resolvedItems / totalItems`. Status mapping: completed -> `completed`, partial
+-> `needs_user_action`, failed or unconfirmed -> `failed`. They never auto-open
+the queue window, because the transfer panel is already visible.
 
 ## Failure Decisions
 
