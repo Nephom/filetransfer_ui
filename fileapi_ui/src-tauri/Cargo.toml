@@ -32,4 +32,5 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
 windows-sys = { version = "0.59", features = ["Win32_UI_Shell"] }

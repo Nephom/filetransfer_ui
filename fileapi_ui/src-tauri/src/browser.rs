@@ -5,6 +5,15 @@ use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
+use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR};
+
+#[cfg(windows)]
+const MAX_SCREENSHOT_DIMENSION: f64 = 16_000.0;
+#[cfg(windows)]
+const MAX_SCREENSHOT_PIXELS: f64 = 40_000_000.0;
+const MAX_SCREENSHOT_BASE64_BYTES: usize = 180 * 1024 * 1024;
+
+#[cfg(windows)]
 const BROWSER_VIEW_STATE_EVENT: &str = "browser-view-state";
 #[cfg(windows)]
 const BROWSER_NEW_PANE_EVENT: &str = "browser-new-pane";
@@ -463,6 +472,162 @@ pub async fn browser_get_state(
         let _ = (app, pane_id);
         Err("Browser panes are supported only on Windows".to_string())
     }
+}
+
+#[tauri::command]
+pub async fn browser_capture_full_page(
+    app: AppHandle,
+    webview: Webview,
+    pane_id: String,
+) -> Result<String, String> {
+    require_main_webview(&webview)?;
+    #[cfg(windows)]
+    {
+        let view = get_browser_webview(&app, &pane_id)?;
+        let metrics =
+            run_browser_devtools_method(view, "Page.getLayoutMetrics", "{}".to_string()).await?;
+        let metrics: serde_json::Value = serde_json::from_str(&metrics)
+            .map_err(|error| format!("Unable to read full page dimensions: {error}"))?;
+        let content_size = metrics
+            .get("contentSize")
+            .ok_or_else(|| "The browser did not report the full page dimensions".to_string())?;
+        let width = content_size
+            .get("width")
+            .and_then(serde_json::Value::as_f64)
+            .ok_or_else(|| "The browser reported an invalid page width".to_string())?;
+        let height = content_size
+            .get("height")
+            .and_then(serde_json::Value::as_f64)
+            .ok_or_else(|| "The browser reported an invalid page height".to_string())?;
+        let width = width.ceil();
+        let height = height.ceil();
+        if !width.is_finite()
+            || !height.is_finite()
+            || width < 1.0
+            || height < 1.0
+            || width > MAX_SCREENSHOT_DIMENSION
+            || height > MAX_SCREENSHOT_DIMENSION
+            || width * height > MAX_SCREENSHOT_PIXELS
+        {
+            return Err(format!(
+                "The page is too large to capture as one image (maximum {} × {} pixels and {} million pixels total)",
+                MAX_SCREENSHOT_DIMENSION as u32,
+                MAX_SCREENSHOT_DIMENSION as u32,
+                (MAX_SCREENSHOT_PIXELS / 1_000_000.0) as u32,
+            ));
+        }
+
+        let clip = serde_json::json!({
+            "x": 0,
+            "y": 0,
+            "width": width,
+            "height": height,
+            "scale": 1,
+        });
+        let params = serde_json::json!({
+            "format": "png",
+            "fromSurface": true,
+            "captureBeyondViewport": true,
+            "clip": clip,
+        })
+        .to_string();
+        let screenshot = run_browser_devtools_method(
+            get_browser_webview(&app, &pane_id)?,
+            "Page.captureScreenshot",
+            params,
+        )
+        .await?;
+        let screenshot: serde_json::Value = serde_json::from_str(&screenshot)
+            .map_err(|error| format!("Unable to read the captured page image: {error}"))?;
+        let data = screenshot
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| "The browser did not return a screenshot image".to_string())?;
+        if data.len() > MAX_SCREENSHOT_BASE64_BYTES {
+            return Err("The full page image is too large to preview and select".to_string());
+        }
+        Ok(data)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, pane_id);
+        Err("Browser screenshots are supported only on Windows".to_string())
+    }
+}
+
+#[cfg(windows)]
+async fn run_browser_devtools_method(
+    view: Webview,
+    method: &'static str,
+    parameters: String,
+) -> Result<String, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel::<Result<String, String>>();
+    let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+    let sender_for_callback = sender.clone();
+    view.with_webview(move |platform| {
+        let method = CoTaskMemPWSTR::from(method);
+        let parameters = CoTaskMemPWSTR::from(parameters.as_str());
+        let callback_sender = sender_for_callback.clone();
+        let callback = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(
+            move |status, response| {
+                let result = status.map(|_| response).map_err(|error| error.to_string());
+                if let Ok(mut sender) = callback_sender.lock() {
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send(result);
+                    }
+                }
+                Ok(())
+            },
+        ));
+        let call_result = unsafe {
+            platform
+                .controller()
+                .CoreWebView2()
+                .map_err(|error| error.to_string())
+                .and_then(|core| {
+                    core.CallDevToolsProtocolMethod(
+                        *method.as_ref().as_pcwstr(),
+                        *parameters.as_ref().as_pcwstr(),
+                        &callback,
+                    )
+                    .map_err(|error| error.to_string())
+                })
+        };
+        if let Err(error) = call_result {
+            if let Ok(mut sender) = sender_for_callback.lock() {
+                if let Some(sender) = sender.take() {
+                    let _ = sender.send(Err(error));
+                }
+            }
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    receiver
+        .await
+        .map_err(|_| "The browser screenshot request was interrupted".to_string())?
+}
+
+#[tauri::command]
+pub async fn browser_save_screenshot(png_base64: String) -> Result<Option<String>, String> {
+    if png_base64.len() > MAX_SCREENSHOT_BASE64_BYTES {
+        return Err("The selected screenshot is too large to save".to_string());
+    }
+    let png = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, png_base64)
+        .map_err(|error| format!("Invalid PNG image data: {error}"))?;
+    if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("The selected image is not a valid PNG file".to_string());
+    }
+    let selected = rfd::AsyncFileDialog::new()
+        .set_file_name("browser-screenshot.png")
+        .add_filter("PNG image", &["png"])
+        .save_file()
+        .await;
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    std::fs::write(selected.path(), png).map_err(|error| error.to_string())?;
+    Ok(Some(selected.path().display().to_string()))
 }
 
 #[tauri::command]

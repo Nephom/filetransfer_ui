@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -15,6 +15,8 @@ type Props = {
   onInitialUrlConsumed: () => void;
   onOpenNewPane: (url: string) => void;
 };
+
+type CaptureSelection = { x: number; y: number; width: number; height: number };
 
 const isHostWithPort = (value: string) => /^(?:\[[\da-f:.]+\]|[^/:?#\s]+):\d+(?:[/?#]|$)/i.test(value);
 
@@ -59,6 +61,13 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
   const [viewReady, setViewReady] = useState(false);
   const [address, setAddress] = useState(visibleAddress(initialUrl));
   const [error, setError] = useState("");
+  const [captureImage, setCaptureImage] = useState("");
+  const [captureBusy, setCaptureBusy] = useState(false);
+  const [captureError, setCaptureError] = useState("");
+  const [captureNotice, setCaptureNotice] = useState("");
+  const [captureSelection, setCaptureSelection] = useState<CaptureSelection | null>(null);
+  const captureImageRef = useRef<HTMLImageElement | null>(null);
+  const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
   const [viewState, setViewState] = useState<BrowserViewStateEvent>({
     paneId,
     url: initialUrl || "about:blank",
@@ -204,11 +213,12 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
 
   useEffect(() => {
     if (!viewReady) return;
-    if (visible) scheduleBounds();
+    const browserVisible = visible && !captureImage;
+    if (browserVisible) scheduleBounds();
     boundsQueueRef.current = boundsQueueRef.current
-      .then(async () => { await invoke<void>("browser_set_visible", { paneId, visible }); })
+      .then(async () => { await invoke<void>("browser_set_visible", { paneId, visible: browserVisible }); })
       .catch(() => undefined);
-  }, [paneId, viewReady, visible, scheduleBounds]);
+  }, [paneId, viewReady, visible, captureImage, scheduleBounds]);
 
   useEffect(() => {
     if (!viewReady || !visible) return undefined;
@@ -255,6 +265,121 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
     }
   };
 
+  const startScreenshot = async () => {
+    if (!viewReady || !visible || captureBusy) return;
+    setCaptureBusy(true);
+    setCaptureError("");
+    setCaptureNotice("");
+    setError("");
+    try {
+      const image = await invoke<string>("browser_capture_full_page", { paneId });
+      await invoke<void>("browser_set_visible", { paneId, visible: false });
+      setCaptureSelection(null);
+      setCaptureImage(image);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setCaptureBusy(false);
+    }
+  };
+
+  const closeScreenshot = () => {
+    selectionStartRef.current = null;
+    setCaptureSelection(null);
+    setCaptureImage("");
+    setCaptureError("");
+    setCaptureNotice("");
+  };
+
+  const pointerPosition = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const image = captureImageRef.current;
+    if (!image) return null;
+    const rect = image.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+      y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+    };
+  };
+
+  const handleSelectionStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const point = pointerPosition(event);
+    if (!point) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    selectionStartRef.current = point;
+    setCaptureSelection({ x: point.x, y: point.y, width: 0, height: 0 });
+    setCaptureError("");
+  };
+
+  const handleSelectionMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = selectionStartRef.current;
+    const point = pointerPosition(event);
+    if (!start || !point) return;
+    setCaptureSelection({
+      x: Math.min(start.x, point.x),
+      y: Math.min(start.y, point.y),
+      width: Math.abs(point.x - start.x),
+      height: Math.abs(point.y - start.y),
+    });
+  };
+
+  const handleSelectionEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!selectionStartRef.current) return;
+    handleSelectionMove(event);
+    selectionStartRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const saveScreenshotSelection = async () => {
+    const image = captureImageRef.current;
+    const selection = captureSelection;
+    if (!image || !selection || selection.width <= 0 || selection.height <= 0) {
+      setCaptureError("Drag on the page preview to select an area first.");
+      return;
+    }
+    const left = Math.max(0, Math.floor(selection.x * image.naturalWidth));
+    const top = Math.max(0, Math.floor(selection.y * image.naturalHeight));
+    const right = Math.min(image.naturalWidth, Math.ceil((selection.x + selection.width) * image.naturalWidth));
+    const bottom = Math.min(image.naturalHeight, Math.ceil((selection.y + selection.height) * image.naturalHeight));
+    if (right <= left || bottom <= top) {
+      setCaptureError("The selected area is too small. Drag to select a larger area.");
+      return;
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = right - left;
+    canvas.height = bottom - top;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setCaptureError("Unable to prepare the selected screenshot.");
+      return;
+    }
+    context.drawImage(image, left, top, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+
+    setCaptureBusy(true);
+    setCaptureError("");
+    setCaptureNotice("");
+    try {
+      const pngBase64 = canvas.toDataURL("image/png").split(",", 2)[1];
+      if (!pngBase64) throw new Error("Unable to encode the selected screenshot as PNG.");
+      const path = await invoke<string | null>("browser_save_screenshot", { pngBase64 });
+      if (path) setCaptureNotice(`Screenshot saved to ${path}`);
+    } catch (reason) {
+      setCaptureError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setCaptureBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!captureImage) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeScreenshot();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [captureImage]);
+
   return (
     <section className="browser-pane" aria-label="Browser">
       <form className="browser-toolbar" onSubmit={(event) => { void submitAddress(event); }}>
@@ -284,10 +409,49 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
             onChange={(event) => setAddress(event.currentTarget.value)}
           />
           <button type="submit" className="browser-go" aria-label="Go" title="Go">Go</button>
+          <button type="button" className="browser-screenshot" aria-label="Capture full page" title="Capture full page" disabled={!viewReady || !visible || captureBusy} onClick={() => { void startScreenshot(); }}>
+            {captureBusy && !captureImage ? "…" : "Screenshot"}
+          </button>
         </div>
         {error && <div className="browser-error" role="alert">{error}</div>}
       </form>
       <div ref={anchorRef} className="browser-viewport" aria-label="Web page content" />
+      {captureImage && <div className="browser-capture-layer" role="presentation">
+        <section className="browser-capture-dialog" role="dialog" aria-modal="true" aria-labelledby="browser-capture-title">
+          <header className="browser-capture-heading">
+            <div><strong id="browser-capture-title">Select screenshot area</strong><span>Drag across the full page preview to choose an area.</span></div>
+            <button type="button" className="browser-capture-close" aria-label="Close screenshot selection" onClick={closeScreenshot}>×</button>
+          </header>
+          <div className="browser-capture-stage">
+            <div
+              className="browser-capture-preview"
+              onPointerDown={handleSelectionStart}
+              onPointerMove={handleSelectionMove}
+              onPointerUp={handleSelectionEnd}
+              onPointerCancel={handleSelectionEnd}
+            >
+              <img ref={captureImageRef} src={`data:image/png;base64,${captureImage}`} alt="Full page screenshot preview" draggable={false} />
+              {captureSelection && <div
+                className="browser-capture-selection"
+                style={{
+                  left: `${captureSelection.x * 100}%`,
+                  top: `${captureSelection.y * 100}%`,
+                  width: `${captureSelection.width * 100}%`,
+                  height: `${captureSelection.height * 100}%`,
+                }}
+              />}
+            </div>
+          </div>
+          {captureError && <div className="browser-capture-message browser-capture-error" role="alert">{captureError}</div>}
+          {captureNotice && <div className="browser-capture-message" role="status">{captureNotice}</div>}
+          <footer className="browser-capture-actions">
+            <button type="button" onClick={closeScreenshot} disabled={captureBusy}>Cancel</button>
+            <button type="button" className="browser-capture-save" onClick={() => { void saveScreenshotSelection(); }} disabled={captureBusy}>
+              {captureBusy ? "Working…" : "Save selection"}
+            </button>
+          </footer>
+        </section>
+      </div>}
     </section>
   );
 }

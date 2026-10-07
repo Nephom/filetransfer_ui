@@ -542,6 +542,10 @@ function Build-Desktop {
     Write-Host "Target triple: $WindowsTarget"
     $env:VITE_APP_VERSION = $versionInfo.version
     $env:VITE_APP_VERSION_DISPLAY = $versionInfo.display
+    Write-Host "Resolving locked Windows Rust dependencies..."
+    Push-Location (Join-Path $DesktopRoot "src-tauri")
+    try { Invoke-Native "cargo" @("fetch", "--locked", "--target", $WindowsTarget) }
+    finally { Pop-Location }
     Invoke-Native "npm.cmd" @("run", "build", "--prefix", $DesktopRoot)
     $webview2RuntimePath = Ensure-WebView2FixedRuntime
     try {

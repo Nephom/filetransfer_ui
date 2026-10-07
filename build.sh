@@ -634,6 +634,10 @@ cmd_build() {
   cmd_install
   install_desktop_system_dependencies
   ensure_rust
+  (
+    cd "$ROOT_DIR/fileapi_ui/src-tauri"
+    cargo fetch --locked
+  )
   install_desktop_node_dependencies
   npm run build --prefix "$ROOT_DIR/fileapi_ui"
   (

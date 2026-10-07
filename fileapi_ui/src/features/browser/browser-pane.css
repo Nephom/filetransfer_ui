@@ -28,7 +28,8 @@
 }
 
 .explorer.pane-style .browser-control,
-.explorer.pane-style .browser-go {
+.explorer.pane-style .browser-go,
+.explorer.pane-style .browser-screenshot {
   flex: 0 0 auto;
   display: inline-grid;
   place-items: center;
@@ -45,13 +46,19 @@
 }
 
 .explorer.pane-style .browser-control:hover:not(:disabled),
-.explorer.pane-style .browser-go:hover:not(:disabled) {
+.explorer.pane-style .browser-go:hover:not(:disabled),
+.explorer.pane-style .browser-screenshot:hover:not(:disabled) {
   border-color: var(--color-primary);
   background: color-mix(in srgb, var(--color-primary) 17%, var(--color-bg-panel-strong));
 }
 
 .explorer.pane-style .browser-control:disabled {
   opacity: .42;
+  cursor: default;
+}
+
+.explorer.pane-style .browser-screenshot:disabled {
+  opacity: .55;
   cursor: default;
 }
 
@@ -89,6 +96,15 @@
   font-weight: 700;
 }
 
+.explorer.pane-style .browser-screenshot {
+  width: auto;
+  min-width: 74px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: var(--ui-small-font-size);
+  font-weight: 700;
+}
+
 .browser-error {
   overflow: hidden;
   color: var(--color-danger);
@@ -104,4 +120,145 @@
   min-height: 0;
   overflow: hidden;
   background: #fff;
+}
+
+.browser-capture-layer {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background: color-mix(in srgb, #000 48%, transparent);
+}
+
+.browser-capture-dialog {
+  width: min(900px, 100%);
+  height: min(680px, 100%);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  color: var(--color-text);
+  background: var(--color-bg-panel-strong);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, .42);
+}
+
+.browser-capture-heading {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.browser-capture-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.browser-capture-heading span {
+  color: var(--color-text-muted);
+  font-size: var(--ui-small-font-size);
+}
+
+.browser-capture-close {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: var(--color-text);
+  background: var(--color-bg-panel);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.browser-capture-stage {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 12px;
+  background: color-mix(in srgb, var(--color-bg) 88%, #000);
+}
+
+.browser-capture-preview {
+  position: relative;
+  flex: 0 0 auto;
+  max-width: 100%;
+  max-height: 100%;
+  line-height: 0;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+
+.browser-capture-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+.browser-capture-selection {
+  position: absolute;
+  z-index: 1;
+  border: 2px solid #52b7ff;
+  background: rgba(82, 183, 255, .13);
+  box-shadow: 0 0 0 99999px rgba(0, 0, 0, .35);
+  pointer-events: none;
+}
+
+.browser-capture-message {
+  flex: 0 0 auto;
+  overflow-wrap: anywhere;
+  padding: 7px 14px;
+  color: var(--color-text-muted);
+  font-size: var(--ui-small-font-size);
+}
+
+.browser-capture-error {
+  color: var(--color-danger);
+}
+
+.browser-capture-actions {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--color-border);
+}
+
+.browser-capture-actions button {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: var(--color-text);
+  background: var(--color-bg-panel);
+  cursor: pointer;
+}
+
+.browser-capture-actions button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.browser-capture-actions .browser-capture-save {
+  border-color: var(--color-primary);
+  color: var(--color-on-primary, #fff);
+  background: var(--color-primary);
+  font-weight: 700;
 }
