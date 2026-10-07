@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="${FILETRANSFER_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 INSTALL_MANIFEST="$ROOT_DIR/.filetransfer_install_manifest"
 COMMAND=""
+BUILD_CHANNEL=""
 PROXY=""
 INTERACTIVE_UPGRADE=0
 SELF_UPDATE_CONTINUE=0
@@ -37,6 +38,12 @@ while [[ $# -gt 0 ]]; do
       COMMAND="$1"
       shift
       ;;
+    pre|ga)
+      [[ "$COMMAND" == "build" ]] || { echo "Version channel '$1' is only valid after build." >&2; exit 2; }
+      [[ -z "$BUILD_CHANNEL" ]] || { echo "Only one build version channel may be provided." >&2; exit 2; }
+      BUILD_CHANNEL="$1"
+      shift
+      ;;
     *)
       echo "Unknown argument: $1" >&2
       exit 2
@@ -45,15 +52,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 COMMAND="${COMMAND:-help}"
+if [[ "$COMMAND" == "build" && -z "$BUILD_CHANNEL" ]]; then
+  echo "build requires a version channel: pre or ga." >&2
+  exit 2
+fi
 
 usage() {
   cat <<'EOF'
-Usage: ./build.sh <command> [--proxy http://proxy-host:port] [--interactive]
+Usage: ./build.sh <command> [pre|ga] [--proxy http://proxy-host:port] [--interactive]
 
 Commands:
   install  Install server dependencies on Alpine Linux or Ubuntu.
   setup    Create missing local configuration and ask for deployment values.
-  build    Build the Ubuntu 22.04+ Tauri DEB package.
+  build    Build the Ubuntu 22.04+ Tauri DEB package; use pre to include the
+           commit hash or ga to build the release version without the hash.
   browser  Build and validate production browser assets (no service startup).
   test     Run backend sandbox tests.
   upgrade      Fast-forward from GitHub, migrate configuration, update dependencies, and run backend tests.
@@ -628,6 +640,7 @@ cmd_setup() {
 
 cmd_build() {
   local before_build_status after_build_status
+  export APP_VERSION_CHANNEL="$BUILD_CHANNEL"
   before_build_status="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all)"
   export VITE_APP_VERSION="$(application_version)"
   export VITE_APP_VERSION_DISPLAY="$(application_version_display)"

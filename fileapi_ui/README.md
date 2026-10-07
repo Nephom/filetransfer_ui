@@ -7,16 +7,20 @@ This is a mouse-first Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/1
 From the repository root on Ubuntu, use the supported Linux build workflow:
 
 ```bash
-./build.sh build
+./build.sh build pre
 ```
+
+Use `./build.sh build ga` for a general-availability build without a commit hash.
 
 It installs the required Ubuntu, Node.js, Rust, GTK, and WebKitGTK dependencies, then creates a DEB in `src-tauri/target/release/bundle/deb/`.
 
 On a Windows build machine, run the repository-level PowerShell workflow. It checks or installs Node.js, Rust with the MSVC toolchain, and the required desktop dependencies:
 
 ```powershell
-.\build.ps1 build
+.\build.ps1 build pre
 ```
+
+Use `build.ps1 build ga` for a general-availability build without a commit hash.
 
 The portable EXE is created at `src-tauri/target/release/nFterm.exe`. The NSIS installer is created in `src-tauri/target/release/bundle/nsis/`.
 

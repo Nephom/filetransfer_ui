@@ -51,7 +51,7 @@ React, ReactDOM, and esbuild are development dependencies. The server does not i
 
 - `./build.sh browser` builds and validates browser output only. It does not start a server or run a desktop build.
 - `./build.sh install` and `./build.sh upgrade` install build-time dependencies, build the browser, and check readiness. Upgrade operates in the active checkout: when needed, it prepares dependencies for the database backup, then fast-forwards, rebuilds browser assets, and applies migrations.
-- The existing `./build.sh build` desktop command is retained.
+- The desktop command uses `./build.sh build pre` for a prerelease or `./build.sh build ga` for a release build.
 - `start.sh` and `restart.sh` run the shared read-only `check_browser_build` function. Restart checks before PID discovery or any stop signal. Neither compiles assets.
 - Output is `build-assets/browser/public`.
 - The build validates a staging directory before replacement and restores the previous directory if activation fails. Failed compilation leaves the old ready build untouched.

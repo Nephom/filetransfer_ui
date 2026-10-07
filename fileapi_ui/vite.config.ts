@@ -9,7 +9,9 @@ const readRootValue = (name: string) => fs.readFileSync(path.join(rootDir, name)
 const gitCommit = process.env.GIT_COMMIT || childProcess.execFileSync("git", ["-C", rootDir, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
 const baseVersion = readRootValue("VERSION");
 const releaseDate = readRootValue("RELEASE_DATE");
-const resolvedVersion = `${baseVersion}-${gitCommit} (${releaseDate})`;
+const channel = process.env.APP_VERSION_CHANNEL || "pre";
+const appVersion = process.env.VITE_APP_VERSION || (channel === "ga" ? baseVersion : `${baseVersion}-pre${gitCommit}`);
+const resolvedVersion = process.env.VITE_APP_VERSION_DISPLAY || `${appVersion} (${releaseDate})`;
 
 export default defineConfig({
   plugins: [react()],

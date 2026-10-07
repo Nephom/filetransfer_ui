@@ -28,7 +28,13 @@ function getVersion() {
   const baseVersion = readValue('VERSION');
   const commit = getCommit();
   const releaseDate = readValue('RELEASE_DATE');
-  const version = baseVersion ? (commit ? `${baseVersion}-${commit}` : baseVersion) : commit;
+  const channel = process.env.APP_VERSION_CHANNEL || 'pre';
+  if (channel !== 'pre' && channel !== 'ga') {
+    throw new Error(`Unsupported APP_VERSION_CHANNEL '${channel}'; expected pre or ga.`);
+  }
+  const version = channel === 'ga'
+    ? baseVersion
+    : (baseVersion ? (commit ? `${baseVersion}-pre${commit}` : baseVersion) : commit);
   return { baseVersion, commit, releaseDate, version, display: version ? (releaseDate ? `${version} (${releaseDate})` : version) : '' };
 }
 

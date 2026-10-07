@@ -76,14 +76,18 @@ nFterm is a Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11. It conn
 Ubuntu:
 
 ```bash
-./build.sh build
+./build.sh build pre
 ```
+
+The `pre` channel appends `-pre<commit hash>` to the version. For a general-availability release without a commit hash, use `./build.sh build ga`.
 
 On a Windows build machine:
 
 ```powershell
-.\build.ps1 build
+.\build.ps1 build pre
 ```
+
+For a general-availability release without a commit hash, use `build.ps1 build ga`.
 
 Build artifacts are located at:
 

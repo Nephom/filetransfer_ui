@@ -76,14 +76,18 @@ nFterm 是 Tauri v2 desktop client，支援 Ubuntu 22.04+ 與 Windows 10/11。�
 Ubuntu：
 
 ```bash
-./build.sh build
+./build.sh build pre
 ```
+
+以 `pre` 建置時，版本會附加 `-pre<commit hash>`；正式版請用 `./build.sh build ga`，版本不附加 commit hash。
 
 Windows build machine：
 
 ```powershell
-.\build.ps1 build
+.\build.ps1 build pre
 ```
+
+Windows 正式版可使用 `build.ps1 build ga`，版本不附加 commit hash。
 
 產物位於：
 

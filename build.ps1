@@ -1,6 +1,8 @@
 param(
     [ValidateSet("build", "upgrade", "self-upgrade", "help")]
     [string]$Command = "help",
+    [ValidateSet("pre", "ga")]
+    [string]$VersionChannel,
     [switch]$Interactive,
     [string]$Proxy,
     [switch]$Help
@@ -148,7 +150,7 @@ function Ensure-MsvcBuildTools {
         -Override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 
     if (-not (Test-MsvcBuildTools)) {
-        throw "MSVC C++ Build Tools installation did not complete. Open 'Visual Studio Installer' and add the 'Desktop development with C++' workload manually, then re-run '.\build.ps1 build'."
+        throw "MSVC C++ Build Tools installation did not complete. Open 'Visual Studio Installer' and add the 'Desktop development with C++' workload manually, then re-run '.\build.ps1 build pre' (or 'ga')."
     }
     Write-Host "MSVC C++ Build Tools are ready."
 }
@@ -231,7 +233,7 @@ function Assert-WindowsX64TargetInstalled {
     if (Get-Command "rustup" -ErrorAction SilentlyContinue) {
         $installed = @(rustup target list --installed)
         if ($installed -notcontains $WindowsTarget) {
-            throw "Rust target '$WindowsTarget' is not installed. Run 'rustup target add $WindowsTarget' and re-run '.\build.ps1 build'."
+            throw "Rust target '$WindowsTarget' is not installed. Run 'rustup target add $WindowsTarget' and re-run '.\build.ps1 build pre' (or 'ga')."
         }
         Write-Host "Rust target '$WindowsTarget' is installed."
         return
@@ -241,7 +243,7 @@ function Assert-WindowsX64TargetInstalled {
     # toolchain's host is the one we need.
     $hostLine = (rustc -vV) -split "`n" | Where-Object { $_ -match "^host:\s*(.+)$" }
     if ($hostLine -and $hostLine -notmatch [regex]::Escape($WindowsTarget)) {
-        throw "Active Rust toolchain host does not match '$WindowsTarget' ($hostLine). Install a Rust toolchain targeting $WindowsTarget before running '.\build.ps1 build'."
+        throw "Active Rust toolchain host does not match '$WindowsTarget' ($hostLine). Install a Rust toolchain targeting $WindowsTarget before running '.\build.ps1 build pre' (or 'ga')."
     }
 }
 
@@ -299,7 +301,7 @@ function Ensure-Nasm {
     }
 
     if (-not (Get-Command "nasm" -ErrorAction SilentlyContinue)) {
-        throw "NASM installation did not complete. Install it manually from https://www.nasm.us/, add its install folder to your User PATH environment variable (System Properties > Environment Variables > User variables > Path), open a new PowerShell window, then re-run '.\build.ps1 build'."
+        throw "NASM installation did not complete. Install it manually from https://www.nasm.us/, add its install folder to your User PATH environment variable (System Properties > Environment Variables > User variables > Path), open a new PowerShell window, then re-run '.\build.ps1 build pre' (or 'ga')."
     }
     Write-Host "NASM is ready."
 }
@@ -488,10 +490,13 @@ function Assert-ProjectVersionConsistency {
 }
 
 function Get-AppVersionInfo {
+    param([Parameter(Mandatory = $true)][ValidateSet("pre", "ga")][string]$Channel)
+
+    $env:APP_VERSION_CHANNEL = $Channel
     # Mirrors build.sh's application_version()/application_version_display():
     # derive the release-metadata version (VERSION + RELEASE_DATE + current
     # commit) once via scripts/version.js, so the Windows desktop build gets
-    # the exact same "VERSION-commit (RELEASE_DATE)" identity as the WebUI
+    # the selected "VERSION-precommit" or "VERSION" identity with RELEASE_DATE as the WebUI
     # and the Linux/Mac Tauri build instead of drifting from whatever was
     # last hand-typed into fileapi_ui's own package.json/Cargo.toml/tauri.conf.json.
     $versionScript = Join-Path $Root "scripts\version.js"
@@ -533,11 +538,14 @@ function Get-PEMachineType {
 }
 
 function Build-Desktop {
-    Write-Host "Building nFterm v$(Get-AppVersion) for Windows..."
+    param([Parameter(Mandatory = $true)][ValidateSet("pre", "ga")][string]$Channel)
+
+    $env:APP_VERSION_CHANNEL = $Channel
+    Write-Host "Building nFterm v$(Get-AppVersion) for Windows ($Channel)..."
     Assert-ProjectVersionConsistency
     Install-DesktopDependencies
     Install-ServerDependencies
-    $versionInfo = Get-AppVersionInfo
+    $versionInfo = Get-AppVersionInfo -Channel $Channel
     Write-Host "Desktop build identity: $($versionInfo.display)"
     Write-Host "Target triple: $WindowsTarget"
     $env:VITE_APP_VERSION = $versionInfo.version
@@ -708,7 +716,8 @@ function Self-UpgradeScript {
 
 function Show-Help {
     @"
-Usage: .\build.ps1 <build|upgrade|self-upgrade|help> [-Interactive] [-Proxy URL]
+Usage: .\build.ps1 build <pre|ga> [-Proxy URL]
+       .\build.ps1 <upgrade|self-upgrade|help> [-Interactive] [-Proxy URL]
 
 Options:
   -Help       Show this help and exit.
@@ -716,7 +725,9 @@ Options:
   -Interactive
               Allow interactive server configuration during 'upgrade'.
 
-build    Check/install Windows build tools (Git, Node.js, Rust, and MSVC C++
+build pre Build the Windows package as a prerelease with commit hash.
+build ga  Build the Windows package as a release without commit hash.
+         Check/install Windows build tools (Git, Node.js, Rust, and MSVC C++
          Build Tools), validate the WebView2 Fixed Version runtime, and build
          the desktop Tauri package.
 upgrade  Fast-forward the checkout and update desktop dependencies.
@@ -731,8 +742,14 @@ portable EXE / NSIS installer.
 
 Set-ProxyEnvironment
 if ($Help) { Show-Help; exit 0 }
+if ($Command -eq "build" -and [string]::IsNullOrWhiteSpace($VersionChannel)) {
+    throw "The build command requires a version channel: pre or ga."
+}
+if ($Command -ne "build" -and -not [string]::IsNullOrWhiteSpace($VersionChannel)) {
+    throw "A version channel is only valid with the build command."
+}
 switch ($Command) {
-    "build" { Build-Desktop }
+    "build" { Build-Desktop -Channel $VersionChannel }
     "upgrade" { Upgrade-Checkout }
     "self-upgrade" { Self-UpgradeScript }
     default { Show-Help }
