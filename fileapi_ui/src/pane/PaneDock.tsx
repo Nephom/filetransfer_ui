@@ -6,6 +6,7 @@ import type { SshPopupInfo } from "./ssh-popup-registry";
 import { BrowserIcon, EntryManagerIcon, ExternalWindowIcon, FunctionsIcon, LocalIcon, LocationIcon, RemoteIcon, RestIcon, SftpIcon, SshEntriesIcon, TerminalIcon, VncIcon } from "./pane-icons";
 import { CommandPromptIcon, WindowsTerminalIcon } from "../ui/icons";
 import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
+import { BrowserTaskPreview, type BrowserTaskPreviewAnchor } from "./BrowserTaskPreview";
 
 export type PaneLocationChoice = {
   id: string;
@@ -119,6 +120,9 @@ export function PaneDock({
   const desktopContextSubmenuRef = useRef<HTMLDivElement | null>(null);
   const desktopContextOptionRefs = useRef<Record<"location" | "ssh", HTMLButtonElement | null>>({ location: null, ssh: null });
   const ignoreInitialContextHoverRef = useRef(false);
+  const [taskPreview, setTaskPreview] = useState<{ id: PaneWindowId; anchor: BrowserTaskPreviewAnchor } | null>(null);
+  const previewShowTimerRef = useRef<number | null>(null);
+  const previewHideTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     setContextMenuPortalHost(rootRef.current?.closest<HTMLElement>(".pane-desktop") || null);
@@ -157,10 +161,39 @@ export function PaneDock({
   }, [desktopContextMenu]);
 
   const anyMenuOpen = functionsOpen || terminalOpen || desktopContextMenu !== null;
+  // The preview floats over the window area, where a native Browser view would paint above it,
+  // so the native views are hidden (their stand-in pictures stay visible) while it is open.
+  const taskPreviewOpen = taskPreview !== null;
   useEffect(() => {
-    onNativeViewOcclusionChange(anyMenuOpen);
+    onNativeViewOcclusionChange(anyMenuOpen || taskPreviewOpen);
     return () => onNativeViewOcclusionChange(false);
-  }, [anyMenuOpen, onNativeViewOcclusionChange]);
+  }, [anyMenuOpen, taskPreviewOpen, onNativeViewOcclusionChange]);
+
+  const clearPreviewTimers = () => {
+    if (previewShowTimerRef.current !== null) window.clearTimeout(previewShowTimerRef.current);
+    if (previewHideTimerRef.current !== null) window.clearTimeout(previewHideTimerRef.current);
+    previewShowTimerRef.current = null;
+    previewHideTimerRef.current = null;
+  };
+  useEffect(() => clearPreviewTimers, []);
+
+  const showTaskPreview = (id: PaneWindowId, element: HTMLElement) => {
+    clearPreviewTimers();
+    const rect = element.getBoundingClientRect();
+    const anchor = { left: rect.left, width: rect.width, top: rect.top };
+    const open = () => { previewShowTimerRef.current = null; setTaskPreview({ id, anchor }); };
+    // Moving between tabs while a preview is already open switches immediately.
+    if (taskPreview) open();
+    else previewShowTimerRef.current = window.setTimeout(open, 250);
+  };
+  const hideTaskPreview = () => {
+    clearPreviewTimers();
+    previewHideTimerRef.current = window.setTimeout(() => { previewHideTimerRef.current = null; setTaskPreview(null); }, 150);
+  };
+  const dismissTaskPreview = () => {
+    clearPreviewTimers();
+    setTaskPreview(null);
+  };
 
   useEffect(() => {
     if (!anyMenuOpen) return undefined;
@@ -242,6 +275,11 @@ export function PaneDock({
 
   const windowOf = (id: PaneWindowId) => layout.windows.find((win) => win.id === id);
   const isOpen = (id: PaneWindowId) => Boolean(windowOf(id)?.open);
+  const previewTargetOpen = taskPreview ? isOpen(taskPreview.id) : true;
+  useEffect(() => {
+    // The previewed window was closed some other way (its own title bar): drop the preview and the occlusion.
+    if (!previewTargetOpen) dismissTaskPreview();
+  }, [previewTargetOpen]);
   const anySftpOpen = layout.windows.some((win) => win.open && kindOf(win.id) === "sftp");
   const anySshOpen = layout.windows.some((win) => win.open && kindOf(win.id) === "ssh");
 
@@ -574,21 +612,26 @@ export function PaneDock({
           const isSshWindow = kindOf(id) === "ssh";
           const sshState = isSshWindow ? sshPaneStates[id] : undefined;
           return (
-            <span key={id} className={`pane-task${active ? " is-active" : ""}${win.minimized ? " is-minimized" : ""}`}>
+            <span
+              key={id}
+              className={`pane-task${active ? " is-active" : ""}${win.minimized ? " is-minimized" : ""}`}
+              onPointerEnter={kindOf(id) === "browser" ? (event) => showTaskPreview(id, event.currentTarget) : undefined}
+              onPointerLeave={kindOf(id) === "browser" ? hideTaskPreview : undefined}
+            >
               <button
                 type="button"
                 role="tab"
                 aria-selected={active}
                 className="pane-task-main"
                 title={win.minimized ? `Restore ${title}` : active ? `Minimize ${title}` : `Show ${title}`}
-                onClick={() => onActivate(id)}
+                onClick={() => { dismissTaskPreview(); onActivate(id); }}
               >
                 {KIND_ICON[kindOf(id) || "local"]}
                 {isSshWindow && <span className={`pane-status-dot${sshState?.connected ? " is-online" : ""}`} aria-hidden="true" />}
                 <span className="pane-task-title">{title}</span>
                 {sshState?.recordingUnsaved && <span className="pane-task-rec" title="Unsaved recording">REC</span>}
               </button>
-              <button type="button" className="pane-task-close" aria-label={`Close ${title}`} onClick={() => onCloseWindow(id)}>×</button>
+              <button type="button" className="pane-task-close" aria-label={`Close ${title}`} onClick={() => { dismissTaskPreview(); onCloseWindow(id); }}>×</button>
             </span>
           );
         })}
@@ -605,6 +648,10 @@ export function PaneDock({
         ))}
       </div>
     </nav>
+    {contextMenuPortalHost && taskPreview && windowOf(taskPreview.id)?.open && createPortal(
+      <BrowserTaskPreview paneId={taskPreview.id} title={titles[taskPreview.id] || taskPreview.id} anchor={taskPreview.anchor} />,
+      contextMenuPortalHost,
+    )}
     {contextMenuPortalHost && desktopContextMenu && createPortal(
       <div ref={desktopContextLayerRef} className="pane-desktop-context-layer" onPointerMove={handleDesktopContextPointerMove}>
         <div

@@ -835,6 +835,54 @@
   background: color-mix(in srgb, var(--color-danger) 50%, transparent);
 }
 
+/* Browser preview floating above a taskbar tab (rendered into .pane-desktop). */
+.pane-task-preview {
+  position: fixed;
+  z-index: 900;
+  box-sizing: border-box;
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-panel-strong);
+  box-shadow: 3px 4px 14px rgba(0, 0, 0, .55), var(--shadow-inset);
+  pointer-events: none;
+}
+.pane-task-preview-title,
+.pane-task-preview-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ui-small-font-size);
+}
+.pane-task-preview-title {
+  color: var(--color-text);
+  font-weight: 600;
+}
+.pane-task-preview-url {
+  color: var(--color-text-muted);
+}
+.pane-task-preview-frame {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+}
+.pane-task-preview-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.pane-task-preview-empty {
+  color: var(--color-text-muted);
+  font-size: var(--ui-small-font-size);
+}
+
 .glass-main-off .pane-pill {
   backdrop-filter: none;
 }

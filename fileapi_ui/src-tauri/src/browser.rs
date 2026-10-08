@@ -555,6 +555,42 @@ pub async fn browser_capture_full_page(
     }
 }
 
+/// Captures the visible part of a Browser pane as a JPEG (base64). Used for the
+/// stand-in image shown while the native view is hidden and for the taskbar
+/// preview. The view has to be shown when this runs; a hidden surface cannot
+/// be captured, so the request is abandoned after a short time instead of
+/// blocking the caller.
+#[tauri::command]
+pub async fn browser_capture_preview(
+    app: AppHandle,
+    webview: Webview,
+    pane_id: String,
+) -> Result<String, String> {
+    require_main_webview(&webview)?;
+    #[cfg(windows)]
+    {
+        let view = get_browser_webview(&app, &pane_id)?;
+        let request = browser_devtools_json(
+            view,
+            "Page.captureScreenshot",
+            serde_json::json!({ "format": "jpeg", "quality": 80, "fromSurface": true }).to_string(),
+        );
+        let response = tokio::time::timeout(std::time::Duration::from_secs(3), request)
+            .await
+            .map_err(|_| "The browser preview request timed out".to_string())??;
+        response
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| "The browser did not return a preview image".to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, pane_id);
+        Err("Browser previews are supported only on Windows".to_string())
+    }
+}
+
 /// A scrolling area found in one frame. Coordinates are CSS pixels in the top
 /// viewport (iframe offsets already added).
 #[cfg(any(windows, test))]

@@ -5048,7 +5048,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             onDragStart={beginModalDrag("settings")}
             onClose={() => setSettingsOpen(false)}
             onSave={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}
-            onManageShareLinks={openShareLinks}
+            onManageShareLinks={() => { setSettingsOpen(false); openShareLinks(); }}
             canManageShareLinks={Boolean(session.token)}
             onClearHistory={clearHistory}
             onClearLogs={clearLogs}

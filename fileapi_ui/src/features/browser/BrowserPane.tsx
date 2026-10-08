@@ -6,6 +6,7 @@ import { ChevronLeftIcon, ChevronRightIcon, RefreshIcon, StopIcon } from "../../
 import type { PaneBrowserWindowId } from "../../pane/pane-window-model";
 import type { BrowserBounds, BrowserBoundsReadback, BrowserNavigationState, BrowserNewPaneEvent, BrowserViewStateEvent } from "./browser-contracts";
 import { BROWSER_NEW_PANE_EVENT, BROWSER_VIEW_STATE_EVENT } from "./browser-contracts";
+import { captureBrowserSnapshot, clearBrowserSnapshot, useBrowserSnapshot } from "./browser-snapshot-store";
 import "./browser-pane.css";
 
 type Props = {
@@ -233,6 +234,12 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
   const lastBoundsRef = useRef("");
   const boundsErrorRef = useRef(false);
   const visibleRef = useRef(visible);
+  // Whether the native child view is showing right now (it is hidden whenever the
+  // pane is not the active one, an overlay is open or the screenshot picker is up).
+  const nativeShownRef = useRef(false);
+  const viewUrlRef = useRef(initialUrl || "about:blank");
+  const [nativeShown, setNativeShown] = useState(false);
+  const snapshot = useBrowserSnapshot(paneId);
   const editingRef = useRef(false);
   const initialUrlRef = useRef(initialUrl);
   const onInitialUrlConsumedRef = useRef(onInitialUrlConsumed);
@@ -256,6 +263,7 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
   });
 
   visibleRef.current = visible;
+  viewUrlRef.current = viewState.url;
   onInitialUrlConsumedRef.current = onInitialUrlConsumed;
   onOpenNewPaneRef.current = onOpenNewPane;
 
@@ -336,12 +344,15 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
       const bounds = readBounds();
       if (!bounds) throw new Error("Browser pane has no visible content area.");
       const url = initialUrlRef.current ? normalizeBrowserUrl(initialUrlRef.current) : "about:blank";
-      const readback = await invoke<BrowserBoundsReadback>("browser_create", { paneId, initialUrl: url, bounds, visible: visibleRef.current });
+      const createdVisible = visibleRef.current;
+      const readback = await invoke<BrowserBoundsReadback>("browser_create", { paneId, initialUrl: url, bounds, visible: createdVisible });
       if (cancelled) {
         await invoke("browser_destroy", { paneId }).catch(() => undefined);
         return;
       }
       createdRef.current = true;
+      nativeShownRef.current = createdVisible;
+      setNativeShown(createdVisible);
       // A creation rectangle the native side did not honour is pushed again by the first sync.
       lastBoundsRef.current = readbackDelta(readback) <= 1 ? boundsKey(bounds) : "";
       setViewReady(true);
@@ -356,8 +367,10 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
       cancelled = true;
       unlistenState?.();
       unlistenNewPane?.();
+      clearBrowserSnapshot(paneId);
       if (createdRef.current) {
         createdRef.current = false;
+        nativeShownRef.current = false;
         void invoke("browser_destroy", { paneId }).catch(() => undefined);
       }
     };
@@ -395,7 +408,21 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
     const browserVisible = visible && !captureImage;
     if (browserVisible) scheduleBounds();
     boundsQueueRef.current = boundsQueueRef.current
-      .then(async () => { await invoke<void>("browser_set_visible", { paneId, visible: browserVisible }); })
+      .then(async () => {
+        if (!createdRef.current) return;
+        // A hidden native view cannot be captured, so the stand-in picture is taken
+        // while the view is still showing, right before it is hidden.
+        if (!browserVisible && nativeShownRef.current) {
+          await captureBrowserSnapshot(paneId, viewUrlRef.current);
+          if (!createdRef.current) {
+            clearBrowserSnapshot(paneId);
+            return;
+          }
+        }
+        await invoke<void>("browser_set_visible", { paneId, visible: browserVisible });
+        nativeShownRef.current = browserVisible;
+        setNativeShown(browserVisible);
+      })
       .catch(() => undefined);
   }, [paneId, viewReady, visible, captureImage, scheduleBounds]);
 
@@ -453,7 +480,10 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
     try {
       const capture = await invoke<BrowserScreenshotCapture>("browser_capture_full_page", { paneId });
       const stitched = await stitchBrowserScreenshot(capture);
+      await captureBrowserSnapshot(paneId, viewUrlRef.current);
       await invoke<void>("browser_set_visible", { paneId, visible: false });
+      nativeShownRef.current = false;
+      setNativeShown(false);
       setCaptureSelection(null);
       setCaptureImage(stitched.dataUrl);
       setCaptureNotice(stitched.notice);
@@ -596,7 +626,9 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
         </div>
         {error && <div className="browser-error" role="alert">{error}</div>}
       </form>
-      <div ref={anchorRef} className="browser-viewport" aria-label="Web page content" />
+      <div ref={anchorRef} className="browser-viewport" aria-label="Web page content">
+        {!nativeShown && snapshot && <img className="browser-snapshot" src={snapshot.dataUrl} alt="" draggable={false} />}
+      </div>
       {captureImage && <div className="browser-capture-layer" role="presentation">
         <section className="browser-capture-dialog" role="dialog" aria-modal="true" aria-labelledby="browser-capture-title">
           <header className="browser-capture-heading">

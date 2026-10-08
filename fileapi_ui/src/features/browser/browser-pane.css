@@ -122,6 +122,18 @@
   background: #fff;
 }
 
+/* Last picture of the page, shown while the native view is hidden. */
+.browser-snapshot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+  pointer-events: none;
+  user-select: none;
+}
+
 .browser-capture-layer {
   position: absolute;
   z-index: 20;
