@@ -2193,8 +2193,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const openLocalTerminal = (kind: LocalTerminalKind) => {
     const label = kind === "windowsTerminal" ? "Windows Terminal" : "Command Prompt";
     void run(async () => {
-      await invoke("open_local_terminal", { kind, path: localPath });
-      notify(`${label} opened in LOCAL: ${localPath ? `~/${localPath}` : "~"}`);
+      await invoke("open_local_terminal", { kind });
+      notify(`${label} opened in C:\\`);
     });
   };
 
@@ -4080,6 +4080,27 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const requestPaneClose = async (id: PaneWindowId) => {
     const vncSessionId = vncScreenSessionIdOf(id);
     if (vncSessionId) {
+      const screen = vncScreenSessions[vncSessionId];
+      const entryId = screen?.entry?.id;
+      if (entryId) {
+        const sessionId = screen.proxmoxSessionId || vncAuthSessions[entryId];
+        const anotherScreenUsesSession = Boolean(sessionId && Object.entries(vncScreenSessions).some(
+          ([otherScreenId, otherScreen]) => otherScreenId !== vncSessionId && otherScreen.proxmoxSessionId === sessionId,
+        ));
+        if (!anotherScreenUsesSession) {
+          if (sessionId) await invoke("proxmox_logout", { sessionId }).catch(() => undefined);
+          setVncAuthSessions((current) => {
+            if (sessionId && current[entryId] !== sessionId) return current;
+            const next = { ...current };
+            delete next[entryId];
+            return next;
+          });
+          if (!sessionId || !vncAuthSessions[entryId] || vncAuthSessions[entryId] === sessionId) {
+            setVncVmLists((current) => { const next = { ...current }; delete next[entryId]; return next; });
+            setVncPickerEntryIds((current) => current.filter((candidateId) => candidateId !== entryId));
+          }
+        }
+      }
       setVncScreenSessions((current) => { const next = { ...current }; delete next[vncSessionId]; return next; });
       setVncFileBrowsers((current) => { const next = { ...current }; delete next[vncSessionId]; return next; });
       return true;

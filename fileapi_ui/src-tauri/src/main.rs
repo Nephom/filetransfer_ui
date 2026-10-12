@@ -3369,26 +3369,26 @@ fn parse_local_terminal_kind(kind: &str) -> Result<LocalTerminalKind, String> {
 }
 
 #[tauri::command]
-fn open_local_terminal(kind: String, path: String) -> Result<(), String> {
+fn open_local_terminal(kind: String) -> Result<(), String> {
     let kind = parse_local_terminal_kind(&kind)?;
-    let (_, directory) = resolve_local_read_path(&path)?;
+    let directory = r"C:\";
 
     #[cfg(target_os = "windows")]
     {
         let mut command = match kind {
             LocalTerminalKind::WindowsTerminal => {
                 let mut command = std::process::Command::new("wt.exe");
-                command.arg("-d").arg(&directory);
+                command.arg("-d").arg(directory);
                 command
             }
             LocalTerminalKind::CommandPrompt => {
                 let mut command = std::process::Command::new("cmd.exe");
-                command.arg("/K");
+                command.args(["/D", "/K", "cd /d C:\\"]);
                 command
             }
         };
         command
-            .current_dir(&directory)
+            .current_dir(directory)
             .spawn()
             .map(|_| ())
             .map_err(|error| format!("Unable to start the local terminal: {error}"))
