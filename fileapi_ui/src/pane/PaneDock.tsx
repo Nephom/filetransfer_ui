@@ -5,7 +5,7 @@ import { PANE_SINGLETON_KINDS, isDynamicWindow, kindOf } from "./pane-window-mod
 import type { SshPopupInfo } from "./ssh-popup-registry";
 import { BrowserIcon, EntryManagerIcon, ExternalWindowIcon, FunctionsIcon, LocalIcon, LocationIcon, RemoteIcon, RestIcon, SftpIcon, SshEntriesIcon, TerminalIcon, VncIcon } from "./pane-icons";
 import { CommandPromptIcon, WindowsTerminalIcon } from "../ui/icons";
-import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
+import type { LocalTerminalKind, RecordingIndicator } from "../features/terminal/terminal-contracts";
 import { BrowserTaskPreview, type BrowserTaskPreviewAnchor } from "./BrowserTaskPreview";
 
 export type PaneLocationChoice = {
@@ -55,7 +55,7 @@ type Props = {
   /** Browser support is Windows-only and enabled after stale native child views are cleaned up. */
   browserSupported: boolean;
   /** Live state of each open SSH pane by window id (taskbar status dot / unsaved-recording marker). */
-  sshPaneStates: Readonly<Record<string, { connected: boolean; recordingUnsaved: boolean } | undefined>>;
+  sshPaneStates: Readonly<Record<string, { connected: boolean; recordingUnsaved: boolean; recordingIndicator: RecordingIndicator } | undefined>>;
   popups: readonly SshPopupInfo[];
   busy: boolean;
   desktopContextMenu: { x: number; y: number } | null;
@@ -629,7 +629,7 @@ export function PaneDock({
                 {KIND_ICON[kindOf(id) || "local"]}
                 {isSshWindow && <span className={`pane-status-dot${sshState?.connected ? " is-online" : ""}`} aria-hidden="true" />}
                 <span className="pane-task-title">{title}</span>
-                {sshState?.recordingUnsaved && <span className="pane-task-rec" title="Unsaved recording">REC</span>}
+                {sshState?.recordingIndicator && <span className={`pane-task-${sshState.recordingIndicator.toLowerCase()}`} title={sshState.recordingIndicator === "REC" ? "Recording in progress" : "Log available to save"}>{sshState.recordingIndicator}</span>}
               </button>
               <button type="button" className="pane-task-close" aria-label={`Close ${title}`} onClick={() => { dismissTaskPreview(); onCloseWindow(id); }}>×</button>
             </span>
@@ -641,7 +641,7 @@ export function PaneDock({
               <ExternalWindowIcon size={18} />
               <span className={`pane-status-dot${popup.connected ? " is-online" : ""}`} aria-hidden="true" />
               <span className="pane-task-title">{popup.title}</span>
-              {popup.recordingUnsaved && <span className="pane-task-rec" title="Unsaved recording">REC</span>}
+              {popup.recordingIndicator && <span className={`pane-task-${popup.recordingIndicator.toLowerCase()}`} title={popup.recordingIndicator === "REC" ? "Recording in progress" : "Log available to save"}>{popup.recordingIndicator}</span>}
             </button>
             <button type="button" className="pane-task-close" aria-label={`Close ${popup.title}`} onClick={() => onClosePopup(popup.label)}>×</button>
           </span>

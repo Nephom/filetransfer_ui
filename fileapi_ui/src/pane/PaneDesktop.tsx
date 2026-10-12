@@ -2,7 +2,7 @@ import React, { lazy, Suspense, useCallback, useEffect, useRef, useState, useSyn
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { PaneDock, type PaneLocationChoice, type PaneTerminalWorkspace, type PaneVncWorkspace } from "./PaneDock";
-import type { LocalTerminalKind } from "../features/terminal/terminal-contracts";
+import type { LocalTerminalKind, RecordingIndicator } from "../features/terminal/terminal-contracts";
 import { PaneWindow } from "./PaneWindow";
 import { usePaneWindows } from "./usePaneWindows";
 import { PANE_SINGLETON_KINDS, browserPaneInstanceOf, browserWindowId, isBrowserWindow, kindOf, sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, sshWindowId, type PaneBrowserWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
@@ -49,7 +49,7 @@ type Props = {
   /** Windows Terminal / Command Prompt can only be launched on Windows. */
   localShellsAvailable: boolean;
   /** Live state of each open SSH pane by entry id. */
-  sshPaneStates: Readonly<Record<string, { connected: boolean; recordingUnsaved: boolean } | undefined>>;
+  sshPaneStates: Readonly<Record<string, { connected: boolean; recordingUnsaved: boolean; recordingIndicator: RecordingIndicator } | undefined>>;
   /** SSH entries that still exist; an open SFTP or SSH window whose entry is gone is dropped. */
   entryIds: readonly string[];
   busy: boolean;

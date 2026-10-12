@@ -46,12 +46,13 @@ export function SshTerminalPopup() {
     entryId: profile?.id || "",
     connected: terminal.connected,
     recordingUnsaved: terminal.recordingUnsaved,
+    recordingIndicator: terminal.recordingIndicator,
   };
   const statePayloadRef = useRef(statePayload);
   statePayloadRef.current = statePayload;
   useEffect(() => {
     void emitTo("main", SSH_POPUP_STATE_EVENT, statePayloadRef.current).catch(() => undefined);
-  }, [terminal.connected, terminal.recordingUnsaved, title, profile?.id]);
+  }, [terminal.connected, terminal.recordingUnsaved, terminal.recordingIndicator, title, profile?.id]);
 
   // The main window asks for a fresh report when it (re)builds its registry,
   // e.g. after a reload, so it learns which SSH entry this window belongs to

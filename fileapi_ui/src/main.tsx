@@ -796,7 +796,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         return rest;
       }
       const previous = current[windowId];
-      if (previous && previous.entryId === entryId && previous.connected === state.connected && previous.connecting === state.connecting && previous.recordingUnsaved === state.recordingUnsaved) return current;
+      if (previous && previous.entryId === entryId && previous.connected === state.connected && previous.connecting === state.connecting && previous.recordingUnsaved === state.recordingUnsaved && previous.recordingIndicator === state.recordingIndicator) return current;
       return { ...current, [windowId]: { ...state, entryId } };
     });
   }, []);

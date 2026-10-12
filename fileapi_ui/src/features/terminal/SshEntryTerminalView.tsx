@@ -72,7 +72,7 @@ export function SshEntryTerminalView({ terminal, title, variant }: Props) {
       <header className={cls.header}>
         {variant === "native" ? <h1>{title}</h1> : <strong className={cls.title} title={title}>{title}</strong>}
         <div className={cls.status}>
-          <span title={terminal.status}>{terminal.status}</span>
+          <span className={terminal.recording ? "ssh-recording-status" : undefined} title={terminal.status}>{terminal.status}</span>
           {terminal.connecting
             ? <button type="button" className={join(cls.button, "is-danger")} onClick={terminal.cancelConnect}>Cancel</button>
             : terminal.connected
@@ -84,7 +84,7 @@ export function SshEntryTerminalView({ terminal, title, variant }: Props) {
             disabled={!terminal.connected || terminal.savingLog || terminal.startingRecording}
             onClick={() => void (terminal.recording ? terminal.stopRecording() : terminal.startRecording())}
           >
-            {terminal.recording ? "Recording" : "Record"}
+            {terminal.recording ? "StopREC" : "Record"}
           </button>
           <button
             type="button"

@@ -810,13 +810,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pane-task-rec {
+.pane-task-rec, .pane-task-log {
   padding: 0 var(--space-1);
   border-radius: 4px;
-  color: var(--color-text);
-  background: var(--color-danger);
+  color: #fff;
   font-size: var(--ui-small-font-size);
   font-weight: 800;
+}
+.pane-task-rec {
+  background: var(--color-danger);
+}
+.pane-task-log {
+  background: color-mix(in srgb, var(--color-success) 40%, #00452d);
 }
 .explorer.pane-style .pane-task-close,
 .explorer.pane-style .pane-task-close:hover:not(:disabled) {

@@ -4,7 +4,7 @@ import type { Terminal } from "@xterm/xterm";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import { useSshEventBridge, type SshBridgeTab, type SshEventPayload } from "./useSshEventBridge";
 import { useTerminalLifecycle } from "./useTerminalLifecycle";
-import type { RecordingStats } from "./terminal-contracts";
+import type { RecordingIndicator, RecordingStats } from "./terminal-contracts";
 import {
   RecordingPlainTranscript,
   SSH_SESSION_BOUNDARY_GUARD,
@@ -21,6 +21,7 @@ export type SshEntryTerminalState = {
   connecting: boolean;
   /** true while a recording runs or has output that was never saved. */
   recordingUnsaved: boolean;
+  recordingIndicator: RecordingIndicator;
 };
 
 export type SshEntryOperationLog = (
@@ -129,10 +130,13 @@ export function useSshEntryTerminal({
     shellInputRef.current = "";
     secretPromptRef.current = false;
     recordingStatsRef.current = { rawBytes: 0, plainBytes: 0, commandCount: 0, saved: false };
+    setRecordingRawBytes(0);
+    setRecordingPlainBytes(0);
+    setSavedLogPaths([]);
   }, [finishRecording, tabId]);
 
   const hasUnsavedRecording = useCallback(
-    () => recordingRef.current || (recordingStatsRef.current.rawBytes > 0 && !recordingStatsRef.current.saved),
+    () => recordingRef.current || ((recordingStatsRef.current.rawBytes > 0 || recordingStatsRef.current.plainBytes > 0) && !recordingStatsRef.current.saved),
     [],
   );
 
@@ -390,6 +394,11 @@ export function useSshEntryTerminal({
   };
 
   const hasRecordedOutput = recordingRawBytes > 0 || recordingPlainBytes > 0;
+  const recordingIndicator: RecordingIndicator = recording
+    ? "REC"
+    : hasRecordedOutput && savedLogPaths.length === 0
+      ? "LOG"
+      : null;
 
   const openSaveLogDialog = async () => {
     if (recording || !hasRecordedOutput) return;
@@ -433,13 +442,13 @@ export function useSshEntryTerminal({
   };
 
   const connected = Boolean(sessionId);
-  const recordingUnsaved = recording || (recordingRawBytes > 0 && savedLogPaths.length === 0);
+  const recordingUnsaved = recording || (hasRecordedOutput && savedLogPaths.length === 0);
 
   const stateRef = useRef(onStateChange);
   stateRef.current = onStateChange;
   useEffect(() => {
-    stateRef.current?.({ connected, connecting, recordingUnsaved });
-  }, [connected, connecting, recordingUnsaved]);
+    stateRef.current?.({ connected, connecting, recordingUnsaved, recordingIndicator });
+  }, [connected, connecting, recordingUnsaved, recordingIndicator]);
 
   const status = connecting
     ? "Connecting…"
@@ -453,6 +462,7 @@ export function useSshEntryTerminal({
     connecting,
     recording,
     recordingUnsaved,
+    recordingIndicator,
     hasRecordedOutput,
     startingRecording,
     savingLog,

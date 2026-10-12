@@ -12,6 +12,7 @@ export type SshPopupInfo = {
   entryId: string;
   connected: boolean;
   recordingUnsaved: boolean;
+  recordingIndicator: SshPopupStatePayload["recordingIndicator"];
 };
 
 const popups = new Map<string, SshPopupInfo>();
@@ -37,7 +38,7 @@ const remove = (label: string) => {
 
 /** Register a popup that this window just created. */
 export function trackSshPopup(handle: WebviewWindow, info: Pick<SshPopupInfo, "label" | "title" | "entryId">) {
-  popups.set(info.label, { ...info, connected: false, recordingUnsaved: false });
+  popups.set(info.label, { ...info, connected: false, recordingUnsaved: false, recordingIndicator: null });
   handles.set(info.label, handle);
   publish();
   void handle.once("tauri://destroyed", () => remove(info.label));
@@ -64,7 +65,7 @@ export async function reconcileSshPopups() {
     if (!popups.has(label)) {
       let title = label;
       try { title = await handle.title(); } catch { /* keep the label as a fallback title */ }
-      popups.set(label, { label, title, entryId: "", connected: false, recordingUnsaved: false });
+      popups.set(label, { label, title, entryId: "", connected: false, recordingUnsaved: false, recordingIndicator: null });
       void handle.once("tauri://destroyed", () => remove(label));
       changed = true;
     }
@@ -87,6 +88,7 @@ export async function startSshPopupBridge(): Promise<UnlistenFn> {
       entryId: payload.entryId || current?.entryId || "",
       connected: payload.connected,
       recordingUnsaved: payload.recordingUnsaved,
+      recordingIndicator: payload.recordingIndicator,
     });
     publish();
   });
