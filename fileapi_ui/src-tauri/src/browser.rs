@@ -250,7 +250,7 @@ fn browser_fullscreen_recoveries(
 }
 
 #[cfg(windows)]
-fn register_browser_fullscreen_recovery(
+async fn register_browser_fullscreen_recovery(
     view: &Webview,
     label: &str,
     fullscreen_before_browser_request: bool,
@@ -266,8 +266,7 @@ fn register_browser_fullscreen_recovery(
 
     let parent = view.window();
     let event_recovery = recovery.clone();
-    let registration = Arc::new(Mutex::new(None));
-    let registration_result = registration.clone();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
     view.with_webview(move |platform| {
         let result = unsafe {
             platform
@@ -315,24 +314,19 @@ fn register_browser_fullscreen_recovery(
                         .map_err(|error| error.to_string())
                 })
         };
-        if let Ok(mut slot) = registration_result.lock() {
-            *slot = Some(result);
-        }
+        let _ = sender.send(result);
     })
     .map_err(|error| error.to_string())?;
 
-    registration
-        .lock()
-        .map_err(|error| error.to_string())?
-        .take()
-        .ok_or_else(|| "Browser fullscreen listener did not complete".to_string())??;
+    receiver
+        .await
+        .map_err(|_| "Browser fullscreen listener did not complete".to_string())??;
     Ok(())
 }
 
 #[cfg(windows)]
-fn browser_contains_fullscreen_element(view: &Webview) -> Result<bool, String> {
-    let result = Arc::new(Mutex::new(None));
-    let result_from_main_thread = result.clone();
+async fn browser_contains_fullscreen_element(view: &Webview) -> Result<bool, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
     view.with_webview(move |platform| {
         let contains_fullscreen_element = (|| unsafe {
             let core = platform
@@ -344,23 +338,22 @@ fn browser_contains_fullscreen_element(view: &Webview) -> Result<bool, String> {
                 .map_err(|error| error.to_string())?;
             Ok::<_, String>(contains_fullscreen_element.as_bool())
         })();
-        if let Ok(mut slot) = result_from_main_thread.lock() {
-            *slot = Some(contains_fullscreen_element);
-        }
+        let _ = sender.send(contains_fullscreen_element);
     })
     .map_err(|error| error.to_string())?;
-    let contains_fullscreen_element =
-        result
-            .lock()
-            .map_err(|error| error.to_string())?
-            .take()
-            .ok_or_else(|| "Browser fullscreen state could not be read".to_string())??;
-    Ok(contains_fullscreen_element)
+    receiver
+        .await
+        .map_err(|_| "Browser fullscreen state could not be read".to_string())?
 }
 
 #[cfg(windows)]
 async fn close_browser_view(view: Webview, label: &str) -> Result<(), String> {
-    let contains_fullscreen_element = browser_contains_fullscreen_element(&view).unwrap_or(false);
+    let contains_fullscreen_element = browser_contains_fullscreen_element(&view)
+        .await
+        .unwrap_or_else(|error| {
+            eprintln!("Unable to read Browser fullscreen state before closing: {error}");
+            false
+        });
     let recovery = browser_fullscreen_recoveries()
         .lock()
         .map_err(|error| error.to_string())?
@@ -544,6 +537,7 @@ pub async fn browser_create(
             .map_err(|error| error.to_string())?;
         if let Err(error) =
             register_browser_fullscreen_recovery(&child, &label, fullscreen_before_browser_request)
+                .await
         {
             let _ = close_browser_view(child, &label).await;
             return Err(error);
@@ -658,7 +652,7 @@ pub async fn browser_history(
     }
     #[cfg(windows)]
     {
-        run_core_command(get_browser_webview(&app, &pane_id)?, direction)
+        run_core_command(get_browser_webview(&app, &pane_id)?, direction).await
     }
     #[cfg(not(windows))]
     {
@@ -692,7 +686,7 @@ pub async fn browser_stop(app: AppHandle, webview: Webview, pane_id: String) -> 
     require_main_webview(&webview)?;
     #[cfg(windows)]
     {
-        run_core_command(get_browser_webview(&app, &pane_id)?, "stop".to_string())
+        run_core_command(get_browser_webview(&app, &pane_id)?, "stop".to_string()).await
     }
     #[cfg(not(windows))]
     {
@@ -712,8 +706,7 @@ pub async fn browser_get_state(
     {
         let view = get_browser_webview(&app, &pane_id)?;
         let url = view.url().map_err(|error| error.to_string())?.to_string();
-        let history = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let history_result = history.clone();
+        let (sender, receiver) = tokio::sync::oneshot::channel();
         view.with_webview(move |platform| {
             let result = (|| unsafe {
                 let core = platform
@@ -731,16 +724,12 @@ pub async fn browser_get_state(
                     can_go_forward.assume_init().0 != 0,
                 ))
             })();
-            if let Ok(mut slot) = history_result.lock() {
-                *slot = Some(result);
-            }
+            let _ = sender.send(result);
         })
         .map_err(|error| error.to_string())?;
-        let (can_go_back, can_go_forward) = history
-            .lock()
-            .map_err(|error| error.to_string())?
-            .take()
-            .ok_or_else(|| "Unable to read browser history state".to_string())??;
+        let (can_go_back, can_go_forward) = receiver
+            .await
+            .map_err(|_| "Unable to read browser history state".to_string())??;
         Ok(BrowserNavigationState {
             url,
             can_go_back,
@@ -1790,9 +1779,8 @@ pub async fn browser_cleanup_stale(app: AppHandle, webview: Webview) -> Result<(
 }
 
 #[cfg(windows)]
-fn run_core_command(view: Webview, action: String) -> Result<(), String> {
-    let result = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let result_from_main_thread = result.clone();
+async fn run_core_command(view: Webview, action: String) -> Result<(), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
     view.with_webview(move |platform| {
         let operation = (|| unsafe {
             let core = platform
@@ -1806,17 +1794,12 @@ fn run_core_command(view: Webview, action: String) -> Result<(), String> {
                 _ => Err("Invalid browser action".to_string()),
             }
         })();
-        if let Ok(mut slot) = result_from_main_thread.lock() {
-            *slot = Some(operation);
-        }
+        let _ = sender.send(operation);
     })
     .map_err(|error| error.to_string())?;
-    let operation = result
-        .lock()
-        .map_err(|error| error.to_string())?
-        .take()
-        .ok_or_else(|| "Browser command did not complete".to_string())?;
-    operation
+    receiver
+        .await
+        .map_err(|_| "Browser command did not complete".to_string())?
 }
 
 #[cfg(test)]
