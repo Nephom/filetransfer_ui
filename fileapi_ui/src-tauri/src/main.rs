@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browser;
+mod mouse_keepalive;
 mod netcheck;
 mod oplog;
 mod proxmox;
@@ -4447,6 +4448,11 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                mouse_keepalive::release_window(window.label());
+            }
+        })
         .setup(|_app| {
             // Any file still sitting in `<install dir>/temp` at startup can
             // only be an orphan from a previous run's unsaved recording
@@ -4492,6 +4498,9 @@ fn main() {
             download_to_drag_staging,
             download_to_drag_staging_at,
             cleanup_drag_staging,
+            mouse_keepalive::ssh_terminal_keepalive_clear_window,
+            mouse_keepalive::ssh_terminal_keepalive_register,
+            mouse_keepalive::ssh_terminal_keepalive_unregister,
             ssh_connect,
             ssh_set_allow_legacy_algorithms,
             ssh_key_available,

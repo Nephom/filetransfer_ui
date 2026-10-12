@@ -114,6 +114,10 @@ function desktop(handler = () => undefined) {
   const driver = hookDriver({ effects: false }), calls = [], storage = new Map();
   const jsx = (type, props) => ({ type, props });
   const invoke = async (command, args) => {
+    // App startup clears stale terminal keep-alive leases before rendering.
+    // This housekeeping command is not a user-requested API operation tracked
+    // by the Location assertions below.
+    if (command === "ssh_terminal_keepalive_clear_window") return null;
     calls.push({ command, args });
     const result = handler(command, args);
     if (result !== undefined) return result;

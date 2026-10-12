@@ -8,6 +8,7 @@ function harness(handler = () => undefined) {
   let nextSession = 0;
   const jsx = (type, props) => ({ type, props });
   const invoke = async (command, args) => {
+    if (command === "ssh_terminal_keepalive_clear_window") return null;
     calls.push({ command, args });
     const result = handler(command, args);
     if (result !== undefined) return result;

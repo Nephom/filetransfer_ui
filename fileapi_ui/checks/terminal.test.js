@@ -98,7 +98,7 @@ const PROFILE = { id: "profile", name: "Server", host: "host", port: 22, usernam
 // Drives the production useSshEntryTerminal hook (the terminal of one SSH entry, shared by the
 // native window and the SSH pane) with the real useTerminalLifecycle and a real xterm.js Terminal.
 // Only Tauri commands/events and the browser shell are replaced.
-async function harness(t, { connect = "a-session", onStateChange, onOperationLog } = {}) {
+async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepAliveWindow, onStateChange, onOperationLog } = {}) {
   const hooks = hookRunner();
   const calls = [], notices = [], copies = [], reads = [], pastes = [], writes = [], states = [], logs = [];
   const instances = [], focused = [];
@@ -106,7 +106,8 @@ async function harness(t, { connect = "a-session", onStateChange, onOperationLog
   let selection = "", selectedTextarea, clipboard = "clipboard", picker = "";
   const documentListeners = new Map();
   const windowListeners = new Map();
-  let bridge, connectResult = connect, disconnectResult;
+  let bridge, connectResult = connect, disconnectResult, keepAliveRegisterResult = keepAliveRegister;
+  let clearKeepAliveWindowResult = clearKeepAliveWindow, clearKeepAliveWindowCalls = 0;
   class Terminal extends RealTerminal {
     constructor(options) { super(options); instances.push(this); }
     open() {
@@ -141,6 +142,14 @@ async function harness(t, { connect = "a-session", onStateChange, onOperationLog
     "@tauri-apps/plugin-clipboard-manager": { readText() { reads.push(true); return Promise.resolve(clipboard); } },
     "@tauri-apps/api/core": { async invoke(command, args) {
       calls.push({ command, args });
+      if (command === "ssh_terminal_keepalive_clear_window") {
+        return typeof clearKeepAliveWindowResult === "function"
+          ? clearKeepAliveWindowResult(++clearKeepAliveWindowCalls)
+          : clearKeepAliveWindowResult;
+      }
+      if (command === "ssh_terminal_keepalive_register") {
+        return typeof keepAliveRegisterResult === "function" ? keepAliveRegisterResult() : keepAliveRegisterResult;
+      }
       if (command === "pick_local_directory") return picker;
       if (command === "ssh_connect") return connectResult;
       if (command === "ssh_disconnect") return disconnectResult;
@@ -182,6 +191,7 @@ async function harness(t, { connect = "a-session", onStateChange, onOperationLog
     setPicker(value) { picker = value; },
     setConnectResult(value) { connectResult = value; },
     setDisconnectResult(value) { disconnectResult = value; },
+    setKeepAliveRegisterResult(value) { keepAliveRegisterResult = value; },
     setSelection(value) { selection = value; },
     screen() {
       const buffer = this.terminal.buffer.active;
@@ -265,10 +275,83 @@ test("an SSH entry connects on its own and reports the connection to its owner",
   assert.equal(h.ctl.connected, true);
   assert.equal(h.ctl.connecting, false);
   assert.equal(h.ctl.status, "Connected");
-  assert.deepEqual(h.states.at(0), { connected: false, connecting: false, recordingUnsaved: false }, "starts before the connection exists");
+  assert.deepEqual(h.states.at(0), { connected: false, connecting: false, recordingUnsaved: false, recordingIndicator: null }, "starts before the connection exists");
   assert.ok(h.states.some((state) => state.connecting && !state.connected), "reports the connecting phase");
-  assert.deepEqual(h.states.at(-1), { connected: true, connecting: false, recordingUnsaved: false });
+  assert.deepEqual(h.states.at(-1), { connected: true, connecting: false, recordingUnsaved: false, recordingIndicator: null });
   assert.ok(h.calls.some((call) => call.command === "ssh_resize" && call.args.sessionId === "a-session"), "the known xterm size is handed to the remote PTY once the session exists");
+});
+
+test("an open SSH Entry owns one keep-alive lease until its terminal unmounts", async (t) => {
+  const h = await harness(t);
+  const clearIndex = h.calls.findIndex(({ command }) => command === "ssh_terminal_keepalive_clear_window");
+  const registration = h.calls.find(({ command }) => command === "ssh_terminal_keepalive_register");
+  const registrationIndex = h.calls.findIndex(({ command }) => command === "ssh_terminal_keepalive_register");
+  assert.ok(clearIndex >= 0 && clearIndex < registrationIndex, "stale leases are cleared before this WebView registers terminals");
+  assert.ok(registration, "mounting an SSH Entry terminal registers native keep-alive");
+  assert.ok(registration.args.leaseId.startsWith("ssh-") && registration.args.leaseId.includes("-keepalive-"));
+
+  await h.ctl.disconnect();
+  await h.settle();
+  assert.equal(
+    h.calls.filter(({ command }) => command === "ssh_terminal_keepalive_unregister").length,
+    0,
+    "Disconnect does not release the lease while the Entry terminal remains open",
+  );
+
+  h.unmount();
+  assert.equal(h.calls.filter(({ command }) => command === "ssh_terminal_keepalive_unregister").length, 1);
+});
+
+test("a late keep-alive registration is released if its Entry terminal unmounts first", async (t) => {
+  const registration = deferred();
+  const h = await harness(t, { keepAliveRegister: registration.promise });
+  const leaseId = h.calls.find(({ command }) => command === "ssh_terminal_keepalive_register").args.leaseId;
+  h.unmount();
+  assert.equal(h.calls.filter(({ command }) => command === "ssh_terminal_keepalive_unregister").length, 1);
+
+  registration.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  const releases = h.calls.filter(({ command }) => command === "ssh_terminal_keepalive_unregister");
+  assert.equal(releases.length, 2, "the completion path repeats the idempotent release after late registration");
+  assert.ok(releases.every(({ args }) => args.leaseId === leaseId));
+});
+
+test("a transient WebView lease-clear failure retries before a later Entry registers", async (t) => {
+  const h = await harness(t, {
+    clearKeepAliveWindow(attempt) {
+      return attempt === 1 ? Promise.reject(new Error("transient clear failure")) : null;
+    },
+  });
+  assert.equal(h.calls.filter(({ command }) => command === "ssh_terminal_keepalive_register").length, 0);
+  assert.match(h.ctl.status, /Mouse keep-alive unavailable: transient clear failure/);
+
+  h.render({ profile: { ...PROFILE, id: "retry-profile" } });
+  await h.settle();
+
+  assert.equal(h.calls.filter(({ command }) => command === "ssh_terminal_keepalive_clear_window").length, 2);
+  assert.equal(h.calls.filter(({ command }) => command === "ssh_terminal_keepalive_register").length, 1);
+  assert.doesNotMatch(h.ctl.status, /Mouse keep-alive unavailable/);
+});
+
+test("keep-alive registration failures are visible without blocking the SSH terminal", async (t) => {
+  const h = await harness(t, { keepAliveRegister: () => Promise.reject(new Error("native registration failed")) });
+  assert.match(h.ctl.status, /Mouse keep-alive unavailable: native registration failed/);
+  assert.equal(h.ctl.connected, true, "the keep-alive failure does not disconnect the SSH Entry");
+
+  await h.ctl.disconnect();
+  h.setConnectResult("reconnected-session");
+  h.ctl.connect();
+  await h.settle();
+  assert.equal(h.ctl.connected, true);
+  assert.match(h.ctl.status, /Mouse keep-alive unavailable: native registration failed/, "reconnecting cannot clear the keep-alive warning");
+
+  h.setKeepAliveRegisterResult(undefined);
+  h.render({ profile: { ...PROFILE, id: "updated-profile" } });
+  await h.settle();
+  assert.doesNotMatch(h.ctl.status, /Mouse keep-alive unavailable/, "a new successful lease clears an old registration warning");
+  h.render({ profile: null });
+  await h.settle();
+  assert.doesNotMatch(h.ctl.status, /Mouse keep-alive unavailable/, "removing the Entry also clears the warning");
 });
 
 test("all paste routes preserve Python indentation and logical newlines in one xterm input", async (t) => {
@@ -675,7 +758,7 @@ test("after the session ends the same window can connect again in the same termi
   await h.settle();
   assert.equal(h.ctl.connected, false);
   assert.equal(h.ctl.status, "Connection closed.");
-  assert.deepEqual(h.states.at(-1), { connected: false, connecting: false, recordingUnsaved: false });
+  assert.deepEqual(h.states.at(-1), { connected: false, connecting: false, recordingUnsaved: false, recordingIndicator: null });
   assert.match(h.screen(), /first session/, "the old output stays visible");
   h.setConnectResult("second-session");
   h.ctl.connect();

@@ -113,6 +113,30 @@ that entry's SFTP connection. Direct transfers between two SFTP windows (or an
 SFTP window and the API Remote) are not supported; the UI asks the user to
 download to LOCAL and upload manually.
 
+On Windows, while at least one SSH Entry Terminal pane or popup window remains
+open, the desktop client watches the interactive session's last keyboard or
+mouse input. After 30 seconds without input, it injects a one-pixel cursor move
+to an adjacent point on a connected display and returns the cursor to its
+original position; it repeats at 30-second idle intervals until real input
+resumes. All open Entries share one keep-alive worker and one idle timer; opening
+more Entries does not increase the nudge frequency. Closing one Entry leaves it
+active while another remains open; closing the last one stops it. A nudge is
+deferred while a key or mouse button is held; releasing it starts a fresh
+30-second idle interval. This applies even if the SSH session is disconnected,
+as long as its Entry Terminal window or pane remains open. The injected input
+resets Windows' idle timer, so the
+automatic screen saver, inactivity lock, and idle-based display-off or sleep
+will be postponed while an Entry remains open. This also works at display
+edges and across multi-monitor layouts. Other applications that track system
+idle time may also observe the synthetic input as activity. On managed devices,
+use this only where policy permits: it deliberately postpones automatic lock,
+and synthetic input may affect presence or security monitoring.
+Cursor movement is suspended while Windows is showing a locked or secure
+desktop; after returning to the normal desktop, a fresh 30-second idle period
+is required. Closing the last SSH Entry Terminal stops the keep-alive.
+The separately launched local Command Prompt and Windows Terminal do not
+acquire a keep-alive lease.
+
 SFTP transfers support directory browsing, create, rename, delete, upload,
 download, archive, extraction, and native drag staging. File contents are
 transferred in bounded operations appropriate to the selected executor; local

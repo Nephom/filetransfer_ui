@@ -50,6 +50,30 @@ type SaveLogPaths = { raw: string; plain: string; commands: string; metadata: st
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+// Clear leases left by a renderer reload before any new SSH terminal registers.
+// The result is memoized per WebView JS context, so multiple terminals opened
+// in the same window share one clear and cannot erase each other's new leases.
+let keepAliveWindowInitialization: Promise<{ error: unknown } | null> | null = null;
+const initializeKeepAliveWindow = () => {
+  if (!keepAliveWindowInitialization) {
+    const attempt = Promise.resolve()
+      .then(() => invoke<void>("ssh_terminal_keepalive_clear_window"))
+      .then(
+        () => null,
+        (error) => ({ error }),
+      );
+    keepAliveWindowInitialization = attempt.then((result) => {
+      // Registration waits on this promise, so a failed clear means this
+      // renderer has not added leases that a later retry could remove.
+      if (result) keepAliveWindowInitialization = null;
+      return result;
+    });
+  }
+  return keepAliveWindowInitialization;
+};
+// Clear on startup even if the user never opens another terminal.
+void initializeKeepAliveWindow();
+
 /**
  * One SSH entry = one terminal: connection, xterm, recording and Save Log.
  * Used by both the native "Open a new Window" window and the in-app SSH pane,
@@ -61,6 +85,7 @@ export function useSshEntryTerminal({
 }: SshEntryTerminalOptions) {
   const [tabId] = useState(() => `ssh-${makeSshTabId()}`);
   const [notice, setNotice] = useState("");
+  const [keepAliveNotice, setKeepAliveNotice] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [host, setHost] = useState<HTMLDivElement | null>(null);
@@ -196,6 +221,45 @@ export function useSshEntryTerminal({
       endSession(payload.sessionId, payload.data || "SSH session ended.");
     },
   });
+
+  // Every SSH terminal instance owns one native keep-alive lease. This hook is
+  // shared by SSH panes and popup windows; local CMD / Windows Terminal launch
+  // through a separate command and never acquires a lease. Releasing twice is
+  // intentionally safe: the second release closes the race where unmount
+  // happens before the register command has completed.
+  useEffect(() => {
+    if (!profile?.id) {
+      setKeepAliveNotice("");
+      return undefined;
+    }
+    const keepAliveLeaseId = `${tabId}-keepalive-${makeSshTabId()}`;
+    let disposed = false;
+    const unregister = () => {
+      void invoke("ssh_terminal_keepalive_unregister", { leaseId: keepAliveLeaseId }).catch(() => undefined);
+    };
+
+    void initializeKeepAliveWindow()
+      .then((initializationFailure) => {
+        if (disposed) return;
+        if (initializationFailure) throw initializationFailure.error;
+        return invoke("ssh_terminal_keepalive_register", { leaseId: keepAliveLeaseId });
+      })
+      .then(() => {
+        if (disposed) unregister();
+        else setKeepAliveNotice("");
+      })
+      .catch((error) => {
+        if (disposed) return;
+        const detail = errorText(error);
+        console.warn("Unable to register SSH mouse keep-alive.", detail);
+        setKeepAliveNotice(`Mouse keep-alive unavailable: ${detail}`);
+      });
+
+    return () => {
+      disposed = true;
+      unregister();
+    };
+  }, [tabId, profile?.id]);
 
   useTerminalLifecycle({
     // The xterm lives as long as its host: it survives Disconnect and keeps the
@@ -450,11 +514,14 @@ export function useSshEntryTerminal({
     stateRef.current?.({ connected, connecting, recordingUnsaved, recordingIndicator });
   }, [connected, connecting, recordingUnsaved, recordingIndicator]);
 
-  const status = connecting
+  const connectionStatus = connecting
     ? "Connecting…"
     : connected
-      ? (recording ? "Recording" : notice || "Connected")
-      : notice || "Disconnected";
+      ? (recording ? "Recording" : notice || keepAliveNotice || "Connected")
+      : notice || keepAliveNotice || "Disconnected";
+  const status = keepAliveNotice && !connectionStatus.includes(keepAliveNotice)
+    ? `${connectionStatus} · ${keepAliveNotice}`
+    : connectionStatus;
 
   return {
     status,
