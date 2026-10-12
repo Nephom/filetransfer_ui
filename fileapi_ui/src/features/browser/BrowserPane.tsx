@@ -18,6 +18,7 @@ type Props = {
 };
 
 type CaptureSelection = { x: number; y: number; width: number; height: number };
+type CapturePreviewSize = { width: number; height: number };
 type BrowserScreenshotPlacement = {
   tile: number;
   dstX: number;
@@ -252,7 +253,9 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
   const [captureError, setCaptureError] = useState("");
   const [captureNotice, setCaptureNotice] = useState("");
   const [captureSelection, setCaptureSelection] = useState<CaptureSelection | null>(null);
+  const captureStageRef = useRef<HTMLDivElement | null>(null);
   const captureImageRef = useRef<HTMLImageElement | null>(null);
+  const [capturePreviewSize, setCapturePreviewSize] = useState<CapturePreviewSize | null>(null);
   const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
   const [viewState, setViewState] = useState<BrowserViewStateEvent>({
     paneId,
@@ -497,6 +500,7 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
   const closeScreenshot = () => {
     selectionStartRef.current = null;
     setCaptureSelection(null);
+    setCapturePreviewSize(null);
     setCaptureImage("");
     setCaptureError("");
     setCaptureNotice("");
@@ -584,6 +588,43 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
 
   useEffect(() => {
     if (!captureImage) return undefined;
+    const stage = captureStageRef.current;
+    const image = captureImageRef.current;
+    if (!stage || !image) return undefined;
+
+    const fitPreview = (availableWidth: number, availableHeight: number) => {
+      if (availableWidth <= 0 || availableHeight <= 0 || image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+      const scale = Math.min(1, availableWidth / image.naturalWidth, availableHeight / image.naturalHeight);
+      const next = { width: image.naturalWidth * scale, height: image.naturalHeight * scale };
+      setCapturePreviewSize((current) => current
+        && Math.abs(current.width - next.width) < 0.5
+        && Math.abs(current.height - next.height) < 0.5
+        ? current
+        : next);
+    };
+    const updateFromStage = () => {
+      const style = window.getComputedStyle(stage);
+      const horizontalPadding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+      const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      const bounds = stage.getBoundingClientRect();
+      fitPreview(bounds.width - horizontalPadding, bounds.height - verticalPadding);
+    };
+    const resizeObserver = new ResizeObserver((entries) => {
+      const content = entries[0]?.contentRect;
+      if (content) fitPreview(content.width, content.height);
+      else updateFromStage();
+    });
+    resizeObserver.observe(stage);
+    image.addEventListener("load", updateFromStage);
+    if (image.complete) updateFromStage();
+    return () => {
+      resizeObserver.disconnect();
+      image.removeEventListener("load", updateFromStage);
+    };
+  }, [captureImage]);
+
+  useEffect(() => {
+    if (!captureImage) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") closeScreenshot();
     };
@@ -635,9 +676,12 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
             <div><strong id="browser-capture-title">Select screenshot area</strong><span>Drag across the full page preview to choose an area.</span></div>
             <button type="button" className="browser-capture-close" aria-label="Close screenshot selection" onClick={closeScreenshot}>×</button>
           </header>
-          <div className="browser-capture-stage">
+          <div ref={captureStageRef} className="browser-capture-stage">
             <div
               className="browser-capture-preview"
+              style={capturePreviewSize
+                ? { width: `${capturePreviewSize.width}px`, height: `${capturePreviewSize.height}px` }
+                : { visibility: "hidden" }}
               onPointerDown={handleSelectionStart}
               onPointerMove={handleSelectionMove}
               onPointerUp={handleSelectionEnd}
