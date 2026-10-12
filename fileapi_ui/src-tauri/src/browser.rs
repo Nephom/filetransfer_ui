@@ -1,13 +1,18 @@
 use serde::{Deserialize, Serialize};
 #[cfg(windows)]
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::webview::Webview;
 #[cfg(windows)]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
-use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR};
+use webview2_com::{
+    CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR,
+    ContainsFullScreenElementChangedEventHandler,
+};
 
 #[cfg(any(windows, test))]
 const MAX_SCREENSHOT_DIMENSION: f64 = 16_000.0;
@@ -230,6 +235,221 @@ fn get_browser_webview(app: &AppHandle, pane_id: &str) -> Result<Webview, String
         .ok_or_else(|| "Browser view is no longer available".to_string())
 }
 
+#[cfg(windows)]
+struct BrowserFullscreenRecovery {
+    fullscreen_before_browser_request: bool,
+    fullscreen_before_active_request: Option<bool>,
+}
+
+#[cfg(windows)]
+fn browser_fullscreen_recoveries(
+) -> &'static Mutex<HashMap<String, Arc<Mutex<BrowserFullscreenRecovery>>>> {
+    static RECOVERIES: OnceLock<Mutex<HashMap<String, Arc<Mutex<BrowserFullscreenRecovery>>>>> =
+        OnceLock::new();
+    RECOVERIES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(windows)]
+fn register_browser_fullscreen_recovery(
+    view: &Webview,
+    label: &str,
+    fullscreen_before_browser_request: bool,
+) -> Result<(), String> {
+    let recovery = Arc::new(Mutex::new(BrowserFullscreenRecovery {
+        fullscreen_before_browser_request,
+        fullscreen_before_active_request: None,
+    }));
+    browser_fullscreen_recoveries()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .insert(label.to_string(), recovery.clone());
+
+    let parent = view.window();
+    let event_recovery = recovery.clone();
+    let registration = Arc::new(Mutex::new(None));
+    let registration_result = registration.clone();
+    view.with_webview(move |platform| {
+        let result = unsafe {
+            platform
+                .controller()
+                .CoreWebView2()
+                .map_err(|error| error.to_string())
+                .and_then(|core| {
+                    let handler = ContainsFullScreenElementChangedEventHandler::create(Box::new(
+                        move |sender, _| {
+                            let Some(sender) = sender else {
+                                return Ok(());
+                            };
+                            let mut contains_fullscreen_element = Default::default();
+                            sender.ContainsFullScreenElement(&mut contains_fullscreen_element)?;
+                            let contains_fullscreen_element =
+                                contains_fullscreen_element.as_bool();
+                            if contains_fullscreen_element {
+                                if let Ok(mut recovery) = event_recovery.lock() {
+                                    if recovery.fullscreen_before_active_request.is_none() {
+                                        // Wry also listens for this event and changes the host
+                                        // window fullscreen state. Use the host state captured
+                                        // before creating this child instead of making a blocking
+                                        // window query from WebView2's UI-thread callback.
+                                        recovery.fullscreen_before_active_request =
+                                            Some(recovery.fullscreen_before_browser_request);
+                                    }
+                                }
+                            } else {
+                                let original_fullscreen = event_recovery.lock().ok().and_then(
+                                    |mut recovery| recovery.fullscreen_before_active_request.take(),
+                                );
+                                if let Some(original_fullscreen) = original_fullscreen {
+                                    if let Err(error) = parent.set_fullscreen(original_fullscreen) {
+                                        eprintln!(
+                                            "Unable to restore the application window after Browser fullscreen: {error}"
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(())
+                        },
+                    ));
+                    let mut token = 0;
+                    core.add_ContainsFullScreenElementChanged(&handler, &mut token)
+                        .map_err(|error| error.to_string())
+                })
+        };
+        if let Ok(mut slot) = registration_result.lock() {
+            *slot = Some(result);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+
+    registration
+        .lock()
+        .map_err(|error| error.to_string())?
+        .take()
+        .ok_or_else(|| "Browser fullscreen listener did not complete".to_string())??;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn browser_contains_fullscreen_element(view: &Webview) -> Result<bool, String> {
+    let result = Arc::new(Mutex::new(None));
+    let result_from_main_thread = result.clone();
+    view.with_webview(move |platform| {
+        let contains_fullscreen_element = (|| unsafe {
+            let core = platform
+                .controller()
+                .CoreWebView2()
+                .map_err(|error| error.to_string())?;
+            let mut contains_fullscreen_element = Default::default();
+            core.ContainsFullScreenElement(&mut contains_fullscreen_element)
+                .map_err(|error| error.to_string())?;
+            Ok::<_, String>(contains_fullscreen_element.as_bool())
+        })();
+        if let Ok(mut slot) = result_from_main_thread.lock() {
+            *slot = Some(contains_fullscreen_element);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    let contains_fullscreen_element =
+        result
+            .lock()
+            .map_err(|error| error.to_string())?
+            .take()
+            .ok_or_else(|| "Browser fullscreen state could not be read".to_string())??;
+    Ok(contains_fullscreen_element)
+}
+
+#[cfg(windows)]
+async fn close_browser_view(view: Webview, label: &str) -> Result<(), String> {
+    let contains_fullscreen_element = browser_contains_fullscreen_element(&view).unwrap_or(false);
+    let recovery = browser_fullscreen_recoveries()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .get(label)
+        .cloned();
+    let original_fullscreen = recovery.as_ref().and_then(|recovery| {
+        recovery.lock().ok().and_then(|recovery| {
+            recovery.fullscreen_before_active_request.or_else(|| {
+                contains_fullscreen_element.then_some(recovery.fullscreen_before_browser_request)
+            })
+        })
+    });
+
+    if contains_fullscreen_element {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let sender = Arc::new(Mutex::new(Some(sender)));
+        let sender_for_callback = sender.clone();
+        let exit_result = view.eval_with_callback(
+            "Promise.resolve(document.exitFullscreen()).catch(() => false)",
+            move |_| {
+                if let Ok(mut sender) = sender_for_callback.lock() {
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send(());
+                    }
+                }
+            },
+        );
+        if exit_result.is_ok() {
+            // Let the page's fullscreenchange event run before destroying its native view.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await;
+        }
+    }
+
+    let restore_result = if let Some(original_fullscreen) = original_fullscreen {
+        let parent = view.window();
+        match parent.is_fullscreen() {
+            Ok(current_fullscreen) if current_fullscreen == original_fullscreen => Ok(()),
+            Ok(_) => parent
+                .set_fullscreen(original_fullscreen)
+                .map_err(|error| error.to_string()),
+            Err(error) => Err(error.to_string()),
+        }
+    } else {
+        Ok(())
+    };
+    let close_result = view.close().map_err(|error| error.to_string());
+    if let Ok(mut recoveries) = browser_fullscreen_recoveries().lock() {
+        recoveries.remove(label);
+    }
+
+    match (restore_result, close_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(restore_error), Ok(())) => Err(format!(
+            "Browser view closed, but the application window fullscreen state could not be restored: {restore_error}"
+        )),
+        (Ok(()), Err(close_error)) => Err(close_error),
+        (Err(restore_error), Err(close_error)) => Err(format!(
+            "{close_error}; the application window fullscreen state could not be restored: {restore_error}"
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn restore_missing_browser_view(main_webview: &Webview, label: &str) -> Result<(), String> {
+    let recovery = browser_fullscreen_recoveries()
+        .lock()
+        .map_err(|error| error.to_string())?
+        .remove(label);
+    let Some(recovery) = recovery else {
+        return Ok(());
+    };
+    let original_fullscreen = recovery
+        .lock()
+        .map_err(|error| error.to_string())?
+        .fullscreen_before_active_request;
+    let Some(original_fullscreen) = original_fullscreen else {
+        return Ok(());
+    };
+
+    let parent = main_webview.window();
+    match parent.is_fullscreen() {
+        Ok(current_fullscreen) if current_fullscreen == original_fullscreen => Ok(()),
+        Ok(_) => parent
+            .set_fullscreen(original_fullscreen)
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[tauri::command]
 pub async fn browser_create(
     app: AppHandle,
@@ -242,6 +462,9 @@ pub async fn browser_create(
     require_main_webview(&webview)?;
     let label = browser_view_label(&pane_id)?;
     if let Some(stale_view) = app.get_webview(&label) {
+        #[cfg(windows)]
+        close_browser_view(stale_view, &label).await?;
+        #[cfg(not(windows))]
         stale_view.close().map_err(|error| error.to_string())?;
     }
     let url = parse_web_url(&initial_url, true)?;
@@ -259,7 +482,7 @@ pub async fn browser_create(
         let load_pane_id = pane_id.clone();
         let app_for_new_window = app.clone();
         let new_window_pane_id = pane_id.clone();
-        let builder = WebviewBuilder::new(label, tauri::WebviewUrl::External(url))
+        let builder = WebviewBuilder::new(label.clone(), tauri::WebviewUrl::External(url))
             .on_navigation(move |target| {
                 let allowed = target.as_str() == "about:blank"
                     || (matches!(target.scheme(), "http" | "https") && target.host_str().is_some());
@@ -310,6 +533,8 @@ pub async fn browser_create(
             });
 
         let parent = webview.window();
+        let fullscreen_before_browser_request =
+            parent.is_fullscreen().map_err(|error| error.to_string())?;
         let child = parent
             .add_child(
                 builder,
@@ -317,6 +542,12 @@ pub async fn browser_create(
                 PhysicalSize::new(native_bounds.width, native_bounds.height),
             )
             .map_err(|error| error.to_string())?;
+        if let Err(error) =
+            register_browser_fullscreen_recovery(&child, &label, fullscreen_before_browser_request)
+        {
+            let _ = close_browser_view(child, &label).await;
+            return Err(error);
+        }
         if !visible {
             child.hide().map_err(|error| error.to_string())?;
         }
@@ -1515,7 +1746,9 @@ pub async fn browser_destroy(
     {
         let label = browser_view_label(&pane_id)?;
         if let Some(view) = app.get_webview(&label) {
-            view.close().map_err(|error| error.to_string())?;
+            close_browser_view(view, &label).await?;
+        } else {
+            restore_missing_browser_view(&webview, &label)?;
         }
         Ok(())
     }
@@ -1533,7 +1766,18 @@ pub async fn browser_cleanup_stale(app: AppHandle, webview: Webview) -> Result<(
     {
         for (label, view) in app.webviews() {
             if label.starts_with(BROWSER_VIEW_PREFIX) {
-                view.close().map_err(|error| error.to_string())?;
+                close_browser_view(view, &label).await?;
+            }
+        }
+        let recovery_labels = browser_fullscreen_recoveries()
+            .lock()
+            .map_err(|error| error.to_string())?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for label in recovery_labels {
+            if app.get_webview(&label).is_none() {
+                restore_missing_browser_view(&webview, &label)?;
             }
         }
         Ok(())
