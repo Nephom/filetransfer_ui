@@ -159,19 +159,15 @@ async fn register_browser_download_progress(
                 let Some(args) = args else {
                     return Ok(());
                 };
-                let operation = unsafe { args.DownloadOperation()? };
+                let operation = args.DownloadOperation()?;
                 let mut raw_path = CoTaskMemPWSTR::default().take();
-                unsafe {
-                    operation.ResultFilePath(&mut raw_path)?;
-                }
+                operation.ResultFilePath(&mut raw_path)?;
                 let staging_path = PathBuf::from(CoTaskMemPWSTR::from(raw_path).to_string());
                 let Some(download_id) = browser_download_id_from_path(&staging_path) else {
                     return Ok(());
                 };
                 let mut raw_url = CoTaskMemPWSTR::default().take();
-                unsafe {
-                    operation.Uri(&mut raw_url)?;
-                }
+                operation.Uri(&mut raw_url)?;
                 let url = CoTaskMemPWSTR::from(raw_url).to_string();
                 let file_name = staging_path
                     .file_name()
@@ -194,10 +190,8 @@ async fn register_browser_download_progress(
                         };
                         let mut bytes_received = 0_i64;
                         let mut total_bytes = 0_i64;
-                        unsafe {
-                            download.BytesReceived(&mut bytes_received)?;
-                            download.TotalBytesToReceive(&mut total_bytes)?;
-                        }
+                        download.BytesReceived(&mut bytes_received)?;
+                        download.TotalBytesToReceive(&mut total_bytes)?;
                         let now = Instant::now();
                         let should_emit = last_progress_emit_for_callback
                             .lock()
@@ -230,9 +224,7 @@ async fn register_browser_download_progress(
                         Ok(())
                     }));
                 let mut token = 0;
-                unsafe {
-                    operation.add_BytesReceivedChanged(&progress_handler, &mut token)?;
-                }
+                operation.add_BytesReceivedChanged(&progress_handler, &mut token)?;
                 Ok(())
             }));
             let mut token = 0;
