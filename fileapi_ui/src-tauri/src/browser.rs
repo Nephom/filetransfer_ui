@@ -1139,6 +1139,8 @@ struct ScrollCandidate {
     frame_index: usize,
     execution_context_id: i64,
     index: usize,
+    allow_x: bool,
+    allow_y: bool,
     x: f64,
     y: f64,
     width: f64,
@@ -1152,6 +1154,27 @@ struct ScrollCandidate {
     scale_x: f64,
     scale_y: f64,
     description: String,
+}
+
+#[cfg(any(windows, test))]
+// Keep non-scrolling axes at their initial viewport size. Auto-hidden scrollbars
+// can change clientWidth/clientHeight between tiles without adding page content.
+fn stable_capture_content_dimensions(
+    candidate: &ScrollCandidate,
+    measured_width: f64,
+    measured_height: f64,
+) -> (f64, f64) {
+    let width = if candidate.allow_x {
+        measured_width * candidate.scale_x
+    } else {
+        candidate.width
+    };
+    let height = if candidate.allow_y {
+        measured_height * candidate.scale_y
+    } else {
+        candidate.height
+    };
+    (width, height)
 }
 
 #[cfg(any(windows, test))]
@@ -1474,14 +1497,15 @@ const SCREENSHOT_INSPECT_JS: &str = r#"(() => {
   };
 
   const rootAxes = rootAllowed();
-  if ((rootAxes.allowY && root.scrollHeight > root.clientHeight + 1) ||
-      (rootAxes.allowX && root.scrollWidth > root.clientWidth + 1)) {
+  const rootCanScrollX = rootAxes.allowX && root.scrollWidth > root.clientWidth + 1;
+  const rootCanScrollY = rootAxes.allowY && root.scrollHeight > root.clientHeight + 1;
+  if (rootCanScrollY || rootCanScrollX) {
     candidates.push({
-      kind: 'root', element: root, allowX: rootAxes.allowX, allowY: rootAxes.allowY,
+      kind: 'root', element: root, allowX: rootCanScrollX, allowY: rootCanScrollY,
       x: 0, y: 0, width: root.clientWidth, height: root.clientHeight,
       scaleX: 1, scaleY: 1,
-      contentWidth: rootAxes.allowX ? root.scrollWidth : root.clientWidth,
-      contentHeight: rootAxes.allowY ? root.scrollHeight : root.clientHeight,
+      contentWidth: rootCanScrollX ? root.scrollWidth : root.clientWidth,
+      contentHeight: rootCanScrollY ? root.scrollHeight : root.clientHeight,
       scrollbarWidth: Math.max(0, window.innerWidth - root.clientWidth),
       scrollbarHeight: Math.max(0, window.innerHeight - root.clientHeight),
       description: 'page',
@@ -1617,6 +1641,7 @@ const SCREENSHOT_INSPECT_JS: &str = r#"(() => {
     viewport: { width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio || 1 },
     candidates: candidates.slice(0, 64).map((candidate, index) => Object.assign({
       index,
+      allowX: candidate.allowX, allowY: candidate.allowY,
       x: candidate.x, y: candidate.y, width: candidate.width, height: candidate.height,
       scaleX: candidate.scaleX, scaleY: candidate.scaleY,
       scrollbarWidth: candidate.scrollbarWidth, scrollbarHeight: candidate.scrollbarHeight,
@@ -1631,6 +1656,14 @@ fn json_number(value: &serde_json::Value, name: &str) -> Result<f64, String> {
         .get(name)
         .and_then(serde_json::Value::as_f64)
         .filter(|number| number.is_finite())
+        .ok_or_else(|| format!("The browser reported an invalid {name}"))
+}
+
+#[cfg(windows)]
+fn json_boolean(value: &serde_json::Value, name: &str) -> Result<bool, String> {
+    value
+        .get(name)
+        .and_then(serde_json::Value::as_bool)
         .ok_or_else(|| format!("The browser reported an invalid {name}"))
 }
 
@@ -1832,6 +1865,8 @@ async fn inspect_browser_frame(
                 frame_index,
                 execution_context_id: context_id,
                 index: json_number(item, "index")? as usize,
+                allow_x: json_boolean(item, "allowX")?,
+                allow_y: json_boolean(item, "allowY")?,
                 x,
                 y,
                 width,
@@ -1901,13 +1936,18 @@ async fn capture_browser_scroll_region(
     let fixed_width = (viewport.width - candidate.width).max(0.0);
     let fixed_height = (viewport.height - candidate.height).max(0.0);
     let cap = |metrics: &RegionMetrics| {
+        let (content_width, content_height) = stable_capture_content_dimensions(
+            candidate,
+            metrics.content_width,
+            metrics.content_height,
+        );
         capped_content_lengths(
             fixed_width,
             fixed_height,
             candidate.width,
             candidate.height,
-            metrics.content_width * candidate.scale_x,
-            metrics.content_height * candidate.scale_y,
+            content_width,
+            content_height,
             viewport.dpr,
         )
     };
@@ -2471,8 +2511,9 @@ mod tests {
         browser_view_label, capped_content_lengths, child_frame_transform,
         collect_browser_frame_tree, map_browser_bounds_to_physical, next_scroll_position,
         parse_web_url, region_placements, region_placements_scaled, safe_browser_download_name,
-        select_scroll_candidate, tile_positions, unique_browser_download_destination,
-        BrowserBounds, BrowserFrameTransform, BrowserPhysicalBounds, ScrollCandidate,
+        select_scroll_candidate, stable_capture_content_dimensions, tile_positions,
+        unique_browser_download_destination, BrowserBounds, BrowserFrameTransform,
+        BrowserPhysicalBounds, ScrollCandidate,
     };
 
     fn css_bounds(x: f64, y: f64, width: f64, height: f64, dpr: f64) -> BrowserBounds {
@@ -2664,6 +2705,8 @@ mod tests {
             frame_index: 0,
             execution_context_id: 1,
             index: 0,
+            allow_x: content_width > width + 1.0,
+            allow_y: content_height > height + 1.0,
             x,
             y,
             width,
@@ -2678,6 +2721,25 @@ mod tests {
             scale_y: 1.0,
             description: "test".to_string(),
         }
+    }
+
+    #[test]
+    fn vertical_capture_keeps_width_stable_when_the_scrollbar_disappears() {
+        let mut vertical_region = candidate(100.0, 40.0, 500.0, 300.0, 500.0, 1800.0);
+        vertical_region.scrollbar_width = 15.0;
+
+        let upper_tile = stable_capture_content_dimensions(&vertical_region, 500.0, 900.0);
+        let lower_tile = stable_capture_content_dimensions(&vertical_region, 515.0, 1800.0);
+
+        assert_eq!(upper_tile, (500.0, 900.0));
+        assert_eq!(lower_tile, (500.0, 1800.0));
+        assert_eq!(lower_tile.0 - vertical_region.width, 0.0);
+
+        let horizontal_region = candidate(100.0, 40.0, 500.0, 300.0, 1200.0, 300.0);
+        assert_eq!(
+            stable_capture_content_dimensions(&horizontal_region, 1200.0, 315.0),
+            (1200.0, 300.0)
+        );
     }
 
     #[test]
