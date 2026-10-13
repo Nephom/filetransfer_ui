@@ -1300,13 +1300,11 @@ fn next_scroll_position(current: f64, step: f64, content: f64, client: f64) -> O
     Some((current + step).min(max_scroll))
 }
 
-/// Limits the expanded content so the stitched page stays inside the maximum
+/// Limits the region content so the stitched image stays inside the maximum
 /// image dimension and pixel budget (device pixels). Returns the capped
 /// content size and whether anything was cut off.
 #[cfg(any(windows, test))]
 fn capped_content_lengths(
-    fixed_width: f64,
-    fixed_height: f64,
     region_width: f64,
     region_height: f64,
     content_width: f64,
@@ -1321,13 +1319,12 @@ fn capped_content_lengths(
     let max_dimension = (MAX_SCREENSHOT_DIMENSION / dpr).floor();
     let width = content_width
         .max(region_width)
-        .min((max_dimension - fixed_width).max(region_width));
-    let page_width = fixed_width + width;
-    let max_by_pixels = (MAX_SCREENSHOT_PIXELS / (page_width * dpr * dpr)).floor();
-    let max_page_height = max_dimension.min(max_by_pixels);
+        .min(max_dimension.max(region_width));
+    let max_by_pixels = (MAX_SCREENSHOT_PIXELS / (width * dpr * dpr)).floor();
+    let max_height = max_dimension.min(max_by_pixels);
     let height = content_height
         .max(region_height)
-        .min((max_page_height - fixed_height).max(region_height));
+        .min(max_height.max(region_height));
     let truncated = width + 0.5 < content_width || height + 0.5 < content_height;
     (width, height, truncated)
 }
@@ -1933,8 +1930,6 @@ async fn capture_browser_scroll_region(
     skipped_frames: usize,
 ) -> Result<BrowserScreenshotCapture, String> {
     let context_id = candidate.execution_context_id;
-    let fixed_width = (viewport.width - candidate.width).max(0.0);
-    let fixed_height = (viewport.height - candidate.height).max(0.0);
     let cap = |metrics: &RegionMetrics| {
         let (content_width, content_height) = stable_capture_content_dimensions(
             candidate,
@@ -1942,8 +1937,6 @@ async fn capture_browser_scroll_region(
             metrics.content_height,
         );
         capped_content_lengths(
-            fixed_width,
-            fixed_height,
             candidate.width,
             candidate.height,
             content_width,
@@ -2870,26 +2863,23 @@ mod tests {
     fn capped_content_lengths_respect_dimension_and_pixel_limits() {
         // Fits: nothing is cut off.
         assert_eq!(
-            capped_content_lengths(200.0, 200.0, 800.0, 500.0, 800.0, 3000.0, 1.0),
+            capped_content_lengths(800.0, 500.0, 800.0, 3000.0, 1.0),
             (800.0, 3000.0, false)
         );
-        // Too tall at 100% scale: page height is capped at 16,000 px.
-        let (_, height, truncated) =
-            capped_content_lengths(200.0, 200.0, 800.0, 500.0, 800.0, 90000.0, 1.0);
+        // Too tall at 100% scale: the image height is capped at 16,000 px.
+        let (_, height, truncated) = capped_content_lengths(800.0, 500.0, 800.0, 90000.0, 1.0);
         assert!(truncated);
-        assert_eq!(height + 200.0, 16000.0);
+        assert_eq!(height, 16000.0);
         // At 125% scaling the same limit applies to device pixels.
-        let (_, height, truncated) =
-            capped_content_lengths(200.0, 200.0, 800.0, 500.0, 800.0, 90000.0, 1.25);
+        let (_, height, truncated) = capped_content_lengths(800.0, 500.0, 800.0, 90000.0, 1.25);
         assert!(truncated);
-        assert!((height + 200.0) * 1.25 <= 16000.0);
+        assert!(height * 1.25 <= 16000.0);
         // Wide pages are limited by the 40 million pixel budget.
-        let (width, height, _) =
-            capped_content_lengths(0.0, 0.0, 1000.0, 700.0, 8000.0, 90000.0, 1.0);
+        let (width, height, _) = capped_content_lengths(1000.0, 700.0, 8000.0, 90000.0, 1.0);
         assert_eq!(width, 8000.0);
         assert!(width * height <= 40_000_000.0);
         // Never smaller than the visible region.
-        let (width, height, _) = capped_content_lengths(0.0, 0.0, 1000.0, 700.0, 10.0, 10.0, 1.0);
+        let (width, height, _) = capped_content_lengths(1000.0, 700.0, 10.0, 10.0, 1.0);
         assert_eq!((width, height), (1000.0, 700.0));
     }
 }

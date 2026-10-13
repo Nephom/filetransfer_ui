@@ -100,9 +100,9 @@ async function decodeScreenshotTile(data: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Builds the full page image. The first tile is the unscrolled viewport; every
- * other tile only contributes the scrolling region at its scroll offset. All
- * coordinates are CSS pixels. Source edges use each tile's actual scale, while
+ * Builds the image of the scrolling region only. Every tile contributes the
+ * region rectangle of its viewport image at its scroll offset; nothing around
+ * the region is drawn or filled. All coordinates are CSS pixels. Source edges use each tile's actual scale, while
  * destination edges use the stitched page scale; rounding the edges separately
  * prevents fractional offsets from changing a feature's width between tiles.
  */
@@ -128,14 +128,12 @@ export async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture)
   if (!Number.isFinite(scaleX) || scaleX <= 0 || !Number.isFinite(scaleY) || scaleY <= 0) {
     throw new UiMessageError("The browser returned invalid screenshot dimensions.");
   }
-  const extraWidth = Math.max(0, region.contentWidth - region.width);
-  const extraHeight = Math.max(0, region.contentHeight - region.height);
   const pxX = (value: number) => Math.round(value * scaleX);
   const pxY = (value: number) => Math.round(value * scaleY);
 
   const canvas = document.createElement("canvas");
-  canvas.width = pxX(capture.viewportWidth + extraWidth);
-  canvas.height = pxY(capture.viewportHeight + extraHeight);
+  canvas.width = pxX(region.contentWidth);
+  canvas.height = pxY(region.contentHeight);
   if (canvas.width < 1 || canvas.height < 1 || canvas.width * canvas.height > MAX_STITCHED_PIXELS) {
     throw new UiMessageError("The full page image is too large to preview and select.");
   }
@@ -172,85 +170,15 @@ export async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture)
       destinationHeight,
     );
   };
-  const probe = document.createElement("canvas");
-  probe.width = 1;
-  probe.height = 1;
-  const probeContext = probe.getContext("2d");
-  const sample = (x: number, y: number): string | null => {
-    const sx = pxX(x);
-    const sy = pxY(y);
-    if (!probeContext || sx < 0 || sy < 0 || sx >= base.naturalWidth || sy >= base.naturalHeight) return null;
-    probeContext.clearRect(0, 0, 1, 1);
-    probeContext.drawImage(base, sx, sy, 1, 1, 0, 0, 1, 1);
-    const [red, green, blue] = probeContext.getImageData(0, 0, 1, 1).data;
-    return `rgb(${red}, ${green}, ${blue})`;
-  };
-  const fill = (color: string, x: number, y: number, width: number, height: number) => {
-    context.fillStyle = color;
-    context.fillRect(pxX(x), pxY(y), pxX(x + width) - pxX(x), pxY(y + height) - pxY(y));
-  };
 
-  const viewportWidth = capture.viewportWidth;
-  const viewportHeight = capture.viewportHeight;
-  const right = region.x + region.width;
-  const bottom = region.y + region.height;
-  const rightStart = right + region.scrollbarWidth;
-  const probeY = Math.max(0, bottom - 2);
-
-  // Background for the blank areas that appear where the region grew.
-  fill(sample(region.x + region.width / 2, probeY) ?? "#ffffff", 0, 0, viewportWidth + extraWidth, viewportHeight + extraHeight);
-  if (extraHeight > 0) {
-    if (region.x >= 4) {
-      const color = sample(region.x / 2, probeY);
-      if (color) fill(color, 0, bottom, region.x, extraHeight);
-    }
-    if (rightStart + 4 <= viewportWidth) {
-      const color = sample((rightStart + viewportWidth) / 2, probeY);
-      if (color) fill(color, rightStart + extraWidth, bottom, viewportWidth - rightStart, extraHeight);
-    }
-  }
-
-  // Everything around the region comes from the unscrolled base image; the
-  // parts after the region move down/right by the amount the region grew. The
-  // region's own scrollbars are left out.
-  const columns = [
-    { x: 0, width: region.x, shift: 0 },
-    { x: region.x, width: region.width, shift: 0 },
-    { x: right, width: Math.max(0, viewportWidth - right), shift: extraWidth },
-  ];
-  const rows = [
-    { y: 0, height: region.y, shift: 0 },
-    { y: region.y, height: region.height, shift: 0 },
-    { y: bottom, height: Math.max(0, viewportHeight - bottom), shift: extraHeight },
-  ];
-  rows.forEach((row, rowIndex) => {
-    columns.forEach((column, columnIndex) => {
-      if (rowIndex === 1 && columnIndex === 1) return;
-      let { x, width } = column;
-      let { y, height } = row;
-      if (rowIndex === 1 && columnIndex === 2) {
-        const skip = Math.min(width, region.scrollbarWidth);
-        x += skip;
-        width -= skip;
-      }
-      if (rowIndex === 2 && columnIndex === 1) {
-        const skip = Math.min(height, region.scrollbarHeight);
-        y += skip;
-        height -= skip;
-      }
-      if (width <= 0 || height <= 0) return;
-      copy(base, x, y, width, height, x + column.shift, y + row.shift);
-    });
-  });
-
-  // The region content: every tile contributes the region rectangle of its
-  // viewport image at the scroll offset it was captured at.
+  // The image is only the scrolling region: every tile contributes the region
+  // rectangle of its viewport image at the scroll offset it was captured at.
   for (let tile = 0; tile < capture.tiles.length; tile += 1) {
     const placements = capture.placements.filter((placement) => placement.tile === tile);
     if (placements.length > 0) {
       const image = tile === 0 ? base : await decodeScreenshotTile(capture.tiles[tile]);
       for (const placement of placements) {
-        copy(image, region.x, region.y, placement.width, placement.height, region.x + placement.dstX, region.y + placement.dstY);
+        copy(image, region.x, region.y, placement.width, placement.height, placement.dstX, placement.dstY);
       }
       if (image !== base) image.removeAttribute("src");
     }
