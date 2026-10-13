@@ -8,6 +8,7 @@ import { usePaneWindows } from "./usePaneWindows";
 import { PANE_SINGLETON_KINDS, browserPaneInstanceOf, browserWindowId, isBrowserWindow, kindOf, sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, sshWindowId, type PaneBrowserWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
 import { BrowserIcon, LocalIcon, RemoteIcon, RestIcon, SftpIcon, TerminalIcon, VncIcon } from "./pane-icons";
 import { BrowserPane } from "../features/browser/BrowserPane";
+import type { BrowserDownloadForRemote } from "../features/browser/browser-contracts";
 import { loadWallpaper, useWallpaper, wallpaperCssVariables } from "./pane-wallpaper-store";
 import {
   closeAllSshPopups,
@@ -31,6 +32,11 @@ type Props = {
   restEnabled: boolean;
   vncEnabled: boolean;
   remoteEnabled: boolean;
+  browserDownloadContext: {
+    localFolder: string;
+    remote: { locationId: string; locationName: string; path: string; canUpload: boolean } | null;
+  };
+  onBrowserDownloadToRemote: (download: BrowserDownloadForRemote) => Promise<void>;
   /** One <PaneBody id=...> child per window. The elements keep their identity while a window is dragged, so dragging never re-renders their contents. */
   children: React.ReactNode;
   /** Window titles / subtitles by window id (`local`, `remote`, ..., `sftp:<entryId>`). SSH windows are named through `sshPaneInfo`. */
@@ -104,7 +110,7 @@ function Wallpaper() {
 }
 
 export function PaneDesktop({
-  restEnabled, vncEnabled, remoteEnabled, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, vncWorkspaces, vncFlowWindowIds, localShellsAvailable, sshPaneStates, entryIds, busy, appOverlayOpen, welcomeOpen, welcomeOnlyFirstLaunch, onWelcomeDismiss, topRight,
+  restEnabled, vncEnabled, remoteEnabled, browserDownloadContext, onBrowserDownloadToRemote, openRef, children, titles, subtitles, sshPaneInfo, remoteChoices, sftpChoices, terminalWorkspaces, vncWorkspaces, vncFlowWindowIds, localShellsAvailable, sshPaneStates, entryIds, busy, appOverlayOpen, welcomeOpen, welcomeOnlyFirstLaunch, onWelcomeDismiss, topRight,
   onSelectRemote, onOpenLocalShell, onOpenSshWindow, onSelectVncEntry, onOpenDirectVnc, onOpenEntryManager, onCreateWorkspace, onWindowState, onRequestClose, hasUnsavedPaneRecording, confirmDiscardRecordings,
 }: Props) {
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -299,6 +305,8 @@ export function PaneDesktop({
                     paneId={win.id as PaneBrowserWindowId}
                     initialUrl={browserInitialUrls[win.id] || ""}
                     visible={layout.activeId === win.id && !win.minimized && !browserViewsOccluded}
+                    downloadContext={browserDownloadContext}
+                    onBrowserDownloadToRemote={onBrowserDownloadToRemote}
                     onInitialUrlConsumed={() => clearBrowserInitialUrl(win.id)}
                     onOpenNewPane={openBrowserPane}
                   />

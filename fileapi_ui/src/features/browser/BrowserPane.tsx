@@ -4,8 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ChevronLeftIcon, ChevronRightIcon, RefreshIcon, StopIcon } from "../../ui/icons";
 import type { PaneBrowserWindowId } from "../../pane/pane-window-model";
-import type { BrowserBounds, BrowserBoundsReadback, BrowserNavigationState, BrowserNewPaneEvent, BrowserViewStateEvent } from "./browser-contracts";
-import { BROWSER_NEW_PANE_EVENT, BROWSER_VIEW_STATE_EVENT } from "./browser-contracts";
+import type { BrowserBounds, BrowserBoundsReadback, BrowserDownloadEvent, BrowserDownloadForRemote, BrowserDownloadTarget, BrowserNavigationState, BrowserNewPaneEvent, BrowserViewStateEvent } from "./browser-contracts";
+import { BROWSER_DOWNLOAD_EVENT, BROWSER_NEW_PANE_EVENT, BROWSER_VIEW_STATE_EVENT } from "./browser-contracts";
 import { captureBrowserSnapshot, clearBrowserSnapshot, useBrowserSnapshot } from "./browser-snapshot-store";
 import "./browser-pane.css";
 
@@ -13,8 +13,46 @@ type Props = {
   paneId: PaneBrowserWindowId;
   initialUrl: string;
   visible: boolean;
+  downloadContext: {
+    localFolder: string;
+    remote: { locationId: string; locationName: string; path: string; canUpload: boolean } | null;
+  };
+  onBrowserDownloadToRemote: (download: BrowserDownloadForRemote) => Promise<void>;
   onInitialUrlConsumed: () => void;
   onOpenNewPane: (url: string) => void;
+};
+
+type BrowserDownloadItem = BrowserDownloadEvent & {
+  deliveryStatus: "waiting" | "saving" | "saved" | "uploading" | "queued" | "failed";
+  deliveryError?: string;
+  destinationPath?: string;
+};
+
+const BROWSER_DOWNLOAD_TARGET_KEY = "nfterm-browser-download-target";
+
+function readBrowserDownloadTarget(): BrowserDownloadTarget {
+  try {
+    const value = JSON.parse(localStorage.getItem(BROWSER_DOWNLOAD_TARGET_KEY) || "null") as BrowserDownloadTarget | null;
+    if (value?.kind === "local-current") return value;
+    if (value?.kind === "local-folder" && typeof value.folder === "string") return value;
+    if (value?.kind === "remote" && typeof value.locationId === "string" && typeof value.locationName === "string" && typeof value.path === "string") return value;
+  } catch {
+    // A stale or manually edited browser preference should not block downloads.
+  }
+  return { kind: "local-current" };
+}
+
+const formatDownloadSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${Math.floor(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
 };
 
 type CaptureSelection = { x: number; y: number; width: number; height: number };
@@ -228,7 +266,7 @@ const readbackDelta = ({ requested, actual }: BrowserBoundsReadback) => Math.max
   Math.abs(requested.height - actual.height),
 );
 
-export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed, onOpenNewPane }: Props) {
+export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBrowserDownloadToRemote, onInitialUrlConsumed, onOpenNewPane }: Props) {
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const createdRef = useRef(false);
   const boundsQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -245,6 +283,8 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
   const initialUrlRef = useRef(initialUrl);
   const onInitialUrlConsumedRef = useRef(onInitialUrlConsumed);
   const onOpenNewPaneRef = useRef(onOpenNewPane);
+  const downloadContextRef = useRef(downloadContext);
+  const onBrowserDownloadToRemoteRef = useRef(onBrowserDownloadToRemote);
   const [viewReady, setViewReady] = useState(false);
   const [address, setAddress] = useState(visibleAddress(initialUrl));
   const [error, setError] = useState("");
@@ -257,6 +297,11 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
   const captureImageRef = useRef<HTMLImageElement | null>(null);
   const [capturePreviewSize, setCapturePreviewSize] = useState<CapturePreviewSize | null>(null);
   const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [downloads, setDownloads] = useState<BrowserDownloadItem[]>([]);
+  const [downloadsOpen, setDownloadsOpen] = useState(false);
+  const [defaultDownloadTarget, setDefaultDownloadTarget] = useState<BrowserDownloadTarget>(readBrowserDownloadTarget);
+  const [downloadBusyId, setDownloadBusyId] = useState("");
+  const [downloadNotice, setDownloadNotice] = useState("");
   const [viewState, setViewState] = useState<BrowserViewStateEvent>({
     paneId,
     url: initialUrl || "about:blank",
@@ -269,6 +314,40 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
   viewUrlRef.current = viewState.url;
   onInitialUrlConsumedRef.current = onInitialUrlConsumed;
   onOpenNewPaneRef.current = onOpenNewPane;
+  downloadContextRef.current = downloadContext;
+  onBrowserDownloadToRemoteRef.current = onBrowserDownloadToRemote;
+
+  const applyDownloadEvent = useCallback((payload: BrowserDownloadEvent) => {
+    if (payload.paneId !== paneId) return;
+    setDownloads((current) => {
+      const previous = current.find((item) => item.downloadId === payload.downloadId);
+      const status = previous && (previous.status === "completed" || previous.status === "failed")
+        && (payload.status === "started" || payload.status === "progress")
+        ? previous.status
+        : payload.status;
+      const next: BrowserDownloadItem = {
+        ...previous,
+        ...payload,
+        status,
+        bytesReceived: Math.max(previous?.bytesReceived || 0, payload.bytesReceived || 0),
+        totalBytes: payload.totalBytes ?? previous?.totalBytes ?? null,
+        deliveryStatus: previous?.deliveryStatus || (status === "failed" ? "failed" : "waiting"),
+        ...(payload.error ? { deliveryError: payload.error } : {}),
+      };
+      const found = current.some((item) => item.downloadId === payload.downloadId);
+      return found
+        ? current.map((item) => item.downloadId === payload.downloadId ? next : item)
+        : [next, ...current];
+    });
+    if (payload.status === "started") {
+      setDownloadsOpen(true);
+    }
+  }, [paneId]);
+
+  const saveDefaultDownloadTarget = (target: BrowserDownloadTarget) => {
+    setDefaultDownloadTarget(target);
+    try { localStorage.setItem(BROWSER_DOWNLOAD_TARGET_KEY, JSON.stringify(target)); } catch { /* storage can be disabled by the host */ }
+  };
 
   const readBounds = useCallback((): BrowserBounds | null => {
     const anchor = anchorRef.current;
@@ -322,6 +401,7 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
     let cancelled = false;
     let unlistenState: (() => void) | undefined;
     let unlistenNewPane: (() => void) | undefined;
+    let unlistenDownload: (() => void) | undefined;
 
     const start = async () => {
       unlistenState = await listen<BrowserViewStateEvent>(BROWSER_VIEW_STATE_EVENT, ({ payload }) => {
@@ -342,7 +422,15 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
           setError("This link cannot be opened in a Browser pane.");
         }
       });
-      if (cancelled) return;
+      unlistenDownload = await listen<BrowserDownloadEvent>(BROWSER_DOWNLOAD_EVENT, ({ payload }) => {
+        applyDownloadEvent(payload);
+      });
+      if (cancelled) {
+        unlistenState?.();
+        unlistenNewPane?.();
+        unlistenDownload?.();
+        return;
+      }
 
       const bounds = readBounds();
       if (!bounds) throw new Error("Browser pane has no visible content area.");
@@ -370,6 +458,7 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
       cancelled = true;
       unlistenState?.();
       unlistenNewPane?.();
+      unlistenDownload?.();
       clearBrowserSnapshot(paneId);
       if (createdRef.current) {
         createdRef.current = false;
@@ -377,7 +466,7 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
         void invoke("browser_destroy", { paneId }).catch(() => undefined);
       }
     };
-  }, [paneId, readBounds]);
+  }, [paneId, readBounds, applyDownloadEvent]);
 
   useEffect(() => {
     if (!viewReady) return;
@@ -471,6 +560,115 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
       setViewState((current) => ({ ...current, url, loading: true }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const activeRemoteTarget = (): BrowserDownloadTarget | null => {
+    const remote = downloadContextRef.current.remote;
+    return remote?.canUpload
+      ? { kind: "remote", locationId: remote.locationId, locationName: remote.locationName, path: remote.path }
+      : null;
+  };
+
+  const destinationLabel = (target: BrowserDownloadTarget) => {
+    if (target.kind === "local-current") {
+      const folder = downloadContextRef.current.localFolder;
+      return `LOCAL · ${folder || "Home"}`;
+    }
+    if (target.kind === "local-folder") return `LOCAL · ${target.folder}`;
+    const remote = downloadContextRef.current.remote;
+    if (remote?.locationId === target.locationId) {
+      return `Remote API · ${remote.locationName}:${remote.path || "/"}`;
+    }
+    return `Remote API · ${target.locationName}:${target.path || "/"}`;
+  };
+
+  const saveBrowserDownload = async (item: BrowserDownloadItem, target: BrowserDownloadTarget, selectedPath?: string) => {
+    if (item.status !== "completed" || downloadBusyId) return;
+    setDownloadBusyId(item.downloadId);
+    setDownloadNotice("");
+    setDownloads((current) => current.map((download) => download.downloadId === item.downloadId
+      ? { ...download, deliveryStatus: "saving", deliveryError: undefined }
+      : download));
+    try {
+      if (target.kind === "remote") {
+        const remote = downloadContextRef.current.remote;
+        if (!remote?.canUpload || remote.locationId !== target.locationId) {
+          throw new Error("The selected API Location is no longer active or does not allow uploads. Select the Location again and retry.");
+        }
+        await onBrowserDownloadToRemoteRef.current({
+          downloadId: item.downloadId,
+          stagingPath: item.stagingPath,
+          fileName: item.fileName,
+          locationId: remote.locationId,
+          locationName: remote.locationName,
+          destinationPath: remote.path,
+        });
+        setDownloads((current) => current.map((download) => download.downloadId === item.downloadId
+          ? { ...download, deliveryStatus: "queued", destinationPath: `${remote.locationName}:${remote.path || "/"}` }
+          : download));
+        setDownloadNotice(`${item.fileName} was added to the Remote upload queue.`);
+        return;
+      }
+
+      const destinationFolder = target.kind === "local-folder"
+        ? target.folder
+        : downloadContextRef.current.localFolder;
+      const saved = await invoke<{ path: string; cleanupWarning?: string | null }>("browser_save_download", {
+        downloadId: item.downloadId,
+        stagingPath: item.stagingPath,
+        destinationFolder,
+        selectedPath: selectedPath || null,
+      });
+      setDownloads((current) => current.map((download) => download.downloadId === item.downloadId
+        ? { ...download, deliveryStatus: "saved", destinationPath: saved.path }
+        : download));
+      setDownloadNotice(`Saved ${item.fileName} to ${saved.path}${saved.cleanupWarning ? `. ${saved.cleanupWarning}` : ""}`);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setDownloads((current) => current.map((download) => download.downloadId === item.downloadId
+        ? { ...download, deliveryStatus: "failed", deliveryError: message }
+        : download));
+      setDownloadNotice(message);
+    } finally {
+      setDownloadBusyId("");
+    }
+  };
+
+  const chooseDefaultLocalFolder = async () => {
+    try {
+      const folder = await invoke<string | null>("browser_pick_download_folder", {
+        initialFolder: defaultDownloadTarget.kind === "local-folder" ? defaultDownloadTarget.folder : null,
+      });
+      if (folder) saveDefaultDownloadTarget({ kind: "local-folder", folder });
+    } catch (reason) {
+      setDownloadNotice(reason instanceof Error ? reason.message : String(reason));
+    }
+  };
+
+  const chooseLocalSavePath = async (item: BrowserDownloadItem) => {
+    try {
+      const initialFolder = defaultDownloadTarget.kind === "local-folder"
+        ? defaultDownloadTarget.folder
+        : undefined;
+      const selectedPath = await invoke<string | null>("browser_pick_download_file", {
+        fileName: item.fileName,
+        initialFolder: initialFolder || null,
+      });
+      if (selectedPath) await saveBrowserDownload(item, { kind: "local-current" }, selectedPath);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setDownloadNotice(message);
+    }
+  };
+
+  const discardBrowserDownload = async (item: BrowserDownloadItem) => {
+    try {
+      await invoke("browser_discard_download", { downloadId: item.downloadId, stagingPath: item.stagingPath });
+      setDownloads((current) => current.filter((download) => download.downloadId !== item.downloadId));
+      setDownloadNotice(`Removed ${item.fileName} from Browser downloads.`);
+    } catch (reason) {
+      setDownloadNotice(reason instanceof Error ? reason.message : String(reason));
     }
   };
 
@@ -664,9 +862,109 @@ export function BrowserPane({ paneId, initialUrl, visible, onInitialUrlConsumed,
           <button type="button" className="browser-screenshot" aria-label="Capture full page" title="Capture full page" disabled={!viewReady || !visible || captureBusy} onClick={() => { void startScreenshot(); }}>
             {captureBusy && !captureImage ? "…" : "Screenshot"}
           </button>
+          <button
+            type="button"
+            className="browser-downloads-toggle"
+            aria-label="Browser downloads"
+            aria-expanded={downloadsOpen}
+            title="Browser downloads"
+            onClick={() => setDownloadsOpen((open) => !open)}
+          >
+            Downloads{downloads.some((item) => item.status === "started" || item.status === "progress") ? " •" : ""}
+          </button>
         </div>
         {error && <div className="browser-error" role="alert">{error}</div>}
       </form>
+      {downloadsOpen && <section className="browser-downloads-panel" aria-label="Browser downloads">
+        <header className="browser-downloads-heading">
+          <strong>Downloads</strong>
+          <button type="button" aria-label="Close downloads" onClick={() => setDownloadsOpen(false)}>×</button>
+        </header>
+        <div className="browser-download-default">
+          <label>
+            <span>Default destination</span>
+            <select
+              value={defaultDownloadTarget.kind}
+              onChange={(event) => {
+                if (event.currentTarget.value === "local-current") saveDefaultDownloadTarget({ kind: "local-current" });
+                if (event.currentTarget.value === "remote") {
+                  const remote = activeRemoteTarget();
+                  if (remote) saveDefaultDownloadTarget(remote);
+                }
+              }}
+            >
+              <option value="local-current">LOCAL · Home/current folder</option>
+              {defaultDownloadTarget.kind === "local-folder" && <option value="local-folder">LOCAL · Chosen folder</option>}
+              <option value="remote" disabled={!downloadContext.remote?.canUpload}>
+                {downloadContext.remote?.canUpload
+                  ? `Remote API · ${downloadContext.remote.locationName}`
+                  : "Remote API · unavailable"}
+              </option>
+            </select>
+          </label>
+          <button type="button" onClick={() => { void chooseDefaultLocalFolder(); }}>Choose local folder…</button>
+          {downloadContext.remote?.canUpload && <button type="button" onClick={() => {
+            const remote = activeRemoteTarget();
+            if (remote) saveDefaultDownloadTarget(remote);
+          }}>Use current Remote</button>}
+        </div>
+        {defaultDownloadTarget.kind === "local-folder" && <div className="browser-download-default-path">{defaultDownloadTarget.folder}</div>}
+        {defaultDownloadTarget.kind === "remote" && <div className="browser-download-default-path">{destinationLabel(defaultDownloadTarget)}</div>}
+        {downloadNotice && <div className="browser-download-notice" role="status">{downloadNotice}</div>}
+        {downloads.length === 0
+          ? <div className="browser-download-empty">No browser downloads yet.</div>
+          : <div className="browser-download-list">
+            {downloads.map((item) => {
+              const receiving = item.status === "started" || item.status === "progress";
+              const failed = item.status === "failed" || item.deliveryStatus === "failed";
+              const remoteAvailable = Boolean(downloadContext.remote?.canUpload);
+              const delivered = item.deliveryStatus === "saved" || item.deliveryStatus === "queued";
+              const percent = item.totalBytes && item.totalBytes > 0
+                ? Math.min(100, Math.floor((item.bytesReceived / item.totalBytes) * 100))
+                : null;
+              const deliveryText = item.deliveryStatus === "saving" ? "Saving…"
+                : item.deliveryStatus === "saved" ? `Saved to ${item.destinationPath || "LOCAL"}`
+                : item.deliveryStatus === "queued" ? `Sent to Transfer Queue · ${item.destinationPath || "Remote API"}; check the queue for upload progress and result.`
+                : item.deliveryStatus === "failed" ? item.deliveryError || item.error || "Delivery failed. The staged download is retained."
+                : item.status === "completed" ? "Downloaded · choose where to save"
+                : item.status === "failed" ? item.error || "Browser download failed"
+                : "Downloading from website…";
+              return <article className="browser-download-item" key={item.downloadId}>
+                <div className="browser-download-item-heading">
+                  <strong title={item.fileName}>{item.fileName}</strong>
+                  <span className={`browser-download-status${failed ? " is-error" : ""}`}>
+                    {receiving ? "Downloading" : item.status === "failed" ? "Failed" : item.deliveryStatus === "saved" ? "Saved" : item.deliveryStatus === "queued" ? "Queued" : item.deliveryStatus === "saving" ? "Saving" : "Ready"}
+                  </span>
+                </div>
+                <div className="browser-download-url" title={item.url}>{item.url}</div>
+                {(receiving || item.status === "completed") && <div className="browser-download-progress">
+                  {item.totalBytes && item.totalBytes > 0
+                    ? <progress
+                        aria-label={`Download progress for ${item.fileName}`}
+                        max={item.totalBytes}
+                        value={Math.min(item.bytesReceived, item.totalBytes)}
+                      />
+                    : receiving && <progress aria-label={`Download progress for ${item.fileName}`} />}
+                  <small>{formatDownloadSize(item.bytesReceived)}{item.totalBytes && item.totalBytes > 0 ? ` / ${formatDownloadSize(item.totalBytes)} · ${percent}%` : " received · total size unknown"}</small>
+                </div>}
+                <div className="browser-download-delivery" role="status">{deliveryText}</div>
+                {item.status === "completed" && !delivered && <div className="browser-download-actions">
+                  <button type="button" onClick={() => { void saveBrowserDownload(item, defaultDownloadTarget); }} disabled={downloadBusyId === item.downloadId || item.deliveryStatus === "saving"}>
+                    {item.deliveryStatus === "saving" ? "Saving…" : `Save to default · ${destinationLabel(defaultDownloadTarget)}`}
+                  </button>
+                  <button type="button" onClick={() => { void chooseLocalSavePath(item); }} disabled={downloadBusyId === item.downloadId}>Save As…</button>
+                  {remoteAvailable && <button type="button" onClick={() => {
+                    const remote = activeRemoteTarget();
+                    if (remote) void saveBrowserDownload(item, remote);
+                  }} disabled={downloadBusyId === item.downloadId}>Send to current Remote</button>}
+                </div>}
+                {!receiving && !delivered && item.deliveryStatus !== "saving" && <div className="browser-download-actions">
+                  <button type="button" className="browser-download-discard" onClick={() => { void discardBrowserDownload(item); }}>Discard staged file</button>
+                </div>}
+              </article>;
+            })}
+          </div>}
+      </section>}
       <div ref={anchorRef} className="browser-viewport" aria-label="Web page content">
         {!nativeShown && snapshot && <img className="browser-snapshot" src={snapshot.dataUrl} alt="" draggable={false} />}
       </div>

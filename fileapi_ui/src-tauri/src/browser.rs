@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 #[cfg(windows)]
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 #[cfg(windows)]
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::webview::Webview;
@@ -10,8 +11,8 @@ use tauri::{AppHandle, Manager};
 
 #[cfg(windows)]
 use webview2_com::{
-    CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR,
-    ContainsFullScreenElementChangedEventHandler,
+    BytesReceivedChangedEventHandler, CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR,
+    ContainsFullScreenElementChangedEventHandler, DownloadStartingEventHandler,
 };
 
 #[cfg(any(windows, test))]
@@ -30,7 +31,219 @@ const MAX_SCREENSHOT_BASE64_BYTES: usize = 180 * 1024 * 1024;
 const BROWSER_VIEW_STATE_EVENT: &str = "browser-view-state";
 #[cfg(windows)]
 const BROWSER_NEW_PANE_EVENT: &str = "browser-new-pane";
+#[cfg(windows)]
+const BROWSER_DOWNLOAD_EVENT: &str = "browser-download";
 const BROWSER_VIEW_PREFIX: &str = "browser-content-";
+
+#[cfg(windows)]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowserDownloadEvent {
+    pane_id: String,
+    download_id: String,
+    url: String,
+    file_name: String,
+    staging_path: String,
+    status: String,
+    bytes_received: u64,
+    total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn browser_download_staging_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let directory = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join("browser-downloads");
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    Ok(directory)
+}
+
+fn safe_browser_download_name(value: &str) -> String {
+    let leaf = value.rsplit(['/', '\\']).next().unwrap_or_default();
+    let safe: String = leaf
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(character, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .trim_end_matches([' ', '.'])
+        .to_string();
+    if safe.is_empty() || safe == "." || safe == ".." {
+        return "download.bin".to_string();
+    }
+    let device_name = safe
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    let reserved = matches!(device_name.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            device_name.strip_prefix(prefix).is_some_and(|suffix| {
+                matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+            })
+        });
+    if reserved {
+        format!("_{safe}")
+    } else {
+        safe
+    }
+}
+
+#[cfg(windows)]
+fn browser_download_id_from_path(path: &Path) -> Option<String> {
+    let id = path.parent()?.file_name()?.to_str()?;
+    uuid::Uuid::parse_str(id).ok().map(|_| id.to_string())
+}
+
+#[cfg(windows)]
+fn emit_browser_download(
+    app: &AppHandle,
+    pane_id: &str,
+    download_id: &str,
+    url: &str,
+    file_name: &str,
+    staging_path: &Path,
+    status: &str,
+    bytes_received: u64,
+    total_bytes: Option<u64>,
+    error: Option<String>,
+) {
+    let _ = app.emit_to(
+        "main",
+        BROWSER_DOWNLOAD_EVENT,
+        BrowserDownloadEvent {
+            pane_id: pane_id.to_string(),
+            download_id: download_id.to_string(),
+            url: url.to_string(),
+            file_name: file_name.to_string(),
+            staging_path: staging_path.display().to_string(),
+            status: status.to_string(),
+            bytes_received,
+            total_bytes,
+            error,
+        },
+    );
+}
+
+#[cfg(windows)]
+fn register_browser_download_progress(
+    view: &Webview,
+    app: AppHandle,
+    pane_id: String,
+) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_4;
+    use std::time::{Duration, Instant};
+
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    view.with_webview(move |platform| {
+        let result = (|| unsafe {
+            let core = platform
+                .controller()
+                .CoreWebView2()
+                .map_err(|error| error.to_string())?;
+            let core: ICoreWebView2_4 = core.cast().map_err(|error| error.to_string())?;
+            let app_for_download = app.clone();
+            let pane_for_download = pane_id.clone();
+            let handler = DownloadStartingEventHandler::create(Box::new(move |_, args| {
+                let Some(args) = args else {
+                    return Ok(());
+                };
+                let operation = unsafe { args.DownloadOperation()? };
+                let mut raw_path = CoTaskMemPWSTR::default().take();
+                unsafe {
+                    operation.ResultFilePath(&mut raw_path)?;
+                }
+                let staging_path = PathBuf::from(CoTaskMemPWSTR::from(raw_path).to_string());
+                let Some(download_id) = browser_download_id_from_path(&staging_path) else {
+                    return Ok(());
+                };
+                let mut raw_url = CoTaskMemPWSTR::default().take();
+                unsafe {
+                    operation.Uri(&mut raw_url)?;
+                }
+                let url = CoTaskMemPWSTR::from(raw_url).to_string();
+                let file_name = staging_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("download.bin")
+                    .to_string();
+
+                let app_for_progress = app_for_download.clone();
+                let pane_for_progress = pane_for_download.clone();
+                let id_for_progress = download_id.clone();
+                let url_for_progress = url.clone();
+                let name_for_progress = file_name.clone();
+                let path_for_progress = staging_path.clone();
+                let last_progress_emit = Arc::new(Mutex::new(Instant::now()));
+                let last_progress_emit_for_callback = last_progress_emit.clone();
+                let progress_handler =
+                    BytesReceivedChangedEventHandler::create(Box::new(move |download, _| {
+                        let Some(download) = download else {
+                            return Ok(());
+                        };
+                        let mut bytes_received = 0_i64;
+                        let mut total_bytes = 0_i64;
+                        unsafe {
+                            download.BytesReceived(&mut bytes_received)?;
+                            download.TotalBytesToReceive(&mut total_bytes)?;
+                        }
+                        let now = Instant::now();
+                        let should_emit = last_progress_emit_for_callback
+                            .lock()
+                            .map(|mut last_emit| {
+                                if now.duration_since(*last_emit) >= Duration::from_millis(120)
+                                    || (total_bytes > 0 && bytes_received >= total_bytes)
+                                {
+                                    *last_emit = now;
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(true);
+                        if !should_emit {
+                            return Ok(());
+                        }
+                        emit_browser_download(
+                            &app_for_progress,
+                            &pane_for_progress,
+                            &id_for_progress,
+                            &url_for_progress,
+                            &name_for_progress,
+                            &path_for_progress,
+                            "progress",
+                            bytes_received.max(0) as u64,
+                            (total_bytes > 0).then_some(total_bytes as u64),
+                            None,
+                        );
+                        Ok(())
+                    }));
+                let mut token = 0;
+                unsafe {
+                    operation.add_BytesReceivedChanged(&progress_handler, &mut token)?;
+                }
+                Ok(())
+            }));
+            let mut token = 0;
+            core.add_DownloadStarting(&handler, &mut token)
+                .map_err(|error| error.to_string())
+        })();
+        let _ = sender.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+    receiver
+        .await
+        .map_err(|_| "Browser download listener did not complete".to_string())?
+}
 
 #[derive(Clone, Deserialize)]
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -84,6 +297,13 @@ pub struct BrowserNavigationState {
     pub url: String,
     pub can_go_back: bool,
     pub can_go_forward: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserDownloadSaveResult {
+    pub path: String,
+    pub cleanup_warning: Option<String>,
 }
 
 /// Where one captured viewport image is drawn inside the scrolling region of
@@ -475,7 +695,17 @@ pub async fn browser_create(
         let load_pane_id = pane_id.clone();
         let app_for_new_window = app.clone();
         let new_window_pane_id = pane_id.clone();
-        let builder = WebviewBuilder::new(label.clone(), tauri::WebviewUrl::External(url))
+        let app_for_download = app.clone();
+        let download_pane_id = pane_id.clone();
+        let pending_downloads: Arc<Mutex<HashMap<String, VecDeque<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_for_download = pending_downloads.clone();
+        let download_records: Arc<Mutex<HashMap<String, (String, String, PathBuf)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let records_for_download = download_records.clone();
+        let records_for_finish = download_records.clone();
+        let blank_url = url::Url::parse("about:blank").map_err(|error| error.to_string())?;
+        let builder = WebviewBuilder::new(label.clone(), tauri::WebviewUrl::External(blank_url))
             .on_navigation(move |target| {
                 let allowed = target.as_str() == "about:blank"
                     || (matches!(target.scheme(), "http" | "https") && target.host_str().is_some());
@@ -523,6 +753,92 @@ pub async fn browser_create(
                     );
                 }
                 NewWindowResponse::Deny
+            })
+            .on_download(move |_, event| {
+                match event {
+                    tauri::webview::DownloadEvent::Requested { url, destination } => {
+                        let file_name = safe_browser_download_name(
+                            destination.file_name().and_then(|name| name.to_str()).unwrap_or("download.bin"),
+                        );
+                        let download_id = uuid::Uuid::new_v4().to_string();
+                        let staging_dir = match browser_download_staging_dir(&app_for_download) {
+                            Ok(directory) => directory,
+                            Err(error) => {
+                                eprintln!("Unable to create Browser download staging directory: {error}");
+                                return false;
+                            }
+                        };
+                        let download_dir = staging_dir.join(&download_id);
+                        if let Err(error) = std::fs::create_dir(&download_dir) {
+                            eprintln!("Unable to create Browser download staging folder: {error}");
+                            return false;
+                        }
+                        let staging_path = download_dir.join(&file_name);
+                        *destination = staging_path.clone();
+                        if let Ok(mut records) = records_for_download.lock() {
+                            records.insert(download_id.clone(), (url.to_string(), file_name.clone(), staging_path.clone()));
+                        }
+                        if let Ok(mut pending) = pending_for_download.lock() {
+                            pending.entry(url.to_string()).or_default().push_back(download_id.clone());
+                        }
+                        emit_browser_download(
+                            &app_for_download,
+                            &download_pane_id,
+                            &download_id,
+                            url.as_str(),
+                            &file_name,
+                            &staging_path,
+                            "started",
+                            0,
+                            None,
+                            None,
+                        );
+                        true
+                    }
+                    tauri::webview::DownloadEvent::Finished { url, path, success } => {
+                        let download_id = path
+                            .as_deref()
+                            .and_then(browser_download_id_from_path)
+                            .or_else(|| {
+                                pending_for_download
+                                    .lock()
+                                    .ok()
+                                    .and_then(|mut pending| pending.get_mut(url.as_str()).and_then(VecDeque::pop_front))
+                            });
+                        if let Some(download_id) = download_id {
+                            let record = records_for_finish.lock().ok().and_then(|mut records| records.remove(&download_id));
+                            let Some((record_url, file_name, record_path)) = record else {
+                                return true;
+                            };
+                            if let Ok(mut pending) = pending_for_download.lock() {
+                                let is_empty = if let Some(ids) = pending.get_mut(url.as_str()) {
+                                    ids.retain(|id| id != &download_id);
+                                    ids.is_empty()
+                                } else {
+                                    false
+                                };
+                                if is_empty {
+                                    pending.remove(url.as_str());
+                                }
+                            }
+                            let staging_path = path.unwrap_or(record_path);
+                            emit_browser_download(
+                                &app_for_download,
+                                &download_pane_id,
+                                &download_id,
+                                &record_url,
+                                &file_name,
+                                &staging_path,
+                                if success { "completed" } else { "failed" },
+                                std::fs::metadata(&staging_path).map(|metadata| metadata.len()).unwrap_or(0),
+                                None,
+                                (!success).then(|| "The browser download was interrupted.".to_string()),
+                            );
+                        }
+                        true
+                    }
+                    _ => true,
+                }
             });
 
         let parent = webview.window();
@@ -542,10 +858,19 @@ pub async fn browser_create(
             let _ = close_browser_view(child, &label).await;
             return Err(error);
         }
+        if let Err(error) = register_browser_download_progress(&child, app.clone(), pane_id.clone()) {
+            eprintln!("Browser download started/finished events are available, but byte progress could not be attached: {error}");
+        }
         if !visible {
             child.hide().map_err(|error| error.to_string())?;
         }
         let actual = read_browser_native_bounds(&child)?;
+        if url.as_str() != "about:blank" {
+            if let Err(error) = child.navigate(url) {
+                let _ = close_browser_view(child, &label).await;
+                return Err(error.to_string());
+            }
+        }
         Ok(BrowserBoundsReadback {
             requested: native_bounds,
             actual,
@@ -1725,6 +2050,211 @@ pub async fn browser_save_screenshot(png_base64: String) -> Result<Option<String
 }
 
 #[tauri::command]
+pub async fn browser_pick_download_folder(
+    webview: Webview,
+    initial_folder: Option<String>,
+) -> Result<Option<String>, String> {
+    require_main_webview(&webview)?;
+    let mut dialog = rfd::AsyncFileDialog::new();
+    if let Some(folder) = initial_folder.filter(|folder| Path::new(folder).is_dir()) {
+        dialog = dialog.set_directory(folder);
+    }
+    Ok(dialog
+        .pick_folder()
+        .await
+        .map(|folder| folder.path().display().to_string()))
+}
+
+#[tauri::command]
+pub async fn browser_pick_download_file(
+    webview: Webview,
+    file_name: String,
+    initial_folder: Option<String>,
+) -> Result<Option<String>, String> {
+    require_main_webview(&webview)?;
+    let mut dialog = rfd::AsyncFileDialog::new().set_file_name(&safe_browser_download_name(&file_name));
+    if let Some(folder) = initial_folder.filter(|folder| Path::new(folder).is_dir()) {
+        dialog = dialog.set_directory(folder);
+    }
+    Ok(dialog
+        .save_file()
+        .await
+        .map(|file| file.path().display().to_string()))
+}
+
+fn validate_browser_staged_path(
+    app: &AppHandle,
+    download_id: &str,
+    staging_path: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    uuid::Uuid::parse_str(download_id).map_err(|_| "Invalid Browser download id".to_string())?;
+    let staging_root = std::fs::canonicalize(browser_download_staging_dir(app)?)
+        .map_err(|error| error.to_string())?;
+    let path = Path::new(staging_path);
+    if !path.is_absolute()
+        || path.file_name().is_none()
+        || path.parent().and_then(Path::file_name).and_then(|name| name.to_str()) != Some(download_id)
+    {
+        return Err("Invalid Browser download staging path".to_string());
+    }
+    let parent = std::fs::canonicalize(path.parent().ok_or_else(|| "Invalid Browser staging path".to_string())?)
+        .map_err(|error| error.to_string())?;
+    if parent.parent() != Some(staging_root.as_path())
+        || parent.file_name().and_then(|name| name.to_str()) != Some(download_id)
+    {
+        return Err("Browser download staging file is outside its managed directory".to_string());
+    }
+    Ok((path.to_path_buf(), parent))
+}
+
+fn resolve_browser_staged_download(
+    app: &AppHandle,
+    download_id: &str,
+    staging_path: &str,
+) -> Result<PathBuf, String> {
+    let (path, staging_dir) = validate_browser_staged_path(app, download_id, staging_path)?;
+    let resolved = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+    if resolved.parent() != Some(staging_dir.as_path()) || !resolved.is_file() {
+        return Err("Browser download staging file is outside its managed directory".to_string());
+    }
+    Ok(resolved)
+}
+
+fn resolve_browser_download_destination_folder(folder: &str) -> Result<PathBuf, String> {
+    let input = Path::new(folder);
+    if input
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("Download destination must not contain '..'".to_string());
+    }
+    let candidate = if input.is_absolute() {
+        input.to_path_buf()
+    } else {
+        dirs::home_dir()
+            .ok_or_else(|| "Unable to locate the current user's home directory".to_string())?
+            .join(input)
+    };
+    let resolved = std::fs::canonicalize(&candidate).map_err(|error| error.to_string())?;
+    if !resolved.is_dir() {
+        return Err("The selected download destination is not a folder".to_string());
+    }
+    Ok(resolved)
+}
+
+fn unique_browser_download_destination(requested: &Path) -> Result<PathBuf, String> {
+    let name = requested
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Invalid Browser download filename".to_string())?;
+    let mut candidate = requested.to_path_buf();
+    let mut attempt = 1;
+    while candidate.exists() {
+        let path = Path::new(name);
+        let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("download");
+        let extension = path.extension().and_then(|value| value.to_str());
+        let next_name = match extension {
+            Some(extension) => format!("{stem}_({attempt}).{extension}"),
+            None => format!("{stem}_({attempt})"),
+        };
+        candidate = requested
+            .parent()
+            .ok_or_else(|| "Invalid Browser download destination".to_string())?
+            .join(next_name);
+        attempt += 1;
+    }
+    Ok(candidate)
+}
+
+#[tauri::command]
+pub async fn browser_save_download(
+    app: AppHandle,
+    webview: Webview,
+    download_id: String,
+    staging_path: String,
+    destination_folder: Option<String>,
+    selected_path: Option<String>,
+) -> Result<BrowserDownloadSaveResult, String> {
+    require_main_webview(&webview)?;
+    let staged = resolve_browser_staged_download(&app, &download_id, &staging_path)?;
+    let suggested_name = staged
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(safe_browser_download_name)
+        .unwrap_or_else(|| "download.bin".to_string());
+
+    let requested = if let Some(selected_path) = selected_path {
+        let selected = PathBuf::from(selected_path);
+        if !selected.is_absolute() || selected.file_name().is_none() {
+            return Err("Choose a valid local download filename".to_string());
+        }
+        let parent = selected
+            .parent()
+            .ok_or_else(|| "Invalid local download destination".to_string())?;
+        let parent = std::fs::canonicalize(parent).map_err(|error| error.to_string())?;
+        parent.join(safe_browser_download_name(
+            selected.file_name().and_then(|name| name.to_str()).unwrap_or(&suggested_name),
+        ))
+    } else {
+        let folder = destination_folder
+            .ok_or_else(|| "Choose a local download destination".to_string())?;
+        resolve_browser_download_destination_folder(&folder)?.join(suggested_name)
+    };
+    let destination = unique_browser_download_destination(&requested)?;
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Invalid Browser download filename".to_string())?;
+    let temporary = destination
+        .parent()
+        .ok_or_else(|| "Invalid Browser download destination".to_string())?
+        .join(format!(".{name}.{}.part", uuid::Uuid::new_v4()));
+
+    if let Err(error) = std::fs::copy(&staged, &temporary) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    if let Err(error) = std::fs::rename(&temporary, &destination) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    let cleanup_warning = std::fs::remove_file(&staged)
+        .err()
+        .or_else(|| staged.parent().and_then(|parent| std::fs::remove_dir(parent).err()))
+        .map(|error| format!("The temporary copy could not be removed: {error}"));
+    Ok(BrowserDownloadSaveResult {
+        path: destination.display().to_string(),
+        cleanup_warning,
+    })
+}
+
+#[tauri::command]
+pub async fn browser_discard_download(
+    app: AppHandle,
+    webview: Webview,
+    download_id: String,
+    staging_path: String,
+) -> Result<(), String> {
+    require_main_webview(&webview)?;
+    let (staged, staging_dir) = validate_browser_staged_path(&app, &download_id, &staging_path)?;
+    if !staged.exists() {
+        if let Some(parent) = staged.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+        return Ok(());
+    }
+    let resolved = std::fs::canonicalize(&staged).map_err(|error| error.to_string())?;
+    if resolved.parent() != Some(staging_dir.as_path()) || !resolved.is_file() {
+        return Err("Browser download staging file is outside its managed directory".to_string());
+    }
+    std::fs::remove_file(&resolved).map_err(|error| error.to_string())?;
+    if let Some(parent) = resolved.parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn browser_destroy(
     app: AppHandle,
     webview: Webview,
@@ -1805,10 +2335,10 @@ async fn run_core_command(view: Webview, action: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        browser_view_label, capped_content_lengths, collect_browser_frame_tree,
+        browser_view_label, capped_content_lengths, collect_browser_frame_tree, safe_browser_download_name,
         map_browser_bounds_to_physical, next_scroll_position, parse_web_url, region_placements,
-        select_scroll_candidate, tile_positions, BrowserBounds, BrowserPhysicalBounds,
-        ScrollCandidate,
+        select_scroll_candidate, tile_positions, unique_browser_download_destination,
+        BrowserBounds, BrowserPhysicalBounds, ScrollCandidate,
     };
 
     fn css_bounds(x: f64, y: f64, width: f64, height: f64, dpr: f64) -> BrowserBounds {
@@ -1868,6 +2398,32 @@ mod tests {
         ] {
             assert!(parse_web_url(invalid, false).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn browser_download_names_are_leaf_only_and_safe_for_windows_paths() {
+        assert_eq!(safe_browser_download_name("C:\\temp\\report.pdf"), "report.pdf");
+        assert_eq!(safe_browser_download_name("../folder/unsafe:name?.zip"), "unsafe_name_.zip");
+        assert_eq!(safe_browser_download_name("... "), "download.bin");
+        assert_eq!(safe_browser_download_name("CON.txt"), "_CON.txt");
+    }
+
+    #[test]
+    fn browser_download_destination_keeps_existing_files_and_uses_a_unique_name() {
+        let directory = std::env::temp_dir().join(format!(
+            "nfterm-browser-download-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let requested = directory.join("report.pdf");
+        std::fs::write(&requested, b"existing").unwrap();
+        let selected = unique_browser_download_destination(&requested).unwrap();
+        assert_eq!(
+            selected.file_name().and_then(|name| name.to_str()),
+            Some("report_(1).pdf")
+        );
+        assert_eq!(std::fs::read(&requested).unwrap(), b"existing");
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

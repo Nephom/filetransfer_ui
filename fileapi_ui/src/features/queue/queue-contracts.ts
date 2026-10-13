@@ -41,6 +41,8 @@ export type TransferQueueItem = {
   downloadBody?: number[];
   downloadFileName?: string;
   archiveFormat?: "tar.gz" | "zip";
+  /** Browser download id whose managed staging file is the local upload source. */
+  browserDownloadId?: string;
   // HOME-relative LOCAL destination directory (matches `localPath`'s own
   // format), captured when a REMOTE -> LOCAL download is queued so it keeps
   // targeting that folder even if the user navigates the LOCAL pane

@@ -4570,6 +4570,10 @@ fn main() {
             browser::browser_capture_full_page,
             browser::browser_capture_preview,
             browser::browser_save_screenshot,
+            browser::browser_pick_download_folder,
+            browser::browser_pick_download_file,
+            browser::browser_save_download,
+            browser::browser_discard_download,
             browser::browser_destroy,
             browser::browser_cleanup_stale,
         ])

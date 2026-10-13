@@ -17,6 +17,7 @@ import { downloadPath } from "../../path-utils";
 import { buildManifestPages, planUploadChildren, rebindUploadManifest, type UploadManifestFile, type UploadSessionFile } from "../../queue/upload-plan";
 import type { FileItem } from "../../file-item-contracts";
 import type { SshProfile } from "../ssh/ssh-contracts";
+import type { BrowserDownloadForRemote } from "../browser/browser-contracts";
 import type { TransferQueueItem } from "./queue-contracts";
 
 // Minimal structural shape of main.tsx's ApiResponse and NativeApiResponse,
@@ -159,7 +160,7 @@ export function useTransferQueueActions({
       item.label,
       destination,
       JSON.stringify({
-        sourceType: item.kind === "upload" ? "LOCAL" : "REMOTE",
+        sourceType: item.browserDownloadId ? "BROWSER" : item.kind === "upload" ? "LOCAL" : "REMOTE",
         destinationType: item.kind === "upload" ? "REMOTE" : "LOCAL",
         itemCount: item.setFiles?.length || item.paths.length || 1,
         retryCount: item.retryCount || 0,
@@ -429,6 +430,19 @@ export function useTransferQueueActions({
     }
   };
 
+  const cleanupBrowserDownloadSource = async (item: TransferQueueItem) => {
+    if (!item.browserDownloadId || !item.paths[0]) return "";
+    try {
+      await invoke("browser_discard_download", {
+        downloadId: item.browserDownloadId,
+        stagingPath: item.paths[0],
+      });
+      return "";
+    } catch (error) {
+      return ` Remote upload completed, but the local staging file could not be removed: ${describeError(error)}`;
+    }
+  };
+
   const executeQueuedResumableUpload = async (item: TransferQueueItem) => {
     const context = captureContext(item);
     const attemptId = crypto.randomUUID();
@@ -633,8 +647,9 @@ export function useTransferQueueActions({
           const progress = updateQueueProgress(item.id, completedBytes, completedBytes,
             preloadedSnapshot.session.expectedFileCount, preloadedSnapshot.session.expectedFileCount);
           if (completedBytes === 0) progress.percentage = 100;
+          const cleanupWarning = await cleanupBrowserDownloadSource(item);
           updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", progress,
-            detail: "Resumable upload already completed on the server." });
+            detail: `Resumable upload already completed on the server.${cleanupWarning}` });
           return;
         }
       }
@@ -649,7 +664,8 @@ export function useTransferQueueActions({
         existingDirectories = snapshot.directories;
         if (sessionInfo.status === "completed") {
           updateQueueProgress(item.id, sessionInfo.totalSize, sessionInfo.totalSize, sessionInfo.expectedFileCount, sessionInfo.expectedFileCount);
-          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: "Resumable upload already completed on the server." });
+          const cleanupWarning = await cleanupBrowserDownloadSource(item);
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: `Resumable upload already completed on the server.${cleanupWarning}` });
           return;
         }
         if (["cancelled", "cancelling", "failed", "expired"].includes(sessionInfo.status)) {
@@ -708,7 +724,8 @@ export function useTransferQueueActions({
         }
         if (created.status === "completed") {
           updateQueueProgress(item.id, created.totalSize, created.totalSize, created.expectedFileCount, created.expectedFileCount);
-          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: "The original resumable upload session already completed." });
+          const cleanupWarning = await cleanupBrowserDownloadSource(item);
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: `The original resumable upload session already completed.${cleanupWarning}` });
           return;
         }
         if (["cancelled", "cancelling", "failed", "expired"].includes(created.status)) {
@@ -816,7 +833,8 @@ export function useTransferQueueActions({
           (cancelledSnapshot.session.status === "uploading" && cancelledSnapshot.files.length === cancelledSnapshot.session.expectedFileCount &&
             cancelledSnapshot.files.every(file => file.status === "completed"));
         if (serverCompleted) {
-          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: "The server completed the upload before cancellation settled." });
+          const cleanupWarning = await cleanupBrowserDownloadSource(item);
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: `The server completed the upload before cancellation settled.${cleanupWarning}` });
         } else if (cancelledSnapshot.session.status === "cancelled") {
           updateQueueItem(item.id, { status: "cancelled", uploadOutcome: "resumable", detail: "Upload cancelled. Completed files are kept; unfinished files can be resumed." });
         } else {
@@ -833,10 +851,11 @@ export function useTransferQueueActions({
         if (context.locationId === session.locationId && item.destinationPath === path) await loadFiles(path).catch(() => undefined);
         const finalProgress = updateQueueProgress(item.id, totalBytes, totalBytes, completeFiles, finalSnapshot.files.length);
         if (totalBytes === 0) finalProgress.percentage = 100;
+        const cleanupWarning = await cleanupBrowserDownloadSource(item);
         updateQueueItem(item.id, {
           status: "completed", uploadOutcome: "settled", uploadActiveChildren: 0,
           progress: finalProgress,
-          detail: `Uploaded ${completeFiles} file(s); all completed files were verified by the server.`,
+          detail: `Uploaded ${completeFiles} file(s); all completed files were verified by the server.${cleanupWarning}`,
         });
       } else {
         const detail = failures.length
@@ -1030,6 +1049,32 @@ export function useTransferQueueActions({
   const runQueuedDownload = (item: TransferQueueItem) => { captureContext(item); return runOnce(item.id, () => executeQueuedDownload(item)); };
   const runQueuedDownloadSet = (item: TransferQueueItem) => { captureContext(item); return runOnce(item.id, () => executeQueuedDownloadSet(item)); };
   const runQueuedSshDownload = (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => runOnce(item.id, () => executeQueuedSshDownload(item, profile, items));
+
+  const enqueueBrowserUpload = async (download: BrowserDownloadForRemote) => {
+    if (!session.nativeSessionId || download.locationId !== session.locationId) {
+      throw new Error("The selected API Location changed. Choose the current Location again before uploading this Browser download.");
+    }
+    const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths: [download.stagingPath] });
+    if (summary.files !== 1 || summary.directories !== 0 || summary.sources.length !== 1) {
+      throw new Error("The Browser download staging file is not a single uploadable file.");
+    }
+    const item: TransferQueueItem = {
+      id: crypto.randomUUID(),
+      label: download.fileName,
+      kind: "upload",
+      paths: [summary.sources[0].path],
+      destinationPath: download.destinationPath,
+      locationId: download.locationId,
+      locationName: download.locationName,
+      status: "queued",
+      detail: "Browser download is ready; waiting to upload to the API Remote.",
+      progress: initialQueueProgress(1, summary.totalSize),
+      browserDownloadId: download.downloadId,
+    };
+    setTransferQueue((current) => [...current, item]);
+    setQueueOpen(true);
+    void runQueuedUpload(item);
+  };
 
   const retryDesktopQueueItem = (item: TransferQueueItem) => {
     let context = contexts.current.get(item.id);
@@ -1289,6 +1334,7 @@ export function useTransferQueueActions({
     enqueueQueueDownload,
     enqueueDownload,
     enqueueSshDownload,
+    enqueueBrowserUpload,
     download,
     logQueueEvent,
   };

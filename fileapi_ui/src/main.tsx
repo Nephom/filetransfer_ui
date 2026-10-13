@@ -68,6 +68,7 @@ import { downloadPath, localBreadcrumbSegments, localParentPath as getLocalParen
 import { useTransferQueueState } from "./features/queue/useTransferQueueState";
 import { useTransferQueueActions } from "./features/queue/useTransferQueueActions";
 import type { TransferQueueItem } from "./features/queue/queue-contracts";
+import type { BrowserDownloadForRemote } from "./features/browser/browser-contracts";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const SftpWindow = lazy(() => import("./features/sftp/SftpWindow").then(({ SftpWindow: component }) => ({ default: component })));
@@ -2351,6 +2352,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     enqueueQueueDownload,
     enqueueDownload,
     enqueueSshDownload,
+    enqueueBrowserUpload,
     download,
   } = useTransferQueueActions({
     run, notify, setNotice, api, readError,
@@ -4712,6 +4714,16 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         restEnabled={desktopSettings.restApiModeEnabled}
         vncEnabled={desktopSettings.proxmoxVncModeEnabled}
         remoteEnabled={!session.localOnly}
+        browserDownloadContext={{
+          localFolder: localPath,
+          remote: !session.localOnly ? {
+            locationId: session.locationId,
+            locationName: activeLocation?.displayName || session.locationId || "Remote",
+            path,
+            canUpload: Boolean(session.nativeSessionId && locationOnline && hasCapability("upload")),
+          } : null,
+        }}
+        onBrowserDownloadToRemote={(downloadItem: BrowserDownloadForRemote) => enqueueBrowserUpload(downloadItem)}
         appOverlayOpen={browserOverlayOpen}
         welcomeOpen={welcomeOpen}
         welcomeOnlyFirstLaunch={welcomeOnlyFirstLaunch}
