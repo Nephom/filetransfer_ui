@@ -127,16 +127,21 @@
 }
 
 .browser-downloads-panel {
-  z-index: 2;
-  flex: 0 0 auto;
-  max-height: min(46vh, 360px);
+  position: absolute;
+  z-index: 5;
+  top: 50px;
+  right: 10px;
+  width: min(460px, calc(100% - 20px));
+  max-height: min(620px, calc(100% - 60px));
   min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-bottom: 1px solid var(--color-border);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
   color: var(--color-text);
   background: var(--color-bg-panel-strong);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .38);
 }
 
 .browser-downloads-heading {
@@ -213,6 +218,7 @@
 }
 
 .browser-download-list {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
@@ -329,6 +335,13 @@
   .browser-download-progress {
     grid-template-columns: minmax(35px, 1fr);
     gap: 3px;
+  }
+
+  .browser-downloads-panel {
+    top: 48px;
+    right: 6px;
+    width: calc(100% - 12px);
+    max-height: calc(100% - 58px);
   }
 }
 

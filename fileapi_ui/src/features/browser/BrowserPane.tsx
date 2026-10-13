@@ -520,7 +520,10 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
 
   useEffect(() => {
     if (!viewReady) return;
-    const browserVisible = visible && !captureImage;
+    // The native WebView2 child surface is above the app WebView's DOM. Hide it
+    // while the downloads popover is open so this HTML panel can render above
+    // the retained page snapshot instead of being covered by the native view.
+    const browserVisible = visible && !captureImage && !downloadsOpen;
     if (browserVisible) scheduleBounds();
     boundsQueueRef.current = boundsQueueRef.current
       .then(async () => {
@@ -539,7 +542,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
         setNativeShown(browserVisible);
       })
       .catch(() => undefined);
-  }, [paneId, viewReady, visible, captureImage, scheduleBounds]);
+  }, [paneId, viewReady, visible, captureImage, downloadsOpen, scheduleBounds]);
 
   useEffect(() => {
     if (!viewReady || !visible) return undefined;
@@ -889,6 +892,8 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
             type="button"
             className="browser-downloads-toggle"
             aria-label="Browser downloads"
+            aria-haspopup="dialog"
+            aria-controls={`browser-downloads-${paneId}`}
             aria-expanded={downloadsOpen}
             title="Browser downloads"
             onClick={() => setDownloadsOpen((open) => !open)}
@@ -898,7 +903,13 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
         </div>
         {error && <div className="browser-error" role="alert">{error}</div>}
       </form>
-      {downloadsOpen && <section className="browser-downloads-panel" aria-label="Browser downloads">
+      {downloadsOpen && <section
+        id={`browser-downloads-${paneId}`}
+        className="browser-downloads-panel"
+        role="dialog"
+        aria-modal="false"
+        aria-label="Browser downloads"
+      >
         <header className="browser-downloads-heading">
           <strong>Downloads</strong>
           <button type="button" aria-label="Close downloads" onClick={() => setDownloadsOpen(false)}>×</button>
