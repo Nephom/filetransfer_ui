@@ -98,8 +98,9 @@ async function decodeScreenshotTile(data: string): Promise<HTMLImageElement> {
 /**
  * Builds the full page image. The first tile is the unscrolled viewport; every
  * other tile only contributes the scrolling region at its scroll offset. All
- * coordinates are CSS pixels, converted with one scale and rounded per edge so
- * neighbouring pieces never leave a gap.
+ * coordinates are CSS pixels. Source edges use each tile's actual scale, while
+ * destination edges use the stitched page scale; rounding the edges separately
+ * prevents fractional offsets from changing a feature's width between tiles.
  */
 async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promise<StitchedScreenshot> {
   const baseData = capture.tiles[0];
@@ -136,12 +137,34 @@ async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promi
   if (!context) throw new Error("Unable to prepare the full page screenshot.");
 
   const copy = (image: HTMLImageElement, srcX: number, srcY: number, width: number, height: number, dstX: number, dstY: number) => {
-    const left = px(srcX);
-    const top = px(srcY);
-    const sourceWidth = px(srcX + width) - left;
-    const sourceHeight = px(srcY + height) - top;
-    if (sourceWidth <= 0 || sourceHeight <= 0) return;
-    context.drawImage(image, left, top, sourceWidth, sourceHeight, px(dstX), px(dstY), sourceWidth, sourceHeight);
+    const sourceScaleX = image.naturalWidth / capture.viewportWidth;
+    const sourceScaleY = image.naturalHeight / capture.viewportHeight;
+    const sourcePxX = (value: number) => Math.round(value * sourceScaleX);
+    const sourcePxY = (value: number) => Math.round(value * sourceScaleY);
+    const sourceLeft = sourcePxX(srcX);
+    const sourceTop = sourcePxY(srcY);
+    const sourceRight = sourcePxX(srcX + width);
+    const sourceBottom = sourcePxY(srcY + height);
+    const destinationLeft = px(dstX);
+    const destinationTop = px(dstY);
+    const destinationRight = px(dstX + width);
+    const destinationBottom = px(dstY + height);
+    const sourceWidth = sourceRight - sourceLeft;
+    const sourceHeight = sourceBottom - sourceTop;
+    const destinationWidth = destinationRight - destinationLeft;
+    const destinationHeight = destinationBottom - destinationTop;
+    if (sourceWidth <= 0 || sourceHeight <= 0 || destinationWidth <= 0 || destinationHeight <= 0) return;
+    context.drawImage(
+      image,
+      sourceLeft,
+      sourceTop,
+      sourceWidth,
+      sourceHeight,
+      destinationLeft,
+      destinationTop,
+      destinationWidth,
+      destinationHeight,
+    );
   };
   const probe = document.createElement("canvas");
   probe.width = 1;
