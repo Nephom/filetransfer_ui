@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import { createPortal } from "react-dom";
 import { useRef } from "react";
 import { isAbsoluteLocalPath } from "../../path-utils";
@@ -38,6 +39,7 @@ const CLASSES = {
  * the terminal. Identical layout in the native window and in the SSH pane.
  */
 export function SshEntryTerminalView({ terminal, title, variant }: Props) {
+  const { t } = useAppTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const cls = CLASSES[variant];
   const { saveLogDialog } = terminal;
@@ -49,17 +51,17 @@ export function SshEntryTerminalView({ terminal, title, variant }: Props) {
   const dialog = saveLogDialog.open && dialogHost && createPortal(
     <div className="modal-cover modal-layer-top" onMouseDown={saveLogDialog.close}>
       <div className="modal log-name-modal" onMouseDown={(event) => event.stopPropagation()}>
-        <h2>Name SSH log package</h2>
-        <p>Choose the base name for the raw output, text, command, and metadata files. The application removes unsafe filename characters and adds the file extensions automatically.</p>
+        <h2>{t("Name SSH log package")}</h2>
+        <p>{t("Choose the base name for the raw output, text, command, and metadata files. The application removes unsafe filename characters and adds the file extensions automatically.")}</p>
         <form onSubmit={(event) => { event.preventDefault(); void terminal.saveLog(); }}>
           <label>
-            Log name
-            <input autoFocus value={saveLogDialog.name} onChange={(event) => saveLogDialog.setName(event.target.value)} placeholder="Production console 2026-08-06" maxLength={120} required />
+            {t("Log name")}
+            <input autoFocus value={saveLogDialog.name} onChange={(event) => saveLogDialog.setName(event.target.value)} placeholder={t("Production console")} maxLength={120} required />
           </label>
-          <small className="field-help">Save location: LOCAL {!saveLogDialog.destination ? "~" : isAbsoluteLocalPath(saveLogDialog.destination) ? saveLogDialog.destination : `~/${saveLogDialog.destination}`}</small>
+          <small className="field-help">{t("Save location:")} LOCAL {!saveLogDialog.destination ? "~" : isAbsoluteLocalPath(saveLogDialog.destination) ? saveLogDialog.destination : `~/${saveLogDialog.destination}`}</small>
           <div className="modal-actions">
-            <button type="button" onClick={saveLogDialog.close} disabled={terminal.savingLog}>Cancel</button>
-            <button className="confirm" type="submit" disabled={terminal.savingLog}>{terminal.savingLog ? "Saving…" : "Save Log"}</button>
+            <button type="button" onClick={saveLogDialog.close} disabled={terminal.savingLog}>{t("Cancel")}</button>
+            <button className="confirm" type="submit" disabled={terminal.savingLog}>{terminal.savingLog ? t("Saving…") : t("Save Log")}</button>
           </div>
         </form>
       </div>
@@ -72,19 +74,19 @@ export function SshEntryTerminalView({ terminal, title, variant }: Props) {
       <header className={cls.header}>
         {variant === "native" ? <h1>{title}</h1> : <strong className={cls.title} title={title}>{title}</strong>}
         <div className={cls.status}>
-          <span className={terminal.recording ? "ssh-recording-status" : undefined} title={terminal.status}>{terminal.status}</span>
+          <span className={terminal.recording ? "ssh-recording-status" : undefined} title={t(terminal.status)}>{t(terminal.status)}</span>
           {terminal.connecting
-            ? <button type="button" className={join(cls.button, "is-danger")} onClick={terminal.cancelConnect}>Cancel</button>
+             ? <button type="button" className={join(cls.button, "is-danger")} onClick={terminal.cancelConnect}>{t("Cancel")}</button>
             : terminal.connected
-              ? <button type="button" className={join(cls.button, "is-danger")} onClick={() => void terminal.disconnect()}>Disconnect</button>
-              : <button type="button" className={join(cls.button, "is-connect")} onClick={terminal.connect}>Connect</button>}
+               ? <button type="button" className={join(cls.button, "is-danger")} onClick={() => void terminal.disconnect()}>{t("Disconnect")}</button>
+               : <button type="button" className={join(cls.button, "is-connect")} onClick={terminal.connect}>{t("Connect")}</button>}
           <button
             type="button"
             className={join(cls.button, cls.record, terminal.recording ? "recording" : "")}
             disabled={!terminal.connected || terminal.savingLog || terminal.startingRecording}
             onClick={() => void (terminal.recording ? terminal.stopRecording() : terminal.startRecording())}
           >
-            {terminal.recording ? "StopREC" : "Record"}
+             {terminal.recording ? t("StopREC") : t("Record")}
           </button>
           <button
             type="button"
@@ -92,13 +94,13 @@ export function SshEntryTerminalView({ terminal, title, variant }: Props) {
             disabled={terminal.recording || !terminal.hasRecordedOutput || terminal.savingLog}
             onClick={() => void terminal.openSaveLogDialog()}
           >
-            Save Log
+            {t("Save Log")}
           </button>
         </div>
       </header>
       <div className={cls.host} ref={terminal.setHost} onMouseDown={terminal.focus} />
       {dialog}
-      {terminal.savedLogPaths.length > 0 && <div className={cls.saved}>Saved: {terminal.savedLogPaths.join(" · ")}</div>}
+       {terminal.savedLogPaths.length > 0 && <div className={cls.saved}>{t("Saved:")} {terminal.savedLogPaths.join(" · ")}</div>}
     </div>
   );
 }

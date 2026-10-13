@@ -58,7 +58,7 @@
      reference one of these two durations instead of a one-off value. */
   --motion-fast: var(--transition-fast);
   --motion-base: 240ms ease-out;
-  --font-family-ui: "Segoe UI", system-ui, sans-serif;
+  --font-family-ui: "Segoe UI", system-ui, "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans CJK TC", sans-serif;
   --font-family-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
   --dropdown-menu-gap: 4.8px;
   --z-dropdown: 400;

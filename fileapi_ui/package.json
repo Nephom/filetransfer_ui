@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "lint": "tsc --noEmit",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && npm run test:i18n && vite build",
+    "test:i18n": "node --test checks/i18n.test.js",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -16,8 +17,10 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
+    "i18next": "^26.4.4",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-i18next": "^17.0.16"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",

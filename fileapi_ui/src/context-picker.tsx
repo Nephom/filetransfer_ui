@@ -1,3 +1,4 @@
+import { useAppTranslation } from "./i18n/useAppTranslation";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDownIcon, DotIcon } from "./ui/icons";
@@ -14,6 +15,7 @@ type Props = {
 };
 
 export function ContextPicker({ label, value, groups, onSelect, disabled = false }: Props) {
+  const { t } = useAppTranslation();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -117,7 +119,7 @@ export function ContextPicker({ label, value, groups, onSelect, disabled = false
           <span className="context-picker-option-copy"><strong>{option.label}</strong>{option.detail && <small>{option.detail}</small>}</span><span className="context-picker-check">{option.selected && <DotIcon size={8} />}</span>
         </button>)}
       </section>)}
-      {!options.length && <span className="context-picker-empty">No available entries</span>}
+      {!options.length && <span className="context-picker-empty">{t("No available entries")}</span>}
     </div>, document.body)}
   </div>;
 }

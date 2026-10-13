@@ -1,4 +1,4 @@
-# nFterm 3.4.0
+# nFterm 4.0.0
 
 This is a mouse-first Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11. The repository folder is `fileapi_ui`.
 
@@ -45,8 +45,9 @@ The server certificate must be trusted by the operating system. The client does 
 - A folder or multiple selected items use `POST /api/archive` and download a ZIP.
 - Location mode Refresh invalidates the current API Remote directory cache through `POST /api/files/refresh-cache` before loading the directory again; SSH Remote refresh directly lists the current SSH directory.
 - The client surfaces the backend's JSON error message rather than only an HTTP status.
-- Configuration and token storage use the desktop WebView's local application storage.
-- Downloads are written to the user's `Downloads` directory.
+- Non-secret workspace and UI preferences use local application storage. API session tokens are runtime-only; SSH, REST, and Proxmox credentials use the OS credential store.
+- Downloads use the destination selected in the download flow. Browser downloads default to the LOCAL home/current folder; users can choose a saved local folder or the active API Remote as the Browser's default destination.
+- The Desktop UI supports `en_US` and `zh_TW`. The saved language can be changed in the top-right Account menu, not in Settings.
 
 ### Issue Record
 

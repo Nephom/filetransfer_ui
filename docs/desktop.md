@@ -323,6 +323,20 @@ redact values containing password, token, secret, cookie, or private-key
 markers, normalize line breaks, cap field length, rotate at 10 MiB, and retain
 at most three log files. Logs are diagnostic records, not a credential store.
 
+## In-App Help And Localization
+
+The Help window is opened from the top-right Account menu. Its topic metadata,
+inline SVG operation icons, and rich help copy are maintained in
+`../fileapi_ui/src/help/help-content.tsx`; the modal renderer and styles live in
+`../fileapi_ui/src/features/help/HelpModal.tsx` and `../fileapi_ui/src/help/help.css`.
+
+The Desktop UI supports only `en_US` and `zh_TW`. The application selects an
+initial locale from the WebView language when no saved preference exists, then
+stores the selected locale as an application preference separate from Desktop
+Settings. The Account menu is the only language control. UI-owned copy and
+client-generated messages are localized; raw server, OS, SSH, Redfish, and terminal diagnostic content stays
+unchanged so technical evidence is not rewritten.
+
 ## Related Documentation
 
 - [Location mode architecture](./location_tech.md)

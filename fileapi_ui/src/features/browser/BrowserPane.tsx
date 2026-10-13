@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import { useCallback, useEffect, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -7,6 +8,8 @@ import type { PaneBrowserWindowId } from "../../pane/pane-window-model";
 import type { BrowserBounds, BrowserBoundsReadback, BrowserDownloadEvent, BrowserDownloadForRemote, BrowserDownloadTarget, BrowserNavigationState, BrowserNewPaneEvent, BrowserViewStateEvent } from "./browser-contracts";
 import { BROWSER_DOWNLOAD_EVENT, BROWSER_NEW_PANE_EVENT, BROWSER_VIEW_STATE_EVENT } from "./browser-contracts";
 import { captureBrowserSnapshot, clearBrowserSnapshot, useBrowserSnapshot } from "./browser-snapshot-store";
+import { getAppLocale, toIntlLocale } from "../../i18n/i18n";
+import { formatUiError, UiMessageError } from "../../i18n/errors";
 import "./browser-pane.css";
 
 type Props = {
@@ -42,9 +45,10 @@ function readBrowserDownloadTarget(): BrowserDownloadTarget {
   return { kind: "local-current" };
 }
 
-const formatDownloadSize = (bytes: number) => {
+const formatDownloadSize = (bytes: number, locale: string) => {
+  const number = (value: number, maximumFractionDigits: number) => new Intl.NumberFormat(locale, { maximumFractionDigits }).format(value);
   if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
-  if (bytes < 1024) return `${Math.floor(bytes)} B`;
+  if (bytes < 1024) return `${number(Math.floor(bytes), 0)} B`;
   const units = ["KB", "MB", "GB", "TB"];
   let value = bytes / 1024;
   let unit = 0;
@@ -52,7 +56,7 @@ const formatDownloadSize = (bytes: number) => {
     value /= 1024;
     unit += 1;
   }
-  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
+  return `${number(value, value >= 10 ? 0 : 1)} ${units[unit]}`;
 };
 
 type CaptureSelection = { x: number; y: number; width: number; height: number };
@@ -105,7 +109,7 @@ async function decodeScreenshotTile(data: string): Promise<HTMLImageElement> {
 export async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promise<StitchedScreenshot> {
   const baseData = capture.tiles[0];
   if (!baseData || !(capture.viewportWidth > 0) || !(capture.viewportHeight > 0)) {
-    throw new Error("The browser did not return a usable screenshot image.");
+    throw new UiMessageError("The browser did not return a usable screenshot image.");
   }
   const skippedNote = capture.skippedFrames > 0
     ? ` ${capture.skippedFrames} frame(s) could not be inspected and are shown as visible.`
@@ -122,7 +126,7 @@ export async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture)
   const scaleX = base.naturalWidth / capture.viewportWidth;
   const scaleY = base.naturalHeight / capture.viewportHeight;
   if (!Number.isFinite(scaleX) || scaleX <= 0 || !Number.isFinite(scaleY) || scaleY <= 0) {
-    throw new Error("The browser returned invalid screenshot dimensions.");
+    throw new UiMessageError("The browser returned invalid screenshot dimensions.");
   }
   const extraWidth = Math.max(0, region.contentWidth - region.width);
   const extraHeight = Math.max(0, region.contentHeight - region.height);
@@ -133,10 +137,10 @@ export async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture)
   canvas.width = pxX(capture.viewportWidth + extraWidth);
   canvas.height = pxY(capture.viewportHeight + extraHeight);
   if (canvas.width < 1 || canvas.height < 1 || canvas.width * canvas.height > MAX_STITCHED_PIXELS) {
-    throw new Error("The full page image is too large to preview and select.");
+    throw new UiMessageError("The full page image is too large to preview and select.");
   }
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("Unable to prepare the full page screenshot.");
+  if (!context) throw new UiMessageError("Unable to prepare the full page screenshot.");
 
   const copy = (image: HTMLImageElement, srcX: number, srcY: number, width: number, height: number, dstX: number, dstY: number) => {
     const sourceScaleX = image.naturalWidth / capture.viewportWidth;
@@ -266,15 +270,15 @@ const isHostWithPort = (value: string) => /^(?:\[[\da-f:.]+\]|[^/:?#\s]+):\d+(?:
 
 export function normalizeBrowserUrl(value: string): string {
   const input = value.trim();
-  if (!input) throw new Error("Enter a web address.");
+  if (!input) throw new UiMessageError("Enter a web address.");
 
   const hasHttpScheme = /^https?:\/\//i.test(input);
   const hasOtherScheme = /^[a-z][a-z\d+.-]*:/i.test(input) && !hasHttpScheme && !isHostWithPort(input);
-  if (hasOtherScheme) throw new Error("Only HTTP and HTTPS addresses are supported.");
+  if (hasOtherScheme) throw new UiMessageError("Only HTTP and HTTPS addresses are supported.");
 
   const url = new URL(hasHttpScheme ? input : `https://${input}`);
   if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) {
-    throw new Error("Enter a valid HTTP or HTTPS address.");
+    throw new UiMessageError("Enter a valid HTTP or HTTPS address.");
   }
   return url.href;
 }
@@ -292,6 +296,8 @@ const readbackDelta = ({ requested, actual }: BrowserBoundsReadback) => Math.max
 );
 
 export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBrowserDownloadToRemote, onInitialUrlConsumed, onOpenNewPane }: Props) {
+  const { t } = useAppTranslation();
+  const locale = toIntlLocale(getAppLocale());
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const createdRef = useRef(false);
   const boundsQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -418,7 +424,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
         // Forget the failed rectangle so the next layout change sends it again.
         if (lastBoundsRef.current === serialized) lastBoundsRef.current = "";
         boundsErrorRef.current = true;
-        setError(reason instanceof Error ? reason.message : String(reason));
+        setError(formatUiError(reason, t));
       });
   }, [applyBounds, readBounds]);
 
@@ -444,7 +450,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
         try {
           onOpenNewPaneRef.current(normalizeBrowserUrl(payload.url));
         } catch {
-          setError("This link cannot be opened in a Browser pane.");
+          setError(t("This link cannot be opened in a Browser pane."));
         }
       });
       unlistenDownload = await listen<BrowserDownloadEvent>(BROWSER_DOWNLOAD_EVENT, ({ payload }) => {
@@ -458,7 +464,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
       }
 
       const bounds = readBounds();
-      if (!bounds) throw new Error("Browser pane has no visible content area.");
+      if (!bounds) throw new UiMessageError("Browser pane has no visible content area.");
       const url = initialUrlRef.current ? normalizeBrowserUrl(initialUrlRef.current) : "about:blank";
       const createdVisible = visibleRef.current;
       const readback = await invoke<BrowserBoundsReadback>("browser_create", { paneId, initialUrl: url, bounds, visible: createdVisible });
@@ -476,7 +482,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
     };
 
     void start().catch((reason: unknown) => {
-      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      if (!cancelled) setError(formatUiError(reason, t));
     });
 
     return () => {
@@ -573,7 +579,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
       await invoke(command, { paneId, ...args });
       if (command === "browser_stop") setViewState((current) => ({ ...current, loading: false }));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(formatUiError(reason, t));
     }
   };
 
@@ -587,7 +593,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
       await invoke("browser_navigate", { paneId, url });
       setViewState((current) => ({ ...current, url, loading: true }));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(formatUiError(reason, t));
     }
   };
 
@@ -622,7 +628,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
       if (target.kind === "remote") {
         const remote = downloadContextRef.current.remote;
         if (!remote?.canUpload || remote.locationId !== target.locationId) {
-          throw new Error("The selected API Location is no longer active or does not allow uploads. Select the Location again and retry.");
+          throw new UiMessageError("The selected API Location is no longer active or does not allow uploads. Select the Location again and retry.");
         }
         await onBrowserDownloadToRemoteRef.current({
           downloadId: item.downloadId,
@@ -717,7 +723,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
       setCaptureImage(stitched.dataUrl);
       setCaptureNotice(stitched.notice);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(formatUiError(reason, t));
     } finally {
       setCaptureBusy(false);
     }
@@ -802,7 +808,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
     setCaptureNotice("");
     try {
       const pngBase64 = canvas.toDataURL("image/png").split(",", 2)[1];
-      if (!pngBase64) throw new Error("Unable to encode the selected screenshot as PNG.");
+      if (!pngBase64) throw new UiMessageError("Unable to encode the selected screenshot as PNG.");
       const path = await invoke<string | null>("browser_save_screenshot", { pngBase64 });
       if (path) setCaptureNotice(`Screenshot saved to ${path}`);
     } catch (reason) {
@@ -859,48 +865,48 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
   }, [captureImage]);
 
   return (
-    <section className="browser-pane" aria-label="Browser">
+    <section className="browser-pane" aria-label={t("Browser")}>
       <form className="browser-toolbar" onSubmit={(event) => { void submitAddress(event); }}>
         <div className="browser-toolbar-controls">
-          <button type="button" className="browser-control" aria-label="Back" title="Back" disabled={!viewState.canGoBack} onClick={() => { void runBrowserCommand("browser_history", { direction: "back" }); }}>
+          <button type="button" className="browser-control" aria-label={t("Back")} title={t("Back")} disabled={!viewState.canGoBack} onClick={() => { void runBrowserCommand("browser_history", { direction: "back" }); }}>
             <ChevronLeftIcon size={17} />
           </button>
-          <button type="button" className="browser-control" aria-label="Forward" title="Forward" disabled={!viewState.canGoForward} onClick={() => { void runBrowserCommand("browser_history", { direction: "forward" }); }}>
+          <button type="button" className="browser-control" aria-label={t("Forward")} title={t("Forward")} disabled={!viewState.canGoForward} onClick={() => { void runBrowserCommand("browser_history", { direction: "forward" }); }}>
             <ChevronRightIcon size={17} />
           </button>
-          <button type="button" className="browser-control" aria-label="Refresh" title="Refresh" onClick={() => { void runBrowserCommand("browser_reload"); }}>
+          <button type="button" className="browser-control" aria-label={t("Refresh")} title={t("Refresh")} onClick={() => { void runBrowserCommand("browser_reload"); }}>
             <RefreshIcon size={16} />
           </button>
-          <button type="button" className="browser-control" aria-label="Stop" title="Stop" disabled={!viewState.loading} onClick={() => { void runBrowserCommand("browser_stop"); }}>
+          <button type="button" className="browser-control" aria-label={t("Stop")} title={t("Stop")} disabled={!viewState.loading} onClick={() => { void runBrowserCommand("browser_stop"); }}>
             <StopIcon size={15} />
           </button>
           <input
             className="browser-address"
             type="text"
             value={address}
-            placeholder="Enter a web address"
-            aria-label="Web address"
+            placeholder={t("Enter a web address")}
+            aria-label={t("Web address")}
             autoComplete="off"
             spellCheck={false}
             onFocus={() => { editingRef.current = true; }}
             onBlur={() => { editingRef.current = false; }}
             onChange={(event) => setAddress(event.currentTarget.value)}
           />
-          <button type="submit" className="browser-go" aria-label="Go" title="Go">Go</button>
-          <button type="button" className="browser-screenshot" aria-label="Capture full page" title="Capture full page" disabled={!viewReady || !visible || captureBusy} onClick={() => { void startScreenshot(); }}>
-            {captureBusy && !captureImage ? "…" : "Screenshot"}
+          <button type="submit" className="browser-go" aria-label={t("Go")} title={t("Go")}>{t("Go")}</button>
+          <button type="button" className="browser-screenshot" aria-label={t("Capture full page")} title={t("Capture full page")} disabled={!viewReady || !visible || captureBusy} onClick={() => { void startScreenshot(); }}>
+            {captureBusy && !captureImage ? "…" : t("Screenshot")}
           </button>
           <button
             type="button"
             className="browser-downloads-toggle"
-            aria-label="Browser downloads"
+            aria-label={t("Browser downloads")}
             aria-haspopup="dialog"
             aria-controls={`browser-downloads-${paneId}`}
             aria-expanded={downloadsOpen}
-            title="Browser downloads"
+            title={t("Browser downloads")}
             onClick={() => setDownloadsOpen((open) => !open)}
           >
-            Downloads{downloads.some((item) => item.status === "started" || item.status === "progress") ? " •" : ""}
+            {t("Downloads")}{downloads.some((item) => item.status === "started" || item.status === "progress") ? " •" : ""}
           </button>
         </div>
         {error && <div className="browser-error" role="alert">{error}</div>}
@@ -910,15 +916,15 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
         className="browser-downloads-panel"
         role="dialog"
         aria-modal="false"
-        aria-label="Browser downloads"
+        aria-label={t("Browser downloads")}
       >
         <header className="browser-downloads-heading">
-          <strong>Downloads</strong>
-          <button type="button" aria-label="Close downloads" onClick={() => setDownloadsOpen(false)}>×</button>
+          <strong>{t("Downloads")}</strong>
+          <button type="button" aria-label={t("Close downloads")} onClick={() => setDownloadsOpen(false)}>×</button>
         </header>
         <div className="browser-download-default">
           <label>
-            <span>Default destination</span>
+            <span>{t("Default destination")}</span>
             <select
               value={defaultDownloadTarget.kind}
               onChange={(event) => {
@@ -929,26 +935,26 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
                 }
               }}
             >
-              <option value="local-current">LOCAL · Home/current folder</option>
-              {defaultDownloadTarget.kind === "local-folder" && <option value="local-folder">LOCAL · Chosen folder</option>}
+              <option value="local-current">{t("LOCAL · Home/current folder")}</option>
+              {defaultDownloadTarget.kind === "local-folder" && <option value="local-folder">{t("LOCAL · Chosen folder")}</option>}
               <option value="remote" disabled={!downloadContext.remote?.canUpload}>
                 {downloadContext.remote?.canUpload
-                  ? `Remote API · ${downloadContext.remote.locationName}`
-                  : "Remote API · unavailable"}
+                  ? t("Remote API · {{location}}", { location: downloadContext.remote.locationName })
+                  : t("Remote API · unavailable")}
               </option>
             </select>
           </label>
-          <button type="button" onClick={() => { void chooseDefaultLocalFolder(); }}>Choose local folder…</button>
+          <button type="button" onClick={() => { void chooseDefaultLocalFolder(); }}>{t("Choose local folder…")}</button>
           {downloadContext.remote?.canUpload && <button type="button" onClick={() => {
             const remote = activeRemoteTarget();
             if (remote) saveDefaultDownloadTarget(remote);
-          }}>Use current Remote</button>}
+          }}>{t("Use current Remote")}</button>}
         </div>
         {defaultDownloadTarget.kind === "local-folder" && <div className="browser-download-default-path">{defaultDownloadTarget.folder}</div>}
         {defaultDownloadTarget.kind === "remote" && <div className="browser-download-default-path">{destinationLabel(defaultDownloadTarget)}</div>}
         {downloadNotice && <div className="browser-download-notice" role="status">{downloadNotice}</div>}
         {downloads.length === 0
-          ? <div className="browser-download-empty">No browser downloads yet.</div>
+          ? <div className="browser-download-empty">{t("No browser downloads yet.")}</div>
           : <div className="browser-download-list">
             {downloads.map((item) => {
               const receiving = item.status === "started" || item.status === "progress";
@@ -958,57 +964,57 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
               const percent = item.totalBytes && item.totalBytes > 0
                 ? Math.min(100, Math.floor((item.bytesReceived / item.totalBytes) * 100))
                 : null;
-              const deliveryText = item.deliveryStatus === "saving" ? "Saving…"
-                : item.deliveryStatus === "saved" ? `Saved to ${item.destinationPath || "LOCAL"}`
-                : item.deliveryStatus === "queued" ? `Sent to Transfer Queue · ${item.destinationPath || "Remote API"}; check the queue for upload progress and result.`
-                : item.deliveryStatus === "failed" ? item.deliveryError || item.error || "Delivery failed. The staged download is retained."
-                : item.status === "completed" ? "Downloaded · choose where to save"
-                : item.status === "failed" ? item.error || "Browser download failed"
-                : "Downloading from website…";
+              const deliveryText = item.deliveryStatus === "saving" ? t("Saving…")
+                : item.deliveryStatus === "saved" ? t("Saved to {{destination}}", { destination: item.destinationPath || "LOCAL" })
+                : item.deliveryStatus === "queued" ? t("Sent to Transfer Queue · {{destination}}; check the queue for upload progress and result.", { destination: item.destinationPath || "Remote API" })
+                : item.deliveryStatus === "failed" ? item.deliveryError || item.error || t("Delivery failed. The staged download is retained.")
+                : item.status === "completed" ? t("Downloaded · choose where to save")
+                : item.status === "failed" ? item.error || t("Browser download failed")
+                : t("Downloading from website…");
               return <article className="browser-download-item" key={item.downloadId}>
                 <div className="browser-download-item-heading">
                   <strong title={item.fileName}>{item.fileName}</strong>
                   <span className={`browser-download-status${failed ? " is-error" : ""}`}>
-                    {receiving ? "Downloading" : item.status === "failed" ? "Failed" : item.deliveryStatus === "saved" ? "Saved" : item.deliveryStatus === "queued" ? "Queued" : item.deliveryStatus === "saving" ? "Saving" : "Ready"}
+                    {receiving ? t("Downloading") : item.status === "failed" ? t("Failed") : item.deliveryStatus === "saved" ? t("Saved") : item.deliveryStatus === "queued" ? t("Queued") : item.deliveryStatus === "saving" ? t("Saving") : t("Ready")}
                   </span>
                 </div>
                 <div className="browser-download-url" title={item.url}>{item.url}</div>
                 {(receiving || item.status === "completed") && <div className="browser-download-progress">
                   {item.totalBytes && item.totalBytes > 0
                     ? <progress
-                        aria-label={`Download progress for ${item.fileName}`}
+                        aria-label={t("Download progress for {{name}}", { name: item.fileName })}
                         max={item.totalBytes}
                         value={Math.min(item.bytesReceived, item.totalBytes)}
                       />
-                    : receiving && <progress aria-label={`Download progress for ${item.fileName}`} />}
-                  <small>{formatDownloadSize(item.bytesReceived)}{item.totalBytes && item.totalBytes > 0 ? ` / ${formatDownloadSize(item.totalBytes)} · ${percent}%` : " received · total size unknown"}</small>
+                    : receiving && <progress aria-label={t("Download progress for {{name}}", { name: item.fileName })} />}
+                  <small>{formatDownloadSize(item.bytesReceived, locale)}{item.totalBytes && item.totalBytes > 0 ? ` / ${formatDownloadSize(item.totalBytes, locale)} · ${percent}%` : ` ${t("received · total size unknown")}`}</small>
                 </div>}
                 <div className="browser-download-delivery" role="status">{deliveryText}</div>
                 {item.status === "completed" && !delivered && <div className="browser-download-actions">
                   <button type="button" onClick={() => { void saveBrowserDownload(item, defaultDownloadTarget); }} disabled={downloadBusyId === item.downloadId || item.deliveryStatus === "saving"}>
-                    {item.deliveryStatus === "saving" ? "Saving…" : `Save to default · ${destinationLabel(defaultDownloadTarget)}`}
+                    {item.deliveryStatus === "saving" ? t("Saving…") : t("Save to default · {{destination}}", { destination: destinationLabel(defaultDownloadTarget) })}
                   </button>
-                  <button type="button" onClick={() => { void chooseLocalSavePath(item); }} disabled={downloadBusyId === item.downloadId}>Save As…</button>
+                  <button type="button" onClick={() => { void chooseLocalSavePath(item); }} disabled={downloadBusyId === item.downloadId}>{t("Save As…")}</button>
                   {remoteAvailable && <button type="button" onClick={() => {
                     const remote = activeRemoteTarget();
                     if (remote) void saveBrowserDownload(item, remote);
-                  }} disabled={downloadBusyId === item.downloadId}>Send to current Remote</button>}
+                  }} disabled={downloadBusyId === item.downloadId}>{t("Send to current Remote")}</button>}
                 </div>}
                 {!receiving && !delivered && item.deliveryStatus !== "saving" && <div className="browser-download-actions">
-                  <button type="button" className="browser-download-discard" onClick={() => { void discardBrowserDownload(item); }}>Discard staged file</button>
+                  <button type="button" className="browser-download-discard" onClick={() => { void discardBrowserDownload(item); }}>{t("Discard staged file")}</button>
                 </div>}
               </article>;
             })}
           </div>}
       </section>}
-      <div ref={anchorRef} className="browser-viewport" aria-label="Web page content">
+      <div ref={anchorRef} className="browser-viewport" aria-label={t("Web page content")}>
         {!nativeShown && snapshot && <img className="browser-snapshot" src={snapshot.dataUrl} alt="" draggable={false} />}
       </div>
       {captureImage && <div className="browser-capture-layer" role="presentation">
         <section className="browser-capture-dialog" role="dialog" aria-modal="true" aria-labelledby="browser-capture-title">
           <header className="browser-capture-heading">
-            <div><strong id="browser-capture-title">Select screenshot area</strong><span>Drag across the full page preview to choose an area.</span></div>
-            <button type="button" className="browser-capture-close" aria-label="Close screenshot selection" onClick={closeScreenshot}>×</button>
+            <div><strong id="browser-capture-title">{t("Select screenshot area")}</strong><span>{t("Drag across the full page preview to choose an area.")}</span></div>
+            <button type="button" className="browser-capture-close" aria-label={t("Close screenshot selection")} onClick={closeScreenshot}>×</button>
           </header>
           <div ref={captureStageRef} className="browser-capture-stage">
             <div
@@ -1021,7 +1027,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
               onPointerUp={handleSelectionEnd}
               onPointerCancel={handleSelectionEnd}
             >
-              <img ref={captureImageRef} src={captureImage} alt="Full page screenshot preview" draggable={false} />
+              <img ref={captureImageRef} src={captureImage} alt={t("Full page screenshot preview")} draggable={false} />
               {captureSelection && <div
                 className="browser-capture-selection"
                 style={{
@@ -1036,9 +1042,9 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
           {captureError && <div className="browser-capture-message browser-capture-error" role="alert">{captureError}</div>}
           {captureNotice && <div className="browser-capture-message" role="status">{captureNotice}</div>}
           <footer className="browser-capture-actions">
-            <button type="button" onClick={closeScreenshot} disabled={captureBusy}>Cancel</button>
+            <button type="button" onClick={closeScreenshot} disabled={captureBusy}>{t("Cancel")}</button>
             <button type="button" className="browser-capture-save" onClick={() => { void saveScreenshotSelection(); }} disabled={captureBusy}>
-              {captureBusy ? "Working…" : "Save selection"}
+              {captureBusy ? t("Working…") : t("Save selection")}
             </button>
           </footer>
         </section>

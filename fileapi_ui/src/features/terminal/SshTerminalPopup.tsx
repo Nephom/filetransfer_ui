@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { emitTo, listen } from "@tauri-apps/api/event";
@@ -31,6 +32,7 @@ export function isSshTerminalPopup() {
  * state reports the main window's taskbar listens to.
  */
 export function SshTerminalPopup() {
+  const { t } = useAppTranslation();
   const [popup] = useState(popupQuery);
   const { profile, title } = popup;
   const currentWindow = getCurrentWebviewWindow();
@@ -70,7 +72,7 @@ export function SshTerminalPopup() {
     const unlistenClose = currentWindow.onCloseRequested(async (event) => {
       event.preventDefault();
       const current = terminalRef.current;
-      if (current.hasUnsavedRecording() && !window.confirm("This SSH recording has not been saved. Close and discard it?")) return;
+      if (current.hasUnsavedRecording() && !window.confirm(t("This SSH recording has not been saved. Close and discard it?"))) return;
       await current.dispose();
       await currentWindow.destroy().catch(() => undefined);
     });

@@ -23,11 +23,15 @@
 .help-tree-chevron { width: var(--icon-size); color: var(--color-text-muted); font-size: var(--font-size-small); }
 .help-tree-pages { padding: 0 0 var(--space-1) var(--space-6); }
 .help-tree-page { gap: var(--space-2); padding: var(--space-2) var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-small); }
+.help-tree-page .help-icon { flex: 0 0 auto; color: var(--color-primary); opacity: .82; }
+.help-tree-page span { min-width: 0; }
 .help-tree-page.active { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 20%, var(--color-bg-panel-strong)); box-shadow: inset 2px 0 var(--color-primary); }
 .help-tree-page.active::before { content: ""; width: var(--space-1); height: var(--space-1); margin-left: -1px; border-radius: 50%; background: var(--color-primary); }
 .help-content { min-width: 0; min-height: 0; overflow: auto; padding: var(--space-5) var(--space-6) var(--space-4); background: radial-gradient(circle at 90% 0%, color-mix(in srgb, var(--color-secondary) 18%, transparent), transparent 35%), var(--color-bg-panel-strong); }
 .help-breadcrumb { color: var(--color-primary); font-size: var(--font-size-small); letter-spacing: .08em; text-transform: uppercase; }
 .help-content h3 { margin: var(--space-2) 0 var(--space-1); color: var(--color-text); font-size: var(--font-size-heading); font-weight: 650; }
+.help-content h3.help-page-title { display: flex; align-items: center; gap: var(--space-2); }
+.help-content h3.help-page-title .help-icon { flex: 0 0 auto; color: var(--color-primary); }
 .help-summary { margin: 0 0 var(--space-5); color: var(--color-text-muted); font-size: var(--font-size-base); }
 .help-page-copy { color: var(--color-text); font-size: var(--font-size-base); line-height: 1.65; }
 .help-page-copy p { margin: 0 0 var(--space-4); }
@@ -42,6 +46,10 @@
 .help-page-nav button { min-height: var(--ui-button-height, var(--control-height-base)); padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); background: var(--color-bg-panel); color: var(--color-text); cursor: pointer; }
 .help-page-nav button:hover:not(:disabled) { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 14%, var(--color-bg-panel-strong)); }
 .help-page-nav button:disabled { opacity: .4; cursor: default; }
+:lang(zh-TW) .help-content,
+:lang(zh-TW) .help-tree,
+:lang(zh-TW) .help-footer { font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans CJK TC", var(--font-family-ui), sans-serif; }
+:root:lang(zh-TW) { --font-family-ui: "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans CJK TC", "Segoe UI", system-ui, sans-serif; }
 @media (max-width: 720px) {
   .help-modal { width: calc(100vw - 20px); height: calc(100vh - 20px); }
   .help-layout { grid-template-columns: clamp(160px, 20vw, 205px) minmax(0, 1fr); }

@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef } from "react";
 import { locationHeaders } from "../remote-browser/remote-browser-contracts";
@@ -8,11 +9,13 @@ import {
   updateQueueProgress as calculateQueueProgress,
   type QueueProgress,
 } from "../../queue/progress";
-import { classifyQueueError, retryDelayMs } from "../../queue/recovery";
+import { classifyQueueError, queueHttpErrorCategory, retryDelayMs } from "../../queue/recovery";
 import { assertQueueTransition } from "../../queue/state";
 import type { QueueScheduler } from "../../queue/scheduler";
 import type { QueueStore } from "../../queue/store";
 import { formatSize } from "../../format-utils";
+import { getAppLocale, toIntlLocale } from "../../i18n/i18n";
+import { formatUiError, UiMessageError, type MessageValues } from "../../i18n/errors";
 import { downloadPath } from "../../path-utils";
 import { buildManifestPages, planUploadChildren, rebindUploadManifest, type UploadManifestFile, type UploadSessionFile } from "../../queue/upload-plan";
 import type { FileItem } from "../../file-item-contracts";
@@ -124,6 +127,30 @@ export function useTransferQueueActions({
   queueProgressSamplesRef, latestQueueProgressRef, queueCompletionHandlersRef,
   cancelledQueueItemsRef, queueSchedulerRef,
 }: UseTransferQueueActionsParams) {
+  const { t } = useAppTranslation();
+  const queueMessage = (key: string, values?: MessageValues, suffix = "", translatedValues: string[] = []) => ({
+    detail: `${key.replace(/\{\{(\w+)\}\}/g, (_match, name: string) => String(values?.[name] ?? `{{${name}}}`))}${suffix}`,
+    detailMessage: { key, values, suffix, translatedValues },
+  });
+  const queueFailure = (item: TransferQueueItem, decision: ReturnType<typeof classifyQueueError>, completedItems?: number, totalItems?: number) => ({
+    category: decision.category,
+    message: decision.message,
+    ...(decision.translationKey ? { translationKey: decision.translationKey, translationValues: decision.translationValues } : {}),
+    ...(completedItems !== undefined ? { completedItems } : {}),
+    ...(totalItems !== undefined ? { totalItems } : {}),
+    itemId: item.id,
+    path: item.paths[0],
+    attempt: (item.retryCount || 0) + 1,
+    timestamp: Date.now(),
+  });
+  const translateQueueMessage = (message: NonNullable<TransferQueueItem["detailMessage"]> | NonNullable<TransferQueueItem["labelMessage"]>) => {
+    const values = { ...message.values };
+    for (const name of message.translatedValues || []) {
+      const value = values[name];
+      if (typeof value === "string") values[name] = t(value);
+    }
+    return `${t(message.key, values)}${message.suffix || ""}`;
+  };
   // Runtime-only contexts never enter the queue store or localStorage.
   const contexts = useRef(new Map<string, {
     origin: string; sessionId?: string; headers: [string, string][]; ignoreTlsErrors: boolean;
@@ -186,9 +213,13 @@ export function useTransferQueueActions({
         if (update.status && update.status !== item.status) {
           assertQueueTransition(item.status, update.status);
         }
+        const clearDetailMessage = Object.hasOwn(update, "detail") && !Object.hasOwn(update, "detailMessage");
+        const clearError = Boolean(update.status && !["failed", "needs_user_action"].includes(update.status));
         const nextItem = {
           ...item,
           ...update,
+          ...(clearDetailMessage ? { detailMessage: undefined } : {}),
+          ...(clearError ? { error: undefined } : {}),
           ...(terminal ? { finishedAt: item.finishedAt || now } : {}),
         };
         if (update.status === "failed" || update.status === "needs_user_action") {
@@ -199,6 +230,7 @@ export function useTransferQueueActions({
             path: item.paths[0],
             attempt: (update.retryCount || item.retryCount || 0) + 1,
             timestamp: now,
+            ...update.error,
           };
         }
         return nextItem;
@@ -222,7 +254,7 @@ export function useTransferQueueActions({
     );
     queueProgressSamplesRef.current.set(id, [...previousSample, { bytes: completedBytes, at: now }].filter((sample) => now - sample.at <= 3000));
     latestQueueProgressRef.current.set(id, progress);
-    updateQueueItem(id, { progress, detail: `${formatSize(completedBytes)}${totalBytes ? ` / ${formatSize(totalBytes)}` : ""}${formatQueueProgress(progress)}` });
+    updateQueueItem(id, { progress, ...queueMessage("Transferring...") });
     return progress;
   };
 
@@ -234,7 +266,7 @@ export function useTransferQueueActions({
     cancelledQueueItemsRef.current.add(id);
     const context = contexts.current.get(id);
     if (current.kind === "upload" && !current.sshEntryId && context) {
-      updateQueueItem(id, { cancellationRequested: true, detail: "Cancellation requested. Waiting for the server outcome." });
+      updateQueueItem(id, { cancellationRequested: true, ...queueMessage("Cancellation requested. Waiting for the server outcome.") });
       void invoke("cancel_transfer", { transferId: context.attemptId || id }).catch(() => undefined);
       for (const [transferId, active] of activeChunkTransfers.current) {
         if (active.itemId === id) void invoke("cancel_transfer", { transferId }).catch(() => undefined);
@@ -248,7 +280,7 @@ export function useTransferQueueActions({
     void invoke("cancel_transfer", { transferId: id })
       .then(() => logQueueEvent(current, "cancel_requested", { nativeCancelRequested: true, alreadyRunning: current.status === "running" }))
       .catch((error) => logQueueEvent(current, "cancel_requested", { nativeCancelRequested: false, alreadyRunning: current.status === "running", failureType: "cancel_command", errorMessage: describeError(error) }, "WARN"));
-    updateQueueItem(id, { status: "cancelled", detail: "Cancelled by user." });
+    updateQueueItem(id, { status: "cancelled", ...queueMessage("Cancelled by user.") });
     logQueueEvent(current, "cancelled", { finalCancelledState: true });
   };
 
@@ -285,23 +317,23 @@ export function useTransferQueueActions({
 
   const executeQueuedSshUpload = async (item: TransferQueueItem, profile: SshProfile) => {
     writeOperationLog("upload", "started", item.label, `${item.locationName}:${item.destinationPath || "/"}`, "SSH transfer queue upload started.", "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: `Uploading 0/${item.paths.length} items...` });
+    updateQueueItem(item.id, { status: "running", ...queueMessage("Uploading 0/{{total}} items...", { total: item.paths.length }) });
     let completed = 0;
     try {
       for (const localItemPath of item.paths) {
         if (isQueueItemCancelled(item.id)) return;
         await invoke("ssh_upload_path", { profile, localPath: localItemPath, remoteDestinationFolder: item.destinationPath });
         completed += 1;
-        updateQueueItem(item.id, { detail: `Uploading ${completed}/${item.paths.length} items...` });
+        updateQueueItem(item.id, { ...queueMessage("Uploading {{completed}}/{{total}} items...", { completed, total: item.paths.length }) });
       }
-      updateQueueItem(item.id, { status: "completed", detail: `Uploaded ${completed} item(s) to ${item.destinationPath || "/"}.` });
+      updateQueueItem(item.id, { status: "completed", ...queueMessage("Uploaded {{quantity}} {{unit}} to {{path}}.", { quantity: completed, unit: completed === 1 ? "item" : "items", path: item.destinationPath || "/" }, "", ["unit"]) });
       writeOperationLog("upload", "completed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `Uploaded ${completed} item(s) via SFTP.`);
       refreshSftpWindow(item.sshEntryId || "", item.destinationPath);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
       const recovery = classifyQueueError(error);
-      const detail = `${recovery.message} (${completed}/${item.paths.length} completed before failing)`;
-      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail}`, errorCategory: recovery.category });
+      const detail = recovery.message;
+      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail, errorCategory: recovery.category, error: queueFailure(item, recovery, completed, item.paths.length) });
       writeOperationLog("upload", "failed", item.label, `${item.locationName}:${item.destinationPath || "/"}`, `SSH queued upload failed: ${detail}`, "ERROR");
     }
   };
@@ -312,12 +344,12 @@ export function useTransferQueueActions({
     context.attemptId = attemptId;
     let clientAttemptId = item.clientAttemptId || attemptId;
     const isCurrent = () => alive.current && context.attemptId === attemptId;
-    updateQueueItem(item.id, { status: "running", detail: item.serverBatchId ? "Reconciling server upload..." : "Preparing upload..." });
+    updateQueueItem(item.id, { status: "running", ...queueMessage(item.serverBatchId ? "Reconciling server upload..." : "Preparing upload...") });
     let unlistenProgress: (() => void) | undefined;
     let dispatched = false;
     let cancellationSent = false;
     const request = async (endpoint: string, method = "GET", body?: unknown) => {
-      if (!context.sessionId) throw new Error("The original native session is unavailable. Sign in and re-add the transfer.");
+      if (!context.sessionId) throw new UiMessageError("The original native session is unavailable. Sign in and re-add the transfer.");
       const raw = await invoke<NativeApiResponse>("api_request", {
         url: `${context.origin}${endpoint}`, method,
         headers: [...context.headers, ...(body === undefined ? [] : [["Content-Type", "application/json"]])],
@@ -325,7 +357,7 @@ export function useTransferQueueActions({
         ignoreTlsErrors: context.ignoreTlsErrors, sessionId: context.sessionId,
       });
       const text = new TextDecoder().decode(new Uint8Array(raw.body));
-      if (raw.status < 200 || raw.status >= 300) throw new Error(`Upload server request failed (HTTP ${raw.status}).`);
+      if (raw.status < 200 || raw.status >= 300) throw new UiMessageError("Upload server request failed (HTTP {{status}}).", { status: raw.status }, queueHttpErrorCategory(raw.status));
       return JSON.parse(text);
     };
     context.cancel = async () => {
@@ -333,7 +365,7 @@ export function useTransferQueueActions({
       cancellationSent = true;
       try { await request(`/api/progress/batch/${encodeURIComponent(context.batchId)}/cancel`, "POST"); }
       catch {
-        updateQueueItem(item.id, { uploadOutcome: "reconcile", detail: "Server cancellation is unconfirmed. Checking the original batch." });
+        updateQueueItem(item.id, { uploadOutcome: "reconcile", ...queueMessage("Server cancellation is unconfirmed. Checking the original batch.") });
       }
     };
     try {
@@ -341,11 +373,11 @@ export function useTransferQueueActions({
       const reconciling = Boolean(context.batchId);
       if (!context.batchId) {
         if (isQueueItemCancelled(item.id)) {
-          updateQueueItem(item.id, { status: "cancelled", detail: "Cancelled before server reservation." });
+          updateQueueItem(item.id, { status: "cancelled", ...queueMessage("Cancelled before server reservation.") });
           return;
         }
         const reservation = await request("/api/upload/batches", "POST", { path: item.destinationPath, clientAttemptId: attemptId });
-        if (typeof reservation.batchId !== "string" || !reservation.batchId || reservation.locationId !== context.locationId) throw new Error("Invalid upload reservation response; no bytes were sent.");
+        if (typeof reservation.batchId !== "string" || !reservation.batchId || reservation.locationId !== context.locationId) throw new UiMessageError("Invalid upload reservation response; no bytes were sent.");
         context.batchId = reservation.batchId;
         updateQueueItem(item.id, { serverBatchId: context.batchId, clientAttemptId: attemptId, serverOrigin: context.origin, ownerId: context.ownerId ?? undefined, locationRevision: context.locationRevision, uploadOutcome: "reserved" });
       }
@@ -359,7 +391,7 @@ export function useTransferQueueActions({
             if (event.payload.transferId !== attemptId || !isCurrent() || isQueueItemCancelled(item.id)) return;
             const { bytesCompleted, bytesTotal } = event.payload;
             const progress = updateQueueProgress(item.id, bytesCompleted, bytesTotal ?? null, 0, summary.files);
-            updateQueueItem(item.id, { detail: `Sending request: ${formatSize(bytesCompleted)} / ${formatSize(bytesTotal)}${formatQueueProgress(progress)}` });
+            updateQueueItem(item.id, { progress, ...queueMessage("Uploading...") });
           },
         );
         if (!isCurrent()) return;
@@ -370,7 +402,7 @@ export function useTransferQueueActions({
             const current = currentSources.sources[index];
             return !current || current.path !== source.path || current.size !== source.size || current.modified !== source.modified;
           });
-        if (sourceChanged) throw new Error("Upload source changed after it was queued. Re-add the file to upload the new content.");
+        if (sourceChanged) throw new UiMessageError("Upload source changed after it was queued. Re-add the file to upload the new content.");
         if (!isCurrent()) return;
         if (!isQueueItemCancelled(item.id)) {
           dispatched = true;
@@ -386,7 +418,7 @@ export function useTransferQueueActions({
             if (rawResponse.status >= 200 && rawResponse.status < 300) updateQueueItem(item.id, { uploadOutcome: "accepted" });
           } catch {
             // A lost acceptance response is not permission to send the files again.
-            updateQueueItem(item.id, { detail: "Upload response lost. Reconciling the reserved batch." });
+            updateQueueItem(item.id, { ...queueMessage("Upload response lost. Reconciling the reserved batch.") });
           }
         }
       }
@@ -397,7 +429,7 @@ export function useTransferQueueActions({
         if (isQueueItemCancelled(item.id)) await context.cancel();
         const batch = await request(`/api/progress/batch/${encodeURIComponent(context.batchId!)}`);
         if (!isCurrent()) return;
-        if (!Number.isFinite(batch.transferredSize) || batch.transferredSize < 0 || !Number.isFinite(batch.totalSize) || batch.totalSize < 0) throw new Error("Invalid server byte counters.");
+        if (!Number.isFinite(batch.transferredSize) || batch.transferredSize < 0 || !Number.isFinite(batch.totalSize) || batch.totalSize < 0) throw new UiMessageError("Invalid server byte counters.");
         const totalBytes = batch.totalSizeKnown === true ? batch.totalSize : null;
         const completedBytes = batch.transferredSize;
         const queueProgress = updateQueueProgress(item.id, completedBytes, totalBytes, batch.successCount, batch.totalFiles);
@@ -406,23 +438,37 @@ export function useTransferQueueActions({
           queueProgress.percentage = 100;
           updateQueueItem(item.id, { progress: queueProgress });
         }
-        const detail = `${batch.successCount}/${batch.totalFiles} files committed; ${batch.failedCount || 0} failed; ${batch.cancelledCount || 0} cancelled. ${batch.phase || batch.status}${formatQueueProgress(queueProgress)}`;
-        updateQueueItem(item.id, { detail });
+        const detailMessage = queueMessage(
+          "{{success}}/{{total}} {{unit}} committed; {{failed}} failed; {{cancelled}} cancelled. {{phase}}",
+          {
+            success: batch.successCount,
+            total: batch.totalFiles,
+            unit: batch.totalFiles === 1 ? "file" : "files",
+            failed: batch.failedCount || 0,
+            cancelled: batch.cancelledCount || 0,
+            phase: batch.phase || batch.status,
+          },
+          "",
+          ["unit"],
+        );
+        updateQueueItem(item.id, detailMessage);
         if (["completed", "cancelled", "failed", "partial_fail", "expired"].includes(batch.status)) {
           const status = batch.status === "completed" ? "completed" : batch.status === "cancelled" ? "cancelled" : "failed";
-          updateQueueItem(item.id, { status, uploadOutcome: "settled", detail });
+          updateQueueItem(item.id, { ...detailMessage, status, uploadOutcome: "settled" });
           await loadFiles(path).catch(() => undefined);
           return;
         }
         await wait(1000);
       }
-      throw new Error("Upload progress timed out.");
+      throw new UiMessageError("Upload progress timed out.");
     } catch (error) {
       if (!isCurrent()) return;
       if (context.batchId && !dispatched && !item.serverBatchId) await context.cancel();
       updateQueueItem(item.id, {
         status: "needs_user_action", uploadOutcome: context.batchId ? "reconcile" : undefined,
-        detail: context.batchId ? `Server outcome unconfirmed. Retry checks the original batch without re-uploading. ${describeError(error)}` : describeError(error),
+        ...(context.batchId
+          ? queueMessage("Server outcome unconfirmed. Retry checks the original batch without re-uploading.", undefined, ` ${describeError(error)}`)
+          : { detail: describeError(error) }),
       });
     } finally {
       unlistenProgress?.();
@@ -448,10 +494,10 @@ export function useTransferQueueActions({
     const attemptId = crypto.randomUUID();
     context.attemptId = attemptId;
     let clientAttemptId = item.clientAttemptId || attemptId;
-    if (item.serverOrigin && item.serverOrigin !== context.origin) throw new Error("The original upload server is unavailable. Re-add the transfer.");
-    if (item.ownerId !== undefined && item.ownerId !== context.ownerId) throw new Error("Sign in as the original upload owner to resume this session.");
+    if (item.serverOrigin && item.serverOrigin !== context.origin) throw new UiMessageError("The original upload server is unavailable. Re-add the transfer.");
+    if (item.ownerId !== undefined && item.ownerId !== context.ownerId) throw new UiMessageError("Sign in as the original upload owner to resume this session.");
     if (item.locationRevision && context.locationRevision && item.locationRevision !== context.locationRevision) {
-      throw new Error("The upload Location changed. Review the existing session before starting a new upload.");
+      throw new UiMessageError("The upload Location changed. Review the existing session before starting a new upload.");
     }
 
     const isCurrent = () => alive.current && context.attemptId === attemptId;
@@ -466,7 +512,7 @@ export function useTransferQueueActions({
     const failures: string[] = [];
 
     const request = async (endpoint: string, method = "GET", body?: unknown) => {
-      if (!context.sessionId) throw new Error("The original native API session is unavailable. Sign in and resume explicitly.");
+      if (!context.sessionId) throw new UiMessageError("The original native API session is unavailable. Sign in and resume explicitly.");
       const raw = await invoke<NativeApiResponse>("api_request", {
         url: `${context.origin}${endpoint}`, method,
         headers: [...context.headers, ...(body === undefined ? [] : [["Content-Type", "application/json"]])],
@@ -487,7 +533,7 @@ export function useTransferQueueActions({
       if (!context.uploadSessionId || !isCurrent()) return;
       for (const transferId of nativeChunkIds) void invoke("cancel_transfer", { transferId }).catch(() => undefined);
       try { await request(`/api/upload/sessions/${encodeURIComponent(context.uploadSessionId)}/cancel`, "POST"); }
-      catch { updateQueueItem(item.id, { uploadOutcome: "resumable", detail: "Server cancellation is unconfirmed; the same session can be reconciled." }); }
+      catch { updateQueueItem(item.id, { uploadOutcome: "resumable", ...queueMessage("Server cancellation is unconfirmed; the same session can be reconciled.") }); }
     };
 
     const readSession = async (sessionId: string) => {
@@ -504,15 +550,15 @@ export function useTransferQueueActions({
         fileOffset = page.nextOffset ?? page.session.expectedFileCount;
         directoryOffset = page.nextDirectoryOffset ?? page.session.expectedDirectoryCount;
       }
-      if (!current) throw new Error("Invalid upload session response.");
+      if (!current) throw new UiMessageError("Invalid upload session response.");
       return { session: current.session, files, directories };
     };
 
     const uploadRequest = async (file: UploadManifestFile, offset: number) => {
-      if (!context.sessionId || !session) throw new Error("Upload session is unavailable.");
+      if (!context.sessionId || !session) throw new UiMessageError("Upload session is unavailable.");
       const chunkIndex = Math.floor(offset / session.chunkSize);
       const expectedHash = file.chunkHashes[chunkIndex];
-      if (!expectedHash) throw new Error(`Upload manifest is missing a chunk checksum for ${file.path}.`);
+      if (!expectedHash) throw new UiMessageError("Upload manifest is missing a chunk checksum for {{path}}.", { path: file.path }, "validation");
       const length = Math.min(session.chunkSize, file.size - offset);
       const transferId = crypto.randomUUID();
       nativeChunkIds.add(transferId);
@@ -541,7 +587,7 @@ export function useTransferQueueActions({
     const refreshFile = async (file: UploadManifestFile) => {
       const page = await request(`/api/upload/sessions/${encodeURIComponent(session!.sessionId)}?offset=${fileStatesIndex.get(file.fileId) || 0}&directoryOffset=0&limit=1`) as ResumableSessionPage;
       const latest = page.files.find(candidate => candidate.fileId === file.fileId);
-      if (!latest) throw new Error(`Upload session no longer contains ${file.path}.`);
+      if (!latest) throw new UiMessageError("Upload session no longer contains {{path}}.", { path: file.path }, "validation");
       fileStates.set(file.fileId, latest.status);
       offsets.set(file.fileId, latest.uploadedOffset);
       return latest;
@@ -574,7 +620,7 @@ export function useTransferQueueActions({
           try { body = JSON.parse(responseText || "{}"); } catch { /* handled as failed upload below */ }
           if (response.status >= 200 && response.status < 300) {
             offset = Number(body.uploadedOffset);
-            if (!Number.isSafeInteger(offset) || offset <= 0 || offset > file.size) throw new Error("Invalid upload offset response.");
+            if (!Number.isSafeInteger(offset) || offset <= 0 || offset > file.size) throw new UiMessageError("Invalid upload offset response.");
             offsets.set(file.fileId, offset);
             retry = 0;
             updateAggregateProgress();
@@ -595,10 +641,10 @@ export function useTransferQueueActions({
           if (remote.status === "completed") { updateAggregateProgress(); return; }
           if (remote.uploadedOffset > offset) { offset = remote.uploadedOffset; retry = 0; continue; }
           if (++retry > 3) throw error;
-          updateQueueItem(item.id, { detail: `Retrying ${file.path} from byte ${offset} (${retry}/3).` });
+          updateQueueItem(item.id, { ...queueMessage("Retrying {{path}} from byte {{offset}} ({{attempt}}/3).", { path: file.path, offset, attempt: retry }) });
           await wait(retryDelayMs(retry));
         }
-        if (chunkBytes <= 0) throw new Error(`Invalid remaining upload size for ${file.path}.`);
+        if (chunkBytes <= 0) throw new UiMessageError("Invalid remaining upload size for {{path}}.", { path: file.path }, "validation");
       }
       if (isQueueItemCancelled(item.id)) return;
       let completed: any;
@@ -613,7 +659,7 @@ export function useTransferQueueActions({
           await wait(Math.min(1000, delay));
         }
       }
-      if (completed.status !== "completed" || completed.uploadedOffset !== file.size) throw new Error(`Server did not finalize ${file.path}.`);
+      if (completed.status !== "completed" || completed.uploadedOffset !== file.size) throw new UiMessageError("Server did not finalize {{path}}.", { path: file.path }, "server_error");
       fileStates.set(file.fileId, "completed");
       offsets.set(file.fileId, file.size);
       updateAggregateProgress();
@@ -623,12 +669,12 @@ export function useTransferQueueActions({
       if (!context.uploadSessionId || !isCurrent()) return;
       for (const transferId of nativeChunkIds) void invoke("cancel_transfer", { transferId }).catch(() => undefined);
       try { await request(`/api/upload/sessions/${encodeURIComponent(context.uploadSessionId)}/cancel`, "POST"); }
-      catch { updateQueueItem(item.id, { uploadOutcome: "resumable", detail: "Server cancellation is unconfirmed; resume checks the same session." }); }
+      catch { updateQueueItem(item.id, { uploadOutcome: "resumable", ...queueMessage("Server cancellation is unconfirmed; resume checks the same session.") }); }
     };
 
     try {
-      updateQueueItem(item.id, { status: "running", detail: item.serverSessionId ? "Checking unfinished upload ranges..." : "Preparing resumable API upload..." });
-      if (!context.sessionId) throw new Error("The original native API session is unavailable. Sign in to the original account and resume explicitly.");
+      updateQueueItem(item.id, { status: "running", ...queueMessage(item.serverSessionId ? "Checking unfinished upload ranges..." : "Preparing resumable API upload...") });
+      if (!context.sessionId) throw new UiMessageError("The original native API session is unavailable. Sign in to the original account and resume explicitly.");
       let preloadedSnapshot: Awaited<ReturnType<typeof readSession>> | undefined;
       if (!context.uploadSessionId && item.serverSessionId) context.uploadSessionId = item.serverSessionId;
       if (!context.uploadSessionId && item.clientAttemptId) {
@@ -649,7 +695,7 @@ export function useTransferQueueActions({
           if (completedBytes === 0) progress.percentage = 100;
           const cleanupWarning = await cleanupBrowserDownloadSource(item);
           updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", progress,
-            detail: `Resumable upload already completed on the server.${cleanupWarning}` });
+            ...queueMessage("Resumable upload already completed on the server.", undefined, cleanupWarning) });
           return;
         }
       }
@@ -665,11 +711,11 @@ export function useTransferQueueActions({
         if (sessionInfo.status === "completed") {
           updateQueueProgress(item.id, sessionInfo.totalSize, sessionInfo.totalSize, sessionInfo.expectedFileCount, sessionInfo.expectedFileCount);
           const cleanupWarning = await cleanupBrowserDownloadSource(item);
-          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: `Resumable upload already completed on the server.${cleanupWarning}` });
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", ...queueMessage("Resumable upload already completed on the server.", undefined, cleanupWarning) });
           return;
         }
         if (["cancelled", "cancelling", "failed", "expired"].includes(sessionInfo.status)) {
-          throw new Error(`The server upload session is ${sessionInfo.status}; it cannot be resumed.`);
+          throw new UiMessageError("The server upload session is {{status}}; it cannot be resumed.", { status: sessionInfo.status }, "validation");
         }
         if (!sessionInfo.manifestComplete) {
           const abandonedSessionId = context.uploadSessionId!;
@@ -681,7 +727,7 @@ export function useTransferQueueActions({
           existingFiles = [];
           existingDirectories = [];
         } else if (sessionInfo.locationId !== context.locationId || sessionInfo.path !== item.destinationPath) {
-          throw new Error("The unfinished upload belongs to a different Location or destination.");
+          throw new UiMessageError("The unfinished upload belongs to a different Location or destination.");
         }
       }
 
@@ -691,22 +737,22 @@ export function useTransferQueueActions({
         chunkSize = options.chunkSize;
       }
       if (typeof chunkSize !== "number" || !Number.isSafeInteger(chunkSize) || chunkSize < 1024 * 1024 || chunkSize > 64 * 1024 * 1024) {
-        throw new Error("The server returned an unsupported upload chunk size.");
+        throw new UiMessageError("The server returned an unsupported upload chunk size.");
       }
       if (isQueueItemCancelled(item.id)) {
-        updateQueueItem(item.id, { status: "cancelled", detail: "Cancelled before upload session creation." });
+        updateQueueItem(item.id, { status: "cancelled", ...queueMessage("Cancelled before upload session creation.") });
         return;
       }
       const manifest = await invoke<{ files: UploadManifestFile[]; directories: string[]; totalSize: number }>(
         "build_api_upload_manifest", { paths: item.paths, expectedSources: summary.sources, chunkSize },
       );
       if (manifest.files.length !== summary.files || manifest.directories.length !== summary.directories || manifest.totalSize !== summary.totalSize) {
-        throw new Error("Upload source inventory changed while creating its checksum manifest.");
+        throw new UiMessageError("Upload source inventory changed while creating its checksum manifest.");
       }
       const manifestPages = buildManifestPages(manifest.files, manifest.directories);
       planUploadChildren(manifest.files, 500);
       if (isQueueItemCancelled(item.id)) {
-        updateQueueItem(item.id, { status: "cancelled", detail: "Cancelled before upload session creation." });
+        updateQueueItem(item.id, { status: "cancelled", ...queueMessage("Cancelled before upload session creation.") });
         return;
       }
       sourceManifest = manifest.files;
@@ -720,16 +766,16 @@ export function useTransferQueueActions({
           fileCount: summary.files, directoryCount: summary.directories,
         }) as ResumableUploadSession;
         if (created.locationId !== context.locationId || created.path !== item.destinationPath || created.chunkSize !== chunkSize) {
-          throw new Error("Upload session target or chunk size did not match the prepared manifest.");
+          throw new UiMessageError("Upload session target or chunk size did not match the prepared manifest.");
         }
         if (created.status === "completed") {
           updateQueueProgress(item.id, created.totalSize, created.totalSize, created.expectedFileCount, created.expectedFileCount);
           const cleanupWarning = await cleanupBrowserDownloadSource(item);
-          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: `The original resumable upload session already completed.${cleanupWarning}` });
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", ...queueMessage("The original resumable upload session already completed.", undefined, cleanupWarning) });
           return;
         }
         if (["cancelled", "cancelling", "failed", "expired"].includes(created.status)) {
-          throw new Error(`The original upload session is ${created.status} and cannot be resent.`);
+        throw new UiMessageError("The original upload session is {{status}} and cannot be resent.", { status: created.status }, "validation");
         }
         context.uploadSessionId = created.sessionId;
         sessionInfo = created;
@@ -740,12 +786,12 @@ export function useTransferQueueActions({
         });
         if (isQueueItemCancelled(item.id)) {
           await context.cancel?.();
-          updateQueueItem(item.id, { status: "cancelled", detail: "Cancelled before the upload manifest or file bytes were sent." });
+          updateQueueItem(item.id, { status: "cancelled", ...queueMessage("Cancelled before the upload manifest or file bytes were sent.") });
           return;
         }
       }
 
-      if (!sessionInfo) throw new Error("Upload session response is missing.");
+      if (!sessionInfo) throw new UiMessageError("Upload session response is missing.");
       session = sessionInfo;
       if (!sessionInfo.manifestComplete) {
         for (const page of manifestPages) {
@@ -771,7 +817,7 @@ export function useTransferQueueActions({
       }
       if (sessionInfo.expectedFileCount !== manifest.files.length || sessionInfo.expectedDirectoryCount !== manifest.directories.length ||
           manifest.directories.some((directory, index) => existingDirectories[index] !== directory)) {
-        throw new Error("The selected upload source no longer matches the server manifest.");
+        throw new UiMessageError("The selected upload source no longer matches the server manifest.");
       }
       const files = rebindUploadManifest(manifest.files, existingFiles);
       for (const remote of existingFiles) {
@@ -780,12 +826,12 @@ export function useTransferQueueActions({
         fileStatesIndex.set(remote.fileId, remote.index);
       }
       for (const file of files) {
-        if (!fileStatesIndex.has(file.fileId)) throw new Error(`Upload session is missing ${file.path}.`);
+        if (!fileStatesIndex.has(file.fileId)) throw new UiMessageError("Upload session is missing {{path}}.", { path: file.path }, "validation");
       }
       updateQueueItem(item.id, {
         uploadOutcome: "resumable", uploadChildCount: planUploadChildren(files).length,
         uploadActiveChildren: 0,
-        detail: "Resumable API upload: up to 2 child batches run concurrently. Parallel uploads may use more resources and can be less efficient.",
+        ...queueMessage("Resumable API upload: up to 2 child batches run concurrently. Parallel uploads may use more resources and can be less efficient."),
         progress: initialQueueProgress(files.length, totalBytes),
       });
       unlistenProgress = await listen<{ transferId: string; bytesCompleted: number; bytesTotal: number }>("upload-progress", event => {
@@ -806,7 +852,7 @@ export function useTransferQueueActions({
           if (isQueueItemCancelled(item.id)) { release(); return; }
           activeChildren += 1;
           updateQueueItem(item.id, { uploadActiveChildren: activeChildren,
-            detail: `Uploading child ${childIndex + 1}/${children.length}. Up to 2 child batches run concurrently; parallel uploads may use more resources and can be less efficient.` });
+            ...queueMessage("Uploading child {{current}}/{{total}}. Up to 2 child batches run concurrently; parallel uploads may use more resources and can be less efficient.", { current: childIndex + 1, total: children.length }) });
           try {
             for (const file of children[childIndex]) {
               if (isQueueItemCancelled(item.id)) return;
@@ -826,7 +872,7 @@ export function useTransferQueueActions({
         try { cancelledSnapshot = await readSession(context.uploadSessionId!); }
         catch (error) {
           updateQueueItem(item.id, { status: "needs_user_action", uploadOutcome: "resumable",
-            detail: `Cancellation outcome is unconfirmed. Check the same session before resuming. ${describeError(error)}` });
+            ...queueMessage("Cancellation outcome is unconfirmed. Check the same session before resuming.", undefined, ` ${describeError(error)}`) });
           return;
         }
         const serverCompleted = cancelledSnapshot.session.status === "completed" ||
@@ -834,12 +880,12 @@ export function useTransferQueueActions({
             cancelledSnapshot.files.every(file => file.status === "completed"));
         if (serverCompleted) {
           const cleanupWarning = await cleanupBrowserDownloadSource(item);
-          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", detail: `The server completed the upload before cancellation settled.${cleanupWarning}` });
+          updateQueueItem(item.id, { status: "completed", uploadOutcome: "settled", ...queueMessage("The server completed the upload before cancellation settled.", undefined, cleanupWarning) });
         } else if (cancelledSnapshot.session.status === "cancelled") {
-          updateQueueItem(item.id, { status: "cancelled", uploadOutcome: "resumable", detail: "Upload cancelled. Completed files are kept; unfinished files can be resumed." });
+          updateQueueItem(item.id, { status: "cancelled", uploadOutcome: "resumable", ...queueMessage("Upload cancelled. Completed files are kept; unfinished files can be resumed.") });
         } else {
           updateQueueItem(item.id, { status: "needs_user_action", uploadOutcome: "resumable",
-            detail: "Server cancellation is unconfirmed. Check the same session before resuming unfinished files." });
+            ...queueMessage("Server cancellation is unconfirmed. Check the same session before resuming unfinished files.") });
         }
         return;
       }
@@ -855,21 +901,23 @@ export function useTransferQueueActions({
         updateQueueItem(item.id, {
           status: "completed", uploadOutcome: "settled", uploadActiveChildren: 0,
           progress: finalProgress,
-          detail: `Uploaded ${completeFiles} file(s); all completed files were verified by the server.${cleanupWarning}`,
+          ...queueMessage("Uploaded {{quantity}} {{unit}}; all completed files were verified by the server.", { quantity: completeFiles, unit: completeFiles === 1 ? "file" : "files" }, cleanupWarning, ["unit"]),
         });
       } else {
-        const detail = failures.length
-          ? `${completeFiles}/${finalSnapshot.session.expectedFileCount} files completed. ${failures[0]} Resume continues only unfinished files and byte ranges.`
-          : `${completeFiles}/${finalSnapshot.session.expectedFileCount} files completed. Resume continues only unfinished files and byte ranges.`;
-        updateQueueItem(item.id, { status: "needs_user_action", uploadOutcome: "resumable", uploadActiveChildren: 0, detail });
+        const totalFiles = finalSnapshot.session.expectedFileCount;
+        const detailMessage = failures.length
+          ? queueMessage("{{completed}}/{{total}} {{unit}} completed. {{failure}} Resume continues only unfinished files and byte ranges.", { completed: completeFiles, total: totalFiles, unit: totalFiles === 1 ? "file" : "files", failure: failures[0] }, "", ["unit"])
+          : queueMessage("{{completed}}/{{total}} {{unit}} completed. Resume continues only unfinished files and byte ranges.", { completed: completeFiles, total: totalFiles, unit: totalFiles === 1 ? "file" : "files" }, "", ["unit"]);
+        updateQueueItem(item.id, { status: "needs_user_action", uploadOutcome: "resumable", uploadActiveChildren: 0, ...detailMessage });
       }
     } catch (error) {
       if (!isCurrent()) return;
+      const formattedError = formatUiError(error, t);
       const detail = context.uploadSessionId
-        ? `Upload session retained. Retry resumes unfinished files and byte ranges only. ${describeError(error)}`
-        : describeError(error);
+        ? queueMessage("Upload session retained. Retry resumes unfinished files and byte ranges only.", undefined, ` ${formattedError}`)
+        : { detail: formattedError };
       updateQueueItem(item.id, { status: isQueueItemCancelled(item.id) ? "cancelled" : "needs_user_action",
-        uploadOutcome: context.uploadSessionId ? "resumable" : undefined, uploadActiveChildren: 0, detail });
+        uploadOutcome: context.uploadSessionId ? "resumable" : undefined, uploadActiveChildren: 0, ...detail });
     } finally {
       unlistenProgress?.();
       for (const [transferId, active] of activeChunkTransfers.current) {
@@ -888,7 +936,7 @@ export function useTransferQueueActions({
     const context = captureContext(item);
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
     logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, archiveFormat: item.archiveFormat || null }, "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: item.archiveFormat ? `Preparing ${item.archiveFormat} archive...` : "Downloading..." });
+    updateQueueItem(item.id, { status: "running", ...(item.archiveFormat ? queueMessage("Preparing {{format}} archive...", { format: item.archiveFormat }) : queueMessage("Downloading...")) });
     // download_to_disk streams the response and emits "download-progress"
     // events tagged with this item's id so the queue can show byte-level
     // progress for single-file and archive downloads (previously just a
@@ -907,10 +955,10 @@ export function useTransferQueueActions({
     try {
       if (item.archiveFormat) {
         await wait(100);
-        updateQueueItem(item.id, { detail: `Streaming ${item.archiveFormat} download...` });
+        updateQueueItem(item.id, { ...queueMessage("Streaming {{format}} download...", { format: item.archiveFormat }) });
       }
       if (!alive.current || isQueueItemCancelled(item.id)) return;
-      if (!context.sessionId) throw new Error("The original native session is unavailable. Re-add the transfer.");
+      if (!context.sessionId) throw new UiMessageError("The original native session is unavailable. Re-add the transfer.");
       const destination = await invoke<string>("download_to_disk", {
         transferId: item.id,
         url: item.downloadUrl,
@@ -932,7 +980,7 @@ export function useTransferQueueActions({
       const latestProgress = latestQueueProgressRef.current.get(item.id) || item.progress;
       updateQueueItem(item.id, {
         status: "completed",
-        detail: `Downloaded to ${destination}.${formatQueueProgress(latestProgress)}`,
+        ...queueMessage("Downloaded to {{destination}}.", { destination }),
       });
       logQueueEvent(item, "completed", { transferId: item.id, destination, bytesCompleted: latestProgress?.completedBytes || 0, bytesTotal: latestProgress?.totalBytes || null }, "INFO");
     } catch (error) {
@@ -941,15 +989,15 @@ export function useTransferQueueActions({
       const detail = recovery.message;
       const retryCount = item.retryCount || 0;
       if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
-        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
+        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, ...queueMessage("Retry {{attempt}}/3 queued", { attempt: retryCount + 1 }), errorCategory: recovery.category };
         updateQueueItem(item.id, nextItem);
         logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
         logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) });
-        void wait(retryDelayMs(retryCount + 1)).then(() => { if (!alive.current || isQueueItemCancelled(item.id)) return; updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownload({ ...nextItem, status: "queued" }); });
+        void wait(retryDelayMs(retryCount + 1)).then(() => { if (!alive.current || isQueueItemCancelled(item.id)) return; updateQueueItem(item.id, { status: "queued", ...queueMessage("Retry starting") }); void runQueuedDownload({ ...nextItem, status: "queued" }); });
         return;
       }
       if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
-      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail}`, errorCategory: recovery.category });
+      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: recovery.message, errorCategory: recovery.category, error: queueFailure(item, recovery) });
       logQueueEvent(item, "failed", { transferId: item.id, errorMessage: detail, errorCategory: recovery.category, retryCount }, "ERROR");
     } finally {
       unlistenProgress();
@@ -962,14 +1010,14 @@ export function useTransferQueueActions({
     const files = item.setFiles || [];
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
     logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, itemCount: files.length }, "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${files.length} files...`, setCompleted: 0 });
+    updateQueueItem(item.id, { status: "running", ...queueMessage("Downloading 0/{{total}} files...", { total: files.length }), setCompleted: 0 });
     const headers = context.headers;
     let completed = 0;
     let lastDestinationRoot = "";
     try {
       for (const file of files) {
         if (!alive.current || isQueueItemCancelled(item.id)) return;
-        if (!context.sessionId) throw new Error("The original native session is unavailable. Re-add the transfer.");
+        if (!context.sessionId) throw new UiMessageError("The original native session is unavailable. Re-add the transfer.");
         // `file.relativePath` already starts with the selected item's own
         // top-level name (the flatten endpoint prefixes it with each
         // selected item's name) -- it must not also be nested under an
@@ -988,12 +1036,12 @@ export function useTransferQueueActions({
         });
         completed += 1;
         lastDestinationRoot = destination.slice(0, destination.length - (file.relativePath.length + 1));
-        updateQueueItem(item.id, { detail: `Downloading ${completed}/${files.length} files...`, setCompleted: completed });
+        updateQueueItem(item.id, { ...queueMessage("Downloading {{completed}}/{{total}} files...", { completed, total: files.length }), setCompleted: completed });
         const totalBytes = files.reduce((sum, current) => sum + current.size, 0);
         const completedBytes = files.slice(0, completed).reduce((sum, current) => sum + current.size, 0);
         updateQueueProgress(item.id, completedBytes, totalBytes, completed, files.length);
       }
-      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} file(s) to ${lastDestinationRoot || destinationLabel}.` });
+        updateQueueItem(item.id, { status: "completed", ...queueMessage("Downloaded {{quantity}} {{unit}} to {{destination}}.", { quantity: completed, unit: completed === 1 ? "file" : "files", destination: lastDestinationRoot || destinationLabel }, "", ["unit"]) });
       logQueueEvent(item, "completed", { transferId: item.id, completedItems: completed, totalItems: files.length }, "INFO");
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
@@ -1001,15 +1049,15 @@ export function useTransferQueueActions({
       const detail = recovery.message;
       const retryCount = item.retryCount || 0;
       if (recovery.retryable && retryCount < 3 && !isQueueItemCancelled(item.id)) {
-        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, detail: `[${recovery.category}] Retry ${retryCount + 1}/3 queued`, errorCategory: recovery.category };
+        const nextItem = { ...item, status: "retrying" as const, retryCount: retryCount + 1, ...queueMessage("Retry {{attempt}}/3 queued", { attempt: retryCount + 1 }), errorCategory: recovery.category };
         updateQueueItem(item.id, nextItem);
         logQueueEvent(nextItem, "retrying", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category }, "WARN");
         logQueueEvent(nextItem, "retry_scheduled", { attempt: retryCount + 1, maximumAttempts: 3, reason: recovery.category, delayMs: retryDelayMs(retryCount + 1) });
-        void wait(retryDelayMs(retryCount + 1)).then(() => { if (!alive.current || isQueueItemCancelled(item.id)) return; updateQueueItem(item.id, { status: "queued", detail: "Retry starting" }); void runQueuedDownloadSet({ ...nextItem, status: "queued" }); });
+        void wait(retryDelayMs(retryCount + 1)).then(() => { if (!alive.current || isQueueItemCancelled(item.id)) return; updateQueueItem(item.id, { status: "queued", ...queueMessage("Retry starting") }); void runQueuedDownloadSet({ ...nextItem, status: "queued" }); });
         return;
       }
       if (recovery.retryable) logQueueEvent(item, "retry_exhausted", { attempt: retryCount, maximumAttempts: 3, reason: recovery.category }, "ERROR");
-      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail} (${completed}/${files.length} completed before failing)`, errorCategory: recovery.category });
+      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: recovery.message, errorCategory: recovery.category, error: queueFailure(item, recovery, completed, files.length) });
       logQueueEvent(item, "failed", { transferId: item.id, errorMessage: detail, errorCategory: recovery.category, completedItems: completed, totalItems: files.length, retryCount }, "ERROR");
     }
   };
@@ -1017,7 +1065,7 @@ export function useTransferQueueActions({
   const executeQueuedSshDownload = async (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => {
     const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
     writeOperationLog("download", "started", item.label, destinationLabel, `SSH queued download of ${items.length} item(s) started.`, "DEBUG");
-    updateQueueItem(item.id, { status: "running", detail: `Downloading 0/${items.length} items...` });
+    updateQueueItem(item.id, { status: "running", ...queueMessage("Downloading 0/{{total}} items...", { total: items.length }) });
     let completed = 0;
     let lastDestination = "";
     try {
@@ -1030,15 +1078,15 @@ export function useTransferQueueActions({
           localDestinationFolder: item.localDestinationFolder || "",
         });
         completed += 1;
-        updateQueueItem(item.id, { detail: `Downloading ${completed}/${items.length} items...` });
+        updateQueueItem(item.id, { ...queueMessage("Downloading {{completed}}/{{total}} items...", { completed, total: items.length }) });
       }
-      updateQueueItem(item.id, { status: "completed", detail: `Downloaded ${completed} item(s) to ${lastDestination.split("/").slice(0, -1).join("/") || destinationLabel}.` });
+      updateQueueItem(item.id, { status: "completed", ...queueMessage("Downloaded {{quantity}} {{unit}} to {{destination}}.", { quantity: completed, unit: completed === 1 ? "item" : "items", destination: lastDestination.split("/").slice(0, -1).join("/") || destinationLabel }, "", ["unit"]) });
       writeOperationLog("download", "completed", item.label, destinationLabel, `Downloaded ${completed} item(s) via SFTP.`);
     } catch (error) {
       if (isQueueItemCancelled(item.id)) return;
       const recovery = classifyQueueError(error);
       const detail = recovery.message;
-      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: `[${recovery.category}] ${detail} (${completed}/${items.length} completed before failing)`, errorCategory: recovery.category });
+      updateQueueItem(item.id, { status: recovery.needsUserAction ? "needs_user_action" : "failed", detail: recovery.message, errorCategory: recovery.category, error: queueFailure(item, recovery, completed, items.length) });
       writeOperationLog("download", "failed", item.label, destinationLabel, `SSH queued download failed: ${detail}`, "ERROR");
     }
   };
@@ -1052,11 +1100,11 @@ export function useTransferQueueActions({
 
   const enqueueBrowserUpload = async (download: BrowserDownloadForRemote) => {
     if (!session.nativeSessionId || download.locationId !== session.locationId) {
-      throw new Error("The selected API Location changed. Choose the current Location again before uploading this Browser download.");
+      throw new UiMessageError("The selected API Location changed. Choose the current Location again before uploading this Browser download.");
     }
     const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths: [download.stagingPath] });
     if (summary.files !== 1 || summary.directories !== 0 || summary.sources.length !== 1) {
-      throw new Error("The Browser download staging file is not a single uploadable file.");
+      throw new UiMessageError("The Browser download staging file is not a single uploadable file.");
     }
     const item: TransferQueueItem = {
       id: crypto.randomUUID(),
@@ -1067,7 +1115,7 @@ export function useTransferQueueActions({
       locationId: download.locationId,
       locationName: download.locationName,
       status: "queued",
-      detail: "Browser download is ready; waiting to upload to the API Remote.",
+      ...queueMessage("Browser download is ready; waiting to upload to the API Remote."),
       progress: initialQueueProgress(1, summary.totalSize),
       browserDownloadId: download.downloadId,
     };
@@ -1105,22 +1153,22 @@ export function useTransferQueueActions({
       return;
     }
     if (item.kind === "upload" && item.uploadOutcome === "settled") {
-      setNotice("This batch has settled. Review its partial results before adding any remaining files.");
+      setNotice(t("This batch has settled. Review its partial results before adding any remaining files."));
       return;
     }
     if (item.kind === "download" && !item.sshEntryId && !item.downloadUrl) {
-      setNotice("This restored download no longer contains its request credentials. Re-add the download to retry it safely.");
+      setNotice(t("This restored download no longer contains its request credentials. Re-add the download to retry it safely."));
       return;
     }
     if (!(["failed", "needs_user_action"] as string[]).includes(item.status)) return;
     if (!item.cancellationRequested) cancelledQueueItemsRef.current.delete(item.id);
-    const retryItem = { ...item, status: "queued" as const, detail: "Retry queued", finishedAt: undefined };
+    const retryItem = { ...item, status: "queued" as const, ...queueMessage("Retry queued"), finishedAt: undefined };
     updateQueueItem(item.id, retryItem);
     writeOperationLog(item.kind === "upload" ? "upload" : "download", "retry", item.label, item.destinationPath, `Manual retry requested (attempt ${(item.retryCount || 0) + 1}).`, "INFO");
     if (retryItem.sshEntryId) {
       const profile = findSshProfileById(retryItem.sshEntryId);
       if (!profile) {
-        updateQueueItem(item.id, { status: "needs_user_action", detail: "The SSH connection for this transfer is no longer available." });
+        updateQueueItem(item.id, { status: "needs_user_action", ...queueMessage("The SSH connection for this transfer is no longer available.") });
         return;
       }
       void (retryItem.kind === "download" ? runQueuedSshDownload(retryItem, profile, retryItem.sshItems || []) : runQueuedSshUpload(retryItem, profile));
@@ -1143,15 +1191,16 @@ export function useTransferQueueActions({
     });
     setTransferQueue((current) => [...current, item]);
     void runOnce(item.id, async () => {
-      updateQueueItem(item.id, { status: "running", detail: "Preparing drag transfer..." });
+      updateQueueItem(item.id, { status: "running", ...queueMessage("Preparing drag transfer...") });
       try {
         const destination = await prepare();
         resolvePreparation(destination);
-        updateQueueItem(item.id, { status: "needs_user_action", detail: "Ready. Drop the file into the external application." });
+        updateQueueItem(item.id, { status: "needs_user_action", ...queueMessage("Ready. Drop the file into the external application.") });
         writeOperationLog("drag", "prepared", item.locationName, destination, JSON.stringify({ operationId: item.id, itemCount: item.paths.length || 1, stagingPath: destination, durationMs: Math.round(performance.now() - started) }), "INFO");
       } catch (error) {
         rejectPreparation(error);
-        updateQueueItem(item.id, { status: "failed", detail: describeError(error), errorCategory: classifyQueueError(error).category });
+        const recovery = classifyQueueError(error);
+        updateQueueItem(item.id, { status: "failed", detail: recovery.message, errorCategory: recovery.category, error: queueFailure(item, recovery) });
         writeOperationLog("drag", "failed", item.locationName, item.destinationPath, JSON.stringify({ operationId: item.id, itemCount: item.paths.length || 1, durationMs: Math.round(performance.now() - started), failureType: "preparation", errorMessage: describeError(error) }), "ERROR");
       }
     });
@@ -1163,6 +1212,11 @@ export function useTransferQueueActions({
       if (!selectedItems.length) return;
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
       const setLabel = selectedItems.length === 1 ? selectedItems[0].name : `${selectedItems.length} selected items`;
+      const setLabelMessage = selectedItems.length > 1 ? {
+        key: "{{quantity}} {{unit}} selected",
+        values: { quantity: selectedItems.length, unit: selectedItems.length === 1 ? "item" : "items" },
+        translatedValues: ["unit"],
+      } : undefined;
       const response = await api("/api/files/flatten", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1175,19 +1229,20 @@ export function useTransferQueueActions({
       const data = await response.json() as { files?: { relativePath: string; remotePath: string; size: number }[] };
       const files = data.files || [];
       if (!files.length) {
-        setNotice("The selection has no files to download.");
+        setNotice(t("The selection has no files to download."));
         return;
       }
       const item: TransferQueueItem = {
         id,
         label: setLabel,
+        labelMessage: setLabelMessage,
         kind: "download-set",
         paths: [],
         destinationPath: localPath ? `~/${localPath}` : "~",
         locationId: session.locationId,
         locationName: activeLocationDisplayName || session.locationId,
         status: "queued",
-        detail: `Waiting to start (${files.length} files)`,
+        ...queueMessage("Waiting to start ({{quantity}} {{unit}})", { quantity: files.length, unit: files.length === 1 ? "file" : "files" }, "", ["unit"]),
         progress: initialQueueProgress(files.length, files.reduce((sum, file) => sum + file.size, 0)),
         setFiles: files,
         setCompleted: 0,
@@ -1215,13 +1270,18 @@ export function useTransferQueueActions({
     const item: TransferQueueItem = {
       id,
       label: singleFile ? selectedItems[0].name : `${selectedItems.length} selected items`,
+      labelMessage: singleFile ? undefined : {
+        key: "{{quantity}} {{unit}} selected",
+        values: { quantity: selectedItems.length, unit: selectedItems.length === 1 ? "item" : "items" },
+        translatedValues: ["unit"],
+      },
       kind: "download",
       paths: [],
       destinationPath: localPath ? `~/${localPath}` : "~",
       locationId: session.locationId,
       locationName: activeLocationDisplayName || session.locationId,
       status: "queued",
-      detail: "Waiting to start",
+      ...queueMessage("Waiting to start"),
       progress: initialQueueProgress(1, singleFile ? selectedItems[0].size : null),
       downloadUrl: singleFile
         ? `${serverUrl()}/api/files/download/${downloadPath(selectedItems[0].path)}`
@@ -1244,21 +1304,27 @@ export function useTransferQueueActions({
     if (!items.length) return;
     const profile = findSshProfileById(entryId);
     if (!profile) {
-      setNotice("The SSH connection for this remote view is no longer available.");
+      setNotice(t("The SSH connection for this remote view is no longer available."));
       return;
     }
     const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
     const label = items.length === 1 ? items[0].name : `${items.length} selected items`;
+    const labelMessage = items.length > 1 ? {
+      key: "{{quantity}} {{unit}} selected",
+      values: { quantity: items.length, unit: "items" },
+      translatedValues: ["unit"],
+    } : undefined;
     const item: TransferQueueItem = {
       id,
       label,
+      labelMessage,
       kind: "download",
       paths: [],
       destinationPath: destinationFolder ? `~/${destinationFolder}` : "~",
       locationId: "",
       locationName: `SSH: ${profile.name}`,
       status: "queued",
-      detail: "Waiting to start",
+      ...queueMessage("Waiting to start"),
       sshEntryId: entryId,
       sshItems: items,
       localDestinationFolder: destinationFolder,
@@ -1283,27 +1349,40 @@ export function useTransferQueueActions({
   const renderDesktopQueueItem = (item: TransferQueueItem) => (
     <div className="queue-item" key={item.id}>
       <div className="queue-item-header">
-        <strong className="queue-item-label">{item.label}</strong>
-        <span className={`queue-status ${item.status}`}>{item.status.replaceAll("_", " ")}</span>
+        <strong className="queue-item-label">{item.labelMessage ? translateQueueMessage(item.labelMessage) : item.label}</strong>
+        <span className={`queue-status ${item.status}`}>{t(item.status.replaceAll("_", " "))}</span>
       </div>
       <div className="queue-item-route">
         <span>{item.locationName}</span>
         <code>{item.destinationPath || "/"}</code>
       </div>
-      <div className="queue-item-detail" role="status" aria-live="polite">{item.detail}</div>
+      <div className="queue-item-detail" role="status" aria-live="polite">{item.error?.translationKey ? t("{{category}}: {{message}}{{partial}}{{suffix}}", {
+        category: t(item.error.category),
+        message: t(item.error.translationKey, item.error.translationValues),
+        suffix: item.error.translationSuffix || "",
+        partial: item.error.completedItems !== undefined && item.error.totalItems !== undefined
+          ? ` ${t("({{completed}}/{{total}} completed before failing)", { completed: item.error.completedItems, total: item.error.totalItems })}`
+          : "",
+      }) : item.detailMessage ? `${item.status === "retrying" && item.errorCategory ? `${t(item.errorCategory)}: ` : ""}${translateQueueMessage(item.detailMessage)}` : item.error ? t("{{category}}: {{message}}{{partial}}", {
+        category: t(item.error.category),
+        message: item.error.message,
+        partial: item.error.completedItems !== undefined && item.error.totalItems !== undefined
+          ? ` ${t("({{completed}}/{{total}} completed before failing)", { completed: item.error.completedItems, total: item.error.totalItems })}`
+          : "",
+       }) : item.detail}</div>
       {item.progress && (["running", "queued", "retrying"].includes(item.status)) && (
-        <div className="queue-item-progress"><small>{item.progress.completedBytes ? `${formatSize(item.progress.completedBytes)}${item.progress.totalBytes ? ` / ${formatSize(item.progress.totalBytes)}` : ""}` : "Waiting for transfer data"}{formatQueueProgress(item.progress)}</small></div>
+        <div className="queue-item-progress"><small>{item.progress.completedBytes ? `${formatSize(item.progress.completedBytes, toIntlLocale(getAppLocale()))}${item.progress.totalBytes ? ` / ${formatSize(item.progress.totalBytes, toIntlLocale(getAppLocale()))}` : ""}` : t("Waiting for transfer data")}{formatQueueProgress(item.progress, toIntlLocale(getAppLocale()), t("ETA"))}</small></div>
       )}
       <div className="queue-item-actions">
         {(item.status === "running" || item.status === "queued" || item.status === "retrying") && (
-          <button type="button" onClick={() => cancelQueueItem(item.id)}>Cancel</button>
+          <button type="button" onClick={() => cancelQueueItem(item.id)}>{t("Cancel")}</button>
         )}
         {(item.status === "failed" || item.status === "needs_user_action") &&
           (item.kind !== "download" || Boolean(item.sshEntryId) || Boolean(item.downloadUrl)) && (
-          <button type="button" onClick={() => retryDesktopQueueItem(item)}>{item.serverSessionId ? "Resume" : "Retry"}</button>
+           <button type="button" onClick={() => retryDesktopQueueItem(item)}>{item.serverSessionId ? t("Resume") : t("Retry")}</button>
         )}
         {(["completed", "failed", "cancelled", "needs_user_action"].includes(item.status)) && (
-          <button type="button" onClick={() => removeQueueItem(item.id)}>Remove</button>
+          <button type="button" onClick={() => removeQueueItem(item.id)}>{t("Remove")}</button>
         )}
       </div>
     </div>

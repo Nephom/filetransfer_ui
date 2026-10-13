@@ -30,6 +30,7 @@ references. For installation, upgrade, startup, and build commands, see the
 
 ## nFterm Desktop
 
+- [In-app Help and localization](../fileapi_ui/src/help/help-content.tsx) — user-facing Help topics, operation icons, and the `en_US` / `zh_TW` UI language resources.
 - [Desktop Architecture](./desktop.md) — runtime boundaries, credentials,
   filesystem access, transfer queue, SSH/SFTP, and Proxmox behavior.
 - [Location Mode Architecture](./location_tech.md) — LOCAL/REMOTE browsing,

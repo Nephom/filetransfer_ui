@@ -1,6 +1,7 @@
-export type RestPollingStopReason = "manual" | "close" | "entry-switch" | "unmount" | "replaced";
-
 import { debugRest } from "./rest-utils";
+import { UiMessageError } from "./i18n/errors";
+
+export type RestPollingStopReason = "manual" | "close" | "entry-switch" | "unmount" | "replaced";
 
 export type RestPollingOptions = {
   intervalMs: number;
@@ -35,7 +36,7 @@ export class RestPollingController {
   start(options: RestPollingOptions) {
     this.stop("replaced");
     if (!Number.isFinite(options.intervalMs) || options.intervalMs < 3_000) {
-      throw new Error("REST polling interval must be at least 3 seconds.");
+      throw new UiMessageError("REST polling interval must be at least 3 seconds.", {}, "validation");
     }
     const controller = new AbortController();
     const generation = ++this.generation;

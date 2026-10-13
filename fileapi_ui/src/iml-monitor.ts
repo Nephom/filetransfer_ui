@@ -1,5 +1,6 @@
 import type { ImlMonitorState, RestFailureType } from "./rest-contracts";
 import { debugRest } from "./rest-utils";
+import { UiMessageError } from "./i18n/errors";
 
 export type ImlMonitorStopReason = "manual" | "close" | "entry-switch" | "unmount" | "replaced";
 export type ImlMonitorErrorKind = "transient" | "authentication" | "resource" | "aborted";
@@ -62,7 +63,7 @@ export class ImlMonitorController<T> {
   start(options: ImlMonitorOptions<T>) {
     this.stop("replaced");
     if (!Number.isFinite(options.intervalMs) || options.intervalMs < 3_000) {
-      throw new Error("IML polling interval must be at least 3 seconds.");
+    throw new UiMessageError("IML polling interval must be at least 3 seconds.", {}, "validation");
     }
     const controller = new AbortController();
     const generation = ++this.generation;

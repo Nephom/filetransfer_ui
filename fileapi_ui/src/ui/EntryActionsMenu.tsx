@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../i18n/useAppTranslation";
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./entry-actions-menu.css";
@@ -30,6 +31,7 @@ type Props = {
 // else, unclipped, regardless of which row opened it or how the sidebar
 // is scrolled.
 export function EntryActionsMenu({ entryName, onEdit, onRemove }: Props) {
+  const { t } = useAppTranslation();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -109,7 +111,7 @@ export function EntryActionsMenu({ entryName, onEdit, onRemove }: Props) {
         ref={triggerRef}
         type="button"
         className="entry-actions-trigger"
-        aria-label={`More actions for ${entryName}`}
+        aria-label={t("More actions for {{name}}", { name: entryName })}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={(event) => {
@@ -120,30 +122,30 @@ export function EntryActionsMenu({ entryName, onEdit, onRemove }: Props) {
         <MoreIcon />
       </button>
       {open && createPortal(
-        <div ref={menuRef} className="entry-actions-popover" style={popoverStyle} role="menu" aria-label={`Actions for ${entryName}`}>
+        <div ref={menuRef} className="entry-actions-popover" style={popoverStyle} role="menu" aria-label={t("Actions for {{name}}", { name: entryName })}>
           <button
             type="button"
             role="menuitem"
             className="entry-action-edit"
-            aria-label={`Edit ${entryName}`}
+            aria-label={t("Edit {{name}}", { name: entryName })}
             onClick={() => {
               close();
               onEdit();
             }}
           >
-            Edit
+            {t("Edit")}
           </button>
           <button
             type="button"
             role="menuitem"
             className="entry-action-remove"
-            aria-label={`Remove ${entryName}`}
+            aria-label={t("Remove {{name}}", { name: entryName })}
             onClick={() => {
               close();
               onRemove();
             }}
           >
-            Remove
+            {t("Remove")}
           </button>
         </div>,
         document.body,

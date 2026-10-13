@@ -15,6 +15,19 @@ export type ProgressSample = {
 };
 
 const MIN_SPEED_SAMPLE_MS = 300;
+const progressFormatters = new Map<string, { integer: Intl.NumberFormat; decimal: Intl.NumberFormat }>();
+
+const getProgressFormatters = (locale: string) => {
+  let formatters = progressFormatters.get(locale);
+  if (!formatters) {
+    formatters = {
+      integer: new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }),
+      decimal: new Intl.NumberFormat(locale, { maximumFractionDigits: 1, minimumFractionDigits: 1 }),
+    };
+    progressFormatters.set(locale, formatters);
+  }
+  return formatters;
+};
 
 export const initialQueueProgress = (totalItems = 1, totalBytes: number | null = null): QueueProgress => ({
   completedBytes: 0,
@@ -65,7 +78,7 @@ export const updateQueueProgress = (
   };
 };
 
-export const formatQueueRate = (bytesPerSecond: number | null) => {
+export const formatQueueRate = (bytesPerSecond: number | null, locale = "en-US") => {
   if (!bytesPerSecond || bytesPerSecond < 1) return "--";
   const units = ["B/s", "KB/s", "MB/s", "GB/s"];
   let value = bytesPerSecond;
@@ -74,25 +87,28 @@ export const formatQueueRate = (bytesPerSecond: number | null) => {
     value /= 1024;
     unit += 1;
   }
-  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+  const formatters = getProgressFormatters(locale);
+  return `${(unit === 0 ? formatters.integer : formatters.decimal).format(value)} ${units[unit]}`;
 };
 
-export const formatQueueEta = (seconds: number | null) => {
+export const formatQueueEta = (seconds: number | null, locale = "en-US") => {
   if (seconds === null || !Number.isFinite(seconds)) return "--";
   const rounded = Math.ceil(seconds);
-  if (rounded < 60) return `${rounded}s`;
+  const integerFormatter = getProgressFormatters(locale).integer;
+  const number = (value: number) => integerFormatter.format(value);
+  if (rounded < 60) return `${number(rounded)}s`;
   const minutes = Math.floor(rounded / 60);
   const remainingSeconds = rounded % 60;
   return minutes < 60
-    ? `${minutes}m ${remainingSeconds}s`
-    : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    ? `${number(minutes)}m ${number(remainingSeconds)}s`
+    : `${number(Math.floor(minutes / 60))}h ${number(minutes % 60)}m`;
 };
 
-export const formatQueueProgress = (progress: QueueProgress | undefined) => {
+export const formatQueueProgress = (progress: QueueProgress | undefined, locale = "en-US", etaLabel = "ETA") => {
   if (!progress) return "";
   const percentage = progress.percentage === null ? "" : ` (${Math.round(progress.percentage)}%)`;
-  const rate = progress.bytesPerSecond === null ? "" : ` · ${formatQueueRate(progress.bytesPerSecond)}`;
-  const eta = progress.etaSeconds === null ? "" : ` · ETA ${formatQueueEta(progress.etaSeconds)}`;
+  const rate = progress.bytesPerSecond === null ? "" : ` · ${formatQueueRate(progress.bytesPerSecond, locale)}`;
+  const eta = progress.etaSeconds === null ? "" : ` · ${etaLabel} ${formatQueueEta(progress.etaSeconds, locale)}`;
   return `${percentage}${rate}${eta}`;
 };
 

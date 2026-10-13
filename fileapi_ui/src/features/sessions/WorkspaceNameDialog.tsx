@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import React from "react";
 
 type WorkspaceNameDialogProps = {
@@ -21,6 +22,7 @@ export function WorkspaceNameDialog({
   onClose,
   onSave,
 }: WorkspaceNameDialogProps) {
+  const { t } = useAppTranslation();
   return (
     <div className="modal-cover modal-layer-top" onMouseDown={onClose}>
       <form
@@ -29,15 +31,15 @@ export function WorkspaceNameDialog({
         onSubmit={(event) => { event.preventDefault(); onSave(event.currentTarget); }}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <h2 className="modal-drag-handle" onMouseDown={onDragStart}>{isEditing ? "Edit Workspace" : "Add Workspace"}</h2>
+        <h2 className="modal-drag-handle" onMouseDown={onDragStart}>{t(isEditing ? "Edit Workspace" : "Add Workspace")}</h2>
         {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
         <label>
-          Workspace name
-          <input name="sessionName" value={sessionNameDraft} onChange={(event) => setSessionNameDraft(event.target.value)} placeholder="Default" required autoFocus />
+          {t("Workspace name")}
+          <input name="sessionName" value={sessionNameDraft} onChange={(event) => setSessionNameDraft(event.target.value)} placeholder={t("Default")} required autoFocus />
         </label>
         <div className="modal-actions">
-          <button type="button" onClick={onClose}>Cancel</button>
-          <button type="submit" className="confirm">Save</button>
+          <button type="button" onClick={onClose}>{t("Cancel")}</button>
+          <button type="submit" className="confirm">{t("Save")}</button>
         </div>
       </form>
     </div>

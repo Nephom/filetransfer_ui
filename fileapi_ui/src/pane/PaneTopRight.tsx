@@ -1,5 +1,7 @@
+import { useAppTranslation } from "../i18n/useAppTranslation";
 import React from "react";
 import { createPortal } from "react-dom";
+import type { AppLocale } from "../i18n/i18n";
 import { AccountIcon, QueueIcon, SettingsIcon } from "./pane-icons";
 
 type Props = {
@@ -17,28 +19,32 @@ type Props = {
   onOpenHelp: () => void;
   onOpenWelcomeTutorial: () => void;
   onSignOut: () => void;
+  locale: AppLocale;
+  onLocaleChange: (locale: AppLocale) => void;
 };
 
 /** Pills in the top-right corner of the desktop: transfer queue, settings and the account menu. */
 export function PaneTopRight({
   session, accountOpen, accountControl, accountMenuStyle, activeQueueCount,
   onOpenQueue, onAccountToggle, onOpenSessions, onOpenSettings, onChangePassword, onOpenLogView, onOpenHelp, onOpenWelcomeTutorial, onSignOut,
+  locale, onLocaleChange,
 }: Props) {
-  const roleLabel = session.localOnly ? "Local" : session.role === "admin" ? "Admin" : session.role === "superuser" ? "Superuser" : "User";
-  const roleDescription = session.localOnly ? "Local-only mode" : session.role === "admin" ? "System administrator" : session.role === "superuser" ? "Superuser" : "Standard user";
+  const { t } = useAppTranslation();
+  const roleLabel = session.localOnly ? t("Local") : session.role === "admin" ? t("Admin") : session.role === "superuser" ? t("Superuser") : t("User");
+  const roleDescription = session.localOnly ? t("Local-only mode") : session.role === "admin" ? t("System administrator") : session.role === "superuser" ? t("Superuser") : t("Standard user");
   return (
     <>
       <button
         type="button"
         className={`pane-pill pane-pill-button${activeQueueCount > 0 ? " is-busy" : ""}`}
         onClick={onOpenQueue}
-        title="Transfer Queue"
-        aria-label={`Transfer Queue, ${activeQueueCount} active`}
+        title={t("Transfer Queue")}
+        aria-label={t("Transfer Queue, {{count}} active", { count: activeQueueCount })}
       >
         <QueueIcon size={18} />
         <span className="pane-pill-count">{activeQueueCount}</span>
       </button>
-      <button type="button" className="pane-pill pane-pill-button pane-pill-icon" onClick={onOpenSettings} title="Settings" aria-label="Settings">
+      <button type="button" className="pane-pill pane-pill-button pane-pill-icon" onClick={onOpenSettings} title={t("Settings")} aria-label={t("Settings")}>
         <SettingsIcon size={18} />
       </button>
       <div className="account-control" ref={accountControl}>
@@ -48,19 +54,26 @@ export function PaneTopRight({
           <span className="account-role">{roleLabel}</span>
         </button>
         {accountOpen && createPortal(
-          <div className="account-menu" style={accountMenuStyle} role="menu" aria-label="Account menu">
+          <div className="account-menu" style={accountMenuStyle} role="menu" aria-label={t("Account menu")}>
             <div className="account-summary">
               <strong>{session.username}</strong>
               <span>{roleDescription}</span>
             </div>
-            <button role="menuitem" onClick={onOpenSessions}>Workspace Manager</button>
-            <button role="menuitem" onClick={onOpenSettings}>Settings</button>
-            {!session.localOnly && session.role !== "admin" && <button role="menuitem" onClick={onChangePassword}>Change password</button>}
-            <button role="menuitem" onClick={onOpenLogView}>LogView</button>
-            <button role="menuitem" onClick={onOpenHelp}>Help</button>
-            <button role="menuitem" onClick={onOpenWelcomeTutorial}>Tutorial</button>
+            <button role="menuitem" onClick={onOpenSessions}>{t("Workspace Manager")}</button>
+            <button role="menuitem" onClick={onOpenSettings}>{t("Settings")}</button>
+            {!session.localOnly && session.role !== "admin" && <button role="menuitem" onClick={onChangePassword}>{t("Change password")}</button>}
+            <button role="menuitem" onClick={onOpenLogView}>{t("LogView")}</button>
+            <button role="menuitem" onClick={onOpenHelp}>{t("Help")}</button>
+            <button role="menuitem" onClick={onOpenWelcomeTutorial}>{t("Tutorial")}</button>
+            <div className="account-language" role="group" aria-label={t("Language")}>
+              <label htmlFor="account-locale-select">{t("Language")}</label>
+              <select id="account-locale-select" value={locale} onChange={(event) => onLocaleChange(event.target.value as AppLocale)}>
+                <option value="en_US">English (United States)</option>
+                <option value="zh_TW">繁體中文（台灣）</option>
+              </select>
+            </div>
             <hr />
-            <button className="danger" role="menuitem" onClick={onSignOut}>Log out</button>
+            <button className="danger" role="menuitem" onClick={onSignOut}>{t("Log out")}</button>
           </div>,
           document.body,
         )}

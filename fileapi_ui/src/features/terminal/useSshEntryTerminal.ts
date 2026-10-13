@@ -1,5 +1,7 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { formatUiError, UiMessageError } from "../../i18n/errors";
 import type { Terminal } from "@xterm/xterm";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import { useSshEventBridge, type SshBridgeTab, type SshEventPayload } from "./useSshEventBridge";
@@ -83,6 +85,9 @@ void initializeKeepAliveWindow();
 export function useSshEntryTerminal({
   profile, title, source, autoConnect, bracketedPasteControlEnabled = true, onStateChange, onOperationLog,
 }: SshEntryTerminalOptions) {
+  const { t } = useAppTranslation();
+  const translationRef = useRef(t);
+  translationRef.current = t;
   const [tabId] = useState(() => `ssh-${makeSshTabId()}`);
   const [notice, setNotice] = useState("");
   const [keepAliveNotice, setKeepAliveNotice] = useState("");
@@ -254,7 +259,7 @@ export function useSshEntryTerminal({
         if (disposed) return;
         const detail = errorText(error);
         console.warn("Unable to register SSH mouse keep-alive.", detail);
-        setKeepAliveNotice(`Mouse keep-alive unavailable: ${detail}`);
+        setKeepAliveNotice(translationRef.current("Mouse keep-alive unavailable: {{error}}", { error: formatUiError(error, translationRef.current) }));
       });
 
     return () => {
@@ -276,7 +281,7 @@ export function useSshEntryTerminal({
     getPasteSessionId: () => sessionIdRef.current,
     uploadClipboardImage: (pngBytes) => {
       const currentProfile = connectedProfileRef.current;
-      if (!currentProfile) return Promise.reject(new Error("SSH profile is no longer available."));
+      if (!currentProfile) return Promise.reject(new UiMessageError("SSH profile is no longer available."));
       return invoke<string>("ssh_upload_clipboard_image", { profile: currentProfile, pngBytes: Array.from(pngBytes) });
     },
     getInitialOutput: () => outputRef.current,
@@ -286,7 +291,7 @@ export function useSshEntryTerminal({
       writeQueueRef.current = writeQueueRef.current
         .catch(() => undefined)
         .then(() => invoke<void>("ssh_write", { sessionId: currentSessionId, data }))
-        .catch((error) => { setNotice(`Terminal input failed: ${errorText(error)}`); });
+        .catch((error) => { setNotice(translationRef.current("Terminal input failed: {{error}}", { error: formatUiError(error, translationRef.current) })); });
       if (recordingRef.current && !secretPromptRef.current) {
         if (data === "\r" || data === "\n") {
           if (shellInputRef.current.trim()) {
@@ -320,7 +325,7 @@ export function useSshEntryTerminal({
   const connect = () => {
     const target = profileRef.current;
     if (!target) {
-      setNotice("Invalid SSH entry parameters.");
+      setNotice(translationRef.current("Invalid SSH entry parameters."));
       return;
     }
     if (sessionIdRef.current || connectingRef.current) return;
@@ -372,7 +377,7 @@ export function useSshEntryTerminal({
       current?.write(`${detail}\n`);
       delete pendingRequestsRef.current[attemptId];
       setConnecting(false);
-      setNotice(`SSH connection failed: ${detail}`);
+      setNotice(translationRef.current("SSH connection failed: {{error}}", { error: formatUiError(error, translationRef.current) }));
     });
   };
 
@@ -398,7 +403,7 @@ export function useSshEntryTerminal({
       await invoke("ssh_disconnect", { sessionId: id });
     } catch (error) {
       // The session is not known to be closed, so the terminal keeps claiming it is live.
-      setNotice(`SSH disconnect failed: ${errorText(error)}`);
+      setNotice(translationRef.current("SSH disconnect failed: {{error}}", { error: formatUiError(error, translationRef.current) }));
       return;
     }
     endSession(id, "Disconnected.");
@@ -450,7 +455,7 @@ export function useSshEntryTerminal({
       setNotice("");
       logRef.current?.("ssh_recording", "started", recordingSessionId || tabId, "LOCAL recording buffer", JSON.stringify({ operationId: tabId, recordingId: tabId, sessionId: recordingSessionId, startedAt: new Date(startedAt).toISOString(), seededRawBytes: stats.rawBytes }), "INFO");
     } catch (error) {
-      setNotice(`Recording failed: ${errorText(error)}`);
+      setNotice(translationRef.current("Recording failed: {{error}}", { error: formatUiError(error, translationRef.current) }));
     } finally {
       setStartingRecording(false);
     }
@@ -460,7 +465,7 @@ export function useSshEntryTerminal({
     if (!recordingRef.current) return;
     const stoppedSessionId = sessionIdRef.current;
     await finishRecording();
-    setNotice("Recording stopped");
+    setNotice(translationRef.current("Recording stopped"));
     const stats = recordingStatsRef.current;
     const startedAt = recordingStartedAtRef.current;
     logRef.current?.("ssh_recording", "stopped", stoppedSessionId || tabId, "LOCAL recording buffer", JSON.stringify({ operationId: tabId, recordingId: tabId, sessionId: stoppedSessionId, startedAt: startedAt ? new Date(startedAt).toISOString() : null, endedAt: new Date().toISOString(), rawBytes: stats.rawBytes, commandCount: stats.commandCount, durationMs: startedAt ? Date.now() - startedAt : undefined }), "INFO");
@@ -482,7 +487,7 @@ export function useSshEntryTerminal({
       setSaveLogName(profileRef.current?.name || titleRef.current);
       setSaveLogNameOpen(true);
     } catch (error) {
-      setNotice(`Unable to choose log destination: ${errorText(error)}`);
+      setNotice(translationRef.current("Unable to choose log destination: {{error}}", { error: formatUiError(error, translationRef.current) }));
     }
   };
 
@@ -504,10 +509,10 @@ export function useSshEntryTerminal({
       setSavedLogPaths(packagePaths);
       recordingStatsRef.current = { ...recordingStatsRef.current, saved: true };
       setSaveLogNameOpen(false);
-      setNotice("Log saved");
+      setNotice(translationRef.current("Log saved"));
       logRef.current?.("ssh_recording", "saved", name, `LOCAL: ~/${saveLogDestination || ""}`, JSON.stringify({ operationId: tabId, recordingId: tabId, sessionId: sessionIdRef.current, packagePaths, durationMs: Math.round(performance.now() - started), rawBytes: stats.rawBytes, commandCount: stats.commandCount }), "INFO");
     } catch (error) {
-      setNotice(`Unable to save log: ${errorText(error)}`);
+      setNotice(translationRef.current("Unable to save log: {{error}}", { error: formatUiError(error, translationRef.current) }));
       logRef.current?.("ssh_recording", "save_failed", name, `LOCAL: ~/${saveLogDestination || ""}`, JSON.stringify({ operationId: tabId, recordingId: tabId, durationMs: Math.round(performance.now() - started), failureType: "save", errorMessage: errorText(error) }), "ERROR");
     } finally {
       setSavingLog(false);

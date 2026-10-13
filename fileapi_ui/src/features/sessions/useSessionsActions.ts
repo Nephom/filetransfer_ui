@@ -1,5 +1,7 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import { useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { formatUiError } from "../../i18n/errors";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import type { RestApiEntry } from "../../rest-api";
 import type { ProxmoxVncEntry } from "../../proxmox-vnc";
@@ -94,6 +96,7 @@ export function useSessionsActions({
   hostSshPasswordDraft, setHostSshPasswordDraft, hostSshPasswordSaved, setHostSshPasswordSaved,
   onVncEntrySaved,
 }: UseSessionsActionsParams) {
+  const { t } = useAppTranslation();
   const vncPasswordLoadGenerationRef = useRef(0);
   // Creates or renames a Workspace. SSH entries are added or edited
   // afterwards in their own floating dialog.
@@ -101,16 +104,16 @@ export function useSessionsActions({
     const values = form ? new FormData(form) : null;
     const name = String(values?.get("sessionName") || sessionNameDraft).trim();
     if (!name) {
-      setSessionFormError("Workspace name is required.");
+      setSessionFormError(t("Workspace name is required."));
       return;
     }
     if (/\s/.test(name)) {
-      setSessionFormError("Workspace names cannot contain spaces.");
+      setSessionFormError(t("Workspace names cannot contain spaces."));
       return;
     }
     const existingWorkspace = managedSessions.find((item) => item.id === workspaceSessionId);
     if (managedSessions.some((item) => item.id !== existingWorkspace?.id && item.name.toLowerCase() === name.toLowerCase())) {
-      setSessionFormError(`A Workspace named "${name}" already exists.`);
+      setSessionFormError(t("A Workspace named {{name}} already exists.", { name }));
       return;
     }
     const makeId = () =>
@@ -128,7 +131,7 @@ export function useSessionsActions({
     setSessionFormError("");
     setLastSavedSessionId(managedSession.id);
     setWorkspaceNameDialogOpen(false);
-    notify(`Saved Workspace: ${name}`);
+    notify(t("Saved Workspace: {{name}}", { name }));
   };
 
   const openWorkspaceNameDialog = (workspace?: ManagedSession) => {
@@ -163,7 +166,7 @@ export function useSessionsActions({
         .then(setSshPasswordSaved)
         .catch((error) => {
           setSshPasswordSaved(false);
-          setNotice(error instanceof Error ? error.message : String(error));
+          setNotice(formatUiError(error, t));
         });
     }
   };
@@ -241,12 +244,12 @@ export function useSessionsActions({
     const port = Number(sshProfileDraft.port);
     if (!workspace) {
       setSshEntrySaving?.(false);
-      setSessionFormError("Save the Workspace name first, then add an SSH entry to it.");
+      setSessionFormError(t("Save the Workspace name first, then add an SSH entry to it."));
       return;
     }
     if (!name || !host || !username || !Number.isInteger(port) || port < 1 || port > 65535) {
       setSshEntrySaving?.(false);
-      setSessionFormError("Connection name, host, username, and a valid port are required.");
+      setSessionFormError(t("Connection name, host, username, and a valid port are required."));
       return;
     }
     const wasEditing = Boolean(sshProfileDraft.id);
@@ -257,7 +260,7 @@ export function useSessionsActions({
         await invoke<void>("ssh_save_password", { entryId: entry.id, password });
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        setSessionFormError(`Unable to save the SSH password: ${detail}`);
+        setSessionFormError(t("Unable to save the SSH password: {{error}}", { error: formatUiError(error, t) }));
         setNotice(detail);
         setSshEntrySaving?.(false);
         return;
@@ -283,7 +286,7 @@ export function useSessionsActions({
     setSessionFormError("");
     setSshEntryDialogOpen(false);
     setSshEntrySaving?.(false);
-    notify(`${wasEditing ? "Updated" : "Added"} SSH entry: ${entry.name}`);
+    notify(t("{{action}} SSH entry: {{name}}", { action: t(wasEditing ? "Updated" : "Added"), name: entry.name }));
   };
 
   const forgetSshPassword = () => {
@@ -291,16 +294,16 @@ export function useSessionsActions({
     void invoke("ssh_forget_password", { entryId: sshProfileDraft.id })
       .then(() => {
         setSshPasswordSaved(false);
-        notify("Saved password removed for this SSH entry.");
+        notify(t("Saved password removed for this SSH entry."));
       })
-      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+      .catch((error) => setNotice(formatUiError(error, t)));
   };
 
   const removeSshEntry = () => {
     const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
     if (!workspace || !sshEntryDraftId) return;
     const entry = workspace.sshEntries.find((item) => item.id === sshEntryDraftId);
-    if (!entry || !window.confirm(`Remove SSH entry "${entry.name}"?`)) return;
+    if (!entry || !window.confirm(t('Remove SSH entry "{{name}}"?', { name: entry.name }))) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, sshEntries: item.sshEntries.filter((candidate) => candidate.id !== entry.id) }));
     setSshProfiles((current) => current.filter((item) => item.id !== entry.id));
     void invoke("ssh_forget_password", { entryId: entry.id }).catch(() => {});
@@ -313,7 +316,7 @@ export function useSessionsActions({
   // cleanup performed by removeSshEntry above, but is parameterized so it
   // can run without any dialog/draft state being open.
   const removeSshEntryDirect = (workspaceId: string, entry: SshProfile) => {
-    if (!window.confirm(`Remove SSH entry "${entry.name}"?`)) return;
+    if (!window.confirm(t('Remove SSH entry "{{name}}"?', { name: entry.name }))) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspaceId ? item : { ...item, sshEntries: item.sshEntries.filter((candidate) => candidate.id !== entry.id) }));
     setSshProfiles((current) => current.filter((item) => item.id !== entry.id));
     void invoke("ssh_forget_password", { entryId: entry.id }).catch(() => {});
@@ -321,7 +324,7 @@ export function useSessionsActions({
       startNewSshEntry();
       setSshEntryDialogOpen(false);
     }
-    notify(`Removed SSH entry: ${entry.name}`);
+    notify(t("Removed SSH entry: {{name}}", { name: entry.name }));
   };
 
   // REST API and Proxmox VNC entries follow the exact same add/edit/remove
@@ -369,11 +372,11 @@ export function useSessionsActions({
     const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
     const draft = restEntryDraft;
     if (!workspace) {
-      setSessionFormError("Save the Workspace name first, then add a REST API entry to it.");
+      setSessionFormError(t("Save the Workspace name first, then add a REST API entry to it."));
       return;
     }
     if (!draft || !draft.name.trim() || !draft.baseUrl.trim()) {
-      setSessionFormError("Connection name and base URL are required.");
+      setSessionFormError(t("Connection name and base URL are required."));
       return;
     }
     const wasEditing = isEditingRestEntry(workspace, draft);
@@ -387,14 +390,14 @@ export function useSessionsActions({
     setRestEntryDraft(null);
     setSessionFormError("");
     setRestEntryDialogOpen(false);
-    notify(`${wasEditing ? "Updated" : "Added"} REST API entry: ${draft.name}`);
+    notify(t("{{action}} REST API entry: {{name}}", { action: t(wasEditing ? "Updated" : "Added"), name: draft.name }));
   };
 
   const removeRestEntry = () => {
     const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
     const draft = restEntryDraft;
     if (!workspace || !draft || !isEditingRestEntry(workspace, draft)) return;
-    if (!window.confirm(`Remove REST API entry "${draft.name}"?`)) return;
+    if (!window.confirm(t('Remove REST API entry "{{name}}"?', { name: draft.name }))) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, restApiEntries: item.restApiEntries.filter((candidate) => candidate.id !== draft.id) }));
     localStorage.removeItem(`rest-api-history:${draft.id}`);
     setRestEntryDraft(null);
@@ -407,7 +410,7 @@ export function useSessionsActions({
   // REST API sidebar's own Remove button without first opening the Edit
   // dialog.
   const removeRestEntryDirect = (workspaceId: string, entry: RestApiEntry) => {
-    if (!window.confirm(`Remove REST API entry "${entry.name}"?`)) return;
+    if (!window.confirm(t('Remove REST API entry "{{name}}"?', { name: entry.name }))) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspaceId ? item : { ...item, restApiEntries: item.restApiEntries.filter((candidate) => candidate.id !== entry.id) }));
     localStorage.removeItem(`rest-api-history:${entry.id}`);
     if (restEntryDraft?.id === entry.id) {
@@ -415,7 +418,7 @@ export function useSessionsActions({
       setRestEntryDialogOpen(false);
     }
     if (activeRestEntryId === entry.id) setActiveRestEntryId("");
-    notify(`Removed REST API entry: ${entry.name}`);
+    notify(t("Removed REST API entry: {{name}}", { name: entry.name }));
   };
 
   const emptyVncEntry = (): ProxmoxVncEntry => ({
@@ -484,15 +487,15 @@ export function useSessionsActions({
     const port = endpoint ? Number(endpoint.port) : 0;
     const username = draft ? vncUsernameParts(draft.username) : null;
     if (!workspace) {
-      setSessionFormError("Save the Workspace name first, then add a Proxmox VNC entry to it.");
+      setSessionFormError(t("Save the Workspace name first, then add a Proxmox VNC entry to it."));
       return;
     }
     if (!draft || !draft.name.trim() || !endpoint?.host || !port || port < 1 || port > 65535 || !username?.account.trim()) {
-      setSessionFormError("Connection name, Proxmox host, and a valid port are required.");
+      setSessionFormError(t("Connection name, Proxmox host, and a valid port are required."));
       return;
     }
     if (passwordRequired && !vncEntryPasswordDraft && !vncEntryPasswordSaved) {
-      setSessionFormError("A Proxmox password is required to connect. Enter it and save this entry first.");
+      setSessionFormError(t("A Proxmox password is required to connect. Enter it and save this entry first."));
       return;
     }
     const wasEditing = isEditingVncEntry(workspace, draft);
@@ -504,7 +507,7 @@ export function useSessionsActions({
         setVncEntryPasswordSaved(true);
       }
     } catch (saveError) {
-      setSessionFormError(`Unable to save the Proxmox password: ${saveError instanceof Error ? saveError.message : String(saveError)}`);
+      setSessionFormError(t("Unable to save the Proxmox password: {{error}}", { error: formatUiError(saveError, t) }));
       setVncEntryPasswordSaving(false);
       return;
     }
@@ -518,7 +521,7 @@ export function useSessionsActions({
     if (hostSshPasswordDraft) {
       void invoke("ssh_save_password", { entryId: hostSshProfileId(draft.id), password: hostSshPasswordDraft })
         .then(() => setHostSshPasswordSaved(true))
-        .catch((saveError) => setNotice(saveError instanceof Error ? saveError.message : String(saveError)));
+        .catch((saveError) => setNotice(formatUiError(saveError, t)));
     }
     setVncEntryPasswordDraft("");
     setVncEntryPasswordSaving(false);
@@ -526,7 +529,7 @@ export function useSessionsActions({
     setVncEntryDraft(null);
     setSessionFormError("");
     setVncEntryDialogOpen(false);
-    notify(`${wasEditing ? "Updated" : "Added"} Proxmox VNC entry: ${draft.name}`);
+    notify(t("{{action}} Proxmox VNC entry: {{name}}", { action: t(wasEditing ? "Updated" : "Added"), name: draft.name }));
     if (vncEntryPasswordDraft || vncEntryPasswordSaved) onVncEntrySaved?.(draft.id);
   };
 
@@ -539,7 +542,7 @@ export function useSessionsActions({
       setVncEntryPasswordSaved(false);
       setSessionFormError("");
     } catch (forgetError) {
-      setSessionFormError(`Unable to forget the Proxmox password: ${forgetError instanceof Error ? forgetError.message : String(forgetError)}`);
+      setSessionFormError(t("Unable to forget the Proxmox password: {{error}}", { error: formatUiError(forgetError, t) }));
     }
   };
 
@@ -547,7 +550,7 @@ export function useSessionsActions({
     const workspace = managedSessions.find((item) => item.id === workspaceSessionId);
     const draft = vncEntryDraft;
     if (!workspace || !draft || !isEditingVncEntry(workspace, draft)) return;
-    if (!window.confirm(`Remove Proxmox VNC entry "${draft.name}"?`)) return;
+    if (!window.confirm(t('Remove Proxmox VNC entry "{{name}}"?', { name: draft.name }))) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspace.id ? item : { ...item, proxmoxVncEntries: item.proxmoxVncEntries.filter((candidate) => candidate.id !== draft.id) }));
     void invoke("proxmox_forget_secret", { entryId: draft.id, kind: "password" }).catch(() => {});
     void invoke("ssh_forget_password", { entryId: hostSshProfileId(draft.id) }).catch(() => {});
@@ -563,7 +566,7 @@ export function useSessionsActions({
   // Proxmox VNC sidebar's own Remove button without first opening the Edit
   // dialog.
   const removeVncEntryDirect = (workspaceId: string, entry: ProxmoxVncEntry) => {
-    if (!window.confirm(`Remove Proxmox VNC entry "${entry.name}"?`)) return;
+    if (!window.confirm(t('Remove Proxmox VNC entry "{{name}}"?', { name: entry.name }))) return;
     setManagedSessions((current) => current.map((item) => item.id !== workspaceId ? item : { ...item, proxmoxVncEntries: item.proxmoxVncEntries.filter((candidate) => candidate.id !== entry.id) }));
     void invoke("proxmox_forget_secret", { entryId: entry.id, kind: "password" }).catch(() => {});
     void invoke("ssh_forget_password", { entryId: hostSshProfileId(entry.id) }).catch(() => {});
@@ -574,7 +577,7 @@ export function useSessionsActions({
       setVncEntryDialogOpen(false);
     }
     if (activeVncEntryId === entry.id) setActiveVncEntryId("");
-    notify(`Removed Proxmox VNC entry: ${entry.name}`);
+    notify(t("Removed Proxmox VNC entry: {{name}}", { name: entry.name }));
   };
 
   // Pushes the app's managed public key (see ssh_storage_dir on the Rust
@@ -591,7 +594,7 @@ export function useSessionsActions({
     if (!draft) return;
     const host = proxmoxHostFromBaseUrl(draft.baseUrl);
     if (!host) {
-      setSessionFormError("The Proxmox host field above must have a valid host before installing a key onto it.");
+      setSessionFormError(t("The Proxmox host field above must have a valid host before installing a key onto it."));
       return;
     }
     const profileId = hostSshProfileId(draft.id);
@@ -604,7 +607,7 @@ export function useSessionsActions({
         await invoke("ssh_save_password", { entryId: profileId, password: passwordDraft });
         setHostSshPasswordSaved(true);
       } else if (!alreadySaved) {
-        setSessionFormError("Enter and Save a Host SSH password above before installing a key with it.");
+      setSessionFormError(t("Enter and Save a Host SSH password above before installing a key with it."));
         return;
       }
       const message = await invoke<string>("ssh_install_key", {

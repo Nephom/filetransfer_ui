@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 export type HelpPage = {
   id: string;
+  icon?: HelpIconName;
   title: string;
   summary: string;
   content: ReactNode;
@@ -26,7 +27,21 @@ export type HelpIconName =
   | "history"
   | "settings"
   | "wrench"
-  | "info";
+  | "info"
+  | "browser"
+  | "vnc"
+  | "rest"
+  | "layout"
+  | "queue"
+  | "drag"
+  | "server"
+  | "download"
+  | "upload"
+  | "link"
+  | "shield"
+  | "eye"
+  | "trash"
+  | "edit";
 
 export function HelpIcon({ name, size = 18 }: { name: HelpIconName; size?: number }) {
   const paths: Record<HelpIconName, ReactNode> = {
@@ -42,6 +57,20 @@ export function HelpIcon({ name, size = 18 }: { name: HelpIconName; size?: numbe
     settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-1.7 1.7-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-2.4v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1L8 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H6.7v-2.4h.2a1.7 1.7 0 0 0 1.5-1A1.7 1.7 0 0 0 8.1 8L8 7.9l1.7-1.7.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h2.4v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 8l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2v2.4h-.2a1.7 1.7 0 0 0-1.5 1z" /></>,
     wrench: <><path d="M14.5 6.5a4 4 0 0 0-5.2 5.2L4 17a2 2 0 1 0 2.8 2.8l5.3-5.3a4 4 0 0 0 5.2-5.2l-2.4 2.4-2.8-.8-.8-2.8z" /></>,
     info: <><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" /></>,
+    browser: <><circle cx="12" cy="12" r="9" /><path d="M3.5 9h17M8.5 3.7c2 2.1 3 4.9 3 8.3s-1 6.2-3 8.3M15.5 3.7c2 2.1 3 4.9 3 8.3s-1 6.2-3 8.3" /></>,
+    vnc: <><rect x="3" y="4.5" width="18" height="12" rx="2" /><path d="M9 20h6M12 16.5V20m-2-10 4 2.5-4 2.5z" /></>,
+    rest: <><path d="M8.5 5C6.5 5 6 6 6 7.5v2C6 11 5 12 3.5 12 5 12 6 13 6 14.5v2C6 18 6.5 19 8.5 19M15.5 5c2 0 2.5 1 2.5 2.5v2c0 1.5 1 2.5 2.5 2.5-1.5 0-2.5 1-2.5 2.5v2c0 1.5-.5 2.5-2.5 2.5" /></>,
+    layout: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M12 4v16M3 10h9m0 4h9" /></>,
+    queue: <><path d="M4 6h16M4 12h16M4 18h10" /><circle cx="18" cy="18" r="2" /></>,
+    drag: <><path d="M5 8h12m-3-3 3 3-3 3M19 16H7m3-3-3 3 3 3" /></>,
+    server: <><rect x="3" y="4" width="18" height="6" rx="1.5" /><rect x="3" y="14" width="18" height="6" rx="1.5" /><path d="M7 7h.01M7 17h.01M11 7h7M11 17h7" /></>,
+    download: <><path d="M12 3v12m-4-4 4 4 4-4M4 18v3h16v-3" /></>,
+    upload: <><path d="M12 16V4m-4 4 4-4 4 4M4 18v3h16v-3" /></>,
+    link: <><path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1" /><path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1" /></>,
+    shield: <><path d="M12 3 20 6v5c0 5-3.4 8.4-8 10-4.6-1.6-8-5-8-10V6z" /><path d="m8.5 12 2.2 2.2 4.8-4.8" /></>,
+    eye: <><path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6z" /><circle cx="12" cy="12" r="2.5" /></>,
+    trash: <><path d="M4 7h16M9 7V4h6v3m3 0-.8 13H6.8L6 7m3 3v7m6-7v7" /></>,
+    edit: <><path d="m4 16.5-.8 4.3 4.3-.8L19 8.5 15.5 5z" /><path d="m13.8 6.7 3.5 3.5" /></>,
   };
   return <svg className="help-icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -52,18 +81,18 @@ const List = ({ children }: { children: ReactNode }) => <ul>{children}</ul>;
 export const helpSections: HelpSection[] = [
   {
     id: "getting-started", title: "Getting Started", icon: "compass", pages: [
-      { id: "login", title: "Login and server connection", summary: "Connect nFterm to an HTTPS file server.", content: <Page><p>Enter the server address without a protocol, path, or port. The default HTTPS port is <code>9443</code>. nFterm verifies TLS certificates by default. The explicit <strong>Ignore SSL certificate verification</strong> option is only for a trusted private endpoint whose certificate cannot be installed in the operating system trust store.</p><List><li>Use <strong>Sign in</strong> for the API file browser.</li></List></Page> },
-      { id: "interface", title: "Interface overview", summary: "Understand the header, panes, toolbar, and status areas.", content: <Page><p>The header contains the current account, remote Location selector, and connection status. The command bar acts on the active pane. In Split mode, the active pane indicator tells you whether actions target LOCAL or REMOTE.</p><p>The file area supports keyboard selection, marquee selection, folder navigation, search, sorting, and details/grid views.</p><p>The SSH terminals are ordinary windows on the desktop: each SSH terminal opens in its own window that can be moved, resized, minimized and maximized like the Location windows.</p></Page> },
+      { id: "login", title: "Login and server connection", summary: "Connect nFterm to an HTTPS file server.", content: <Page><p>Enter the server address without a protocol, path, or port. The default HTTPS port is <code>9443</code>. nFterm verifies TLS certificates by default. The explicit <strong>Ignore SSL certificate verification</strong> option is only for a trusted private endpoint whose certificate cannot be installed in the operating system trust store.</p><List><li>Use <strong>Sign in</strong> for the API file browser. Enter <code>127.0.0.1</code> to use local-only mode without an API session.</li></List></Page> },
+      { id: "interface", title: "Interface overview", summary: "Understand the header, panes, toolbar, and status areas.", content: <Page><p>The top-right area contains Transfer Queue, Settings, and your Account menu. Use Functions and Terminal in the dock at the bottom to open locations and tools. Each Location window has its own command bar, and actions apply to that window.</p><p>The file area supports keyboard selection, marquee selection, folder navigation, search, sorting, and details/grid views.</p><p>The SSH terminals are ordinary windows on the desktop: each SSH terminal opens in its own window that can be moved, resized, minimized and maximized like the Location windows.</p></Page> },
     ],
   },
   {
     id: "file-browser", title: "File Browser", icon: "folder", pages: [
-      { id: "navigation", title: "Navigation and selection", summary: "Browse local and remote folders safely.", content: <Page><p>Use the folder tree or breadcrumbs to navigate. LOCAL starts in your home directory. Remote API locations are selected from the Location menu; each connected SSH entry opens in its own SFTP window.</p><List><li>Click a folder to open it.</li><li>Use Ctrl/Cmd-click or marquee selection for multiple items.</li><li>Use the search box to filter the current listing.</li></List></Page> },
-      { id: "file-actions", title: "File actions", summary: "Create, rename, delete, open, and archive files.", content: <Page><p>The toolbar provides New folder, Rename, Delete, View, Select all, and archive actions. Safety confirmations protect delete, overwrite, recursive, and cross-source move operations. Local files can be opened or edited with the operating system tools.</p></Page> },
+      { id: "navigation", title: "Navigation and selection", summary: "Browse local and remote folders safely.", content: <Page><p>Use the folder tree or breadcrumbs to navigate. LOCAL starts in your home directory. Remote API locations are selected from <strong>Functions → Location</strong>; each connected SSH entry opens in its own SFTP window.</p><List><li>Click a folder to open it.</li><li>Use Ctrl/Cmd-click or marquee selection for multiple items.</li><li>Use the search box to filter the current listing.</li></List></Page> },
+      { id: "file-actions", title: "File actions", summary: "Create, rename, delete, open, and archive files.", content: <Page><p>The command bar provides New folder, Rename, Delete, View, Select all, and Refresh. Archive actions are available in LOCAL and SFTP, not API Remote. Safety confirmations protect delete, overwrite, recursive, and cross-source move operations. Local files can be opened or edited with the operating system tools.</p></Page> },
     ],
   },
   {
-    id: "rest-api", title: "REST API", icon: "compass", pages: [
+    id: "rest-api", title: "REST API", icon: "rest", pages: [
       { id: "redfish-session-auth", title: "Redfish Session Auth", summary: "Log in to HPE iLO Redfish APIs and reuse the session safely.", content: <Page><p>Use this flow for HPE iLO and other Redfish services that provide a <code>SessionService/Sessions</code> endpoint.</p><ol><li>Set <strong>Authentication Mode</strong> to <strong>Session Auth</strong>.</li><li>Enter your Redfish username.</li><li>Enter your Redfish password.</li><li>Click <strong>Use Redfish SessionService preset</strong>.</li><li>Click <strong>Login</strong>. The same button changes to <strong>Logout</strong> after success.</li><li>Confirm that <strong>REST session established for this entry.</strong> appears.</li><li>Click <strong>GET</strong> to read the current Redfish resource.</li><li>Click <strong>Logout</strong> to DELETE the advertised Redfish session and clear local session state.</li></ol><p>The token is kept for this REST API entry and reused when you click a history item, breadcrumb, <code>@odata.id</code>, resource link, Redfish action, or download link. nFterm does not read browser cookies or sessions created by other tools.</p><h3>HPE IML Monitor</h3><p>Start creates a new Desktop CSV session file after the HPE ComputerSystem serial number is discovered. New IML entries are appended immediately. The App display keeps at most 50 entries.</p><p>The monitor retries transient iLO connection failures with backoff. It re-discovers Redfish resources after reconnecting. A manual Stop cancels polling and retry. A complete AHS download appears only after manual Stop. AHS download has no date-range selector and does not filter the response by date.</p></Page> },
       { id: "redfish-navigation", title: "Redfish navigation", summary: "Browse @odata.id links, collections, actions, and downloads.", content: <Page><p>Redfish resources commonly expose navigation through <code>@odata.id</code>, <code>href</code>, <code>Members</code>, and nested <code>Links</code>. Click a resource link to issue a new GET. Use the breadcrumbs or Recent GET paths to revisit a resource.</p><p>Power, BIOS, reset, and other <code>Actions.*.target</code> entries are shown separately and require confirmation before a POST is sent. Download links such as <code>DownloadUri</code> open a LOCAL folder picker and save the response using the current REST session.</p></Page> },
     ],
@@ -71,7 +100,7 @@ export const helpSections: HelpSection[] = [
   {
     id: "file-transfer", title: "File Transfer", icon: "transfer", pages: [
       { id: "upload-download", title: "Upload and download", summary: "Move files between LOCAL, API Remote, and SSH/SFTP.", content: <Page><p>Upload sends local selections to the current remote folder. Download writes files to the selected LOCAL folder. A single regular API file uses a direct download; folders and multiple selections are packaged as an archive.</p><p>Transfers are verified and report backend error messages instead of only HTTP status codes.</p></Page> },
-      { id: "queue", title: "Transfer queue", summary: "Monitor progress, retry failures, and cancel work.", content: <Page><p>The queue records queued, running, retrying, completed, failed, cancelled, and needs-user-action states. Open the queue from the toolbar to inspect progress and error categories. Retry only after correcting the reported destination, permission, connection, or source-file problem.</p></Page> },
+      { id: "queue", title: "Transfer queue", summary: "Monitor progress, retry failures, and cancel work.", content: <Page><p>The queue records queued, running, retrying, completed, failed, cancelled, and needs-user-action states. Open Transfer Queue from the button at the top-right to inspect progress and error categories. Retry only after correcting the reported destination, permission, connection, or source-file problem.</p></Page> },
       { id: "drag-drop", title: "Drag and drop", summary: "Move selections between the two application panes.", content: <Page><p>Drag selections between LOCAL and REMOTE panes to stage a transfer. The application uses its internal HTML5 drag/drop path so pane-to-pane operations remain reliable. External operating-system Explorer drops are not supported.</p></Page> },
     ],
   },
@@ -96,7 +125,7 @@ export const helpSections: HelpSection[] = [
     ],
   },
   {
-    id: "proxmox-vnc", title: "Proxmox VNC", icon: "workspace", pages: [
+    id: "proxmox-vnc", title: "Proxmox VNC", icon: "vnc", pages: [
       { id: "proxmox-entry", title: "Create a Proxmox entry", summary: "Configure HTTPS access to a Proxmox cluster.", content: <Page><p>Open <strong>Workspace Manager</strong>, enable Proxmox VNC in Settings, and add an entry with its HTTPS host, API port (normally <code>8006</code>), account, and <code>pam</code> or <code>pve</code> realm.</p><p>Select it from <strong>Functions → VNC → Entries</strong> to log in automatically. If the entry has no saved password, nFterm opens its Workspace edit form so you can save one; after saving, login and VM discovery continue automatically. The Proxmox password is kept in the system credential store and is never written to Workspace JSON or operation logs.</p><p>The Host Entry edit page also contains the entry's Host SSH (jump) credentials. VM SSH settings are configured for the selected VM in the VM picker.</p></Page> },
       { id: "proxmox-connect", title: "Connect to a VM", summary: "Choose a guest, then open its independent VNC window.", content: <Page><p>Select a Proxmox entry from <strong>Functions → VNC → Entries</strong>. After automatic login, a separate VM picker window lists nodes and guests. Choose a VM and select <strong>Connect</strong> to open its own VNC display window; the picker remains independent and can be used again.</p><p>nFterm requests a short-lived Proxmox VNC proxy ticket and creates a loopback WebSocket relay for the embedded noVNC client. The relay validates the exact connection path and one-time token in addition to the Proxmox ticket. A pending relay is cancelled when its display window closes. Connected sessions have no fixed idle timeout. Use <strong>View only</strong> to disable input and <strong>Ctrl+Alt+Del</strong> only when the guest should receive it.</p><p><strong>Ignore TLS certificate errors</strong> is disabled by default. Enable it only for a trusted private endpoint whose certificate cannot be installed in the operating system trust store.</p><p>Choose <strong>Functions → VNC → Direct mode</strong> for a non-Proxmox VNC host. Enter the host and port in its own setup window; required viewer or macOS account credentials are requested by the VNC server after connecting. Direct mode has no VM file transfer.</p></Page> },
       { id: "proxmox-file-transfer", title: "File transfer credentials and upload/download", summary: "Open file transfer in its own window for the connected VM.", content: <Page><p>After connecting to a Proxmox VM, file-transfer route detection runs in the background. In the VNC display window, select the small <strong>Files</strong> button at the upper left to open a separate file-transfer window. The VNC display stays connected, and closing or reopening the Files window does not discard the transfer queue.</p><List><li><strong>Direct SFTP</strong> is used when the VM's own IP is reachable on its SSH port.</li><li><strong>SFTP via host jump</strong> tunnels through the Proxmox host when direct access is unavailable. Use <strong>Try Host Jump</strong> from the Files window when an explicit jump attempt is needed.</li><li><strong>Guest Agent</strong> is a limited QEMU fallback; it does not support folder downloads and uploads are size-limited.</li></List><p>The detected route and guest IP appear in the Files window. If no route is available, it explains what configuration is missing.</p><h3>Setting up SSH credentials</h3><p>In the VM picker, choose <strong>VM SFTP settings</strong> to configure the guest's SSH username, port, optional private-key path, password, and fallback IP. Configure Host SSH (jump) username, port, key, and password in the Proxmox Entry's Workspace edit form. Passwords stay in the system credential store, not Workspace JSON.</p><h3>Browsing and transferring</h3><List><li>Use <strong>Upload</strong> to send local files to the current VM folder.</li><li>Select files and choose <strong>Download</strong> to pick a local destination.</li><li>Use <strong>Refresh</strong>, folder names, and the <strong>.. (up)</strong> row to browse.</li><li>Track active and completed operations in the transfer queue; recoverable errors retry automatically.</li></List></Page> },
@@ -133,6 +162,24 @@ export const helpSections: HelpSection[] = [
       { id: "support", title: "Documentation and support", summary: "Find technical references and report problems.", content: <Page><p>For server API behavior, consult the parent API contract. When reporting a problem, include the operation name, non-sensitive error message, app version, operating system, and relevant operation-log entry. Do not attach private keys, passwords, tokens, or passphrases.</p></Page> },
     ],
   },
+  {
+    id: "browser", title: "Browser", icon: "browser", pages: [
+      { id: "browser-pane", title: "Browser pane and downloads", summary: "Open the Windows-only browser and manage downloaded files.", content: <Page><p>Open <strong>Functions → Browser</strong> from the dock. The Browser pane is available on Windows and keeps its navigation controls, page content, and downloads within its own window.</p><p>The Downloads panel shows received bytes and status. Completed downloads can be saved to the configured default destination or a chosen local folder, or sent to the active API Remote. A staged file can be discarded when it is no longer needed.</p></Page> },
+    ],
+  },
 ];
 
-export const helpPages = helpSections.flatMap((section) => section.pages);
+const pageIcons: Record<string, HelpIconName> = {
+  login: "key", interface: "layout", navigation: "folder", "file-actions": "edit",
+  "redfish-session-auth": "key", "redfish-navigation": "compass",
+  "upload-download": "transfer", queue: "queue", "drag-drop": "drag",
+  workspaces: "workspace", "ssh-entry": "key", terminal: "terminal", sftp: "transfer", "ssh-logs": "history",
+  "ssh-storage": "folder", "key-files": "key", "auth-failures": "wrench",
+  "proxmox-entry": "server", "proxmox-connect": "vnc", "proxmox-file-transfer": "transfer", "proxmox-troubleshooting": "wrench",
+  "share-links": "share", "direct-links": "link", undo: "history", "operation-log": "history",
+  safety: "shield", preferences: "settings", "connection-problems": "wrench", "transfer-problems": "transfer",
+  "about-nfterm": "info", support: "book", "browser-pane": "browser",
+};
+
+export const helpPageIcon = (pageId: string, fallback: HelpIconName = "book") => pageIcons[pageId] || fallback;
+export const helpPages = helpSections.flatMap((section) => section.pages.map((page) => ({ ...page, icon: helpPageIcon(page.id, section.icon) })));

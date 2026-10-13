@@ -17,6 +17,16 @@ export function loadTypeScript(path, { mocks = {}, globals = {}, importMeta } = 
     const nativeRequire = createRequire(filename);
     const require = (id) => {
       if (Object.hasOwn(mocks, id)) return mocks[id];
+      if (id === "react-i18next") {
+        return {
+          useTranslation: () => ({
+            t: (key, values = {}) => String(key).replace(/\{\{(\w+)\}\}/g, (_match, name) => String(values[name] ?? "")),
+            i18n: { language: "en_US", changeLanguage: async () => undefined },
+          }),
+          initReactI18next: { type: "3rdParty", init() {} },
+          I18nextProvider: ({ children }) => children,
+        };
+      }
       if (id.startsWith("@tauri-apps/") || id.startsWith("@crabnebula/")) throw new Error(`Native module must be explicitly mocked: ${id}`);
       if (id.endsWith(".css")) return {};
       if (id.startsWith(".")) {

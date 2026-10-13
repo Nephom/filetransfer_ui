@@ -1,3 +1,4 @@
+import { formatQuantity, useAppTranslation } from "../../i18n/useAppTranslation";
 import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FloatingWindow } from "../../ui/FloatingWindow";
@@ -63,6 +64,7 @@ export type VncVmPickerPaneProps = {
 };
 
 export function VncVmPickerPane({ entry, vms, authenticated, loading, error, onChangeEntry, onConnect, onRetry, onLogout, onEditEntry }: VncVmPickerPaneProps) {
+  const { t } = useAppTranslation();
   const nodes = [...new Set(vms.map((vm) => vm.node))].sort();
   const nodeVms = vms.filter((vm) => vm.node === entry.node);
   const selectedVm = nodeVms.find((vm) => vm.vmid === entry.vmid);
@@ -116,55 +118,55 @@ export function VncVmPickerPane({ entry, vms, authenticated, loading, error, onC
       setVmSshError(forgetError instanceof Error ? forgetError.message : String(forgetError));
     }
   };
-  return <section className="vnc-picker-pane" aria-label={`Select a VM for ${entry.name}`}>
+  return <section className="vnc-picker-pane" aria-label={t("Select a VM for {{name}}", { name: entry.name })}>
     <header className="vnc-picker-heading">
-      <div><span className="eyebrow">Proxmox VNC</span><h1>{entry.name}</h1><small>{entry.baseUrl}</small></div>
-      <span className="vnc-session-status">{loading ? (authenticated ? "Loading VMs…" : "Logging in…") : authenticated ? `${vms.length} VMs` : "Not logged in"}</span>
+      <div><span className="eyebrow">{t("Proxmox VNC")}</span><h1>{entry.name}</h1><small>{entry.baseUrl}</small></div>
+      <span className="vnc-session-status">{loading ? (authenticated ? t("Loading VMs…") : t("Logging in…")) : authenticated ? formatQuantity(vms.length, "VM", "VMs") : t("Not logged in")}</span>
     </header>
     {error && <div className="notice rest-error" role="alert">{error}</div>}
-    {!authenticated && <p className="field-help">{loading ? "Logging in to Proxmox and loading the VM list…" : "Select this Entry from Functions → VNC → Entries to log in."}</p>}
+    {!authenticated && <p className="field-help">{loading ? t("Logging in to Proxmox and loading the VM list…") : t("Select this Entry from Functions → VNC → Entries to log in.")}</p>}
     {authenticated && <div className="vnc-picker-controls">
-      <label>Node
+      <label>{t("Node")}
         <select value={entry.node} onChange={(event) => onChangeEntry({ node: event.target.value, vmid: null })} disabled={loading || !nodes.length}>
-          <option value="">Select node</option>
+          <option value="">{t("Select node")}</option>
           {nodes.map((node) => <option key={node} value={node}>{node}</option>)}
         </select>
       </label>
-      <label>VM
+      <label>{t("VM")}
         <select value={selectedVm ? String(selectedVm.vmid) : ""} onChange={(event) => {
           const vm = nodeVms.find((item) => String(item.vmid) === event.target.value);
           if (vm) onChangeEntry({ node: vm.node, vmid: vm.vmid, guestType: vm.guestType as "qemu" | "lxc" });
         }} disabled={loading || !entry.node || !nodeVms.length}>
-          <option value="">Select VM</option>
-          {nodeVms.map((vm) => <option key={vm.vmid} value={vm.vmid}>{vm.name || `VM ${vm.vmid}`} ({vm.vmid}) · {vm.status || "unknown"}</option>)}
+          <option value="">{t("Select VM")}</option>
+          {nodeVms.map((vm) => <option key={vm.vmid} value={vm.vmid}>{vm.name || `VM ${vm.vmid}`} ({vm.vmid}) · {vm.status || t("Unknown")}</option>)}
         </select>
       </label>
     </div>}
-    {authenticated && selectedVm && <div className="vnc-picker-selected"><strong>{selectedVm.name || `VM ${selectedVm.vmid}`}</strong><span>{selectedVm.guestType.toUpperCase()} · VMID {selectedVm.vmid} · {selectedVm.node}</span><button type="button" onClick={() => setVmSshSettingsOpen(true)}>VM SFTP settings</button></div>}
+    {authenticated && selectedVm && <div className="vnc-picker-selected"><strong>{selectedVm.name || t("VM {{vmid}}", { vmid: selectedVm.vmid })}</strong><span>{selectedVm.guestType.toUpperCase()} · VMID {selectedVm.vmid} · {selectedVm.node}</span><button type="button" onClick={() => setVmSshSettingsOpen(true)}>{t("VM SFTP settings")}</button></div>}
     <div className="vnc-picker-actions">
-      <button type="button" onClick={onEditEntry}>Edit Entry</button>
+      <button type="button" onClick={onEditEntry}>{t("Edit Entry")}</button>
       {authenticated
-        ? <><button type="button" onClick={onLogout} disabled={loading}>Logout</button><button type="button" className="confirm" onClick={() => selectedVm && onConnect(selectedVm)} disabled={loading || !selectedVm}>Connect</button></>
-        : <button type="button" className="confirm" onClick={onRetry} disabled={loading}>Retry login</button>}
+        ? <><button type="button" onClick={onLogout} disabled={loading}>{t("Logout")}</button><button type="button" className="confirm" onClick={() => selectedVm && onConnect(selectedVm)} disabled={loading || !selectedVm}>{t("Connect")}</button></>
+        : <button type="button" className="confirm" onClick={onRetry} disabled={loading}>{t("Retry login")}</button>}
     </div>
     {vmSshSettingsOpen && selectedVm && <FloatingWindow
-      ariaLabel={`VM SFTP settings for VMID ${selectedVm.vmid}`}
+      ariaLabel={t("VM SFTP settings for VMID {{vmid}}", { vmid: selectedVm.vmid })}
       className="vnc-vm-ssh-window"
-      header={<strong>VM SFTP settings · {selectedVm.name || `VM ${selectedVm.vmid}`}</strong>}
+      header={<strong>{t("VM SFTP settings")} · {selectedVm.name || t("VM {{vmid}}", { vmid: selectedVm.vmid })}</strong>}
       onClose={() => setVmSshSettingsOpen(false)}
-      footer={<div className="modal-actions"><button type="button" onClick={() => setVmSshSettingsOpen(false)}>Close</button><button type="button" className="confirm" onClick={() => void saveVmSshProfile()} disabled={vmSshSaving || !vmSshDraft.username.trim()}>{vmSshSaving ? "Saving…" : "Save VM SFTP"}</button></div>}
+      footer={<div className="modal-actions"><button type="button" onClick={() => setVmSshSettingsOpen(false)}>{t("Close")}</button><button type="button" className="confirm" onClick={() => void saveVmSshProfile()} disabled={vmSshSaving || !vmSshDraft.username.trim()}>{vmSshSaving ? t("Saving…") : t("Save VM SFTP")}</button></div>}
     >
       <div className="vnc-vm-ssh-window-body">
-        <div className="vnc-vm-ssh-window-status"><span>{storedVmSshProfile ? "Profile saved for this VM" : "Not configured for this VM"}</span><span>{vmSshPasswordSaved ? "Password saved" : "Password not saved"}</span></div>
+        <div className="vnc-vm-ssh-window-status"><span>{storedVmSshProfile ? t("Profile saved for this VM") : t("Not configured for this VM")}</span><span>{vmSshPasswordSaved ? t("Password saved") : t("Password not saved")}</span></div>
         <div className="vnc-auth-grid vnc-auth-grid-compact">
-          <label>Username<input value={vmSshDraft.username} onChange={(event) => setVmSshDraft((current) => ({ ...current, username: event.target.value }))} placeholder="root" /></label>
-          <label>Port<input type="number" min="1" max="65535" value={vmSshDraft.port} onChange={(event) => setVmSshDraft((current) => ({ ...current, port: Number(event.target.value) || 22 }))} /></label>
-          <label>Private key<input value={vmSshDraft.privateKeyPath} onChange={(event) => setVmSshDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder="Optional" /></label>
-          <label>Fallback IP<input value={vmSshDraft.fallbackIp} onChange={(event) => setVmSshDraft((current) => ({ ...current, fallbackIp: event.target.value }))} placeholder="Optional" /></label>
+          <label>{t("Username")}<input value={vmSshDraft.username} onChange={(event) => setVmSshDraft((current) => ({ ...current, username: event.target.value }))} placeholder="root" /></label>
+          <label>{t("Port")}<input type="number" min="1" max="65535" value={vmSshDraft.port} onChange={(event) => setVmSshDraft((current) => ({ ...current, port: Number(event.target.value) || 22 }))} /></label>
+          <label>{t("Private key")}<input value={vmSshDraft.privateKeyPath} onChange={(event) => setVmSshDraft((current) => ({ ...current, privateKeyPath: event.target.value }))} placeholder={t("Optional")} /></label>
+          <label>{t("Fallback IP")}<input value={vmSshDraft.fallbackIp} onChange={(event) => setVmSshDraft((current) => ({ ...current, fallbackIp: event.target.value }))} placeholder={t("Optional")} /></label>
         </div>
-        <label className="vnc-vm-ssh-password">Password<input type="password" value={vmSshPassword} onChange={(event) => setVmSshPassword(event.target.value)} placeholder={vmSshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" /></label>
-        {vmSshPasswordSaved && <button type="button" onClick={() => void forgetVmSshPassword()} disabled={vmSshSaving}>Forget VM password</button>}
-        <small className="field-help">QEMU Guest Agent file access works without VM SSH credentials. Saving this profile enables direct or host-jump SFTP detection.</small>
+        <label className="vnc-vm-ssh-password">{t("Password")}<input type="password" value={vmSshPassword} onChange={(event) => setVmSshPassword(event.target.value)} placeholder={vmSshPasswordSaved ? t("Saved - leave blank to keep it") : t("Not saved")} autoComplete="new-password" /></label>
+        {vmSshPasswordSaved && <button type="button" onClick={() => void forgetVmSshPassword()} disabled={vmSshSaving}>{t("Forget VM password")}</button>}
+        <small className="field-help">{t("QEMU Guest Agent file access works without VM SSH credentials. Saving this profile enables direct or host-jump SFTP detection.")}</small>
         {vmSshError && <div className="notice rest-error" role="alert">{vmSshError}</div>}
       </div>
     </FloatingWindow>}
@@ -174,6 +176,7 @@ export function VncVmPickerPane({ entry, vms, authenticated, loading, error, onC
 export type VncDirectSetupPaneProps = { onConnect: (host: string, port: number) => void };
 
 export function VncDirectSetupPane({ onConnect }: VncDirectSetupPaneProps) {
+  const { t } = useAppTranslation();
   const [host, setHost] = useState(() => localStorage.getItem("fileapi-direct-vnc-host") || "");
   const [port, setPort] = useState(() => Number(localStorage.getItem("fileapi-direct-vnc-port")) || 5900);
   const valid = Boolean(host.trim()) && Number.isInteger(port) && port >= 1 && port <= 65535;
@@ -186,13 +189,13 @@ export function VncDirectSetupPane({ onConnect }: VncDirectSetupPaneProps) {
     setPort(next);
     localStorage.setItem("fileapi-direct-vnc-port", String(next));
   };
-  return <section className="vnc-picker-pane direct-vnc-setup-pane" aria-label="Direct VNC setup">
-    <header className="vnc-picker-heading"><div><span className="eyebrow">Direct mode</span><h1>Connect to a VNC host</h1><small>Direct VNC does not provide VM file transfer.</small></div></header>
+  return <section className="vnc-picker-pane direct-vnc-setup-pane" aria-label={t("Direct VNC setup")}>
+    <header className="vnc-picker-heading"><div><span className="eyebrow">{t("Direct mode")}</span><h1>{t("Connect to a VNC host")}</h1><small>{t("Direct VNC does not provide VM file transfer.")}</small></div></header>
     <div className="vnc-picker-controls direct-vnc-setup-controls">
-      <label>Host<input value={host} onChange={(event) => updateHost(event.target.value)} placeholder="vnc-server.local" /></label>
-      <label>Port<input type="number" min="1" max="65535" value={port || ""} onChange={(event) => updatePort(event.target.value)} /></label>
+      <label>{t("Host")}<input value={host} onChange={(event) => updateHost(event.target.value)} placeholder="vnc-server.local" /></label>
+      <label>{t("Port")}<input type="number" min="1" max="65535" value={port || ""} onChange={(event) => updatePort(event.target.value)} /></label>
     </div>
-    <p className="field-help">The VNC server will request any required viewer or account credentials after the connection starts.</p>
-    <div className="vnc-picker-actions"><button type="button" className="confirm" onClick={() => onConnect(host.trim(), port)} disabled={!valid}>Connect</button></div>
+    <p className="field-help">{t("The VNC server will request any required viewer or account credentials after the connection starts.")}</p>
+    <div className="vnc-picker-actions"><button type="button" className="confirm" onClick={() => onConnect(host.trim(), port)} disabled={!valid}>{t("Connect")}</button></div>
   </section>;
 }

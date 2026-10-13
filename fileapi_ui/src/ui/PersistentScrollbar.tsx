@@ -9,9 +9,11 @@ type ScrollMetrics = {
 export function PersistentScrollbar({
   targetRef,
   label,
+  controlsId,
 }: {
   targetRef: React.RefObject<HTMLElement | null>;
   label: string;
+  controlsId: string;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const dragStart = useRef<{ pointerY: number; scrollTop: number } | null>(null);
@@ -83,7 +85,7 @@ export function PersistentScrollbar({
       className="persistent-scrollbar"
       role="scrollbar"
       aria-label={label}
-      aria-controls={label === "Folders" ? "folders" : "files"}
+      aria-controls={controlsId}
       aria-orientation="vertical"
       aria-valuemin={0}
       aria-valuemax={maxScroll}

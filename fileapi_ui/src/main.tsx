@@ -1,6 +1,8 @@
+import { formatQuantity, useAppTranslation } from "./i18n/useAppTranslation";
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
+import { I18nextProvider } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
@@ -69,6 +71,8 @@ import { useTransferQueueState } from "./features/queue/useTransferQueueState";
 import { useTransferQueueActions } from "./features/queue/useTransferQueueActions";
 import type { TransferQueueItem } from "./features/queue/queue-contracts";
 import type { BrowserDownloadForRemote } from "./features/browser/browser-contracts";
+import i18n, { changeAppLocale, getAppLocale, toIntlLocale } from "./i18n/i18n";
+import { formatUiError, UiMessageError } from "./i18n/errors";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
 const SftpWindow = lazy(() => import("./features/sftp/SftpWindow").then(({ SftpWindow: component }) => ({ default: component })));
@@ -301,12 +305,10 @@ class ApiResponse {
 
 const validateServer = (session: Session) => {
   if (!/^[a-zA-Z0-9.-]+$/.test(session.host.trim()))
-    throw new Error(
-      "Enter a server address without a protocol, path, or port.",
-    );
+    throw new UiMessageError("Enter a server address without a protocol, path, or port.");
   const port = Number(session.port);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
-    throw new Error("Enter an HTTPS port between 1 and 65535.");
+    throw new UiMessageError("Enter an HTTPS port between 1 and 65535.");
 };
 
 type DesktopAppProps = {
@@ -342,6 +344,7 @@ type LoginScreenProps = {
 };
 
 function LoginScreen({ session, setSession, password, setPassword, busy, notice, glassMenusEnabled, glassDialogsEnabled, onSubmit }: LoginScreenProps) {
+  const { t } = useAppTranslation();
   const updateSaveUserInformation = (enabled: boolean) => {
     setSession((current) => ({ ...current, saveUserInformation: enabled }));
     if (!enabled) {
@@ -356,17 +359,17 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
     <main className={`login ${glassMenusEnabled ? "" : "glass-menus-off"} ${glassDialogsEnabled ? "" : "glass-dialogs-off"}`}>
       <form onSubmit={onSubmit}>
         <h1>nFterm {appVersion && <small className="login-version">{appVersion}</small>}</h1>
-        <label className="login-field-server">Server address<input placeholder="files.example.internal" value={session.host} onChange={(event) => setSession((current) => ({ ...current, host: event.target.value }))} /></label>
-        <label className="login-field-port">HTTPS port<input inputMode="numeric" value={session.port} onChange={(event) => setSession((current) => ({ ...current, port: event.target.value }))} /></label>
-        <label className="login-field-username">Username<input value={session.username} onChange={(event) => setSession((current) => ({ ...current, username: event.target.value }))} /></label>
-        <label className="login-field-password">Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-        <div className="login-toggle-row" role="group" aria-label="Login options">
-          <button type="submit" className="login-submit-button" disabled={busy}>{busy ? "Signing in..." : "Sign in"}</button>
-          <button type="button" className={`login-toggle-button${session.ignoreTlsErrors ? " enabled" : ""}`} aria-pressed={session.ignoreTlsErrors} onClick={() => setSession((current) => ({ ...current, ignoreTlsErrors: !current.ignoreTlsErrors }))} title="Disable HTTPS certificate verification for this API server">
-            <span className="mode-switch-dot" aria-hidden="true" /><span>IGNORE SSL</span>
+        <label className="login-field-server">{t("Server address")}<input placeholder={t("files.example.internal")} value={session.host} onChange={(event) => setSession((current) => ({ ...current, host: event.target.value }))} /></label>
+        <label className="login-field-port">{t("HTTPS port")}<input inputMode="numeric" value={session.port} onChange={(event) => setSession((current) => ({ ...current, port: event.target.value }))} /></label>
+        <label className="login-field-username">{t("Username")}<input value={session.username} onChange={(event) => setSession((current) => ({ ...current, username: event.target.value }))} /></label>
+        <label className="login-field-password">{t("Password")}<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        <div className="login-toggle-row" role="group" aria-label={t("Login options")}>
+          <button type="submit" className="login-submit-button" disabled={busy}>{busy ? t("Signing in...") : t("Sign in")}</button>
+          <button type="button" className={`login-toggle-button${session.ignoreTlsErrors ? " enabled" : ""}`} aria-pressed={session.ignoreTlsErrors} onClick={() => setSession((current) => ({ ...current, ignoreTlsErrors: !current.ignoreTlsErrors }))} title={t("Disable HTTPS certificate verification for this API server")}>
+            <span className="mode-switch-dot" aria-hidden="true" /><span>{t("IGNORE SSL")}</span>
           </button>
-          <button type="button" className={`login-toggle-button${session.saveUserInformation ? " enabled" : ""}`} aria-pressed={session.saveUserInformation} onClick={() => updateSaveUserInformation(!session.saveUserInformation)} title="Save the API username and password in the OS credential store">
-            <span className="mode-switch-dot" aria-hidden="true" /><span>SAVE USER INFO</span>
+          <button type="button" className={`login-toggle-button${session.saveUserInformation ? " enabled" : ""}`} aria-pressed={session.saveUserInformation} onClick={() => updateSaveUserInformation(!session.saveUserInformation)} title={t("Save the API username and password in the OS credential store")}>
+            <span className="mode-switch-dot" aria-hidden="true" /><span>{t("SAVE USER INFO")}</span>
           </button>
         </div>
         {notice && <output role="alert">{notice}</output>}
@@ -376,6 +379,7 @@ function LoginScreen({ session, setSession, password, setPassword, busy, notice,
 }
 
 export function App() {
+  const { t } = useAppTranslation();
   const [session, setSessionState] = useState<Session>(() => {
     try {
       const saved = JSON.parse(localStorage.getItem("nfterm-session") || "null") as Partial<Session> | null;
@@ -449,9 +453,9 @@ export function App() {
     validateServer(captured);
     const generation = refresh ? authGeneration.current : ++authGeneration.current;
     const nativeSessionId = refresh ? captured.nativeSessionId : await invoke<string>("create_api_session", { origin: serverUrl(captured), ignoreTlsErrors: captured.ignoreTlsErrors });
-    if (!nativeSessionId) throw new Error("The native API session is unavailable. Sign in again.");
+      if (!nativeSessionId) throw new UiMessageError("The native API session is unavailable. Sign in again.");
     try {
-      if (generation !== authGeneration.current) throw new Error("Sign-in was superseded.");
+      if (generation !== authGeneration.current) throw new UiMessageError("Sign-in was superseded.");
       const responseValue = await invoke<NativeApiResponse>("api_request", {
         url: `${serverUrl(captured)}/auth/login`,
         sessionId: nativeSessionId,
@@ -463,9 +467,9 @@ export function App() {
       const response = new ApiResponse(responseValue.status, responseValue.body);
       if (!response.ok) throw new Error(await readError(response));
       const data = await response.json();
-      if (data.success === false || !data.user || !Number.isInteger(data.user.id) || data.user.id < 0 || typeof data.user.username !== "string" || !data.user.username || (data.token != null && (typeof data.token !== "string" || !data.token))) throw new Error("The server returned an invalid login response.");
-      if (refresh && (data.user.id !== captured.userId || data.user.username !== captured.username)) throw new Error("The refreshed account does not match this session.");
-      if (generation !== authGeneration.current) throw new Error("Sign-in was superseded.");
+      if (data.success === false || !data.user || !Number.isInteger(data.user.id) || data.user.id < 0 || typeof data.user.username !== "string" || !data.user.username || (data.token != null && (typeof data.token !== "string" || !data.token))) throw new UiMessageError("The server returned an invalid login response.");
+      if (refresh && (data.user.id !== captured.userId || data.user.username !== captured.username)) throw new UiMessageError("The refreshed account does not match this session.");
+      if (generation !== authGeneration.current) throw new UiMessageError("Sign-in was superseded.");
       const authenticatedUsername = data.user.username;
       // The marker is not a bearer token. Cookies live only in this native session's jar.
       const sessionMarker = typeof data.token === "string" && data.token ? data.token : "cookie";
@@ -519,7 +523,7 @@ export function App() {
       }
       setPassword("");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setNotice(formatUiError(error, t));
     } finally {
       setBusy(false);
     }
@@ -585,6 +589,7 @@ export function App() {
 }
 
 export function DesktopApp({ session, setSession, password, setPassword, busy, setBusy, notice, setNotice, refreshSessionToken, logoutSession, invalidateCredentials }: DesktopAppProps) {
+  const { t } = useAppTranslation();
   const sessionRef = useRef(session);
   sessionRef.current = session;
   const [files, setFiles] = useState<FileItem[]>([]);
@@ -985,8 +990,10 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     }
     return tokenRefreshPromiseRef.current;
   };
+  const describeError = (error: unknown) => error instanceof Error ? error.message : String(error);
+  const displayError = (error: unknown) => formatUiError(error, t);
   const isTransportError = (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = describeError(error);
     return /10054|connection reset|connection (?:closed|aborted)|broken pipe|timed? ?out|network is unreachable|connection refused|dns|name or service not known/i.test(message);
   };
   const isSafeToRetry = (endpoint: string, init: RequestInit) => {
@@ -1218,7 +1225,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const refreshTimer = window.setInterval(() => {
       if (document.hidden) return;
       void refreshLocalFiles().catch((error) => {
-        setNotice(error instanceof Error ? error.message : String(error));
+        setNotice(formatUiError(error, t));
       });
     }, 5000);
     return () => window.clearInterval(refreshTimer);
@@ -1299,7 +1306,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // twice (once with the old token, once with a freshly refreshed one)
   // without duplicating the request-building logic itself.
   const rawApiRequest = async (endpoint: string, init: RequestInit, token: string, locationId: string) => {
-    if (!remoteMounted.current || !session.nativeSessionId) throw new Error("The Location session has ended.");
+    if (!remoteMounted.current || !session.nativeSessionId) throw new UiMessageError("The Location session has ended.");
     const headers = new Headers(init.headers);
     if (token && token !== "cookie") headers.set("Authorization", `Bearer ${token}`);
     if (locationId) headers.set("X-Location-ID", locationId);
@@ -1342,13 +1349,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       response = await rawApiRequest(endpoint, init, session.token, session.locationId);
     } catch (error) {
       if (!isTransportError(error) || !isRemoteCurrent()) throw error;
-      notify("REMOTE connection interrupted. Reconnecting...");
+      notify(t("REMOTE connection interrupted. Reconnecting..."));
       const recovered = await recoverApiTransportOnce();
       if (!recovered || !isRemoteCurrent()) {
-        throw new Error("REMOTE API connection could not be restored. Check that the server is reachable.");
+        throw new UiMessageError("REMOTE API connection could not be restored. Check that the server is reachable.");
       }
       if (!isSafeToRetry(endpoint, init)) {
-        throw new Error("REMOTE connection was interrupted; the operation result is not confirmed. Press Refresh to check the current state.");
+        throw new UiMessageError("REMOTE connection was interrupted; the operation result is not confirmed. Press Refresh to check the current state.");
       }
       response = await rawApiRequest(endpoint, init, sessionRef.current.token, session.locationId);
     }
@@ -1358,7 +1365,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     if (!refreshedToken) {
       if (!isRemoteCurrent()) return response;
       void logoutSession().catch(() => undefined);
-      notify("Your session expired. Please sign in again.");
+      notify(t("Your session expired. Please sign in again."));
       return response;
     }
     if (!isRemoteCurrent()) return response;
@@ -1373,10 +1380,10 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       response = await rawApiRequest(endpoint, { method: "GET" }, session.token, locationId);
     } catch (error) {
       if (!isTransportError(error) || !isRemoteCurrent()) throw error;
-      notify("REMOTE connection interrupted. Reconnecting...");
+      notify(t("REMOTE connection interrupted. Reconnecting..."));
       const recovered = await recoverApiTransportOnce();
       if (!recovered || !isRemoteCurrent()) {
-        throw new Error("REMOTE API connection could not be restored. Check that the server is reachable.");
+        throw new UiMessageError("REMOTE API connection could not be restored. Check that the server is reachable.");
       }
       response = await rawApiRequest(endpoint, { method: "GET" }, sessionRef.current.token, locationId);
     }
@@ -1386,7 +1393,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     if (!refreshedToken) {
       if (!isRemoteCurrent()) return response;
       void logoutSession().catch(() => undefined);
-      notify("Your session expired. Please sign in again.");
+      notify(t("Your session expired. Please sign in again."));
       return response;
     }
     if (!isRemoteCurrent()) return response;
@@ -1402,7 +1409,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       session: captured,
       isViewCurrent: () => isViewCurrent() && generation === remoteGeneration.current,
       request: async (endpoint: string, method: string, payload: unknown) => {
-        if (!captured.nativeSessionId || !isRemoteCurrent()) throw new Error("The original Location session or root changed. Pending operations were not sent.");
+        if (!captured.nativeSessionId || !isRemoteCurrent()) throw new UiMessageError("The original Location session or root changed. Pending operations were not sent.");
         // api() belongs to the same captured render. It rechecks identity
         // before the single 401 retry, and never retries a lost response/409.
         return api(endpoint, {
@@ -1477,9 +1484,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
     await Promise.all([loadLocations(), loadFiles(refreshPath)]);
     if (remoteRecoveryCountRef.current !== recoveryCountBefore) {
-      notify("REMOTE reconnected and refreshed.");
+      notify(t("REMOTE reconnected and refreshed."));
     } else {
-      notify("REMOTE refreshed.");
+      notify(t("REMOTE refreshed."));
     }
   };
 
@@ -1694,12 +1701,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   useEffect(() => {
     if (session.token) {
       void loadLocations().catch((error) =>
-        setNotice(error instanceof Error ? error.message : String(error)),
+        setNotice(formatUiError(error, t)),
       );
       const healthTimer = window.setInterval(
         () =>
           void loadLocations().catch((error) =>
-            setNotice(error instanceof Error ? error.message : String(error)),
+            setNotice(formatUiError(error, t)),
           ),
         15000,
       );
@@ -1738,7 +1745,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         if (cancelled) return;
         if (!refreshedToken) {
           void logoutSession().catch(() => undefined);
-          notify("Your session expired. Please sign in again.");
+          notify(t("Your session expired. Please sign in again."));
         }
       });
     }, delayMs);
@@ -1754,7 +1761,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       try {
         await loadLocalFiles("");
       } catch (error) {
-        setNotice(error instanceof Error ? error.message : String(error));
+        setNotice(formatUiError(error, t));
       }
     })();
     return undefined;
@@ -1785,8 +1792,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     if (session.token && session.locationId) {
       const nextPath = pendingRemotePath ?? "";
       if (pendingRemotePath !== null) setPendingRemotePath(null);
-      void loadFiles(nextPath).catch((error) => setNotice(error.message));
-      void loadTreeChildren("").catch((error) => setNotice(error.message));
+      void loadFiles(nextPath).catch((error) => setNotice(formatUiError(error, t)));
+      void loadTreeChildren("").catch((error) => setNotice(formatUiError(error, t)));
     }
   }, [session.nativeSessionId, session.locationId, session.locationRevision]);
 
@@ -1823,7 +1830,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     try {
       await action();
     } catch (error) {
-      if (generation === runGeneration.current && isViewCurrent()) setNotice(error instanceof Error ? error.message : String(error));
+      if (generation === runGeneration.current && isViewCurrent()) setNotice(formatUiError(error, t));
     } finally {
       if (generation === runGeneration.current && remoteMounted.current) setBusy(false);
     }
@@ -1980,7 +1987,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const workspace = managedSessions.find((item) => item.id === workspaceId);
     const entry = workspace?.proxmoxVncEntries.find((item) => item.id === entryId);
     if (!workspace || !entry) {
-      setNotice("The selected Proxmox VNC entry is no longer available.");
+      setNotice(t("The selected Proxmox VNC entry is no longer available."));
       return;
     }
     setWorkspaceSessionId(workspace.id);
@@ -2159,7 +2166,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const workspace = managedSessions.find((item) => item.id === workspaceId);
     const entry = workspace?.sshEntries.find((item) => item.id === entryId);
     if (!entry) {
-      setNotice("The selected SSH entry is no longer available.");
+      setNotice(t("The selected SSH entry is no longer available."));
       return;
     }
     const title = entry.name || `${entry.username}@${entry.host}`;
@@ -2187,7 +2194,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     });
     trackSshPopup(popup, { label, title, entryId: entry.id });
     popup.once("tauri://error", (event) => {
-      setNotice(`Unable to open SSH terminal window: ${String(event.payload)}`);
+      setNotice(t("Unable to open SSH terminal window: {{error}}", { error: String(event.payload) }));
     });
   };
 
@@ -2195,7 +2202,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const label = kind === "windowsTerminal" ? "Windows Terminal" : "Command Prompt";
     void run(async () => {
       await invoke("open_local_terminal", { kind });
-      notify(`${label} opened in C:\\`);
+      notify(t("{{label}} opened in C:\\", { label }));
     });
   };
 
@@ -2262,7 +2269,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // or failure -- an on-screen `notify`/error banner disappears after a few
   // seconds and is gone for good, so without a persisted log entry a failure
   // (e.g. "builder error") leaves no trace to diagnose after the fact.
-  const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 
   const refreshStorageInfo = () => {
@@ -2273,20 +2279,20 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   };
 
   const clearHistory = () => {
-    if (!window.confirm("Clear undo history? This removes only the saved undo records and cannot be undone.")) return;
+    if (!window.confirm(t("Clear undo history? This removes only the saved undo records and cannot be undone."))) return;
     void run(async () => {
       await invoke("clear_operation_history");
       refreshStorageInfo();
-      notify("Undo history cleared.");
+      notify(t("Undo history cleared."));
     });
   };
 
   const clearLogs = () => {
-    if (!window.confirm("Clear operation logs? This removes only nFterm operation logs, not user files or transfer staging data.")) return;
+    if (!window.confirm(t("Clear operation logs? This removes only nFterm operation logs, not user files or transfer staging data."))) return;
     void run(async () => {
       await invoke("clear_operation_logs");
       refreshStorageInfo();
-      notify("Operation logs cleared.");
+      notify(t("Operation logs cleared."));
     });
   };
 
@@ -2565,10 +2571,10 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           if (event.key === "Enter") searchFiles();
           if (event.key === "Escape") clearSearch();
         }}
-        placeholder="Search files"
+        placeholder={t("Search files")}
       />
       {(search || searching) && (
-        <button className="clear-search" onClick={clearSearch} aria-label="Clear search">
+        <button className="clear-search" onClick={clearSearch} aria-label={t("Clear search")}>
           <CloseIcon size={12} />
         </button>
       )}
@@ -2635,9 +2641,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           await invoke("local_rename_path", { oldPath: entry.newPath, newPath: entry.oldPath });
           await loadLocalFiles(localPath);
         } else {
-          if (entry.context && entry.context !== remoteIdentity) throw new Error("This undo belongs to a previous Location root or session.");
+          if (entry.context && entry.context !== remoteIdentity) throw new UiMessageError("This undo belongs to a previous Location root or session.");
           if (entry.locationId && entry.locationId !== session.locationId) {
-            throw new Error("Switch LOCATION back to the Remote this operation happened on before undoing it.");
+            throw new UiMessageError("Switch LOCATION back to the Remote this operation happened on before undoing it.");
           }
           const oldName = entry.oldPath.split("/").pop() || entry.oldPath;
           const newParent = entry.newPath.split("/").slice(0, -1).join("/");
@@ -2650,7 +2656,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             : { oldPath: entry.newPath, oldName: newName, newName: oldName, currentPath: newParent });
           const data = await response.json();
           const [outcome] = remoteMutationResults([{ path: entry.newPath, name: newName }], data, response.status);
-          if (outcome.success !== true) throw new Error(`Undo was not confirmed. ${remoteMutationError(data, response.status)} Check the original Location before retrying.`);
+          if (outcome.success !== true) throw new UiMessageError("Undo was not confirmed. {{detail}} Check the original Location before retrying.", { detail: remoteMutationError(data, response.status) });
         }
         setUndoStack((current) => current.filter((item) => item.id !== entry.id));
         // Only refresh the REMOTE listing for entries that actually
@@ -2663,7 +2669,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         // refresh.
         if (entry.source === "api") await loadFiles(path);
         writeOperationLog("undo", "completed", sourceLabel, destinationLabel, `Undone: ${entry.description}`);
-        notify(`Undone: ${entry.description}`);
+        notify(t("Undone: {{description}}", { description: entry.description }));
       } catch (error) {
         writeOperationLog("undo", "failed", sourceLabel, destinationLabel, `Failed to undo "${entry.description}": ${describeError(error)}`, "ERROR");
         throw error;
@@ -2678,16 +2684,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         showCrossWindowDragNotice();
         return;
       }
-      if (source === "remote" && dragContextRef.current !== remoteIdentity) throw new Error("The dragged files belong to a previous remote view. Select them again.");
+      if (source === "remote" && dragContextRef.current !== remoteIdentity) throw new UiMessageError("The dragged files belong to a previous remote view. Select them again.");
       writeOperationLog("drag", "dropped", source === "local" ? "LOCAL" : "REMOTE", destination, JSON.stringify({ itemCount: items.length, sourceType: source === "local" ? "LOCAL" : "REMOTE", destinationType: source === "local" ? "REMOTE" : "LOCAL" }), "INFO");
       if (source === "local") {
         uploadLocalItemsToRemote(items, destination);
         return;
       }
       if (!isValidMoveTarget(items, destination))
-        throw new Error(
-          "Choose a folder other than the current folder or a folder inside a selected folder.",
-        );
+        throw new UiMessageError("Choose a folder other than the current folder or a folder inside a selected folder.");
       const sourceLabel = `${items.length} item${items.length === 1 ? "" : "s"}`;
       const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${destination}`;
       const context = captureRemoteMutation();
@@ -2732,14 +2736,16 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           notify(detail);
         }
       } catch (error) {
-        const detail = `${completed}/${targets.length} moves confirmed; ${failed} failed; ${targets.length - completed - failed} unconfirmed. Check the original Location before retrying. ${describeError(error)}`;
-        writeOperationLog("move", "unconfirmed", sourceLabel, destinationLabel, detail, "WARN");
-        if (context.isViewCurrent()) notify(detail);
+        const rawDetail = `${completed}/${targets.length} moves confirmed; ${failed} failed; ${targets.length - completed - failed} unconfirmed. Check the original Location before retrying. ${describeError(error)}`;
+        writeOperationLog("move", "unconfirmed", sourceLabel, destinationLabel, rawDetail, "WARN");
+        if (context.isViewCurrent()) notify(t("{{completed}}/{{total}} moves confirmed; {{failed}} failed; {{unconfirmed}} unconfirmed. Check the original Location before retrying. {{error}}", {
+          completed, total: targets.length, failed, unconfirmed: targets.length - completed - failed, error: displayError(error),
+        }));
       } finally {
         if (context.isViewCurrent()) {
           setFolderTree({ path: "", name: "/", expanded: true, loaded: false, children: [] });
           await Promise.all([loadFiles(path), loadTreeChildren("", true)]).catch(() => {
-            if (isViewCurrent()) notify(`${completed}/${targets.length} moves confirmed. Refresh failed; check the original Location before retrying.`);
+            if (isViewCurrent()) notify(t("{{completed}}/{{total}} moves confirmed. Refresh failed; check the original Location before retrying.", { completed, total: targets.length }));
           });
         }
       }
@@ -2824,7 +2830,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     // user to the stable Download/Queue path instead.
     if (!event.altKey) return;
     event.preventDefault();
-    setNotice("External drag-out is disabled on Windows for stability. Use Download to save through the Queue.");
+    setNotice(t("External drag-out is disabled on Windows for stability. Use Download to save through the Queue."));
     writeOperationLog("drag_out", "skipped", file.name, "External file manager", "Windows outbound native drag is disabled; use Download/Queue instead.", "WARN");
   };
 
@@ -2847,8 +2853,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const showCrossWindowDragNotice = () => {
     writeOperationLog("drag", "cancelled", "REMOTE", "REMOTE", JSON.stringify({ reason: "cross_remote_unsupported" }), "WARN");
     void requestInfo(
-      "Files cannot be dragged directly between an SFTP window and another remote window (a different SFTP entry or the API Remote).\n\nPlease download the files to LOCAL first, then upload them to the destination manually.",
-      "Manual transfer required",
+      t("Files cannot be dragged directly between an SFTP window and another remote window (a different SFTP entry or the API Remote).\n\nPlease download the files to LOCAL first, then upload them to the destination manually."),
+      t("Manual transfer required"),
     );
   };
 
@@ -2859,7 +2865,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const source = dragSourceRef.current;
     window.setTimeout(() => {
       if (source === "remote" && dragSourceRef.current === "remote") {
-        setNotice("Remote files cannot be dragged to Explorer. Use Download to save through the Queue.");
+        setNotice(t("Remote files cannot be dragged to Explorer. Use Download to save through the Queue."));
         writeOperationLog("drag", "cancelled", "REMOTE", "External file manager", JSON.stringify({ itemCount: dragItemsRef.current.length, sourceType: "REMOTE", destinationType: "EXTERNAL", reason: "unsupported_target" }), "WARN");
       }
       finishDrag();
@@ -2877,7 +2883,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     dragSourceRef.current === "" && Array.from(event.dataTransfer.types).includes("Files");
   const notifyExternalFileDrag = (event: React.DragEvent) => {
     if (!isExternalFileDrag(event)) return false;
-    setNotice("External files cannot be dropped directly. Use Upload to choose files for the current Remote.");
+    setNotice(t("External files cannot be dropped directly. Use Upload to choose files for the current Remote."));
     return true;
   };
   const enterPaneDragHover = (pane: "local" | "remote") => (event: React.DragEvent) => {
@@ -2896,7 +2902,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       viewerContextRef.current = "";
       if (filePath.toLowerCase().endsWith(".pdf")) {
         await invoke("open_local_file", { path: filePath });
-        notify("Opened the PDF in the default application.");
+        notify(t("Opened the PDF in the default application."));
         return;
       }
       const content = await invoke<string>("read_local_file", { path: filePath });
@@ -2933,13 +2939,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const editViewerFile = () =>
     void run(async () => {
       const generation = viewerGeneration.current;
-      if (viewerRemotePath && viewerContextRef.current !== remoteIdentity) throw new Error("The viewer belongs to a previous Location. Open the file again.");
+      if (viewerRemotePath && viewerContextRef.current !== remoteIdentity) throw new UiMessageError("The viewer belongs to a previous Location. Open the file again.");
       let localPathForEdit = viewerLocalPath;
       if (!localPathForEdit && viewerRemotePath) {
         const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `edit-${Date.now()}`;
         const item: TransferQueueItem = {
           id,
           label: `Prepare ${viewerTitle} for editing`,
+          labelMessage: { key: "Prepare {{title}} for editing", values: { title: viewerTitle } },
           kind: "download",
           paths: [],
           destinationPath: "~/Downloads",
@@ -2947,6 +2954,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           locationName: activeLocation?.displayName || session.locationId,
           status: "queued",
           detail: "Waiting to download editor copy",
+          detailMessage: { key: "Waiting to download editor copy" },
           downloadUrl: `${serverUrl(session)}/api/files/download/${downloadPath(viewerRemotePath)}`,
           downloadMethod: "GET",
           downloadHeaders: locationHeaders(session),
@@ -2958,7 +2966,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           if (generation !== viewerGeneration.current || !isRemoteCurrent()) return;
           setViewerLocalPath(destination);
           await invoke("edit_local_file", { path: destination });
-          notify(`Opened ${viewerTitle} in the default text editor.`);
+          notify(t("Opened {{title}} in the default text editor.", { title: viewerTitle }));
         });
         if (isQueueItemCancelled(item.id)) return;
         setTransferQueue((current) => [...current, item]);
@@ -2966,9 +2974,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         void runQueuedDownload(item);
         return;
       }
-      if (!localPathForEdit) throw new Error("No local file is available for editing.");
+      if (!localPathForEdit) throw new UiMessageError("No local file is available for editing.");
       await invoke("edit_local_file", { path: localPathForEdit });
-      notify(`Opened ${viewerTitle} in the default text editor.`);
+      notify(t("Opened {{title}} in the default text editor.", { title: viewerTitle }));
     });
 
   const uploadPaths = (paths: string[]) =>
@@ -2978,14 +2986,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         paths,
       });
       const accepted = await requestConfirmation(
-        `Upload ${summary.files} file${summary.files === 1 ? "" : "s"} and ${summary.directories} folder${summary.directories === 1 ? "" : "s"} to ${path ? `/${path}` : "/"}?${summary.files > 500 ? "\n\nLarge uploads are split into child batches. Up to 2 batches can run concurrently; this may use more system/storage resources and can reduce overall efficiency." : ""}`,
-        "Confirm upload",
+        `${t("Upload {{files}} and {{directories}} to {{path}}?", { files: formatQuantity(summary.files, "file", "files"), directories: formatQuantity(summary.directories, "folder", "folders"), path: path ? `/${path}` : "/" })}${summary.files > 500 ? `\n\n${t("Large uploads are split into child batches. Up to 2 batches can run concurrently; this may use more system/storage resources and can reduce overall efficiency.")}` : ""}`,
+        t("Confirm upload"),
       );
       if (!accepted) return;
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
       const item: TransferQueueItem = {
         id,
-        label: `${summary.files} files, ${summary.directories} folders`,
+        label: `${summary.files} ${summary.files === 1 ? "file" : "files"}, ${summary.directories} ${summary.directories === 1 ? "folder" : "folders"}`,
+        labelMessage: { key: "{{fileCount}} {{fileUnit}}, {{folderCount}} {{folderUnit}}", values: { fileCount: summary.files, fileUnit: summary.files === 1 ? "file" : "files", folderCount: summary.directories, folderUnit: summary.directories === 1 ? "folder" : "folders" }, translatedValues: ["fileUnit", "folderUnit"] },
         kind: "upload",
         paths,
         destinationPath: path,
@@ -2993,6 +3002,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         locationName: activeLocation?.displayName || session.locationId,
         status: "queued",
         detail: "Waiting to start",
+        detailMessage: { key: "Waiting to start" },
       };
       setTransferQueue((current) => [...current, item]);
       setQueueOpen(true);
@@ -3004,23 +3014,25 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     void run(async () => {
       if (!paths.length) return;
       const profile = findSshProfileById(entryId);
-      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      if (!profile) throw new UiMessageError("The SSH connection for this remote view is no longer available.");
       const summary = await invoke<UploadSummary>("inspect_upload_paths", { paths });
       const accepted = await requestConfirmation(
-        `Upload ${summary.files} file${summary.files === 1 ? "" : "s"} and ${summary.directories} folder${summary.directories === 1 ? "" : "s"} to ${destination || "/"}?`,
-        "Confirm upload",
+        t("Upload {{files}} and {{directories}} to {{path}}?", { files: formatQuantity(summary.files, "file", "files"), directories: formatQuantity(summary.directories, "folder", "folders"), path: destination || "/" }),
+        t("Confirm upload"),
       );
       if (!accepted) return;
       const item: TransferQueueItem = {
         id: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`,
-        label: `${summary.files} files, ${summary.directories} folders`,
+        label: `${summary.files} ${summary.files === 1 ? "file" : "files"}, ${summary.directories} ${summary.directories === 1 ? "folder" : "folders"}`,
+        labelMessage: { key: "{{fileCount}} {{fileUnit}}, {{folderCount}} {{folderUnit}}", values: { fileCount: summary.files, fileUnit: summary.files === 1 ? "file" : "files", folderCount: summary.directories, folderUnit: summary.directories === 1 ? "folder" : "folders" }, translatedValues: ["fileUnit", "folderUnit"] },
         kind: "upload",
         paths,
         destinationPath: destination,
         locationId: "",
         locationName: `SSH: ${profile.name}`,
         status: "queued",
-        detail: "Waiting to start",
+           detail: "Waiting to start",
+           detailMessage: { key: "Waiting to start" },
         sshEntryId: entryId,
       };
       setTransferQueue((current) => [...current, item]);
@@ -3032,7 +3044,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // from; "" means they come from the API Remote window.
   const downloadRemoteItemsToLocal = (items: FileItem[], destination: string = localPath, entryId: string = dragEntryRef.current) =>
     void run(async () => {
-      if (!entryId && dragContextRef.current && dragContextRef.current !== remoteIdentity) throw new Error("The dragged files belong to a previous remote view. Select them again.");
+      if (!entryId && dragContextRef.current && dragContextRef.current !== remoteIdentity) throw new UiMessageError("The dragged files belong to a previous remote view. Select them again.");
       if (!items.length) {
         writeOperationLog(
           "download",
@@ -3042,12 +3054,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           "No items were detected in the drag payload; nothing was downloaded.",
           "WARN",
         );
-        setNotice("No items were detected for this drag; nothing was downloaded.");
+        setNotice(t("No items were detected for this drag; nothing was downloaded."));
         return;
       }
       if (entryId) {
         const profile = findSshProfileById(entryId);
-        if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+        if (!profile) throw new UiMessageError("The SSH connection for this remote view is no longer available.");
         writeOperationLog(
           "download",
           "started",
@@ -3080,7 +3092,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           "The active API Remote is offline or does not allow downloads.",
           "WARN",
         );
-        setNotice("The active REMOTE is offline or doesn't allow downloads right now.");
+        setNotice(t("The active REMOTE is offline or doesn't allow downloads right now."));
         return;
       }
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
@@ -3097,6 +3109,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           locationName: activeLocation?.displayName || session.locationId,
           status: "queued",
           detail: "Waiting to start",
+          detailMessage: { key: "Waiting to start" },
           downloadUrl: `${serverUrl(session)}/api/files/download/${downloadPath(items[0].path)}`,
           downloadMethod: "GET",
           downloadHeaders: headers,
@@ -3111,6 +3124,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         return;
       }
       const setLabel = items.length === 1 ? items[0].name : `${items.length} selected items`;
+      const setLabelMessage = items.length > 1 ? {
+        key: "{{quantity}} {{unit}} selected",
+        values: { quantity: items.length, unit: "items" },
+        translatedValues: ["unit"],
+      } : undefined;
       try {
         const response = await api("/api/files/flatten", {
           method: "POST",
@@ -3124,19 +3142,21 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         const data = await response.json() as { files?: { relativePath: string; remotePath: string; size: number }[] };
         const files = data.files || [];
         if (!files.length) {
-          setNotice("The selection has no files to download.");
+          setNotice(t("The selection has no files to download."));
           return;
         }
         const queueItem: TransferQueueItem = {
           id,
           label: setLabel,
+          labelMessage: setLabelMessage,
           kind: "download-set",
           paths: [],
           destinationPath: destination ? `~/${destination}` : "~",
           locationId: session.locationId,
           locationName: activeLocation?.displayName || session.locationId,
           status: "queued",
-          detail: `Waiting to start (${files.length} files)`,
+            detail: `Waiting to start (${files.length} ${files.length === 1 ? "file" : "files"})`,
+            detailMessage: { key: "Waiting to start ({{quantity}} {{unit}})", values: { quantity: files.length, unit: files.length === 1 ? "file" : "files" }, translatedValues: ["unit"] },
           setFiles: files,
           setCompleted: 0,
           localDestinationFolder: destination,
@@ -3164,22 +3184,28 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     void run(async () => {
       if (!items.length) {
         writeOperationLog("upload", "skipped", `LOCAL: ~/${localPath || ""}`, "REMOTE", "No items were detected in the drag payload; nothing was uploaded.", "WARN");
-        setNotice("No items were detected for this drag; nothing was uploaded.");
+        setNotice(t("No items were detected for this drag; nothing was uploaded."));
         return;
       }
       const profile = findSshProfileById(entryId);
-      if (!profile) throw new Error("The SSH connection for this remote view is no longer available.");
+      if (!profile) throw new UiMessageError("The SSH connection for this remote view is no longer available.");
       writeOperationLog("upload", "started", `LOCAL: ~/${localPath || ""}`, `SSH: ${profile.name}:${destination}`, `Uploading ${items.length} item(s) from LOCAL to SSH.`, "DEBUG");
       const queueItem: TransferQueueItem = {
         id: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`,
         label: `${items.length} selected items`,
+        labelMessage: {
+          key: "{{quantity}} {{unit}} selected",
+          values: { quantity: items.length, unit: items.length === 1 ? "item" : "items" },
+          translatedValues: ["unit"],
+        },
         kind: "upload",
         paths: items.map((item) => item.path),
         destinationPath: destination,
         locationId: "",
         locationName: `SSH: ${profile.name}`,
         status: "queued",
-        detail: "Waiting to start",
+         detail: "Waiting to start",
+         detailMessage: { key: "Waiting to start" },
         sshEntryId: entryId,
       };
       setTransferQueue((current) => [...current, queueItem]);
@@ -3199,7 +3225,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           "No items were detected in the drag payload; nothing was uploaded.",
           "WARN",
         );
-        setNotice("No items were detected for this drag; nothing was uploaded.");
+        setNotice(t("No items were detected for this drag; nothing was uploaded."));
         return;
       }
       // API Remote: reuse the exact same queued-upload machinery
@@ -3216,30 +3242,32 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           "The active API Remote is offline or does not allow uploads.",
           "WARN",
         );
-        setNotice("The active REMOTE is offline or doesn't allow uploads right now.");
+        setNotice(t("The active REMOTE is offline or doesn't allow uploads right now."));
         return;
       }
       const summary = await invoke<UploadSummary>("inspect_upload_paths", {
         paths: items.map((item) => item.path),
       });
       if (summary.files > 500) {
-        const confirmed = await requestConfirmation(
-          `Drag upload ${summary.files} files and ${summary.directories} folders to ${destination || "/"}? Up to 2 child batches can run concurrently; this may use more system/storage resources and can reduce overall efficiency.`,
-          "Confirm parallel API upload",
+      const confirmed = await requestConfirmation(
+          t("Drag upload {{files}} files and {{directories}} folders to {{path}}? Up to 2 child batches can run concurrently; this may use more system/storage resources and can reduce overall efficiency.", { files: summary.files, directories: summary.directories, path: destination || "/" }),
+          t("Confirm parallel API upload"),
         );
         if (!confirmed) return;
       }
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
       const queueItem: TransferQueueItem = {
         id,
-        label: `${summary.files} files, ${summary.directories} folders`,
+        label: `${summary.files} ${summary.files === 1 ? "file" : "files"}, ${summary.directories} ${summary.directories === 1 ? "folder" : "folders"}`,
+        labelMessage: { key: "{{fileCount}} {{fileUnit}}, {{folderCount}} {{folderUnit}}", values: { fileCount: summary.files, fileUnit: summary.files === 1 ? "file" : "files", folderCount: summary.directories, folderUnit: summary.directories === 1 ? "folder" : "folders" }, translatedValues: ["fileUnit", "folderUnit"] },
         kind: "upload",
         paths: items.map((item) => item.path),
         destinationPath: destination,
         locationId: session.locationId,
         locationName: activeLocation?.displayName || session.locationId,
         status: "queued",
-        detail: "Waiting to start",
+         detail: "Waiting to start",
+         detailMessage: { key: "Waiting to start" },
       };
       setTransferQueue((current) => [...current, queueItem]);
       setQueueOpen(true);
@@ -3264,15 +3292,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       }
       uploadPaths(paths);
     } catch (error) {
-      const detail = `Unable to choose upload files: ${describeError(error)}`;
-      writeOperationLog("upload", "failed", `LOCAL: ~/${localPath || ""}`, "REMOTE", detail, "ERROR");
-      setNotice(detail);
+      const rawDetail = `Unable to choose upload files: ${describeError(error)}`;
+      writeOperationLog("upload", "failed", `LOCAL: ~/${localPath || ""}`, "REMOTE", rawDetail, "ERROR");
+      setNotice(t("Unable to choose upload files: {{error}}", { error: displayError(error) }));
     }
   };
 
   const createFolder = () =>
     run(async () => {
-      const folderName = await requestName("New folder", "");
+      const folderName = await requestName(t("New folder"), "");
       if (!folderName?.trim()) return;
       const name = folderName.trim();
       if (activePane === "local") {
@@ -3280,7 +3308,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         await invoke("local_create_directory", { path: target });
         await loadLocalFiles(localPath);
         writeOperationLog("create_folder", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${target}`, `Created folder ${name} locally.`);
-        notify(`Created ${name}.`);
+        notify(t("Created {{name}}.", { name }));
         return;
       }
       const destinationLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${path || "/"}`;
@@ -3296,7 +3324,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         if (!response.ok) throw new Error(await readError(response));
         await loadFiles(path);
         writeOperationLog("create_folder", "completed", destinationLabel, `${destinationLabel}/${name}`, `Created folder ${name} through the API Remote.`);
-        notify(`Created ${name}.`);
+        notify(t("Created {{name}}.", { name }));
       } catch (error) {
         writeOperationLog("create_folder", "failed", destinationLabel, `${destinationLabel}/${name}`, `Failed to create folder ${name} through the API Remote: ${describeError(error)}`, "ERROR");
         throw error;
@@ -3308,21 +3336,21 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     run(async () => {
       const item = activePane === "local" ? localSelectedItems[0] : selectedItems[0];
       if (!item || (activePane === "local" ? localSelectedItems.length !== 1 : selectedItems.length !== 1)) return;
-      const newName = await requestName("Rename", item.name);
+      const newName = await requestName(t("Rename"), item.name);
       if (!newName?.trim() || newName === item.name) return;
       const trimmedName = newName.trim();
       if (activePane === "local") {
-        if (/[\\/]/.test(trimmedName) || trimmedName === "." || trimmedName === "..") throw new Error("Enter a filename, not a path.");
+        if (/[\\/]/.test(trimmedName) || trimmedName === "." || trimmedName === "..") throw new UiMessageError("Enter a filename, not a path.");
         const newPath = joinLocalPath(parentPath(item.path), trimmedName);
         const finalPath = await invoke<string>("local_rename_path", { oldPath: item.path, newPath });
         recordUndoableRename({ source: "local", oldPath: item.path, newPath: finalPath });
         await loadLocalFiles(localPath);
         writeOperationLog("rename", "completed", `LOCAL: ~/${item.path}`, `LOCAL: ~/${finalPath}`, `Renamed ${item.name} locally.`);
-        notify(`Renamed ${item.name}.`);
+        notify(t("Renamed {{name}}.", { name: item.name }));
         return;
       }
       const sourceLabel = `${activeLocation?.displayName || session.locationId || "Remote"}:${item.path}`;
-      if (/[\\/]/.test(trimmedName) || trimmedName === "." || trimmedName === "..") throw new Error("Enter a filename, not a path.");
+      if (/[\\/]/.test(trimmedName) || trimmedName === "." || trimmedName === "..") throw new UiMessageError("Enter a filename, not a path.");
       const parent = remoteParent(item.path);
       const newFullPath = parent ? `${parent}/${trimmedName}` : trimmedName;
       const context = captureRemoteMutation();
@@ -3337,7 +3365,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         recordUndoableRename({ source: "api", locationId: session.locationId, oldPath: item.path, newPath: newFullPath });
         await loadFiles(path);
         writeOperationLog("rename", "completed", sourceLabel, `${activeLocation?.displayName || session.locationId || "Remote"}:${newFullPath}`, `Renamed ${item.name} to ${trimmedName} through the API Remote.`);
-        notify(`Renamed ${item.name}.`);
+        notify(t("Renamed {{name}}.", { name: item.name }));
       } catch (error) {
         writeOperationLog("rename", "failed", sourceLabel, `${activeLocation?.displayName || session.locationId || "Remote"}:${newFullPath}`, `Failed to rename ${item.name} through the API Remote: ${describeError(error)}`, "ERROR");
         throw error;
@@ -3348,18 +3376,18 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     run(async () => {
       if (activePane === "local") {
         if (!localSelectedItems.length) return;
-        if (desktopSettings.confirmations.delete && !await requestConfirmation(`Delete ${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"}? This cannot be undone.`, "Delete local items")) return;
+        if (desktopSettings.confirmations.delete && !await requestConfirmation(t("Delete {{items}}? This cannot be undone.", { items: formatQuantity(localSelectedItems.length, "item", "items") }), t("Delete local items"))) return;
         for (const item of localSelectedItems) await invoke("local_delete_path", { path: item.path, isDirectory: item.isDirectory });
         await loadLocalFiles(localPath);
         writeOperationLog("delete", "completed", `LOCAL: ~/${localPath || ""}`, `LOCAL: ~/${localPath || ""}`, `Deleted ${localSelectedItems.length} item(s) locally.`, "INFO");
-        notify("Deleted selected local items. This cannot be undone.");
+        notify(t("Deleted selected local items. This cannot be undone."));
         return;
       }
       if (
         !selectedItems.length ||
         (desktopSettings.confirmations.delete && !await requestConfirmation(
-          `Delete ${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}? This cannot be undone.`,
-          "Delete remote items",
+          t("Delete {{items}}? This cannot be undone.", { items: formatQuantity(selectedItems.length, "item", "items") }),
+          t("Delete remote items"),
         ))
       )
         return;
@@ -3385,12 +3413,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         writeOperationLog("delete", completed === selectedItems.length ? "completed" : "partial", sourceLabel, destinationLabel, detail, completed === selectedItems.length ? "INFO" : "WARN");
         if (context.isViewCurrent()) notify(detail);
       } catch (error) {
-        const detail = `${completed}/${selectedItems.length} deletions confirmed; ${failed} failed; ${selectedItems.length - completed - failed} unconfirmed. ${describeError(error)}`;
-        writeOperationLog("delete", "unconfirmed", sourceLabel, destinationLabel, detail, "WARN");
-        if (context.isViewCurrent()) notify(detail);
+        const unconfirmed = selectedItems.length - completed - failed;
+        const rawDetail = `${completed}/${selectedItems.length} deletions confirmed; ${failed} failed; ${unconfirmed} unconfirmed. ${describeError(error)}`;
+        writeOperationLog("delete", "unconfirmed", sourceLabel, destinationLabel, rawDetail, "WARN");
+        if (context.isViewCurrent()) notify(t("{{completed}}/{{total}} deletions confirmed; {{failed}} failed; {{unconfirmed}} unconfirmed. {{error}}", {
+          completed, total: selectedItems.length, failed, unconfirmed, error: displayError(error),
+        }));
       } finally {
         if (context.isViewCurrent()) await loadFiles(path).catch(() => {
-          if (isViewCurrent()) notify(`${completed}/${selectedItems.length} deletions confirmed. Refresh failed; check the original Location.`);
+          if (isViewCurrent()) notify(t("{{completed}}/{{total}} deletions confirmed. Refresh failed; check the original Location.", { completed, total: selectedItems.length }));
         });
       }
     });
@@ -3431,7 +3462,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       const defaultName = localSelectedItems.length === 1
         ? localSelectedItems[0].name.replace(/\.[^./]+$/, "")
         : "Archive";
-      const archiveName = await requestName("Archive name", defaultName);
+      const archiveName = await requestName(t("Archive name"), defaultName);
       if (!archiveName?.trim()) return;
       const sourceLabel = `${localSelectedItems.length} selected item${localSelectedItems.length === 1 ? "" : "s"}`;
       const destinationLabel = `LOCAL: ~/${localPath || ""}`;
@@ -3443,7 +3474,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         });
         await loadLocalFiles(localPath);
         writeOperationLog("compress", "completed", sourceLabel, destinationLabel, `Created ${finalName} locally.`);
-        notify(`Created ${finalName}.`);
+        notify(t("Created {{name}}.", { name: finalName }));
       } catch (error) {
         writeOperationLog("compress", "failed", sourceLabel, destinationLabel, `Failed to create archive locally: ${describeError(error)}`, "ERROR");
         throw error;
@@ -3463,7 +3494,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         });
         await loadLocalFiles(localPath);
         writeOperationLog("extract", "completed", sourceLabel, destinationLabel, `Extracted ${item.name} to ${finalName} locally.`);
-        notify(`Extracted to ${finalName}.`);
+        notify(t("Extracted to {{name}}.", { name: finalName }));
       } catch (error) {
         writeOperationLog("extract", "failed", sourceLabel, destinationLabel, `Failed to extract ${item.name} locally: ${describeError(error)}`, "ERROR");
         throw error;
@@ -3480,7 +3511,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const confirmPassword = String(form.get("confirmPassword") || "");
     void run(async () => {
       if (newPassword !== confirmPassword)
-        throw new Error("The new passwords do not match.");
+        throw new UiMessageError("The new passwords do not match.");
       const response = await api("/auth/change-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3490,14 +3521,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       setChangePasswordOpen(false);
       try { await invalidateCredentials(); }
       finally { await logoutSession().catch(() => undefined); }
-      notify("Password changed. Please sign in again.");
+      notify(t("Password changed. Please sign in again."));
     });
   };
 
   const signOut = () => {
     setAccountOpen(false);
     remoteGeneration.current++; treeGeneration.current++;
-    void logoutSession().catch(() => setNotice("Signed out locally. The server logout request could not be confirmed."));
+    void logoutSession().catch(() => setNotice(t("Signed out locally. The server logout request could not be confirmed.")));
   };
 
   const renderTreeNode = (node: FolderNode) => (
@@ -3549,7 +3580,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           {node.name}
         </button>
         {dragItems.length > 0 && dropTarget === node.path && (
-          <span className="drop-label">Move here</span>
+          <span className="drop-label">{t("Move here")}</span>
         )}
       </div>
       {node.expanded && (
@@ -3557,7 +3588,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           {node.loaded ? (
             node.children.map(renderTreeNode)
           ) : (
-            <span className="tree-loading">Loading folders...</span>
+            <span className="tree-loading">{t("Loading folders...")}</span>
           )}
         </div>
       )}
@@ -3637,7 +3668,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           {node.loaded ? (
             node.children.map(renderLocalTreeNode)
           ) : (
-            <span className="tree-loading">Loading folders...</span>
+            <span className="tree-loading">{t("Loading folders...")}</span>
           )}
         </div>
       )}
@@ -3649,7 +3680,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     const rootLabel = segments[0].label;
     const visibleSegments = segments.slice(1);
     return (
-      <div className="pane-breadcrumbs crumbs" aria-label="LOCAL path">
+      <div className="pane-breadcrumbs crumbs" aria-label={t("LOCAL path")}>
         <button onClick={() => void run(() => loadLocalFiles(segments[0].target))}>
           {rootLabel}
         </button>
@@ -3668,7 +3699,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const renderRemoteBreadcrumbs = () => {
     const parts = path.split("/").filter(Boolean);
     return (
-      <div className="pane-breadcrumbs crumbs" aria-label="REMOTE path">
+      <div className="pane-breadcrumbs crumbs" aria-label={t("REMOTE path")}>
         <button onClick={() => void run(() => loadFiles(""))}>/</button>
         {parts.map((part, index) => (
           <React.Fragment key={`remote-pane-${part}-${index}`}>
@@ -3688,14 +3719,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const renderLocalPane = () => (
     <section
       className={`local-pane ${activePane === "local" ? "active-pane" : ""} ${isLocalElevated ? "privileged" : ""}`}
-      aria-label="Local files"
+      aria-label={t("Local files")}
       onMouseDownCapture={() => setActivePane("local")}
     >
       <div className="local-pane-heading">
         <span className="sidebar-label">
           LOCAL
           {isLocalElevated && (
-            <span className="privileged-badge" title="Running elevated: LOCAL is not confined to your home directory.">
+            <span className="privileged-badge" title={t("Running elevated: LOCAL is not confined to your home directory.")}>
               {" "}<WarningIcon size={12} /> ROOT
             </span>
           )}
@@ -3704,17 +3735,17 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       </div>
       <div className="local-pane-actions">
         <button onClick={() => void run(refreshLocalFiles)} disabled={busy}>
-          Refresh
+          {t("Refresh")}
         </button>
         <button onClick={() => void run(() => loadLocalFiles(""))} disabled={busy}>
-          Home
+          {t("Home")}
         </button>
         <button
           className={`local-tree-toggle ${localTreeOpen ? "active" : ""}`}
           onClick={() => setLocalTreeOpen((open) => !open)}
           aria-pressed={localTreeOpen}
-          aria-label={localTreeOpen ? "Hide folder tree" : "Show folder tree"}
-          title={localTreeOpen ? "Hide folder tree" : "Show folder tree"}
+            aria-label={t(localTreeOpen ? "Hide folder tree" : "Show folder tree")}
+            title={t(localTreeOpen ? "Hide folder tree" : "Show folder tree")}
         >
           {localTreeOpen ? <ChevronLeftIcon /> : <ChevronRightIcon />}
         </button>
@@ -3723,13 +3754,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             className={localViewMode === "details" ? "active" : ""}
             onClick={() => setLocalViewMode("details")}
           >
-            Details
+            {t("Details")}
           </button>
           <button
             className={localViewMode === "grid" ? "active" : ""}
             onClick={() => setLocalViewMode("grid")}
           >
-            Grid
+            {t("Grid")}
           </button>
         </span>
       </div>
@@ -3780,7 +3811,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               onPointerDown={beginLocalTreeResize}
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize LOCAL folder tree"
+              aria-label={t("Resize LOCAL folder tree")}
             />
           </>
         )}
@@ -3812,7 +3843,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               >
                 <span className="tile-icon glyph-folder" aria-hidden="true" />
                 <strong>../</strong>
-                <span>Parent folder</span>
+                <span>{t("Parent folder")}</span>
               </article>
             )}
 
@@ -3855,11 +3886,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               >
                 <span className={`tile-icon ${file.isDirectory ? "glyph-folder" : "glyph-file"}`} aria-hidden="true" />
                 <strong>{file.name}</strong>
-                <span>{file.isDirectory ? "File folder" : "File"}</span>
-                <small>{file.isDirectory ? "--" : formatSize(file.size)}</small>
+                <span>{t(file.isDirectory ? "File folder" : "File")}</span>
+                <small>{file.isDirectory ? "--" : formatSize(file.size, toIntlLocale())}</small>
               </article>
             ))}
-            {!localFiles.length && !localPath && <span className="muted">This folder is empty.</span>}
+            {!localFiles.length && !localPath && <span className="muted">{t("This folder is empty.")}</span>}
           </div>
         ) : (
         <div
@@ -3931,14 +3962,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             >
               <span className={file.isDirectory ? "glyph-folder" : "glyph-file"} aria-hidden="true" />
               <span className="local-file-name">{file.name}</span>
-              <small>{file.isDirectory ? "Folder" : formatSize(file.size)}</small>
+              <small>{file.isDirectory ? t("Folder") : formatSize(file.size, toIntlLocale())}</small>
             </button>
           ))}
-          {!localFiles.length && !localPath && <span className="muted">This folder is empty.</span>}
+          {!localFiles.length && !localPath && <span className="muted">{t("This folder is empty.")}</span>}
         </div>
         )}
       </div>
-      <div className="local-pane-footer">{localFiles.length} items</div>
+      <div className="local-pane-footer">{formatQuantity(localFiles.length, "item", "items")}</div>
     </section>
   );
 
@@ -3957,18 +3988,18 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       setWorkspaceSessionId(owner.id);
       setActiveRestEntryId(id);
     };
-    return <ContextPicker label="REST Entry" value={activeEntry?.name || "No REST Entry"} groups={groups} onSelect={select} disabled={busy} />;
+    return <ContextPicker label={t("REST Entry")} value={activeEntry?.name || t("No REST Entry")} groups={groups} onSelect={select} disabled={busy} />;
   };
 
   // What the Functions menu offers: every API Location (offline ones disabled)
   // and every saved SSH entry (openable once it is connected in the Terminal;
   // one SFTP window per entry).
-  const paneRemoteChoices: PaneLocationChoice[] = session.localOnly ? [] : locations.map((location) => ({
+   const paneRemoteChoices: PaneLocationChoice[] = session.localOnly ? [] : locations.map((location) => ({
     id: location.id,
     label: location.displayName,
     detail: location.id,
     available: location.status === "online",
-    disabledReason: `${location.displayName} is ${location.status || "unavailable"}`,
+    disabledReason: t("{{name}} is {{status}}", { name: location.displayName, status: t(location.status || "unavailable") }),
     selected: location.id === session.locationId,
   }));
   const sshEntries = managedSessions.flatMap((workspace) => workspace.sshEntries.map((entry) => ({ entry, workspaceName: workspace.name })));
@@ -4013,7 +4044,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     entries: workspace.proxmoxVncEntries.map((entry) => ({
       entryId: entry.id,
       label: vncEntryLabel(entry),
-      detail: `${entry.baseUrl} · ${entry.node || "No node"}/${entry.vmid || "No VMID"}`,
+      detail: `${entry.baseUrl} · ${entry.node || t("No node")}/${entry.vmid || t("No VMID")}`,
     })),
   }));
   const vncEntryIds = allVncEntries.map(({ entry }) => entry.id);
@@ -4109,7 +4140,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     }
     if (!sshPaneStatesRef.current[id]?.recordingUnsaved) return true;
     const name = openSshPanes.find((pane) => pane.id === id)?.name;
-    return requestConfirmation(`${name ? `SSH · ${name}` : "This SSH window"} has a recording that was not saved. Close it and discard the recording?`, "Close SSH window");
+      return requestConfirmation(t("{{name}} has a recording that was not saved. Close it and discard the recording?", { name: name ? `SSH · ${name}` : t("This SSH window") }), t("Close SSH window"));
   };
   const hasUnsavedPaneRecording = () => Object.values(sshPaneStatesRef.current).some((state) => Boolean(state?.recordingUnsaved));
 
@@ -4158,40 +4189,40 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               : sortedFiles.map((file) => file.path),
           );
     return (
-      <nav ref={bar.setRef} className="commandbar" aria-label="File actions" onPointerDownCapture={() => setActivePane(pane)}>
+      <nav ref={bar.setRef} className="commandbar" aria-label={t("File actions")} onPointerDownCapture={() => setActivePane(pane)}>
         <button className="primary" onClick={() => void upload()} disabled={busy || !remoteReady}>
-          Upload
+          {t("Upload")}
         </button>
         {!commandBarOverflow && <>
           <button onClick={createFolder} disabled={newFolderDisabled}>
-            New folder
+            {t("New folder")}
           </button>
           <span className="divider" />
           <button disabled={downloadDisabled} onClick={download}>
-            Download
+            {t("Download")}
           </button>
         </>}
         {commandBarOverflow ? (
           <CommandBarOverflowMenu
-            label="More actions"
+            label={t("More actions")}
             actions={[
-              { key: "new-folder", label: "New folder", disabled: newFolderDisabled, onClick: createFolder },
-              { key: "download", label: "Download", disabled: downloadDisabled, onClick: download },
+              { key: "new-folder", label: t("New folder"), disabled: newFolderDisabled, onClick: createFolder },
+              { key: "download", label: t("Download"), disabled: downloadDisabled, onClick: download },
               {
                 key: "view",
-                label: "View",
+                label: t("View"),
                 disabled: viewDisabled,
                 onClick: () =>
                   activePane === "local"
                     ? openLocalViewer(localSelectedItems[0].path)
                     : openRemoteViewer(selectedItems[0]),
               },
-              { key: "rename", label: "Rename", disabled: renameDisabled, onClick: rename },
-              { key: "share", label: "Share", disabled: shareDisabled, onClick: share },
-              { key: "delete", label: "Delete", disabled: deleteDisabled, onClick: remove },
-              { key: "undo", label: "Undo", disabled: busy || !ownUndoStack.length, title: undoTitle, onClick: undoLastOperation },
-              { key: "select-all", label: "Select all", onClick: selectAll },
-              { key: "refresh", label: "Refresh", disabled: busy, onClick: () => void run(refreshActivePane) },
+              { key: "rename", label: t("Rename"), disabled: renameDisabled, onClick: rename },
+              { key: "share", label: t("Share"), disabled: shareDisabled, onClick: share },
+              { key: "delete", label: t("Delete"), disabled: deleteDisabled, onClick: remove },
+              { key: "undo", label: t("Undo"), disabled: busy || !ownUndoStack.length, title: undoTitle, onClick: undoLastOperation },
+              { key: "select-all", label: t("Select all"), onClick: selectAll },
+              { key: "refresh", label: t("Refresh"), disabled: busy, onClick: () => void run(refreshActivePane) },
             ]}
           />
         ) : (
@@ -4204,23 +4235,23 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   : openRemoteViewer(selectedItems[0])
               }
             >
-              View
+              {t("View")}
             </button>
             <button disabled={renameDisabled} onClick={rename}>
-              Rename
+              {t("Rename")}
             </button>
             <button disabled={shareDisabled} onClick={share}>
-              Share
+              {t("Share")}
             </button>
             <button disabled={deleteDisabled} onClick={remove}>
-              Delete
+              {t("Delete")}
             </button>
             <button disabled={busy || !ownUndoStack.length} onClick={undoLastOperation} title={undoTitle}>
-              Undo
+              {t("Undo")}
             </button>
             <span className="divider" />
             <button onClick={selectAll}>
-              Select all
+              {t("Select all")}
             </button>
           </>
         )}
@@ -4229,16 +4260,16 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             className={viewMode === "details" ? "active" : ""}
             onClick={() => setViewMode("details")}
           >
-            Details
+            {t("Details")}
           </button>
           <button
             className={viewMode === "grid" ? "active" : ""}
             onClick={() => setViewMode("grid")}
           >
-            Grid
+            {t("Grid")}
           </button>
         </span>}
-        {!commandBarOverflow && <button onClick={() => void run(refreshActivePane)} disabled={busy}>Refresh</button>}
+        {!commandBarOverflow && <button onClick={() => void run(refreshActivePane)} disabled={busy}>{t("Refresh")}</button>}
       </nav>
     );
   };
@@ -4257,7 +4288,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
       {renderCommandbar("remote")}
       <div className={`desktop-workspace pane-remote-workspace${desktopSettings.collapseMainPaneEnabled && remoteFolderPaneCollapsed ? " remote-folder-pane-collapsed" : ""}`}>
         <aside aria-hidden={desktopSettings.collapseMainPaneEnabled && remoteFolderPaneCollapsed} className="desktop-folder-tree" style={{ flexBasis: `${folderPaneWidth}px`, width: `${folderPaneWidth}px` }} onMouseDownCapture={() => setActivePane("remote")}>
-          <span className="sidebar-label">Folders</span>
+          <span className="sidebar-label">{t("Folders")}</span>
           <div className="folder-pane">
             <div
               id="folders"
@@ -4269,15 +4300,15 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             >
               {renderTreeNode(folderTree)}
             </div>
-            <PersistentScrollbar targetRef={folderTreeRef} label="Folders" />
+            <PersistentScrollbar targetRef={folderTreeRef} label={t("Folders")} controlsId="folders" />
           </div>
         </aside>
         {desktopSettings.collapseMainPaneEnabled
-          ? <div className="remote-main-pane-collapse-controls" role="group" aria-label="Remote folder pane visibility">
-              <button type="button" onClick={() => setRemoteFolderPaneCollapsed(true)} disabled={remoteFolderPaneCollapsed} aria-label="Collapse Remote folders pane" title="Collapse Remote folders pane"><ChevronLeftIcon /></button>
-              <button type="button" onClick={() => setRemoteFolderPaneCollapsed(false)} disabled={!remoteFolderPaneCollapsed} aria-label="Restore Remote folders pane" title="Restore Remote folders pane"><ChevronRightIcon /></button>
+          ? <div className="remote-main-pane-collapse-controls" role="group" aria-label={t("Remote folder pane visibility")}>
+              <button type="button" onClick={() => setRemoteFolderPaneCollapsed(true)} disabled={remoteFolderPaneCollapsed} aria-label={t("Collapse Remote folders pane")} title={t("Collapse Remote folders pane")}><ChevronLeftIcon /></button>
+              <button type="button" onClick={() => setRemoteFolderPaneCollapsed(false)} disabled={!remoteFolderPaneCollapsed} aria-label={t("Restore Remote folders pane")} title={t("Restore Remote folders pane")}><ChevronRightIcon /></button>
             </div>
-          : <PaneResizeHandle ariaLabel="Resize Folders and REMOTE panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />}
+          : <PaneResizeHandle ariaLabel={t("Resize Folders and REMOTE panes")} onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />}
         <section
           className={`desktop-content ${activePane === "remote" ? "active-pane" : ""}`}
           onMouseDownCapture={() => setActivePane("remote")}
@@ -4286,14 +4317,14 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             <div>
               <span className="eyebrow">{remoteSourceLabel}</span>
               <div className="remote-navigation-row">
-                {searching ? <h1>Search results for "{search}"</h1> : renderRemoteBreadcrumbs()}
+                {searching ? <h1>{t('Search results for "{{query}}"', { query: search })}</h1> : renderRemoteBreadcrumbs()}
                 {canSearchRemote && renderSearchControl()}
               </div>
             </div>
           </div>
-          <div className="remote-status-row" aria-label="Remote status">
+          <div className="remote-status-row" aria-label={t("Remote status")}>
             <span className="selection-count" aria-live="polite">
-              {selectedItems.length > 0 ? `${selectedItems.length} selected` : ""}
+              {selectedItems.length > 0 ? t("{{count}} selected", { count: selectedItems.length }) : ""}
             </span>
             {notice && (
               <output className="notice transfer-notice" role="status" title={notice}>
@@ -4304,7 +4335,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           {shareUrl && (
             <div className="share-link">
               <label>
-                Share link
+                {t("Share link")}
                 <input
                   readOnly
                   value={shareUrl}
@@ -4315,13 +4346,13 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 onClick={() =>
                   void navigator.clipboard
                     .writeText(shareUrl)
-                    .then(() => notify("Share link copied."))
-                    .catch((error) => setNotice(error.message))
+                    .then(() => notify(t("Share link copied.")))
+                    .catch((error) => setNotice(formatUiError(error, t)))
                 }
               >
-                Copy link
+                {t("Copy link")}
               </button>
-              <button onClick={() => setShareUrl("")}>Close</button>
+              <button onClick={() => setShareUrl("")}>{t("Close")}</button>
             </div>
           )}
           <div className="file-pane">
@@ -4385,7 +4416,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   >
                     <span className="tile-icon glyph-folder" aria-hidden="true" />
                     <strong>../</strong>
-                    <span>Parent folder</span>
+                    <span>{t("Parent folder")}</span>
                   </article>
                 )}
 
@@ -4435,11 +4466,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                       <span className={file.isDirectory ? "glyph-folder" : "glyph-file"} aria-hidden="true" />
                     </span>
                     <strong>{file.name}</strong>
-                    <span>{file.isDirectory ? "File folder" : "File"}</span>
+                    <span>{t(file.isDirectory ? "File folder" : "File")}</span>
                     <small>
                       {file.isDirectory
-                        ? "Drop files here"
-                        : formatSize(file.size)}
+                        ? t("Drop files here")
+                        : formatSize(file.size, toIntlLocale())}
                     </small>
                   </article>
                 ))}
@@ -4454,7 +4485,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 </colgroup>
                 <thead>
                   <tr>
-                    <th aria-label="Select" />
+                    <th aria-label={t("Select")} />
                     {(["name", "modified", "size"] as ColumnKey[]).map((column) => (
                       <th
                         key={column}
@@ -4467,7 +4498,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                           <button
                             type="button"
                             className={`directory-first-toggle${remoteDirectoriesFirst ? " active" : ""}`}
-                            aria-label="Keep folders first"
+                            aria-label={t("Keep folders first")}
                             aria-pressed={remoteDirectoriesFirst}
                             title={remoteDirectoriesFirst ? "Folders first: on" : "Folders first: off"}
                             onClick={() => setRemoteDirectoriesFirst((current) => !current)}
@@ -4590,11 +4621,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                       </td>
                       <td className="muted">
                         {file.modified
-                          ? new Date(file.modified).toLocaleString()
+                          ? new Date(file.modified).toLocaleString(toIntlLocale())
                           : "--"}
                       </td>
                       <td className="muted">
-                        {file.isDirectory ? "--" : formatSize(file.size)}
+                        {file.isDirectory ? "--" : formatSize(file.size, toIntlLocale())}
                       </td>
                     </tr>
                   ))}
@@ -4602,26 +4633,26 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
               </table>
             )}
             </div>
-            <PersistentScrollbar targetRef={fileAreaRef} label="Files" />
+            <PersistentScrollbar targetRef={fileAreaRef} label={t("Files")} controlsId="files" />
           </div>
         </section>
       </div>
       <footer className="statusbar">
-        <span>{files.length} item{files.length === 1 ? "" : "s"}</span>
-        <span>{searching ? "Search results" : path ? `/${path}` : "/"}</span>
+        <span>{formatQuantity(files.length, "item", "items")}</span>
+        <span>{searching ? t("Search results") : path ? `/${path}` : "/"}</span>
       </footer>
     </div>
   );
 
   const renderRestWindow = () => (
     <div className="pane-window-content rest-window">
-      <nav ref={setRestBarHost} className="commandbar" aria-label="REST API actions">
+      <nav ref={setRestBarHost} className="commandbar" aria-label={t("REST API actions")}>
         {renderRestEntryPicker()}
       </nav>
       <div className="mode-workspace">
-        <Suspense fallback={<div className="pane-loading">Loading REST API…</div>}>
+        <Suspense fallback={<div className="pane-loading">{t("Loading REST API…")}</div>}>
           <RestApiWorkspace
-            workspaceName={restWorkspace?.name || "No Workspace"}
+            workspaceName={restWorkspace?.name || t("No Workspace")}
             entries={restWorkspace?.restApiEntries || []}
              activeEntryId={activeRestEntryId}
              secrets={restSecrets}
@@ -4662,8 +4693,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         </Suspense>
       </div>
       <footer className="statusbar">
-        <span>{restWorkspace?.restApiEntries.length || 0} REST entr{restWorkspace?.restApiEntries.length === 1 ? "y" : "ies"}</span>
-        <span>REST API reader</span>
+        <span>{t("{{count}} REST API entries", { count: restWorkspace?.restApiEntries.length || 0 })}</span>
+        <span>{t("REST API reader")}</span>
       </footer>
     </div>
   );
@@ -4680,8 +4711,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const exportOperationLog = () => {
     const content = operationLogRecords.map((record) => JSON.stringify(record)).join("\n");
     void invoke<string | null>("save_text_file", { name: "nfterm-operations.jsonl", content })
-      .then((savedPath) => { if (savedPath) notify(`Operation log exported to ${savedPath}`); })
-      .catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+      .then((savedPath) => { if (savedPath) notify(t("Operation log exported to {{path}}", { path: savedPath })); })
+      .catch((error) => setNotice(formatUiError(error, t)));
   };
 
   const sftpDnd: SftpDndBridge = {
@@ -4766,25 +4797,27 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             onOpenHelp={() => { setAccountOpen(false); setHelpOpen(true); }}
             onOpenWelcomeTutorial={() => { setAccountOpen(false); setWelcomeOpen(true); }}
             onSignOut={signOut}
+            locale={getAppLocale()}
+            onLocaleChange={(locale) => { void changeAppLocale(locale); }}
           />
         }
         onSelectRemote={(locationId) => { void selectLocation(locationId); }}
         onWindowState={handlePaneWindowState}
         onRequestClose={requestPaneClose}
         hasUnsavedPaneRecording={hasUnsavedPaneRecording}
-        confirmDiscardRecordings={() => requestConfirmation("An SSH window has a recording that was not saved. Close nFterm and discard it?", "Close nFterm")}
+        confirmDiscardRecordings={() => requestConfirmation(t("An SSH window has a recording that was not saved. Close nFterm and discard it?"), t("Close nFterm"))}
       >
         <PaneBody id="local">{renderLocalWindow()}</PaneBody>
         <PaneBody id="remote">{renderRemoteWindow()}</PaneBody>
         <PaneBody id="rest">{renderRestWindow()}</PaneBody>
         <PaneBody id={vncPickerWindowId("direct")}>
-          <Suspense fallback={<div className="pane-loading">Loading Direct VNC…</div>}>
+          <Suspense fallback={<div className="pane-loading">{t("Loading Direct VNC…")}</div>}>
             <VncDirectSetupPane onConnect={startDirectVnc} />
           </Suspense>
         </PaneBody>
         {vncPickerPaneEntries.map(({ workspace, entry }) => (
           <PaneBody key={entry.id} id={vncPickerWindowId(entry.id)}>
-            <Suspense fallback={<div className="pane-loading">Loading VM picker…</div>}>
+            <Suspense fallback={<div className="pane-loading">{t("Loading VM picker…")}</div>}>
               <VncVmPickerPane
                 entry={entry}
                 vms={vncVmLists[entry.id] || []}
@@ -4802,7 +4835,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         ))}
         {vncScreenPaneSessions.map((screen) => (
           <PaneBody key={screen.id} id={vncScreenWindowId(screen.id)}>
-            <Suspense fallback={<div className="pane-loading">Loading VNC display…</div>}>
+            <Suspense fallback={<div className="pane-loading">{t("Loading VNC display…")}</div>}>
               <ProxmoxVncScreenPane
                 screenSessionId={screen.id}
                 entry={screen.entry}
@@ -4818,7 +4851,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         ))}
         {vncScreenPaneSessions.filter((screen) => screen.entry && screen.vm).map((screen) => (
           <PaneBody key={screen.id} id={vncFilesWindowId(screen.id)}>
-            <Suspense fallback={<div className="pane-loading">Loading VM files…</div>}>
+            <Suspense fallback={<div className="pane-loading">{t("Loading VM files…")}</div>}>
               <VncFileTransferPane
                 entry={screen.entry!}
                 vmName={screen.vm!.name || `VM ${screen.vm!.vmid}`}
@@ -4847,7 +4880,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         ))}
         {sshEntries.map(({ entry }) => (
           <PaneBody key={entry.id} id={sftpWindowId(entry.id)}>
-            <Suspense fallback={<div className="pane-loading">Loading SFTP…</div>}>
+            <Suspense fallback={<div className="pane-loading">{t("Loading SFTP…")}</div>}>
               <SftpWindow
                 entryId={entry.id}
                 profile={entry}
@@ -4889,7 +4922,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           ref={contextMenuRef}
           className="context-menu"
           role="menu"
-          aria-label="File actions"
+          aria-label={t("File actions")}
           style={contextMenuStyle}
           onClick={(event) => event.stopPropagation()}
         >
@@ -4902,7 +4935,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   uploadLocalItemsToRemote(localSelectedItems, path);
                 }}
               >
-                Upload to REMOTE
+                {t("Upload to REMOTE")}
               </button>
               <button
                 onClick={() => {
@@ -4910,7 +4943,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   void createFolder();
                 }}
               >
-                New folder
+                {t("New folder")}
               </button>
               <button
                 disabled={localSelectedItems.length !== 1}
@@ -4919,7 +4952,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   void rename();
                 }}
               >
-                Rename
+                {t("Rename")}
               </button>
               <hr />
               <button
@@ -4929,7 +4962,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   void compressLocalItems();
                 }}
               >
-                Compress to .zip
+                {t("Compress to .zip")}
               </button>
               <button
                 disabled={localSelectedItems.length !== 1 || !isZipFile(localSelectedItems[0])}
@@ -4938,7 +4971,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   void extractLocalArchive();
                 }}
               >
-                Extract here
+                {t("Extract here")}
               </button>
               <hr />
               <button
@@ -4948,7 +4981,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   void remove();
                 }}
               >
-                Delete
+                {t("Delete")}
               </button>
             </>
           ) : (
@@ -4960,18 +4993,18 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   download();
                 }}
               >
-                Download
+                {t("Download")}
               </button>
               <button
                 disabled={!selectedItems.length}
                 onClick={() => {
                   setContextMenu(null);
                   notify(
-                    "Drag selected files to a destination folder to move them.",
+                    t("Drag selected files to a destination folder to move them."),
                   );
                 }}
               >
-                Move
+                {t("Move")}
               </button>
               <button
                 disabled={selectedItems.length !== 1}
@@ -4980,7 +5013,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   rename();
                 }}
               >
-                Rename
+                {t("Rename")}
               </button>
               <button
                 disabled={
@@ -4991,7 +5024,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   share();
                 }}
               >
-                Share
+                {t("Share")}
               </button>
               <hr />
               <button
@@ -5001,7 +5034,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   remove();
                 }}
               >
-                Delete
+                {t("Delete")}
               </button>
             </>
           )}
@@ -5016,11 +5049,11 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             className="modal"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <h2>Change password</h2>
+            <h2>{t("Change password")}</h2>
             <form onSubmit={changePassword}>
-              <p>Changing your password signs this device out.</p>
+              <p>{t("Changing your password signs this device out.")}</p>
               <label>
-                Current password
+                {t("Current password")}
                 <input
                   name="currentPassword"
                   type="password"
@@ -5029,7 +5062,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 />
               </label>
               <label>
-                New password
+                {t("New password")}
                 <input
                   name="newPassword"
                   type="password"
@@ -5038,7 +5071,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                 />
               </label>
               <label>
-                Confirm new password
+                {t("Confirm new password")}
                 <input
                   name="confirmPassword"
                   type="password"
@@ -5051,10 +5084,10 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                   type="button"
                   onClick={() => setChangePasswordOpen(false)}
                 >
-                  Cancel
+                  {t("Cancel")}
                 </button>
                 <button className="confirm" type="submit" disabled={busy}>
-                  Change password
+                  {t("Change password")}
                 </button>
               </div>
             </form>
@@ -5080,7 +5113,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
             modalStyle={modalStyle("settings")}
             onDragStart={beginModalDrag("settings")}
             onClose={() => setSettingsOpen(false)}
-            onSave={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify("Desktop settings saved."); }}
+            onSave={() => { localStorage.setItem(desktopSettingsKey, JSON.stringify(desktopSettings)); notify(t("Desktop settings saved.")); }}
             onManageShareLinks={() => { setSettingsOpen(false); openShareLinks(); }}
             canManageShareLinks={Boolean(session.token)}
             onClearHistory={clearHistory}
@@ -5216,7 +5249,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         />
       )}
       {queueOpen && <QueueModal items={transferQueue} activeItems={activeTransferQueue} historyItems={transferHistory} renderItem={(item) => renderDesktopQueueItem(item as TransferQueueItem)} modalStyle={modalStyle("queue")} onDragStart={beginModalDrag("queue")} onClose={() => setQueueOpen(false)} onClearStatus={clearQueueStatus} onClearHistory={clearFinishedQueue} />}
-      {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={closeViewer} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify("File content copied."))} />}
+      {viewerOpen && <ViewerModal title={viewerTitle} content={viewerContent} modalStyle={modalStyle("viewer")} onDragStart={beginModalDrag("viewer")} onClose={closeViewer} onEdit={editViewerFile} onCopy={() => void navigator.clipboard.writeText(viewerContent).then(() => notify(t("File content copied.")))} />}
       {logViewOpen && <LogView records={operationLogRecords} modalStyle={modalStyle("log-view")} onDragStart={beginModalDrag("log-view")} onClose={() => setLogViewOpen(false)} onExport={exportOperationLog} />}
       {helpOpen && <HelpModal selectedPageId={selectedHelpPageId} expandedSections={expandedHelpSections} modalStyle={modalStyle("help")} onDragStart={beginModalDrag("help")} onClose={() => setHelpOpen(false)} onToggleSection={(id) => setExpandedHelpSections((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onSelectPage={setSelectedHelpPageId} />}
       {namePrompt && <FloatingWindow
@@ -5225,10 +5258,10 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         style={modalStyle("workspace-name")}
         header={<h2>{namePrompt.title}</h2>}
         onClose={() => finishNamePrompt(null)}
-        footer={<><button type="button" onClick={() => finishNamePrompt(null)}>Cancel</button><button type="submit" form="name-prompt-form" className="confirm">Confirm</button></>}
+        footer={<><button type="button" onClick={() => finishNamePrompt(null)}>{t("Cancel")}</button><button type="submit" form="name-prompt-form" className="confirm">{t("Confirm")}</button></>}
       >
         <form id="name-prompt-form" onSubmit={(event) => { event.preventDefault(); finishNamePrompt(namePromptDraft); }}>
-          <label>Name<input autoFocus value={namePromptDraft} onChange={(event) => setNamePromptDraft(event.target.value)} /></label>
+          <label>{t("Name")}<input autoFocus value={namePromptDraft} onChange={(event) => setNamePromptDraft(event.target.value)} /></label>
         </form>
       </FloatingWindow>}
       {confirmPrompt && <FloatingWindow
@@ -5238,8 +5271,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         header={<h2>{confirmPrompt.title}</h2>}
         onClose={() => finishConfirmation(false)}
         footer={confirmPrompt.infoOnly
-          ? <button type="button" className="confirm" onClick={() => finishConfirmation(true)}>OK</button>
-          : <><button type="button" onClick={() => finishConfirmation(false)}>Cancel</button><button type="button" className="confirm" onClick={() => finishConfirmation(true)}>Confirm</button></>}
+          ? <button type="button" className="confirm" onClick={() => finishConfirmation(true)}>{t("OK")}</button>
+          : <><button type="button" onClick={() => finishConfirmation(false)}>{t("Cancel")}</button><button type="button" className="confirm" onClick={() => finishConfirmation(true)}>{t("Confirm")}</button></>}
       >
         <p style={{ whiteSpace: "pre-line" }}>{confirmPrompt.message}</p>
       </FloatingWindow>}
@@ -5248,4 +5281,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   );
 }
 
-createRoot(document.getElementById("root")!).render(isSshTerminalPopup() ? <SshTerminalPopup /> : <App />);
+createRoot(document.getElementById("root")!).render(
+  <I18nextProvider i18n={i18n}>
+    {isSshTerminalPopup() ? <SshTerminalPopup /> : <App />}
+  </I18nextProvider>,
+);

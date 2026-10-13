@@ -2,6 +2,7 @@
 // small for pictures), the placement settings in localStorage. A tiny external
 // store lets the Settings dialog and the desktop share one source of truth.
 import { useSyncExternalStore } from "react";
+import { UiMessageError } from "../i18n/errors";
 
 export type WallpaperFit = "cover" | "center" | "stretch";
 
@@ -69,7 +70,7 @@ function openDb(): Promise<IDBDatabase> {
     const request = indexedDB.open(DB_NAME, 1);
     request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME);
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Unable to open wallpaper storage"));
+    request.onerror = () => reject(request.error || new UiMessageError("Unable to open wallpaper storage."));
   });
 }
 
@@ -79,7 +80,7 @@ async function idb<T>(mode: IDBTransactionMode, run: (store: IDBObjectStore) => 
     return await new Promise<T>((resolve, reject) => {
       const request = run(db.transaction(STORE_NAME, mode).objectStore(STORE_NAME));
       request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error || new Error("Wallpaper storage request failed"));
+      request.onerror = () => reject(request.error || new UiMessageError("Wallpaper storage request failed."));
     });
   } finally {
     db.close();
@@ -120,8 +121,8 @@ export async function loadWallpaper() {
 }
 
 export async function setWallpaperImage(file: File) {
-  if (!file.type.startsWith("image/")) throw new Error("Choose an image file.");
-  if (file.size > WALLPAPER_MAX_BYTES) throw new Error(`The image is ${(file.size / 1048576).toFixed(1)} MB; the limit is ${WALLPAPER_MAX_BYTES / 1048576} MB.`);
+  if (!file.type.startsWith("image/")) throw new UiMessageError("Choose an image file.");
+  if (file.size > WALLPAPER_MAX_BYTES) throw new UiMessageError("The image is {{size}} MB; the limit is {{limit}} MB.", { size: (file.size / 1048576).toFixed(1), limit: WALLPAPER_MAX_BYTES / 1048576 }, "validation");
   await idb("readwrite", (store) => store.put(file, IMAGE_KEY));
   const config = { ...defaultWallpaperConfig(), name: file.name };
   writeConfig(config);

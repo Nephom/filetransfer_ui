@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import React from "react";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import type { RestApiEntry } from "../../rest-api";
@@ -63,29 +64,30 @@ export function SessionsModal({
   openEditVncEntryDialog,
   removeVncEntryDirect,
 }: SessionsModalProps) {
+  const { t } = useAppTranslation();
   return (
     <div className="modal-cover" onMouseDown={onClose}>
       <div className="modal sessions-modal" style={modalStyle} onMouseDown={(event) => event.stopPropagation()}>
         <div className="workspace-manager-heading modal-drag-handle" onMouseDown={onDragStart}>
-          <h2>Workspace Manager</h2>
+          <h2>{t("Workspace Manager")}</h2>
           <div className="workspace-list-heading">
-            <strong>Workspaces</strong>
-            <button type="button" className="confirm" onClick={startNewWorkspace}>Add</button>
+            <strong>{t("Workspaces")}</strong>
+            <button type="button" className="confirm" onClick={startNewWorkspace}>{t("Add")}</button>
           </div>
         </div>
         {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
-        {lastSavedSessionId && <span className="session-saved-note">Saved successfully.</span>}
-        {!managedSessions.length && <p className="muted workspace-empty">No Workspaces saved yet. Use Add to create one.</p>}
+        {lastSavedSessionId && <span className="session-saved-note">{t("Saved successfully.")}</span>}
+        {!managedSessions.length && <p className="muted workspace-empty">{t("No Workspaces saved yet. Use Add to create one.")}</p>}
         <div className="workspace-card-list">
           {managedSessions.map((managedSession) => (
             <article className={`workspace-card${managedSession.id === workspaceSessionId ? " selected" : ""}`} key={managedSession.id}>
               <div className="workspace-card-heading">
                 <button type="button" className="workspace-name" onClick={() => openWorkspaceNameDialog(managedSession)}>{managedSession.name}</button>
-                <button type="button" onClick={() => openWorkspaceNameDialog(managedSession)}>Edit</button>
+                <button type="button" onClick={() => openWorkspaceNameDialog(managedSession)}>{t("Edit")}</button>
               </div>
               <section className="workspace-entry-section">
-                <h3>SSH Entries</h3>
-                {!managedSession.sshEntries.length && <span className="muted">No SSH entries yet.</span>}
+                <h3>{t("SSH Entries")}</h3>
+                {!managedSession.sshEntries.length && <span className="muted">{t("No SSH entries yet.")}</span>}
                 <ol className="workspace-entry-list">
                   {managedSession.sshEntries.map((entry) => (
                     <li key={entry.id}>
@@ -93,14 +95,14 @@ export function SessionsModal({
                         <strong>{entry.name}</strong>
                         <span>{entry.username}@{entry.host}:{entry.port}</span>
                       </button>
-                      <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeSshEntryDirect(managedSession.id, entry); }}>Remove</button>
+                      <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeSshEntryDirect(managedSession.id, entry); }}>{t("Remove")}</button>
                     </li>
                   ))}
                 </ol>
               </section>
               {restApiModeEnabled && <section className="workspace-entry-section">
-                <h3>REST API Entries</h3>
-                {!managedSession.restApiEntries.length && <span className="muted">No REST API entries yet.</span>}
+                <h3>{t("REST API Entries")}</h3>
+                {!managedSession.restApiEntries.length && <span className="muted">{t("No REST API entries yet.")}</span>}
                 <ol className="workspace-entry-list">
                   {managedSession.restApiEntries.map((entry) => (
                     <li key={entry.id}>
@@ -108,34 +110,34 @@ export function SessionsModal({
                         <strong>{entry.name}</strong>
                         <span>{entry.baseUrl}{entry.defaultPath}</span>
                       </button>
-                      <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditRestEntryDialog(managedSession.id, entry); }}>Edit</button>
-                      <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeRestEntryDirect(managedSession.id, entry); }}>Remove</button>
+                      <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditRestEntryDialog(managedSession.id, entry); }}>{t("Edit")}</button>
+                      <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeRestEntryDirect(managedSession.id, entry); }}>{t("Remove")}</button>
                     </li>
                   ))}
                 </ol>
               </section>}
               {proxmoxVncModeEnabled && <section className="workspace-entry-section">
-                <h3>Proxmox VNC Entries</h3>
-                {!managedSession.proxmoxVncEntries.length && <span className="muted">No Proxmox VNC entries yet.</span>}
+                <h3>{t("Proxmox VNC Entries")}</h3>
+                {!managedSession.proxmoxVncEntries.length && <span className="muted">{t("No Proxmox VNC entries yet.")}</span>}
                 <ol className="workspace-entry-list">
                   {managedSession.proxmoxVncEntries.map((entry) => (
                     <li key={entry.id}>
                       <button type="button" className="workspace-entry-button" onClick={() => { setWorkspaceSessionId(managedSession.id); setActiveVncEntryId(entry.id); onSelectVncEntry(managedSession.id, entry.id); onClose(); }}>
                         <strong>{entry.name}</strong>
-                        <span>{entry.baseUrl} · {entry.node || "No node"}/{entry.vmid || "No VMID"}</span>
+                        <span>{entry.baseUrl} · {entry.node || t("No node")}/{entry.vmid || t("No VMID")}</span>
                       </button>
-                      <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditVncEntryDialog(managedSession.id, entry); }}>Edit</button>
-                      <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeVncEntryDirect(managedSession.id, entry); }}>Remove</button>
+                      <button type="button" className="workspace-entry-edit" onClick={(event) => { event.stopPropagation(); openEditVncEntryDialog(managedSession.id, entry); }}>{t("Edit")}</button>
+                      <button type="button" className="workspace-entry-remove" onClick={(event) => { event.stopPropagation(); removeVncEntryDirect(managedSession.id, entry); }}>{t("Remove")}</button>
                     </li>
                   ))}
                 </ol>
               </section>}
               <div className="workspace-entry-actions">
-                <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>Add SSH Entry</button>
-                {restApiModeEnabled && <button type="button" className="confirm" onClick={() => openAddRestEntryDialog(managedSession.id)}>Add REST API Entry</button>}
-                {proxmoxVncModeEnabled && <button type="button" className="confirm" onClick={() => openAddVncEntryDialog(managedSession.id)}>Add Proxmox VNC Entry</button>}
-                {restApiModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); openMode("rest"); onClose(); }}>Open REST API</button>}
-                {proxmoxVncModeEnabled && managedSession.proxmoxVncEntries[0] && <button type="button" onClick={() => { const entry = managedSession.proxmoxVncEntries[0]; setWorkspaceSessionId(managedSession.id); setActiveVncEntryId(entry.id); onSelectVncEntry(managedSession.id, entry.id); onClose(); }}>Open VNC</button>}
+                <button type="button" className="confirm" onClick={() => { setWorkspaceSessionId(managedSession.id); openAddSshEntryDialog(); }}>{t("Add SSH Entry")}</button>
+                {restApiModeEnabled && <button type="button" className="confirm" onClick={() => openAddRestEntryDialog(managedSession.id)}>{t("Add REST API Entry")}</button>}
+                {proxmoxVncModeEnabled && <button type="button" className="confirm" onClick={() => openAddVncEntryDialog(managedSession.id)}>{t("Add Proxmox VNC Entry")}</button>}
+                {restApiModeEnabled && <button type="button" onClick={() => { setWorkspaceSessionId(managedSession.id); openMode("rest"); onClose(); }}>{t("Open REST API")}</button>}
+                {proxmoxVncModeEnabled && managedSession.proxmoxVncEntries[0] && <button type="button" onClick={() => { const entry = managedSession.proxmoxVncEntries[0]; setWorkspaceSessionId(managedSession.id); setActiveVncEntryId(entry.id); onSelectVncEntry(managedSession.id, entry.id); onClose(); }}>{t("Open VNC")}</button>}
               </div>
             </article>
           ))}
@@ -146,15 +148,15 @@ export function SessionsModal({
               type="button"
               className="danger"
               disabled={!activeManagedWorkspace}
-              title={activeManagedWorkspace ? undefined : "請先選擇一個 Workspace 才能移除"}
+              title={activeManagedWorkspace ? undefined : t("Select a Workspace before removing an entry")}
               onClick={() => activeManagedWorkspace && removeSession(activeManagedWorkspace.id)}
             >
-              Remove Workspace
+              {t("Remove Workspace")}
             </button>
           ) : (
-            <span className="muted workspace-remove-hint">僅有 1 個 Workspace，如需移除請先建立另一個 Workspace</span>
+            <span className="muted workspace-remove-hint">{t("Only one Workspace exists. Create another Workspace before removing this one.")}</span>
           )}
-          <button type="button" className="confirm" onClick={onClose}>Close</button>
+          <button type="button" className="confirm" onClick={onClose}>{t("Close")}</button>
         </div>
       </div>
     </div>

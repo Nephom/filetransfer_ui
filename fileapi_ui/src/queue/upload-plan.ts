@@ -1,3 +1,5 @@
+import { UiMessageError } from "../i18n/errors";
+
 export type UploadManifestFile = {
   fileId: string;
   sourcePath: string;
@@ -49,7 +51,7 @@ export const planUploadChildren = (files: UploadManifestFile[], maxFiles = 500) 
     while (end < sorted.length && sorted[end].path.normalize("NFC").toLowerCase() === sorted[index].path.normalize("NFC").toLowerCase()) end += 1;
     const collisionGroup = sorted.slice(index, end);
     if (collisionGroup.length > maxFiles) {
-      throw new Error(`More than ${maxFiles} selected files target the same destination path: ${sorted[index].path}`);
+      throw new UiMessageError("More than {{maxFiles}} selected files target the same destination path: {{path}}", { maxFiles, path: sorted[index].path }, "conflict");
     }
     if (child.length && child.length + collisionGroup.length > maxFiles) {
       children.push(child);
@@ -87,7 +89,7 @@ export const buildManifestPages = (
     while (fileOffset + pageFiles.length < sortedFiles.length && pageFiles.length < pageSize) {
       const candidate = sortedFiles[fileOffset + pageFiles.length];
       if (encodedLength(fileOffset, directoryOffset, [...pageFiles, candidate], pageDirectories) > maximumPageBytes) {
-        if (!pageFiles.length) throw new Error(`Checksum manifest entry is too large: ${candidate.path}. Increase the upload chunk size.`);
+        if (!pageFiles.length) throw new UiMessageError("Checksum manifest entry is too large: {{path}}. Increase the upload chunk size.", { path: candidate.path }, "validation");
         break;
       }
       pageFiles.push(candidate);
@@ -98,7 +100,7 @@ export const buildManifestPages = (
       pageDirectories.push(candidate);
     }
     if (!pageFiles.length && !pageDirectories.length && (fileOffset < sortedFiles.length || directoryOffset < sortedDirectories.length)) {
-      throw new Error("Upload manifest page could not fit within the API metadata limit.");
+      throw new UiMessageError("Upload manifest page could not fit within the API metadata limit.", {}, "validation");
     }
     pages.push({ pageIndex: pages.length, fileOffset, directoryOffset,
       files: pageFiles.map(projectApiManifestFile), directories: pageDirectories });
@@ -122,7 +124,7 @@ export const rebindUploadManifest = (localFiles: UploadManifestFile[], serverFil
   return sortUploadManifest(localFiles).map((localFile) => {
     const matches = available.get(fileIdentity(localFile));
     const serverFile = matches?.shift();
-    if (!serverFile) throw new Error(`Upload source changed or is missing: ${localFile.path}`);
+    if (!serverFile) throw new UiMessageError("Upload source changed or is missing: {{path}}", { path: localFile.path }, "source_changed");
     return { ...localFile, fileId: serverFile.fileId };
   });
 };

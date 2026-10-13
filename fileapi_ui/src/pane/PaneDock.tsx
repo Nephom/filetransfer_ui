@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../i18n/useAppTranslation";
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { PaneLayout, PaneWindowId, PaneWindowKind } from "./pane-window-model";
@@ -103,6 +104,7 @@ export function PaneDock({
   desktopContextMenu, onCloseDesktopContextMenu,
   onOpenLocal, onOpenBrowser, onNativeViewOcclusionChange, onOpenLocalShell, onOpenSshInPane, onOpenSshWindow, onSelectVncEntry, onOpenDirectVnc, onOpenEntryManager, onCreateWorkspace, onOpenRemote, onOpenSftp, onActivate, onCloseWindow, onFocusPopup, onClosePopup,
 }: Props) {
+  const { t } = useAppTranslation();
   const [functionsOpen, setFunctionsOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
@@ -286,16 +288,16 @@ export function PaneDock({
   const flyoutItems: { key: string; label: string; icon: React.ReactNode; open: boolean; onClick: () => void; hasMenu?: boolean; expanded?: boolean }[] = [
     {
       key: "location",
-      label: "Location",
+      label: t("Location"),
       icon: <LocationIcon size={26} />,
       open: isOpen("local") || isOpen("remote") || anySftpOpen,
       hasMenu: true,
       expanded: locationOpen,
       onClick: () => setLocationOpen((value) => !value),
     },
-    ...(browserSupported ? [{ key: "browser", label: "Browser", icon: <BrowserIcon size={26} />, open: layout.windows.some((win) => win.open && kindOf(win.id) === "browser"), onClick: () => { onOpenBrowser(); closeMenus(); } }] : []),
-    ...(vncEnabled ? [{ key: "vnc", label: "VNC", icon: <VncIcon size={26} />, open: layout.windows.some((win) => win.open && ["vnc-picker", "vnc-screen", "vnc-files"].includes(kindOf(win.id) || "")), hasMenu: true, expanded: vncOpen, onClick: () => { setVncOpen((value) => !value); setVncEntriesOpen(false); setLocationOpen(false); } }] : []),
-    ...(restEnabled ? [{ key: "rest", label: "RestAPI", icon: <RestIcon size={26} />, open: isOpen("rest"), onClick: () => { onActivate("rest"); closeMenus(); } }] : []),
+    ...(browserSupported ? [{ key: "browser", label: t("Browser"), icon: <BrowserIcon size={26} />, open: layout.windows.some((win) => win.open && kindOf(win.id) === "browser"), onClick: () => { onOpenBrowser(); closeMenus(); } }] : []),
+    ...(vncEnabled ? [{ key: "vnc", label: t("VNC"), icon: <VncIcon size={26} />, open: layout.windows.some((win) => win.open && ["vnc-picker", "vnc-screen", "vnc-files"].includes(kindOf(win.id) || "")), hasMenu: true, expanded: vncOpen, onClick: () => { setVncOpen((value) => !value); setVncEntriesOpen(false); setLocationOpen(false); } }] : []),
+    ...(restEnabled ? [{ key: "rest", label: t("RestAPI"), icon: <RestIcon size={26} />, open: isOpen("rest"), onClick: () => { onActivate("rest"); closeMenus(); } }] : []),
   ];
 
   const chooseRemote = (choice: PaneLocationChoice) => { onOpenRemote(choice.id); closeMenus(); };
@@ -355,15 +357,15 @@ export function PaneDock({
   const renderEntryActions = (dismiss: () => void, className = "pane-entry-actions") => {
     if (!activeEntry || !activeEntryInfo) return null;
     return (
-      <div className={className} role="menu" aria-label={`${activeEntryInfo.label} actions`}>
+      <div className={className} role="menu" aria-label={t("{{name}} actions", { name: activeEntryInfo.label })}>
         <div className="pane-menu-heading">{activeEntryInfo.label}</div>
         <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenSshWindow(activeEntry.workspaceId, activeEntry.entryId); dismiss(); }}>
           <span className="pane-menu-icon"><ExternalWindowIcon size={18} /></span>
-          <span className="pane-menu-text"><strong>Open a new Window</strong></span>
+          <span className="pane-menu-text"><strong>{t("Open a new Window")}</strong></span>
         </button>
         <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenSshInPane(activeEntry.entryId); dismiss(); }}>
           <span className="pane-menu-icon"><TerminalIcon size={18} /></span>
-          <span className="pane-menu-text"><strong>Open SSH</strong></span>
+          <span className="pane-menu-text"><strong>{t("Open SSH")}</strong></span>
         </button>
       </div>
     );
@@ -372,13 +374,13 @@ export function PaneDock({
   const terminalFlyoutItems: { key: string; label: string; icon: React.ReactNode; hasMenu?: boolean; expanded?: boolean; onClick: () => void }[] = [
     {
       key: "entry-manager",
-      label: "Entry Manager",
+      label: t("Entry Manager"),
       icon: <EntryManagerIcon size={26} />,
       onClick: () => { onOpenEntryManager(); closeMenus(); },
     },
     {
       key: "ssh-entries",
-      label: "SSH Entries",
+      label: t("SSH Entries"),
       icon: <SshEntriesIcon size={26} />,
       hasMenu: true,
       expanded: sshListOpen,
@@ -393,7 +395,7 @@ export function PaneDock({
       },
       {
         key: "terminal",
-        label: "Terminal",
+        label: t("Terminal"),
         icon: <WindowsTerminalIcon size={26} />,
         onClick: () => { onOpenLocalShell("windowsTerminal"); closeMenus(); },
       },
@@ -405,7 +407,7 @@ export function PaneDock({
       return (
         <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onCreateWorkspace(); dismiss(); }}>
           <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
-          <span className="pane-menu-text"><strong>No Workspace yet</strong><small>Create a Workspace first</small></span>
+          <span className="pane-menu-text"><strong>{t("No Workspace yet")}</strong><small>{t("Create a Workspace first")}</small></span>
         </button>
       );
     }
@@ -413,7 +415,7 @@ export function PaneDock({
       return (
         <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenEntryManager(terminalWorkspaces[0].id); dismiss(); }}>
           <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
-          <span className="pane-menu-text"><strong>No SSH Entry yet</strong><small>Add one in Entry Manager</small></span>
+          <span className="pane-menu-text"><strong>{t("No SSH Entry yet")}</strong><small>{t("Add one in Entry Manager")}</small></span>
         </button>
       );
     }
@@ -451,7 +453,7 @@ export function PaneDock({
       return (
         <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onCreateWorkspace(); dismiss(); }}>
           <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
-          <span className="pane-menu-text"><strong>No Workspace yet</strong><small>Create a Workspace first</small></span>
+          <span className="pane-menu-text"><strong>{t("No Workspace yet")}</strong><small>{t("Create a Workspace first")}</small></span>
         </button>
       );
     }
@@ -459,7 +461,7 @@ export function PaneDock({
       return (
         <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenEntryManager(vncWorkspaces[0].id); dismiss(); }}>
           <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
-          <span className="pane-menu-text"><strong>No Proxmox VNC Entry yet</strong><small>Add one in Workspace Manager</small></span>
+          <span className="pane-menu-text"><strong>{t("No Proxmox VNC Entry yet")}</strong><small>{t("Add one in Workspace Manager")}</small></span>
         </button>
       );
     }
@@ -491,10 +493,10 @@ export function PaneDock({
 
   return (
     <>
-    <nav className="pane-dock" aria-label="Desktop dock">
+    <nav className="pane-dock" aria-label={t("Desktop dock")}>
       <div className="pane-dock-launchers" ref={rootRef}>
         <div className="pane-functions">
-          <div className={`pane-flyout${functionsOpen ? " is-open" : ""}`} role="menu" aria-label="Functions" aria-hidden={!functionsOpen}>
+          <div className={`pane-flyout${functionsOpen ? " is-open" : ""}`} role="menu" aria-label={t("Functions")} aria-hidden={!functionsOpen}>
             {flyoutItems.map((item, index) => (
               <div className="pane-flyout-slot" key={item.key} style={{ "--i": index } as React.CSSProperties}>
                 <button
@@ -510,22 +512,22 @@ export function PaneDock({
                   <span className="pane-dock-label">{item.label}</span>
                 </button>
                 {item.key === "location" && locationOpen && (
-                  <div className="pane-location-menu" role="menu" aria-label="Location">
+                  <div className="pane-location-menu" role="menu" aria-label={t("Location")}>
                     <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenLocal(); closeMenus(); }}>
                       <span className="pane-menu-icon"><LocalIcon size={18} /></span>
-                      <span className="pane-menu-text"><strong>Local</strong><small>This computer</small></span>
+                      <span className="pane-menu-text"><strong>{t("Local")}</strong><small>{t("This computer")}</small></span>
                     </button>
                     {remoteEnabled && <>
-                      <div className="pane-menu-heading"><RemoteIcon size={14} /> Remote</div>
-                      {renderChoices(remoteChoices, chooseRemote, "No remote locations")}
+                      <div className="pane-menu-heading"><RemoteIcon size={14} /> {t("Remote")}</div>
+                      {renderChoices(remoteChoices, chooseRemote, t("No remote locations"))}
                     </>}
                     <div className="pane-menu-heading"><SftpIcon size={14} /> SFTP</div>
-                    {renderChoices(sftpChoices, chooseSftp, "No SSH entries in the Workspace Manager")}
+                    {renderChoices(sftpChoices, chooseSftp, t("No SSH entries in the Workspace Manager"))}
                   </div>
                 )}
                 {item.key === "vnc" && vncOpen && (
                   <div className="pane-vnc-menu-wrap">
-                    <div className="pane-location-menu pane-vnc-menu" role="menu" aria-label="VNC">
+                    <div className="pane-location-menu pane-vnc-menu" role="menu" aria-label={t("VNC")}>
                       <button
                         type="button"
                         role="menuitem"
@@ -535,18 +537,18 @@ export function PaneDock({
                         onClick={() => setVncEntriesOpen((value) => !value)}
                       >
                         <span className="pane-menu-icon"><VncIcon size={18} /></span>
-                        <span className="pane-menu-text"><strong>Entries</strong><small>Choose a Proxmox connection</small></span>
+                        <span className="pane-menu-text"><strong>{t("Entries")}</strong><small>{t("Choose a Proxmox connection")}</small></span>
                       </button>
                       <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenDirectVnc(); closeMenus(); }}>
                         <span className="pane-menu-icon"><VncIcon size={18} /></span>
-                        <span className="pane-menu-text"><strong>Direct mode</strong><small>Connect to a VNC host directly</small></span>
+                        <span className="pane-menu-text"><strong>{t("Direct mode")}</strong><small>{t("Connect to a VNC host directly")}</small></span>
                       </button>
                       <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenEntryManager(); closeMenus(); }}>
                         <span className="pane-menu-icon"><EntryManagerIcon size={18} /></span>
-                        <span className="pane-menu-text"><strong>Entry Manager</strong><small>Add or edit Proxmox entries</small></span>
+                        <span className="pane-menu-text"><strong>{t("Entry Manager")}</strong><small>{t("Add or edit Proxmox entries")}</small></span>
                       </button>
                     </div>
-                    {vncEntriesOpen && <div className="pane-location-menu pane-vnc-entries-menu" role="menu" aria-label="Proxmox VNC Entries">{renderVncEntries()}</div>}
+                    {vncEntriesOpen && <div className="pane-location-menu pane-vnc-entries-menu" role="menu" aria-label={t("Proxmox VNC Entries")}>{renderVncEntries()}</div>}
                   </div>
                 )}
               </div>
@@ -560,11 +562,11 @@ export function PaneDock({
             onClick={() => { setFunctionsOpen((value) => !value); setLocationOpen(false); setTerminalOpen(false); setSshListOpen(false); setVncOpen(false); setVncEntriesOpen(false); setActiveEntry(null); }}
           >
             <span className="pane-dock-icon"><FunctionsIcon size={26} /></span>
-            <span className="pane-dock-label">Functions</span>
+            <span className="pane-dock-label">{t("Functions")}</span>
           </button>
         </div>
         <div className="pane-terminal">
-          <div className={`pane-flyout${terminalOpen ? " is-open" : ""}`} role="menu" aria-label="Terminal" aria-hidden={!terminalOpen}>
+          <div className={`pane-flyout${terminalOpen ? " is-open" : ""}`} role="menu" aria-label={t("Terminal")} aria-hidden={!terminalOpen}>
             {terminalFlyoutItems.map((item, index) => (
               <div className="pane-flyout-slot" key={item.key} style={{ "--i": index } as React.CSSProperties}>
                 <button
@@ -581,7 +583,7 @@ export function PaneDock({
                 </button>
                 {item.key === "ssh-entries" && sshListOpen && (
                   <div className="pane-ssh-menu-wrap">
-                    <div className="pane-location-menu pane-ssh-menu" role="menu" aria-label="SSH Entries">
+                    <div className="pane-location-menu pane-ssh-menu" role="menu" aria-label={t("SSH Entries")}>
                       {renderSshEntries()}
                     </div>
                     {renderEntryActions(closeMenus)}
@@ -598,13 +600,13 @@ export function PaneDock({
             onClick={() => { setTerminalOpen((value) => !value); setFunctionsOpen(false); setLocationOpen(false); setSshListOpen(false); setVncOpen(false); setVncEntriesOpen(false); setActiveEntry(null); }}
           >
             <span className="pane-dock-icon"><TerminalIcon size={26} /></span>
-            <span className="pane-dock-label">Terminal</span>
+            <span className="pane-dock-label">{t("Terminal")}</span>
           </button>
         </div>
       </div>
 
-      <div className="pane-taskbar" role="tablist" aria-label="Open windows">
-        {taskbarIds.length === 0 && popups.length === 0 && <span className="pane-taskbar-empty">No open windows</span>}
+      <div className="pane-taskbar" role="tablist" aria-label={t("Open windows")}>
+        {taskbarIds.length === 0 && popups.length === 0 && <span className="pane-taskbar-empty">{t("No open windows")}</span>}
         {taskbarIds.map((id) => {
           const win = windowOf(id)!;
           const active = layout.activeId === id;
@@ -623,27 +625,27 @@ export function PaneDock({
                 role="tab"
                 aria-selected={active}
                 className="pane-task-main"
-                title={win.minimized ? `Restore ${title}` : active ? `Minimize ${title}` : `Show ${title}`}
+                title={win.minimized ? t("Restore {{title}}", { title }) : active ? t("Minimize {{title}}", { title }) : t("Show {{title}}", { title })}
                 onClick={() => { dismissTaskPreview(); onActivate(id); }}
               >
                 {KIND_ICON[kindOf(id) || "local"]}
                 {isSshWindow && <span className={`pane-status-dot${sshState?.connected ? " is-online" : ""}`} aria-hidden="true" />}
                 <span className="pane-task-title">{title}</span>
-                {sshState?.recordingIndicator && <span className={`pane-task-${sshState.recordingIndicator.toLowerCase()}`} title={sshState.recordingIndicator === "REC" ? "Recording in progress" : "Log available to save"}>{sshState.recordingIndicator}</span>}
+                {sshState?.recordingIndicator && <span className={`pane-task-${sshState.recordingIndicator.toLowerCase()}`} title={sshState.recordingIndicator === "REC" ? t("Recording in progress") : t("Log available to save")}>{sshState.recordingIndicator}</span>}
               </button>
-              <button type="button" className="pane-task-close" aria-label={`Close ${title}`} onClick={() => { dismissTaskPreview(); onCloseWindow(id); }}>×</button>
+              <button type="button" className="pane-task-close" aria-label={t("Close {{title}}", { title })} onClick={() => { dismissTaskPreview(); onCloseWindow(id); }}>×</button>
             </span>
           );
         })}
         {popups.map((popup) => (
           <span key={popup.label} className="pane-task is-external">
-            <button type="button" role="tab" aria-selected={false} className="pane-task-main" title={`${popup.title} (separate window) - click to bring to front`} onClick={() => onFocusPopup(popup.label)}>
+            <button type="button" role="tab" aria-selected={false} className="pane-task-main" title={t("{{title}} (separate window) - click to bring to front", { title: popup.title })} onClick={() => onFocusPopup(popup.label)}>
               <ExternalWindowIcon size={18} />
               <span className={`pane-status-dot${popup.connected ? " is-online" : ""}`} aria-hidden="true" />
               <span className="pane-task-title">{popup.title}</span>
-              {popup.recordingIndicator && <span className={`pane-task-${popup.recordingIndicator.toLowerCase()}`} title={popup.recordingIndicator === "REC" ? "Recording in progress" : "Log available to save"}>{popup.recordingIndicator}</span>}
+              {popup.recordingIndicator && <span className={`pane-task-${popup.recordingIndicator.toLowerCase()}`} title={popup.recordingIndicator === "REC" ? t("Recording in progress") : t("Log available to save")}>{popup.recordingIndicator}</span>}
             </button>
-            <button type="button" className="pane-task-close" aria-label={`Close ${popup.title}`} onClick={() => onClosePopup(popup.label)}>×</button>
+            <button type="button" className="pane-task-close" aria-label={t("Close {{title}}", { title: popup.title })} onClick={() => onClosePopup(popup.label)}>×</button>
           </span>
         ))}
       </div>
@@ -658,7 +660,7 @@ export function PaneDock({
           ref={desktopContextMenuRef}
           className="context-menu pane-desktop-context-menu"
           role="menu"
-          aria-label="Desktop shortcuts"
+          aria-label={t("Desktop shortcuts")}
           style={desktopContextMenuStyle}
         >
           <button
@@ -673,7 +675,7 @@ export function PaneDock({
             onFocus={() => enterDesktopContextBranch("location")}
           >
             <LocationIcon size={18} />
-            <span>Location</span>
+            <span>{t("Location")}</span>
           </button>
           <button
             ref={(element) => { desktopContextOptionRefs.current.ssh = element; }}
@@ -687,7 +689,7 @@ export function PaneDock({
             onFocus={() => enterDesktopContextBranch("ssh")}
           >
             <SshEntriesIcon size={18} />
-            <span>SSH Entries</span>
+            <span>{t("SSH Entries")}</span>
           </button>
         </div>
         {desktopContextBranch === "location" && (
@@ -695,19 +697,19 @@ export function PaneDock({
             ref={desktopContextSubmenuRef}
             className="context-menu pane-desktop-context-submenu pane-desktop-context-submenu-location"
             role="menu"
-            aria-label="Location choices"
+            aria-label={t("Location choices")}
             style={desktopContextSubmenuStyle}
           >
             <button type="button" role="menuitem" className="pane-menu-item" onClick={() => { onOpenLocal(); closeDesktopMenus(); }}>
               <span className="pane-menu-icon"><LocalIcon size={18} /></span>
-              <span className="pane-menu-text"><strong>Local</strong><small>This computer</small></span>
+              <span className="pane-menu-text"><strong>{t("Local")}</strong><small>{t("This computer")}</small></span>
             </button>
             {remoteEnabled && <>
-              <div className="pane-menu-heading"><RemoteIcon size={14} /> Remote</div>
-              {renderChoices(remoteChoices, chooseContextRemote, "No remote locations")}
+              <div className="pane-menu-heading"><RemoteIcon size={14} /> {t("Remote")}</div>
+              {renderChoices(remoteChoices, chooseContextRemote, t("No remote locations"))}
             </>}
             <div className="pane-menu-heading"><SftpIcon size={14} /> SFTP</div>
-            {renderChoices(sftpChoices, chooseContextSftp, "No SSH entries in the Workspace Manager")}
+            {renderChoices(sftpChoices, chooseContextSftp, t("No SSH entries in the Workspace Manager"))}
           </div>
         )}
         {desktopContextBranch === "ssh" && (
@@ -715,11 +717,11 @@ export function PaneDock({
             ref={desktopContextSubmenuRef}
             className={`context-menu pane-desktop-context-submenu pane-desktop-context-submenu-ssh${activeEntryInfo ? " has-active-entry" : ""}`}
             role="menu"
-            aria-label="SSH Entries"
+            aria-label={t("SSH Entries")}
             style={desktopContextSubmenuStyle}
           >
             <div className="pane-context-ssh-wrap">
-              <div className="pane-context-ssh-list" role="menu" aria-label="SSH Entry list">
+              <div className="pane-context-ssh-list" role="menu" aria-label={t("SSH Entry list")}>
                 {renderSshEntries(closeDesktopMenus)}
               </div>
               {renderEntryActions(closeDesktopMenus, "pane-entry-actions pane-context-entry-actions")}

@@ -55,20 +55,21 @@ WebUI 是瀏覽器版檔案管理介面，提供：
 nFterm 是 Tauri v2 desktop client，支援 Ubuntu 22.04+ 與 Windows 10/11。它使用 HTTPS 連線至 API server，並提供：
 
 - LOCAL 與 API Remote 雙窗格檔案管理。
+- Windows-only Browser pane，提供分開管理的網頁瀏覽與下載操作。
 - SSH Terminal、SFTP browsing、SSH upload/download 與 remote archive 操作。
 - Transfer Queue、進度、取消、bounded retry、失敗分類與中斷狀態恢復。
 - REST API workspace，支援一般 REST、HPE iLO、OpenBMC、Redfish Session Auth 與 Redfish Actions。
-- Proxmox VNC workspace，支援登入、VM discovery、VNC 連線、entry 隔離，以及透過對應模式與 VM 傳輸檔案。nFterm 執行機與 Proxmox Host 必須位於同一網段。
+- Proxmox VNC workspace，支援登入、VM discovery、VNC 連線與 entry 隔離。nFterm 必須能連線至 Proxmox HTTPS API；VM 檔案傳輸依 Guest Agent、直接 SFTP 或 Host SSH 跳板路徑決定，不要求同一子網。
 - VNC workspace 上方提供 Direct VNC 圖卡，可透過標準 VNC password 連線到 macOS Screen Sharing 桌面；Direct VNC 僅提供畫面與輸入，不提供檔案傳輸。
-- VM 檔案傳輸模式：
+- VM 檔案傳輸會先檢查 SSH 傳輸路徑，再視需要使用 QEMU Guest Agent；判斷依實際 SSH 可達性，不依 ping：
 
-  | VM 類型 | 與 nFterm 執行機同一網段（可互 ping） | 與 nFterm 執行機不同網段（不可互 ping） |
-  | --- | --- | --- |
-  | Linux VM | SFTP（via SSH） | SFTP（via Host jumping） |
-  | Windows VM | 不支援 SSH/SFTP | 不支援 SSH/SFTP |
-  | Windows VM（Proxmox API） | Proxmox 提供的 API 傳輸協議 | Proxmox 提供的 API 傳輸協議 |
-- Windows VM 透過 Proxmox API 傳輸時，必須安裝 QEMU Guest Agent。VM 擁有者的權限必須包含 `VM.GuestAgent.FileRead`、`VM.GuestAgent.FileWrite` 與 `VM.GuestAgent.Unrestricted`。建議啟用全部 `VM.GuestAgent.*` 權限。
-- **LXC 不支援這項操作。**
+  | 條件 | 傳輸路徑 |
+  | --- | --- |
+  | VM 的 SSH 位址可直接連線 | Direct SFTP |
+  | VM SSH 不可直接連線，但可透過 Proxmox Host 到達 | Host Jump SFTP |
+  | QEMU Guest Agent 已安裝並回應，且 SSH 路徑不可用 | Guest Agent fallback（不支援資料夾下載，上傳受大小限制） |
+  | LXC 已設定可達 VM IP 與 SSH | Direct SFTP 或 Host Jump SFTP；沒有 Guest Agent API |
+- QEMU Guest Agent 檔案傳輸需要安裝 Agent 並授予 `VM.GuestAgent.FileRead`、`VM.GuestAgent.FileWrite` 與 `VM.GuestAgent.Unrestricted` 權限；建議啟用全部 `VM.GuestAgent.*` 權限。沒有 Guest Agent 路徑時，仍可依網路與 SSH 設定使用直接 SFTP 或 Host SSH 跳板；LXC 不支援 Guest Agent API 路徑。
 - 本地檔案 viewer、editor、archive、operation log 與 undo history。
 
 ### Desktop Build
@@ -103,6 +104,7 @@ Windows 正式版可使用 `build.ps1 build ga`，版本不附加 commit hash。
 - 下載使用 collision-safe filename；取消或失敗時清理 partial output。
 - TLS certificate verification 預設開啟。只有使用者明確選擇 Ignore TLS errors 時才停用驗證。
 - Proxmox localhost relay 使用一次性 token 與精確 WebSocket path；切換 entry 時會取消尚未建立的 pending relay。
+- Desktop UI 僅支援 `en_US` 與 `zh_TW`；首次依 WebView 語系選擇，之後可從右上角 Account 選單切換並保存。
 
 ## API Contract
 

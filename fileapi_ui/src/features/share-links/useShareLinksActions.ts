@@ -1,5 +1,7 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import type { ShareLink, ShareResponse } from "./share-links-contracts";
 import { useRef } from "react";
+import { UiMessageError } from "../../i18n/errors";
 
 // Minimal structural shape of main.tsx's ApiResponse, matching exactly what
 // this hook calls on it -- avoids importing main.tsx's own (unexported)
@@ -54,11 +56,12 @@ export function useShareLinksActions({
   shareLinks, setShareLinks, setShareLinksLoading,
   setShareUrl, setShareLinksOpen, setSharePasswordOpen, setSharePasswordDraft,
 }: UseShareLinksActionsParams) {
+  const { t } = useAppTranslation();
   const pendingShare = useRef<((password?: string) => Promise<void>) | null>(null);
   const listGeneration = useRef(0);
   const createCapturedShareLink = (password?: string) =>
     run(async () => {
-      if (!isContextCurrent()) throw new Error("The share's original Location has changed. Select the file again.");
+      if (!isContextCurrent()) throw new UiMessageError("The share’s original Location has changed. Select the file again.");
       const item = selectedShareableItem;
       if (!item || item.isDirectory) return;
       const sourceLabel = `${activeLocationDisplayName || session.locationId || "Remote"}:${item.path}`;
@@ -93,13 +96,13 @@ export function useShareLinksActions({
               (data.data?.directDownloadUrl ? `${serverUrl()}${data.data.directDownloadUrl}` : "")
             : data.data?.fullUrl ||
               (data.data?.shareUrl ? `${serverUrl()}${data.data.shareUrl}` : "");
-        if (!url) throw new Error("The server did not return a share link.");
+        if (!url) throw new UiMessageError("The server did not return a share link.");
         setShareUrl(url);
         setSharePasswordOpen(false);
         setSharePasswordDraft("");
         pendingShare.current = null;
         writeOperationLog("share", "completed", sourceLabel, "Public share link", JSON.stringify({ operationId, locationId: session.locationId, filePath: item.path, mode: shareLinkMode, expiration: shareLinkExpirationDays, passwordConfigured: Boolean(password), durationMs: Math.round(performance.now() - started) }));
-        notify("Share link created.");
+        notify(t("Share link created."));
       } catch (error) {
         writeOperationLog("share", "failed", sourceLabel, "Public share link", JSON.stringify({ operationId, locationId: session.locationId, filePath: item.path, mode: shareLinkMode, expiration: shareLinkExpirationDays, passwordConfigured: Boolean(password), durationMs: Math.round(performance.now() - started), failureType: "share_request", errorMessage: describeError(error) }), "ERROR");
         throw error;
@@ -137,18 +140,18 @@ export function useShareLinksActions({
 
   const copyManagedShareLink = async (link: ShareLink, kind: "secure" | "direct") => {
     const url = shareLinkUrl(link, kind);
-    if (!url) throw new Error("The server did not return this share link URL.");
+    if (!url) throw new UiMessageError("The server did not return this share link URL.");
     await navigator.clipboard.writeText(url);
-    notify(`${kind === "direct" ? "Direct" : "Secure"} link copied.`);
+    notify(t("{{kind}} link copied.", { kind: t(kind === "direct" ? "Direct" : "Secure") }));
   };
 
   const revokeManagedShareLink = (shareToken: string) =>
     run(async () => {
-      if (!window.confirm("Revoke this share link? Existing downloads will stop working.")) return;
+      if (!window.confirm(t("Revoke this share link? Existing downloads will stop working."))) return;
       const response = await api(`${session.role === "admin" ? "/api/admin/share-links" : "/api/files/share"}/${encodeURIComponent(shareToken)}`, { method: "DELETE" });
       if (!response.ok) throw new Error(await readError(response));
       await loadShareLinks();
-      notify("Share link revoked.");
+      notify(t("Share link revoked."));
     });
 
   const deleteExpiredShareLink = (shareToken: string) =>
@@ -156,7 +159,7 @@ export function useShareLinksActions({
       const response = await api(`${session.role === "admin" ? "/api/admin/share-links" : "/api/files/share"}/${encodeURIComponent(shareToken)}/history`, { method: "DELETE" });
       if (!response.ok) throw new Error(await readError(response));
       await loadShareLinks();
-      notify("Expired share link removed from history.");
+      notify(t("Expired share link removed from history."));
     });
 
   const deleteRevokedShareLink = (shareToken: string) =>
@@ -164,7 +167,7 @@ export function useShareLinksActions({
       const response = await api(`${session.role === "admin" ? "/api/admin/share-links" : "/api/files/share"}/${encodeURIComponent(shareToken)}/history/revoked`, { method: "DELETE" });
       if (!response.ok) throw new Error(await readError(response));
       await loadShareLinks();
-      notify("Revoked share link removed from history.");
+      notify(t("Revoked share link removed from history."));
     });
 
   const shareLinkStatus = (link: ShareLink) =>

@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import React from "react";
 import { Dropdown } from "../../ui/Dropdown";
 import type { ProxmoxVncEntry } from "../../proxmox-vnc";
@@ -55,6 +56,7 @@ export function VncEntryDialog({
   vncEndpointParts,
   vncUsernameParts,
 }: VncEntryDialogProps) {
+  const { t } = useAppTranslation();
   const endpoint = vncEndpointParts(vncEntryDraft.baseUrl);
   const proxmoxUsername = vncUsernameParts(vncEntryDraft.username);
   const updateEndpoint = (host: string, port: string) => setVncEntryDraft({ ...vncEntryDraft, baseUrl: `https://${host}:${port}` });
@@ -62,51 +64,51 @@ export function VncEntryDialog({
   return (
     <div className="modal-cover modal-layer-top" onMouseDown={onClose}>
       <div className="modal vnc-entry-modal" style={modalStyle} onMouseDown={(event) => event.stopPropagation()}>
-        <h2 className="modal-drag-handle" onMouseDown={onDragStart}>{isEditing ? "Edit Proxmox VNC Entry" : "Add Proxmox VNC Entry"}</h2>
-        <div className="vnc-entry-modal-tabs" role="tablist" aria-label="Proxmox VNC entry section">
-          <button type="button" role="tab" aria-selected={vncEntryModalTab === "default"} className={`vnc-entry-modal-tab${vncEntryModalTab === "default" ? " active" : ""}`} onClick={() => setVncEntryModalTab("default")}>Host Entry</button>
-          <button type="button" role="tab" aria-selected={vncEntryModalTab === "hostSsh"} className={`vnc-entry-modal-tab${vncEntryModalTab === "hostSsh" ? " active" : ""}`} onClick={() => setVncEntryModalTab("hostSsh")}>Host SSH (jump)</button>
+        <h2 className="modal-drag-handle" onMouseDown={onDragStart}>{t(isEditing ? "Edit Proxmox VNC Entry" : "Add Proxmox VNC Entry")}</h2>
+        <div className="vnc-entry-modal-tabs" role="tablist" aria-label={t("Proxmox VNC entry section")}>
+          <button type="button" role="tab" aria-selected={vncEntryModalTab === "default"} className={`vnc-entry-modal-tab${vncEntryModalTab === "default" ? " active" : ""}`} onClick={() => setVncEntryModalTab("default")}>{t("Host Entry")}</button>
+          <button type="button" role="tab" aria-selected={vncEntryModalTab === "hostSsh"} className={`vnc-entry-modal-tab${vncEntryModalTab === "hostSsh" ? " active" : ""}`} onClick={() => setVncEntryModalTab("hostSsh")}>{t("Host SSH (jump)")}</button>
         </div>
-        <p>Workspace: {workspaceName || "—"}</p>
+        <p>{t("Workspace")}: {workspaceName || "—"}</p>
         {sessionFormError && <output className="form-error" role="alert">{sessionFormError}</output>}
         {vncEntryModalTab === "default" && <>
-          <label>Name<input value={vncEntryDraft.name} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, name: event.target.value })} /></label>
+          <label>{t("Name")}<input value={vncEntryDraft.name} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, name: event.target.value })} /></label>
           <div className="vnc-form-grid">
-            <label>Proxmox host<input value={endpoint.host} onChange={(event) => updateEndpoint(event.target.value, endpoint.port)} placeholder="proxmox.example.com" /></label>
-            <label>Port<input type="number" min="1" max="65535" value={endpoint.port} onChange={(event) => updateEndpoint(endpoint.host, event.target.value)} placeholder="8006" /></label>
+            <label>{t("Proxmox host")}<input value={endpoint.host} onChange={(event) => updateEndpoint(event.target.value, endpoint.port)} placeholder="proxmox.example.com" /></label>
+            <label>{t("Port")}<input type="number" min="1" max="65535" value={endpoint.port} onChange={(event) => updateEndpoint(endpoint.host, event.target.value)} placeholder="8006" /></label>
           </div>
           <div className="vnc-username-field">
-            <label>Username<input value={proxmoxUsername.account} onChange={(event) => updateUsername(event.target.value, proxmoxUsername.realm)} placeholder="root" /></label>
+            <label>{t("Username")}<input value={proxmoxUsername.account} onChange={(event) => updateUsername(event.target.value, proxmoxUsername.realm)} placeholder="root" /></label>
             <div className="vnc-realm-options">
               <label><input type="radio" name={`realm-${vncEntryDraft.id}`} checked={proxmoxUsername.realm === "pam"} onChange={() => updateUsername(proxmoxUsername.account, "pam")} /> pam</label>
               <label><input type="radio" name={`realm-${vncEntryDraft.id}`} checked={proxmoxUsername.realm === "pve"} onChange={() => updateUsername(proxmoxUsername.account, "pve")} /> pve</label>
             </div>
           </div>
-          <label>PVE version<Dropdown label="PVE version" value={vncEntryDraft.proxmoxVersion} onChange={(nextVersion) => setVncEntryDraft({ ...vncEntryDraft, proxmoxVersion: nextVersion as ProxmoxVncEntry["proxmoxVersion"] })} options={[{ value: "auto", label: "Auto detect" }, { value: "6.4", label: "6.4" }, { value: "7.x", label: "7.x" }, { value: "8.x", label: "8.x" }, { value: "9.x", label: "9.x" }]} /></label>
-          <label className="tls-option"><input type="checkbox" checked={vncEntryDraft.ignoreTlsErrors} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, ignoreTlsErrors: event.target.checked })} /> Ignore TLS certificate errors</label>
-          <label>Proxmox password<input type="password" value={vncEntryPasswordDraft} onChange={(event) => setVncEntryPasswordDraft(event.target.value)} placeholder={vncEntryPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" aria-required={vncEntryPasswordRequired} /></label>
+          <label>{t("PVE version")}<Dropdown label={t("PVE version")} value={vncEntryDraft.proxmoxVersion} onChange={(nextVersion) => setVncEntryDraft({ ...vncEntryDraft, proxmoxVersion: nextVersion as ProxmoxVncEntry["proxmoxVersion"] })} options={[{ value: "auto", label: t("Auto detect") }, { value: "6.4", label: "6.4" }, { value: "7.x", label: "7.x" }, { value: "8.x", label: "8.x" }, { value: "9.x", label: "9.x" }]} /></label>
+          <label className="tls-option"><input type="checkbox" checked={vncEntryDraft.ignoreTlsErrors} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, ignoreTlsErrors: event.target.checked })} /> {t("Ignore TLS certificate errors")}</label>
+          <label>{t("Proxmox password")}<input type="password" value={vncEntryPasswordDraft} onChange={(event) => setVncEntryPasswordDraft(event.target.value)} placeholder={vncEntryPasswordSaved ? t("Saved - leave blank to keep it") : t("Not saved")} autoComplete="new-password" aria-required={vncEntryPasswordRequired} /></label>
           <div className="vnc-password-status-row">
-            <small className="field-help">The password is stored in the system credential store, not the Workspace file.</small>
-            {vncEntryPasswordSaved && <button type="button" onClick={onForgetVncPassword} disabled={vncEntryPasswordSaving}>Forget password</button>}
+            <small className="field-help">{t("The password is stored in the system credential store, not the Workspace file.")}</small>
+            {vncEntryPasswordSaved && <button type="button" onClick={onForgetVncPassword} disabled={vncEntryPasswordSaving}>{t("Forget password")}</button>}
           </div>
-          {vncEntryPasswordRequired && !vncEntryPasswordSaved && <small className="field-help" role="status">Enter and save the password to continue connecting to this Entry.</small>}
-          <small className="field-help">Node and VM selection are saved after choosing the Entry and opening its VM picker.</small>
+          {vncEntryPasswordRequired && !vncEntryPasswordSaved && <small className="field-help" role="status">{t("Enter and save the password to continue connecting to this Entry.")}</small>}
+          <small className="field-help">{t("Node and VM selection are saved after choosing the Entry and opening its VM picker.")}</small>
         </>}
         {vncEntryModalTab === "hostSsh" && <>
-          <strong>File transfer: Host SSH (jump)</strong>
-          <small className="field-help">Only needed when the VM isn't directly reachable from this client -- the Proxmox host itself is then used as an SSH jump to reach the VM's SFTP over a tunneled connection.</small>
+          <strong>{t("File transfer: Host SSH (jump)")}</strong>
+          <small className="field-help">{t("Only needed when the VM is not directly reachable from this client; the Proxmox host is then used as an SSH jump to reach the VM’s SFTP over a tunnel.")}</small>
           <div className="vnc-form-grid">
-            <label>Host SSH username<input value={vncEntryDraft.hostSshUsername || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshUsername: event.target.value })} placeholder="root" /></label>
-            <label>Host SSH port<input type="number" min="1" max="65535" value={vncEntryDraft.hostSshPort || 22} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshPort: Number(event.target.value) || 22 })} /></label>
+            <label>{t("Host SSH username")}<input value={vncEntryDraft.hostSshUsername || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshUsername: event.target.value })} placeholder="root" /></label>
+            <label>{t("Host SSH port")}<input type="number" min="1" max="65535" value={vncEntryDraft.hostSshPort || 22} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshPort: Number(event.target.value) || 22 })} /></label>
           </div>
-          <label>Host SSH private key path (optional)<input value={vncEntryDraft.hostSshPrivateKeyPath || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshPrivateKeyPath: event.target.value })} placeholder="/home/test/.ssh/id_ed25519" /></label>
-          <label>Host SSH password<input type="password" value={hostSshPasswordDraft} onChange={(event) => setHostSshPasswordDraft(event.target.value)} placeholder={hostSshPasswordSaved ? "Saved - leave blank to keep it" : "Not saved"} autoComplete="new-password" /></label>
-          <div className="modal-actions"><button type="button" onClick={onInstallHostKey}>Install SSH key on host</button></div>
+          <label>{t("Host SSH private key path (optional)")}<input value={vncEntryDraft.hostSshPrivateKeyPath || ""} onChange={(event) => setVncEntryDraft({ ...vncEntryDraft, hostSshPrivateKeyPath: event.target.value })} placeholder="/home/test/.ssh/id_ed25519" /></label>
+          <label>{t("Host SSH password")}<input type="password" value={hostSshPasswordDraft} onChange={(event) => setHostSshPasswordDraft(event.target.value)} placeholder={hostSshPasswordSaved ? t("Saved - leave blank to keep it") : t("Not saved")} autoComplete="new-password" /></label>
+          <div className="modal-actions"><button type="button" onClick={onInstallHostKey}>{t("Install SSH key on host")}</button></div>
         </>}
         <div className="modal-actions">
-          <button type="button" onClick={onClose}>Cancel</button>
-          {isEditing && <button type="button" className="session-delete" onClick={onRemove}>Remove</button>}
-          <button type="button" className="confirm" onClick={onSave} disabled={vncEntryPasswordSaving}>{vncEntryPasswordSaving ? "Saving…" : "Save"}</button>
+          <button type="button" onClick={onClose}>{t("Cancel")}</button>
+          {isEditing && <button type="button" className="session-delete" onClick={onRemove}>{t("Remove")}</button>}
+          <button type="button" className="confirm" onClick={onSave} disabled={vncEntryPasswordSaving}>{vncEntryPasswordSaving ? t("Saving…") : t("Save")}</button>
         </div>
       </div>
     </div>

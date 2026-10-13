@@ -16,6 +16,7 @@ export type TransferQueueItem = {
   uploadActiveChildren?: number;
   cancellationRequested?: boolean;
   label: string;
+  labelMessage?: { key: string; values?: Record<string, string | number>; translatedValues?: string[]; suffix?: string };
   kind: "upload" | "download" | "download-set";
   paths: string[];
   destinationPath: string;
@@ -23,11 +24,17 @@ export type TransferQueueItem = {
   locationName: string;
   status: "queued" | "running" | "retrying" | "completed" | "failed" | "cancelled" | "needs_user_action";
   detail: string;
+  detailMessage?: { key: string; values?: Record<string, string | number>; translatedValues?: string[]; suffix?: string };
   progress?: QueueProgress;
   errorCategory?: QueueErrorCategory;
   error?: {
     category: QueueErrorCategory;
     message: string;
+    translationKey?: string;
+    translationValues?: Record<string, string | number>;
+    translationSuffix?: string;
+    completedItems?: number;
+    totalItems?: number;
     itemId: string;
     path?: string;
     attempt: number;
@@ -71,18 +78,20 @@ export const readPersistedQueue = (): TransferQueueItem[] => {
         const withOperationId = { ...item, operationId: item.operationId || item.id };
         if (!["queued", "running", "retrying"].includes(item.status)) return withOperationId;
         const requiresRequeue = !item.sshEntryId;
+        const detailKey = item.serverSessionId
+          ? "Upload interrupted. Resume only the unfinished files and byte ranges; completed files are kept."
+          : item.serverBatchId
+            ? "Server upload outcome is unconfirmed. Reconcile the original batch; do not re-upload."
+            : requiresRequeue
+              ? "Transfer was interrupted when nFterm closed. Re-add it to authenticate again."
+              : "Transfer was interrupted when nFterm closed. Review and retry it.";
         return {
           ...withOperationId,
           status: "needs_user_action",
           errorCategory: "unknown",
           ...(item.serverSessionId ? { uploadOutcome: "resumable" as const } : item.serverBatchId ? { uploadOutcome: "reconcile" as const } : {}),
-          detail: item.serverSessionId
-            ? "Upload interrupted. Resume only the unfinished files and byte ranges; completed files are kept."
-            : item.serverBatchId
-            ? "Server upload outcome is unconfirmed. Reconcile the original batch; do not re-upload."
-            : requiresRequeue
-            ? "Transfer was interrupted when nFterm closed. Re-add it to authenticate again."
-            : "Transfer was interrupted when nFterm closed. Review and retry it.",
+          detail: detailKey,
+          detailMessage: { key: detailKey },
           error: {
             category: "unknown",
             message: "Transfer was interrupted when nFterm closed.",

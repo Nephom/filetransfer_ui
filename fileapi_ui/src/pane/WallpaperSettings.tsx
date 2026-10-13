@@ -1,4 +1,6 @@
+import { useAppTranslation } from "../i18n/useAppTranslation";
 import React, { useRef, useState } from "react";
+import { formatUiError } from "../i18n/errors";
 import { Dropdown } from "../ui/Dropdown";
 import {
   WALLPAPER_MAX_BYTES,
@@ -13,19 +15,19 @@ import {
   type WallpaperFit,
 } from "./pane-wallpaper-store";
 
-const FIT_OPTIONS: { value: WallpaperFit; label: string }[] = [
-  { value: "cover", label: "Fill (crop to fit)" },
-  { value: "center", label: "Center (original size)" },
-  { value: "stretch", label: "Stretch" },
-];
-
 /** Settings section for the Pane desktop wallpaper: image, fit, zoom and position. */
 export function WallpaperSettings() {
+  const { t } = useAppTranslation();
   const { config, imageUrl } = useWallpaper();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const hasImage = Boolean(imageUrl);
+  const fitOptions: { value: WallpaperFit; label: string }[] = [
+    { value: "cover", label: t("Fill (crop to fit)") },
+    { value: "center", label: t("Center (original size)") },
+    { value: "stretch", label: t("Stretch") },
+  ];
 
   const choose = async (file: File | undefined) => {
     if (!file) return;
@@ -34,7 +36,7 @@ export function WallpaperSettings() {
     try {
       await setWallpaperImage(file);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(formatUiError(reason, t));
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = "";
@@ -46,7 +48,7 @@ export function WallpaperSettings() {
     try {
       await clearWallpaper();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(formatUiError(reason, t));
     } finally {
       setBusy(false);
     }
@@ -57,16 +59,16 @@ export function WallpaperSettings() {
 
   return (
     <section className="settings-section settings-section-theme wallpaper-settings">
-      <h3>Desktop wallpaper</h3>
+      <h3>{t("Desktop wallpaper")}</h3>
       <div className="settings-check">
         <span>
-          <strong>Background image</strong>
-          <small>{hasImage ? `${config.name || "Custom image"}` : "Using the built-in gradient."} Images up to {WALLPAPER_MAX_BYTES / 1048576} MB; stored on this computer only.</small>
+          <strong>{t("Background image")}</strong>
+          <small>{hasImage ? config.name || t("Custom image") : t("Using the built-in gradient.")} {t("Images up to {{size}} MB; stored on this computer only.", { size: WALLPAPER_MAX_BYTES / 1048576 })}</small>
         </span>
         <span className="wallpaper-actions">
           <input ref={inputRef} type="file" accept="image/*" hidden onChange={(event) => void choose(event.target.files?.[0])} />
-          <button type="button" disabled={busy} onClick={() => inputRef.current?.click()}>Choose image…</button>
-          <button type="button" disabled={busy || !hasImage} onClick={() => void remove()}>Use default</button>
+          <button type="button" disabled={busy} onClick={() => inputRef.current?.click()}>{t("Choose image…")}</button>
+          <button type="button" disabled={busy || !hasImage} onClick={() => void remove()}>{t("Use default")}</button>
         </span>
       </div>
       {error && <p className="settings-accent-warning" role="alert">{error}</p>}
@@ -77,11 +79,11 @@ export function WallpaperSettings() {
           </div>
           <div className="wallpaper-controls">
             <label className="wallpaper-row">
-              <span>Fit</span>
-              <Dropdown label="Wallpaper fit" value={config.fit} onChange={(value) => updateWallpaperConfig({ fit: value as WallpaperFit })} options={FIT_OPTIONS} />
+              <span>{t("Fit")}</span>
+              <Dropdown label={t("Wallpaper fit")} value={config.fit} onChange={(value) => updateWallpaperConfig({ fit: value as WallpaperFit })} options={fitOptions} />
             </label>
             <label className="wallpaper-row">
-              <span>Zoom {Math.round(config.scale * 100)}%</span>
+              <span>{t("Zoom {{percent}}%", { percent: Math.round(config.scale * 100) })}</span>
               <input
                 type="range"
                 min={WALLPAPER_SCALE_MIN}
@@ -92,14 +94,14 @@ export function WallpaperSettings() {
               />
             </label>
             <div className="wallpaper-row">
-              <span>Position {config.x}% / {config.y}%</span>
-              <span className="wallpaper-nudge" role="group" aria-label="Move wallpaper">
-                <button type="button" aria-label="Move image left" onClick={() => move(-WALLPAPER_STEP, 0)}>←</button>
-                <button type="button" aria-label="Move image up" onClick={() => move(0, -WALLPAPER_STEP)}>↑</button>
-                <button type="button" aria-label="Move image down" onClick={() => move(0, WALLPAPER_STEP)}>↓</button>
-                <button type="button" aria-label="Move image right" onClick={() => move(WALLPAPER_STEP, 0)}>→</button>
-                <button type="button" onClick={() => updateWallpaperConfig({ x: 50, y: 50 })}>Center</button>
-                <button type="button" onClick={() => updateWallpaperConfig({ scale: 1, x: 50, y: 50, fit: "cover" })}>Reset</button>
+              <span>{t("Position {{x}}% / {{y}}%", { x: config.x, y: config.y })}</span>
+              <span className="wallpaper-nudge" role="group" aria-label={t("Move wallpaper")}>
+                <button type="button" aria-label={t("Move image left")} onClick={() => move(-WALLPAPER_STEP, 0)}>←</button>
+                <button type="button" aria-label={t("Move image up")} onClick={() => move(0, -WALLPAPER_STEP)}>↑</button>
+                <button type="button" aria-label={t("Move image down")} onClick={() => move(0, WALLPAPER_STEP)}>↓</button>
+                <button type="button" aria-label={t("Move image right")} onClick={() => move(WALLPAPER_STEP, 0)}>→</button>
+                <button type="button" onClick={() => updateWallpaperConfig({ x: 50, y: 50 })}>{t("Center")}</button>
+                <button type="button" onClick={() => updateWallpaperConfig({ scale: 1, x: 50, y: 50, fit: "cover" })}>{t("Reset")}</button>
               </span>
             </div>
           </div>

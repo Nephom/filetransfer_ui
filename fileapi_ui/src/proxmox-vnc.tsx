@@ -1,3 +1,4 @@
+import { useAppTranslation } from "./i18n/useAppTranslation";
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./proxmox-vnc.css";
@@ -10,6 +11,9 @@ import { Dropdown } from "./ui/Dropdown";
 import { FloatingWindow } from "./ui/FloatingWindow";
 import { formatQueueEta, formatQueueRate, QueueProgress, updateQueueProgress } from "./queue/progress";
 import { classifyQueueError, retryDelayMs } from "./queue/recovery";
+import { formatSize } from "./format-utils";
+import { getAppLocale, toIntlLocale } from "./i18n/i18n";
+import { formatUiError, UiMessageError } from "./i18n/errors";
 
 export type ProxmoxVersion = "auto" | "6.4" | "7.x" | "8.x" | "9.x";
 export type ProxmoxVncEntry = {
@@ -73,6 +77,7 @@ type VncQueueItem = {
   kind: "upload" | "download";
   label: string;
   detail: string;
+  detailMessage?: { key: string; values?: Record<string, string | number>; includeProgress?: boolean };
   status: VncQueueStatus;
   progress?: QueueProgress;
 };
@@ -118,18 +123,11 @@ export const proxmoxHostFromBaseUrl = (baseUrl: string): string => {
   try { return new URL(baseUrl).hostname; } catch { return ""; }
 };
 
-const formatFileSize = (bytes: number): string => {
-  if (!bytes) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
-  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
-};
+const formatFileSize = (bytes: number): string => formatSize(bytes, toIntlLocale(getAppLocale()));
 
 const formatModifiedDate = (millis: number): string => {
   if (!millis) return "--";
-  try { return new Date(millis).toLocaleString(); } catch { return "--"; }
+  try { return new Date(millis).toLocaleString(toIntlLocale(getAppLocale())); } catch { return "--"; }
 };
 
 const transferModeLabel = (mode: VncTransferMode): string => {
@@ -143,11 +141,11 @@ const transferModeLabel = (mode: VncTransferMode): string => {
   }
 };
 
-const formatQueueDetailProgress = (progress: QueueProgress | undefined) => {
+const formatQueueDetailProgress = (progress: QueueProgress | undefined, locale: string, etaLabel: string) => {
   if (!progress) return "";
   const percentage = progress.percentage === null ? "" : ` (${Math.round(progress.percentage)}%)`;
-  const rate = progress.bytesPerSecond === null ? "" : ` · ${formatQueueRate(progress.bytesPerSecond)}`;
-  const eta = progress.etaSeconds === null ? "" : ` · ETA ${formatQueueEta(progress.etaSeconds)}`;
+  const rate = progress.bytesPerSecond === null ? "" : ` · ${formatQueueRate(progress.bytesPerSecond, locale)}`;
+  const eta = progress.etaSeconds === null ? "" : ` · ${etaLabel} ${formatQueueEta(progress.etaSeconds, locale)}`;
   return `${percentage}${rate}${eta}`;
 };
 
@@ -232,42 +230,43 @@ export type VncFileTransferPaneProps = {
 // screen stay mounted (and connected) on the right the whole time -- with
 // a "Entries" back button to return to the entries list.
 function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditEntry, onRemoveEntry, password, authenticated, loading, onPasswordChange, onLogin, onLogout, fileBrowser }: Pick<Props, "entries" | "activeEntryId" | "onSelectEntry" | "onAddEntry" | "onEditEntry" | "onRemoveEntry"> & EntryAuthProps & { fileBrowser: FileBrowserProps }) {
+  const { t } = useAppTranslation();
   if (fileBrowser.visible) {
     return <aside className="vnc-entry-pane vnc-entry-pane-files">
       <div className="vnc-entry-heading">
-        <button type="button" className="vnc-entry-back" onClick={fileBrowser.onBack}>&larr; Entries</button>
-        <span className="vnc-reachability-status" data-mode={fileBrowser.mode}>{fileBrowser.modeLabel}{fileBrowser.guestIp ? ` · ${fileBrowser.guestIp}` : ""}</span>
+         <button type="button" className="vnc-entry-back" onClick={fileBrowser.onBack}>&larr; {t("Entries")}</button>
+         <span className="vnc-reachability-status" data-mode={fileBrowser.mode}>{t(fileBrowser.modeLabel)}{fileBrowser.guestIp ? ` · ${fileBrowser.guestIp}` : ""}</span>
       </div>
       <div className="vnc-files-toolbar">
-        <button type="button" className="confirm" onClick={fileBrowser.onUpload} disabled={!fileBrowser.filesReady}>Upload</button>
-        <button type="button" onClick={fileBrowser.onDownload} disabled={!fileBrowser.filesReady || !fileBrowser.selectedPaths.size}>Download{fileBrowser.selectedPaths.size ? ` (${fileBrowser.selectedPaths.size})` : ""}</button>
-        <button type="button" onClick={fileBrowser.onRefresh} disabled={!fileBrowser.filesReady || fileBrowser.filesLoading}>Refresh</button>
+         <button type="button" className="confirm" onClick={fileBrowser.onUpload} disabled={!fileBrowser.filesReady}>{t("Upload")}</button>
+         <button type="button" onClick={fileBrowser.onDownload} disabled={!fileBrowser.filesReady || !fileBrowser.selectedPaths.size}>{t("Download")}{fileBrowser.selectedPaths.size ? ` (${fileBrowser.selectedPaths.size})` : ""}</button>
+         <button type="button" onClick={fileBrowser.onRefresh} disabled={!fileBrowser.filesReady || fileBrowser.filesLoading}>{t("Refresh")}</button>
         <span className="vnc-files-breadcrumb" title={fileBrowser.path}>{fileBrowser.path}</span>
       </div>
-      {fileBrowser.loading && <div className="vnc-empty">Detecting how to reach this VM for file transfer...</div>}
+       {fileBrowser.loading && <div className="vnc-empty">{t("Detecting how to reach this VM for file transfer...")}</div>}
       {!fileBrowser.loading && fileBrowser.transferError && <div className="notice rest-error">{fileBrowser.transferError}</div>}
       {fileBrowser.filesError && <div className="notice rest-error">{fileBrowser.filesError}</div>}
       {fileBrowser.filesReady && <div className="vnc-files-table-wrap">
         <table className="file-table">
           <thead>
             <tr>
-              <th className="selection-column" aria-label="Select" />
-              <th>Name</th>
-              <th>Size</th>
-              <th>Modified</th>
+               <th className="selection-column" aria-label={t("Select")} />
+               <th>{t("Name")}</th>
+               <th>{t("Size")}</th>
+               <th>{t("Modified")}</th>
             </tr>
           </thead>
           <tbody>
             {fileBrowser.path !== "/" && <tr className="file-row">
               <td className="selection-column" />
-              <td><button type="button" className="tree-folder" onClick={() => fileBrowser.onNavigate(fileBrowser.path.split("/").slice(0, -1).join("/") || "/")}>.. (up)</button></td>
+               <td><button type="button" className="tree-folder" onClick={() => fileBrowser.onNavigate(fileBrowser.path.split("/").slice(0, -1).join("/") || "/")}>{t(".. (up)")}</button></td>
               <td />
               <td />
             </tr>}
-            {!fileBrowser.filesLoading && !fileBrowser.files.length && <tr className="file-row"><td colSpan={4} className="vnc-files-empty">This folder is empty.</td></tr>}
+             {!fileBrowser.filesLoading && !fileBrowser.files.length && <tr className="file-row"><td colSpan={4} className="vnc-files-empty">{t("This folder is empty.")}</td></tr>}
             {fileBrowser.files.map((file) => <tr className="file-row" key={file.path}>
               <td className="selection-column">
-                {(!file.isDirectory || fileBrowser.mode !== "guest-agent") && <input type="checkbox" checked={fileBrowser.selectedPaths.has(file.path)} onChange={() => fileBrowser.onToggleSelect(file.path)} aria-label={`Select ${file.name}`} />}
+                 {(!file.isDirectory || fileBrowser.mode !== "guest-agent") && <input type="checkbox" checked={fileBrowser.selectedPaths.has(file.path)} onChange={() => fileBrowser.onToggleSelect(file.path)} aria-label={t("Select {{name}}", { name: file.name })} />}
               </td>
               <td>{file.isDirectory
                 ? <button type="button" className="tree-folder" onClick={() => fileBrowser.onNavigate(file.path)}><span className="folder-mini" />{file.name}</button>
@@ -278,40 +277,43 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditE
           </tbody>
         </table>
       </div>}
-      {fileBrowser.queue.length > 0 && <div className="vnc-transfer-queue">
+       {fileBrowser.queue.length > 0 && <div className="vnc-transfer-queue">
         {fileBrowser.queue.map((item) => <div className="queue-item" key={item.id}>
-          <div className="queue-item-header"><span className="queue-item-label">{item.kind === "upload" ? "Upload" : "Download"}: {item.label}</span><span className={`queue-status ${item.status}`}>{item.status}</span></div>
-          <div className="queue-item-detail">{item.detail}</div>
-          {(item.status === "completed" || item.status === "failed") && <div className="queue-item-actions"><button type="button" onClick={() => fileBrowser.onRemoveQueueItem(item.id)}>Remove</button></div>}
+           <div className="queue-item-header"><span className="queue-item-label">{t(item.kind === "upload" ? "Upload" : "Download")}: {item.label}</span><span className={`queue-status ${item.status}`}>{t(item.status)}</span></div>
+           <div className="queue-item-detail">{item.detailMessage
+             ? `${t(item.detailMessage.key, item.detailMessage.values)}${item.detailMessage.includeProgress ? formatQueueDetailProgress(item.progress, toIntlLocale(getAppLocale()), t("ETA")) : ""}`
+             : item.detail}</div>
+           {(item.status === "completed" || item.status === "failed") && <div className="queue-item-actions"><button type="button" onClick={() => fileBrowser.onRemoveQueueItem(item.id)}>{t("Remove")}</button></div>}
         </div>)}
       </div>}
     </aside>;
   }
   return <aside className="vnc-entry-pane">
     <div className="vnc-entry-heading">
-      {fileBrowser.hasRoute
-        ? <button type="button" className="vnc-entry-back" onClick={fileBrowser.onReturn}>Files &rarr;</button>
-        : <span className="sidebar-label">PROXMOX VNC ENTRIES</span>}
-      <button type="button" className="vnc-entry-add" onClick={onAddEntry}>+ Add</button>
+       {fileBrowser.hasRoute
+         ? <button type="button" className="vnc-entry-back" onClick={fileBrowser.onReturn}>{t("Files")} &rarr;</button>
+         : <span className="sidebar-label">{t("PROXMOX VNC ENTRIES")}</span>}
+       <button type="button" className="vnc-entry-add" onClick={onAddEntry}>+ {t("Add")}</button>
     </div>
     <div className="vnc-entry-list">
-      {!entries.length && <div className="vnc-empty">No Proxmox VNC entries yet. Use the Add button above to create one.</div>}
+       {!entries.length && <div className="vnc-empty">{t("No Proxmox VNC entries yet. Use the Add button above to create one.")}</div>}
       {entries.map((entry) => <div className="vnc-entry-row" key={entry.id}>
         <button type="button" className={`vnc-entry${entry.id === activeEntryId ? " active" : ""}`} onClick={() => onSelectEntry(entry.id)}>
-          <span className="vnc-entry-dot" /><span className="vnc-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{entry.node || "No node"} / {entry.vmid || "No VMID"}</small></span>
+           <span className="vnc-entry-dot" /><span className="vnc-entry-copy"><strong>{entry.name}</strong><small>{entry.baseUrl}</small><small>{entry.node || t("No node")} / {entry.vmid || t("No VMID")}</small></span>
         </button>
         <EntryActionsMenu entryName={entry.name} onEdit={() => onEditEntry(entry)} onRemove={() => onRemoveEntry(entry)} />
       </div>)}
     </div>
     <div className="vnc-entry-auth">
-      <strong>{authenticated ? "Proxmox session active" : "Entry credentials"}</strong>
-      {!authenticated && <input type="password" value={password} onChange={(event) => onPasswordChange(event.target.value)} placeholder="Proxmox password" autoComplete="new-password" />}
-      {authenticated ? <button type="button" onClick={onLogout}>Logout</button> : <button type="button" className="confirm" onClick={onLogin} disabled={loading || !password}>{loading ? "Logging in..." : "Login"}</button>}
+       <strong>{authenticated ? t("Proxmox session active") : t("Entry credentials")}</strong>
+       {!authenticated && <input type="password" value={password} onChange={(event) => onPasswordChange(event.target.value)} placeholder={t("Proxmox password")} autoComplete="new-password" />}
+       {authenticated ? <button type="button" onClick={onLogout}>{t("Logout")}</button> : <button type="button" className="confirm" onClick={onLogin} disabled={loading || !password}>{loading ? t("Logging in...") : t("Login")}</button>}
     </div>
   </aside>;
 }
 
 export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, secrets, commandbarHost, collapseMainPaneEnabled, onSelectEntry, onChangeEntries, onChangeSecret, onAddEntry, onEditEntry, onRemoveEntry, screenMode, screenSessionId, proxmoxSessionId, initialVms, directHost: initialDirectHost, directPort: initialDirectPort, onOpenFiles, onFileTransferUpdate }: Props) {
+  const { t } = useAppTranslation();
   const entry = entries.find((item) => item.id === activeEntryId) || entries[0];
   const secret = entry ? secrets[entry.id] || {} : {};
   const screenRef = useRef<HTMLDivElement>(null);
@@ -410,7 +412,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         if (value !== null) (credentialRequest.account ? setAccountPassword : setDirectPassword)(value);
       })
       .catch(() => {
-        if (!cancelled && credentialRequest.isCurrent()) setCredentialNotice("Saved credentials could not be loaded. Enter them manually.");
+        if (!cancelled && credentialRequest.isCurrent()) setCredentialNotice(t("Saved credentials could not be loaded. Enter them manually."));
       });
     return () => { cancelled = true; };
   }, [credentialRequest, credentialEntryId, credentialAccountName]);
@@ -421,7 +423,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     try {
       await invoke("proxmox_forget_secret", { entryId: credentialEntryId, kind: "password" });
     } catch {
-      if (credentialRequest.isCurrent()) setCredentialNotice("Saved credentials could not be forgotten.");
+      if (credentialRequest.isCurrent()) setCredentialNotice(t("Saved credentials could not be forgotten."));
     }
   };
   useEffect(() => { localStorage.setItem("fileapi-direct-vnc-host", directHost); }, [directHost]);
@@ -479,8 +481,8 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   const toggleDirectVnc = () => {
     if (rfbRef.current && !window.confirm(directVncOpen
-      ? "Disconnect Direct VNC and return to Proxmox VNC?"
-      : "Disconnect the current Proxmox VNC session and switch to Direct VNC?")) return;
+      ? t("Disconnect Direct VNC and return to Proxmox VNC?")
+      : t("Disconnect the current Proxmox VNC session and switch to Direct VNC?"))) return;
     stopConnection(false);
     setDirectVncOpen((value) => !value);
     setStatus("Not connected");
@@ -531,7 +533,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       const sessionId = await invoke<string>("proxmox_login", { entry: nativeEntry, password });
       setAuthSessions((current) => ({ ...current, [nativeEntry.id]: sessionId }));
       await loadVms(sessionId, nativeEntry);
-    } catch (value) { setError(value instanceof Error ? value.message : String(value)); }
+    } catch (value) { setError(formatUiError(value, t)); }
     finally { setLoading(false); }
   };
   const logoutEntry = async () => {
@@ -543,10 +545,10 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     setAuthSessions((current) => { const next = { ...current }; delete next[entry.id]; return next; });
   };
   const loadVms = async (sessionId = nativeEntry ? sessionForEntry(nativeEntry.id) : undefined, targetEntry = nativeEntry) => {
-    if (!targetEntry || !sessionId) { setError("Log in to this Proxmox entry first."); return; }
+    if (!targetEntry || !sessionId) { setError(t("Log in to this Proxmox entry first.")); return; }
     setLoading(true); setError("");
     try { setVms(await invoke<VmSummary[]>("proxmox_list_vms_session", { entry: targetEntry, sessionId })); }
-    catch (value) { setError(value instanceof Error ? value.message : String(value)); }
+    catch (value) { setError(formatUiError(value, t)); }
     finally { setLoading(false); }
   };
 
@@ -612,7 +614,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       setPreferEntriesList(false);
       await detectTransferMode(false, next);
     } catch (value) {
-      setTransferError(value instanceof Error ? value.message : String(value));
+      setTransferError(formatUiError(value, t));
     } finally {
       setVmSshSaving(false);
     }
@@ -692,8 +694,8 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     if (forceJump) setPreferEntriesList(true);
     setTransferError(
       entry.guestType === "qemu"
-        ? "The QEMU Guest Agent isn't responding and no reachable IP was found for direct or jump-host SFTP. Check the VM's network/Guest Agent status, or set the VM SFTP profile and Host SSH credentials."
-        : "This LXC guest has no Guest Agent API. Provide a reachable VM IP in the selected VM's SFTP profile and configure Host SSH credentials to enable file transfer.",
+        ? t("The QEMU Guest Agent isn’t responding and no reachable IP was found for direct or jump-host SFTP. Check the VM’s network/Guest Agent status, or set the VM SFTP profile and Host SSH credentials.")
+        : t("This LXC guest has no Guest Agent API. Provide a reachable VM IP in the selected VM’s SFTP profile and configure Host SSH credentials to enable file transfer."),
     );
   };
 
@@ -779,7 +781,15 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
 
   // --- Transfer queue ----------------------------------------------------
   const addQueueItem = (item: VncQueueItem) => setVncQueue((current) => [item, ...current]);
-  const patchQueueItem = (id: string, patch: Partial<VncQueueItem>) => setVncQueue((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  const queueMessage = (key: string, values?: Record<string, string | number>, includeProgress = false) => ({
+    detail: key,
+    detailMessage: { key, values, includeProgress },
+  });
+  const patchQueueItem = (id: string, patch: Partial<VncQueueItem>) => setVncQueue((current) => current.map((item) => (item.id === id ? {
+    ...item,
+    ...patch,
+    ...(Object.hasOwn(patch, "detail") && !Object.hasOwn(patch, "detailMessage") ? { detailMessage: undefined } : {}),
+  } : item)));
   const removeQueueItem = (id: string) => {
     delete progressSamplesRef.current[id];
     setVncQueue((current) => current.filter((item) => item.id !== id));
@@ -790,7 +800,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       const samples = [...(progressSamplesRef.current[id] || []), { bytes: completedBytes, at: Date.now() }].slice(-8);
       progressSamplesRef.current[id] = samples;
       const progress = updateQueueProgress(item.progress, completedBytes, totalBytes ?? item.progress?.totalBytes ?? null, item.progress?.completedItems ?? 0, item.progress?.totalItems ?? 1, samples);
-      return { ...item, progress, detail: `Transferring...${formatQueueDetailProgress(progress)}` };
+       return { ...item, progress, ...queueMessage("Transferring...", undefined, true) };
     }));
   };
 
@@ -809,10 +819,10 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   }, []);
 
   const executeUpload = async (id: string, localPath: string, fileName: string, mode: VncTransferMode, profile: SshTransferProfile, destinationPath: string, attempt: number) => {
-    patchQueueItem(id, { status: attempt > 1 ? "retrying" : "running", detail: attempt > 1 ? `Retrying (attempt ${attempt})...` : "Uploading..." });
+    patchQueueItem(id, { status: attempt > 1 ? "retrying" : "running", ...queueMessage(attempt > 1 ? "Retrying (attempt {{attempt}})..." : "Uploading...", attempt > 1 ? { attempt } : undefined) });
     try {
       if (mode === "guest-agent") {
-        if (!nativeEntry) throw new Error("Proxmox entry is unavailable");
+        if (!nativeEntry) throw new UiMessageError("Proxmox entry is unavailable");
         await invoke("proxmox_agent_upload_file", {
           entry: nativeEntry,
           sessionId: sessionForEntry(nativeEntry.id),
@@ -824,15 +834,18 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       } else {
         await invoke("ssh_upload_path", { profile, localPath, remoteDestinationFolder: destinationPath });
       }
-      patchQueueItem(id, { status: "completed", detail: "Upload complete." });
+      patchQueueItem(id, { status: "completed", ...queueMessage("Upload complete.") });
       if (destinationPath === remotePath) void loadRemoteFiles(remotePath);
     } catch (uploadError) {
       const decision = classifyQueueError(uploadError);
       if (decision.retryable && attempt <= MAX_TRANSFER_RETRIES) {
-        patchQueueItem(id, { status: "retrying", detail: `${decision.message} - retrying...` });
+        const message = decision.translationKey ? t(decision.translationKey, decision.translationValues) : decision.message;
+        patchQueueItem(id, { status: "retrying", ...queueMessage("{{message}} - retrying...", { message }) });
         window.setTimeout(() => { void executeUpload(id, localPath, fileName, mode, profile, destinationPath, attempt + 1); }, retryDelayMs(attempt));
       } else {
-        patchQueueItem(id, { status: "failed", detail: decision.message });
+        patchQueueItem(id, decision.translationKey
+          ? { status: "failed", detail: decision.message, detailMessage: { key: decision.translationKey, values: decision.translationValues } }
+          : { status: "failed", detail: decision.message });
       }
     }
   };
@@ -840,7 +853,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const runUpload = (localPath: string) => {
     const fileName = localPath.split(/[\\/]/).pop() || localPath;
     const id = crypto.randomUUID();
-    addQueueItem({ id, kind: "upload", label: fileName, detail: "Queued...", status: "queued" });
+    addQueueItem({ id, kind: "upload", label: fileName, ...queueMessage("Queued..."), status: "queued" });
     void executeUpload(id, localPath, fileName, transferMode, buildSshProfile(), remotePath, 1);
   };
 
@@ -851,15 +864,15 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       const paths = await invoke<string[]>("pick_upload_files");
       paths.forEach((path) => runUpload(path));
     } catch (pickError) {
-      setTransferError(pickError instanceof Error ? pickError.message : String(pickError));
+       setTransferError(formatUiError(pickError, t));
     }
   };
 
   const executeDownload = async (id: string, item: VmFileEntry, mode: VncTransferMode, profile: SshTransferProfile, destination: string, attempt: number) => {
-    patchQueueItem(id, { status: attempt > 1 ? "retrying" : "running", detail: attempt > 1 ? `Retrying (attempt ${attempt})...` : "Downloading..." });
+    patchQueueItem(id, { status: attempt > 1 ? "retrying" : "running", ...queueMessage(attempt > 1 ? "Retrying (attempt {{attempt}})..." : "Downloading...", attempt > 1 ? { attempt } : undefined) });
     try {
       if (mode === "guest-agent") {
-        if (!nativeEntry) throw new Error("Proxmox entry is unavailable");
+        if (!nativeEntry) throw new UiMessageError("Proxmox entry is unavailable");
         await invoke("proxmox_agent_download_file", {
           entry: nativeEntry,
           sessionId: sessionForEntry(nativeEntry.id),
@@ -871,21 +884,24 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       } else {
         await invoke("ssh_download_path", { profile, remotePath: item.path, isDirectory: item.isDirectory, localDestinationFolder: destination });
       }
-      patchQueueItem(id, { status: "completed", detail: "Download complete." });
+      patchQueueItem(id, { status: "completed", ...queueMessage("Download complete.") });
     } catch (downloadError) {
       const decision = classifyQueueError(downloadError);
       if (decision.retryable && attempt <= MAX_TRANSFER_RETRIES) {
-        patchQueueItem(id, { status: "retrying", detail: `${decision.message} - retrying...` });
+        const message = decision.translationKey ? t(decision.translationKey, decision.translationValues) : decision.message;
+        patchQueueItem(id, { status: "retrying", ...queueMessage("{{message}} - retrying...", { message }) });
         window.setTimeout(() => { void executeDownload(id, item, mode, profile, destination, attempt + 1); }, retryDelayMs(attempt));
       } else {
-        patchQueueItem(id, { status: "failed", detail: decision.message });
+        patchQueueItem(id, decision.translationKey
+          ? { status: "failed", detail: decision.message, detailMessage: { key: decision.translationKey, values: decision.translationValues } }
+          : { status: "failed", detail: decision.message });
       }
     }
   };
 
   const runDownload = (item: VmFileEntry, destination: string) => {
     const id = crypto.randomUUID();
-    addQueueItem({ id, kind: "download", label: item.name, detail: "Queued...", status: "queued" });
+    addQueueItem({ id, kind: "download", label: item.name, ...queueMessage("Queued..."), status: "queued" });
     void executeDownload(id, item, transferMode, buildSshProfile(), destination, 1);
   };
 
@@ -893,15 +909,15 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     if (!entry) return;
     setTransferError("");
     const items = remoteFiles.filter((file) => selectedRemotePaths.has(file.path));
-    if (!items.length) { setTransferError("Select at least one file to download first."); return; }
+    if (!items.length) { setTransferError(t("Select at least one file to download first.")); return; }
     if (transferMode === "guest-agent" && items.some((item) => item.isDirectory)) {
-      setTransferError("Folders can't be downloaded over the Guest Agent fallback (no directory API). Open the folder and download files individually, or use a reachable direct/jump SFTP connection.");
+      setTransferError(t("Folders can't be downloaded over the Guest Agent fallback (no directory API). Open the folder and download files individually, or use a reachable direct/jump SFTP connection."));
       return;
     }
     if (transferMode === "guest-agent") {
       const oversized = items.find((item) => item.size > GUEST_AGENT_SINGLE_READ_LIMIT_BYTES);
       if (oversized) {
-        setTransferError(`Guest Agent download is limited to 16 MiB on this fallback route. "${oversized.name}" is larger than the limit. Use Direct SFTP, Jump SFTP, or upgrade Proxmox VE to a version that supports chunked file reads.`);
+        setTransferError(t("Guest Agent download is limited to 16 MiB on this fallback route. \"{{name}}\" is larger than the limit. Use Direct SFTP, Jump SFTP, or upgrade Proxmox VE to a version that supports chunked file reads.", { name: oversized.name }));
         return;
       }
     }
@@ -910,14 +926,14 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       if (!destination) return;
       items.forEach((item) => runDownload(item, destination));
     } catch (pickError) {
-      setTransferError(pickError instanceof Error ? pickError.message : String(pickError));
+       setTransferError(formatUiError(pickError, t));
     }
   };
 
   const connect = async () => {
     if (isDirectVnc) {
-      if (!directHost.trim() || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535) { setError("Direct VNC requires a host and a port from 1 to 65535."); return; }
-    } else if (!nativeEntry || !authenticated) { setError("Log in to this Proxmox entry first."); return; }
+      if (!directHost.trim() || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535) { setError(t("Direct VNC requires a host and a port from 1 to 65535.")); return; }
+    } else if (!nativeEntry || !authenticated) { setError(t("Log in to this Proxmox entry first.")); return; }
     stopConnection(false);
     const sessionGeneration = sessionGenerationRef.current;
     let rfb: NonNullable<typeof rfbRef.current> | null = null;
@@ -975,7 +991,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         return;
       }
       connectionId = connection.id;
-      if (!screenRef.current) throw new Error("VNC screen is unavailable");
+       if (!screenRef.current) throw new UiMessageError("VNC screen is unavailable");
       const client = new RFB(screenRef.current, connection.websocketUrl, {
         forceCursorFallback: isDirectVnc,
       });
@@ -992,7 +1008,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         setStatus("Connected"); setControlsOpen(false);
         if (submittedSecret) {
           void invoke("proxmox_save_secret", { ...submittedSecret, kind: "password" }).catch(() => {
-            if (isCurrent()) setCredentialNotice("Connected, but credentials could not be saved.");
+            if (isCurrent()) setCredentialNotice(t("Connected, but credentials could not be saved."));
           });
           submittedSecret = null;
         }
@@ -1004,7 +1020,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
         if (phase === "connected") setStatus("Disconnected");
         else {
           setStatus("Connection failed");
-          setError("VNC server disconnected during connection or authentication.");
+          setError(t("VNC server disconnected during connection or authentication."));
         }
         release(false);
       });
@@ -1058,7 +1074,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   useEffect(() => {
     if (!screenMode) return;
     if (screenMode === "proxmox" && (!nativeEntry || !authenticated || !selectedVm)) {
-      setError("The selected Proxmox VM session is unavailable. Return to the VM picker and connect again.");
+      setError(t("The selected Proxmox VM session is unavailable. Return to the VM picker and connect again."));
       return;
     }
     void connect();
@@ -1093,19 +1109,19 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   const fileBrowserVisible = hasFileRoute && !preferEntriesList;
   const filesReady = transferMode === "direct-sftp" || transferMode === "jump-sftp" || transferMode === "guest-agent";
   const qemuAgentStatusLabel = qemuAgentStatus === "up"
-    ? "UP"
+    ? t("UP")
     : qemuAgentStatus === "checking"
-      ? "Checking"
+      ? t("Checking")
       : qemuAgentStatus === "not-applicable"
-        ? "N/A"
-        : qemuAgentStatus === "down" ? "DOWN" : "Unknown";
+        ? t("N/A")
+        : qemuAgentStatus === "down" ? t("DOWN") : t("Unknown");
   const qemuAgentStatusTitle = qemuAgentStatus === "up"
-    ? "QEMU Guest Agent is UP. Windows file transfer is available."
+    ? t("QEMU Guest Agent is UP. Windows file transfer is available.")
     : qemuAgentStatus === "checking"
-      ? "Checking QEMU Guest Agent status..."
+      ? t("Checking QEMU Guest Agent status...")
       : qemuAgentStatus === "not-applicable"
-        ? "QEMU Guest Agent is only available for QEMU guests."
-        : "QEMU Guest Agent is DOWN or not installed. Only green means Windows file transfer is available.";
+        ? t("QEMU Guest Agent is only available for QEMU guests.")
+        : t("QEMU Guest Agent is DOWN or not installed. Only green means Windows file transfer is available.");
 
   const fileBrowser: FileBrowserProps = {
     visible: fileBrowserVisible,
@@ -1142,7 +1158,7 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
   }, [screenMode, screenSessionId, onFileTransferUpdate]);
 
   return <>
-    {screenMode !== "proxmox" && screenMode !== "direct" && commandbarHost && createPortal(<button type="button" data-direct-vnc-action="true" className={`direct-vnc-card${directVncOpen ? " active" : ""}`} aria-pressed={directVncOpen} onClick={toggleDirectVnc}><span className="direct-vnc-card-icon" aria-hidden="true" /><span><strong>Direct VNC</strong><small>Remote desktop</small></span></button>, commandbarHost)}
+    {screenMode !== "proxmox" && screenMode !== "direct" && commandbarHost && createPortal(<button type="button" data-direct-vnc-action="true" className={`direct-vnc-card${directVncOpen ? " active" : ""}`} aria-pressed={directVncOpen} onClick={toggleDirectVnc}><span className="direct-vnc-card-icon" aria-hidden="true" /><span><strong>{t("Direct VNC")}</strong><small>{t("Remote desktop")}</small></span></button>, commandbarHost)}
     <div className={`vnc-workspace${entryPaneCollapsed ? " vnc-entry-pane-collapsed" : ""}${directVncOpen ? " direct-vnc-open" : ""}${screenMode ? " vnc-screen-only" : ""}`}>
     <div className="vnc-entry-pane-shell" style={{ flexBasis: `${entryPaneWidth}px` }}>
       <VncEntries
@@ -1162,18 +1178,18 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       />
     </div>
     {collapseMainPaneEnabled
-      ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label="VNC pane visibility"><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label="Collapse VNC entry pane" title="Collapse VNC entry pane"><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label="Restore VNC entry pane" title="Restore VNC entry pane"><ChevronRightIcon /></button></div>
-      : <PaneResizeHandle ariaLabel="Resize Proxmox VNC entries pane" onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
-    <section ref={vncReaderRef} className="vnc-reader" aria-label="Proxmox VNC workspace">
+      ? <div className="vnc-main-pane-collapse-controls" role="group" aria-label={t("VNC pane visibility")}><button type="button" onClick={() => setEntryPaneCollapsed(true)} disabled={entryPaneCollapsed} aria-label={t("Collapse VNC entry pane")} title={t("Collapse VNC entry pane")}><ChevronLeftIcon /></button><button type="button" onClick={() => setEntryPaneCollapsed(false)} disabled={!entryPaneCollapsed} aria-label={t("Restore VNC entry pane")} title={t("Restore VNC entry pane")}><ChevronRightIcon /></button></div>
+      : <PaneResizeHandle ariaLabel={t("Resize Proxmox VNC entries pane")} onStart={beginEntryPaneResize} onMove={(event) => resizeEntryPane(event.nativeEvent)} onEnd={stopEntryPaneResize} />}
+    <section ref={vncReaderRef} className="vnc-reader" aria-label={t("Proxmox VNC workspace")}>
       <div className="vnc-reader-heading">
         <div className="vnc-reader-title-group">
-          {screenMode === "proxmox" && <button type="button" className="vnc-files-open-button" onClick={onOpenFiles} disabled={status !== "Connected"} title="Open VM file transfer">Files</button>}
-          <div><span className="eyebrow">{isDirectVnc ? "Direct VNC" : screenMode ? "Proxmox VNC" : `VNC mode · ${workspaceName}`}</span><h1>{isDirectVnc ? "Direct VNC" : entry?.name || "Proxmox VNC"}{screenMode === "proxmox" && selectedVm ? ` · ${selectedVm.name || `VM ${selectedVm.vmid}`}` : ""}</h1></div>
+          {screenMode === "proxmox" && <button type="button" className="vnc-files-open-button" onClick={onOpenFiles} disabled={status !== "Connected"} title={t("Open VM file transfer")}>{t("Files")}</button>}
+          <div><span className="eyebrow">{isDirectVnc ? t("Direct VNC") : screenMode ? t("Proxmox VNC") : t("VNC mode · {{workspace}}", { workspace: workspaceName })}</span><h1>{isDirectVnc ? t("Direct VNC") : entry?.name || t("Proxmox VNC")}{screenMode === "proxmox" && selectedVm ? ` · ${selectedVm.name || `VM ${selectedVm.vmid}`}` : ""}</h1></div>
         </div>
         <div className="vnc-reader-status-actions">
-          <span className="vnc-session-status">{status}</span>
-          {screenMode && !rfbRef.current && status !== "Connecting..." && status !== "Connected" && <button type="button" className="confirm" onClick={() => void connect()} disabled={loading}>{loading ? "Connecting…" : "Reconnect"}</button>}
-          {screenMode && <button type="button" onClick={() => stopConnection()} disabled={!connectionCleanupRef.current}>Disconnect</button>}
+          <span className="vnc-session-status">{t(status)}</span>
+          {screenMode && !rfbRef.current && status !== "Connecting..." && status !== "Connected" && <button type="button" className="confirm" onClick={() => void connect()} disabled={loading}>{loading ? t("Connecting…") : t("Reconnect")}</button>}
+          {screenMode && <button type="button" onClick={() => stopConnection()} disabled={!connectionCleanupRef.current}>{t("Disconnect")}</button>}
         </div>
       </div>
       {credentialNotice && <div className="notice vnc-warning">{credentialNotice}</div>}
@@ -1181,27 +1197,27 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
       <div className={`vnc-display-split${controlsOpen ? "" : " controls-collapsed"}`}>
         <div className={`vnc-auth-panel${controlsOpen ? " open" : " collapsed"}`}>
           <div className="vnc-auth-heading">
-            <strong>{isDirectVnc ? "Direct VNC connection" : "Connection controls"}</strong>
-            <button type="button" onClick={() => setControlsOpen((value) => !value)}>{controlsOpen ? "Collapse" : "Expand"}</button>
+            <strong>{isDirectVnc ? t("Direct VNC connection") : t("Connection controls")}</strong>
+            <button type="button" onClick={() => setControlsOpen((value) => !value)}>{controlsOpen ? t("Collapse") : t("Expand")}</button>
           </div>
           {controlsOpen && <>
             {isDirectVnc ? <div className="vnc-auth-grid direct-vnc-auth-grid">
-              <label>Host<input value={directHost} onChange={(event) => setDirectHost(event.target.value)} placeholder="vnc-server.local" disabled={loading} /></label>
-              <label>Port<input type="number" min="1" max="65535" value={directPort} onChange={(event) => setDirectPort(Number(event.target.value))} disabled={loading} /></label>
+              <label>{t("Host")}<input value={directHost} onChange={(event) => setDirectHost(event.target.value)} placeholder={t("vnc-server.local")} disabled={loading} /></label>
+              <label>{t("Port")}<input type="number" min="1" max="65535" value={directPort} onChange={(event) => setDirectPort(Number(event.target.value))} disabled={loading} /></label>
             </div> : <div className="vnc-auth-grid">
-              <label>Node<Dropdown label="Node" value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? "Select node" : "Login first"} options={nodes.map((node) => ({ value: node, label: node }))} /></label>
-              <label>VM<Dropdown label="VM" value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? "Select VM" : "Select node first"} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label>
+              <label>{t("Node")}<Dropdown label={t("Node")} value={selectedNode} onChange={chooseNode} disabled={!authenticated || !nodes.length} placeholder={authenticated ? t("Select node") : t("Login first")} options={nodes.map((node) => ({ value: node, label: node }))} /></label>
+              <label>{t("VM")}<Dropdown label={t("VM")} value={selectedVm ? String(selectedVm.vmid) : ""} onChange={chooseVm} disabled={!authenticated || !selectedNode || !nodeVms.length} placeholder={selectedNode ? t("Select VM") : t("Select node first")} options={nodeVms.map((vm) => ({ value: String(vm.vmid), label: `${vm.name || `VM ${vm.vmid}`} (${vm.vmid})` }))} /></label>
             </div>}
-            {isDirectVnc && <p className="field-help">Connect to discover the server's authentication requirements. Direct VNC does not provide file transfer.</p>}
+            {isDirectVnc && <p className="field-help">{t("Connect to discover the server’s authentication requirements. Direct VNC does not provide file transfer.")}</p>}
             {!isDirectVnc && selectedVm && <div className="vnc-vm-ssh-card">
-              <div className="vnc-vm-ssh-card-copy"><strong>VM SFTP</strong><small>{selectedVm.name || `VM ${selectedVm.vmid}`} · VMID {selectedVm.vmid}</small><span>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</span></div>
-              <div className="vnc-vm-ssh-card-side"><span className={`vnc-agent-status ${qemuAgentStatus}`} title={qemuAgentStatusTitle} aria-label={`QEMU Guest Agent: ${qemuAgentStatusLabel}`}><span className="vnc-agent-status-dot" aria-hidden="true" />QEMU Agent: {qemuAgentStatusLabel}</span><button type="button" className="vnc-compact-action" onClick={() => setVmSshSettingsOpen(true)}>Configure</button></div>
+              <div className="vnc-vm-ssh-card-copy"><strong>{t("VM SFTP")}</strong><small>{selectedVm.name || `VM ${selectedVm.vmid}`} · VMID {selectedVm.vmid}</small><span>{vmSshConfigured ? t("Profile saved for this VM") : t("Not configured for this VM")}</span></div>
+              <div className="vnc-vm-ssh-card-side"><span className={`vnc-agent-status ${qemuAgentStatus}`} title={qemuAgentStatusTitle} aria-label={t("QEMU Guest Agent: {{status}}", { status: qemuAgentStatusLabel })}><span className="vnc-agent-status-dot" aria-hidden="true" />{t("QEMU Agent: {{status}}", { status: qemuAgentStatusLabel })}</span><button type="button" className="vnc-compact-action" onClick={() => setVmSshSettingsOpen(true)}>{t("Configure")}</button></div>
             </div>}
             <div className="vnc-actions">
-              <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || (isDirectVnc ? !directHost.trim() || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535 : !entry || !authenticated || !selectedVm)}>{loading ? "Connecting..." : "Connect"}</button>
-              <button type="button" onClick={() => stopConnection()} disabled={!connectionCleanupRef.current}>Disconnect</button>
+              <button type="button" className="confirm" onClick={() => void connect()} disabled={loading || (isDirectVnc ? !directHost.trim() || !Number.isInteger(directPort) || directPort < 1 || directPort > 65535 : !entry || !authenticated || !selectedVm)}>{loading ? t("Connecting...") : t("Connect")}</button>
+              <button type="button" onClick={() => stopConnection()} disabled={!connectionCleanupRef.current}>{t("Disconnect")}</button>
             </div>
-            {!isDirectVnc && entry?.ignoreTlsErrors && <div className="notice vnc-warning">TLS certificate verification is disabled for this entry.</div>}
+            {!isDirectVnc && entry?.ignoreTlsErrors && <div className="notice vnc-warning">{t("TLS certificate verification is disabled for this entry.")}</div>}
             {error && <div className="notice rest-error">{error}</div>}
           </>}
         </div>
@@ -1216,58 +1232,58 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
             <button
               type="button"
               className="vnc-display-toolbar-handle"
-              aria-label={toolbarOpen ? "Hide VNC controls" : "Show VNC controls"}
+              aria-label={toolbarOpen ? t("Hide VNC controls") : t("Show VNC controls")}
               aria-expanded={toolbarOpen}
               onClick={() => (toolbarOpen ? scheduleToolbarClose() : openToolbar())}
             >
               <ChevronRightIcon />
             </button>
             <div className="vnc-display-toolbar">
-              {!isDirectVnc && <button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>Ctrl+Alt+Del</button>}
-              <button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>Focus</button>
-              <button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? "Enable input" : "View only"}</button>
-              <button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
+              {!isDirectVnc && <button type="button" onClick={() => rfbRef.current?.sendCtrlAltDel()} disabled={!rfbRef.current}>{t("Ctrl+Alt+Del")}</button>}
+              <button type="button" onClick={() => rfbRef.current?.focus()} disabled={!rfbRef.current}>{t("Focus")}</button>
+              <button type="button" onClick={toggleViewOnly} disabled={!rfbRef.current}>{viewOnly ? t("Enable input") : t("View only")}</button>
+              <button type="button" onClick={() => void toggleFullscreen()}>{isFullscreen ? t("Exit fullscreen") : t("Fullscreen")}</button>
             </div>
           </div>
           <div ref={screenRef} className="vnc-screen" />
         </div>
       </div>
       {credentialRequest && createPortal(<FloatingWindow
-        ariaLabel="Direct VNC credentials"
+        ariaLabel={t("Direct VNC credentials")}
         className="vnc-vm-ssh-window"
-        header={<strong>{credentialRequest.account ? "VNC account authentication" : "VNC viewer authentication"}</strong>}
+        header={<strong>{credentialRequest.account ? t("VNC account authentication") : t("VNC viewer authentication")}</strong>}
         onClose={() => stopConnection()}
         footer={<div className="modal-actions">
-          <button type="button" onClick={() => stopConnection()}>Cancel</button>
-          <button type="button" onClick={() => void forgetDirectCredential()} disabled={credentialRequest.account && !directUsername.trim()}>Forget saved password</button>
-          <button type="button" className="confirm" disabled={credentialRequest.account ? !directUsername.trim() || !accountPassword : !directPassword} onClick={() => credentialRequest.submit(directUsername, credentialRequest.account ? accountPassword : directPassword, credentialEntryId)}>Continue</button>
+          <button type="button" onClick={() => stopConnection()}>{t("Cancel")}</button>
+          <button type="button" onClick={() => void forgetDirectCredential()} disabled={credentialRequest.account && !directUsername.trim()}>{t("Forget saved password")}</button>
+          <button type="button" className="confirm" disabled={credentialRequest.account ? !directUsername.trim() || !accountPassword : !directPassword} onClick={() => credentialRequest.submit(directUsername, credentialRequest.account ? accountPassword : directPassword, credentialEntryId)}>{t("Continue")}</button>
         </div>}
       >
         <div className="vnc-vm-ssh-window-body">
-          <p className="field-help">{credentialRequest.host}:{credentialRequest.port} requests {credentialRequest.account ? "an account username and account password" : "a VNC viewer password"}. Saved values are sent only when you select Continue.</p>
-          {credentialRequest.account && <label className="vnc-vm-ssh-password">Username<input autoFocus value={directUsername} onChange={(event) => { credentialDraftRevisionRef.current += 1; setDirectUsername(event.target.value); }} autoComplete="username" /></label>}
-          <label className="vnc-vm-ssh-password">{credentialRequest.account ? "Account password" : "VNC viewer password"}<input type="password" autoFocus={!credentialRequest.account} value={credentialRequest.account ? accountPassword : directPassword} onChange={(event) => { credentialDraftRevisionRef.current += 1; (credentialRequest.account ? setAccountPassword : setDirectPassword)(event.target.value); }} autoComplete="current-password" /></label>
-          {credentialRequest.account && <p className="field-help">If this server uses macOS Screen Sharing (ARD), use the Mac account short name and its login password, not the separate VNC viewer password.</p>}
+          <p className="field-help">{t("{{host}}:{{port}} requests {{credential}}. Saved values are sent only when you select Continue.", { host: credentialRequest.host, port: credentialRequest.port, credential: credentialRequest.account ? t("an account username and account password") : t("a VNC viewer password") })}</p>
+          {credentialRequest.account && <label className="vnc-vm-ssh-password">{t("Username")}<input autoFocus value={directUsername} onChange={(event) => { credentialDraftRevisionRef.current += 1; setDirectUsername(event.target.value); }} autoComplete="username" /></label>}
+          <label className="vnc-vm-ssh-password">{credentialRequest.account ? t("Account password") : t("VNC viewer password")}<input type="password" autoFocus={!credentialRequest.account} value={credentialRequest.account ? accountPassword : directPassword} onChange={(event) => { credentialDraftRevisionRef.current += 1; (credentialRequest.account ? setAccountPassword : setDirectPassword)(event.target.value); }} autoComplete="current-password" /></label>
+          {credentialRequest.account && <p className="field-help">{t("If this server uses macOS Screen Sharing (ARD), use the Mac account short name and its login password, not the separate VNC viewer password.")}</p>}
           {credentialNotice && <div className="notice vnc-warning">{credentialNotice}</div>}
         </div>
       </FloatingWindow>, isFullscreen && screenShellRef.current ? screenShellRef.current : document.body)}
       {vmSshSettingsOpen && selectedVm && <FloatingWindow
-        ariaLabel={`VM SFTP settings for VMID ${selectedVm.vmid}`}
+        ariaLabel={t("VM SFTP settings for VMID {{vmid}}", { vmid: selectedVm.vmid })}
         className="vnc-vm-ssh-window"
-        header={<div className="vnc-vm-ssh-window-heading"><div><strong>VM SFTP settings</strong><small>{selectedVm.name || `VM ${selectedVm.vmid}`} · VMID {selectedVm.vmid}</small></div><button type="button" onClick={() => setVmSshSettingsOpen(false)} aria-label="Close VM SFTP settings">×</button></div>}
+        header={<div className="vnc-vm-ssh-window-heading"><div><strong>{t("VM SFTP settings")}</strong><small>{selectedVm.name || `VM ${selectedVm.vmid}`} · VMID {selectedVm.vmid}</small></div><button type="button" onClick={() => setVmSshSettingsOpen(false)} aria-label={t("Close VM SFTP settings")}>×</button></div>}
         onClose={() => setVmSshSettingsOpen(false)}
-        footer={<div className="modal-actions"><button type="button" onClick={() => setVmSshSettingsOpen(false)}>Close</button><button type="button" className="confirm" onClick={() => void saveVmSshProfile()} disabled={vmSshSaving || !vmSshDraft.username.trim()}>{vmSshSaving ? "Saving..." : "Save VM SFTP"}</button></div>}
+        footer={<div className="modal-actions"><button type="button" onClick={() => setVmSshSettingsOpen(false)}>{t("Close")}</button><button type="button" className="confirm" onClick={() => void saveVmSshProfile()} disabled={vmSshSaving || !vmSshDraft.username.trim()}>{vmSshSaving ? t("Saving...") : t("Save VM SFTP")}</button></div>}
       >
         <div className="vnc-vm-ssh-window-body">
-          <div className="vnc-vm-ssh-window-status"><span>{vmSshConfigured ? "Profile saved for this VM" : "Not configured for this VM"}</span><span className={`vnc-agent-status ${qemuAgentStatus}`}><span className="vnc-agent-status-dot" aria-hidden="true" />QEMU Agent: {qemuAgentStatusLabel}</span></div>
+          <div className="vnc-vm-ssh-window-status"><span>{vmSshConfigured ? t("Profile saved for this VM") : t("Not configured for this VM")}</span><span className={`vnc-agent-status ${qemuAgentStatus}`}><span className="vnc-agent-status-dot" aria-hidden="true" />{t("QEMU Agent: {{status}}", { status: qemuAgentStatusLabel })}</span></div>
           <div className="vnc-auth-grid vnc-auth-grid-compact">
-            <label>Username<input value={vmSshDraft.username} onChange={(event) => updateVmSshProfile({ username: event.target.value })} placeholder="root" /></label>
-            <label>Port<input type="number" min="1" max="65535" value={vmSshDraft.port} onChange={(event) => updateVmSshProfile({ port: Number(event.target.value) || 22 })} /></label>
-            <label>Private key<input value={vmSshDraft.privateKeyPath} onChange={(event) => updateVmSshProfile({ privateKeyPath: event.target.value })} placeholder="Optional" /></label>
-            <label>Fallback IP<input value={vmSshDraft.fallbackIp} onChange={(event) => updateVmSshProfile({ fallbackIp: event.target.value })} placeholder="Optional" /></label>
+            <label>{t("Username")}<input value={vmSshDraft.username} onChange={(event) => updateVmSshProfile({ username: event.target.value })} placeholder={t("root")} /></label>
+            <label>{t("Port")}<input type="number" min="1" max="65535" value={vmSshDraft.port} onChange={(event) => updateVmSshProfile({ port: Number(event.target.value) || 22 })} /></label>
+            <label>{t("Private key")}<input value={vmSshDraft.privateKeyPath} onChange={(event) => updateVmSshProfile({ privateKeyPath: event.target.value })} placeholder={t("Optional")} /></label>
+            <label>{t("Fallback IP")}<input value={vmSshDraft.fallbackIp} onChange={(event) => updateVmSshProfile({ fallbackIp: event.target.value })} placeholder={t("Optional")} /></label>
           </div>
-          <label className="vnc-vm-ssh-password">Password<input type="password" value={vmSshPassword} onChange={(event) => setVmSshPassword(event.target.value)} placeholder={vmSshPasswordSaved ? "Saved" : "Not saved"} autoComplete="new-password" /></label>
-          {!vmSshConfigured && <small className="field-help">QEMU Agent can provide Windows files without VM credentials. Save this VM's credentials to try direct SFTP automatically; Try Host Jump remains an explicit jump attempt.</small>}
+          <label className="vnc-vm-ssh-password">{t("Password")}<input type="password" value={vmSshPassword} onChange={(event) => setVmSshPassword(event.target.value)} placeholder={vmSshPasswordSaved ? t("Saved") : t("Not saved")} autoComplete="new-password" /></label>
+          {!vmSshConfigured && <small className="field-help">{t("QEMU Agent can provide Windows files without VM credentials. Save this VM’s credentials to try direct SFTP automatically; Try Host Jump remains an explicit jump attempt.")}</small>}
           <div className="vnc-vm-ssh-window-actions">{!vmSshConfigured && <button type="button" className="vnc-compact-action" onClick={() => void detectTransferMode(true)} disabled={transferMode === "detecting" || !entry?.hostSshUsername?.trim()}>{transferMode === "detecting" ? "Trying..." : "Try Host Jump"}</button>}</div>
           {transferError && <div className="notice rest-error">{transferError}</div>}
         </div>
@@ -1290,8 +1306,9 @@ export type ProxmoxVncScreenPaneProps = {
 };
 
 export function ProxmoxVncScreenPane({ screenSessionId, entry, proxmoxSessionId, vms = [], directHost, directPort, onOpenFiles, onFileTransferUpdate }: ProxmoxVncScreenPaneProps) {
+  const { t } = useAppTranslation();
   return <ProxmoxVncWorkspace
-    workspaceName="Proxmox VNC"
+     workspaceName={t("Proxmox VNC")}
     entries={entry ? [entry] : []}
     activeEntryId={entry?.id || ""}
     secrets={{}}

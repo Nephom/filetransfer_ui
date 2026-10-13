@@ -55,20 +55,21 @@ The default HTTP port is `9400`; the default HTTPS port is `9443`. Production de
 nFterm is a Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11. It connects to the API server over HTTPS and provides:
 
 - LOCAL and API Remote file-management panes.
+- A Windows-only Browser pane with separate web browsing and download controls.
 - SSH Terminal, SFTP browsing, SSH upload/download, and remote archive operations.
 - A Transfer Queue with progress, cancellation, bounded retries, failure classification, and interrupted-state recovery.
 - REST API workspaces for generic REST, HPE iLO, OpenBMC, Redfish Session Auth, and Redfish Actions.
-- Proxmox VNC workspaces with login, VM discovery, VNC connections, entry isolation, and file transfers to VMs through the applicable transfer mode. The nFterm host and Proxmox Host must be on the same network segment.
+- Proxmox VNC workspaces with login, VM discovery, VNC connections, and entry isolation. nFterm must reach the Proxmox HTTPS API; VM file transfer uses the available Guest Agent, direct SFTP, or Host SSH jump route and does not require the same subnet.
 - A Direct VNC card above the VNC workspace for standard VNC-password connections to macOS Screen Sharing desktops. Direct VNC provides display and input only; it does not provide file transfer.
-- VM file-transfer modes:
+- VM file transfer checks actual SSH reachability first, then may use the QEMU Guest Agent fallback; it does not use ping as the route test:
 
-  | VM type | Same network segment as the nFterm host (reachable by ping) | Different network segment from the nFterm host (not reachable by ping) |
-  | --- | --- | --- |
-  | Linux VM | SFTP via SSH | SFTP via Host jumping |
-  | Windows VM | SSH/SFTP not supported | SSH/SFTP not supported |
-  | Windows VM (Proxmox API) | Proxmox-provided API transfer protocol | Proxmox-provided API transfer protocol |
-- Windows VM file transfer through the Proxmox API requires QEMU Guest Agent. The VM owner's permissions must include `VM.GuestAgent.FileRead`, `VM.GuestAgent.FileWrite`, and `VM.GuestAgent.Unrestricted`. Enabling all `VM.GuestAgent.*` permissions is recommended.
-- **LXC does not support this operation.**
+  | Condition | Transfer route |
+  | --- | --- |
+  | The VM's SSH address is directly reachable | Direct SFTP |
+  | VM SSH is not directly reachable but can be reached through the Proxmox Host | Host Jump SFTP |
+  | QEMU Guest Agent is installed and responding, and SSH routes are unavailable | Guest Agent fallback (no folder downloads; uploads are size-limited) |
+  | LXC has a reachable VM IP and SSH configured | Direct SFTP or Host Jump SFTP; no Guest Agent API |
+- QEMU Guest Agent file transfer requires the agent and `VM.GuestAgent.FileRead`, `VM.GuestAgent.FileWrite`, and `VM.GuestAgent.Unrestricted` permissions; enabling all `VM.GuestAgent.*` permissions is recommended. Without that route, direct or Host SSH jump SFTP may still work when configured. LXC does not support the Guest Agent API route.
 - Local file viewing and editing, archive operations, operation logs, and undo history.
 
 ### Desktop Build
@@ -103,6 +104,7 @@ Build artifacts are located at:
 - Downloads use collision-safe filenames and remove partial output after cancellation or failure.
 - TLS certificate verification is enabled by default. It is disabled only when the user explicitly selects **Ignore TLS errors**.
 - The Proxmox localhost relay uses a one-time token and an exact WebSocket path. Switching entries cancels a pending relay that has not yet been established.
+- The Desktop UI supports only `en_US` and `zh_TW`. It selects an initial locale from the WebView language and lets users change and save it in the top-right Account menu.
 
 ## API Contract
 

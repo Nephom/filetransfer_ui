@@ -1,7 +1,10 @@
+import { formatQuantity, useAppTranslation } from "./i18n/useAppTranslation";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import type { TFunction } from "i18next";
 import "./log-view.css";
 import { FloatingWindow } from "./ui/FloatingWindow";
 import { ChevronDownIcon, ChevronRightIcon, CloseIcon, SortAscIcon, SortDescIcon } from "./ui/icons";
+import { getAppLocale, toIntlLocale } from "./i18n/i18n";
 
 export type OperationLogRecord = Record<string, unknown>;
 type SortKey = "time" | "function" | "level" | "status";
@@ -31,9 +34,9 @@ const timestamp = (record: OperationLogRecord) => {
   return 0;
 };
 
-const displayTime = (record: OperationLogRecord) => {
+const displayTime = (record: OperationLogRecord, locale: string) => {
   const numeric = timestamp(record);
-  return numeric > 0 ? new Date(numeric).toLocaleString() : value(record, "timestamp", "-");
+  return numeric > 0 ? new Date(numeric).toLocaleString(locale) : value(record, "timestamp", "-");
 };
 
 const operationName = (record: OperationLogRecord) => value(record, "operation", value(record, "event", "operation"));
@@ -43,23 +46,23 @@ const parseDetail = (record: OperationLogRecord) => {
   try { return JSON.parse(record.detail); } catch { return record.detail; }
 };
 
-const label = (key: string) => key
+const label = (key: string, t: TFunction) => t(key
   .replace(/([a-z])([A-Z])/g, "$1 $2")
-  .replace(/^./, (character) => character.toUpperCase());
+  .replace(/^./, (character) => character.toUpperCase()));
 
-const readableValue = (input: unknown): string => {
+const readableValue = (input: unknown, t: TFunction): string => {
   if (input === undefined || input === null || input === "") return "-";
-  if (Array.isArray(input)) return input.map(readableValue).join(", ");
+  if (Array.isArray(input)) return input.map((item) => readableValue(item, t)).join(", ");
   if (typeof input === "object") {
     return Object.entries(input as Record<string, unknown>)
       .filter(([key]) => !hiddenKeys.has(key))
-      .map(([key, value]) => `${label(key)}: ${readableValue(value)}`)
+      .map(([key, value]) => `${label(key, t)}: ${readableValue(value, t)}`)
       .join("; ");
   }
   return String(input);
 };
 
-const fields = (record: OperationLogRecord) => {
+const fields = (record: OperationLogRecord, t: TFunction) => {
   const detail = parseDetail(record);
   const merged: OperationLogRecord = {
     ...record,
@@ -72,24 +75,24 @@ const fields = (record: OperationLogRecord) => {
   ];
   return keys
     .filter((key) => merged[key] !== undefined && !hiddenKeys.has(key))
-    .map((key) => `${label(key)}: ${readableValue(merged[key])}`);
+    .map((key) => `${label(key, t)}: ${readableValue(merged[key], t)}`);
 };
 
-const resizeResult = (records: OperationLogRecord[], compact: boolean) => {
+const resizeResult = (records: OperationLogRecord[], compact: boolean, t: TFunction) => {
   const latest = records[records.length - 1];
   const entry = value(latest, "entryName", "Unnamed SSH entry");
   const source = value(latest, "source", "SSH terminal");
   const size = `${value(latest, "cols", "?")} × ${value(latest, "rows", "?")}`;
-  if (compact && records.length > 1) return `${entry} · ${records.length} resize events · Latest size: ${size} · Source: ${source}`;
-  return `Entry: ${entry} · Size: ${size} · Source: ${source}`;
+  if (compact && records.length > 1) return `${entry} · ${t("{{count}} resize events", { count: records.length })} · ${t("Latest size:")} ${size} · ${t("Source:")} ${source}`;
+  return `${t("Entry:")} ${entry} · ${t("Size:")} ${size} · ${t("Source:")} ${source}`;
 };
 
-const result = (records: OperationLogRecord[], compact = false) => {
+const result = (records: OperationLogRecord[], compact: boolean, t: TFunction) => {
   const latest = records[records.length - 1];
-  if (operationName(latest) === "ssh_resize") return resizeResult(records, compact);
-  const readable = fields(latest);
-  if (!readable.length) return records.length > 1 ? `${records.length} events` : "-";
-  if (compact && records.length > 1) return `${records.length} events · Latest: ${readable.join(" · ")}`;
+  if (operationName(latest) === "ssh_resize") return resizeResult(records, compact, t);
+  const readable = fields(latest, t);
+  if (!readable.length) return records.length > 1 ? t("{{count}} events", { count: records.length }) : "-";
+  if (compact && records.length > 1) return `${t("{{count}} events", { count: records.length })} · ${t("Latest:")} ${readable.join(" · ")}`;
   return readable.join(" · ");
 };
 const groupKey = (record: OperationLogRecord, index: number) => {
@@ -105,6 +108,8 @@ const groupKey = (record: OperationLogRecord, index: number) => {
 const compareText = (left: string, right: string) => left.localeCompare(right, undefined, { sensitivity: "base" });
 
 function LogTable({ records }: { records: OperationLogRecord[] }) {
+  const { t } = useAppTranslation();
+  const locale = toIntlLocale(getAppLocale());
   const [sortKey, setSortKey] = useState<SortKey>("time");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -141,14 +146,14 @@ function LogTable({ records }: { records: OperationLogRecord[] }) {
   const sortLabel = (key: SortKey) => sortKey === key ? <> {sortDirection === "asc" ? <SortAscIcon size={10} /> : <SortDescIcon size={10} />}</> : null;
 
   return (
-    <div className="log-table" role="table" aria-label="Operation log table">
+    <div className="log-table" role="table" aria-label={t("Operation log table")}>
       <div className="log-table-header" role="row">
-        <button type="button" role="columnheader" onClick={() => sortBy("time")}>Time{sortLabel("time")}</button>
-        <button type="button" role="columnheader" onClick={() => sortBy("function")}>Function{sortLabel("function")}</button>
-        <button type="button" role="columnheader" onClick={() => sortBy("level")}>Level{sortLabel("level")}</button>
-        <button type="button" role="columnheader" onClick={() => sortBy("status")}>Status{sortLabel("status")}</button>
-        <span role="columnheader">Events</span>
-        <span role="columnheader">Details</span>
+        <button type="button" role="columnheader" onClick={() => sortBy("time")}>{t("Time")}{sortLabel("time")}</button>
+        <button type="button" role="columnheader" onClick={() => sortBy("function")}>{t("Function")}{sortLabel("function")}</button>
+        <button type="button" role="columnheader" onClick={() => sortBy("level")}>{t("Level")}{sortLabel("level")}</button>
+        <button type="button" role="columnheader" onClick={() => sortBy("status")}>{t("Status")}{sortLabel("status")}</button>
+        <span role="columnheader">{t("Events")}</span>
+        <span role="columnheader">{t("Details")}</span>
       </div>
       {groups.map((group) => {
         const isExpanded = expanded.has(group.key);
@@ -164,21 +169,21 @@ function LogTable({ records }: { records: OperationLogRecord[] }) {
                 return next;
               })}
             >
-              <span>{isExpanded ? <ChevronDownIcon size={11} /> : <ChevronRightIcon size={11} />} {displayTime(group.records[0])}</span>
+              <span>{isExpanded ? <ChevronDownIcon size={11} /> : <ChevronRightIcon size={11} />} {displayTime(group.records[0], locale)}</span>
               <strong>{group.operation}</strong>
               <span className={`log-level log-level-${value(group.last, "level", "INFO").toLowerCase()}`}>{value(group.last, "level", "INFO")}</span>
               <span>{value(group.last, "status", "-")}</span>
               <span>{group.records.length}</span>
-              <pre className="log-result">{result(group.records, true)}</pre>
+              <pre className="log-result">{result(group.records, true, t)}</pre>
             </button>
             {isExpanded && group.records.map((record, index) => (
               <div className="log-table-detail-row" role="row" key={`${group.key}-${index}`}>
-                <span>{displayTime(record)}</span>
+                <span>{displayTime(record, locale)}</span>
                 <span>{operationName(record)}</span>
                 <span className={`log-level log-level-${value(record, "level", "INFO").toLowerCase()}`}>{value(record, "level", "INFO")}</span>
                 <span>{value(record, "status", "-")}</span>
                 <span>•</span>
-                <pre className="log-result">{result([record])}</pre>
+                <pre className="log-result">{result([record], false, t)}</pre>
               </div>
             ))}
           </div>
@@ -195,6 +200,7 @@ export function LogView({ records, onClose, onExport, modalStyle, onDragStart }:
   modalStyle: React.CSSProperties;
   onDragStart: (event: React.MouseEvent<HTMLElement>) => void;
 }) {
+  const { t } = useAppTranslation();
   const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -203,7 +209,7 @@ export function LogView({ records, onClose, onExport, modalStyle, onDragStart }:
 
   return (
     <FloatingWindow
-      ariaLabel="LogView"
+      ariaLabel={t("LogView")}
       className="log-view-modal"
       style={modalStyle}
       onClose={onClose}
@@ -211,22 +217,22 @@ export function LogView({ records, onClose, onExport, modalStyle, onDragStart }:
       header={(
         <header className="log-view-heading modal-drag-handle">
           <div>
-            <h2 id="log-view-title">LogView</h2>
-            <p>Grouped operation events with readable results. Internal IDs remain in exported logs.</p>
+            <h2 id="log-view-title">{t("LogView")}</h2>
+            <p>{t("Grouped operation events with readable results. Internal IDs remain in exported logs.")}</p>
           </div>
           <div className="log-view-heading-actions">
-            <button type="button" className="log-view-export" onClick={onExport}>Export log</button>
-            <button ref={closeRef} type="button" className="log-view-close" onClick={onClose} aria-label="Close LogView"><CloseIcon /></button>
+            <button type="button" className="log-view-export" onClick={onExport}>{t("Export log")}</button>
+            <button ref={closeRef} type="button" className="log-view-close" onClick={onClose} aria-label={t("Close LogView")}><CloseIcon /></button>
           </div>
         </header>
       )}
     >
-        <div className="log-view-content floating-window-content" tabIndex={0} aria-label="Pretty operation log">
-          {records.length ? <LogTable records={records} /> : <p className="log-view-empty">No operation logs recorded yet.</p>}
+        <div className="log-view-content floating-window-content" tabIndex={0} aria-label={t("Pretty operation log")}>
+          {records.length ? <LogTable records={records} /> : <p className="log-view-empty">{t("No operation logs recorded yet.")}</p>}
         </div>
         <div className="log-view-footer floating-window-footer">
-          <span>{records.length} event{records.length === 1 ? "" : "s"}</span>
-          <button type="button" className="confirm" onClick={onClose}>Close</button>
+          <span>{formatQuantity(records.length, "event", "events")}</span>
+          <button type="button" className="confirm" onClick={onClose}>{t("Close")}</button>
         </div>
     </FloatingWindow>
   );

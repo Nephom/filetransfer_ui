@@ -1,3 +1,5 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
+
 type SharePasswordDialogProps = {
   sharePasswordDraft: string;
   setSharePasswordDraft: (value: string) => void;
@@ -6,13 +8,14 @@ type SharePasswordDialogProps = {
 };
 
 export function SharePasswordDialog({ sharePasswordDraft, setSharePasswordDraft, onClose, onCreate }: SharePasswordDialogProps) {
+  const { t } = useAppTranslation();
   return (
     <div className="modal-cover modal-layer-top" onMouseDown={onClose}>
       <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
-        <h2>Secure share link</h2>
-        <p className="muted">Optional: protect the link with a password. Leave blank to share without one.</p>
+        <h2>{t("Secure share link")}</h2>
+        <p className="muted">{t("Optional: protect the link with a password. Leave blank to share without one.")}</p>
         <label>
-          Password (optional)
+          {t("Password (optional)")}
           <input
             type="password"
             autoFocus
@@ -22,9 +25,9 @@ export function SharePasswordDialog({ sharePasswordDraft, setSharePasswordDraft,
         </label>
         <div className="modal-actions">
           <button type="button" className="confirm" onClick={() => onCreate(sharePasswordDraft.trim() || undefined)}>
-            Create link
+            {t("Create link")}
           </button>
-          <button type="button" onClick={onClose}>Cancel</button>
+          <button type="button" onClick={onClose}>{t("Cancel")}</button>
         </div>
       </div>
     </div>

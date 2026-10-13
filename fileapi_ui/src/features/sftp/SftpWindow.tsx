@@ -1,9 +1,12 @@
+import { formatQuantity, useAppTranslation } from "../../i18n/useAppTranslation";
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import type { FileItem } from "../../file-item-contracts";
 import type { SshProfile } from "./../ssh/ssh-contracts";
 import { formatSize } from "../../format-utils";
+import { getAppLocale, toIntlLocale } from "../../i18n/i18n";
+import { formatUiError, UiMessageError } from "../../i18n/errors";
 import { PaneResizeHandle } from "../../resizable-pane";
 import { PersistentScrollbar } from "../../ui/PersistentScrollbar";
 import { CommandBarOverflowMenu } from "../../ui/CommandBarOverflowMenu";
@@ -67,6 +70,8 @@ export function SftpWindow({
   entryId, profile, writeOperationLog, describeError, requestName, requestConfirmation, confirmDelete, folderResizeEnabled,
   undoEnabled, undoEntries, recordUndo, removeUndo, dnd, transfer, registerRefresh, onPathChange,
 }: SftpWindowProps) {
+  const { t } = useAppTranslation();
+  const columnLabel = (column: ColumnKey) => t(column[0].toUpperCase() + column.slice(1));
   const profileRef = useRef(profile);
   profileRef.current = profile;
   const sourceName = profile ? `SSH: ${profile.name}` : "SSH";
@@ -130,7 +135,7 @@ export function SftpWindow({
     try {
       await action();
     } catch (error) {
-      if (mountedRef.current) setNotice(describeError(error));
+      if (mountedRef.current) setNotice(formatUiError(error, t));
     } finally {
       if (mountedRef.current) setBusy(false);
     }
@@ -138,7 +143,7 @@ export function SftpWindow({
 
   const requireProfile = () => {
     const current = profileRef.current;
-    if (!current) throw new Error(MISSING_PROFILE);
+    if (!current) throw new UiMessageError(MISSING_PROFILE);
     return current;
   };
 
@@ -353,16 +358,16 @@ export function SftpWindow({
 
   const createFolder = () => run(async () => {
     const sshProfile = requireProfile();
-    const folderName = await requestName("New folder", "");
+    const folderName = await requestName(t("New folder"), "");
     if (!folderName?.trim()) return;
     const name = folderName.trim();
-    if (/[\\/]/.test(name) || name === "." || name === "..") throw new Error("Enter a folder name, not a path.");
+    if (/[\\/]/.test(name) || name === "." || name === "..") throw new UiMessageError("Enter a folder name, not a path.");
     const fullPath = joinSshPath(path, name);
     try {
       await invoke("ssh_create_directory", { profile: sshProfile, path: fullPath });
       await loadFiles(path);
       writeOperationLog("create_folder", "completed", `SSH: ${sshProfile.name}:${path}`, `SSH: ${sshProfile.name}:${fullPath}`, `Created folder ${name} through SFTP.`);
-      notify(`Created ${name}.`);
+      notify(t("Created {{name}}.", { name }));
     } catch (error) {
       writeOperationLog("create_folder", "failed", `SSH: ${sshProfile.name}:${path}`, `SSH: ${sshProfile.name}:${fullPath}`, `Failed to create folder ${name} through SFTP: ${describeError(error)}`, "ERROR");
       throw error;
@@ -373,10 +378,10 @@ export function SftpWindow({
     const sshProfile = requireProfile();
     if (selectedItems.length !== 1) return;
     const item = selectedItems[0];
-    const newName = await requestName("Rename", item.name);
+    const newName = await requestName(t("Rename"), item.name);
     if (!newName?.trim() || newName === item.name) return;
     const trimmedName = newName.trim();
-    if (/[\\/]/.test(trimmedName) || trimmedName === "." || trimmedName === "..") throw new Error("Enter a filename, not a path.");
+    if (/[\\/]/.test(trimmedName) || trimmedName === "." || trimmedName === "..") throw new UiMessageError("Enter a filename, not a path.");
     const newPath = joinSshPath(sshParentPath(item.path), trimmedName);
     try {
       const finalPath = await invoke<string>("ssh_rename_path", { profile: sshProfile, oldPath: item.path, newPath });
@@ -385,7 +390,7 @@ export function SftpWindow({
       }
       await loadFiles(path);
       writeOperationLog("rename", "completed", `SSH: ${sshProfile.name}:${item.path}`, `SSH: ${sshProfile.name}:${finalPath}`, `Renamed ${item.name} to ${finalPath.split("/").pop()} through SFTP.`);
-      notify(`Renamed ${item.name} to ${finalPath.split("/").pop()}.`);
+      notify(t("Renamed {{oldName}} to {{newName}}.", { oldName: item.name, newName: finalPath.split("/").pop() }));
     } catch (error) {
       writeOperationLog("rename", "failed", `SSH: ${sshProfile.name}:${item.path}`, `SSH: ${sshProfile.name}:${newPath}`, `Failed to rename ${item.name} through SFTP: ${describeError(error)}`, "ERROR");
       throw error;
@@ -395,7 +400,7 @@ export function SftpWindow({
   const remove = () => run(async () => {
     const sshProfile = requireProfile();
     if (!selectedItems.length) return;
-    if (confirmDelete && !await requestConfirmation(`Delete ${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}? This cannot be undone.`, "Delete remote items")) return;
+    if (confirmDelete && !await requestConfirmation(t("Delete {{items}}? This cannot be undone.", { items: formatQuantity(selectedItems.length, "item", "items") }), t("Delete remote items"))) return;
     const sourceLabel = `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`;
     const destinationLabel = `SSH: ${sshProfile.name}:${path}`;
     try {
@@ -404,7 +409,7 @@ export function SftpWindow({
       }
       await loadFiles(path);
       writeOperationLog("delete", "completed", sourceLabel, destinationLabel, "Deleted through SFTP. This cannot be undone.");
-      notify("Deleted selected items. This cannot be undone.");
+      notify(t("Deleted selected items. This cannot be undone."));
     } catch (error) {
       writeOperationLog("delete", "failed", sourceLabel, destinationLabel, `Failed to delete through SFTP: ${describeError(error)}`, "ERROR");
       throw error;
@@ -415,7 +420,7 @@ export function SftpWindow({
     const sshProfile = requireProfile();
     writeOperationLog("drag", "dropped", `SSH: ${sshProfile.name}`, destination, JSON.stringify({ itemCount: items.length, sourceType: "SFTP", destinationType: "SFTP" }), "INFO");
     if (!isValidMoveTarget(items, destination)) {
-      throw new Error("Choose a folder other than the current folder or a folder inside a selected folder.");
+      throw new UiMessageError("Choose a folder other than the current folder or a folder inside a selected folder.");
     }
     const sourceLabel = `${items.length} item${items.length === 1 ? "" : "s"}`;
     const destinationLabel = `SSH: ${sshProfile.name}:${destination}`;
@@ -428,7 +433,7 @@ export function SftpWindow({
       setMenuPoint(null);
       await loadFiles(path);
       writeOperationLog("move", "completed", sourceLabel, destinationLabel, `Moved ${items.length} item(s) through SFTP.`);
-      notify(`Moved ${items.length} item${items.length === 1 ? "" : "s"}.`);
+      notify(t("Moved {{items}}.", { items: formatQuantity(items.length, "item", "items") }));
     } catch (error) {
       writeOperationLog("move", "failed", sourceLabel, destinationLabel, `Failed to move through SFTP: ${describeError(error)}`, "ERROR");
       throw error;
@@ -446,7 +451,7 @@ export function SftpWindow({
       removeUndo(entry.id);
       await loadFiles(path);
       writeOperationLog("undo", "completed", sourceLabel, destinationLabel, `Undone: ${entry.description}`);
-      notify(`Undone: ${entry.description}`);
+      notify(t("Undone: {{description}}", { description: entry.description }));
     } catch (error) {
       writeOperationLog("undo", "failed", sourceLabel, destinationLabel, `Failed to undo "${entry.description}": ${describeError(error)}`, "ERROR");
       throw error;
@@ -457,7 +462,7 @@ export function SftpWindow({
     const sshProfile = requireProfile();
     if (!selectedItems.length) return;
     const defaultName = selectedItems.length === 1 ? selectedItems[0].name.replace(/\.[^./]+$/, "") : "Archive";
-    const archiveName = await requestName("Archive name", defaultName);
+    const archiveName = await requestName(t("Archive name"), defaultName);
     if (!archiveName?.trim()) return;
     const sourceLabel = `${selectedItems.length} selected item${selectedItems.length === 1 ? "" : "s"}`;
     const destinationLabel = `SSH: ${sshProfile.name}:${path}`;
@@ -470,7 +475,7 @@ export function SftpWindow({
       });
       await loadFiles(path);
       writeOperationLog("compress", "completed", sourceLabel, destinationLabel, `Created ${finalName} through SFTP.`);
-      notify(`Created ${finalName}.`);
+      notify(t("Created {{name}}.", { name: finalName }));
     } catch (error) {
       writeOperationLog("compress", "failed", sourceLabel, destinationLabel, `Failed to create archive through SFTP: ${describeError(error)}`, "ERROR");
       throw error;
@@ -487,7 +492,7 @@ export function SftpWindow({
       const finalName = await invoke<string>("ssh_extract_archive", { profile: sshProfile, path: item.path, destinationFolder: path });
       await loadFiles(path);
       writeOperationLog("extract", "completed", sourceLabel, destinationLabel, `Extracted ${item.name} to ${finalName} through SFTP.`);
-      notify(`Extracted to ${finalName}.`);
+      notify(t("Extracted to {{name}}.", { name: finalName }));
     } catch (error) {
       writeOperationLog("extract", "failed", sourceLabel, destinationLabel, `Failed to extract ${item.name} through SFTP: ${describeError(error)}`, "ERROR");
       throw error;
@@ -638,7 +643,7 @@ export function SftpWindow({
           dropOn(node.path);
         }}
       >
-        <button className="tree-toggle" aria-label={`${node.expanded ? "Collapse" : "Expand"} ${node.name}`} onClick={() => toggleFolder(node)}>
+        <button className="tree-toggle" aria-label={t("{{action}} {{name}}", { action: t(node.expanded ? "Collapse" : "Expand"), name: node.name })} onClick={() => toggleFolder(node)}>
           {node.expanded ? "−" : "+"}
         </button>
         <button className="tree-folder" onClick={() => void run(() => loadFiles(node.path))}>
@@ -646,12 +651,12 @@ export function SftpWindow({
           {node.name}
         </button>
         {dnd.dragItems.length > 0 && dropTarget === node.path && (
-          <span className="drop-label">{dnd.sourceRef.current === "local" ? "Upload here" : "Move here"}</span>
+          <span className="drop-label">{t(dnd.sourceRef.current === "local" ? "Upload here" : "Move here")}</span>
         )}
       </div>
       {node.expanded && (
         <div className="tree-children">
-          {node.loaded ? node.children.map(renderTreeNode) : <span className="tree-loading">Loading folders...</span>}
+          {node.loaded ? node.children.map(renderTreeNode) : <span className="tree-loading">{t("Loading folders...")}</span>}
         </div>
       )}
     </div>
@@ -659,7 +664,7 @@ export function SftpWindow({
 
   const parts = path.split("/").filter(Boolean);
   const breadcrumbs = (
-    <div className="pane-breadcrumbs crumbs" aria-label="SFTP path">
+    <div className="pane-breadcrumbs crumbs" aria-label={t("SFTP path")}>
       <button onClick={() => void run(() => loadFiles(ROOT))}>/</button>
       {parts.map((part, index) => (
         <React.Fragment key={`sftp-crumb-${part}-${index}`}>
@@ -695,13 +700,13 @@ export function SftpWindow({
   const noProfile = !profile;
 
   const overflowActions = [
-    { key: "new-folder", label: "New folder", disabled: busy || noProfile, onClick: () => void createFolder() },
-    { key: "download", label: "Download", disabled: busy || !selectedItems.length, title: "Bring the selection into the current LOCAL folder", onClick: download },
-    { key: "rename", label: "Rename", disabled: busy || selectedItems.length !== 1, onClick: () => void rename() },
-    { key: "delete", label: "Delete", disabled: busy || !selectedItems.length, onClick: () => void remove() },
-    { key: "undo", label: "Undo", disabled: busy || !lastUndo, title: lastUndo ? `Undo: ${lastUndo.description}` : "No operation to undo", onClick: () => void undo() },
-    { key: "select-all", label: "Select all", onClick: selectAll },
-    { key: "refresh", label: "Refresh", disabled: busy || noProfile, onClick: () => void run(refresh) },
+    { key: "new-folder", label: t("New folder"), disabled: busy || noProfile, onClick: () => void createFolder() },
+    { key: "download", label: t("Download"), disabled: busy || !selectedItems.length, title: t("Bring the selection into the current LOCAL folder"), onClick: download },
+    { key: "rename", label: t("Rename"), disabled: busy || selectedItems.length !== 1, onClick: () => void rename() },
+    { key: "delete", label: t("Delete"), disabled: busy || !selectedItems.length, onClick: () => void remove() },
+    { key: "undo", label: t("Undo"), disabled: busy || !lastUndo, title: lastUndo ? t("Undo: {{description}}", { description: lastUndo.description }) : t("No operation to undo"), onClick: () => void undo() },
+    { key: "select-all", label: t("Select all"), onClick: selectAll },
+    { key: "refresh", label: t("Refresh"), disabled: busy || noProfile, onClick: () => void run(refresh) },
   ];
 
   const fileArea = (
@@ -754,7 +759,7 @@ export function SftpWindow({
             >
               <span className="tile-icon glyph-folder" aria-hidden="true" />
               <strong>../</strong>
-              <span>Parent folder</span>
+              <span>{t("Parent folder")}</span>
             </article>
           )}
           {sortedFiles.map((file) => (
@@ -774,8 +779,8 @@ export function SftpWindow({
                 <span className={file.isDirectory ? "glyph-folder" : "glyph-file"} aria-hidden="true" />
               </span>
               <strong>{file.name}</strong>
-              <span>{file.isDirectory ? "File folder" : "File"}</span>
-              <small>{file.isDirectory ? "Drop files here" : formatSize(file.size)}</small>
+              <span>{t(file.isDirectory ? "File folder" : "File")}</span>
+              <small>{file.isDirectory ? t("Drop files here") : formatSize(file.size, toIntlLocale(getAppLocale()))}</small>
             </article>
           ))}
         </div>
@@ -789,7 +794,7 @@ export function SftpWindow({
           </colgroup>
           <thead>
             <tr>
-              <th aria-label="Select" />
+              <th aria-label={t("Select")} />
               {(["name", "modified", "size"] as ColumnKey[]).map((column) => (
                 <th
                   key={column}
@@ -800,23 +805,23 @@ export function SftpWindow({
                     <button
                       type="button"
                       className={`directory-first-toggle${directoriesFirst ? " active" : ""}`}
-                      aria-label="Keep folders first"
+                      aria-label={t("Keep folders first")}
                       aria-pressed={directoriesFirst}
-                      title={directoriesFirst ? "Folders first: on" : "Folders first: off"}
+                      title={t(directoriesFirst ? "Folders first: on" : "Folders first: off")}
                       onClick={() => setDirectoriesFirst((current) => !current)}
                     >
                       <span aria-hidden="true" />
                     </button>
                   )}
-                  <button type="button" onClick={() => toggleSort(column)} aria-label={`Sort by ${column}`}>
-                    <span>{column[0].toUpperCase() + column.slice(1)}</span>
+                  <button type="button" onClick={() => toggleSort(column)} aria-label={t("Sort by {{column}}", { column: columnLabel(column) })}>
+                  <span>{columnLabel(column)}</span>
                     {sortKey === column && (
                       <span className="sort-indicator" aria-hidden="true">
                         {sortDirection === "asc" ? <SortAscIcon size={11} /> : <SortDescIcon size={11} />}
                       </span>
                     )}
                   </button>
-                  <span className="column-resize-handle" onPointerDown={(event) => beginColumnResize(column, event)} role="separator" aria-label={`Resize ${column} column`} />
+                  <span className="column-resize-handle" onPointerDown={(event) => beginColumnResize(column, event)} role="separator" aria-label={t("Resize {{column}} column", { column: columnLabel(column) })} />
                 </th>
               ))}
             </tr>
@@ -859,8 +864,8 @@ export function SftpWindow({
                     <span className={file.isDirectory ? "glyph-folder" : "glyph-file"} aria-hidden="true" /> {file.name}
                   </span>
                 </td>
-                <td className="muted">{file.modified ? new Date(file.modified).toLocaleString() : "--"}</td>
-                <td className="muted">{file.isDirectory ? "--" : formatSize(file.size)}</td>
+                <td className="muted">{file.modified ? new Date(file.modified).toLocaleString(toIntlLocale(getAppLocale())) : "--"}</td>
+                <td className="muted">{file.isDirectory ? "--" : formatSize(file.size, toIntlLocale(getAppLocale()))}</td>
               </tr>
             ))}
           </tbody>
@@ -871,35 +876,35 @@ export function SftpWindow({
 
   return (
     <div className="pane-window-content sftp-window" ref={rootRef}>
-      <nav ref={bar.setRef} className="commandbar" aria-label="SFTP file actions">
-        <button className="primary" onClick={() => void pickAndUpload()} disabled={busy || noProfile} title="Choose local files to upload into the current folder">
-          Upload
+      <nav ref={bar.setRef} className="commandbar" aria-label={t("SFTP file actions")}>
+        <button className="primary" onClick={() => void pickAndUpload()} disabled={busy || noProfile} title={t("Choose local files to upload into the current folder")}>
+          {t("Upload")}
         </button>
         {!bar.overflow && <>
-          <button onClick={() => void createFolder()} disabled={busy || noProfile}>New folder</button>
+          <button onClick={() => void createFolder()} disabled={busy || noProfile}>{t("New folder")}</button>
           <span className="divider" />
-          <button disabled={busy || !selectedItems.length} onClick={download} title="Bring the selection into the current LOCAL folder">Download</button>
+          <button disabled={busy || !selectedItems.length} onClick={download} title={t("Bring the selection into the current LOCAL folder")}>{t("Download")}</button>
         </>}
         {bar.overflow ? (
-          <CommandBarOverflowMenu label="More actions" actions={overflowActions} />
+          <CommandBarOverflowMenu label={t("More actions")} actions={overflowActions} />
         ) : (
           <>
-            <button disabled={busy || selectedItems.length !== 1} onClick={() => void rename()}>Rename</button>
-            <button disabled={busy || !selectedItems.length} onClick={() => void remove()}>Delete</button>
-            <button disabled={busy || !lastUndo} onClick={() => void undo()} title={lastUndo ? `Undo: ${lastUndo.description}` : "No operation to undo"}>Undo</button>
+            <button disabled={busy || selectedItems.length !== 1} onClick={() => void rename()}>{t("Rename")}</button>
+            <button disabled={busy || !selectedItems.length} onClick={() => void remove()}>{t("Delete")}</button>
+            <button disabled={busy || !lastUndo} onClick={() => void undo()} title={lastUndo ? t("Undo: {{description}}", { description: lastUndo.description }) : t("No operation to undo")}>{t("Undo")}</button>
             <span className="divider" />
-            <button onClick={selectAll}>Select all</button>
+            <button onClick={selectAll}>{t("Select all")}</button>
           </>
         )}
         <span className="view-switch">
-          <button className={viewMode === "details" ? "active" : ""} onClick={() => setViewMode("details")}>Details</button>
-          <button className={viewMode === "grid" ? "active" : ""} onClick={() => setViewMode("grid")}>Grid</button>
+          <button className={viewMode === "details" ? "active" : ""} onClick={() => setViewMode("details")}>{t("Details")}</button>
+          <button className={viewMode === "grid" ? "active" : ""} onClick={() => setViewMode("grid")}>{t("Grid")}</button>
         </span>
-        {!bar.overflow && <button onClick={() => void run(refresh)} disabled={busy || noProfile}>Refresh</button>}
+        {!bar.overflow && <button onClick={() => void run(refresh)} disabled={busy || noProfile}>{t("Refresh")}</button>}
       </nav>
       <div className="desktop-workspace pane-remote-workspace">
         <aside className="desktop-folder-tree" style={{ flexBasis: `${folderPaneWidth}px`, width: `${folderPaneWidth}px` }}>
-          <span className="sidebar-label">Folders</span>
+          <span className="sidebar-label">{t("Folders")}</span>
           <div className="folder-pane">
             <div
               id={`folders-${entryId}`}
@@ -911,47 +916,47 @@ export function SftpWindow({
             >
               {renderTreeNode(tree)}
             </div>
-            <PersistentScrollbar targetRef={treeRef} label="Folders" />
+            <PersistentScrollbar targetRef={treeRef} label={t("Folders")} controlsId={`folders-${entryId}`} />
           </div>
         </aside>
         {folderResizeEnabled && (
-          <PaneResizeHandle ariaLabel="Resize Folders and SFTP panes" onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />
+          <PaneResizeHandle ariaLabel={t("Resize Folders and SFTP panes")} onStart={beginPaneResize} onMove={(event) => resizePane(event.nativeEvent)} onEnd={stopPaneResize} />
         )}
         <section className="desktop-content active-pane">
           <div className="content-heading">
             <div>
-              <span className="eyebrow">{`REMOTE (${sourceName})`}</span>
+              <span className="eyebrow">{t("REMOTE ({{source}})", { source: sourceName })}</span>
               <div className="remote-navigation-row">{breadcrumbs}</div>
             </div>
           </div>
-          <div className="remote-status-row" aria-label="SFTP status">
-            <span className="selection-count" aria-live="polite">{selectedItems.length > 0 ? `${selectedItems.length} selected` : ""}</span>
+          <div className="remote-status-row" aria-label={t("SFTP status")}>
+            <span className="selection-count" aria-live="polite">{selectedItems.length > 0 ? t("{{count}} selected", { count: selectedItems.length }) : ""}</span>
             {notice && (
               <output className="notice transfer-notice" role="status" title={notice}>{notice}</output>
             )}
           </div>
           <div className="file-pane">
             {fileArea}
-            <PersistentScrollbar targetRef={fileAreaRef} label="Files" />
+            <PersistentScrollbar targetRef={fileAreaRef} label={t("Files")} controlsId={`files-${entryId}`} />
           </div>
         </section>
       </div>
       <footer className="statusbar">
-        <span>{files.length} item{files.length === 1 ? "" : "s"}</span>
+        <span>{formatQuantity(files.length, "item", "items")}</span>
         <span>{path}</span>
       </footer>
       {marquee && (
         <div className="marquee-select" style={{ position: "fixed", left: marquee.left, top: marquee.top, width: marquee.width, height: marquee.height, pointerEvents: "none", zIndex: 9999 }} />
       )}
       {menuPoint && menuHost && createPortal(
-        <div ref={menuRef} className="context-menu" role="menu" aria-label="SFTP file actions" style={menuStyle} onClick={(event) => event.stopPropagation()}>
-          <button disabled={!selectedItems.length} onClick={closeMenuThen(download)}>Download</button>
-          <button disabled={selectedItems.length !== 1} onClick={closeMenuThen(rename)}>Rename</button>
+        <div ref={menuRef} className="context-menu" role="menu" aria-label={t("SFTP file actions")} style={menuStyle} onClick={(event) => event.stopPropagation()}>
+          <button disabled={!selectedItems.length} onClick={closeMenuThen(download)}>{t("Download")}</button>
+          <button disabled={selectedItems.length !== 1} onClick={closeMenuThen(rename)}>{t("Rename")}</button>
           <hr />
-          <button disabled={!selectedItems.length} onClick={closeMenuThen(compress)}>Compress to .zip</button>
-          <button disabled={selectedItems.length !== 1 || !isZipFile(selectedItems[0])} onClick={closeMenuThen(extract)}>Extract here</button>
+          <button disabled={!selectedItems.length} onClick={closeMenuThen(compress)}>{t("Compress to .zip")}</button>
+          <button disabled={selectedItems.length !== 1 || !isZipFile(selectedItems[0])} onClick={closeMenuThen(extract)}>{t("Extract here")}</button>
           <hr />
-          <button disabled={!selectedItems.length} onClick={closeMenuThen(remove)}>Delete</button>
+          <button disabled={!selectedItems.length} onClick={closeMenuThen(remove)}>{t("Delete")}</button>
         </div>,
         menuHost,
       )}

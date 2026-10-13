@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../i18n/useAppTranslation";
 import React, { useRef } from "react";
 import { kindOf, minSizeOf, resizeRect, type PaneRect, type PaneSize, type PaneWindowState, type ResizeEdges } from "./pane-window-model";
 
@@ -31,6 +32,7 @@ const EDGE_HANDLES: { name: string; edges: ResizeEdges }[] = [
 ];
 
 export function PaneWindow({ win, title, subtitle, icon, active, layer, onFocus, onMinimize, onToggleMaximize, onClose, onRect, children }: Props) {
+  const { t } = useAppTranslation();
   const dragRef = useRef<DragState | null>(null);
   const resizeRef = useRef<ResizeState | null>(null);
   const visible = win.open && !win.minimized;
@@ -99,15 +101,15 @@ export function PaneWindow({ win, title, subtitle, icon, active, layer, onFocus,
         <span className="pane-window-title">{title}</span>
         {subtitle && <span className="pane-window-subtitle">{subtitle}</span>}
         <span className="pane-window-controls">
-          <button type="button" className="pane-window-control" aria-label={`Minimize ${title}`} title="Minimize" onClick={onMinimize}>
+          <button type="button" className="pane-window-control" aria-label={t("Minimize {{title}}", { title })} title={t("Minimize")} onClick={onMinimize}>
             <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3 12h10" /></svg>
           </button>
-          <button type="button" className="pane-window-control" aria-label={win.maximized ? `Restore ${title}` : `Maximize ${title}`} title={win.maximized ? "Restore" : "Maximize"} onClick={onToggleMaximize}>
+          <button type="button" className="pane-window-control" aria-label={win.maximized ? t("Restore {{title}}", { title }) : t("Maximize {{title}}", { title })} title={win.maximized ? t("Restore") : t("Maximize")} onClick={onToggleMaximize}>
             {win.maximized
               ? <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M5 5V3h8v8h-2M3 5h8v8H3z" /></svg>
               : <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3 3h10v10H3z" /></svg>}
           </button>
-          <button type="button" className="pane-window-control pane-window-close" aria-label={`Close ${title}`} title="Close" onClick={onClose}>
+          <button type="button" className="pane-window-control pane-window-close" aria-label={t("Close {{title}}", { title })} title={t("Close")} onClick={onClose}>
             <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" /></svg>
           </button>
         </span>

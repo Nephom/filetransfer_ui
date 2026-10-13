@@ -1,8 +1,10 @@
+import { useAppTranslation } from "../../i18n/useAppTranslation";
 import { useEffect, useRef, type MutableRefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
 import { readImage, readText } from "@tauri-apps/plugin-clipboard-manager";
+import { formatUiError, UiMessageError } from "../../i18n/errors";
 import { getTerminalConnectionBoundary, isTerminalPasteShortcut, normalizeTerminalPasteText } from "./terminal-utils";
 
 // Best-effort: attaches the WebGL2 renderer to `terminal` if the runtime
@@ -106,25 +108,25 @@ export const encodeClipboardImagePng = async (image: Awaited<ReturnType<typeof r
     const { width, height } = await image.size();
     const pixelCount = width * height;
     if (!Number.isSafeInteger(pixelCount) || width < 1 || height < 1 || pixelCount > MAX_CLIPBOARD_IMAGE_PIXELS) {
-      throw new Error("Clipboard image dimensions are invalid or too large.");
+      throw new UiMessageError("Clipboard image dimensions are invalid or too large.");
     }
 
     const rgba = await image.rgba();
-    if (rgba.byteLength !== pixelCount * 4) throw new Error("Clipboard image data is incomplete.");
+    if (rgba.byteLength !== pixelCount * 4) throw new UiMessageError("Clipboard image data is incomplete.");
 
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     try {
       const context = canvas.getContext("2d");
-      if (!context) throw new Error("Unable to prepare the clipboard image for upload.");
+      if (!context) throw new UiMessageError("Unable to prepare the clipboard image for upload.");
       const pixels = context.createImageData(width, height);
       pixels.data.set(rgba);
       context.putImageData(pixels, 0, 0);
       const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((result) => result ? resolve(result) : reject(new Error("Unable to encode clipboard image as PNG.")), "image/png");
+        canvas.toBlob((result) => result ? resolve(result) : reject(new UiMessageError("Unable to encode clipboard image as PNG.")), "image/png");
       });
-      if (blob.size > MAX_CLIPBOARD_IMAGE_BYTES) throw new Error("Clipboard image is larger than the 20 MiB upload limit.");
+      if (blob.size > MAX_CLIPBOARD_IMAGE_BYTES) throw new UiMessageError("Clipboard image is larger than the 20 MiB upload limit.");
       return new Uint8Array(await blob.arrayBuffer());
     } finally {
       canvas.width = 0;
@@ -223,6 +225,9 @@ export function useTerminalLifecycle({
   onResize: (tabId: string, cols: number, rows: number) => void;
   onNotice: (message: string) => void;
 }) {
+  const { t } = useAppTranslation();
+  const translationRef = useRef(t);
+  translationRef.current = t;
   const dataRef = useRef(onData);
   const resizeRef = useRef(onResize);
   const noticeRef = useRef(onNotice);
@@ -290,11 +295,11 @@ export function useTerminalLifecycle({
           // Never allow clipboard controls (including embedded paste delimiters)
           // to escape xterm's single protected paste. Tab and newlines need DEC 2004.
           if (/[\x00-\x08\x0b-\x1f\x7f-\x9f]/.test(paste)) {
-            noticeRef.current("Paste blocked: clipboard text contains unsafe terminal control characters.");
+            noticeRef.current(translationRef.current("Paste blocked: clipboard text contains unsafe terminal control characters."));
             return;
           }
           if (/[\n\t]/.test(paste) && (!terminal.modes.bracketedPasteMode || terminal.options.ignoreBracketedPasteMode)) {
-            noticeRef.current("Paste blocked: this terminal has not enabled bracketed paste. Text with line breaks or tabs cannot be pasted safely. Enable bracketed paste in the remote application, or paste a single line without tabs.");
+            noticeRef.current(translationRef.current("Paste blocked: this terminal has not enabled bracketed paste. Text with line breaks or tabs cannot be pasted safely. Enable bracketed paste in the remote application, or paste a single line without tabs."));
             return;
           }
           if (!paste) return;
@@ -333,7 +338,7 @@ export function useTerminalLifecycle({
               try {
                 await pasteClipboardImage(isCurrent);
               } catch (error) {
-                if (isCurrent()) noticeRef.current(`Clipboard image paste failed: ${error instanceof Error ? error.message : String(error)}`);
+                if (isCurrent()) noticeRef.current(translationRef.current("Clipboard image paste failed: {{error}}", { error: formatUiError(error, translationRef.current) }));
               }
             })
             .catch(async (textError) => {
@@ -343,7 +348,7 @@ export function useTerminalLifecycle({
               } catch (imageError) {
                 if (isCurrent()) {
                   const detail = imageError instanceof Error ? imageError.message : String(imageError);
-                  noticeRef.current(`Unable to read clipboard text or image for paste. ${detail || String(textError)}`);
+                  noticeRef.current(translationRef.current("Unable to read clipboard text or image for paste. {{error}}", { error: detail || String(textError) }));
                 }
               }
             });

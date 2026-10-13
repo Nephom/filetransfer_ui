@@ -1,3 +1,4 @@
+import { useAppTranslation } from "../i18n/useAppTranslation";
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDownIcon } from "./icons";
@@ -22,6 +23,7 @@ type Props = {
 };
 
 export function Dropdown({ label, value, options, onChange, disabled = false, placeholder, className = "" }: Props) {
+  const { t } = useAppTranslation();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -147,7 +149,7 @@ export function Dropdown({ label, value, options, onChange, disabled = false, pl
               {option.label}
             </button>
           ))}
-          {!options.length && <span className="dropdown-empty">No options</span>}
+          {!options.length && <span className="dropdown-empty">{t("No options")}</span>}
         </div>,
         document.body,
       )}
