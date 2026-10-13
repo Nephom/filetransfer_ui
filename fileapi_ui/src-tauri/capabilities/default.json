@@ -18,6 +18,7 @@
     "core:webview:allow-create-webview-window",
     "core:event:default",
     "drag:default",
-    "clipboard-manager:allow-read-text"
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-read-image"
   ]
 }

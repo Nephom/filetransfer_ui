@@ -101,6 +101,7 @@ export function useSshEntryTerminal({
 
   const profileRef = useRef(profile);
   profileRef.current = profile;
+  const connectedProfileRef = useRef<SshProfile | null>(null);
   const titleRef = useRef(title);
   titleRef.current = title;
   const logRef = useRef(onOperationLog);
@@ -171,6 +172,7 @@ export function useSshEntryTerminal({
     if (!endedSessionId || sessionIdRef.current !== endedSessionId) return;
     sessionIdRef.current = "";
     tabsRef.current[0].sessionId = "";
+    connectedProfileRef.current = null;
     lastSizeRef.current = null;
     secretPromptRef.current = false;
     shellInputRef.current = "";
@@ -272,6 +274,11 @@ export function useSshEntryTerminal({
     boundaryGuard: VT_SESSION_BOUNDARY_GUARD,
     bracketedPasteControlEnabled,
     getPasteSessionId: () => sessionIdRef.current,
+    uploadClipboardImage: (pngBytes) => {
+      const currentProfile = connectedProfileRef.current;
+      if (!currentProfile) return Promise.reject(new Error("SSH profile is no longer available."));
+      return invoke<string>("ssh_upload_clipboard_image", { profile: currentProfile, pngBytes: Array.from(pngBytes) });
+    },
     getInitialOutput: () => outputRef.current,
     onData: (_tabId, data) => {
       const currentSessionId = sessionIdRef.current;
@@ -349,6 +356,7 @@ export function useSshEntryTerminal({
       // pendingRequestsRef[attemptId] is kept on purpose: the first burst of output
       // can reach the event bridge before this promise resolves (see dispose()).
       sessionIdRef.current = id;
+      connectedProfileRef.current = target;
       tabsRef.current[0].sessionId = id;
       connectingRef.current = false;
       setSessionId(id);
@@ -403,6 +411,7 @@ export function useSshEntryTerminal({
     connectingRef.current = false;
     const id = sessionIdRef.current;
     sessionIdRef.current = "";
+    connectedProfileRef.current = null;
     tabsRef.current[0].sessionId = "";
     const closing = (async () => {
       await discardRecording();

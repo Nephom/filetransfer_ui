@@ -14,6 +14,19 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as AsyncMutex;
 
+const MAX_CLIPBOARD_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+
+fn validate_clipboard_png(png_bytes: &[u8]) -> Result<(), String> {
+    if png_bytes.len() < PNG_SIGNATURE.len() || !png_bytes.starts_with(PNG_SIGNATURE) {
+        return Err("Clipboard image is not a valid PNG payload".to_string());
+    }
+    if png_bytes.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+        return Err("Clipboard image exceeds the 20 MiB upload limit".to_string());
+    }
+    Ok(())
+}
+
 /// Write `data` to `path` on the remote host, creating the file if it does
 /// not already exist (and truncating it if it does).
 ///
@@ -326,6 +339,86 @@ pub async fn upload_file(
         return Err(error);
     }
     crate::oplog::log("INFO", "sftp_upload", "completed", &label, &remote_path, &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "bytes": byte_count}).to_string());
+    Ok(remote_path)
+}
+
+/// Upload a PNG copied from the local clipboard into the SSH user's home
+/// directory. The unique hidden file remains available to remote CLI tools
+/// after its path has been pasted into the terminal.
+pub async fn upload_clipboard_image(
+    profile: SshProfile,
+    png_bytes: Vec<u8>,
+) -> Result<String, String> {
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let started = std::time::Instant::now();
+    let label = super::profile_label(&profile);
+    if let Err(error) = validate_clipboard_png(&png_bytes) {
+        crate::oplog::log(
+            "ERROR",
+            "ssh_clipboard_image_upload",
+            "failed",
+            &label,
+            "remote home",
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "byteCount": png_bytes.len(), "failureType": "validation", "error": error}).to_string(),
+        );
+        return Err(error);
+    }
+
+    crate::oplog::log(
+        "DEBUG",
+        "ssh_clipboard_image_upload",
+        "started",
+        &label,
+        "remote home",
+        &serde_json::json!({"operationId": operation_id, "byteCount": png_bytes.len()}).to_string(),
+    );
+    if let Err(error) = ensure_connected(&profile).await {
+        crate::oplog::log(
+            "ERROR",
+            "ssh_clipboard_image_upload",
+            "failed",
+            &label,
+            "remote home",
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "byteCount": png_bytes.len(), "failureType": "ensure_connected", "error": error}).to_string(),
+        );
+        return Err(error);
+    }
+    let connection = cached_connection(&profile.id)
+        .await
+        .ok_or_else(|| "SFTP session is not connected".to_string())?;
+    let home = connection
+        .sftp
+        .canonicalize(".")
+        .await
+        .unwrap_or_else(|_| ".".to_string());
+    let file_name = format!(".nfterm-clipboard-{operation_id}.png");
+    let remote_path = if home == "/" {
+        format!("/{file_name}")
+    } else if home == "." {
+        file_name
+    } else {
+        format!("{}/{file_name}", home.trim_end_matches('/'))
+    };
+
+    if let Err(error) = write_remote_file(&connection.sftp, remote_path.clone(), &png_bytes).await {
+        crate::oplog::log(
+            "ERROR",
+            "ssh_clipboard_image_upload",
+            "failed",
+            &label,
+            &remote_path,
+            &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "byteCount": png_bytes.len(), "failureType": "sftp_write", "error": error}).to_string(),
+        );
+        return Err(error);
+    }
+    crate::oplog::log(
+        "INFO",
+        "ssh_clipboard_image_upload",
+        "completed",
+        &label,
+        &remote_path,
+        &serde_json::json!({"operationId": operation_id, "durationMs": started.elapsed().as_millis(), "byteCount": png_bytes.len()}).to_string(),
+    );
     Ok(remote_path)
 }
 
@@ -1025,6 +1118,13 @@ pub async fn extract_archive(
 #[cfg(test)]
 mod connection_isolation_tests {
     use super::*;
+
+    #[test]
+    fn clipboard_png_validation_checks_format_and_size() {
+        assert!(validate_clipboard_png(b"\x89PNG\r\n\x1a\nimage").is_ok());
+        assert!(validate_clipboard_png(b"not a png").is_err());
+        assert!(validate_clipboard_png(&vec![0; MAX_CLIPBOARD_IMAGE_BYTES + 1]).is_err());
+    }
 
     #[test]
     fn handshake_gate_is_per_entry() {

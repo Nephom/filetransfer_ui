@@ -100,10 +100,11 @@ const PROFILE = { id: "profile", name: "Server", host: "host", port: 22, usernam
 // Only Tauri commands/events and the browser shell are replaced.
 async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepAliveWindow, onStateChange, onOperationLog } = {}) {
   const hooks = hookRunner();
-  const calls = [], notices = [], copies = [], reads = [], pastes = [], writes = [], states = [], logs = [];
+  const calls = [], notices = [], copies = [], reads = [], imageReads = [], pastes = [], writes = [], states = [], logs = [];
   const instances = [], focused = [];
   const fitCalls = [];
-  let selection = "", selectedTextarea, clipboard = "clipboard", picker = "";
+  let selection = "", selectedTextarea, clipboard = "clipboard", clipboardImage = null;
+  let clipboardUploadResult = "/home/user/.nfterm-clipboard-test.png", picker = "";
   const documentListeners = new Map();
   const windowListeners = new Map();
   let bridge, connectResult = connect, disconnectResult, keepAliveRegisterResult = keepAliveRegister;
@@ -139,7 +140,15 @@ async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepA
     "@xterm/xterm": { Terminal },
     "@xterm/addon-fit": { FitAddon },
     "@xterm/addon-webgl": { WebglAddon },
-    "@tauri-apps/plugin-clipboard-manager": { readText() { reads.push(true); return Promise.resolve(clipboard); } },
+    "@tauri-apps/plugin-clipboard-manager": {
+      readText() { reads.push(true); return Promise.resolve(clipboard); },
+      readImage() {
+        imageReads.push(true);
+        return clipboardImage
+          ? Promise.resolve(clipboardImage)
+          : Promise.reject(new Error("Clipboard does not contain an image"));
+      },
+    },
     "@tauri-apps/api/core": { async invoke(command, args) {
       calls.push({ command, args });
       if (command === "ssh_terminal_keepalive_clear_window") {
@@ -154,6 +163,7 @@ async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepA
       if (command === "ssh_connect") return connectResult;
       if (command === "ssh_disconnect") return disconnectResult;
       if (command === "save_ssh_logs") return { raw: "raw", plain: "plain", commands: "commands", metadata: "metadata" };
+      if (command === "ssh_upload_clipboard_image") return typeof clipboardUploadResult === "function" ? clipboardUploadResult(args) : clipboardUploadResult;
       if (command === "start_ssh_recording") return { rawBytes: 20, plainBytes: 18, commandCount: 0 };
       if (command === "append_ssh_recording") return { rawBytes: 40, plainBytes: 36, commandCount: 0 };
       if (command === "append_ssh_recording_command") return { rawBytes: 40, plainBytes: 36, commandCount: 1 };
@@ -170,7 +180,21 @@ async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepA
     ResizeObserver: class { observe() {} disconnect() {} },
     document: {
       body: { appendChild() {} },
-      createElement() { return { style: {}, setAttribute() {}, select() { selectedTextarea = this; }, remove() {} }; },
+      createElement(tag) {
+        if (tag === "canvas") return {
+          width: 0,
+          height: 0,
+          getContext() { return {
+            createImageData(width, height) { return { data: new Uint8ClampedArray(width * height * 4) }; },
+            putImageData() {},
+          }; },
+          toBlob(callback, type) {
+            assert.equal(type, "image/png");
+            callback(new Blob([Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])], { type }));
+          },
+        };
+        return { style: {}, setAttribute() {}, select() { selectedTextarea = this; }, remove() {} };
+      },
       execCommand(command) { assert.equal(command, "copy"); copies.push(selectedTextarea.value); return true; },
       addEventListener(type, callback, capture) { assert.equal(capture, true); documentListeners.set(type, callback); },
       removeEventListener(type, callback, capture) { assert.equal(capture, true); if (documentListeners.get(type) === callback) documentListeners.delete(type); },
@@ -181,13 +205,15 @@ async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepA
   const lifecycle = loadTypeScript("features/terminal/useTerminalLifecycle.ts", { mocks, globals });
   let controller;
   const api = {
-    props, host, calls, notices, copies, reads, pastes, writes, instances, focused, fitCalls, states, logs, lifecycle,
+    props, host, calls, notices, copies, reads, imageReads, pastes, writes, instances, focused, fitCalls, states, logs, lifecycle,
     get bridge() { return bridge; },
     get ctl() { return controller; },
     get terminal() { return instances[0]; },
     get sent() { return calls.filter((call) => call.command === "ssh_write"); },
     requestId(n = -1) { return calls.filter((call) => call.command === "ssh_connect").at(n).args.requestId; },
     setClipboard(value) { clipboard = value; },
+    setClipboardImage(value) { clipboardImage = value; },
+    setClipboardUploadResult(value) { clipboardUploadResult = value; },
     setPicker(value) { picker = value; },
     setConnectResult(value) { connectResult = value; },
     setDisconnectResult(value) { disconnectResult = value; },
@@ -212,8 +238,12 @@ async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepA
       }
       api.render();
     },
-    native(text) {
-      return host.fire("paste", { clipboardData: text === undefined ? undefined : { getData(type) { assert.equal(type, "text/plain"); return text; } } });
+    native(text, { types = [], items = [], files = [] } = {}) {
+      const clipboardData = text === undefined && !types.length && !items.length && !files.length ? undefined : {
+        types, items, files,
+        getData(type) { assert.equal(type, "text/plain"); return text ?? ""; },
+      };
+      return host.fire("paste", { clipboardData });
     },
     documentMouseup(changes = {}) {
       const event = { button: 0, ...changes };
@@ -394,6 +424,83 @@ test("actual keyboard handlers intercept each paste variant once and leave Alt/I
   assert.equal(h.reads.length, 4);
   assert.equal(h.sent.length, 4);
   assert.ok(h.sent.every(({ args }) => args.data === "  single line  "));
+});
+
+test("clipboard images upload as remote PNGs and paste the returned shell path", async (t) => {
+  const h = await harness(t);
+  const image = {
+    async size() { return { width: 1, height: 1 }; },
+    async rgba() { return Uint8Array.from([255, 0, 0, 255]); },
+    async close() {},
+  };
+  h.setClipboard("");
+  h.setClipboardImage(image);
+
+  const keyboard = key();
+  assert.equal(h.terminal.keyHandler(keyboard), false);
+  await h.settle();
+  h.rightClick();
+  await h.settle();
+  const native = h.native(undefined, { types: ["image/png"] });
+  await h.settle();
+
+  const uploads = h.calls.filter(({ command }) => command === "ssh_upload_clipboard_image");
+  assert.equal(uploads.length, 3);
+  assert.ok(uploads.every(({ args }) => args.profile.id === "profile"));
+  assert.ok(uploads.every(({ args }) => args.pngBytes.join(",") === "137,80,78,71,13,10,26,10"));
+  assert.equal(h.imageReads.length, 3);
+  assert.equal(h.pastes.length, 3);
+  assert.deepEqual(h.pastes, Array(3).fill("'/home/user/.nfterm-clipboard-test.png'"));
+  assert.equal(h.sent.length, 3);
+  assert.ok(h.sent.every(({ args }) => args.data === "'/home/user/.nfterm-clipboard-test.png'"));
+  assert.equal(native.prevented, true);
+  assert.equal(native.stopped, true);
+
+  h.setClipboardUploadResult("/home/o'neil/clipboard.png");
+  h.terminal.keyHandler(key());
+  await h.settle();
+  assert.equal(h.pastes.at(-1), "'/home/o'\\''neil/clipboard.png'");
+});
+
+test("clipboard text wins when the clipboard also exposes an image", async (t) => {
+  const h = await harness(t);
+  h.setClipboard("plain text");
+  h.setClipboardImage({
+    async size() { return { width: 1, height: 1 }; },
+    async rgba() { return Uint8Array.from([0, 0, 0, 255]); },
+    async close() {},
+  });
+  h.native("plain text", { types: ["text/plain", "image/png"] });
+  await h.settle();
+  assert.equal(h.calls.some(({ command }) => command === "ssh_upload_clipboard_image"), false);
+  assert.equal(h.imageReads.length, 0);
+  assert.deepEqual(h.sent.map(({ args }) => args.data), ["plain text"]);
+});
+
+test("clipboard image upload failures are reported and stale uploads never enter a changed session", async (t) => {
+  const h = await harness(t);
+  const image = {
+    async size() { return { width: 1, height: 1 }; },
+    async rgba() { return Uint8Array.from([0, 0, 0, 255]); },
+    async close() {},
+  };
+  h.setClipboard("");
+  h.setClipboardImage(image);
+  h.setClipboardUploadResult(() => Promise.reject(new Error("SFTP unavailable")));
+  h.rightClick();
+  await h.settle();
+  assert.match(h.ctl.status, /Clipboard image paste failed: SFTP unavailable/);
+  assert.equal(h.sent.length, 0);
+
+  const pendingUpload = deferred();
+  h.setClipboardUploadResult(() => pendingUpload.promise);
+  h.rightClick();
+  await h.settle();
+  assert.equal(h.calls.filter(({ command }) => command === "ssh_upload_clipboard_image").length, 2);
+  await h.ctl.disconnect();
+  pendingUpload.resolve("/home/user/.nfterm-clipboard-stale.png");
+  await h.settle();
+  assert.equal(h.sent.length, 0);
 });
 
 test("unprotected line breaks and tabs send zero bytes through every route, without Continue", async (t) => {

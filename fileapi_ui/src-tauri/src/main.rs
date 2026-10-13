@@ -3010,6 +3010,14 @@ async fn ssh_sftp_disconnect(entry_id: String) -> Result<(), String> {
     ssh::sftp::disconnect(entry_id).await
 }
 
+#[tauri::command]
+async fn ssh_upload_clipboard_image(
+    profile: ssh::SshProfile,
+    png_bytes: Vec<u8>,
+) -> Result<String, String> {
+    ssh::sftp::upload_clipboard_image(profile, png_bytes).await
+}
+
 /// Single-file `scp`-equivalent transfer primitives, deliberately limited to
 /// LOCAL <-> SSH REMOTE (never the API Remote model).
 #[tauri::command]
@@ -4533,6 +4541,7 @@ fn main() {
             proxmox_agent_upload_file,
             ssh_list_directory,
             ssh_sftp_disconnect,
+            ssh_upload_clipboard_image,
             scp_download,
             scp_upload,
             ssh_create_directory,

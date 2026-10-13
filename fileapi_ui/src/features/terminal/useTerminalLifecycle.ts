@@ -2,7 +2,7 @@ import { useEffect, useRef, type MutableRefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { WebglAddon } from "@xterm/addon-webgl";
-import { readText } from "@tauri-apps/plugin-clipboard-manager";
+import { readImage, readText } from "@tauri-apps/plugin-clipboard-manager";
 import { getTerminalConnectionBoundary, isTerminalPasteShortcut, normalizeTerminalPasteText } from "./terminal-utils";
 
 // Best-effort: attaches the WebGL2 renderer to `terminal` if the runtime
@@ -92,10 +92,48 @@ export const copyTerminalText = async (text: string) => {
 // permission gap noted above, and unlike copy there is no `execCommand`
 // fallback for reading (browsers/WebViews disable `execCommand("paste")`
 // for security). The privileged `clipboard-manager` plugin
-// (`src-tauri/capabilities/default.json` grants `allow-read-text`) is the
+// (`src-tauri/capabilities/default.json` grants text/image read permissions) is the
 // only way to read the real OS clipboard from script here, so right-click
 // paste (below) goes through it instead of any local "last copied" state.
 export const readSystemClipboardText = () => readText();
+export const readSystemClipboardImage = () => readImage();
+
+const MAX_CLIPBOARD_IMAGE_PIXELS = 32 * 1024 * 1024;
+const MAX_CLIPBOARD_IMAGE_BYTES = 20 * 1024 * 1024;
+
+export const encodeClipboardImagePng = async (image: Awaited<ReturnType<typeof readImage>>) => {
+  try {
+    const { width, height } = await image.size();
+    const pixelCount = width * height;
+    if (!Number.isSafeInteger(pixelCount) || width < 1 || height < 1 || pixelCount > MAX_CLIPBOARD_IMAGE_PIXELS) {
+      throw new Error("Clipboard image dimensions are invalid or too large.");
+    }
+
+    const rgba = await image.rgba();
+    if (rgba.byteLength !== pixelCount * 4) throw new Error("Clipboard image data is incomplete.");
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    try {
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Unable to prepare the clipboard image for upload.");
+      const pixels = context.createImageData(width, height);
+      pixels.data.set(rgba);
+      context.putImageData(pixels, 0, 0);
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((result) => result ? resolve(result) : reject(new Error("Unable to encode clipboard image as PNG.")), "image/png");
+      });
+      if (blob.size > MAX_CLIPBOARD_IMAGE_BYTES) throw new Error("Clipboard image is larger than the 20 MiB upload limit.");
+      return new Uint8Array(await blob.arrayBuffer());
+    } finally {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  } finally {
+    await image.close().catch(() => undefined);
+  }
+};
 
 type XtermModules = { Terminal: typeof Terminal; FitAddon: typeof FitAddon; WebglAddonCtor: typeof WebglAddon };
 
@@ -159,6 +197,7 @@ export function useTerminalLifecycle({
   boundaryGuard,
   bracketedPasteControlEnabled,
   getPasteSessionId,
+  uploadClipboardImage,
   getInitialOutput,
   onData,
   onResize,
@@ -173,6 +212,7 @@ export function useTerminalLifecycle({
   boundaryGuard: string;
   bracketedPasteControlEnabled: boolean;
   getPasteSessionId: (tabId: string) => string;
+  uploadClipboardImage: (pngBytes: Uint8Array) => Promise<string>;
   // Called exactly once, at instance-creation time, to seed a (re)created
   // tab's Terminal with whatever it already accumulated -- e.g. the whole
   // dock was collapsed and reopened, or a tab produced output before the
@@ -190,7 +230,9 @@ export function useTerminalLifecycle({
   const bracketedPasteRef = useRef(bracketedPasteControlEnabled);
   const activeTabIdRef = useRef(activeTabId);
   const pasteSessionRef = useRef(getPasteSessionId);
+  const uploadClipboardImageRef = useRef(uploadClipboardImage);
   pasteSessionRef.current = getPasteSessionId;
+  uploadClipboardImageRef.current = uploadClipboardImage;
   const sessionId = getPasteSessionId(activeTabId);
   const pasteContextRef = useRef({ enabled, activeTabId, sessionId });
   if (pasteContextRef.current.enabled !== enabled || pasteContextRef.current.activeTabId !== activeTabId || pasteContextRef.current.sessionId !== sessionId) {
@@ -265,6 +307,15 @@ export function useTerminalLifecycle({
           // keeps the browser clipboard path identical to typed input.
           terminal.paste(paste);
         };
+        const quoteRemotePath = (path: string) => `'${path.replace(/'/g, `'\\''`)}'`;
+        const pasteClipboardImage = async (isCurrent: () => boolean) => {
+          const image = await readSystemClipboardImage();
+          if (!isCurrent()) return;
+          const pngBytes = await encodeClipboardImagePng(image);
+          if (!isCurrent()) return;
+          const remotePath = await uploadClipboardImageRef.current(pngBytes);
+          if (isCurrent()) pasteText(quoteRemotePath(remotePath));
+        };
         const readClipboardAndPaste = () => {
           if (!canPaste()) return;
           const context = pasteContextRef.current;
@@ -273,11 +324,28 @@ export function useTerminalLifecycle({
           const isCurrent = () => canPaste() && context === pasteContextRef.current &&
             session === pasteSessionRef.current(tabId) && boundary === getTerminalConnectionBoundary(terminal);
           readSystemClipboardText()
-            .then((text) => {
-              if (isCurrent() && text) pasteText(text);
+            .then(async (text) => {
+              if (!isCurrent()) return;
+              if (text) {
+                pasteText(text);
+                return;
+              }
+              try {
+                await pasteClipboardImage(isCurrent);
+              } catch (error) {
+                if (isCurrent()) noticeRef.current(`Clipboard image paste failed: ${error instanceof Error ? error.message : String(error)}`);
+              }
             })
-            .catch(() => {
-              if (isCurrent()) noticeRef.current("Unable to read the system clipboard for paste. Check clipboard permissions and try again.");
+            .catch(async (textError) => {
+              if (!isCurrent()) return;
+              try {
+                await pasteClipboardImage(isCurrent);
+              } catch (imageError) {
+                if (isCurrent()) {
+                  const detail = imageError instanceof Error ? imageError.message : String(imageError);
+                  noticeRef.current(`Unable to read clipboard text or image for paste. ${detail || String(textError)}`);
+                }
+              }
             });
         };
         terminal.attachCustomKeyEventHandler((event) => {
@@ -300,10 +368,20 @@ export function useTerminalLifecycle({
           return true;
         });
         const onPaste = (event: ClipboardEvent) => {
-          const text = event.clipboardData?.getData("text/plain");
+          const clipboardData = event.clipboardData;
+          const text = clipboardData?.getData("text/plain");
           event.preventDefault();
           event.stopImmediatePropagation();
-          if (text !== undefined) pasteText(text);
+          if (text) {
+            pasteText(text);
+            return;
+          }
+          const hasImage = Boolean(clipboardData && (
+            Array.from(clipboardData.types).some((type) => type.toLowerCase().startsWith("image/")) ||
+            Array.from(clipboardData.items).some((item) => item.kind === "file" && item.type.toLowerCase().startsWith("image/")) ||
+            Array.from(clipboardData.files).some((file) => file.type.toLowerCase().startsWith("image/"))
+          ));
+          if (hasImage) readClipboardAndPaste();
         };
         let selectionAtMouseDown = "";
         let selectionInProgress = false;
