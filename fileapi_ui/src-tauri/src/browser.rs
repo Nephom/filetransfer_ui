@@ -1155,7 +1155,78 @@ struct ScrollCandidate {
     content_height: f64,
     scrollbar_width: f64,
     scrollbar_height: f64,
+    scroll_width: f64,
+    scroll_height: f64,
+    scale_x: f64,
+    scale_y: f64,
     description: String,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BrowserFrameTransform {
+    x: f64,
+    y: f64,
+    scale_x: f64,
+    scale_y: f64,
+}
+
+#[cfg(any(windows, test))]
+impl BrowserFrameTransform {
+    const IDENTITY: Self = Self {
+        x: 0.0,
+        y: 0.0,
+        scale_x: 1.0,
+        scale_y: 1.0,
+    };
+
+    fn point(self, x: f64, y: f64) -> (f64, f64) {
+        (self.x + x * self.scale_x, self.y + y * self.scale_y)
+    }
+
+    fn size(self, width: f64, height: f64) -> (f64, f64) {
+        (width * self.scale_x, height * self.scale_y)
+    }
+}
+
+#[cfg(any(windows, test))]
+fn child_frame_transform(
+    parent: BrowserFrameTransform,
+    origin_x: f64,
+    origin_y: f64,
+    rendered_width: f64,
+    rendered_height: f64,
+    viewport_width: f64,
+    viewport_height: f64,
+) -> Option<BrowserFrameTransform> {
+    let values = [
+        origin_x,
+        origin_y,
+        rendered_width,
+        rendered_height,
+        viewport_width,
+        viewport_height,
+        parent.x,
+        parent.y,
+        parent.scale_x,
+        parent.scale_y,
+    ];
+    if values.iter().any(|value| !value.is_finite())
+        || rendered_width <= 0.0
+        || rendered_height <= 0.0
+        || viewport_width <= 0.0
+        || viewport_height <= 0.0
+        || parent.scale_x <= 0.0
+        || parent.scale_y <= 0.0
+    {
+        return None;
+    }
+    Some(BrowserFrameTransform {
+        x: parent.x + origin_x * parent.scale_x,
+        y: parent.y + origin_y * parent.scale_y,
+        scale_x: parent.scale_x * rendered_width / viewport_width,
+        scale_y: parent.scale_y * rendered_height / viewport_height,
+    })
 }
 
 /// Amount of content that is not visible: the larger it is, the more a
@@ -1256,19 +1327,42 @@ fn region_placements(
     content_width: f64,
     content_height: f64,
 ) -> Vec<BrowserScreenshotPlacement> {
+    region_placements_scaled(
+        scroll_offsets,
+        region_width,
+        region_height,
+        content_width,
+        content_height,
+        1.0,
+        1.0,
+    )
+}
+
+#[cfg(any(windows, test))]
+fn region_placements_scaled(
+    scroll_offsets: &[(f64, f64)],
+    region_width: f64,
+    region_height: f64,
+    content_width: f64,
+    content_height: f64,
+    scale_x: f64,
+    scale_y: f64,
+) -> Vec<BrowserScreenshotPlacement> {
     scroll_offsets
         .iter()
         .enumerate()
         .filter_map(|(tile, (scroll_x, scroll_y))| {
-            let width = (content_width - scroll_x).min(region_width);
-            let height = (content_height - scroll_y).min(region_height);
+            let dst_x = scroll_x * scale_x;
+            let dst_y = scroll_y * scale_y;
+            let width = (content_width - dst_x).min(region_width);
+            let height = (content_height - dst_y).min(region_height);
             if width <= 0.0 || height <= 0.0 {
                 None
             } else {
                 Some(BrowserScreenshotPlacement {
                     tile,
-                    dst_x: *scroll_x,
-                    dst_y: *scroll_y,
+                    dst_x,
+                    dst_y,
                     width,
                     height,
                 })
@@ -1393,6 +1487,9 @@ const SCREENSHOT_INSPECT_JS: &str = r#"(() => {
     candidates.push({
       kind: 'root', element: root, allowX: rootAxes.allowX, allowY: rootAxes.allowY,
       x: 0, y: 0, width: root.clientWidth, height: root.clientHeight,
+      scaleX: 1, scaleY: 1,
+      contentWidth: rootAxes.allowX ? root.scrollWidth : root.clientWidth,
+      contentHeight: rootAxes.allowY ? root.scrollHeight : root.clientHeight,
       scrollbarWidth: Math.max(0, window.innerWidth - root.clientWidth),
       scrollbarHeight: Math.max(0, window.innerHeight - root.clientHeight),
       description: 'page',
@@ -1410,12 +1507,19 @@ const SCREENSHOT_INSPECT_JS: &str = r#"(() => {
     if (!allowX && !allowY) return;
     const rect = element.getBoundingClientRect();
     const border = (name) => parseFloat(style[name]) || 0;
+    const layoutWidth = element.offsetWidth || rect.width;
+    const layoutHeight = element.offsetHeight || rect.height;
+    const scaleX = layoutWidth > 0 ? rect.width / layoutWidth : 1;
+    const scaleY = layoutHeight > 0 ? rect.height / layoutHeight : 1;
     candidates.push({
       kind: 'element', element, allowX, allowY,
-      x: rect.left + element.clientLeft, y: rect.top + element.clientTop,
-      width: element.clientWidth, height: element.clientHeight,
-      scrollbarWidth: Math.max(0, Math.round(rect.width - element.clientWidth - border('borderLeftWidth') - border('borderRightWidth'))),
-      scrollbarHeight: Math.max(0, Math.round(rect.height - element.clientHeight - border('borderTopWidth') - border('borderBottomWidth'))),
+      x: rect.left + element.clientLeft * scaleX, y: rect.top + element.clientTop * scaleY,
+      width: element.clientWidth * scaleX, height: element.clientHeight * scaleY,
+      scaleX, scaleY,
+      contentWidth: (allowX ? element.scrollWidth : element.clientWidth) * scaleX,
+      contentHeight: (allowY ? element.scrollHeight : element.clientHeight) * scaleY,
+      scrollbarWidth: Math.max(0, (element.offsetWidth - element.clientWidth - border('borderLeftWidth') - border('borderRightWidth')) * scaleX),
+      scrollbarHeight: Math.max(0, (element.offsetHeight - element.clientHeight - border('borderTopWidth') - border('borderBottomWidth')) * scaleY),
       description: describe(element),
     });
   };
@@ -1436,8 +1540,10 @@ const SCREENSHOT_INSPECT_JS: &str = r#"(() => {
     return {
       scrollLeft: isRoot ? window.scrollX : element.scrollLeft,
       scrollTop: isRoot ? window.scrollY : element.scrollTop,
-      contentWidth: candidate.allowX ? element.scrollWidth : element.clientWidth,
-      contentHeight: candidate.allowY ? element.scrollHeight : element.clientHeight,
+      contentWidth: (candidate.allowX ? element.scrollWidth : element.clientWidth) * candidate.scaleX,
+      contentHeight: (candidate.allowY ? element.scrollHeight : element.clientHeight) * candidate.scaleY,
+      scrollContentWidth: candidate.allowX ? element.scrollWidth : element.clientWidth,
+      scrollContentHeight: candidate.allowY ? element.scrollHeight : element.clientHeight,
       clientWidth: element.clientWidth,
       clientHeight: element.clientHeight,
     };
@@ -1520,6 +1626,7 @@ const SCREENSHOT_INSPECT_JS: &str = r#"(() => {
     candidates: candidates.slice(0, 64).map((candidate, index) => Object.assign({
       index,
       x: candidate.x, y: candidate.y, width: candidate.width, height: candidate.height,
+      scaleX: candidate.scaleX, scaleY: candidate.scaleY,
       scrollbarWidth: candidate.scrollbarWidth, scrollbarHeight: candidate.scrollbarHeight,
       description: candidate.description,
     }, measure(candidate))),
@@ -1540,8 +1647,8 @@ fn parse_region_metrics(value: &serde_json::Value) -> Result<RegionMetrics, Stri
     Ok(RegionMetrics {
         scroll_left: json_number(value, "scrollLeft")?,
         scroll_top: json_number(value, "scrollTop")?,
-        content_width: json_number(value, "contentWidth")?,
-        content_height: json_number(value, "contentHeight")?,
+        content_width: json_number(value, "scrollContentWidth")?,
+        content_height: json_number(value, "scrollContentHeight")?,
     })
 }
 
@@ -1563,7 +1670,7 @@ async fn capture_browser_page(
         return Err("The page has too many nested frames to capture safely".to_string());
     }
 
-    let mut known: HashMap<String, (i64, (f64, f64))> = HashMap::new();
+    let mut known: HashMap<String, (i64, BrowserFrameTransform)> = HashMap::new();
     let mut candidates = Vec::new();
     let mut root_viewport = None;
     let mut skipped_frames = 0usize;
@@ -1579,8 +1686,8 @@ async fn capture_browser_page(
             },
         };
         match inspect_browser_frame(&view, frame_id, index, parent, cleanup).await {
-            Ok((context_id, offset, viewport, found)) => {
-                known.insert(frame_id.clone(), (context_id, offset));
+            Ok((context_id, frame_transform, viewport, found)) => {
+                known.insert(frame_id.clone(), (context_id, frame_transform));
                 if index == 0 {
                     root_viewport = Some(viewport);
                 }
@@ -1623,9 +1730,17 @@ async fn inspect_browser_frame(
     view: &Webview,
     frame_id: &str,
     frame_index: usize,
-    parent: Option<(i64, (f64, f64))>,
+    parent: Option<(i64, BrowserFrameTransform)>,
     cleanup: &mut ScreenshotCleanup,
-) -> Result<(i64, (f64, f64), BrowserViewport, Vec<ScrollCandidate>), String> {
+) -> Result<
+    (
+        i64,
+        BrowserFrameTransform,
+        BrowserViewport,
+        Vec<ScrollCandidate>,
+    ),
+    String,
+> {
     let world = browser_devtools_json(
         view.clone(),
         "Page.createIsolatedWorld",
@@ -1637,9 +1752,9 @@ async fn inspect_browser_frame(
         .and_then(serde_json::Value::as_i64)
         .ok_or_else(|| "The browser could not create a frame execution context".to_string())?;
 
-    let offset = match parent {
-        None => (0.0, 0.0),
-        Some((parent_context_id, parent_offset)) => {
+    let owner_origin = match parent {
+        None => None,
+        Some((parent_context_id, parent_transform)) => {
             let owner = browser_devtools_json(
                 view.clone(),
                 "DOM.getFrameOwner",
@@ -1669,13 +1784,16 @@ async fn inspect_browser_frame(
             let origin = call_browser_remote_object(
                 view.clone(),
                 &object_id,
-                "function() { const rect = this.getBoundingClientRect(); const style = getComputedStyle(this); return { x: rect.left + this.clientLeft + (parseFloat(style.paddingLeft) || 0), y: rect.top + this.clientTop + (parseFloat(style.paddingTop) || 0) }; }",
+                "function() { const rect = this.getBoundingClientRect(); const style = getComputedStyle(this); const layoutWidth = this.offsetWidth || rect.width; const layoutHeight = this.offsetHeight || rect.height; const scaleX = layoutWidth > 0 ? rect.width / layoutWidth : 1; const scaleY = layoutHeight > 0 ? rect.height / layoutHeight : 1; const paddingLeft = parseFloat(style.paddingLeft) || 0; const paddingRight = parseFloat(style.paddingRight) || 0; const paddingTop = parseFloat(style.paddingTop) || 0; const paddingBottom = parseFloat(style.paddingBottom) || 0; return { x: rect.left + (this.clientLeft + paddingLeft) * scaleX, y: rect.top + (this.clientTop + paddingTop) * scaleY, width: Math.max(0, this.clientWidth - paddingLeft - paddingRight) * scaleX, height: Math.max(0, this.clientHeight - paddingTop - paddingBottom) * scaleY }; }",
             )
             .await?;
-            (
-                parent_offset.0 + json_number(&origin, "x")?,
-                parent_offset.1 + json_number(&origin, "y")?,
-            )
+            Some((
+                parent_transform,
+                json_number(&origin, "x")?,
+                json_number(&origin, "y")?,
+                json_number(&origin, "width")?,
+                json_number(&origin, "height")?,
+            ))
         }
     };
 
@@ -1697,6 +1815,15 @@ async fn inspect_browser_frame(
     if viewport.width < 1.0 || viewport.height < 1.0 {
         return Err("The browser reported an invalid viewport".to_string());
     }
+    let frame_transform = match owner_origin {
+        None => BrowserFrameTransform::IDENTITY,
+        Some((parent, x, y, width, height)) => {
+            child_frame_transform(parent, x, y, width, height, viewport.width, viewport.height)
+                .ok_or_else(|| {
+                    "The browser reported invalid iframe screenshot coordinates".to_string()
+                })?
+        }
+    };
 
     let mut found = Vec::new();
     if let Some(items) = inspected
@@ -1704,18 +1831,27 @@ async fn inspect_browser_frame(
         .and_then(serde_json::Value::as_array)
     {
         for item in items {
+            let (x, y) = frame_transform.point(json_number(item, "x")?, json_number(item, "y")?);
+            let (width, height) =
+                frame_transform.size(json_number(item, "width")?, json_number(item, "height")?);
+            let local_scale_x = json_number(item, "scaleX")?;
+            let local_scale_y = json_number(item, "scaleY")?;
             found.push(ScrollCandidate {
                 frame_index,
                 execution_context_id: context_id,
                 index: json_number(item, "index")? as usize,
-                x: json_number(item, "x")? + offset.0,
-                y: json_number(item, "y")? + offset.1,
-                width: json_number(item, "width")?,
-                height: json_number(item, "height")?,
-                content_width: json_number(item, "contentWidth")?,
-                content_height: json_number(item, "contentHeight")?,
-                scrollbar_width: json_number(item, "scrollbarWidth")?,
-                scrollbar_height: json_number(item, "scrollbarHeight")?,
+                x,
+                y,
+                width,
+                height,
+                content_width: json_number(item, "contentWidth")? * frame_transform.scale_x,
+                content_height: json_number(item, "contentHeight")? * frame_transform.scale_y,
+                scrollbar_width: json_number(item, "scrollbarWidth")? * frame_transform.scale_x,
+                scrollbar_height: json_number(item, "scrollbarHeight")? * frame_transform.scale_y,
+                scroll_width: json_number(item, "clientWidth")?,
+                scroll_height: json_number(item, "clientHeight")?,
+                scale_x: local_scale_x * frame_transform.scale_x,
+                scale_y: local_scale_y * frame_transform.scale_y,
                 description: item
                     .get("description")
                     .and_then(serde_json::Value::as_str)
@@ -1724,7 +1860,7 @@ async fn inspect_browser_frame(
             });
         }
     }
-    Ok((context_id, offset, viewport, found))
+    Ok((context_id, frame_transform, viewport, found))
 }
 
 #[cfg(windows)]
@@ -1778,8 +1914,8 @@ async fn capture_browser_scroll_region(
             fixed_height,
             candidate.width,
             candidate.height,
-            metrics.content_width,
-            metrics.content_height,
+            metrics.content_width * candidate.scale_x,
+            metrics.content_height * candidate.scale_y,
             viewport.dpr,
         )
     };
@@ -1800,7 +1936,8 @@ async fn capture_browser_scroll_region(
     let mut row_top = 0.0;
     loop {
         let (content_width, _, _) = cap(&metrics);
-        for x in tile_positions(content_width, candidate.width) {
+        let local_content_width = content_width / candidate.scale_x;
+        for x in tile_positions(local_content_width, candidate.scroll_width) {
             metrics = scroll_browser_region(view, context_id, candidate.index, x, row_top).await?;
             let data = capture_browser_viewport_png(view).await?;
             total_bytes = total_bytes
@@ -1829,9 +1966,9 @@ async fn capture_browser_scroll_region(
         let (_, content_height, _) = cap(&metrics);
         match next_scroll_position(
             metrics.scroll_top,
-            candidate.height,
-            content_height,
-            candidate.height,
+            candidate.scroll_height,
+            content_height / candidate.scale_y,
+            candidate.scroll_height,
         ) {
             Some(next) => row_top = next,
             None => break,
@@ -1839,12 +1976,14 @@ async fn capture_browser_scroll_region(
     }
 
     let (content_width, content_height, capped) = cap(&metrics);
-    let placements = region_placements(
+    let placements = region_placements_scaled(
         &offsets,
         candidate.width,
         candidate.height,
         content_width,
         content_height,
+        candidate.scale_x,
+        candidate.scale_y,
     );
     let description = if candidate.frame_index > 0 {
         format!("{} (iframe)", candidate.description)
@@ -2337,10 +2476,11 @@ async fn run_core_command(view: Webview, action: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        browser_view_label, capped_content_lengths, collect_browser_frame_tree, safe_browser_download_name,
-        map_browser_bounds_to_physical, next_scroll_position, parse_web_url, region_placements,
+        browser_view_label, capped_content_lengths, child_frame_transform,
+        collect_browser_frame_tree, map_browser_bounds_to_physical, next_scroll_position,
+        parse_web_url, region_placements, region_placements_scaled, safe_browser_download_name,
         select_scroll_candidate, tile_positions, unique_browser_download_destination,
-        BrowserBounds, BrowserPhysicalBounds, ScrollCandidate,
+        BrowserBounds, BrowserFrameTransform, BrowserPhysicalBounds, ScrollCandidate,
     };
 
     fn css_bounds(x: f64, y: f64, width: f64, height: f64, dpr: f64) -> BrowserBounds {
@@ -2540,8 +2680,36 @@ mod tests {
             content_height,
             scrollbar_width: 0.0,
             scrollbar_height: 0.0,
+            scroll_width: width,
+            scroll_height: height,
+            scale_x: 1.0,
+            scale_y: 1.0,
             description: "test".to_string(),
         }
+    }
+
+    #[test]
+    fn nested_frame_transform_maps_origin_and_scaled_content_to_the_root_viewport() {
+        let parent = BrowserFrameTransform {
+            x: 100.0,
+            y: 40.0,
+            scale_x: 2.0,
+            scale_y: 1.5,
+        };
+        let child = child_frame_transform(parent, 20.0, 30.0, 200.0, 150.0, 400.0, 300.0).unwrap();
+
+        assert_eq!(
+            child,
+            BrowserFrameTransform {
+                x: 140.0,
+                y: 85.0,
+                scale_x: 1.0,
+                scale_y: 0.75
+            }
+        );
+        assert_eq!(child.point(10.0, 20.0), (150.0, 100.0));
+        assert_eq!(child.size(80.0, 40.0), (80.0, 30.0));
+        assert!(child_frame_transform(parent, 0.0, 0.0, 200.0, 150.0, 0.0, 300.0).is_none());
     }
 
     #[test]
@@ -2623,6 +2791,25 @@ mod tests {
         // Scrolled 300 px to the right: only 700 px of content remain.
         assert_eq!((placements[2].width, placements[2].height), (700.0, 600.0));
         assert_eq!((placements[2].dst_x, placements[2].dst_y), (300.0, 1400.0));
+    }
+
+    #[test]
+    fn scaled_region_placements_map_scroll_offsets_and_partial_tiles_to_display_pixels() {
+        let placements = region_placements_scaled(
+            &[(0.0, 0.0), (30.0, 40.0), (50.0, 70.0)],
+            120.0,
+            80.0,
+            170.0,
+            135.0,
+            2.0,
+            1.5,
+        );
+
+        assert_eq!(placements.len(), 3);
+        assert_eq!((placements[1].dst_x, placements[1].dst_y), (60.0, 60.0));
+        assert_eq!((placements[1].width, placements[1].height), (110.0, 75.0));
+        assert_eq!((placements[2].dst_x, placements[2].dst_y), (100.0, 105.0));
+        assert_eq!((placements[2].width, placements[2].height), (70.0, 30.0));
     }
 
     #[test]

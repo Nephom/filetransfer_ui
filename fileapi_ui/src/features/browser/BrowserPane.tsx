@@ -102,7 +102,7 @@ async function decodeScreenshotTile(data: string): Promise<HTMLImageElement> {
  * destination edges use the stitched page scale; rounding the edges separately
  * prevents fractional offsets from changing a feature's width between tiles.
  */
-async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promise<StitchedScreenshot> {
+export async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promise<StitchedScreenshot> {
   const baseData = capture.tiles[0];
   if (!baseData || !(capture.viewportWidth > 0) || !(capture.viewportHeight > 0)) {
     throw new Error("The browser did not return a usable screenshot image.");
@@ -119,17 +119,19 @@ async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promi
   }
 
   const base = await decodeScreenshotTile(baseData);
-  const scale = base.naturalWidth / capture.viewportWidth;
-  if (!Number.isFinite(scale) || scale <= 0) {
+  const scaleX = base.naturalWidth / capture.viewportWidth;
+  const scaleY = base.naturalHeight / capture.viewportHeight;
+  if (!Number.isFinite(scaleX) || scaleX <= 0 || !Number.isFinite(scaleY) || scaleY <= 0) {
     throw new Error("The browser returned invalid screenshot dimensions.");
   }
   const extraWidth = Math.max(0, region.contentWidth - region.width);
   const extraHeight = Math.max(0, region.contentHeight - region.height);
-  const px = (value: number) => Math.round(value * scale);
+  const pxX = (value: number) => Math.round(value * scaleX);
+  const pxY = (value: number) => Math.round(value * scaleY);
 
   const canvas = document.createElement("canvas");
-  canvas.width = px(capture.viewportWidth + extraWidth);
-  canvas.height = px(capture.viewportHeight + extraHeight);
+  canvas.width = pxX(capture.viewportWidth + extraWidth);
+  canvas.height = pxY(capture.viewportHeight + extraHeight);
   if (canvas.width < 1 || canvas.height < 1 || canvas.width * canvas.height > MAX_STITCHED_PIXELS) {
     throw new Error("The full page image is too large to preview and select.");
   }
@@ -145,10 +147,10 @@ async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promi
     const sourceTop = sourcePxY(srcY);
     const sourceRight = sourcePxX(srcX + width);
     const sourceBottom = sourcePxY(srcY + height);
-    const destinationLeft = px(dstX);
-    const destinationTop = px(dstY);
-    const destinationRight = px(dstX + width);
-    const destinationBottom = px(dstY + height);
+    const destinationLeft = pxX(dstX);
+    const destinationTop = pxY(dstY);
+    const destinationRight = pxX(dstX + width);
+    const destinationBottom = pxY(dstY + height);
     const sourceWidth = sourceRight - sourceLeft;
     const sourceHeight = sourceBottom - sourceTop;
     const destinationWidth = destinationRight - destinationLeft;
@@ -171,8 +173,8 @@ async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promi
   probe.height = 1;
   const probeContext = probe.getContext("2d");
   const sample = (x: number, y: number): string | null => {
-    const sx = px(x);
-    const sy = px(y);
+    const sx = pxX(x);
+    const sy = pxY(y);
     if (!probeContext || sx < 0 || sy < 0 || sx >= base.naturalWidth || sy >= base.naturalHeight) return null;
     probeContext.clearRect(0, 0, 1, 1);
     probeContext.drawImage(base, sx, sy, 1, 1, 0, 0, 1, 1);
@@ -181,7 +183,7 @@ async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture): Promi
   };
   const fill = (color: string, x: number, y: number, width: number, height: number) => {
     context.fillStyle = color;
-    context.fillRect(px(x), px(y), px(x + width) - px(x), px(y + height) - px(y));
+    context.fillRect(pxX(x), pxY(y), pxX(x + width) - pxX(x), pxY(y + height) - pxY(y));
   };
 
   const viewportWidth = capture.viewportWidth;
