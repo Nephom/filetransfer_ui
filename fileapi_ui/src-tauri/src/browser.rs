@@ -14,6 +14,8 @@ use webview2_com::{
     BytesReceivedChangedEventHandler, CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR,
     ContainsFullScreenElementChangedEventHandler, DownloadStartingEventHandler,
 };
+#[cfg(windows)]
+use windows::core::Interface;
 
 #[cfg(any(windows, test))]
 const MAX_SCREENSHOT_DIMENSION: f64 = 16_000.0;
@@ -135,7 +137,7 @@ fn emit_browser_download(
 }
 
 #[cfg(windows)]
-fn register_browser_download_progress(
+async fn register_browser_download_progress(
     view: &Webview,
     app: AppHandle,
     pane_id: String,
@@ -858,7 +860,7 @@ pub async fn browser_create(
             let _ = close_browser_view(child, &label).await;
             return Err(error);
         }
-        if let Err(error) = register_browser_download_progress(&child, app.clone(), pane_id.clone()) {
+        if let Err(error) = register_browser_download_progress(&child, app.clone(), pane_id.clone()).await {
             eprintln!("Browser download started/finished events are available, but byte progress could not be attached: {error}");
         }
         if !visible {
