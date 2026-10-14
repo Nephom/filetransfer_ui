@@ -553,6 +553,7 @@ export const zhTW: Record<string, string> = {
   "Share link copied.": "分享連結已複製。",
   "Signed out locally. The server logout request could not be confirmed.": "已在本機登出，但無法確認伺服器是否完成登出。",
   "Size": "大小",
+  "Sort LOCAL files": "LOCAL 檔案排序",
   "Sort by {{column}}": "依 {{column}} 排序",
   "Stop": "停止",
   "The VNC server will request any required viewer or account credentials after the connection starts.": "連線開始後，VNC 伺服器會要求所需的檢視器或帳戶憑證。",

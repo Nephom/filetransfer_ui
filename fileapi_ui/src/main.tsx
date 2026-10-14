@@ -826,6 +826,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const [remoteDirectoriesFirst, setRemoteDirectoriesFirst] = useState(false);
   const [localSortKey, setLocalSortKey] = useState<SortKey>("name");
   const [localSortDirection, setLocalSortDirection] = useState<SortDirection>("asc");
+  const [localDirectoriesFirst, setLocalDirectoriesFirst] = useState(false);
   const {
     transferQueue, setTransferQueue,
     queueStoreRef,
@@ -2312,7 +2313,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   };
 
   const sortedFiles = sortFileItems(files, remoteSortKey, remoteSortDirection, remoteDirectoriesFirst);
-  const sortedLocalFiles = sortFileItems(localFiles, localSortKey, localSortDirection);
+  const sortedLocalFiles = sortFileItems(localFiles, localSortKey, localSortDirection, localDirectoriesFirst);
   const selectedItems = files.filter((file) => selected.includes(file.path));
   const localSelectedItems = localFiles.filter((file) => localSelected.includes(file.path));
   const activeTransferQueue = selectActiveQueueItems(transferQueue);
@@ -3762,6 +3763,41 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
           >
             {t("Grid")}
           </button>
+        </span>
+        <span className="view-switch local-sort-group" role="group" aria-label={t("Sort LOCAL files")}>
+          <button
+            type="button"
+            className={`directory-first-toggle${localDirectoriesFirst ? " active" : ""}`}
+            aria-label={t("Keep folders first")}
+            aria-pressed={localDirectoriesFirst}
+            title={localDirectoriesFirst ? "Folders first: on" : "Folders first: off"}
+            onClick={() => setLocalDirectoriesFirst((current) => !current)}
+          >
+            <span aria-hidden="true" />
+          </button>
+          {(["name", "modified", "size"] as ColumnKey[]).map((column) => (
+            <button
+              key={column}
+              type="button"
+              className={localSortKey === column ? "active" : ""}
+              aria-label={`Sort by ${column}`}
+              aria-pressed={localSortKey === column}
+              onClick={() => toggleSort(
+                column,
+                localSortKey,
+                setLocalSortKey,
+                setLocalSortDirection,
+                localSortDirection,
+              )}
+            >
+              {column[0].toUpperCase() + column.slice(1)}
+              {localSortKey === column && (
+                <span className="sort-indicator" aria-hidden="true">
+                  {localSortDirection === "asc" ? <SortAscIcon size={11} /> : <SortDescIcon size={11} />}
+                </span>
+              )}
+            </button>
+          ))}
         </span>
       </div>
       <div
