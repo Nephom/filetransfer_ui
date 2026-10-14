@@ -2270,8 +2270,20 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     setDirection("asc");
   };
 
-  const sortedFiles = sortFileItems(files, remoteSortKey, remoteSortDirection, remoteDirectoriesFirst);
-  const sortedLocalFiles = sortFileItems(localFiles, localSortKey, localSortDirection, localDirectoriesFirst);
+  // Memoized because this component re-renders on every unrelated state
+  // change (any input, timer, or resize touching its many other `useState`
+  // hooks); without this, a large directory listing would pay for a full
+  // array copy + O(n log n) sort on every one of those renders instead of
+  // only when the files/sort key/direction/directories-first setting
+  // actually changed.
+  const sortedFiles = useMemo(
+    () => sortFileItems(files, remoteSortKey, remoteSortDirection, remoteDirectoriesFirst),
+    [files, remoteSortKey, remoteSortDirection, remoteDirectoriesFirst],
+  );
+  const sortedLocalFiles = useMemo(
+    () => sortFileItems(localFiles, localSortKey, localSortDirection, localDirectoriesFirst),
+    [localFiles, localSortKey, localSortDirection, localDirectoriesFirst],
+  );
   const selectedItems = files.filter((file) => selected.includes(file.path));
   const localSelectedItems = localFiles.filter((file) => localSelected.includes(file.path));
   const activeTransferQueue = selectActiveQueueItems(transferQueue);
