@@ -192,75 +192,118 @@ test("full-page screenshot preserves colored region placement across tiles and i
 
   const output = outputCanvases.get(result.dataUrl.split(",", 2)[1]);
   assert.ok(output, "the stitched PNG canvas was produced");
-  // The image is the 20×30 CSS region only: 20×41/40 = 20.5 → 21 px wide and
-  // 30×31/30 = 31 px tall. Nothing from the surrounding viewport is included.
-  assert.equal(output.width, 21);
-  assert.equal(output.height, 31);
-  assert.deepEqual(pixel(output, 5, 5), [220, 20, 20, 255], "the first tile starts at the region origin");
-  assert.deepEqual(pixel(output, 5, 15), [20, 80, 230, 255], "the scrolled tile begins at its measured destination offset");
-  assert.deepEqual(pixel(output, 5, 26), [230, 180, 20, 255], "the final tile reaches the bottom edge at the Y pixel scale");
-
-  const regionColors = new Set(["220,20,20,255", "20,80,230,255", "230,180,20,255"]);
-  for (let y = 0; y < output.height; y += 1) {
-    for (let x = 0; x < output.width; x += 1) {
-      assert.ok(regionColors.has(pixel(output, x, y).join(",")), `pixel ${x},${y} comes from a region tile, not from the page around it or a fill`);
-    }
-  }
+  assert.equal(output.width, 41);
+  assert.equal(output.height, 52);
+  assert.deepEqual(pixel(output, 15, 10), [220, 20, 20, 255], "the first tile stays in the first visible region");
+  assert.deepEqual(pixel(output, 15, 21), [20, 80, 230, 255], "the scrolled tile begins at its measured destination offset");
+  assert.deepEqual(pixel(output, 15, 33), [230, 180, 20, 255], "the final tile reaches the bottom edge at the Y pixel scale");
+  assert.deepEqual(pixel(output, 5, 2), [0, 180, 0, 255], "the page left of the region above it comes from the base image");
+  assert.deepEqual(pixel(output, 35, 2), [180, 0, 180, 255], "the page right of the region above it comes from the base image");
+  assert.deepEqual(pixel(output, 5, 21), [0, 0, 0, 0], "the area left of the grown region has no real pixels and stays transparent");
+  assert.deepEqual(pixel(output, 35, 21), [0, 0, 0, 0], "the area right of the grown region has no real pixels and stays transparent");
+  assert.deepEqual(pixel(output, 5, 45), [0, 180, 0, 255], "the page below the region moves down by the amount the region grew");
+  assert.deepEqual(pixel(output, 35, 45), [180, 0, 180, 255], "the page below the region moves down on the right side as well");
 });
 
-test("full-page screenshot of a right-side iframe contains only the iframe content and no filled sidebar", async () => {
+// Page layout for the generated cases: 60×50 viewport, a 30×20 scrolling area at
+// (20, 10) with a 20 px column on its left and a 10 px column on its right.
+const GRID_VIEWPORT = { width: 60, height: 50 };
+const GRID_REGION = { x: 20, y: 10, width: 30, height: 20 };
+const gridTileColor = (column, row) => [30 + row * 20, 40 + column * 50, 200 - row * 10, 255];
+const gridHex = ([red, green, blue]) => `#${[red, green, blue].map((value) => value.toString(16).padStart(2, "0")).join("")}`;
+
+for (const { columns, rows } of [{ columns: 1, rows: 1 }, { columns: 1, rows: 3 }, { columns: 1, rows: 7 }, { columns: 2, rows: 4 }]) {
+  test(`full-page screenshot grows with the measured content (${columns}×${rows} region pages)`, async () => {
+    tilePixels.clear();
+    outputCanvases.clear();
+    nextCanvasId = 1;
+
+    const contentWidth = GRID_REGION.width * columns;
+    const contentHeight = GRID_REGION.height * rows;
+    const extraWidth = contentWidth - GRID_REGION.width;
+    const extraHeight = contentHeight - GRID_REGION.height;
+    const tiles = [];
+    const placements = [];
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const tile = image(GRID_VIEWPORT.width, GRID_VIEWPORT.height, "#202020");
+        paint(tile, 0, 0, GRID_REGION.x, GRID_VIEWPORT.height, "#00b400");
+        paint(tile, GRID_REGION.x + GRID_REGION.width, 0, GRID_VIEWPORT.width, GRID_VIEWPORT.height, "#b400b4");
+        paint(tile, GRID_REGION.x, GRID_REGION.y, GRID_REGION.x + GRID_REGION.width, GRID_REGION.y + GRID_REGION.height, gridHex(gridTileColor(column, row)));
+        const key = `grid-${columns}x${rows}-${column}-${row}`;
+        tilePixels.set(key, tile);
+        placements.push({ tile: tiles.length, dstX: column * GRID_REGION.width, dstY: row * GRID_REGION.height, width: GRID_REGION.width, height: GRID_REGION.height });
+        tiles.push(key);
+      }
+    }
+
+    const result = await browserPane.stitchBrowserScreenshot({
+      viewportWidth: GRID_VIEWPORT.width,
+      viewportHeight: GRID_VIEWPORT.height,
+      region: { ...GRID_REGION, contentWidth, contentHeight, scrollbarWidth: 0, scrollbarHeight: 0, description: "grid fixture", truncated: false },
+      tiles,
+      placements,
+      skippedFrames: 0,
+    });
+    const output = outputCanvases.get(result.dataUrl.split(",", 2)[1]);
+    assert.ok(output, "the stitched PNG canvas was produced");
+
+    assert.equal(output.width, GRID_VIEWPORT.width + extraWidth, "width is the viewport plus the measured extra width");
+    assert.equal(output.height, GRID_VIEWPORT.height + extraHeight, "height is the viewport plus the measured extra height");
+
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const x = GRID_REGION.x + column * GRID_REGION.width + GRID_REGION.width / 2;
+        const y = GRID_REGION.y + row * GRID_REGION.height + GRID_REGION.height / 2;
+        assert.deepEqual(pixel(output, x, y), gridTileColor(column, row), `tile ${column},${row} sits at its own scroll offset`);
+      }
+    }
+    assert.deepEqual(pixel(output, 5, 5), [0, 180, 0, 255], "page content above the region is kept");
+    assert.deepEqual(pixel(output, output.width - 5, 5), [180, 0, 180, 255], "page content right of the region is kept and moves with the region width");
+    assert.deepEqual(pixel(output, 5, output.height - 5), [0, 180, 0, 255], "page content below the region moves down by the extra height");
+    if (extraHeight > 0) {
+      const gapY = GRID_REGION.y + GRID_REGION.height + extraHeight / 2;
+      assert.deepEqual(pixel(output, 5, gapY), [0, 0, 0, 0], "left of the grown region is transparent, not a made-up color");
+    }
+    const colorsInRegion = new Set();
+    for (let y = GRID_REGION.y; y < GRID_REGION.y + contentHeight; y += 1) {
+      for (let x = GRID_REGION.x; x < GRID_REGION.x + contentWidth; x += 1) colorsInRegion.add(pixel(output, x, y).join(","));
+    }
+    assert.equal(colorsInRegion.size, rows * columns, "the grown region contains exactly the tile colors and no fill");
+  });
+}
+
+test("a page without a scrolling area is returned as the current view", async () => {
   tilePixels.clear();
   outputCanvases.clear();
-  nextCanvasId = 1;
-
-  // A 40×30 viewport: a 15 px green sidebar on the left, a scrolling iframe on the right.
-  const sidebarTile = (color) => {
-    const tile = image(40, 30, color);
-    paint(tile, 0, 0, 15, 30, "#00b400");
-    return tile;
-  };
-  tilePixels.set("first", sidebarTile("#dc1414"));
-  tilePixels.set("middle", sidebarTile("#1450e6"));
-  tilePixels.set("last", sidebarTile("#e6b414"));
-
+  tilePixels.set("only", image(10, 10, "#123456"));
   const result = await browserPane.stitchBrowserScreenshot({
-    viewportWidth: 40,
-    viewportHeight: 30,
-    region: {
-      x: 15,
-      y: 0,
-      width: 25,
-      height: 30,
-      contentWidth: 25,
-      contentHeight: 90,
-      scrollbarWidth: 0,
-      scrollbarHeight: 0,
-      description: "iframe fixture",
-      truncated: false,
-    },
-    tiles: ["first", "middle", "last"],
-    placements: [
-      { tile: 0, dstX: 0, dstY: 0, width: 25, height: 30 },
-      { tile: 1, dstX: 0, dstY: 30, width: 25, height: 30 },
-      { tile: 2, dstX: 0, dstY: 60, width: 25, height: 30 },
-    ],
+    viewportWidth: 10,
+    viewportHeight: 10,
+    region: null,
+    tiles: ["only"],
+    placements: [],
     skippedFrames: 0,
   });
+  assert.equal(result.dataUrl, "data:image/png;base64,only");
+});
 
-  const output = outputCanvases.get(result.dataUrl.split(",", 2)[1]);
-  assert.ok(output, "the stitched PNG canvas was produced");
-  assert.equal(output.width, 25);
-  assert.equal(output.height, 90);
-  assert.deepEqual(pixel(output, 0, 0), [220, 20, 20, 255]);
-  assert.deepEqual(pixel(output, 24, 29), [220, 20, 20, 255]);
-  assert.deepEqual(pixel(output, 0, 30), [20, 80, 230, 255]);
-  assert.deepEqual(pixel(output, 24, 59), [20, 80, 230, 255]);
-  assert.deepEqual(pixel(output, 0, 60), [230, 180, 20, 255]);
-  assert.deepEqual(pixel(output, 24, 89), [230, 180, 20, 255]);
-  for (let y = 0; y < output.height; y += 1) {
-    for (let x = 0; x < output.width; x += 1) {
-      assert.notDeepEqual(pixel(output, x, y), [0, 180, 0, 255], `pixel ${x},${y} must not contain the sidebar`);
-      assert.equal(pixel(output, x, y)[3], 255, `pixel ${x},${y} must be painted`);
-    }
-  }
+const regionOption = (frameIndex, index, x, y, width, height) => ({
+  frameIndex, index, x, y, width, height, contentWidth: width, contentHeight: height * 3, description: `area ${frameIndex}:${index}`,
+});
+
+test("overlapping scrolling areas are stacked so the smallest one under the pointer is on top", () => {
+  const page = regionOption(0, 0, 0, 0, 1000, 700);
+  const panel = regionOption(1, 0, 300, 80, 700, 400);
+  const table = regionOption(1, 1, 320, 120, 400, 200);
+  const ordered = browserPane.orderScrollRegionsForPicking([table, page, panel]);
+  assert.deepEqual(ordered.map((region) => `${region.frameIndex}:${region.index}`), ["0:0", "1:0", "1:1"]);
+  assert.deepEqual([table, page, panel].map((region) => region.index), [1, 0, 0], "the input list is not reordered");
+});
+
+test("scrolling area boxes are fractions of the viewport image", () => {
+  const box = browserPane.scrollRegionBox(regionOption(1, 0, 300, 70, 600, 280), 1200, 700);
+  assert.deepEqual(box, { left: 0.25, top: 0.1, width: 0.5, height: 0.4 });
+  const outside = browserPane.scrollRegionBox(regionOption(0, 0, -20, -10, 1300, 800), 1200, 700);
+  assert.deepEqual(outside, { left: 0, top: 0, width: 1, height: 1 }, "boxes are clamped to the image");
 });

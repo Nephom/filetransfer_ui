@@ -341,6 +341,35 @@ pub struct BrowserScreenshotCapture {
     pub skipped_frames: usize,
 }
 
+/// One scrolling area the user can pick for a full page screenshot. Positions
+/// are CSS pixels in the top viewport. `frame_index` and `index` identify the
+/// area inside a later capture; the rest lets that capture verify that the page
+/// has not changed in between.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserScrollRegionOption {
+    pub frame_index: usize,
+    pub index: usize,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub content_width: f64,
+    pub content_height: f64,
+    pub description: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserScrollRegionInspection {
+    pub viewport_width: f64,
+    pub viewport_height: f64,
+    /// Base64 PNG of the current, unscrolled viewport.
+    pub image: String,
+    pub regions: Vec<BrowserScrollRegionOption>,
+    pub skipped_frames: usize,
+}
+
 #[cfg(windows)]
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1062,18 +1091,57 @@ pub async fn browser_get_state(
     }
 }
 
+/// Lists the scrolling areas of the page that can be expanded and returns an
+/// image of the current view. Nothing on the page is scrolled or changed.
+#[tauri::command]
+pub async fn browser_inspect_scroll_regions(
+    app: AppHandle,
+    webview: Webview,
+    pane_id: String,
+) -> Result<BrowserScrollRegionInspection, String> {
+    require_main_webview(&webview)?;
+    #[cfg(windows)]
+    {
+        let view = get_browser_webview(&app, &pane_id)?;
+        let mut cleanup = ScreenshotCleanup::default();
+        let inspect_result = inspect_browser_scroll_regions_page(view.clone(), &mut cleanup).await;
+        let restore_result = cleanup_browser_screenshot(view, cleanup).await;
+
+        match (inspect_result, restore_result) {
+            (Ok(inspection), Ok(())) => Ok(inspection),
+            (Err(inspect_error), Ok(())) => Err(inspect_error),
+            (Ok(_), Err(restore_error)) => Err(format!(
+                "The page was inspected, but the original page state could not be restored: {restore_error}"
+            )),
+            (Err(inspect_error), Err(restore_error)) => Err(format!(
+                "{inspect_error}; the original page state also could not be restored: {restore_error}"
+            )),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, pane_id);
+        Err("Browser screenshots are supported only on Windows".to_string())
+    }
+}
+
+/// Captures the full page. `region` is the scrolling area chosen from
+/// `browser_inspect_scroll_regions`; without it the area hiding the most
+/// content is expanded.
 #[tauri::command]
 pub async fn browser_capture_full_page(
     app: AppHandle,
     webview: Webview,
     pane_id: String,
+    region: Option<BrowserScrollRegionOption>,
 ) -> Result<BrowserScreenshotCapture, String> {
     require_main_webview(&webview)?;
     #[cfg(windows)]
     {
         let view = get_browser_webview(&app, &pane_id)?;
         let mut cleanup = ScreenshotCleanup::default();
-        let capture_result = capture_browser_page(view.clone(), &mut cleanup).await;
+        let capture_result =
+            capture_browser_page(view.clone(), &mut cleanup, region.as_ref()).await;
         let restore_result = cleanup_browser_screenshot(view, cleanup).await;
 
         match (capture_result, restore_result) {
@@ -1089,7 +1157,7 @@ pub async fn browser_capture_full_page(
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, pane_id);
+        let _ = (app, pane_id, region);
         Err("Browser screenshots are supported only on Windows".to_string())
     }
 }
@@ -1253,28 +1321,38 @@ fn hidden_content_area(candidate: &ScrollCandidate) -> f64 {
     hidden_height * candidate.width + hidden_width * candidate.height
 }
 
-/// Picks the scrolling area to expand: it has to be completely visible, large
-/// enough, and actually overflow. The one hiding the most content wins; the
-/// larger visible area breaks ties.
+/// A scrolling area can be expanded when it is completely visible, large
+/// enough and actually overflows.
+#[cfg(any(windows, test))]
+fn is_selectable_scroll_candidate(
+    candidate: &ScrollCandidate,
+    viewport_width: f64,
+    viewport_height: f64,
+) -> bool {
+    const TOLERANCE: f64 = 2.0;
+    candidate.width >= 40.0
+        && candidate.height >= 40.0
+        && candidate.x >= -TOLERANCE
+        && candidate.y >= -TOLERANCE
+        && candidate.x + candidate.width <= viewport_width + TOLERANCE
+        && candidate.y + candidate.height <= viewport_height + TOLERANCE
+        && (candidate.content_width > candidate.width + 1.0
+            || candidate.content_height > candidate.height + 1.0)
+}
+
+/// Picks the scrolling area to expand when the user did not choose one. The one
+/// hiding the most content wins; the larger visible area breaks ties.
 #[cfg(any(windows, test))]
 fn select_scroll_candidate(
     candidates: &[ScrollCandidate],
     viewport_width: f64,
     viewport_height: f64,
 ) -> Option<usize> {
-    const TOLERANCE: f64 = 2.0;
     candidates
         .iter()
         .enumerate()
         .filter(|(_, candidate)| {
-            candidate.width >= 40.0
-                && candidate.height >= 40.0
-                && candidate.x >= -TOLERANCE
-                && candidate.y >= -TOLERANCE
-                && candidate.x + candidate.width <= viewport_width + TOLERANCE
-                && candidate.y + candidate.height <= viewport_height + TOLERANCE
-                && (candidate.content_width > candidate.width + 1.0
-                    || candidate.content_height > candidate.height + 1.0)
+            is_selectable_scroll_candidate(candidate, viewport_width, viewport_height)
         })
         .max_by(|(_, left), (_, right)| {
             hidden_content_area(left)
@@ -1289,6 +1367,54 @@ fn select_scroll_candidate(
         .map(|(index, _)| index)
 }
 
+/// The areas offered to the user, in the order the page reported them (largest
+/// visible area first).
+#[cfg(any(windows, test))]
+fn scroll_region_options(
+    candidates: &[ScrollCandidate],
+    viewport_width: f64,
+    viewport_height: f64,
+) -> Vec<BrowserScrollRegionOption> {
+    candidates
+        .iter()
+        .filter(|candidate| is_selectable_scroll_candidate(candidate, viewport_width, viewport_height))
+        .map(|candidate| BrowserScrollRegionOption {
+            frame_index: candidate.frame_index,
+            index: candidate.index,
+            x: candidate.x,
+            y: candidate.y,
+            width: candidate.width,
+            height: candidate.height,
+            content_width: candidate.content_width,
+            content_height: candidate.content_height,
+            description: candidate.description.clone(),
+        })
+        .collect()
+}
+
+/// Finds the area the user picked in a fresh inspection. The identifiers and
+/// the geometry must still match; otherwise the page changed and the capture
+/// must not silently expand a different area.
+#[cfg(any(windows, test))]
+fn find_chosen_scroll_candidate(
+    candidates: &[ScrollCandidate],
+    chosen: &BrowserScrollRegionOption,
+    viewport_width: f64,
+    viewport_height: f64,
+) -> Option<usize> {
+    const TOLERANCE: f64 = 2.0;
+    candidates.iter().position(|candidate| {
+        candidate.frame_index == chosen.frame_index
+            && candidate.index == chosen.index
+            && candidate.description == chosen.description
+            && (candidate.x - chosen.x).abs() <= TOLERANCE
+            && (candidate.y - chosen.y).abs() <= TOLERANCE
+            && (candidate.width - chosen.width).abs() <= TOLERANCE
+            && (candidate.height - chosen.height).abs() <= TOLERANCE
+            && is_selectable_scroll_candidate(candidate, viewport_width, viewport_height)
+    })
+}
+
 /// Next vertical scroll offset of a capture pass, or `None` once the end of
 /// the (possibly still growing) content has been reached.
 #[cfg(any(windows, test))]
@@ -1300,11 +1426,13 @@ fn next_scroll_position(current: f64, step: f64, content: f64, client: f64) -> O
     Some((current + step).min(max_scroll))
 }
 
-/// Limits the region content so the stitched image stays inside the maximum
+/// Limits the expanded content so the stitched page stays inside the maximum
 /// image dimension and pixel budget (device pixels). Returns the capped
 /// content size and whether anything was cut off.
 #[cfg(any(windows, test))]
 fn capped_content_lengths(
+    fixed_width: f64,
+    fixed_height: f64,
     region_width: f64,
     region_height: f64,
     content_width: f64,
@@ -1319,12 +1447,13 @@ fn capped_content_lengths(
     let max_dimension = (MAX_SCREENSHOT_DIMENSION / dpr).floor();
     let width = content_width
         .max(region_width)
-        .min(max_dimension.max(region_width));
-    let max_by_pixels = (MAX_SCREENSHOT_PIXELS / (width * dpr * dpr)).floor();
-    let max_height = max_dimension.min(max_by_pixels);
+        .min((max_dimension - fixed_width).max(region_width));
+    let page_width = fixed_width + width;
+    let max_by_pixels = (MAX_SCREENSHOT_PIXELS / (page_width * dpr * dpr)).floor();
+    let max_page_height = max_dimension.min(max_by_pixels);
     let height = content_height
         .max(region_height)
-        .min(max_height.max(region_height));
+        .min((max_page_height - fixed_height).max(region_height));
     let truncated = width + 0.5 < content_width || height + 0.5 < content_height;
     (width, height, truncated)
 }
@@ -1674,11 +1803,20 @@ fn parse_region_metrics(value: &serde_json::Value) -> Result<RegionMetrics, Stri
     })
 }
 
+/// Everything a page inspection found: the top viewport and the scrolling
+/// areas of every frame that could be inspected.
 #[cfg(windows)]
-async fn capture_browser_page(
-    view: Webview,
+struct InspectedBrowserPage {
+    viewport: BrowserViewport,
+    candidates: Vec<ScrollCandidate>,
+    skipped_frames: usize,
+}
+
+#[cfg(windows)]
+async fn inspect_browser_page(
+    view: &Webview,
     cleanup: &mut ScreenshotCleanup,
-) -> Result<BrowserScreenshotCapture, String> {
+) -> Result<InspectedBrowserPage, String> {
     browser_devtools_json(view.clone(), "DOM.enable", "{}".to_string()).await?;
     cleanup.dom_enabled = true;
 
@@ -1707,7 +1845,7 @@ async fn capture_browser_page(
                 }
             },
         };
-        match inspect_browser_frame(&view, frame_id, index, parent, cleanup).await {
+        match inspect_browser_frame(view, frame_id, index, parent, cleanup).await {
             Ok((context_id, frame_transform, viewport, found)) => {
                 known.insert(frame_id.clone(), (context_id, frame_transform));
                 if index == 0 {
@@ -1728,7 +1866,59 @@ async fn capture_browser_page(
 
     let viewport =
         root_viewport.ok_or_else(|| "The browser did not return a main frame".to_string())?;
-    match select_scroll_candidate(&candidates, viewport.width, viewport.height) {
+    Ok(InspectedBrowserPage {
+        viewport,
+        candidates,
+        skipped_frames,
+    })
+}
+
+/// Scans the page for scrolling areas the user can choose from and captures the
+/// current viewport. The page is not scrolled or modified.
+#[cfg(windows)]
+async fn inspect_browser_scroll_regions_page(
+    view: Webview,
+    cleanup: &mut ScreenshotCleanup,
+) -> Result<BrowserScrollRegionInspection, String> {
+    let page = inspect_browser_page(&view, cleanup).await?;
+    let image = capture_browser_viewport_png(&view).await?;
+    Ok(BrowserScrollRegionInspection {
+        viewport_width: page.viewport.width,
+        viewport_height: page.viewport.height,
+        image,
+        regions: scroll_region_options(
+            &page.candidates,
+            page.viewport.width,
+            page.viewport.height,
+        ),
+        skipped_frames: page.skipped_frames,
+    })
+}
+
+/// Captures the full page. `chosen` is the area the user picked; without it the
+/// area hiding the most content is expanded.
+#[cfg(windows)]
+async fn capture_browser_page(
+    view: Webview,
+    cleanup: &mut ScreenshotCleanup,
+    chosen: Option<&BrowserScrollRegionOption>,
+) -> Result<BrowserScreenshotCapture, String> {
+    let InspectedBrowserPage {
+        viewport,
+        candidates,
+        skipped_frames,
+    } = inspect_browser_page(&view, cleanup).await?;
+    let selected = match chosen {
+        Some(chosen) => Some(
+            find_chosen_scroll_candidate(&candidates, chosen, viewport.width, viewport.height)
+                .ok_or_else(|| {
+                    "The page changed after the scrolling area was chosen. Take the screenshot again."
+                        .to_string()
+                })?,
+        ),
+        None => select_scroll_candidate(&candidates, viewport.width, viewport.height),
+    };
+    match selected {
         Some(selected) => {
             capture_browser_scroll_region(&view, viewport, &candidates[selected], skipped_frames)
                 .await
@@ -1930,6 +2120,8 @@ async fn capture_browser_scroll_region(
     skipped_frames: usize,
 ) -> Result<BrowserScreenshotCapture, String> {
     let context_id = candidate.execution_context_id;
+    let fixed_width = (viewport.width - candidate.width).max(0.0);
+    let fixed_height = (viewport.height - candidate.height).max(0.0);
     let cap = |metrics: &RegionMetrics| {
         let (content_width, content_height) = stable_capture_content_dimensions(
             candidate,
@@ -1937,6 +2129,8 @@ async fn capture_browser_scroll_region(
             metrics.content_height,
         );
         capped_content_lengths(
+            fixed_width,
+            fixed_height,
             candidate.width,
             candidate.height,
             content_width,
@@ -2504,9 +2698,9 @@ mod tests {
         browser_view_label, capped_content_lengths, child_frame_transform,
         collect_browser_frame_tree, map_browser_bounds_to_physical, next_scroll_position,
         parse_web_url, region_placements, region_placements_scaled, safe_browser_download_name,
-        select_scroll_candidate, stable_capture_content_dimensions, tile_positions,
-        unique_browser_download_destination, BrowserBounds, BrowserFrameTransform,
-        BrowserPhysicalBounds, ScrollCandidate,
+        find_chosen_scroll_candidate, scroll_region_options, select_scroll_candidate,
+        stable_capture_content_dimensions, tile_positions, unique_browser_download_destination,
+        BrowserBounds, BrowserFrameTransform, BrowserPhysicalBounds, ScrollCandidate,
     };
 
     fn css_bounds(x: f64, y: f64, width: f64, height: f64, dpr: f64) -> BrowserBounds {
@@ -2782,6 +2976,61 @@ mod tests {
     }
 
     #[test]
+    fn scroll_region_options_list_only_areas_that_can_be_expanded() {
+        let mut iframe = candidate(300.0, 80.0, 700.0, 400.0, 700.0, 1900.0);
+        iframe.frame_index = 1;
+        iframe.index = 2;
+        iframe.description = "iframe > div".to_string();
+        let candidates = vec![
+            candidate(0.0, 0.0, 1000.0, 700.0, 1000.0, 1500.0),
+            iframe,
+            // Partly outside the viewport, does not overflow, too small.
+            candidate(200.0, 400.0, 800.0, 500.0, 800.0, 90000.0),
+            candidate(0.0, 0.0, 400.0, 300.0, 400.0, 300.0),
+            candidate(10.0, 10.0, 20.0, 20.0, 20.0, 5000.0),
+        ];
+        let options = scroll_region_options(&candidates, 1000.0, 700.0);
+        assert_eq!(options.len(), 2);
+        assert_eq!((options[0].frame_index, options[0].index), (0, 0));
+        assert_eq!((options[1].frame_index, options[1].index), (1, 2));
+        assert_eq!(options[1].description, "iframe > div");
+        assert_eq!((options[1].content_width, options[1].content_height), (700.0, 1900.0));
+    }
+
+    #[test]
+    fn chosen_scroll_region_must_still_match_the_page() {
+        let mut iframe = candidate(300.0, 80.0, 700.0, 400.0, 700.0, 1900.0);
+        iframe.frame_index = 1;
+        iframe.index = 2;
+        iframe.description = "iframe > div".to_string();
+        let candidates = vec![candidate(0.0, 0.0, 1000.0, 700.0, 1000.0, 1500.0), iframe];
+        let chosen = scroll_region_options(&candidates, 1000.0, 700.0)[1].clone();
+        assert_eq!(
+            find_chosen_scroll_candidate(&candidates, &chosen, 1000.0, 700.0),
+            Some(1)
+        );
+        // Content may grow between the two steps.
+        let mut grown = candidates.clone();
+        grown[1].content_height = 2600.0;
+        assert_eq!(
+            find_chosen_scroll_candidate(&grown, &chosen, 1000.0, 700.0),
+            Some(1)
+        );
+        // A moved or renamed area is not the one the user picked.
+        let mut moved = candidates.clone();
+        moved[1].y = 200.0;
+        assert_eq!(find_chosen_scroll_candidate(&moved, &chosen, 1000.0, 700.0), None);
+        let mut renamed = candidates.clone();
+        renamed[1].description = "other".to_string();
+        assert_eq!(find_chosen_scroll_candidate(&renamed, &chosen, 1000.0, 700.0), None);
+        // The same position with a different identifier is a different area.
+        let mut reindexed = candidates.clone();
+        reindexed[1].index = 3;
+        assert_eq!(find_chosen_scroll_candidate(&reindexed, &chosen, 1000.0, 700.0), None);
+        assert_eq!(find_chosen_scroll_candidate(&[], &chosen, 1000.0, 700.0), None);
+    }
+
+    #[test]
     fn next_scroll_position_walks_to_the_end_and_follows_growing_content() {
         assert_eq!(next_scroll_position(0.0, 600.0, 2000.0, 600.0), Some(600.0));
         assert_eq!(
@@ -2863,23 +3112,26 @@ mod tests {
     fn capped_content_lengths_respect_dimension_and_pixel_limits() {
         // Fits: nothing is cut off.
         assert_eq!(
-            capped_content_lengths(800.0, 500.0, 800.0, 3000.0, 1.0),
+            capped_content_lengths(200.0, 200.0, 800.0, 500.0, 800.0, 3000.0, 1.0),
             (800.0, 3000.0, false)
         );
-        // Too tall at 100% scale: the image height is capped at 16,000 px.
-        let (_, height, truncated) = capped_content_lengths(800.0, 500.0, 800.0, 90000.0, 1.0);
+        // Too tall at 100% scale: page height is capped at 16,000 px.
+        let (_, height, truncated) =
+            capped_content_lengths(200.0, 200.0, 800.0, 500.0, 800.0, 90000.0, 1.0);
         assert!(truncated);
-        assert_eq!(height, 16000.0);
+        assert_eq!(height + 200.0, 16000.0);
         // At 125% scaling the same limit applies to device pixels.
-        let (_, height, truncated) = capped_content_lengths(800.0, 500.0, 800.0, 90000.0, 1.25);
+        let (_, height, truncated) =
+            capped_content_lengths(200.0, 200.0, 800.0, 500.0, 800.0, 90000.0, 1.25);
         assert!(truncated);
-        assert!(height * 1.25 <= 16000.0);
+        assert!((height + 200.0) * 1.25 <= 16000.0);
         // Wide pages are limited by the 40 million pixel budget.
-        let (width, height, _) = capped_content_lengths(1000.0, 700.0, 8000.0, 90000.0, 1.0);
+        let (width, height, _) =
+            capped_content_lengths(0.0, 0.0, 1000.0, 700.0, 8000.0, 90000.0, 1.0);
         assert_eq!(width, 8000.0);
         assert!(width * height <= 40_000_000.0);
         // Never smaller than the visible region.
-        let (width, height, _) = capped_content_lengths(1000.0, 700.0, 10.0, 10.0, 1.0);
+        let (width, height, _) = capped_content_lengths(0.0, 0.0, 1000.0, 700.0, 10.0, 10.0, 1.0);
         assert_eq!((width, height), (1000.0, 700.0));
     }
 }

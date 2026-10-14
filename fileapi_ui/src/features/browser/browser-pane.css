@@ -459,6 +459,46 @@
   user-select: none;
 }
 
+.browser-capture-preview.browser-region-picker {
+  cursor: default;
+}
+
+.browser-region-option {
+  position: absolute;
+  z-index: 1;
+  padding: 0;
+  border: 2px solid rgba(82, 183, 255, .85);
+  background: rgba(82, 183, 255, .1);
+  color: #fff;
+  line-height: normal;
+  text-align: left;
+  cursor: pointer;
+}
+
+.browser-region-option:hover,
+.browser-region-option:focus-visible {
+  background: rgba(82, 183, 255, .3);
+  outline: none;
+}
+
+.browser-region-option span {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  max-width: 100%;
+  padding: 3px 7px;
+  overflow-wrap: anywhere;
+  background: rgba(0, 0, 0, .78);
+  font-size: var(--ui-small-font-size);
+  pointer-events: none;
+}
+
+.browser-region-option:hover span,
+.browser-region-option:focus-visible span {
+  display: block;
+}
+
 .browser-capture-selection {
   position: absolute;
   z-index: 1;

@@ -4577,6 +4577,7 @@ fn main() {
             browser::browser_stop,
             browser::browser_get_state,
             browser::browser_capture_full_page,
+            browser::browser_inspect_scroll_regions,
             browser::browser_capture_preview,
             browser::browser_save_screenshot,
             browser::browser_pick_download_folder,

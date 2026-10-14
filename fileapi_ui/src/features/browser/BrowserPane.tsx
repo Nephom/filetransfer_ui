@@ -89,6 +89,42 @@ type BrowserScreenshotCapture = {
   skippedFrames: number;
 };
 type StitchedScreenshot = { dataUrl: string; notice: string };
+type BrowserScrollRegionOption = {
+  frameIndex: number;
+  index: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  contentWidth: number;
+  contentHeight: number;
+  description: string;
+};
+type BrowserScrollRegionInspection = {
+  viewportWidth: number;
+  viewportHeight: number;
+  image: string;
+  regions: BrowserScrollRegionOption[];
+  skippedFrames: number;
+};
+
+/**
+ * Larger areas first. The picker stacks the areas in this order, so where areas
+ * overlap the smallest one under the pointer is the one that gets the click.
+ */
+export function orderScrollRegionsForPicking(regions: BrowserScrollRegionOption[]): BrowserScrollRegionOption[] {
+  return [...regions].sort((left, right) => right.width * right.height - left.width * left.height);
+}
+
+/** Position and size of an area as fractions (0 to 1) of the viewport image. */
+export function scrollRegionBox(region: BrowserScrollRegionOption, viewportWidth: number, viewportHeight: number) {
+  const clamp = (value: number) => Math.min(1, Math.max(0, value));
+  const left = clamp(region.x / viewportWidth);
+  const top = clamp(region.y / viewportHeight);
+  const right = clamp((region.x + region.width) / viewportWidth);
+  const bottom = clamp((region.y + region.height) / viewportHeight);
+  return { left, top, width: right - left, height: bottom - top };
+}
 
 const MAX_STITCHED_PIXELS = 40_000_000;
 
@@ -100,9 +136,9 @@ async function decodeScreenshotTile(data: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Builds the image of the scrolling region only. Every tile contributes the
- * region rectangle of its viewport image at its scroll offset; nothing around
- * the region is drawn or filled. All coordinates are CSS pixels. Source edges use each tile's actual scale, while
+ * Builds the full page image. The first tile is the unscrolled viewport; every
+ * other tile only contributes the scrolling region at its scroll offset. All
+ * coordinates are CSS pixels. Source edges use each tile's actual scale, while
  * destination edges use the stitched page scale; rounding the edges separately
  * prevents fractional offsets from changing a feature's width between tiles.
  */
@@ -128,12 +164,14 @@ export async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture)
   if (!Number.isFinite(scaleX) || scaleX <= 0 || !Number.isFinite(scaleY) || scaleY <= 0) {
     throw new UiMessageError("The browser returned invalid screenshot dimensions.");
   }
+  const extraWidth = Math.max(0, region.contentWidth - region.width);
+  const extraHeight = Math.max(0, region.contentHeight - region.height);
   const pxX = (value: number) => Math.round(value * scaleX);
   const pxY = (value: number) => Math.round(value * scaleY);
 
   const canvas = document.createElement("canvas");
-  canvas.width = pxX(region.contentWidth);
-  canvas.height = pxY(region.contentHeight);
+  canvas.width = pxX(capture.viewportWidth + extraWidth);
+  canvas.height = pxY(capture.viewportHeight + extraHeight);
   if (canvas.width < 1 || canvas.height < 1 || canvas.width * canvas.height > MAX_STITCHED_PIXELS) {
     throw new UiMessageError("The full page image is too large to preview and select.");
   }
@@ -170,15 +208,53 @@ export async function stitchBrowserScreenshot(capture: BrowserScreenshotCapture)
       destinationHeight,
     );
   };
+  const viewportWidth = capture.viewportWidth;
+  const viewportHeight = capture.viewportHeight;
+  const right = region.x + region.width;
+  const bottom = region.y + region.height;
 
-  // The image is only the scrolling region: every tile contributes the region
-  // rectangle of its viewport image at the scroll offset it was captured at.
+  // Everything around the region comes from the unscrolled base image; the
+  // parts after the region move down/right by the amount the region grew. The
+  // region's own scrollbars are left out. Areas that exist only because the
+  // region grew have no real pixels and stay transparent.
+  const columns = [
+    { x: 0, width: region.x, shift: 0 },
+    { x: region.x, width: region.width, shift: 0 },
+    { x: right, width: Math.max(0, viewportWidth - right), shift: extraWidth },
+  ];
+  const rows = [
+    { y: 0, height: region.y, shift: 0 },
+    { y: region.y, height: region.height, shift: 0 },
+    { y: bottom, height: Math.max(0, viewportHeight - bottom), shift: extraHeight },
+  ];
+  rows.forEach((row, rowIndex) => {
+    columns.forEach((column, columnIndex) => {
+      if (rowIndex === 1 && columnIndex === 1) return;
+      let { x, width } = column;
+      let { y, height } = row;
+      if (rowIndex === 1 && columnIndex === 2) {
+        const skip = Math.min(width, region.scrollbarWidth);
+        x += skip;
+        width -= skip;
+      }
+      if (rowIndex === 2 && columnIndex === 1) {
+        const skip = Math.min(height, region.scrollbarHeight);
+        y += skip;
+        height -= skip;
+      }
+      if (width <= 0 || height <= 0) return;
+      copy(base, x, y, width, height, x + column.shift, y + row.shift);
+    });
+  });
+
+  // The region content: every tile contributes the region rectangle of its
+  // viewport image at the scroll offset it was captured at.
   for (let tile = 0; tile < capture.tiles.length; tile += 1) {
     const placements = capture.placements.filter((placement) => placement.tile === tile);
     if (placements.length > 0) {
       const image = tile === 0 ? base : await decodeScreenshotTile(capture.tiles[tile]);
       for (const placement of placements) {
-        copy(image, region.x, region.y, placement.width, placement.height, placement.dstX, placement.dstY);
+        copy(image, region.x, region.y, placement.width, placement.height, region.x + placement.dstX, region.y + placement.dstY);
       }
       if (image !== base) image.removeAttribute("src");
     }
@@ -251,6 +327,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
   const [captureBusy, setCaptureBusy] = useState(false);
   const [captureError, setCaptureError] = useState("");
   const [captureNotice, setCaptureNotice] = useState("");
+  const [regionChoice, setRegionChoice] = useState<BrowserScrollRegionInspection | null>(null);
   const [captureSelection, setCaptureSelection] = useState<CaptureSelection | null>(null);
   const captureStageRef = useRef<HTMLDivElement | null>(null);
   const captureImageRef = useRef<HTMLImageElement | null>(null);
@@ -459,7 +536,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
     // The native WebView2 child surface is above the app WebView's DOM. Hide it
     // while the downloads popover is open so this HTML panel can render above
     // the retained page snapshot instead of being covered by the native view.
-    const browserVisible = visible && !captureImage && !downloadsOpen;
+    const browserVisible = visible && !captureImage && !regionChoice && !downloadsOpen;
     if (browserVisible) scheduleBounds();
     boundsQueueRef.current = boundsQueueRef.current
       .then(async () => {
@@ -478,7 +555,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
         setNativeShown(browserVisible);
       })
       .catch(() => undefined);
-  }, [paneId, viewReady, visible, captureImage, downloadsOpen, scheduleBounds]);
+  }, [paneId, viewReady, visible, captureImage, regionChoice, downloadsOpen, scheduleBounds]);
 
   useEffect(() => {
     if (!viewReady || !visible) return undefined;
@@ -634,6 +711,25 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
     }
   };
 
+  const hideNativeBrowserView = async () => {
+    await captureBrowserSnapshot(paneId, viewUrlRef.current);
+    await invoke<void>("browser_set_visible", { paneId, visible: false });
+    nativeShownRef.current = false;
+    setNativeShown(false);
+  };
+
+  const showStitchedScreenshot = async (stitched: StitchedScreenshot) => {
+    await hideNativeBrowserView();
+    setCaptureSelection(null);
+    setCaptureImage(stitched.dataUrl);
+    setCaptureNotice(stitched.notice);
+  };
+
+  const captureFullPage = async (region: BrowserScrollRegionOption) => {
+    const capture = await invoke<BrowserScreenshotCapture>("browser_capture_full_page", { paneId, region });
+    await showStitchedScreenshot(await stitchBrowserScreenshot(capture));
+  };
+
   const startScreenshot = async () => {
     if (!viewReady || !visible || captureBusy) return;
     setCaptureBusy(true);
@@ -641,15 +737,49 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
     setCaptureNotice("");
     setError("");
     try {
-      const capture = await invoke<BrowserScreenshotCapture>("browser_capture_full_page", { paneId });
-      const stitched = await stitchBrowserScreenshot(capture);
-      await captureBrowserSnapshot(paneId, viewUrlRef.current);
-      await invoke<void>("browser_set_visible", { paneId, visible: false });
-      nativeShownRef.current = false;
-      setNativeShown(false);
-      setCaptureSelection(null);
-      setCaptureImage(stitched.dataUrl);
-      setCaptureNotice(stitched.notice);
+      const inspection = await invoke<BrowserScrollRegionInspection>("browser_inspect_scroll_regions", { paneId });
+      if (inspection.regions.length === 0) {
+        const stitched = await stitchBrowserScreenshot({
+          viewportWidth: inspection.viewportWidth,
+          viewportHeight: inspection.viewportHeight,
+          region: null,
+          tiles: [inspection.image],
+          placements: [],
+          skippedFrames: inspection.skippedFrames,
+        });
+        await showStitchedScreenshot(stitched);
+      } else if (inspection.regions.length === 1) {
+        await captureFullPage(inspection.regions[0]);
+      } else {
+        await hideNativeBrowserView();
+        setCapturePreviewSize(null);
+        setRegionChoice(inspection);
+      }
+    } catch (reason) {
+      setError(formatUiError(reason, t));
+    } finally {
+      setCaptureBusy(false);
+    }
+  };
+
+  const closeRegionChoice = () => {
+    setCapturePreviewSize(null);
+    setRegionChoice(null);
+  };
+
+  const chooseScrollRegion = async (region: BrowserScrollRegionOption) => {
+    if (captureBusy) return;
+    setCaptureBusy(true);
+    setCaptureError("");
+    setCaptureNotice("");
+    setError("");
+    closeRegionChoice();
+    try {
+      // The page can only be captured while its native view is showing.
+      await invoke<void>("browser_set_visible", { paneId, visible: true });
+      nativeShownRef.current = true;
+      setNativeShown(true);
+      await captureFullPage(region);
     } catch (reason) {
       setError(formatUiError(reason, t));
     } finally {
@@ -747,7 +877,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
   };
 
   useEffect(() => {
-    if (!captureImage) return undefined;
+    if (!captureImage && !regionChoice) return undefined;
     const stage = captureStageRef.current;
     const image = captureImageRef.current;
     if (!stage || !image) return undefined;
@@ -781,16 +911,18 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
       resizeObserver.disconnect();
       image.removeEventListener("load", updateFromStage);
     };
-  }, [captureImage]);
+  }, [captureImage, regionChoice]);
 
   useEffect(() => {
-    if (!captureImage) return undefined;
+    if (!captureImage && !regionChoice) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeScreenshot();
+      if (event.key !== "Escape") return;
+      if (captureImage) closeScreenshot();
+      else closeRegionChoice();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [captureImage]);
+  }, [captureImage, regionChoice]);
 
   return (
     <section className="browser-pane" aria-label={t("Browser")}>
@@ -938,6 +1070,51 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
       <div ref={anchorRef} className="browser-viewport" aria-label={t("Web page content")}>
         {!nativeShown && snapshot && <img className="browser-snapshot" src={snapshot.dataUrl} alt="" draggable={false} />}
       </div>
+      {regionChoice && <div className="browser-capture-layer" role="presentation">
+        <section className="browser-capture-dialog" role="dialog" aria-modal="true" aria-labelledby="browser-region-title">
+          <header className="browser-capture-heading">
+            <div><strong id="browser-region-title">{t("Choose the scrolling area to capture")}</strong><span>{t("Click the area whose full content you want. Everything else on the page is kept as it is.")}</span></div>
+            <button type="button" className="browser-capture-close" aria-label={t("Close screenshot selection")} onClick={closeRegionChoice}>×</button>
+          </header>
+          <div ref={captureStageRef} className="browser-capture-stage">
+            <div
+              className="browser-capture-preview browser-region-picker"
+              style={capturePreviewSize
+                ? { width: `${capturePreviewSize.width}px`, height: `${capturePreviewSize.height}px` }
+                : { visibility: "hidden" }}
+            >
+              <img ref={captureImageRef} src={`data:image/png;base64,${regionChoice.image}`} alt={t("Current page view")} draggable={false} />
+              {orderScrollRegionsForPicking(regionChoice.regions).map((region) => {
+                const box = scrollRegionBox(region, regionChoice.viewportWidth, regionChoice.viewportHeight);
+                const label = t("Scrolling area {{name}}: {{width}}×{{height}} px visible, {{contentWidth}}×{{contentHeight}} px in total", {
+                  name: region.description,
+                  width: Math.round(region.width),
+                  height: Math.round(region.height),
+                  contentWidth: Math.round(region.contentWidth),
+                  contentHeight: Math.round(region.contentHeight),
+                });
+                return <button
+                  key={`${region.frameIndex}:${region.index}`}
+                  type="button"
+                  className="browser-region-option"
+                  style={{
+                    left: `${box.left * 100}%`,
+                    top: `${box.top * 100}%`,
+                    width: `${box.width * 100}%`,
+                    height: `${box.height * 100}%`,
+                  }}
+                  title={label}
+                  aria-label={label}
+                  onClick={() => { void chooseScrollRegion(region); }}
+                ><span>{label}</span></button>;
+              })}
+            </div>
+          </div>
+          <footer className="browser-capture-actions">
+            <button type="button" onClick={closeRegionChoice}>{t("Cancel")}</button>
+          </footer>
+        </section>
+      </div>}
       {captureImage && <div className="browser-capture-layer" role="presentation">
         <section className="browser-capture-dialog" role="dialog" aria-modal="true" aria-labelledby="browser-capture-title">
           <header className="browser-capture-heading">
