@@ -287,9 +287,14 @@ impl ClientSession {
     }
 }
 
-static SESSIONS: OnceLock<Arc<AsyncMutex<HashMap<String, SshSession>>>> = OnceLock::new();
+// Each session is wrapped in its own `Arc` so `write()`/`resize()`/
+// `disconnect()` can clone the specific session they need out of the map and
+// release the map's lock immediately afterward, instead of holding it for
+// the duration of the channel I/O that follows (see the comment on
+// `sftp::disconnect()` for the same pattern applied to SFTP connections).
+static SESSIONS: OnceLock<Arc<AsyncMutex<HashMap<String, Arc<SshSession>>>>> = OnceLock::new();
 
-fn sessions() -> &'static Arc<AsyncMutex<HashMap<String, SshSession>>> {
+fn sessions() -> &'static Arc<AsyncMutex<HashMap<String, Arc<SshSession>>>> {
     SESSIONS.get_or_init(|| Arc::new(AsyncMutex::new(HashMap::new())))
 }
 
@@ -1093,10 +1098,10 @@ pub async fn connect(
 
     sessions().lock().await.insert(
         session_id.clone(),
-        SshSession {
+        Arc::new(SshSession {
             handle: session,
             write: write_half,
-        },
+        }),
     );
     crate::oplog::log(
         "INFO",
@@ -1207,10 +1212,12 @@ pub async fn write(session_id: String, data: String) -> Result<(), String> {
     let started = std::time::Instant::now();
     let byte_count = data.len();
     crate::oplog::log("DEBUG", "ssh_write", "started", "terminal", "", &serde_json::json!({"operationId": operation_id, "sessionId": session_id, "byteCount": byte_count}).to_string());
-    let sessions = sessions().lock().await;
-    let session = sessions
-        .get(&session_id)
-        .ok_or_else(|| "SSH session is not connected".to_string());
+    // Clone the specific session's `Arc` out and release the map lock before
+    // awaiting the channel write below, so one session's (possibly
+    // backpressured) write cannot stall every other open terminal's
+    // write/resize/disconnect/connect call in the meantime.
+    let session = sessions().lock().await.get(&session_id).cloned();
+    let session = session.ok_or_else(|| "SSH session is not connected".to_string());
     let session = match session {
         Ok(session) => session,
         Err(error) => {
@@ -1258,10 +1265,10 @@ pub async fn resize(
         crate::oplog::log("ERROR", "ssh_resize", "failed", &source, "", &detail(serde_json::json!({"durationMs": started.elapsed().as_millis(), "failureType": "validation", "error": "SSH terminal size must be greater than zero"})));
         return Err("SSH terminal size must be greater than zero".to_string());
     }
-    let sessions = sessions().lock().await;
-    let session = sessions
-        .get(&session_id)
-        .ok_or_else(|| "SSH session is not connected".to_string());
+    // Same reasoning as `write()`: clone this session's `Arc` out and drop the
+    // map lock before awaiting the resize below.
+    let session = sessions().lock().await.get(&session_id).cloned();
+    let session = session.ok_or_else(|| "SSH session is not connected".to_string());
     let session = match session {
         Ok(session) => session,
         Err(error) => {
@@ -1287,7 +1294,10 @@ pub async fn resize(
 }
 
 pub async fn disconnect(session_id: String) -> Result<(), String> {
-    if let Some(session) = sessions().lock().await.remove(&session_id) {
+    // Take the session out of the map first so the lock is not held while
+    // closing it (mirrors `sftp::disconnect()`'s existing pattern).
+    let session = sessions().lock().await.remove(&session_id);
+    if let Some(session) = session {
         let _ = session.write.close().await;
         session.handle.disconnect_all().await;
         crate::oplog::log(

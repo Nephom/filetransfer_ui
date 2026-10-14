@@ -519,7 +519,13 @@ async fn start_session_inner(entry: VncEntry, session_id: String) -> Result<VncC
     let task_connection_id = connection_id.clone();
     tokio::spawn(async move {
         if let Ok((stream, _)) = listener.accept().await {
-            if let Some(pending_connection) = pending().lock().await.remove(&task_connection_id) {
+            // Take the entry out of the map first so the lock is not held for
+            // `relay()`'s whole duration (a streaming WebSocket<->TCP relay
+            // that runs until the VNC session disconnects) -- otherwise any
+            // other VNC connection's own cleanup here would block on this
+            // lock until this unrelated session ends.
+            let pending_connection = pending().lock().await.remove(&task_connection_id);
+            if let Some(pending_connection) = pending_connection {
                 let _ = relay(stream, task_connection_id, pending_connection).await;
             }
         }
@@ -571,10 +577,12 @@ pub async fn start_direct(host: String, port: u16) -> Result<VncConnection, Stri
         if let Ok(Ok((stream, _))) =
             tokio::time::timeout(Duration::from_secs(30), listener.accept()).await
         {
-            if let Some(connection) = direct_pending().lock().await.remove(&task_connection_id) {
+            // Same reasoning as the Proxmox-relayed VNC path above: take the
+            // entry out of the map first so the lock is not held for
+            // `direct_relay()`'s whole (session-length) duration.
+            let connection = direct_pending().lock().await.remove(&task_connection_id);
+            if let Some(connection) = connection {
                 let _ = direct_relay(stream, task_connection_id, connection).await;
-            } else {
-                let _ = direct_pending().lock().await.remove(&task_connection_id);
             }
         } else {
             let _ = direct_pending().lock().await.remove(&task_connection_id);

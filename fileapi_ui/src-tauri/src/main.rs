@@ -876,8 +876,13 @@ async fn save_text_file(name: String, content: String) -> Result<Option<String>,
     let Some(selected) = selected else {
         return Ok(None);
     };
-    std::fs::write(selected.path(), content.as_bytes()).map_err(|error| error.to_string())?;
-    Ok(Some(selected.path().display().to_string()))
+    let path = selected.path().to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&path, content.as_bytes()).map_err(|error| error.to_string())?;
+        Ok(Some(path.display().to_string()))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn sanitize_iml_file_component(value: &str) -> String {
