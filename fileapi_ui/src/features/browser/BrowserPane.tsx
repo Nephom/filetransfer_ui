@@ -289,7 +289,13 @@ export function normalizeBrowserUrl(value: string): string {
 
 const visibleAddress = (url: string) => url === "about:blank" ? "" : url;
 
-const boundsKey = (bounds: BrowserBounds) => `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}:${bounds.devicePixelRatio}`;
+const boundsKey = (bounds: BrowserBounds) => `${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}:${bounds.devicePixelRatio}:${bounds.bottomLeftRadius}:${bounds.bottomRightRadius}`;
+
+/** CSS-pixel numeric value of a computed `border-*-radius`, or 0 when unreadable/unset. */
+const computedCornerRadius = (value: string): number => {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
 
 /** Largest physical-pixel difference between the requested and the native rectangle. */
 const readbackDelta = ({ requested, actual }: BrowserBoundsReadback) => Math.max(
@@ -304,9 +310,20 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
   const locale = toIntlLocale(getAppLocale());
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const createdRef = useRef(false);
-  const boundsQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // Bounds application is coalesced to the most recent rectangle instead of a
+  // serial per-distinct-rectangle queue: a continuous drag-resize produces far
+  // more ResizeObserver callbacks than the native round trip can keep up with,
+  // and applying every intermediate size in order makes the native view visibly
+  // lag behind the pane's outline. Only the latest pending rectangle survives.
+  const pendingBoundsRef = useRef<BrowserBounds | null>(null);
+  const applyingBoundsRef = useRef(false);
+  const boundsFrameRef = useRef<number | null>(null);
   const lastBoundsRef = useRef("");
   const boundsErrorRef = useRef(false);
+  // Serializes native show/hide toggles (and the snapshot capture taken right
+  // before a hide) among themselves. Kept separate from bounds application,
+  // which no longer runs on a single serial queue.
+  const visibilityQueueRef = useRef<Promise<void>>(Promise.resolve());
   const visibleRef = useRef(visible);
   // Whether the native child view is showing right now (it is hidden whenever the
   // pane is not the active one, an overlay is open or the screenshot picker is up).
@@ -390,6 +407,15 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
     if (!anchor) return null;
     const rect = anchor.getBoundingClientRect();
     if (rect.width < 3 || rect.height < 3) return null;
+    // The native child surface is a plain rectangle: it is never clipped by the
+    // hosting `.pane-window`'s CSS `border-radius`/`overflow:hidden`. Reading the
+    // pane's own computed bottom-corner radius (0 while maximized, since the CSS
+    // sets `border-radius: 0` then) lets the native side cut the same rounded
+    // corners into the child window so the two stay visually aligned. Only the
+    // bottom corners matter: the anchor sits below the pane's titlebar, so its
+    // top edge is never at one of the pane's rounded corners.
+    const pane = anchor.closest<HTMLElement>(".pane-window");
+    const paneStyle = pane ? window.getComputedStyle(pane) : null;
     // CSS pixels, not rounded: the native side converts to physical pixels with
     // devicePixelRatio. Keep the child surface 1 CSS px inside the pane border.
     return {
@@ -398,17 +424,48 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
       width: rect.width - 2,
       height: rect.height - 2,
       devicePixelRatio: window.devicePixelRatio || 1,
+      bottomLeftRadius: paneStyle ? computedCornerRadius(paneStyle.borderBottomLeftRadius) : 0,
+      bottomRightRadius: paneStyle ? computedCornerRadius(paneStyle.borderBottomRightRadius) : 0,
     };
   }, []);
 
-  const applyBounds = useCallback(async (bounds: BrowserBounds) => {
-    const first = await invoke<BrowserBoundsReadback>("browser_set_bounds", { paneId, bounds });
-    if (readbackDelta(first) <= 1) return;
-    // The native rectangle differs from the request: push it once more and
-    // report it if the second attempt still does not match.
-    const second = await invoke<BrowserBoundsReadback>("browser_set_bounds", { paneId, bounds });
-    if (readbackDelta(second) > 1) console.warn(`Browser pane ${paneId} native bounds differ from the requested rectangle`, second);
-  }, [paneId]);
+  const applyBounds = useCallback((bounds: BrowserBounds) =>
+    invoke<BrowserBoundsReadback>("browser_set_bounds", { paneId, bounds }), [paneId]);
+
+  // Applies only the most recently requested rectangle. If another rectangle
+  // was scheduled while a request was in flight, it is picked up immediately
+  // after instead of being queued behind every rectangle requested in between.
+  const flushBounds = useCallback(async () => {
+    if (applyingBoundsRef.current) return;
+    const bounds = pendingBoundsRef.current;
+    if (!bounds) return;
+    pendingBoundsRef.current = null;
+    applyingBoundsRef.current = true;
+    try {
+      if (!createdRef.current) return;
+      const readback = await applyBounds(bounds);
+      if (boundsErrorRef.current) {
+        boundsErrorRef.current = false;
+        setError("");
+      }
+      // The native rectangle differs from the request: verify and correct it
+      // once more, but only once the pane has stopped moving (no newer
+      // rectangle queued up behind this one) so a continuous drag-resize does
+      // not pay for a second round trip on every single frame.
+      if (!pendingBoundsRef.current && readbackDelta(readback) > 1) {
+        const second = await applyBounds(bounds);
+        if (readbackDelta(second) > 1) console.warn(`Browser pane ${paneId} native bounds differ from the requested rectangle`, second);
+      }
+    } catch (reason) {
+      // Forget the failed rectangle so the next layout change sends it again.
+      if (lastBoundsRef.current === boundsKey(bounds)) lastBoundsRef.current = "";
+      boundsErrorRef.current = true;
+      setError(formatUiError(reason, t));
+    } finally {
+      applyingBoundsRef.current = false;
+      if (pendingBoundsRef.current) void flushBounds();
+    }
+  }, [applyBounds, paneId, t]);
 
   const scheduleBounds = useCallback(() => {
     const bounds = readBounds();
@@ -416,22 +473,13 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
     const serialized = boundsKey(bounds);
     if (serialized === lastBoundsRef.current) return;
     lastBoundsRef.current = serialized;
-    boundsQueueRef.current = boundsQueueRef.current
-      .then(async () => {
-        if (!createdRef.current) return;
-        await applyBounds(bounds);
-        if (boundsErrorRef.current) {
-          boundsErrorRef.current = false;
-          setError("");
-        }
-      })
-      .catch((reason: unknown) => {
-        // Forget the failed rectangle so the next layout change sends it again.
-        if (lastBoundsRef.current === serialized) lastBoundsRef.current = "";
-        boundsErrorRef.current = true;
-        setError(formatUiError(reason, t));
-      });
-  }, [applyBounds, readBounds]);
+    pendingBoundsRef.current = bounds;
+    if (boundsFrameRef.current !== null) return;
+    boundsFrameRef.current = window.requestAnimationFrame(() => {
+      boundsFrameRef.current = null;
+      void flushBounds();
+    });
+  }, [flushBounds, readBounds]);
 
   useEffect(() => {
     let cancelled = false;
@@ -528,6 +576,11 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
       resizeObserver.disconnect();
       mutationObserver?.disconnect();
       window.removeEventListener("resize", scheduleBounds);
+      if (boundsFrameRef.current !== null) {
+        window.cancelAnimationFrame(boundsFrameRef.current);
+        boundsFrameRef.current = null;
+      }
+      pendingBoundsRef.current = null;
     };
   }, [viewReady, scheduleBounds]);
 
@@ -538,7 +591,7 @@ export function BrowserPane({ paneId, initialUrl, visible, downloadContext, onBr
     // the retained page snapshot instead of being covered by the native view.
     const browserVisible = visible && !captureImage && !regionChoice && !downloadsOpen;
     if (browserVisible) scheduleBounds();
-    boundsQueueRef.current = boundsQueueRef.current
+    visibilityQueueRef.current = visibilityQueueRef.current
       .then(async () => {
         if (!createdRef.current) return;
         // A hidden native view cannot be captured, so the stand-in picture is taken

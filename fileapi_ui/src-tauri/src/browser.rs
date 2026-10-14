@@ -250,6 +250,13 @@ pub struct BrowserBounds {
     pub height: f64,
     /// Physical pixels per CSS pixel reported by the main WebView.
     pub device_pixel_ratio: f64,
+    /// CSS pixels, read from the hosting pane's computed bottom-corner radius;
+    /// 0 while that pane is maximized (square corners, matching its CSS). The
+    /// child WebView is a native rectangle that CSS `border-radius`/
+    /// `overflow: hidden` on the hosting element cannot clip, so the native
+    /// side cuts the same rounded corners into the child window itself.
+    pub bottom_left_radius: f64,
+    pub bottom_right_radius: f64,
 }
 
 /// Child WebView rectangle in physical pixels relative to the parent window
@@ -469,6 +476,157 @@ fn read_browser_native_bounds(view: &Webview) -> Result<BrowserPhysicalBounds, S
         width: size.width,
         height: size.height,
     })
+}
+
+/// Converts a CSS-pixel corner radius to physical pixels, clamped to zero for
+/// a non-finite, non-positive radius or scale (square corner).
+#[cfg(windows)]
+fn physical_corner_radius(radius_css: f64, scale: f64) -> i32 {
+    if !radius_css.is_finite() || radius_css <= 0.0 || !scale.is_finite() || scale <= 0.0 {
+        return 0;
+    }
+    let physical = (radius_css * scale).round();
+    if !physical.is_finite() || physical <= 0.0 {
+        return 0;
+    }
+    physical.min(f64::from(i32::MAX)) as i32
+}
+
+/// Removes one rounded corner from `region` in place: the square region at
+/// that corner, minus the quarter-circle that should remain, is exactly the
+/// sharp sliver that has to be subtracted from `region` to leave a rounded
+/// corner behind. Written as a plain function (not a closure) so every unsafe
+/// call stays in an unambiguous `unsafe` block: a closure body does not
+/// inherit the unsafe-ness of the block it is written in.
+#[cfg(windows)]
+unsafe fn cut_rounded_corner(
+    region: windows::Win32::Graphics::Gdi::HRGN,
+    square_left: i32,
+    square_top: i32,
+    square_right: i32,
+    square_bottom: i32,
+    circle_left: i32,
+    circle_top: i32,
+    circle_right: i32,
+    circle_bottom: i32,
+) {
+    use windows::Win32::Graphics::Gdi::{
+        CombineRgn, CreateEllipticRgn, CreateRectRgn, DeleteObject, HGDIOBJ, RGN_DIFF,
+    };
+    unsafe {
+        let square = CreateRectRgn(square_left, square_top, square_right, square_bottom);
+        let circle = CreateEllipticRgn(circle_left, circle_top, circle_right, circle_bottom);
+        CombineRgn(Some(square), Some(square), Some(circle), RGN_DIFF);
+        CombineRgn(Some(region), Some(region), Some(square), RGN_DIFF);
+        let _ = DeleteObject(HGDIOBJ(square.0));
+        let _ = DeleteObject(HGDIOBJ(circle.0));
+    }
+}
+
+/// Builds a `width`x`height` region with only the bottom-left and
+/// bottom-right corners rounded; the top corners stay square. The Browser
+/// pane's anchor sits below the hosting pane's titlebar, so only the pane's
+/// bottom edge (and therefore only these two corners) is ever rounded by its
+/// CSS. Ownership of the returned region belongs to the caller until it is
+/// handed to `SetWindowRgn`, which then owns it in turn.
+#[cfg(windows)]
+unsafe fn rounded_bottom_region(
+    width: i32,
+    height: i32,
+    bottom_left_radius: i32,
+    bottom_right_radius: i32,
+) -> windows::Win32::Graphics::Gdi::HRGN {
+    use windows::Win32::Graphics::Gdi::CreateRectRgn;
+
+    let max_radius = width.min(height) / 2;
+    let left = bottom_left_radius.clamp(0, max_radius.max(0));
+    let right = bottom_right_radius.clamp(0, max_radius.max(0));
+    let region = unsafe { CreateRectRgn(0, 0, width.max(1), height.max(1)) };
+
+    if left > 0 {
+        unsafe {
+            cut_rounded_corner(
+                region,
+                0,
+                height - left,
+                left,
+                height,
+                0,
+                height - 2 * left,
+                2 * left,
+                height,
+            );
+        }
+    }
+    if right > 0 {
+        unsafe {
+            cut_rounded_corner(
+                region,
+                width - right,
+                height - right,
+                width,
+                height,
+                width - 2 * right,
+                height - 2 * right,
+                width,
+                height,
+            );
+        }
+    }
+    region
+}
+
+/// Clips the Browser pane's native child window so its bottom corners match
+/// the hosting `.pane-window`'s rounded corners (square while maximized, same
+/// as its CSS). Non-fatal by design: a failure here only leaves square
+/// corners on the native surface, so callers log and continue rather than
+/// failing the create/resize request over a cosmetic mismatch.
+#[cfg(windows)]
+async fn apply_browser_corner_mask(
+    view: &Webview,
+    physical_width: u32,
+    physical_height: u32,
+    bottom_left_radius_css: f64,
+    bottom_right_radius_css: f64,
+    scale: f64,
+) -> Result<(), String> {
+    let left = physical_corner_radius(bottom_left_radius_css, scale);
+    let right = physical_corner_radius(bottom_right_radius_css, scale);
+    let width = physical_width.min(i32::MAX as u32) as i32;
+    let height = physical_height.min(i32::MAX as u32) as i32;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    view.with_webview(move |platform| {
+        let result = (|| unsafe {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::Graphics::Gdi::{DeleteObject, SetWindowRgn, HGDIOBJ};
+
+            // The controller's "parent window" is the dedicated native child
+            // window wry created to host it, not the main application window:
+            // this is the exact surface `set_bounds`/`position`/`size` already
+            // operate on.
+            let mut hwnd = HWND::default();
+            platform
+                .controller()
+                .ParentWindow(&mut hwnd)
+                .map_err(|error| error.to_string())?;
+            let region = (left > 0 || right > 0)
+                .then(|| unsafe { rounded_bottom_region(width, height, left, right) });
+            // `SetWindowRgn` takes ownership of the region on success; on
+            // failure the caller remains responsible for deleting it.
+            if SetWindowRgn(hwnd, region, true) == 0 {
+                if let Some(region) = region {
+                    let _ = DeleteObject(HGDIOBJ(region.0));
+                }
+                return Err("Unable to apply the Browser pane's rounded corners".to_string());
+            }
+            Ok(())
+        })();
+        let _ = sender.send(result);
+    })
+    .map_err(|error| error.to_string())?;
+    receiver
+        .await
+        .map_err(|_| "Browser corner mask request did not complete".to_string())?
 }
 
 #[cfg(windows)]
@@ -888,6 +1046,18 @@ pub async fn browser_create(
             child.hide().map_err(|error| error.to_string())?;
         }
         let actual = read_browser_native_bounds(&child)?;
+        if let Err(error) = apply_browser_corner_mask(
+            &child,
+            actual.width,
+            actual.height,
+            bounds.bottom_left_radius,
+            bounds.bottom_right_radius,
+            bounds.device_pixel_ratio,
+        )
+        .await
+        {
+            eprintln!("Browser pane rounded corners could not be applied: {error}");
+        }
         if url.as_str() != "about:blank" {
             if let Err(error) = child.navigate(url) {
                 let _ = close_browser_view(child, &label).await;
@@ -929,6 +1099,18 @@ pub async fn browser_set_bounds(
         })
         .map_err(|error| error.to_string())?;
         let actual = read_browser_native_bounds(&view)?;
+        if let Err(error) = apply_browser_corner_mask(
+            &view,
+            actual.width,
+            actual.height,
+            bounds.bottom_left_radius,
+            bounds.bottom_right_radius,
+            bounds.device_pixel_ratio,
+        )
+        .await
+        {
+            eprintln!("Browser pane rounded corners could not be applied: {error}");
+        }
         Ok(BrowserBoundsReadback {
             requested: native_bounds,
             actual,

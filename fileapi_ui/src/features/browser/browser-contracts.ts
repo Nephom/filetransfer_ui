@@ -57,6 +57,15 @@ export type BrowserBounds = {
   height: number;
   /** Physical pixels per CSS pixel in the main WebView (125% display = 1.25). */
   devicePixelRatio: number;
+  /**
+   * CSS pixels read from the hosting `.pane-window`'s computed
+   * `border-bottom-{left,right}-radius`; 0 while the pane is maximized (same
+   * as its CSS). The Browser pane's anchor sits below the pane's titlebar,
+   * so only the window's bottom edge (and therefore only these two corners)
+   * is ever rounded.
+   */
+  bottomLeftRadius: number;
+  bottomRightRadius: number;
 };
 
 /** Physical child-WebView bounds relative to the native parent window client area. */
