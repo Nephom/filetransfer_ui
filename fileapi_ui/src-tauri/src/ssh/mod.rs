@@ -1302,19 +1302,6 @@ pub async fn disconnect(session_id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Check whether the SSH entry can already authenticate without a stored
-/// password prompt, i.e. a usable private key is configured. Password-only
-/// entries always report `false` here so the caller knows a stored password
-/// (or one about to be typed into the Session manager) is required.
-pub fn key_available(profile: &SshProfile) -> Result<bool, String> {
-    validate_profile(profile)?;
-    Ok(profile
-        .private_key_path
-        .as_ref()
-        .map(|path| Path::new(path).is_file())
-        .unwrap_or(false))
-}
-
 /// Install a public key on the remote host's `~/.ssh/authorized_keys`,
 /// without depending on the external `ssh-copy-id` script (which does not
 /// exist on Windows). Authenticates with the entry's stored password, then

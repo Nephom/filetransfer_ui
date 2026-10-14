@@ -2,7 +2,6 @@
 
 mod browser;
 mod mouse_keepalive;
-mod netcheck;
 mod oplog;
 mod proxmox;
 mod recording;
@@ -146,18 +145,9 @@ fn reset_transfer_cancellation(transfer_id: &str) {
     }
 }
 
-/// Client-side TCP reachability probe (see `netcheck.rs`). Used by VNC mode
-/// to decide, from the desktop machine's own point of view, whether a Proxmox
-/// guest VM (or the Proxmox host itself, for an SSH jump) can be reached
-/// directly before falling back to the QEMU guest-agent API transfer path.
-#[tauri::command]
-async fn tcp_check_reachable(host: String, port: u16, timeout_ms: u64) -> bool {
-    netcheck::is_port_reachable(&host, port, timeout_ms).await
-}
-
 /// Real SSH-transport reachability probe (see
-/// `ssh::check_transport_reachable`). Unlike `tcp_check_reachable`, this
-/// proves a live SSH server actually answers at `profile.host:port` -- and,
+/// `ssh::check_transport_reachable`). Proves a live SSH server actually
+/// answers at `profile.host:port` -- and,
 /// when `profile.jump_host` is set, that the jump host's stored credentials
 /// authenticate and it can tunnel through to that target -- rather than
 /// just that *some* process holds the port open. VNC mode's
@@ -2187,32 +2177,6 @@ fn build_api_upload_manifest(
     build_upload_manifest(&paths, &expected_sources, chunk_size)
 }
 
-#[tauri::command]
-fn hash_upload_paths(paths: Vec<String>) -> Result<HashMap<String, String>, String> {
-    let (files, _) = collect_upload_paths(&paths)?;
-    files
-        .into_iter()
-        .map(|(path, relative_path)| {
-            let mut file = std::fs::File::open(&path).map_err(|error| {
-                format!("Unable to hash upload path '{}': {error}", path.display())
-            })?;
-            let mut digest = Sha256::new();
-            let mut buffer = [0_u8; 1024 * 1024];
-            loop {
-                let read = file.read(&mut buffer).map_err(|error| {
-                    format!("Unable to stream hash for '{}': {error}", path.display())
-                })?;
-                if read == 0 {
-                    break;
-                }
-                digest.update(&buffer[..read]);
-            }
-            let digest = digest.finalize();
-            Ok((relative_path, format!("{digest:x}")))
-        })
-        .collect()
-}
-
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn api_upload_paths(
@@ -2794,11 +2758,6 @@ fn ssh_set_allow_legacy_algorithms(enabled: bool) {
 }
 
 #[tauri::command]
-fn ssh_key_available(profile: ssh::SshProfile) -> Result<bool, String> {
-    ssh::key_available(&profile)
-}
-
-#[tauri::command]
 async fn ssh_install_key(profile: ssh::SshProfile) -> Result<String, String> {
     ssh::install_key(profile).await
 }
@@ -2870,14 +2829,6 @@ fn proxmox_forget_secret(entry_id: String, kind: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn proxmox_list_vms(
-    entry: proxmox::VncEntry,
-    password: String,
-) -> Result<Vec<proxmox::VmSummary>, String> {
-    proxmox::list_vms(entry, password).await
-}
-
-#[tauri::command]
 async fn proxmox_login(entry: proxmox::VncEntry, password: String) -> Result<String, String> {
     proxmox::authenticate(entry, password).await
 }
@@ -2901,14 +2852,6 @@ async fn proxmox_vnc_start_session(
     session_id: String,
 ) -> Result<proxmox::VncConnection, String> {
     proxmox::start_session(entry, session_id).await
-}
-
-#[tauri::command]
-async fn proxmox_vnc_start(
-    entry: proxmox::VncEntry,
-    password: String,
-) -> Result<proxmox::VncConnection, String> {
-    proxmox::start(entry, password).await
 }
 
 #[tauri::command]
@@ -3016,37 +2959,6 @@ async fn ssh_upload_clipboard_image(
     png_bytes: Vec<u8>,
 ) -> Result<String, String> {
     ssh::sftp::upload_clipboard_image(profile, png_bytes).await
-}
-
-/// Single-file `scp`-equivalent transfer primitives, deliberately limited to
-/// LOCAL <-> SSH REMOTE (never the API Remote model).
-#[tauri::command]
-async fn scp_download(
-    profile: ssh::SshProfile,
-    remote_path: String,
-    local_path: String,
-) -> Result<String, String> {
-    let local_path = resolve_local_download_file(
-        Path::new(&local_path)
-            .parent()
-            .and_then(|parent| parent.to_str())
-            .unwrap_or_default(),
-        Path::new(&local_path)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "Invalid local destination path".to_string())?,
-    )?;
-    ssh::sftp::download_file(profile, remote_path, local_path.display().to_string()).await
-}
-
-#[tauri::command]
-async fn scp_upload(
-    profile: ssh::SshProfile,
-    local_path: String,
-    remote_path: String,
-) -> Result<String, String> {
-    let local_path = resolve_local_read_entry(&local_path)?;
-    ssh::sftp::upload_file(profile, local_path.display().to_string(), remote_path).await
 }
 
 /// Write parity for the SSH SFTP browse pane: create/delete/rename/upload/
@@ -4475,7 +4387,6 @@ fn main() {
             clear_api_session,
             reset_api_session,
             api_request,
-            tcp_check_reachable,
             ssh_check_transport_reachable,
             pick_upload_files,
             pick_local_directory,
@@ -4495,7 +4406,6 @@ fn main() {
             local_extract_archive,
             inspect_upload_paths,
             build_api_upload_manifest,
-            hash_upload_paths,
             api_upload_paths,
             api_upload_chunk,
             open_local_file,
@@ -4511,7 +4421,6 @@ fn main() {
             mouse_keepalive::ssh_terminal_keepalive_unregister,
             ssh_connect,
             ssh_set_allow_legacy_algorithms,
-            ssh_key_available,
             ssh_install_key,
             ssh_write,
             ssh_resize,
@@ -4525,12 +4434,10 @@ fn main() {
             proxmox_save_secret,
             proxmox_load_secret,
             proxmox_forget_secret,
-            proxmox_list_vms,
             proxmox_login,
             proxmox_logout,
             proxmox_list_vms_session,
             proxmox_vnc_start_session,
-            proxmox_vnc_start,
             proxmox_vnc_cancel,
             direct_vnc_start,
             direct_vnc_cancel,
@@ -4542,8 +4449,6 @@ fn main() {
             ssh_list_directory,
             ssh_sftp_disconnect,
             ssh_upload_clipboard_image,
-            scp_download,
-            scp_upload,
             ssh_create_directory,
             ssh_delete_path,
             ssh_rename_path,

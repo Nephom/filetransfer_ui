@@ -2892,6 +2892,8 @@ mod tests {
             width,
             height,
             device_pixel_ratio: dpr,
+            bottom_left_radius: 0.0,
+            bottom_right_radius: 0.0,
         }
     }
 
