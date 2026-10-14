@@ -267,20 +267,6 @@ const parentPath = (path: string) =>
   path.split("/").filter(Boolean).slice(0, -1).join("/");
 const joinLocalPath = (directory: string, name: string) =>
   directory ? `${directory.replace(/\/+$/, "")}/${name}` : name;
-const sanitizeArchiveName = (value: string) => {
-  const cleaned = value
-    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
-    .replace(/[. ]+$/g, "")
-    .trim();
-  return cleaned || "nFterm";
-};
-const localArchiveTimestamp = (date = new Date()) => {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}_${pad(date.getMinutes())}_${pad(date.getSeconds())}`;
-};
-const sessionArchiveName = (sessionName: string) =>
-  `${sanitizeArchiveName(sessionName)}_${localArchiveTimestamp()}`;
-
 const serverUrl = (session: Session) =>
   `https://${session.host.trim()}:${session.port.trim()}`;
 // Only this exact loopback IPv4 literal selects Local-only mode; other loopback spellings remain API hosts.
@@ -1303,9 +1289,9 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
 
   // Fires one raw HTTP request through the Tauri `api_request` command,
   // using whichever bearer token the caller passes in -- separated from
-  // `api()`/`apiForLocation()` below so the 401-retry wrapper can call it
-  // twice (once with the old token, once with a freshly refreshed one)
-  // without duplicating the request-building logic itself.
+  // `api()` below so the 401-retry wrapper can call it twice (once with the
+  // old token, once with a freshly refreshed one) without duplicating the
+  // request-building logic itself.
   const rawApiRequest = async (endpoint: string, init: RequestInit, token: string, locationId: string) => {
     if (!remoteMounted.current || !session.nativeSessionId) throw new UiMessageError("The Location session has ended.");
     const headers = new Headers(init.headers);
@@ -1371,34 +1357,6 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     }
     if (!isRemoteCurrent()) return response;
     const retried = await rawApiRequest(endpoint, init, refreshedToken, session.locationId);
-    if (retried.status === 401 && isRemoteCurrent()) void logoutSession().catch(() => undefined);
-    return retried;
-  };
-
-  const apiForLocation = async (endpoint: string, locationId: string) => {
-    let response: ApiResponse;
-    try {
-      response = await rawApiRequest(endpoint, { method: "GET" }, session.token, locationId);
-    } catch (error) {
-      if (!isTransportError(error) || !isRemoteCurrent()) throw error;
-      notify(t("REMOTE connection interrupted. Reconnecting..."));
-      const recovered = await recoverApiTransportOnce();
-      if (!recovered || !isRemoteCurrent()) {
-        throw new UiMessageError("REMOTE API connection could not be restored. Check that the server is reachable.");
-      }
-      response = await rawApiRequest(endpoint, { method: "GET" }, sessionRef.current.token, locationId);
-    }
-    if (response.status !== 401) return response;
-    if (!isRemoteCurrent()) return response;
-    const refreshedToken = await refreshTokenOnce();
-    if (!refreshedToken) {
-      if (!isRemoteCurrent()) return response;
-      void logoutSession().catch(() => undefined);
-      notify(t("Your session expired. Please sign in again."));
-      return response;
-    }
-    if (!isRemoteCurrent()) return response;
-    const retried = await rawApiRequest(endpoint, { method: "GET" }, refreshedToken, locationId);
     if (retried.status === 401 && isRemoteCurrent()) void logoutSession().catch(() => undefined);
     return retried;
   };
@@ -1728,8 +1686,8 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   // logout/close. If the expiry can't be determined (decodeJwtExpiryMs
   // returned null) or the user didn't opt into "Save user info", there is
   // nothing safe to proactively refresh with, so this effect does
-  // nothing and the 401-triggered path in `api()`/`apiForLocation()`
-  // remains the only fallback.
+  // nothing and the 401-triggered path in `api()` remains the only
+  // fallback.
   useEffect(() => {
     if (!session.token || !session.saveUserInformation) return undefined;
     const expiryMs = decodeJwtExpiryMs(session.token);
