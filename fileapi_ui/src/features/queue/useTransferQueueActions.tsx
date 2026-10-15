@@ -95,6 +95,7 @@ export type UseTransferQueueActionsParams = {
   setTransferQueue: (updater: (current: TransferQueueItem[]) => TransferQueueItem[]) => void;
   queueStoreRef: { current: QueueStore<TransferQueueItem> };
   setQueueOpen: (open: boolean) => void;
+  archiveFormatOpen: boolean;
   setArchiveFormatOpen: (open: boolean) => void;
   setArchiveFormatDraft: (draft: "tar.gz" | "zip" | "queue") => void;
   queueProgressSamplesRef: { current: Map<string, { bytes: number; at: number }[]> };
@@ -123,11 +124,30 @@ export function useTransferQueueActions({
   activeLocationDisplayName, activeManagedWorkspaceName,
   findSshProfileById, refreshSftpWindow, selectedItems,
   transferQueue, setTransferQueue, queueStoreRef,
-  setQueueOpen, setArchiveFormatOpen, setArchiveFormatDraft,
+  setQueueOpen, archiveFormatOpen, setArchiveFormatOpen, setArchiveFormatDraft,
   queueProgressSamplesRef, latestQueueProgressRef, queueCompletionHandlersRef,
   cancelledQueueItemsRef, queueSchedulerRef,
 }: UseTransferQueueActionsParams) {
   const { t } = useAppTranslation();
+  const pendingDownloadDestinationRef = useRef<string | null>(null);
+  const destinationPickerOpenRef = useRef(false);
+  useEffect(() => {
+    if (!archiveFormatOpen) pendingDownloadDestinationRef.current = null;
+  }, [archiveFormatOpen]);
+
+  const localDestinationDisplayPath = (folder: string) => {
+    if (!folder) return "~";
+    const normalized = folder.replace(/\\/g, "/");
+    return normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)
+      ? normalized
+      : `~/${normalized}`;
+  };
+  const consumePendingDownloadDestination = () => {
+    const destination = pendingDownloadDestinationRef.current;
+    pendingDownloadDestinationRef.current = null;
+    return destination ?? localPath;
+  };
+
   const queueMessage = (key: string, values?: MessageValues, suffix = "", translatedValues: string[] = []) => ({
     detail: `${key.replace(/\{\{(\w+)\}\}/g, (_match, name: string) => String(values?.[name] ?? `{{${name}}}`))}${suffix}`,
     detailMessage: { key, values, suffix, translatedValues },
@@ -180,7 +200,7 @@ export function useTransferQueueActions({
   const logQueueEvent = (item: TransferQueueItem, event: string, fields: Record<string, unknown> = {}, level: "DEBUG" | "INFO" | "WARN" | "ERROR" = "INFO") => {
     const destination = item.kind === "upload"
       ? `${item.locationName}:${item.destinationPath || "/"}`
-      : `LOCAL: ~/${item.localDestinationFolder || ""}`;
+      : `LOCAL: ${localDestinationDisplayPath(item.localDestinationFolder || "")}`;
     writeOperationLog(
       item.kind === "upload" ? "upload" : "download",
       event,
@@ -934,7 +954,7 @@ export function useTransferQueueActions({
   const executeQueuedDownload = async (item: TransferQueueItem) => {
     if (!alive.current || isQueueItemCancelled(item.id)) return;
     const context = captureContext(item);
-    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    const destinationLabel = `LOCAL: ${localDestinationDisplayPath(item.localDestinationFolder || "")}`;
     logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, archiveFormat: item.archiveFormat || null }, "DEBUG");
     updateQueueItem(item.id, { status: "running", ...(item.archiveFormat ? queueMessage("Preparing {{format}} archive...", { format: item.archiveFormat }) : queueMessage("Downloading...")) });
     // download_to_disk streams the response and emits "download-progress"
@@ -1008,7 +1028,7 @@ export function useTransferQueueActions({
     if (!alive.current || isQueueItemCancelled(item.id)) return;
     const context = captureContext(item);
     const files = item.setFiles || [];
-    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    const destinationLabel = `LOCAL: ${localDestinationDisplayPath(item.localDestinationFolder || "")}`;
     logQueueEvent(item, "started", { transferId: item.id, kind: item.kind, itemCount: files.length }, "DEBUG");
     updateQueueItem(item.id, { status: "running", ...queueMessage("Downloading 0/{{total}} files...", { total: files.length }), setCompleted: 0 });
     const headers = context.headers;
@@ -1063,7 +1083,7 @@ export function useTransferQueueActions({
   };
 
   const executeQueuedSshDownload = async (item: TransferQueueItem, profile: SshProfile, items: FileItem[]) => {
-    const destinationLabel = `LOCAL: ~/${item.localDestinationFolder || ""}`;
+    const destinationLabel = `LOCAL: ${localDestinationDisplayPath(item.localDestinationFolder || "")}`;
     writeOperationLog("download", "started", item.label, destinationLabel, `SSH queued download of ${items.length} item(s) started.`, "DEBUG");
     updateQueueItem(item.id, { status: "running", ...queueMessage("Downloading 0/{{total}} items...", { total: items.length }) });
     let completed = 0;
@@ -1207,7 +1227,9 @@ export function useTransferQueueActions({
     return preparation;
   };
 
-  const enqueueQueueDownload = () =>
+  const enqueueQueueDownload = () => {
+    const pendingDestinationFolder = pendingDownloadDestinationRef.current;
+    const destinationFolder = pendingDestinationFolder ?? localPath;
     void run(async () => {
       if (!selectedItems.length) return;
       const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
@@ -1232,13 +1254,16 @@ export function useTransferQueueActions({
         setNotice(t("The selection has no files to download."));
         return;
       }
+      if (pendingDownloadDestinationRef.current === pendingDestinationFolder) {
+        pendingDownloadDestinationRef.current = null;
+      }
       const item: TransferQueueItem = {
         id,
         label: setLabel,
         labelMessage: setLabelMessage,
         kind: "download-set",
         paths: [],
-        destinationPath: localPath ? `~/${localPath}` : "~",
+        destinationPath: localDestinationDisplayPath(destinationFolder),
         locationId: session.locationId,
         locationName: activeLocationDisplayName || session.locationId,
         status: "queued",
@@ -1246,16 +1271,18 @@ export function useTransferQueueActions({
         progress: initialQueueProgress(files.length, files.reduce((sum, file) => sum + file.size, 0)),
         setFiles: files,
         setCompleted: 0,
-        localDestinationFolder: localPath,
+        localDestinationFolder: destinationFolder,
       };
       setArchiveFormatOpen(false);
       setTransferQueue((current) => [...current, item]);
       setQueueOpen(true);
       void runQueuedDownloadSet(item);
     });
+  };
 
-  const enqueueDownload = (archiveFormat: "tar.gz" | "zip") => {
+  const enqueueDownload = (archiveFormat: "tar.gz" | "zip", selectedDestinationFolder?: string) => {
     if (!selectedItems.length) return;
+    const destinationFolder = selectedDestinationFolder ?? consumePendingDownloadDestination();
     const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
     const fileName = singleFile ? selectedItems[0].name : `archive.${archiveFormat}`;
     const id = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
@@ -1277,7 +1304,7 @@ export function useTransferQueueActions({
       },
       kind: "download",
       paths: [],
-      destinationPath: localPath ? `~/${localPath}` : "~",
+      destinationPath: localDestinationDisplayPath(destinationFolder),
       locationId: session.locationId,
       locationName: activeLocationDisplayName || session.locationId,
       status: "queued",
@@ -1291,7 +1318,7 @@ export function useTransferQueueActions({
       downloadBody: body,
       downloadFileName: fileName,
       archiveFormat: singleFile ? undefined : archiveFormat,
-      localDestinationFolder: localPath,
+      localDestinationFolder: destinationFolder,
     };
     setArchiveFormatOpen(false);
     setTransferQueue((current) => [...current, item]);
@@ -1336,6 +1363,30 @@ export function useTransferQueueActions({
 
   // API REMOTE download button. SFTP windows call enqueueSshDownload directly.
   const download = () => {
+    pendingDownloadDestinationRef.current = null;
+    if (!selectedItems.length) return;
+    if (destinationPickerOpenRef.current) return;
+    destinationPickerOpenRef.current = true;
+    void run(async () => {
+      try {
+        const destinationFolder = await invoke<string | null>("pick_local_directory", { path: localPath });
+        if (destinationFolder === null) return;
+        const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
+        if (!singleFile) {
+          pendingDownloadDestinationRef.current = destinationFolder;
+          setArchiveFormatDraft("tar.gz");
+          setArchiveFormatOpen(true);
+          return;
+        }
+        enqueueDownload("tar.gz", destinationFolder);
+      } finally {
+        destinationPickerOpenRef.current = false;
+      }
+    });
+  };
+
+  const downloadToCurrentLocalFolder = () => {
+    pendingDownloadDestinationRef.current = null;
     if (!selectedItems.length) return;
     const singleFile = selectedItems.length === 1 && !selectedItems[0].isDirectory;
     if (!singleFile) {
@@ -1415,6 +1466,7 @@ export function useTransferQueueActions({
     enqueueSshDownload,
     enqueueBrowserUpload,
     download,
+    downloadToCurrentLocalFolder,
     logQueueEvent,
   };
 }

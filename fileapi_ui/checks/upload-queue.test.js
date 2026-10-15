@@ -40,14 +40,18 @@ function harness(handler = () => undefined, { sourceSize = 0, fileCount = 1 } = 
   const backend = { session: null, files: [], directories: [], totalSize: sourceSize, sessionId: "session-A" };
   let sourceSummary;
   const props = {
-    run: async (action) => { const promise = action(); pending.push(promise); await promise; }, notify() {}, setNotice(value) { props.notice = value; },
+    // Match DesktopApp.run: action failures become a visible notice and do not reject the click handler.
+    run: async (action) => { const promise = action().catch(error => { props.notice = String(error); }); pending.push(promise); await promise; }, notify() {}, setNotice(value) { props.notice = value; },
     api: async () => ({ ok: true, json: async () => ({ files: [{ remotePath: "a/file", relativePath: "file", size: 0 }] }) }),
     readError: async () => "error", session: { token: "cookie", nativeSessionId: "opaque-A", userId: 0, locationId: "A", locationRevision: "root-A", ignoreTlsErrors: false },
     serverUrl: () => "https://original.test:9443", writeOperationLog() {}, describeError: String, path: "folder", localPath: "Downloads", loadFiles: async () => {},
     refreshSftpWindow(entryId, folder) { (props.refreshed ||= []).push([entryId, folder]); },
     selectedItems: [{ name: "folder", path: "folder", isDirectory: true, size: 0 }],
     transferQueue: [item], setTransferQueue: (update) => { props.transferQueue = update(props.transferQueue); },
-    queueStoreRef: { current: { replace() {} } }, setQueueOpen() {}, setArchiveFormatOpen() {}, setArchiveFormatDraft() {},
+    queueStoreRef: { current: { replace() {} } }, setQueueOpen() {},
+    archiveFormatOpen: false,
+    setArchiveFormatOpen(value) { props.archiveFormatOpen = value; },
+    setArchiveFormatDraft(value) { props.archiveFormatDraft = value; },
     queueProgressSamplesRef: { current: new Map() }, latestQueueProgressRef: { current: new Map() }, queueCompletionHandlersRef: { current: new Map() },
     cancelledQueueItemsRef: { current: new Set() }, queueSchedulerRef: { current: { runExclusive: (_id, execute) => { const promise = execute(); pending.push(promise); return promise; } } },
   };
@@ -55,6 +59,7 @@ function harness(handler = () => undefined, { sourceSize = 0, fileCount = 1 } = 
     calls.push({ command, args });
     const result = handler(command, args, backend);
     if (result !== undefined) return result;
+    if (command === "pick_local_directory") return "Chosen/Target";
     if (command === "inspect_upload_paths") {
       sourceSummary = { files: fileCount, directories: 0, totalSize: sourceSize * fileCount,
         sources: paths.map(path => ({ path, size: sourceSize, modified: 1 })) };
@@ -364,6 +369,101 @@ test("cookie archive and flattened downloads keep Content-Type and Location inde
   const file = app.calls.find((call) => call.command === "download_to_disk_at");
   assert.equal(file.args.sessionId, "opaque-A");
   assert.ok(file.args.headers.some(([name]) => name === "X-Location-ID"));
+});
+
+test("explicit API Remote download chooses a destination before queuing a single file", async () => {
+  const app = harness();
+  app.props.selectedItems = [{ name: "report.csv", path: "folder/report.csv", isDirectory: false, size: 24 }];
+  app.render().download();
+  app.render().download();
+  await app.settle();
+
+  const pickerIndex = app.calls.findIndex(({ command }) => command === "pick_local_directory");
+  const downloadIndex = app.calls.findIndex(({ command }) => command === "download_to_disk");
+  assert.equal(app.calls.filter(({ command }) => command === "pick_local_directory").length, 1, "a rapid second click does not open another picker");
+  assert.ok(pickerIndex >= 0);
+  assert.ok(downloadIndex > pickerIndex, "the picker completes before native download starts");
+  assert.deepEqual(app.calls[pickerIndex].args, { path: "Downloads" });
+  assert.equal(app.calls[downloadIndex].args.destinationFolder, "Chosen/Target");
+  assert.equal(app.props.transferQueue.at(-1).localDestinationFolder, "Chosen/Target");
+  assert.equal(app.props.transferQueue.at(-1).destinationPath, "~/Chosen/Target");
+});
+
+test("cancelled or failed destination selection does not start an API Remote download", async () => {
+  const cancelled = harness(command => command === "pick_local_directory" ? null : undefined);
+  cancelled.props.selectedItems = [{ name: "report.csv", path: "report.csv", isDirectory: false, size: 24 }];
+  const originalQueueLength = cancelled.props.transferQueue.length;
+  cancelled.render().download();
+  await cancelled.settle();
+  assert.equal(cancelled.calls.some(({ command }) => command === "download_to_disk"), false);
+  assert.equal(cancelled.props.transferQueue.length, originalQueueLength);
+
+  const failed = harness(command => {
+    if (command === "pick_local_directory") throw new Error("destination picker failed");
+    return undefined;
+  });
+  failed.props.selectedItems = [{ name: "report.csv", path: "report.csv", isDirectory: false, size: 24 }];
+  failed.render().download();
+  await failed.settle();
+  assert.equal(failed.calls.some(({ command }) => command === "download_to_disk"), false);
+  assert.match(failed.props.notice, /destination picker failed/);
+});
+
+test("archive and per-file API Remote downloads use the selected destination", async () => {
+  const archive = harness();
+  archive.render().download();
+  await archive.settle();
+  assert.equal(archive.props.archiveFormatOpen, true);
+  assert.equal(archive.calls.some(({ command }) => command === "download_to_disk"), false);
+  archive.render().enqueueDownload("zip");
+  await tick();
+  await archive.advance();
+  await archive.settle();
+  assert.equal(archive.calls.find(({ command }) => command === "download_to_disk").args.destinationFolder, "Chosen/Target");
+  assert.equal(archive.props.transferQueue.at(-1).localDestinationFolder, "Chosen/Target");
+
+  const individual = harness();
+  individual.render().download();
+  await individual.settle();
+  individual.render().enqueueQueueDownload();
+  await individual.settle();
+  const fileDownload = individual.calls.find(({ command }) => command === "download_to_disk_at");
+  assert.equal(fileDownload.args.destinationFolder, "Chosen/Target");
+  assert.equal(individual.props.transferQueue.at(-1).localDestinationFolder, "Chosen/Target");
+});
+
+test("retrying archive-to-queue preparation retains the chosen destination", async () => {
+  const app = harness();
+  let attempts = 0;
+  app.props.api = async () => {
+    attempts += 1;
+    return attempts === 1
+      ? { ok: false, json: async () => ({}) }
+      : { ok: true, json: async () => ({ files: [{ remotePath: "folder/file.txt", relativePath: "folder/file.txt", size: 3 }] }) };
+  };
+  app.props.readError = async () => "temporary flatten failure";
+  app.render().download();
+  await app.settle();
+  app.render().enqueueQueueDownload();
+  await app.settle();
+  assert.match(app.props.notice, /temporary flatten failure/);
+  assert.equal(app.calls.some(({ command }) => command === "download_to_disk_at"), false);
+  assert.equal(app.props.archiveFormatOpen, true);
+
+  app.render().enqueueQueueDownload();
+  await app.settle();
+  const fileDownload = app.calls.find(({ command }) => command === "download_to_disk_at");
+  assert.equal(fileDownload.args.destinationFolder, "Chosen/Target");
+});
+
+test("double-click download keeps using the current LOCAL folder without opening a picker", async () => {
+  const app = harness();
+  app.props.selectedItems = [{ name: "report.csv", path: "report.csv", isDirectory: false, size: 24 }];
+  app.render().downloadToCurrentLocalFolder();
+  await app.settle();
+  assert.equal(app.calls.some(({ command }) => command === "pick_local_directory"), false);
+  const download = app.calls.find(({ command }) => command === "download_to_disk");
+  assert.equal(download.args.destinationFolder, "Downloads");
 });
 
 test("unmount releases chunk progress listeners and queued retry timers", async () => {

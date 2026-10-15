@@ -2332,6 +2332,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     enqueueSshDownload,
     enqueueBrowserUpload,
     download,
+    downloadToCurrentLocalFolder,
   } = useTransferQueueActions({
     run, notify, setNotice, api, readError,
     session,
@@ -2342,7 +2343,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
     activeManagedWorkspaceName: activeManagedWorkspace?.name,
     findSshProfileById, refreshSftpWindow, selectedItems,
     transferQueue, setTransferQueue, queueStoreRef,
-    setQueueOpen, setArchiveFormatOpen, setArchiveFormatDraft,
+    setQueueOpen, archiveFormatOpen, setArchiveFormatOpen, setArchiveFormatDraft,
     queueProgressSamplesRef, latestQueueProgressRef, queueCompletionHandlersRef,
     cancelledQueueItemsRef, queueSchedulerRef,
   });
@@ -4458,7 +4459,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                     onDoubleClick={() =>
                       file.isDirectory
                         ? void run(() => loadFiles(file.path))
-                        : download()
+                        : downloadToCurrentLocalFolder()
                     }
                     onContextMenu={(event) => {
                       const point = contextMenuPoint(event);
@@ -4599,7 +4600,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
                       onDoubleClick={() =>
                         file.isDirectory
                           ? void run(() => loadFiles(file.path))
-                          : download()
+                          : downloadToCurrentLocalFolder()
                       }
                       onContextMenu={(event) => {
                         const point = contextMenuPoint(event);

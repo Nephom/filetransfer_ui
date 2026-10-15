@@ -1034,7 +1034,7 @@ export const zhTW: Record<string, string> = {
   "Track active and completed operations in the transfer queue; recoverable errors retry automatically.": "在傳輸佇列追蹤進行中與已完成的操作；可復原的錯誤會自動重試。",
   "Transfers are verified and report backend error messages instead of only HTTP status codes.": "傳輸會經過驗證，並顯示後端錯誤訊息，而非只顯示 HTTP 狀態碼。",
   "Undo records are stored locally for operations that can be safely verified and reversed. Disabling undo history stops new records; it does not delete files. Clear undo history is permanent.": "可安全驗證並復原的操作會在本機建立復原記錄。停用復原歷史紀錄只會停止新增記錄，不會刪除檔案；清除復原歷史紀錄無法復原。",
-  "Upload sends local selections to the current remote folder. Download writes files to the selected LOCAL folder. A single regular API file uses a direct download; folders and multiple selections are packaged as an archive.": "Upload 會將本機選取項目傳至目前遠端資料夾。Download 會將檔案寫入選取的 LOCAL 資料夾。單一一般 API 檔案會直接下載；資料夾或多個選取項目會封裝為壓縮檔。",
+  "Upload sends local selections to the current remote folder. The Download button prompts you to choose a LOCAL folder, then writes files there. Double-clicking a remote file continues to download directly to the current LOCAL folder. A single regular API file uses a direct download; folders and multiple selections are packaged as an archive.": "Upload 會將本機選取項目傳至目前遠端資料夾。按下 Download 按鈕時會先提示選擇 LOCAL 資料夾，再將檔案寫入該處。雙擊遠端檔案則維持直接下載至目前的 LOCAL 資料夾。單一一般 API 檔案會直接下載；資料夾或多個選取項目會封裝為壓縮檔。",
   "Use": "使用",
   "Use Ctrl/Cmd-click or marquee selection for multiple items.": "使用 Ctrl／Cmd-click 或框選來選取多個項目。",
   "Use Redfish SessionService preset": "使用 Redfish SessionService 預設值",
