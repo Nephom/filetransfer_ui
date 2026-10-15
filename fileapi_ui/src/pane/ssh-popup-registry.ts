@@ -115,6 +115,9 @@ export async function closeSshPopup(label: string) {
 
 export const hasUnsavedSshPopupRecording = () => Array.from(popups.values()).some((popup) => popup.recordingUnsaved);
 
+/** Returns true when at least one SSH popup is connected (meaning its mouse keep-alive lease is active). */
+export const hasActiveMouseKeepalive = () => Array.from(popups.values()).some((popup) => popup.connected);
+
 /**
  * Close every popup. With `force` the windows are destroyed without running
  * their own close handler (which would ask about unsaved recordings again);
