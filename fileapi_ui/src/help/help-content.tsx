@@ -78,7 +78,29 @@ export function HelpIcon({ name, size = 18 }: { name: HelpIconName; size?: numbe
 const Page = ({ children }: { children: ReactNode }) => <div className="help-page-copy">{children}</div>;
 const List = ({ children }: { children: ReactNode }) => <ul>{children}</ul>;
 
-export const helpSections: HelpSection[] = [
+const helpSectionOrder = [
+  "getting-started",
+  "file-browser",
+  "file-transfer",
+  "browser",
+  "proxmox-vnc",
+  "rest-api",
+  "workspace",
+  "ssh-terminal",
+  "ssh-auth",
+  "sharing",
+  "logs-history",
+  "settings",
+  "troubleshooting",
+  "about",
+];
+
+const helpSectionRank = (id: string) => {
+  const rank = helpSectionOrder.indexOf(id);
+  return rank < 0 ? helpSectionOrder.length : rank;
+};
+
+const helpSectionDefinitions: HelpSection[] = [
   {
     id: "getting-started", title: "Getting Started", icon: "compass", pages: [
       { id: "login", title: "Login and server connection", summary: "Connect nFterm to an HTTPS file server.", content: <Page><p>Enter the server address without a protocol, path, or port. The default HTTPS port is <code>9443</code>. nFterm verifies TLS certificates by default. The explicit <strong>Ignore SSL certificate verification</strong> option is only for a trusted private endpoint whose certificate cannot be installed in the operating system trust store.</p><List><li>Use <strong>Sign in</strong> for the API file browser. Enter <code>127.0.0.1</code> to use local-only mode without an API session.</li></List></Page> },
@@ -167,6 +189,10 @@ export const helpSections: HelpSection[] = [
     ],
   },
 ];
+
+export const helpSections: HelpSection[] = [...helpSectionDefinitions].sort(
+  (left, right) => helpSectionRank(left.id) - helpSectionRank(right.id),
+);
 
 const pageIcons: Record<string, HelpIconName> = {
   login: "key", interface: "layout", navigation: "folder", "file-actions": "edit",
