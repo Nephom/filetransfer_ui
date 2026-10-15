@@ -41,6 +41,7 @@
 .help-page-copy code, .help-about-grid strong { color: var(--color-primary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; }
 .help-about-grid { display: grid; grid-template-columns: minmax(100px, .35fr) minmax(0, 1fr); gap: var(--space-2) var(--space-3); margin-top: var(--space-5); padding: var(--space-3); border: 1px solid var(--color-border); background: var(--color-bg); }
 .help-about-grid span { color: var(--color-text-muted); }
+.help-about-link { min-width: 0; color: var(--color-primary); text-decoration: underline; overflow-wrap: anywhere; }
 .help-footer { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-top: 1px solid var(--color-border); color: var(--color-text-muted); font-size: var(--font-size-small); }
 .help-page-nav { display: flex; gap: var(--space-2); }
 .help-page-nav button { min-height: var(--ui-button-height, var(--control-height-base)); padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); background: var(--color-bg-panel); color: var(--color-text); cursor: pointer; }

@@ -610,7 +610,7 @@ async fn apply_browser_corner_mask(
                 .ParentWindow(&mut hwnd)
                 .map_err(|error| error.to_string())?;
             let region = (left > 0 || right > 0)
-                .then(|| unsafe { rounded_bottom_region(width, height, left, right) });
+                .then(|| { rounded_bottom_region(width, height, left, right) });
             // `SetWindowRgn` takes ownership of the region on success; on
             // failure the caller remains responsible for deleting it.
             if SetWindowRgn(hwnd, region, true) == 0 {
@@ -1642,25 +1642,6 @@ fn capped_content_lengths(
 
 /// Draw instructions for the captured tiles. `scroll_offsets` are the scroll
 /// positions that were actually reached (not the requested ones).
-#[cfg(any(windows, test))]
-fn region_placements(
-    scroll_offsets: &[(f64, f64)],
-    region_width: f64,
-    region_height: f64,
-    content_width: f64,
-    content_height: f64,
-) -> Vec<BrowserScreenshotPlacement> {
-    region_placements_scaled(
-        scroll_offsets,
-        region_width,
-        region_height,
-        content_width,
-        content_height,
-        1.0,
-        1.0,
-    )
-}
-
 #[cfg(any(windows, test))]
 fn region_placements_scaled(
     scroll_offsets: &[(f64, f64)],
@@ -2879,7 +2860,7 @@ mod tests {
     use super::{
         browser_view_label, capped_content_lengths, child_frame_transform,
         collect_browser_frame_tree, map_browser_bounds_to_physical, next_scroll_position,
-        parse_web_url, region_placements, region_placements_scaled, safe_browser_download_name,
+        parse_web_url, region_placements_scaled, safe_browser_download_name,
         find_chosen_scroll_candidate, scroll_region_options, select_scroll_candidate,
         stable_capture_content_dimensions, tile_positions, unique_browser_download_destination,
         BrowserBounds, BrowserFrameTransform, BrowserPhysicalBounds, ScrollCandidate,
@@ -3241,12 +3222,14 @@ mod tests {
             assert!(positions.len() < 100);
         }
         assert_eq!(positions.last(), Some(&4400.0));
-        let placements = region_placements(
+        let placements = region_placements_scaled(
             &positions.iter().map(|top| (0.0, *top)).collect::<Vec<_>>(),
             800.0,
             600.0,
             800.0,
             5000.0,
+            1.0,
+            1.0,
         );
         // Every pixel row of the content is covered by at least one tile.
         let mut covered_until = 0.0;
@@ -3259,12 +3242,14 @@ mod tests {
 
     #[test]
     fn region_placements_clip_to_the_content_and_skip_empty_tiles() {
-        let placements = region_placements(
+        let placements = region_placements_scaled(
             &[(0.0, 0.0), (0.0, 600.0), (300.0, 1400.0), (0.0, 9000.0)],
             800.0,
             600.0,
             1000.0,
             2000.0,
+            1.0,
+            1.0,
         );
         assert_eq!(placements.len(), 3);
         assert_eq!((placements[0].width, placements[0].height), (800.0, 600.0));

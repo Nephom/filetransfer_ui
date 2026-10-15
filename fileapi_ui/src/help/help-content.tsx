@@ -158,8 +158,7 @@ export const helpSections: HelpSection[] = [
   },
   {
     id: "about", title: "About", icon: "info", pages: [
-      { id: "about-nfterm", title: "nFterm information", summary: "View the build, release, and runtime details.", content: <Page><p>The version shown here is generated from the repository's root <code>VERSION</code>, Git commit, and <code>RELEASE_DATE</code>. Runtime and SSH storage details are resolved for this installation and are not hard-coded into the Help text.</p><div className="help-about-grid"><span>Application</span><strong>nFterm</strong><span>Version</span><strong>{import.meta.env.VITE_APP_VERSION_DISPLAY || "development"}</strong><span>Documentation</span><strong>README.md and parent docs/API</strong></div></Page> },
-      { id: "support", title: "Documentation and support", summary: "Find technical references and report problems.", content: <Page><p>For server API behavior, consult the parent API contract. When reporting a problem, include the operation name, non-sensitive error message, app version, operating system, and relevant operation-log entry. Do not attach private keys, passwords, tokens, or passphrases.</p></Page> },
+      { id: "about-nfterm", title: "nFterm information", summary: "View the build, release, and runtime details.", content: <Page><div className="help-about-grid"><span>Version</span><strong>{import.meta.env.VITE_APP_VERSION_DISPLAY || "development"}</strong><span>GitHub</span><a className="help-about-link" href="https://github.com/Nephom/filetransfer_ui/" target="_blank" rel="noreferrer">https://github.com/Nephom/filetransfer_ui/</a></div></Page> },
     ],
   },
   {
@@ -178,7 +177,7 @@ const pageIcons: Record<string, HelpIconName> = {
   "proxmox-entry": "server", "proxmox-connect": "vnc", "proxmox-file-transfer": "transfer", "proxmox-troubleshooting": "wrench",
   "share-links": "share", "direct-links": "link", undo: "history", "operation-log": "history",
   safety: "shield", preferences: "settings", "connection-problems": "wrench", "transfer-problems": "transfer",
-  "about-nfterm": "info", support: "book", "browser-pane": "browser",
+  "about-nfterm": "info", "browser-pane": "browser",
 };
 
 export const helpPageIcon = (pageId: string, fallback: HelpIconName = "book") => pageIcons[pageId] || fallback;

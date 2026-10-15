@@ -68,6 +68,8 @@ export const zhTW: Record<string, string> = {
   "Transfer problems": "傳輸問題",
   "nFterm information": "nFterm 資訊",
   "Documentation and support": "文件與支援",
+  "GitHub": "GitHub",
+  "https://github.com/Nephom/filetransfer_ui/": "https://github.com/Nephom/filetransfer_ui/",
   "Browser pane and downloads": "瀏覽器視窗與下載",
   "Connect nFterm to an HTTPS file server.": "將 nFterm 連線至 HTTPS 檔案伺服器。",
   "Understand the header, panes, toolbar, and status areas.": "認識右上角控制、工作區視窗、工具列與狀態區域。",
