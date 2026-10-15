@@ -805,6 +805,75 @@ test("real xterm keeps DEC 2004 while the host is detached; only connection boun
   assert.equal(h.terminal.modes.bracketedPasteMode, false);
 });
 
+test("an SSH session boundary restores interrupted xterm modes without erasing scrollback", async (t) => {
+  const h = await harness(t);
+  h.bridge.onOutput("x", {
+    sessionId: "a-session",
+    requestId: h.requestId(),
+    data: [
+      "shell output before the full-screen program\r\n",
+      "\x1b[?1h\x1b=\x1b[?7l\x1b[?25l\x1b[?45h",
+      "\x1b[?1000h\x1b[?1004h\x1b[?1049h\x1b[?6hfull-screen output",
+      "\x1b[4h\x1b[?2004h\x1b[?2026h",
+    ].join(""),
+  });
+  await h.settle();
+
+  assert.equal(h.terminal.modes.applicationCursorKeysMode, true);
+  assert.equal(h.terminal.modes.applicationKeypadMode, true);
+  assert.equal(h.terminal.modes.originMode, true);
+  assert.equal(h.terminal.modes.wraparoundMode, false);
+  assert.equal(h.terminal.modes.reverseWraparoundMode, true);
+  assert.equal(h.terminal.modes.mouseTrackingMode, "vt200");
+  assert.equal(h.terminal.modes.sendFocusMode, true);
+  assert.equal(h.terminal.modes.insertMode, true);
+  assert.equal(h.terminal.modes.bracketedPasteMode, true);
+  assert.equal(h.terminal.modes.synchronizedOutputMode, true);
+  assert.equal(h.terminal.buffer.active.type, "alternate");
+
+  h.bridge.onExit("x", { sessionId: "a-session", requestId: h.requestId(), data: "Connection closed." });
+  await h.settle();
+
+  assert.equal(h.terminal.modes.applicationCursorKeysMode, false);
+  assert.equal(h.terminal.modes.applicationKeypadMode, false);
+  assert.equal(h.terminal.modes.originMode, false);
+  assert.equal(h.terminal.modes.wraparoundMode, true);
+  assert.equal(h.terminal.modes.reverseWraparoundMode, false);
+  assert.equal(h.terminal.modes.mouseTrackingMode, "none");
+  assert.equal(h.terminal.modes.sendFocusMode, false);
+  assert.equal(h.terminal.modes.insertMode, false);
+  assert.equal(h.terminal.modes.bracketedPasteMode, false);
+  assert.equal(h.terminal.modes.synchronizedOutputMode, false);
+  assert.equal(h.terminal.buffer.active.type, "normal");
+  assert.match(h.screen(), /shell output before the full-screen program/, "the pre-session scrollback is retained");
+});
+
+test("Home and End remain available to the shell after reconnect resets application cursor mode", async (t) => {
+  const h = await harness(t);
+  h.bridge.onOutput("x", {
+    sessionId: "a-session",
+    requestId: h.requestId(),
+    data: "\x1b[?1h\x1b[?1049hfull-screen output",
+  });
+  await h.settle();
+  assert.equal(h.terminal.modes.applicationCursorKeysMode, true);
+
+  h.bridge.onExit("x", { sessionId: "a-session", requestId: h.requestId(), data: "Connection closed." });
+  await h.settle();
+  h.setConnectResult("second-session");
+  h.ctl.connect();
+  await h.settle();
+
+  assert.equal(h.ctl.connected, true);
+  assert.equal(h.terminal.modes.applicationCursorKeysMode, false, "Home/End use the normal xterm key mode for the new shell");
+  const home = key({ key: "Home", code: "Home", keyCode: 36, ctrlKey: false });
+  const end = key({ key: "End", code: "End", keyCode: 35, ctrlKey: false });
+  assert.equal(h.terminal.keyHandler(home), true, "Home is passed through to xterm's shell key handling");
+  assert.equal(h.terminal.keyHandler(end), true, "End is passed through to xterm's shell key handling");
+  assert.equal(home.prevented, undefined);
+  assert.equal(end.prevented, undefined);
+});
+
 test("connect start and failure invalidate pending reads; a later connection can paste", async (t) => {
   const h = await harness(t);
   await h.ctl.disconnect();

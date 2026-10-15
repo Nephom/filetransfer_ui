@@ -1,8 +1,27 @@
 import type { Terminal } from "@xterm/xterm";
 
 export const VT_SESSION_BOUNDARY_GUARD = "\u001b\\\u001b[0m";
-// Replay only needs the parser guard above; real connections also reset DEC 2004.
-export const SSH_SESSION_BOUNDARY_GUARD = `${VT_SESSION_BOUNDARY_GUARD}\u001b[?2004l`;
+// A plain VT replay tail only needs the parser guard above. SSH session
+// boundaries also restore input-related modes so an interrupted full-screen
+// program cannot leave cursor, keypad, mouse or focus-reporting modes active
+// in the next shell session. Explicit mode changes avoid RIS (`ESC c`), which
+// would erase the scrollback the user expects to keep across reconnects.
+export const SSH_SESSION_BOUNDARY_GUARD = [
+  VT_SESSION_BOUNDARY_GUARD,
+  "\u001b[?1l", // Normal cursor-key mode (Home/End use xterm's normal sequences).
+  "\u001b>", // Normal keypad mode.
+  "\u001b[?7h", // Normal wrapping.
+  "\u001b[?25h", // Show the cursor.
+  "\u001b[?45l", // Disable reverse wrapping.
+  "\u001b[?9l\u001b[?1000l\u001b[?1001l\u001b[?1002l\u001b[?1003l", // Disable mouse tracking.
+  "\u001b[?1004l", // Disable focus-in/focus-out reports.
+  "\u001b[?1005l\u001b[?1006l\u001b[?1015l\u001b[?1016l", // Reset mouse encodings.
+  "\u001b[?1007l", // Disable alternate-scroll mode.
+  "\u001b[4l", // Normal replace mode.
+  "\u001b[?2004l", // Disable bracketed paste.
+  "\u001b[?2026l", // End synchronized output if it was interrupted.
+].join("");
+const SSH_ALTERNATE_SCREEN_GUARD = "\u001b[?47l\u001b[?1047l\u001b[?1049l";
 const connectionBoundaries = new WeakMap<Terminal, { ready: boolean }>();
 export const getTerminalConnectionBoundary = (terminal: Terminal) => connectionBoundaries.get(terminal);
 export const resetTerminalConnection = (terminal: Terminal | undefined) => {
@@ -10,7 +29,28 @@ export const resetTerminalConnection = (terminal: Terminal | undefined) => {
   const boundary = { ready: false };
   connectionBoundaries.set(terminal, boundary);
   // Invalidate pending clipboard reads synchronously, before xterm parses the reset.
-  terminal.write(SSH_SESSION_BOUNDARY_GUARD, () => { boundary.ready = true; });
+  // Leaving an alternate buffer restores its saved cursor. Sending those
+  // sequences while already on the primary buffer can restore a stale cursor
+  // over existing output, so only do it when xterm confirms the alternate
+  // buffer is active.
+  const alternateBufferActive = terminal.buffer?.active?.type === "alternate";
+  const cursorBuffer = alternateBufferActive ? terminal.buffer?.normal : terminal.buffer?.active;
+  const cursorX = cursorBuffer?.cursorX;
+  const cursorY = cursorBuffer?.cursorY;
+  // DECOM reset moves the cursor home; save and restore its position only
+  // when origin mode or an alternate-buffer transition can move it.
+  const resetOriginMode = Boolean(terminal.modes?.originMode);
+  const restoreCursor = (alternateBufferActive || resetOriginMode) &&
+    Number.isInteger(cursorX) && Number.isInteger(cursorY)
+    ? `\u001b[${Math.max(1, cursorY! + 1)};${Math.max(1, Math.min(cursorX!, terminal.cols - 1) + 1)}H`
+    : "";
+  const guard = [
+    SSH_SESSION_BOUNDARY_GUARD,
+    alternateBufferActive ? SSH_ALTERNATE_SCREEN_GUARD : "",
+    resetOriginMode ? "\u001b[?6l" : "",
+    restoreCursor,
+  ].join("");
+  terminal.write(guard, () => { boundary.ready = true; });
 };
 export const SSH_TAB_OUTPUT_CAP = 512 * 1024;
 
