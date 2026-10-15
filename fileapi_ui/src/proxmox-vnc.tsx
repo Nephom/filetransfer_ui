@@ -14,6 +14,8 @@ import { classifyQueueError, retryDelayMs } from "./queue/recovery";
 import { formatSize } from "./format-utils";
 import { getAppLocale, toIntlLocale } from "./i18n/i18n";
 import { formatUiError, UiMessageError } from "./i18n/errors";
+import { hostSshProfileId, proxmoxHostFromBaseUrl } from "./proxmox-vnc-utils";
+export { hostSshProfileId, proxmoxHostFromBaseUrl } from "./proxmox-vnc-utils";
 
 export type ProxmoxVersion = "auto" | "6.4" | "7.x" | "8.x" | "9.x";
 export type ProxmoxVncEntry = {
@@ -104,7 +106,6 @@ type SshTransferProfile = {
 /// ever collide.
 export const vmSshProfileKey = (node: string, vmid: number | null): string => `${node.trim()}:${vmid ?? ""}`;
 export const vmSshProfileId = (entryId: string, node = "", vmid: number | null = null) => `vncvm:${entryId}:${vmSshProfileKey(node, vmid)}`;
-export const hostSshProfileId = (entryId: string) => `vncjump:${entryId}`;
 
 // Reachability timeouts for `ssh_check_transport_reachable`, which performs
 // a full SSH transport handshake (not a bare TCP connect), so both are more
@@ -118,10 +119,6 @@ const DIRECT_REACHABILITY_TIMEOUT_MS = 2500;
 const JUMP_REACHABILITY_TIMEOUT_MS = 6000;
 const MAX_TRANSFER_RETRIES = 2;
 const GUEST_AGENT_SINGLE_READ_LIMIT_BYTES = 16 * 1024 * 1024;
-
-export const proxmoxHostFromBaseUrl = (baseUrl: string): string => {
-  try { return new URL(baseUrl).hostname; } catch { return ""; }
-};
 
 const formatFileSize = (bytes: number): string => formatSize(bytes, toIntlLocale(getAppLocale()));
 

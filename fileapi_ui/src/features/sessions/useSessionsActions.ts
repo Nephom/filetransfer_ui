@@ -5,7 +5,7 @@ import { formatUiError } from "../../i18n/errors";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import type { RestApiEntry } from "../../rest-api";
 import type { ProxmoxVncEntry } from "../../proxmox-vnc";
-import { hostSshProfileId, proxmoxHostFromBaseUrl } from "../../proxmox-vnc";
+import { hostSshProfileId, proxmoxHostFromBaseUrl } from "../../proxmox-vnc-utils";
 import { makeSshTabId } from "../terminal/terminal-utils";
 import type { ManagedSession } from "./sessions-contracts";
 import type { SshProfileDraft } from "./useSessionsState";

@@ -2,7 +2,6 @@ import i18n from "i18next";
 import type { TFunction } from "i18next";
 import { initReactI18next } from "react-i18next";
 import { enUS } from "./locales/en_US";
-import { zhTW } from "./locales/zh_TW";
 
 export const APP_LOCALES = ["en_US", "zh_TW"] as const;
 export type AppLocale = (typeof APP_LOCALES)[number];
@@ -44,10 +43,9 @@ const initialLocale = (() => {
   return locale;
 })();
 
-void i18n.use(initReactI18next).init({
+const initializationPromise = i18n.use(initReactI18next).init({
   resources: {
     en_US: { translation: enUS },
-    zh_TW: { translation: zhTW },
   },
   lng: initialLocale,
   fallbackLng: "en_US",
@@ -60,6 +58,59 @@ void i18n.use(initReactI18next).init({
   react: { useSuspense: false },
 });
 
+const localeResourcePromises = new Map<AppLocale, Promise<void>>();
+
+export function ensureAppLocaleResources(locale: AppLocale): Promise<void> {
+  if (locale === "en_US") return initializationPromise.then(() => undefined);
+
+  const existing = localeResourcePromises.get(locale);
+  if (existing) return existing;
+
+  const loading = initializationPromise
+    .then(() => import("./locales/zh_TW"))
+    .then(({ zhTW }) => {
+      if (!i18n.hasResourceBundle(locale, "translation")) {
+        i18n.addResourceBundle(locale, "translation", zhTW, true, true);
+      }
+    })
+    .catch((error: unknown) => {
+      localeResourcePromises.delete(locale);
+      throw error;
+    });
+  localeResourcePromises.set(locale, loading);
+  return loading;
+}
+
+export const initialLocaleReady = ensureAppLocaleResources(initialLocale).catch(async () => {
+  await i18n.changeLanguage("en_US");
+});
+
+let localeChangeSequence = 0;
+
+async function applyAppLocale(locale: AppLocale, persist: boolean) {
+  const sequence = ++localeChangeSequence;
+  try {
+    await ensureAppLocaleResources(locale);
+  } catch {
+    return;
+  }
+  if (sequence !== localeChangeSequence) return;
+
+  if (persist) {
+    try {
+      localStorage.setItem(localeStorageKey, locale);
+    } catch {
+      // Language switching still works for this WebView when storage is unavailable.
+    }
+  }
+
+  await i18n.changeLanguage(locale);
+  if (sequence !== localeChangeSequence) return;
+  if (persist && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("nfterm-locale-changed", { detail: locale }));
+  }
+}
+
 const updateDocumentLanguage = (locale: string) => {
   if (typeof document !== "undefined" && document.documentElement) {
     document.documentElement.lang = locale.replace("_", "-");
@@ -71,22 +122,15 @@ updateDocumentLanguage(initialLocale);
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener("storage", (event) => {
-    if (event.key !== localeStorageKey || !isAppLocale(event.newValue)) return;
-    void i18n.changeLanguage(event.newValue);
+    const locale = event.newValue;
+    if (event.key !== localeStorageKey || !isAppLocale(locale)) return;
+    void applyAppLocale(locale, false).catch(() => undefined);
   });
 }
 
 export async function changeAppLocale(locale: AppLocale) {
   if (!isAppLocale(locale)) return;
-  try {
-    localStorage.setItem(localeStorageKey, locale);
-  } catch {
-    // Language switching still works for this WebView when storage is unavailable.
-  }
-  await i18n.changeLanguage(locale);
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("nfterm-locale-changed", { detail: locale }));
-  }
+  await applyAppLocale(locale, true);
 }
 
 export function getAppLocale(): AppLocale {

@@ -7,7 +7,6 @@ import { PaneWindow } from "./PaneWindow";
 import { usePaneWindows } from "./usePaneWindows";
 import { PANE_SINGLETON_KINDS, browserPaneInstanceOf, browserWindowId, isBrowserWindow, kindOf, sftpWindowId, sshPaneEntryIdOf, sshPaneInstanceOf, sshWindowId, type PaneBrowserWindowId, type PaneWindowId, type PaneWindowKind } from "./pane-window-model";
 import { BrowserIcon, LocalIcon, RemoteIcon, RestIcon, SftpIcon, TerminalIcon, VncIcon } from "./pane-icons";
-import { BrowserPane } from "../features/browser/BrowserPane";
 import type { BrowserDownloadForRemote } from "../features/browser/browser-contracts";
 import { loadWallpaper, useWallpaper, wallpaperCssVariables } from "./pane-wallpaper-store";
 import {
@@ -22,6 +21,7 @@ import {
 } from "./ssh-popup-registry";
 
 const WelcomeWizard = lazy(() => import("./WelcomeWizard").then(({ WelcomeWizard: component }) => ({ default: component })));
+const BrowserPane = lazy(() => import("../features/browser/BrowserPane").then(({ BrowserPane: component }) => ({ default: component })));
 
 /** Marks the content of one window (by window id); PaneDesktop places it inside that window's frame. */
 export function PaneBody({ children }: { id: PaneWindowId; children: React.ReactNode }) {
@@ -301,15 +301,17 @@ export function PaneDesktop({
               onRect={(rect) => setRect(win.id, rect)}
             >
               {kind === "browser"
-                ? <BrowserPane
-                    paneId={win.id as PaneBrowserWindowId}
-                    initialUrl={browserInitialUrls[win.id] || ""}
-                    visible={layout.activeId === win.id && !win.minimized && !browserViewsOccluded}
-                    downloadContext={browserDownloadContext}
-                    onBrowserDownloadToRemote={onBrowserDownloadToRemote}
-                    onInitialUrlConsumed={() => clearBrowserInitialUrl(win.id)}
-                    onOpenNewPane={openBrowserPane}
-                  />
+                ? <Suspense fallback={null}>
+                    <BrowserPane
+                      paneId={win.id as PaneBrowserWindowId}
+                      initialUrl={browserInitialUrls[win.id] || ""}
+                      visible={layout.activeId === win.id && !win.minimized && !browserViewsOccluded}
+                      downloadContext={browserDownloadContext}
+                      onBrowserDownloadToRemote={onBrowserDownloadToRemote}
+                      onInitialUrlConsumed={() => clearBrowserInitialUrl(win.id)}
+                      onOpenNewPane={openBrowserPane}
+                    />
+                  </Suspense>
                 : bodies[win.id]}
             </PaneWindow>
           );

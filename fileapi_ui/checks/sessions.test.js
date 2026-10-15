@@ -30,7 +30,7 @@ const makeActions = (invoke, initial = {}) => {
     mocks: {
       react: { useRef: (current) => ({ current }) },
       "@tauri-apps/api/core": { invoke: async (...args) => { calls.push(args); return invoke(...args); } },
-      "../../proxmox-vnc": { hostSshProfileId: (entryId) => `vncjump:${entryId}`, proxmoxHostFromBaseUrl: () => "host" },
+      "../../proxmox-vnc-utils": { hostSshProfileId: (entryId) => `vncjump:${entryId}`, proxmoxHostFromBaseUrl: () => "host" },
       "../terminal/terminal-utils": { makeSshTabId: () => "new-entry" },
     },
     globals: { React: {} },

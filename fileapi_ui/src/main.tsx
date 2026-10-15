@@ -53,8 +53,6 @@ import { trackSshPopup, subscribeSshPopups, getSshPopupSnapshot } from "./pane/s
 import { isSshEntryConnected } from "./pane/sftp-availability";
 import { SSH_POPUP_PREFIX } from "./pane/ssh-popup-contracts";
 import { useCommandbarOverflow } from "./pane/useCommandbarOverflow";
-import { isSshTerminalPopup, SshTerminalPopup } from "./features/terminal/SshTerminalPopup";
-import { SshEntryPane } from "./features/terminal/SshEntryPane";
 import type { SshEntryTerminalState } from "./features/terminal/useSshEntryTerminal";
 import type { SshProfile } from "./features/ssh/ssh-contracts";
 import type { LocalTerminalKind } from "./features/terminal/terminal-contracts";import { formatSize } from "./format-utils";
@@ -71,7 +69,7 @@ import { useTransferQueueState } from "./features/queue/useTransferQueueState";
 import { useTransferQueueActions } from "./features/queue/useTransferQueueActions";
 import type { TransferQueueItem } from "./features/queue/queue-contracts";
 import type { BrowserDownloadForRemote } from "./features/browser/browser-contracts";
-import i18n, { changeAppLocale, getAppLocale, toIntlLocale } from "./i18n/i18n";
+import i18n, { changeAppLocale, getAppLocale, initialLocaleReady, toIntlLocale } from "./i18n/i18n";
 import { formatUiError, UiMessageError } from "./i18n/errors";
 
 const RestApiWorkspace = lazy(() => import("./rest-api").then(({ RestApiWorkspace: component }) => ({ default: component })));
@@ -93,6 +91,9 @@ const VncEntryDialog = lazy(() => import("./features/sessions/VncEntryDialog").t
 const SharePasswordDialog = lazy(() => import("./features/share-links/SharePasswordDialog").then(({ SharePasswordDialog: component }) => ({ default: component })));
 const ShareLinksModal = lazy(() => import("./features/share-links/ShareLinksModal").then(({ ShareLinksModal: component }) => ({ default: component })));
 const ArchiveFormatDialog = lazy(() => import("./features/queue/ArchiveFormatDialog").then(({ ArchiveFormatDialog: component }) => ({ default: component })));
+const SshTerminalPopup = lazy(() => import("./features/terminal/SshTerminalPopup").then(({ SshTerminalPopup: component }) => ({ default: component })));
+const SshEntryPane = lazy(() => import("./features/terminal/SshEntryPane").then(({ SshEntryPane: component }) => ({ default: component })));
+const isSshTerminalPopup = () => new URLSearchParams(window.location.search).get("sshPopup") === "1";
 const WELCOME_TUTORIAL_STORAGE_KEY = "fileapi-welcome-tutorial";
 
 // `Location` here is the REMOTE (API Location) entry type main.tsx has
@@ -4874,14 +4875,16 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
         ))}
         {openSshPanes.map(({ id, entry, name }) => (
           <PaneBody key={id} id={id as PaneWindowId}>
-            <SshEntryPane
-              windowId={id}
-              profile={entry}
-              title={name}
-              bracketedPasteControlEnabled={desktopSettings.bracketedPasteControlEnabled}
-              onStateChange={handleSshPaneState}
-              onOperationLog={writeOperationLog}
-            />
+            <Suspense fallback={null}>
+              <SshEntryPane
+                windowId={id}
+                profile={entry}
+                title={name}
+                bracketedPasteControlEnabled={desktopSettings.bracketedPasteControlEnabled}
+                onStateChange={handleSshPaneState}
+                onOperationLog={writeOperationLog}
+              />
+            </Suspense>
           </PaneBody>
         ))}
         {sshEntries.map(({ entry }) => (
@@ -5287,8 +5290,12 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   );
 }
 
-createRoot(document.getElementById("root")!).render(
-  <I18nextProvider i18n={i18n}>
-    {isSshTerminalPopup() ? <SshTerminalPopup /> : <App />}
-  </I18nextProvider>,
-);
+void initialLocaleReady.then(() => {
+  createRoot(document.getElementById("root")!).render(
+    <I18nextProvider i18n={i18n}>
+      <Suspense fallback={null}>
+        {isSshTerminalPopup() ? <SshTerminalPopup /> : <App />}
+      </Suspense>
+    </I18nextProvider>,
+  );
+});

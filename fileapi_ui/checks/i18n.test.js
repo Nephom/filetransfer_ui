@@ -71,6 +71,18 @@ test("a valid saved locale takes precedence over browser language", () => {
   assert.equal(i18n.resolveInitialAppLocale("unsupported", ["fr-FR"]), "en_US");
 });
 
+test("a saved Traditional Chinese locale is loaded before initial rendering", async () => {
+  const values = new Map([["nfterm-locale", "zh_TW"]]);
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+  };
+  const appI18n = loadTypeScript("i18n/i18n.ts", { globals: { localStorage: storage } });
+  await appI18n.initialLocaleReady;
+  assert.equal(appI18n.getAppLocale(), "zh_TW");
+  assert.equal(appI18n.default.t("Entry:"), "項目：");
+});
+
 test("manual locale changes are limited to the supported locales and persist separately", async () => {
   const values = new Map();
   const storage = {
@@ -91,6 +103,42 @@ test("manual locale changes are limited to the supported locales and persist sep
   assert.equal(appI18n.default.t("Uploaded {{quantity}} {{unit}} to {{path}}.", { quantity: 1, unit: "item", path: "/" }), "Uploaded 1 item to /.");
   await appI18n.changeAppLocale("fr_FR");
   assert.equal(values.get(appI18n.localeStorageKey), "en_US");
+});
+
+test("the most recent locale selection wins when locale resources load asynchronously", async () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+  };
+  const appI18n = loadTypeScript("i18n/i18n.ts", { globals: { localStorage: storage } });
+  await appI18n.initialLocaleReady;
+  const earlierSelection = appI18n.changeAppLocale("zh_TW");
+  const latestSelection = appI18n.changeAppLocale("en_US");
+  await Promise.all([earlierSelection, latestSelection]);
+  assert.equal(values.get(appI18n.localeStorageKey), "en_US");
+  assert.equal(appI18n.getAppLocale(), "en_US");
+});
+
+test("cross-window locale changes load translations before changing language", async () => {
+  const values = new Map([["nfterm-locale", "en_US"]]);
+  let storageListener;
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+  };
+  const window = {
+    addEventListener: (event, listener) => {
+      if (event === "storage") storageListener = listener;
+    },
+    dispatchEvent() {},
+  };
+  const appI18n = loadTypeScript("i18n/i18n.ts", { globals: { localStorage: storage, window } });
+  await appI18n.initialLocaleReady;
+  storageListener({ key: appI18n.localeStorageKey, newValue: "zh_TW" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(appI18n.getAppLocale(), "zh_TW");
+  assert.equal(appI18n.default.t("Entry:"), "項目：");
 });
 
 test("the language selector is located in Account and not Desktop Settings", () => {
