@@ -4424,6 +4424,7 @@ fn main() {
             mouse_keepalive::ssh_terminal_keepalive_clear_window,
             mouse_keepalive::ssh_terminal_keepalive_register,
             mouse_keepalive::ssh_terminal_keepalive_unregister,
+            mouse_keepalive::ssh_terminal_keepalive_is_active,
             ssh_connect,
             ssh_set_allow_legacy_algorithms,
             ssh_install_key,

@@ -1,6 +1,6 @@
 # nFterm Desktop Architecture
 
-This document describes the supported architecture of the nFterm 4.0.0
+This document describes the supported architecture of the nFterm 4.0.1
 desktop client. It is an implementation contract for maintainers, not a local
 development runbook.
 

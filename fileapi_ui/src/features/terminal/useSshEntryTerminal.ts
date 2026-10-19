@@ -2,7 +2,6 @@ import { useAppTranslation } from "../../i18n/useAppTranslation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { formatUiError, UiMessageError } from "../../i18n/errors";
-import { hasActiveMouseKeepalive } from "../../pane/ssh-popup-registry";
 import type { Terminal } from "@xterm/xterm";
 import type { SshProfile } from "../ssh/ssh-contracts";
 import { useSshEventBridge, type SshBridgeTab, type SshEventPayload } from "./useSshEventBridge";
@@ -260,12 +259,21 @@ export function useSshEntryTerminal({
         if (disposed) return;
         const detail = errorText(error);
         console.warn("Unable to register SSH mouse keep-alive.", detail);
-        // Only show the error when this is the sole SSH terminal that failed.
-        // If another SSH popup (native window) is connected, its keep-alive lease
-        // keeps the display active, so the pane does not need to report an error.
-        if (!hasActiveMouseKeepalive()) {
+        const showFailureIfInactive = () => {
+          if (disposed) return;
           setKeepAliveNotice(translationRef.current("Mouse keep-alive unavailable: {{error}}", { error: formatUiError(error, translationRef.current) }));
-        }
+        };
+        void invoke<boolean>("ssh_terminal_keepalive_is_active")
+          .then((active) => {
+            if (disposed) return;
+            if (active) setKeepAliveNotice("");
+            else showFailureIfInactive();
+          })
+          .catch((statusError) => {
+            if (disposed) return;
+            console.warn("Unable to inspect SSH mouse keep-alive state.", errorText(statusError));
+            showFailureIfInactive();
+          });
       });
 
     return () => {

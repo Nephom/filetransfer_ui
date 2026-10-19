@@ -98,7 +98,7 @@ const PROFILE = { id: "profile", name: "Server", host: "host", port: 22, usernam
 // Drives the production useSshEntryTerminal hook (the terminal of one SSH entry, shared by the
 // native window and the SSH pane) with the real useTerminalLifecycle and a real xterm.js Terminal.
 // Only Tauri commands/events and the browser shell are replaced.
-async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepAliveWindow, onStateChange, onOperationLog } = {}) {
+async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepAliveWindow, keepAliveActive = false, onStateChange, onOperationLog } = {}) {
   const hooks = hookRunner();
   const calls = [], notices = [], copies = [], reads = [], imageReads = [], pastes = [], writes = [], states = [], logs = [];
   const instances = [], focused = [];
@@ -108,6 +108,7 @@ async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepA
   const documentListeners = new Map();
   const windowListeners = new Map();
   let bridge, connectResult = connect, disconnectResult, keepAliveRegisterResult = keepAliveRegister;
+  let keepAliveActiveResult = keepAliveActive;
   let clearKeepAliveWindowResult = clearKeepAliveWindow, clearKeepAliveWindowCalls = 0;
   class Terminal extends RealTerminal {
     constructor(options) { super(options); instances.push(this); }
@@ -158,6 +159,9 @@ async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepA
       }
       if (command === "ssh_terminal_keepalive_register") {
         return typeof keepAliveRegisterResult === "function" ? keepAliveRegisterResult() : keepAliveRegisterResult;
+      }
+      if (command === "ssh_terminal_keepalive_is_active") {
+        return typeof keepAliveActiveResult === "function" ? keepAliveActiveResult() : keepAliveActiveResult;
       }
       if (command === "pick_local_directory") return picker;
       if (command === "ssh_connect") return connectResult;
@@ -218,6 +222,7 @@ async function harness(t, { connect = "a-session", keepAliveRegister, clearKeepA
     setConnectResult(value) { connectResult = value; },
     setDisconnectResult(value) { disconnectResult = value; },
     setKeepAliveRegisterResult(value) { keepAliveRegisterResult = value; },
+    setKeepAliveActiveResult(value) { keepAliveActiveResult = value; },
     setSelection(value) { selection = value; },
     screen() {
       const buffer = this.terminal.buffer.active;
@@ -363,9 +368,10 @@ test("a transient WebView lease-clear failure retries before a later Entry regis
   assert.doesNotMatch(h.ctl.status, /Mouse keep-alive unavailable/);
 });
 
-test("keep-alive registration failures are visible without blocking the SSH terminal", async (t) => {
+test("an initial keep-alive registration failure is visible without blocking the SSH terminal", async (t) => {
   const h = await harness(t, { keepAliveRegister: () => Promise.reject(new Error("native registration failed")) });
   assert.match(h.ctl.status, /Mouse keep-alive unavailable: native registration failed/);
+  assert.ok(h.calls.some(({ command }) => command === "ssh_terminal_keepalive_is_active"), "the warning uses native worker state, not popup connection state");
   assert.equal(h.ctl.connected, true, "the keep-alive failure does not disconnect the SSH Entry");
 
   await h.ctl.disconnect();
@@ -382,6 +388,29 @@ test("keep-alive registration failures are visible without blocking the SSH term
   h.render({ profile: null });
   await h.settle();
   assert.doesNotMatch(h.ctl.status, /Mouse keep-alive unavailable/, "removing the Entry also clears the warning");
+});
+
+test("a keep-alive registration failure is hidden while another terminal's native worker is active", async (t) => {
+  const h = await harness(t, {
+    keepAliveRegister: () => Promise.reject(new Error("current webview is not a WebviewWindow")),
+    keepAliveActive: true,
+  });
+
+  assert.doesNotMatch(h.ctl.status, /Mouse keep-alive unavailable/);
+  assert.equal(h.ctl.connected, true, "an existing keep-alive lease does not block the SSH terminal");
+  assert.ok(h.calls.some(({ command }) => command === "ssh_terminal_keepalive_is_active"));
+});
+
+test("a takeover registration failure is visible after the previous native worker has stopped", async (t) => {
+  const h = await harness(t);
+  assert.doesNotMatch(h.ctl.status, /Mouse keep-alive unavailable/);
+
+  h.setKeepAliveActiveResult(false);
+  h.setKeepAliveRegisterResult(() => Promise.reject(new Error("takeover registration failed")));
+  h.render({ profile: { ...PROFILE, id: "takeover-profile" } });
+  await h.settle();
+
+  assert.match(h.ctl.status, /Mouse keep-alive unavailable: takeover registration failed/);
 });
 
 test("all paste routes preserve Python indentation and logical newlines in one xterm input", async (t) => {

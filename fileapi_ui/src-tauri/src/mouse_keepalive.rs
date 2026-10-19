@@ -100,6 +100,10 @@ impl LeaseRegistry {
         !self.leases.is_empty()
     }
 
+    fn has_active_keepalive(&self) -> bool {
+        self.worker_running && self.has_active_leases()
+    }
+
     fn start_worker(&mut self) -> bool {
         if self.worker_running {
             return false;
@@ -322,6 +326,10 @@ mod windows_impl {
         if lock_registry().unregister(lease) {
             service().changed.notify_all();
         }
+    }
+
+    pub(super) fn has_active_keepalive() -> bool {
+        lock_registry().has_active_keepalive()
     }
 
     pub(super) fn destroy_window(window_label: &str) {
@@ -633,7 +641,7 @@ mod windows_impl {
 
 #[tauri::command]
 pub fn ssh_terminal_keepalive_register(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     lease_id: String,
 ) -> Result<(), String> {
     #[cfg(windows)]
@@ -649,7 +657,7 @@ pub fn ssh_terminal_keepalive_register(
 
 #[tauri::command]
 pub fn ssh_terminal_keepalive_unregister(
-    window: tauri::WebviewWindow,
+    window: tauri::Window,
     lease_id: String,
 ) -> Result<(), String> {
     #[cfg(windows)]
@@ -665,12 +673,24 @@ pub fn ssh_terminal_keepalive_unregister(
 }
 
 #[tauri::command]
-pub fn ssh_terminal_keepalive_clear_window(window: tauri::WebviewWindow) -> Result<(), String> {
+pub fn ssh_terminal_keepalive_clear_window(window: tauri::Window) -> Result<(), String> {
     #[cfg(windows)]
     windows_impl::clear_window_for_startup(window.label());
     #[cfg(not(windows))]
     let _ = window;
     Ok(())
+}
+
+#[tauri::command]
+pub fn ssh_terminal_keepalive_is_active() -> bool {
+    #[cfg(windows)]
+    {
+        windows_impl::has_active_keepalive()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 pub fn release_window(window_label: &str) {
@@ -831,7 +851,9 @@ mod tests {
         let mut registry = LeaseRegistry::default();
 
         assert!(registry.register(first.clone()).unwrap());
+        assert!(!registry.has_active_keepalive());
         assert!(registry.start_worker());
+        assert!(registry.has_active_keepalive());
         assert!(registry.register(second.clone()).unwrap());
         assert!(
             !registry.start_worker(),
@@ -847,6 +869,7 @@ mod tests {
 
         assert!(registry.unregister(&second));
         assert!(!registry.has_active_leases());
+        assert!(!registry.has_active_keepalive());
         registry.stop_worker();
         assert!(
             registry.start_worker(),
