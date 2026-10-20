@@ -1454,6 +1454,13 @@ try {
     await transferQueuePanel.waitFor({ state: 'detached' });
     await transferWindow.locator('button[aria-label="Close window"]').click();
     await page.locator('.account').click();
+    const shareManager = page.getByRole('button', { name: 'Share Manager', exact: true });
+    await shareManager.click();
+    await page.locator('.share-links-dialog').waitFor();
+    assert.equal(await page.getByText('Links created by').count(), 1, 'Pane Style Share Manager opens the existing share-link management dialog');
+    await page.locator('.modal-cover').click({ position: { x: 5, y: 5 } });
+    await page.locator('.share-links-dialog').waitFor({ state: 'detached' });
+    await page.locator('.account').click();
     const styleSettings = page.getByRole('button', { name: 'Style settings', exact: true });
     await styleSettings.click();
     const accountPaneTypography = [

@@ -651,7 +651,6 @@ export default function FileBrowser({ token, user, onLogout }) {
     };
 
     const openShareLinks = () => {
-        if (!hasCapability('share')) return;
         setModal('shareLinks');
         void loadShareLinks();
     };
@@ -1818,7 +1817,8 @@ export default function FileBrowser({ token, user, onLogout }) {
            return <>
                <input ref={inputRef} type="file" multiple hidden onChange={upload} />
                <input ref={resumeDirectoryInputRef} type="file" multiple webkitdirectory="" hidden onChange={upload} />
-               <PaneWorkspace token={token} user={user} onLogout={onLogout} onStyleChange={setInterfaceStyle}
+               <PaneWorkspace token={token} user={user} onLogout={onLogout} onStyleChange={setInterfaceStyle} onOpenShareLinks={openShareLinks}
+                   shareManager={modal === 'shareLinks' && <div className="modal-cover" onMouseDown={() => setModal(null)}><div className="modal" onMouseDown={(event) => event.stopPropagation()}><h2>Share Links</h2><div className="share-links-dialog"><div className="share-links-toolbar"><p>Links created by {user.username}.</p><button type="button" onClick={loadShareLinks} disabled={shareLinksLoading}>{shareLinksLoading ? 'Refreshing...' : 'Refresh'}</button></div>{shareLinksLoading && !shareLinks.length ? <p className="muted">Loading share links...</p> : !shareLinks.length ? <p className="muted">No share links created yet.</p> : <div className="share-link-groups">{shareLinkGroups.map((group) => <section className="share-link-group" key={group.key}><div className="share-link-group-heading"><h3>{group.label}</h3><span>{group.links.length}</span></div><div className="share-links-list">{group.links.map((link) => { const status = shareLinkStatus(link); return <article className="share-link-card" key={link.shareToken}><div className="share-link-card-heading"><strong>{link.fileName}</strong><span className={`share-link-status ${status.toLowerCase()}`}>{status}</span></div><small>Location: {link.locationId || '--'} · Created: {formatDate(link.createdAt)}</small><div className="modal-actions">{status === 'Active' && <><button type="button" onClick={() => void copyShareLink(link, 'secure')}>Copy secure</button><button type="button" className="danger" onClick={() => void revokeShareLink(link.shareToken)}>Revoke</button></>}{status === 'Revoked' && <button type="button" onClick={() => void deleteRevokedShareLink(link.shareToken)}>Clear revoked</button>}{status === 'Expired' && <button type="button" onClick={() => void deleteExpiredShareLink(link.shareToken)}>Clear expired</button>}</div></article>; })}</div></section>)}</div>}</div></div></div>}
                     transferQueue={queueItems} onCancelUpload={cancelQueueItem} onResumeUpload={beginResumeUpload}
                     onRetryUpload={retryQueueItem}
                     onDiscardUpload={discardQueueItem} onClearNeedsAction={() => clearQueueStatus('needs_user_action')} onClearFinished={clearFinishedQueueItems}

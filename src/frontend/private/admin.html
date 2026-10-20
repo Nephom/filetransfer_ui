@@ -1219,8 +1219,10 @@
             const previousActive = select.value.trim();
             input.value = JSON.stringify(next);
             const previousActiveAvailable = next.includes(previousActive) && aiDiscoveredModels.includes(previousActive);
-            let nextActive = previousActive;
-            if (!aiModelManagedByEnvironment && ((preferFirst && !previousActive) || !next.includes(previousActive) || (aiDiscoveredModels.length && !previousActiveAvailable))) {
+            // An empty configured list is an explicit Admin decision: never retain
+            // the previous active model after the last configured model is removed.
+            let nextActive = next.length ? previousActive : '';
+            if (!aiModelManagedByEnvironment && next.length && ((preferFirst && !previousActive) || !next.includes(previousActive) || (aiDiscoveredModels.length && !previousActiveAvailable))) {
                 const discoveredModel = next.find(model => aiDiscoveredModels.includes(model));
                 nextActive = discoveredModel || (aiDiscoveredModels.length ? '' : next[0] || '');
             }

@@ -98,13 +98,16 @@ try {
     assert.equal(await page.locator('#config-ai-model').inputValue(), 'model-b', 'removing the active model selects the remaining model');
     await page.getByRole('button', { name: 'Remove configured model legacy-model' }).click();
     assert.equal(await page.locator('#config-ai-models').inputValue(), '["model-b"]');
+    await page.getByRole('button', { name: 'Remove configured model model-b' }).click();
+    assert.equal(await page.locator('#config-ai-model').inputValue(), '', 'removing the last model clears the active model');
+    assert.equal(await page.locator('#config-ai-models').inputValue(), '[]', 'removing the last model clears the configured model list');
 
     await page.getByRole('button', { name: /Save Configuration/ }).click();
     await page.waitForFunction(() => !document.getElementById('configModal')?.classList.contains('active'));
     const save = requests.find(request => request.path === '/api/admin/config' && request.method === 'PUT');
     assert.ok(save, 'the Admin panel submits its configuration');
-    assert.deepEqual(save.body.ai.models, ['model-b']);
-    assert.equal(save.body.ai.model, 'model-b');
+    assert.deepEqual(save.body.ai.models, []);
+    assert.equal(save.body.ai.model, '');
     assert.equal(save.body.ai.apiKey, 'fixture-test-key');
     assert.ok(requests.some(request => request.path === '/api/admin/config/ai-test' && request.body?.apiKey === 'fixture-test-key'), 'Test sends the entered key to the server for validation');
 

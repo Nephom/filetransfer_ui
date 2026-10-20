@@ -902,6 +902,13 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
     status(superuserChange, 200);
     assert.equal(config.ai.model, 'superuser-selected-model');
     assert.deepEqual(config.ai.models, ['existing-model', 'superuser-selected-model']);
+
+    const adminClearsSuperuserModel = await send('/api/admin/config', {
+      method: 'PUT', body: { ai: { model: '', models: [] } }
+    });
+    status(adminClearsSuperuserModel, 200);
+    assert.equal(config.ai.model, '', 'Admin can clear the active model selected by a Superuser');
+    assert.deepEqual(config.ai.models, [], 'Admin can clear the configured model list selected by a Superuser');
   });
 
   await t.test('E04 cross-Location same-object move and cut never delete the only file', async () => {
