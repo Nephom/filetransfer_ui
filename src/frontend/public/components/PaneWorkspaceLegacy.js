@@ -918,6 +918,7 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, on
                     {['admin', 'superuser'].includes(user.role) && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/dashboard'); }}>Dashboard</button>}
                     {user.role === 'admin' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/admin'); }}>Admin console</button>}
                     {user.role === 'superuser' && <button type="button" onClick={() => { setAccountOpen(false); void openPrivateConsole('/super'); }}>Super panel</button>}
+                    <button type="button" className="pane-account-share-manager" onClick={() => { closeAccountMenu(); onOpenShareLinks?.(); }}>Share Manager</button>
                     <button type="button" className="style-settings-trigger" aria-expanded={styleSettingsOpen} onClick={() => setStyleSettingsOpen((open) => !open)}>Style settings <span aria-hidden="true">⌄</span></button>
                     {styleSettingsOpen && <div className="pane-account-style">
                         <h2>Interface style</h2>

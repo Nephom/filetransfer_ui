@@ -614,6 +614,21 @@ try {
     assert.ok(requests.every(request => !new URLSearchParams(request.query).has('password')));
     report.checks.push('managed/new shares: seven safe-metadata cases gate direct URL/copy, secure links remain, passwordless direct GET has no query secret');
 
+    await page.locator('.account').click();
+    const classicalShareManager = page.locator('.account-menu').getByRole('button', { name: 'Share Manager', exact: true });
+    await classicalShareManager.waitFor();
+    await classicalShareManager.click();
+    await page.locator('.share-links-dialog').waitFor();
+    assert.equal(await page.getByText('Links created by').count(), 1, 'Classical Style Share Manager opens the share-link management dialog');
+    await page.locator('.modal-cover').click({ position: { x: 5, y: 5 } });
+    await page.locator('.share-links-dialog').waitFor({ state: 'detached' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('.account').click();
+    assert.equal(await page.locator('.account-menu').getByRole('button', { name: 'Share Manager', exact: true }).isVisible(), true, 'Classical Share Manager remains reachable at a narrow viewport');
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1440, height: 900 });
+    report.checks.push('Classical Style account menu exposes Share Manager and opens its management dialog');
+
     async function selectPair() {
         await page.locator('.file-row').nth(0).click();
         await page.locator('.file-row').nth(1).click({ modifiers: ['ControlOrMeta'] });
@@ -1465,6 +1480,15 @@ try {
     assert.equal(await shareManager.isVisible(), true, 'Pane Share Manager remains visible at a narrow viewport');
     await page.setViewportSize({ width: 1440, height: 900 });
     report.checks.push('Pane Style Share Manager remains directly visible without the account menu and opens its management dialog');
+    await page.locator('.account').click();
+    const paneMenuShareManager = page.locator('.pane-account-menu').getByRole('button', { name: 'Share Manager', exact: true });
+    await paneMenuShareManager.waitFor();
+    await paneMenuShareManager.click();
+    await page.locator('.share-links-dialog').waitFor();
+    assert.equal(await page.getByText('Links created by').count(), 1, 'Pane Style account menu Share Manager opens the share-link management dialog');
+    await page.locator('.modal-cover').click({ position: { x: 5, y: 5 } });
+    await page.locator('.share-links-dialog').waitFor({ state: 'detached' });
+    report.checks.push('Pane Style account menu also exposes Share Manager');
     await page.locator('.account').click();
     const styleSettings = page.getByRole('button', { name: 'Style settings', exact: true });
     await styleSettings.click();
