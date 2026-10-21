@@ -324,13 +324,14 @@ NODE
   ln -s "src-tauri/webview2-fixed-runtime" "$DESKTOP_RUNTIME_LINK"
   BUILD_RUNTIME_LINK_CREATED=1
 
+  local output="$DESKTOP_ROOT/src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
+  rm -f "$output"/*-setup.exe
+
   export RUSTFLAGS="${RUSTFLAGS:-} -C linker=$(brew --prefix lld)/bin/lld-link"
   (cd "$DESKTOP_ROOT" && run npm run tauri -- build --runner cargo-xwin --target "$WINDOWS_TARGET" --bundles nsis --config "$BUILD_CONFIG")
 
-  local output="$DESKTOP_ROOT/src-tauri/target/$WINDOWS_TARGET/release/bundle/nsis"
-  local installer
-  installer="$(find "$output" -maxdepth 1 -type f -name '*-setup.exe' -print -quit)"
-  [[ -f "$installer" ]] || die "NSIS installer was not produced under $output."
+  local installer="$output/nFterm_${VITE_APP_VERSION}_x64-setup.exe"
+  [[ -f "$installer" ]] || die "NSIS installer was not produced: $installer"
   local installer_size
   installer_size="$(stat -f '%z' "$installer")"
   ((installer_size > 100000000)) || die "NSIS installer is only $installer_size bytes; embedded WebView2 runtime is missing."
