@@ -906,7 +906,6 @@ export default function PaneWorkspace({ token, user, onLogout, onStyleChange, on
             <span className="app-mark" />
             <span className="app-name">LAB File Manager</span>
             <span className="connection-status">SECURE STORAGE</span>
-            <button type="button" className="pane-share-manager-button" onClick={() => { closeAccountMenu(); onOpenShareLinks?.(); }}>Share Manager</button>
             <div className="account-control">
                 <button className="account" onClick={(event) => { event.stopPropagation(); setAccountOpen((open) => !open); }} aria-expanded={accountOpen}>
                     {user.username}

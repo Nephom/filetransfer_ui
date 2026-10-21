@@ -398,7 +398,7 @@ function Install-ServerDependencies {
     Set-Content -LiteralPath $resolveCheckPath -Encoding ascii -Value @'
 const path = require("path");
 const root = process.argv[2];
-for (const name of ["bcrypt", "sqlite3", "ssh2", "ws", "unrs-resolver", "esbuild"]) {
+for (const name of ["bcrypt", "sqlite3", "ssh2", "ws", "esbuild"]) {
     require.resolve(name, { paths: [root] });
 }
 '@

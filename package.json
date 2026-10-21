@@ -5,7 +5,7 @@
   "main": "src/backend/server.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env src/backend/server.js",
-    "dev": "node --env-file-if-exists=.env node_modules/nodemon/bin/nodemon.js",
+    "dev": "node --env-file-if-exists=.env --watch src/backend/server.js",
     "test": "node --test --test-concurrency=1",
     "build:browser": "node scripts/build-browser.js",
     "check:browser": "node scripts/build-browser.js --check",
@@ -40,24 +40,17 @@
   },
   "devDependencies": {
     "esbuild": "^0.25.12",
-    "jest": "^30.4.2",
-    "nodemon": "^3.1.14",
     "playwright": "^1.58.2",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },
   "overrides": {
     "glob": "^10.4.5",
-    "chokidar": {
-      "picomatch": "^2.3.2"
-    },
-    "qs": "^6.16.0",
-    "js-yaml": "^3.15.2"
+    "qs": "^6.16.0"
   },
   "allowScripts": {
     "sqlite3@6.0.1": true,
     "bcrypt@6.0.0": true,
-    "unrs-resolver@1.12.2": true,
     "esbuild@0.25.12": true
   }
 }

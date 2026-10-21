@@ -39,7 +39,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     pre|ga)
-      [[ "$COMMAND" == "build" ]] || { echo "Version channel '$1' is only valid after build." >&2; exit 2; }
+      [[ "$COMMAND" == "build" || "$COMMAND" == "upgrade" || "$COMMAND" == "self-update" ]] || { echo "Version channel '$1' is only valid after build, upgrade or self-update." >&2; exit 2; }
       [[ -z "$BUILD_CHANNEL" ]] || { echo "Only one build version channel may be provided." >&2; exit 2; }
       BUILD_CHANNEL="$1"
       shift
@@ -69,6 +69,9 @@ Commands:
   browser  Build and validate production browser assets (no service startup).
   test     Run backend sandbox tests.
   upgrade      Fast-forward from GitHub, migrate configuration, update dependencies, and run backend tests.
+               Add pre or ga to choose the version shown by the web UI (pre = 4.0.1-pre<hash>,
+               ga = 4.0.1); the choice is saved as APP_VERSION_CHANNEL in .env and applies after the
+               service is restarted. Without pre or ga the saved choice is left unchanged.
   self-update  Fetch and syntax-check the upstream build.sh; use --continue to run upgrade with it.
 
 The proxy applies only to this invocation. It is passed to apk or apt, Git, npm,
@@ -297,7 +300,7 @@ install_server_node_dependencies() {
     cd "$ROOT_DIR" &&
       npm ci --ignore-scripts --include=optional --include=dev &&
       npm rebuild --foreground-scripts &&
-      node -e 'for (const name of ["bcrypt", "sqlite3", "ssh2", "ws", "unrs-resolver", "esbuild"]) require.resolve(name);' &&
+      node -e 'for (const name of ["bcrypt", "sqlite3", "ssh2", "ws", "esbuild"]) require.resolve(name);' &&
       npm run check:native
   ) || return $?
   cmd_browser
@@ -521,6 +524,7 @@ self_update() {
   }
 
   local -a forwarded_args=(upgrade)
+  [[ -n "$BUILD_CHANNEL" ]] && forwarded_args+=("$BUILD_CHANNEL")
   [[ "$INTERACTIVE_UPGRADE" -eq 1 ]] && forwarded_args+=(--interactive)
   [[ -n "$PROXY" ]] && forwarded_args+=(--proxy "$PROXY")
   FILETRANSFER_ROOT="$ROOT_DIR" SELF_UPDATE_BOOTSTRAPPED=1 bash "$temporary" "${forwarded_args[@]}"
@@ -548,6 +552,15 @@ confirm_configuration_upgrade() {
   else
     echo "Non-interactive upgrade: preserving existing values and applying migration defaults."
   fi
+}
+
+apply_version_channel() {
+  [[ -n "$BUILD_CHANNEL" ]] || return 0
+  [[ -f "$ROOT_DIR/.env" ]] || { echo "Cannot save the version channel: $ROOT_DIR/.env does not exist." >&2; return 1; }
+  upsert_env APP_VERSION_CHANNEL "$BUILD_CHANNEL"
+  chmod 600 "$ROOT_DIR/.env"
+  echo "Upgrade: saved APP_VERSION_CHANNEL=$BUILD_CHANNEL in .env."
+  echo "Upgrade: the web UI will show: $(APP_VERSION_CHANNEL="$BUILD_CHANNEL" application_version_display)"
 }
 
 setup_configuration() {
@@ -791,11 +804,12 @@ cmd_upgrade() {
   migrate_legacy_configuration "$legacy_config"
   [[ -z "$legacy_config" ]] || rm -f "$legacy_config"
   setup_configuration
+  apply_version_channel
   echo "Upgrade: running database migrations..."
   run_database_migrations
   echo "Upgrade: running backend tests..."
   cmd_test
-  echo "Upgrade complete. Start the service with ./start.sh."
+  echo "Upgrade complete. Restart a running service with ./restart.sh, or start it with ./start.sh."
 }
 
 configure_proxy

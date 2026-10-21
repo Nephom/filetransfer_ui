@@ -614,20 +614,11 @@ try {
     assert.ok(requests.every(request => !new URLSearchParams(request.query).has('password')));
     report.checks.push('managed/new shares: seven safe-metadata cases gate direct URL/copy, secure links remain, passwordless direct GET has no query secret');
 
+    assert.equal(await page.locator('.titlebar').getByRole('button', { name: 'Share Manager', exact: true }).count(), 0, 'Classical Style keeps Share Links on the command bar, not in the title bar');
     await page.locator('.account').click();
-    const classicalShareManager = page.locator('.account-menu').getByRole('button', { name: 'Share Manager', exact: true });
-    await classicalShareManager.waitFor();
-    await classicalShareManager.click();
-    await page.locator('.share-links-dialog').waitFor();
-    assert.equal(await page.getByText('Links created by').count(), 1, 'Classical Style Share Manager opens the share-link management dialog');
-    await page.locator('.modal-cover').click({ position: { x: 5, y: 5 } });
-    await page.locator('.share-links-dialog').waitFor({ state: 'detached' });
-    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.locator('.account-menu').getByRole('button', { name: 'Share Manager', exact: true }).count(), 0, 'Classical Style account menu has no Share Manager entry');
     await page.locator('.account').click();
-    assert.equal(await page.locator('.account-menu').getByRole('button', { name: 'Share Manager', exact: true }).isVisible(), true, 'Classical Share Manager remains reachable at a narrow viewport');
-    await page.keyboard.press('Escape');
-    await page.setViewportSize({ width: 1440, height: 900 });
-    report.checks.push('Classical Style account menu exposes Share Manager and opens its management dialog');
+    report.checks.push('Classical Style keeps Share Links on the command bar only');
 
     async function selectPair() {
         await page.locator('.file-row').nth(0).click();
@@ -1468,27 +1459,89 @@ try {
     await transferQueuePanel.locator('.pane-upload-queue-close').click();
     await transferQueuePanel.waitFor({ state: 'detached' });
     await transferWindow.locator('button[aria-label="Close window"]').click();
-    const shareManager = page.getByRole('button', { name: 'Share Manager', exact: true });
-    assert.equal(await page.locator('.pane-account-menu').count(), 0, 'Pane Share Manager is available without opening the account menu');
-    await shareManager.waitFor();
-    await shareManager.click();
-    await page.locator('.share-links-dialog').waitFor();
-    assert.equal(await page.getByText('Links created by').count(), 1, 'Pane Style Share Manager opens the existing share-link management dialog');
-    await page.locator('.modal-cover').click({ position: { x: 5, y: 5 } });
-    await page.locator('.share-links-dialog').waitFor({ state: 'detached' });
+    assert.equal(await page.locator('.pane-titlebar').getByRole('button', { name: 'Share Manager', exact: true }).count(), 0, 'Pane Style keeps the title bar free of a Share Manager button');
+    const shareManagerBases = { default: '#07111f', light: '#dfeaf2', silver: '#d5d8dd', dos: '#0000aa' };
+    const shareManagerShots = process.env.SHARE_MANAGER_SHOT_DIR;
+    if (shareManagerShots) fs.mkdirSync(shareManagerShots, { recursive: true });
+    for (const [themeId, baseColor] of Object.entries(shareManagerBases)) {
+        await page.locator('.account').click();
+        const themeMenu = page.locator('.pane-account-menu');
+        assert.equal(await themeMenu.getByRole('button', { name: 'Share Manager', exact: true }).count(), 1, `${themeId}: Pane account menu has exactly one Share Manager entry`);
+        await themeMenu.getByRole('button', { name: 'Style settings', exact: true }).click();
+        await page.locator('.pane-account-style select').last().selectOption(themeId);
+        await page.mouse.click(5, 5);
+        await page.locator('.pane-account-menu').waitFor({ state: 'detached' });
+        await page.locator('.account').click();
+        await page.locator('.pane-account-menu').getByRole('button', { name: 'Share Manager', exact: true }).click();
+        const shareDialog = page.locator('.pane-share-manager-modal');
+        await shareDialog.locator('.share-link-card').first().waitFor();
+        assert.equal(await page.getByText('Links created by').count(), 1, `${themeId}: Pane Share Manager opens the share-link management dialog`);
+        assert.equal(await shareDialog.getByRole('heading', { name: 'Share Manager', exact: true }).count(), 1, `${themeId}: dialog title`);
+        const shareLook = await shareDialog.evaluate((dialog, base) => {
+            const parse = (value) => { const parts = value.match(/[\d.]+/g).map(Number); return { r: parts[0], g: parts[1], b: parts[2], a: parts.length > 3 ? parts[3] : 1 }; };
+            const hex = (value) => ({ r: parseInt(value.slice(1, 3), 16), g: parseInt(value.slice(3, 5), 16), b: parseInt(value.slice(5, 7), 16), a: 1 });
+            const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
+            const backgroundOf = (element) => {
+                const layers = [];
+                for (let node = element; node; node = node.parentElement) {
+                    const color = parse(getComputedStyle(node).backgroundColor);
+                    if (color.a > 0) layers.push(color);
+                    if (color.a >= 1) break;
+                }
+                return layers.reduceRight((below, layer) => over(layer, below), hex(base));
+            };
+            const channel = (value) => { const s = value / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
+            const luminance = (color) => 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b);
+            const ratio = (element) => {
+                const background = backgroundOf(element);
+                const foreground = over(parse(getComputedStyle(element).color), background);
+                const [light, dark] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+                return (light + 0.05) / (dark + 0.05);
+            };
+            const targets = {
+                title: '.pane-share-manager-titlebar h2', close: '.pane-share-manager-close', description: '.share-links-toolbar p', refresh: '.share-links-toolbar button',
+                groupHeading: '.share-link-group-heading h3', groupCount: '.share-link-group-heading > span', fileName: '.share-link-card-heading strong',
+                status: '.share-link-status', detail: '.share-link-card small', copy: '.share-link-card .modal-actions button:not(.danger)', revoke: '.share-link-card .modal-actions button.danger'
+            };
+            const ratios = {};
+            for (const [name, selector] of Object.entries(targets)) {
+                const element = dialog.querySelector(selector);
+                ratios[name] = element ? ratio(element) : null;
+            }
+            const style = getComputedStyle(dialog);
+            const toolbar = dialog.querySelector('.share-links-toolbar');
+            const toolbarText = toolbar.querySelector('p').getBoundingClientRect();
+            const toolbarButton = toolbar.querySelector('button').getBoundingClientRect();
+            return { toolbar: { display: getComputedStyle(toolbar).display, sameRow: toolbarButton.top < toolbarText.bottom && toolbarText.top < toolbarButton.bottom }, ratios, borderRadius: style.borderTopLeftRadius, borderStyle: style.borderTopStyle, fontFamily: style.fontFamily, boxShadow: style.boxShadow };
+        }, baseColor);
+        assert.equal(shareLook.toolbar.sameRow, true, `${themeId}: the description and Refresh button share one row (toolbar display: ${shareLook.toolbar.display})`);
+        for (const [name, value] of Object.entries(shareLook.ratios)) {
+            assert.ok(value !== null, `${themeId}: ${name} is rendered in the Share Manager dialog`);
+            assert.ok(value >= 4.5, `${themeId}: ${name} contrast ${value?.toFixed(2)} is at least 4.5:1`);
+        }
+        if (themeId === 'dos') {
+            assert.equal(shareLook.borderRadius, '0px', 'MS-DOS Share Manager has square corners');
+            assert.equal(shareLook.borderStyle, 'double', 'MS-DOS Share Manager uses the double-line frame');
+            assert.match(shareLook.fontFamily, /Courier|monospace|VGA/i, 'MS-DOS Share Manager uses the DOS monospace font');
+            assert.match(shareLook.boxShadow, /rgb\(0, 0, 0\) 8px 8px 0px/, 'MS-DOS Share Manager uses the hard offset shadow');
+        } else {
+            assert.notEqual(shareLook.borderStyle, 'double', `${themeId}: only MS-DOS uses the double-line frame`);
+        }
+        if (shareManagerShots) await page.screenshot({ path: path.join(shareManagerShots, `share-manager-${themeId}.png`) });
+        await shareDialog.getByRole('button', { name: 'Close Share Manager', exact: true }).click();
+        await shareDialog.waitFor({ state: 'detached' });
+    }
     await page.setViewportSize({ width: 390, height: 844 });
-    assert.equal(await shareManager.isVisible(), true, 'Pane Share Manager remains visible at a narrow viewport');
-    await page.setViewportSize({ width: 1440, height: 900 });
-    report.checks.push('Pane Style Share Manager remains directly visible without the account menu and opens its management dialog');
     await page.locator('.account').click();
-    const paneMenuShareManager = page.locator('.pane-account-menu').getByRole('button', { name: 'Share Manager', exact: true });
-    await paneMenuShareManager.waitFor();
-    await paneMenuShareManager.click();
-    await page.locator('.share-links-dialog').waitFor();
-    assert.equal(await page.getByText('Links created by').count(), 1, 'Pane Style account menu Share Manager opens the share-link management dialog');
-    await page.locator('.modal-cover').click({ position: { x: 5, y: 5 } });
-    await page.locator('.share-links-dialog').waitFor({ state: 'detached' });
-    report.checks.push('Pane Style account menu also exposes Share Manager');
+    assert.equal(await page.locator('.pane-account-menu').getByRole('button', { name: 'Share Manager', exact: true }).isVisible(), true, 'Pane Share Manager stays reachable from the account menu at a narrow viewport');
+    await page.mouse.click(5, 5);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator('.account').click();
+    await page.locator('.pane-account-menu').getByRole('button', { name: 'Style settings', exact: true }).click();
+    await page.locator('.pane-account-style select').last().selectOption('default');
+    await page.mouse.click(5, 5);
+    await page.locator('.pane-account-menu').waitFor({ state: 'detached' });
+    report.checks.push('Pane Style Share Manager lives only in the account menu and its dialog follows Default, Clean Light, Silver Gray and MS-DOS with readable contrast');
     await page.locator('.account').click();
     const styleSettings = page.getByRole('button', { name: 'Style settings', exact: true });
     await styleSettings.click();

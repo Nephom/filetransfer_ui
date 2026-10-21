@@ -254,7 +254,7 @@ install_server_dependencies() {
     cd "$ROOT_DIR" &&
       run npm ci --ignore-scripts --include=optional --include=dev &&
       run npm rebuild --foreground-scripts &&
-      node -e 'for (const name of ["bcrypt", "sqlite3", "ssh2", "ws", "unrs-resolver", "esbuild"]) require.resolve(name);' &&
+      node -e 'for (const name of ["bcrypt", "sqlite3", "ssh2", "ws", "esbuild"]) require.resolve(name);' &&
       run npm run check:native &&
       run npm run build:browser &&
       run npm run check:browser
