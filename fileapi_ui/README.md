@@ -1,4 +1,4 @@
-# nFterm 4.0.1
+# nFterm 4.0.2
 
 This is a mouse-first Tauri v2 desktop client for Ubuntu 22.04+ and Windows 10/11. The repository folder is `fileapi_ui`.
 

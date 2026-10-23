@@ -69,8 +69,8 @@ Commands:
   browser  Build and validate production browser assets (no service startup).
   test     Run backend sandbox tests.
   upgrade      Fast-forward from GitHub, migrate configuration, update dependencies, and run backend tests.
-               Add pre or ga to choose the version shown by the web UI (pre = 4.0.1-pre<hash>,
-               ga = 4.0.1); the choice is saved as APP_VERSION_CHANNEL in .env and applies after the
+               Add pre or ga to choose the version shown by the web UI (pre = 4.0.2-pre<hash>,
+               ga = 4.0.2); the choice is saved as APP_VERSION_CHANNEL in .env and applies after the
                service is restarted. Without pre or ga the saved choice is left unchanged.
   self-update  Fetch and syntax-check the upstream build.sh; use --continue to run upgrade with it.
 

@@ -1,7 +1,32 @@
-const forge = require('node-forge');
+// @peculiar/x509 relies on tsyringe, which needs a Reflect polyfill loaded first.
+require('reflect-metadata');
+const crypto = require('crypto');
+const net = require('net');
+const { promisify } = require('util');
+const x509 = require('@peculiar/x509');
 const fs = require('fs').promises;
 const path = require('path');
 const { systemLogger } = require('../utils/logger');
+
+const generateKeyPair = promisify(crypto.generateKeyPair);
+const RSA_ALGORITHM = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' };
+
+x509.cryptoProvider.set(crypto.webcrypto);
+
+// Positive 128-bit random serial. The top bit is cleared so the DER INTEGER is
+// never negative (Go TLS rejects negative serials) and re-issued certificates
+// with the same issuer name never collide on (issuer, serial).
+const randomSerialNumber = () => {
+  const bytes = crypto.randomBytes(16);
+  bytes[0] = (bytes[0] & 0x7f) | 0x01;
+  return bytes.toString('hex');
+};
+
+const addYears = (date, years) => {
+  const result = new Date(date.getTime());
+  result.setFullYear(result.getFullYear() + years);
+  return result;
+};
 
 class CertificateManager {
   constructor() {
@@ -13,52 +38,61 @@ class CertificateManager {
   }
 
   /**
+   * Generate a 2048-bit RSA key pair with Node's native crypto.
+   * @returns {Promise<Object>} { privateKey, publicKey (CryptoKey), keyPem (PKCS#1 PEM) }
+   */
+  async generateRsaKeyPair() {
+    const { publicKey, privateKey } = await generateKeyPair('rsa', {
+      modulusLength: 2048,
+      publicExponent: 0x10001
+    });
+    return {
+      privateKey: await this.importPrivateKey(privateKey),
+      publicKey: await crypto.webcrypto.subtle.importKey(
+        'spki', publicKey.export({ type: 'spki', format: 'der' }), RSA_ALGORITHM, true, ['verify']
+      ),
+      // Same PEM flavour (PKCS#1 "RSA PRIVATE KEY") as the previous implementation.
+      keyPem: privateKey.export({ type: 'pkcs1', format: 'pem' })
+    };
+  }
+
+  /**
+   * Convert a Node KeyObject into a WebCrypto signing key.
+   * @param {crypto.KeyObject} keyObject - RSA private key
+   * @returns {Promise<CryptoKey>}
+   */
+  importPrivateKey(keyObject) {
+    return crypto.webcrypto.subtle.importKey(
+      'pkcs8', keyObject.export({ type: 'pkcs8', format: 'der' }), RSA_ALGORITHM, true, ['sign']
+    );
+  }
+
+  /**
    * Generate CA (Certificate Authority) certificate and private key
    * @param {number} validityYears - Certificate validity in years (default: 10)
-   * @returns {Object} { cert: PEM certificate, key: PEM private key }
+   * @returns {Promise<Object>} { cert: PEM certificate, key: PEM private key, certObj, keyObj }
    */
-  generateCA(validityYears = 10) {
-    const keys = forge.pki.rsa.generateKeyPair(2048);
-    const cert = forge.pki.createCertificate();
+  async generateCA(validityYears = 10) {
+    const keys = await this.generateRsaKeyPair();
+    const notBefore = new Date();
 
-    cert.publicKey = keys.publicKey;
-    cert.serialNumber = '01';
-    cert.validity.notBefore = new Date();
-    cert.validity.notAfter = new Date();
-    cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + validityYears);
-
-    const attrs = [
-      { name: 'commonName', value: 'File Transfer CA' },
-      { name: 'countryName', value: 'TW' },
-      { name: 'organizationName', value: 'File Transfer System' },
-      { shortName: 'OU', value: 'Certificate Authority' }
-    ];
-
-    cert.setSubject(attrs);
-    cert.setIssuer(attrs);
-
-    cert.setExtensions([
-      {
-        name: 'basicConstraints',
-        cA: true,
-        critical: true
-      },
-      {
-        name: 'keyUsage',
-        keyCertSign: true,
-        cRLSign: true,
-        critical: true
-      },
-      {
-        name: 'subjectKeyIdentifier'
-      }
-    ]);
-
-    cert.sign(keys.privateKey, forge.md.sha256.create());
+    const cert = await x509.X509CertificateGenerator.createSelfSigned({
+      serialNumber: randomSerialNumber(),
+      name: 'CN=File Transfer CA, C=TW, O=File Transfer System, OU=Certificate Authority',
+      notBefore,
+      notAfter: addYears(notBefore, validityYears),
+      signingAlgorithm: RSA_ALGORITHM,
+      keys: { privateKey: keys.privateKey, publicKey: keys.publicKey },
+      extensions: [
+        new x509.BasicConstraintsExtension(true, undefined, true),
+        new x509.KeyUsagesExtension(x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign, true),
+        await x509.SubjectKeyIdentifierExtension.create(keys.publicKey)
+      ]
+    });
 
     return {
-      cert: forge.pki.certificateToPem(cert),
-      key: forge.pki.privateKeyToPem(keys.privateKey),
+      cert: cert.toString('pem'),
+      key: keys.keyPem,
       certObj: cert,
       keyObj: keys.privateKey
     };
@@ -66,78 +100,43 @@ class CertificateManager {
 
   /**
    * Generate server certificate signed by CA
-   * @param {Object} caData - CA certificate and key objects
+   * @param {Object} caData - CA certificate (x509.X509Certificate) and signing key (CryptoKey)
    * @param {Array<string>} sans - Subject Alternative Names (IPs and hostnames)
    * @param {number} validityYears - Certificate validity in years (default: 10)
-   * @returns {Object} { cert: PEM certificate, key: PEM private key }
+   * @returns {Promise<Object>} { cert: PEM certificate, key: PEM private key }
    */
-  generateServerCertificate(caData, sans = [], validityYears = 10) {
-    const keys = forge.pki.rsa.generateKeyPair(2048);
-    const cert = forge.pki.createCertificate();
+  async generateServerCertificate(caData, sans = [], validityYears = 10) {
+    const keys = await this.generateRsaKeyPair();
+    const notBefore = new Date();
 
-    cert.publicKey = keys.publicKey;
-    // 使用正數序列號（Go TLS 不接受負數）
-    cert.serialNumber = Math.abs(Math.floor(Math.random() * 1000000)).toString(16);
-    cert.validity.notBefore = new Date();
-    cert.validity.notAfter = new Date();
-    cert.validity.notAfter.setFullYear(cert.validity.notBefore.getFullYear() + validityYears);
+    // Build Subject Alternative Names. net.isIP is authoritative; a regex would
+    // also classify hex-only host names (e.g. "beef") as IP addresses.
+    const altNames = sans.map(san => ({ type: net.isIP(san) ? 'ip' : 'dns', value: san }));
 
-    const attrs = [
-      { name: 'commonName', value: 'File Transfer Server' },
-      { name: 'countryName', value: 'TW' },
-      { name: 'organizationName', value: 'File Transfer System' },
-      { shortName: 'OU', value: 'Server Certificate' }
+    const extensions = [
+      new x509.BasicConstraintsExtension(false, undefined, true),
+      new x509.KeyUsagesExtension(x509.KeyUsageFlags.digitalSignature | x509.KeyUsageFlags.keyEncipherment, true),
+      new x509.ExtendedKeyUsageExtension([x509.ExtendedKeyUsage.serverAuth, x509.ExtendedKeyUsage.clientAuth]),
+      ...(altNames.length ? [new x509.SubjectAlternativeNameExtension(altNames)] : []),
+      await x509.SubjectKeyIdentifierExtension.create(keys.publicKey),
+      await x509.AuthorityKeyIdentifierExtension.create(caData.certObj)
     ];
 
-    cert.setSubject(attrs);
-    cert.setIssuer(caData.certObj.subject.attributes);
-
-    // Build Subject Alternative Names
-    const altNames = [];
-    sans.forEach(san => {
-      // Check if it's an IP address
-      if (/^(\d{1,3}\.){3}\d{1,3}$/.test(san) || /^([0-9a-fA-F:]+)$/.test(san)) {
-        altNames.push({ type: 7, ip: san }); // type 7 = IP address
-      } else {
-        altNames.push({ type: 2, value: san }); // type 2 = DNS name
-      }
+    const cert = await x509.X509CertificateGenerator.create({
+      serialNumber: randomSerialNumber(),
+      subject: 'CN=File Transfer Server, C=TW, O=File Transfer System, OU=Server Certificate',
+      issuer: caData.certObj.subjectName,
+      notBefore,
+      notAfter: addYears(notBefore, validityYears),
+      signingAlgorithm: RSA_ALGORITHM,
+      publicKey: keys.publicKey,
+      signingKey: caData.keyObj,
+      extensions
     });
 
-    cert.setExtensions([
-      {
-        name: 'basicConstraints',
-        cA: false,
-        critical: true
-      },
-      {
-        name: 'keyUsage',
-        digitalSignature: true,
-        keyEncipherment: true,
-        critical: true
-      },
-      {
-        name: 'extKeyUsage',
-        serverAuth: true,
-        clientAuth: true
-      },
-      {
-        name: 'subjectAltName',
-        altNames: altNames
-      },
-      {
-        name: 'subjectKeyIdentifier'
-      },
-      {
-        name: 'authorityKeyIdentifier',
-        keyIdentifier: caData.certObj.generateSubjectKeyIdentifier().getBytes()
-      }
-    ]);
-
-    cert.sign(caData.keyObj, forge.md.sha256.create());
-
     return {
-      cert: forge.pki.certificateToPem(cert),
-      key: forge.pki.privateKeyToPem(keys.privateKey)
+      cert: cert.toString('pem'),
+      key: keys.keyPem
     };
   }
 
@@ -156,21 +155,21 @@ class CertificateManager {
   /**
    * Load certificate from file
    * @param {string} certPath - Path to certificate file
-   * @returns {Object} forge certificate object
+   * @returns {Promise<x509.X509Certificate>} parsed certificate
    */
   async loadCertificate(certPath) {
     const certPem = await fs.readFile(certPath, 'utf8');
-    return forge.pki.certificateFromPem(certPem);
+    return new x509.X509Certificate(certPem);
   }
 
   /**
    * Load private key from file
    * @param {string} keyPath - Path to private key file
-   * @returns {Object} forge private key object
+   * @returns {Promise<CryptoKey>} RSA signing key (PKCS#1 and PKCS#8 PEM are both accepted)
    */
   async loadPrivateKey(keyPath) {
     const keyPem = await fs.readFile(keyPath, 'utf8');
-    return forge.pki.privateKeyFromPem(keyPem);
+    return this.importPrivateKey(crypto.createPrivateKey(keyPem));
   }
 
   /**
@@ -203,7 +202,7 @@ class CertificateManager {
   async getCertificateExpiration(certPath) {
     try {
       const cert = await this.loadCertificate(certPath);
-      return cert.validity.notAfter;
+      return cert.notAfter;
     } catch (error) {
       return null;
     }
@@ -245,12 +244,12 @@ class CertificateManager {
 
       // Generate CA
       systemLogger.logSystem('INFO', 'Generating CA certificate...');
-      const caData = this.generateCA(10);
+      const caData = await this.generateCA(10);
       await this.saveCertificate(this.caCertPath, this.caKeyPath, caData.cert, caData.key);
 
       // Generate Server certificate
       systemLogger.logSystem('INFO', `Generating server certificate with SANs: ${sans.join(', ')}`);
-      const serverData = this.generateServerCertificate(caData, sans, 10);
+      const serverData = await this.generateServerCertificate(caData, sans, 10);
       await this.saveCertificate(this.serverCertPath, this.serverKeyPath, serverData.cert, serverData.key);
 
       const caExpiration = await this.getCertificateExpiration(this.caCertPath);
@@ -302,7 +301,7 @@ class CertificateManager {
 
       // Generate new server certificate
       systemLogger.logSystem('INFO', `Renewing server certificate with SANs: ${sans.join(', ')}`);
-      const serverData = this.generateServerCertificate(caData, sans, 10);
+      const serverData = await this.generateServerCertificate(caData, sans, 10);
       await this.saveCertificate(this.serverCertPath, this.serverKeyPath, serverData.cert, serverData.key);
 
       const serverExpiration = await this.getCertificateExpiration(this.serverCertPath);
@@ -341,17 +340,11 @@ class CertificateManager {
       const cert = await this.loadCertificate(certPath);
       const sans = [];
 
-      const altNameExt = cert.getExtension('subjectAltName');
-      if (altNameExt && altNameExt.altNames) {
-        altNameExt.altNames.forEach(altName => {
-          if (altName.type === 7) {
-            // IP address
-            sans.push(altName.ip);
-          } else if (altName.type === 2) {
-            // DNS name
-            sans.push(altName.value);
-          }
-        });
+      const altNameExt = cert.getExtension(x509.SubjectAlternativeNameExtension);
+      if (altNameExt) {
+        for (const altName of altNameExt.names.items) {
+          if (altName.type === 'ip' || altName.type === 'dns') sans.push(altName.value);
+        }
       }
 
       return sans;
