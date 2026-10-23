@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import ts from "typescript5";
 import { loadTypeScript } from "./test-utils.js";
 
 const checksDirectory = dirname(fileURLToPath(import.meta.url));

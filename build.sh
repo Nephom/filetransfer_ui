@@ -240,7 +240,7 @@ node_major() {
 }
 
 node_version_supported() {
-  node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); process.exit(major > 20 || (major === 20 && (minor > 17 || (minor === 17 && patch >= 0))) ? 0 : 1)' 2>/dev/null
+  node -e 'const [major, minor] = process.versions.node.split(".").map(Number); process.exit((major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major >= 23 ? 0 : 1)' 2>/dev/null
 }
 
 node_supports_env_file() {
@@ -267,7 +267,7 @@ ensure_node() {
     exit 1
   fi
   major="$(node_major)"
-  node_version_supported && node_supports_env_file || { echo "Node.js 20.17.0 or newer is required (Node.js 22 LTS is recommended)." >&2; exit 1; }
+  node_version_supported && node_supports_env_file || { echo "Node.js 20.19.0 or newer (or 22.12.0 or newer) is required (Node.js 22 LTS is recommended)." >&2; exit 1; }
 }
 
 ensure_rust() {

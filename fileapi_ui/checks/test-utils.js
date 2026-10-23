@@ -2,7 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
+import ts from "typescript5";
 
 const sourceRoot = fileURLToPath(new URL("../src/", import.meta.url));
 

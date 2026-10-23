@@ -102,8 +102,8 @@ ensure_brew_packages() {
 ensure_node() {
   require_command node
   require_command npm
-  node -e 'const [a,b,c]=process.versions.node.split(".").map(Number); process.exit(a > 20 || (a === 20 && (b > 17 || (b === 17 && c >= 0))) ? 0 : 1)' \
-    || die "Node.js 20.17.0 or newer is required."
+  node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit((a === 20 && b >= 19) || (a === 22 && b >= 12) || a >= 23 ? 0 : 1)' \
+    || die "Node.js 20.19.0 or newer (or 22.12.0 or newer) is required."
 }
 
 ensure_rust() {

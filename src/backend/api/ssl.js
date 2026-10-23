@@ -10,7 +10,7 @@ const path = require('path');
 // Rate limiter for certificate operations (5 requests per 15 minutes)
 const certLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5,
+  limit: 5,
   message: { error: '證書操作過於頻繁，請稍後再試' },
   standardHeaders: true,
   legacyHeaders: false,

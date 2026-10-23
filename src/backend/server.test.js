@@ -623,10 +623,9 @@ test('P36 actual server HTTP fixtures', { timeout: 60000 }, async t => {
       ['/api/files/delete', 'DELETE', { items: [null] }]
     ]) {
       await malformed.test(`${endpoint} ${JSON.stringify(body)}`, async scenario => {
-        // Observe rejected route promises without letting Express 4's missing
-        // async error handling abort unrelated tests. No response is fabricated:
+        // Observe rejected route promises without letting Express 4's missing        // async error handling abort unrelated tests. No response is fabricated:
         // a rejection destroys the request and fails with the original error.
-        const handler = app._router.stack.find(layer => layer.route?.path === endpoint
+        const handler = app.router.stack.find(layer => layer.route?.path === endpoint
           && layer.route.methods[method.toLowerCase()]).route.stack.at(-1);
         const original = handler.handle;
         let rejected;

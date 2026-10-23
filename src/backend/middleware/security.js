@@ -9,7 +9,7 @@ const securityManager = new SecurityManager();
 // Rate limiting for authentication endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 requests per windowMs
+  limit: 5, // Limit each IP to 5 requests per windowMs
   message: {
     error: 'Too many authentication attempts, please try again later.'
   },
@@ -30,7 +30,7 @@ const authLimiter = rateLimit({
 // Rate limiting for file operations
 const fileLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: 50, // Limit each IP to 50 file operations per minute
+  limit: 50, // Limit each IP to 50 file operations per minute
   message: {
     error: 'Too many file operations, please slow down.'
   }

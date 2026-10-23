@@ -908,7 +908,7 @@ export function DesktopApp({ session, setSession, password, setPassword, busy, s
   const dragSourceRef = useRef<"local" | "remote" | "">("");
   const dragEntryRef = useRef("");
   const dragContextRef = useRef("");
-  const noticeTimer = useRef<number | undefined>();
+  const noticeTimer = useRef<number | undefined>(undefined);
 
   const contextMenuPoint = (event: React.MouseEvent<HTMLElement>) => {
     event.preventDefault();

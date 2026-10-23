@@ -63,7 +63,8 @@ function Test-NodeVersion {
     if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) { return $false }
     $versionText = (& node --version 2>$null).Trim().TrimStart('v')
     try {
-        return ([version]$versionText -ge [version]"20.17.0")
+        $nodeVersion = [version]$versionText
+        return (($nodeVersion.Major -eq 20 -and $nodeVersion.Minor -ge 19) -or ($nodeVersion.Major -eq 22 -and $nodeVersion.Minor -ge 12) -or $nodeVersion.Major -ge 23)
     }
     catch {
         return $false
@@ -73,15 +74,15 @@ function Test-NodeVersion {
 function Ensure-Node {
     Update-EnvironmentPath
     if (Test-NodeVersion -and (Get-Command "npm.cmd" -ErrorAction SilentlyContinue)) {
-        Write-Host "Node.js $(node --version) meets the minimum version 20.17.0."
+        Write-Host "Node.js $(node --version) meets the minimum version (20.19.0, or 22.12.0 and newer)."
         return
     }
 
-    Write-Host "Node.js 20.17.0 or newer is required; installing Node.js 22 LTS..."
+    Write-Host "Node.js 20.19.0 or newer (or 22.12.0 or newer) is required; installing Node.js 22 LTS..."
     Install-WingetPackage -Id "OpenJS.NodeJS.LTS"
     Update-EnvironmentPath
     if (-not (Test-NodeVersion) -or -not (Get-Command "npm.cmd" -ErrorAction SilentlyContinue)) {
-        throw "Node.js 20.17.0 or newer with npm is required. Re-run this script after installing Node.js 22 LTS."
+        throw "Node.js 20.19.0 or newer (or 22.12.0 or newer) with npm is required. Re-run this script after installing Node.js 22 LTS."
     }
     Write-Host "Node.js $(node --version) is ready."
 }

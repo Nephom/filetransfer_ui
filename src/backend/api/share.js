@@ -61,7 +61,7 @@ const assertSharePermission = async (user, locationId, manager = locationPermiss
 // Rate limiter for share link creation (max 10 per minute per user)
 const createShareLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 10,
+  limit: 10,
   message: { success: false, message: '創建分享連結過於頻繁，請稍後再試' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -70,7 +70,7 @@ const createShareLimiter = rateLimit({
 // Rate limiter for failed download attempts (max 100 per hour per IP)
 const downloadFailLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 100,
+  limit: 100,
   skipSuccessfulRequests: true,
   message: { success: false, message: '請求過於頻繁，請稍後再試' },
   standardHeaders: true,

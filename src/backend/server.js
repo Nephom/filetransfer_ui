@@ -9,7 +9,7 @@ const fsSync = require('fs');
 const https = require('https');
 const http = require('http');
 const os = require('os');
-const archiver = require('archiver');
+const { ZipArchive, TarArchive } = require('archiver');
 const crypto = require('crypto');
 const configManager = require('./config');
 const { EnhancedMemoryFileSystem } = require('./file-system');
@@ -363,6 +363,12 @@ app.use(cors({
 // Increase JSON body limit to 100MB for large file metadata
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+// Express 5 leaves req.body undefined when a request carries no body; keep the
+// Express 4 contract (empty object) that every handler below relies on.
+app.use((req, res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
 app.use((req, res, next) => securityMiddleware ? securityMiddleware.validateInput(req, res, next) : next());
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api/')) return next();
@@ -1111,10 +1117,17 @@ app.post('/api/files/refresh-cache', authenticate, async (req, res) => {
   }
 });
 
+// Express 5 exposes a `{*name}` wildcard as an array of decoded segments.
+// Re-join it into the single path string the handlers used with Express 4.
+const wildcardRequestPath = (req) => {
+  const value = req.params.requestPath;
+  return Array.isArray(value) ? value.join('/') : (value || '');
+};
+
 // Get file content
-app.get('/api/files/content/*', authenticate, async (req, res) => {
+app.get('/api/files/content/{*requestPath}', authenticate, async (req, res) => {
   try {
-    const requestPath = req.params[0] || '';
+    const requestPath = wildcardRequestPath(req);
     const context = await getStorageContext(req, requestPath, 'read');
     const content = await context.fileSystem.read(context.targetPath);
     res.json({ content: content.toString() });
@@ -1124,13 +1137,13 @@ app.get('/api/files/content/*', authenticate, async (req, res) => {
 });
 
 // Download file endpoint
-app.get('/api/files/download/*', authenticate, async (req, res) => {
+app.get('/api/files/download/{*requestPath}', authenticate, async (req, res) => {
   const requestStartedAt = Date.now();
   let responseFinished = false;
   let streamFailed = false;
-  let fileName = req.params[0] || 'unknown';
+  let fileName = wildcardRequestPath(req) || 'unknown';
   try {
-    const requestPath = req.params[0] || '';
+    const requestPath = wildcardRequestPath(req);
     const context = await getStorageContext(req, requestPath, 'read');
     const fullPath = context.targetPath;
 
@@ -1180,11 +1193,11 @@ app.get('/api/files/download/*', authenticate, async (req, res) => {
   } catch (error) {
     // Catch file not found errors from fs.stat
     if (error.code === 'ENOENT') {
-      systemLogger.logDownload(req.params[0] || 'unknown', 'authenticated', false, req, { error: 'File not found' });
+      systemLogger.logDownload(wildcardRequestPath(req) || 'unknown', 'authenticated', false, req, { error: 'File not found' });
       return res.status(404).json({ error: 'File not found' });
     }
     systemLogger.logSystem('ERROR', `DOWNLOAD SETUP FAILED - User: ${req.user?.username || req.user?.id || 'unknown'}, File: ${fileName}, Error: ${error.message}`);
-    systemLogger.logDownload(req.params[0] || 'unknown', 'authenticated', false, req, { error: error.message });
+    systemLogger.logDownload(wildcardRequestPath(req) || 'unknown', 'authenticated', false, req, { error: error.message });
     res.status(error.statusCode || 500).json({ error: publicErrorMessage(error) });
   }
 });
@@ -1843,8 +1856,8 @@ app.post('/api/archive', authenticate, async (req, res) => {
       return withOperationLocks(manifest.map(entry => entry.path), async () => {
         if (res.destroyed) throw Object.assign(new Error('Archive request closed'), { statusCode: 409 });
         const archive = archiveFormat === 'tar.gz'
-          ? archiver('tar', { gzip: true, gzipOptions: { level: 9 } })
-          : archiver('zip', { zlib: { level: 9 } });
+          ? new TarArchive({ gzip: true, gzipOptions: { level: 9 } })
+          : new ZipArchive({ zlib: { level: 9 } });
         await new Promise((resolve, reject) => {
           let settled = false;
           let sourceStream;
