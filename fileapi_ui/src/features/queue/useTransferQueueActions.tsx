@@ -1409,7 +1409,9 @@ export function useTransferQueueActions({
       </div>
       <div className="queue-item-detail" role="status" aria-live="polite">{item.error?.translationKey ? t("{{category}}: {{message}}{{partial}}{{suffix}}", {
         category: t(item.error.category),
-        message: t(item.error.translationKey, item.error.translationValues),
+        message: item.error.translationValues === undefined
+          ? t(item.error.translationKey)
+          : t(item.error.translationKey, item.error.translationValues),
         suffix: item.error.translationSuffix || "",
         partial: item.error.completedItems !== undefined && item.error.totalItems !== undefined
           ? ` ${t("({{completed}}/{{total}} completed before failing)", { completed: item.error.completedItems, total: item.error.totalItems })}`

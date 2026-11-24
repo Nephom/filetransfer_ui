@@ -11,8 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path -LiteralPath $PSScriptRoot).Path
 $DesktopRoot = Join-Path $Root "fileapi_ui"
-$WebView2FixedRuntimeVersion = "151.0.4129.78"
-$WebView2FixedRuntimeUrl = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/355004fc-ebbc-42d3-b319-d43be39f8d39/Microsoft.WebView2.FixedVersionRuntime.151.0.4129.78.x64.cab"
+$WebView2PageUrl = "https://developer.microsoft.com/en-us/microsoft-edge/webview2/"
 $WebView2FixedRuntimeAssetRoot = Join-Path $Root "build-assets\webview2"
 $WebView2FixedRuntimeDownloadRoot = Join-Path $WebView2FixedRuntimeAssetRoot "downloads"
 $WebView2FixedRuntimeExtractRoot = Join-Path $WebView2FixedRuntimeAssetRoot "fixed\x64"
@@ -156,27 +155,78 @@ function Ensure-MsvcBuildTools {
     Write-Host "MSVC C++ Build Tools are ready."
 }
 
+function Get-LatestWebView2FixedRuntime {
+    $requestArgs = @{
+        Uri = $WebView2PageUrl
+        UseBasicParsing = $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Proxy)) { $requestArgs.Proxy = $Proxy }
+    $page = Invoke-WebRequest @requestArgs
+
+    $cabPattern = 'https?:[^\s"''<>]+FixedVersionRuntime[^\s"''<>]+x64\.cab'
+    $versionPattern = '(?i)FixedVersionRuntime\.(?<version>\d+(?:\.\d+){3})\.x64\.cab'
+    $runtimes = @(
+        foreach ($match in [regex]::Matches($page.Content, $cabPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            $url = [System.Net.WebUtility]::HtmlDecode($match.Value)
+            $url = [regex]::Replace($url, '\\u002f', '/', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            if ($url -notmatch $versionPattern) { continue }
+
+            try { $uri = [uri]$url }
+            catch { continue }
+            if (-not $uri.IsAbsoluteUri) { continue }
+            if ($uri.Scheme -ne "https" -or $uri.Host -ne "msedge.sf.dl.delivery.mp.microsoft.com") { continue }
+
+            [pscustomobject]@{
+                Version = [version]::Parse($Matches["version"])
+                Url = $uri.AbsoluteUri
+            }
+        }
+    )
+
+    if ($runtimes.Count -eq 0) {
+        throw "Microsoft's WebView2 page did not expose an x64 Fixed Version CAB URL."
+    }
+
+    return $runtimes | Sort-Object -Property Version -Descending | Select-Object -First 1
+}
+
 function Ensure-WebView2FixedRuntime {
     New-Item -ItemType Directory -Path $WebView2FixedRuntimeDownloadRoot -Force | Out-Null
     $archives = @(Get-ChildItem -LiteralPath $WebView2FixedRuntimeDownloadRoot -Filter "*FixedVersionRuntime*x64*.cab" -File -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending)
-    if ($archives.Count -eq 0) {
-        $archive = Join-Path $WebView2FixedRuntimeDownloadRoot "Microsoft.WebView2.FixedVersionRuntime.$WebView2FixedRuntimeVersion.x64.cab"
-        Write-Host "No local WebView2 Fixed Version CAB found. Downloading the default runtime..."
-        $downloadArgs = @{
-            Uri = $WebView2FixedRuntimeUrl
-            OutFile = $archive
-            UseBasicParsing = $true
+
+    $latestRuntime = $null
+    try {
+        $latestRuntime = Get-LatestWebView2FixedRuntime
+    }
+    catch {
+        if ($archives.Count -eq 0) { throw }
+        Write-Warning "Could not resolve the current WebView2 runtime from Microsoft's official page. Falling back to a cached archive: $($_.Exception.Message)"
+    }
+
+    if ($latestRuntime) {
+        $archiveName = [System.IO.Path]::GetFileName(([uri]$latestRuntime.Url).AbsolutePath)
+        $archive = Join-Path $WebView2FixedRuntimeDownloadRoot $archiveName
+        if (-not (Test-Path -LiteralPath $archive)) {
+            Write-Host "No cached WebView2 Fixed Version CAB for $($latestRuntime.Version). Downloading it from Microsoft..."
+            $downloadArgs = @{
+                Uri = $latestRuntime.Url
+                OutFile = $archive
+                UseBasicParsing = $true
+            }
+            if (-not [string]::IsNullOrWhiteSpace($Proxy)) { $downloadArgs.Proxy = $Proxy }
+            Invoke-WebRequest @downloadArgs
         }
-        if (-not [string]::IsNullOrWhiteSpace($Proxy)) { $downloadArgs.Proxy = $Proxy }
-        Invoke-WebRequest @downloadArgs
+        else {
+            Write-Host "Using cached WebView2 Fixed Version $($latestRuntime.Version) archive: $archive"
+        }
+    }
+    elseif ($archives.Count -gt 0) {
+        $archive = $archives[0].FullName
+        Write-Warning "Using cached WebView2 Fixed Version archive without confirming its version: $archive"
     }
     else {
-        $archive = $archives[0].FullName
-        Write-Host "Using local WebView2 Fixed Version archive: $archive"
-        if ($archives.Count -gt 1) {
-            Write-Warning "Multiple WebView2 Fixed Version CAB files were found. Using the newest file: $($archives[0].Name)"
-        }
+        throw "No WebView2 Fixed Version CAB is cached, and the current version could not be resolved from Microsoft's official page."
     }
 
     if (Test-Path -LiteralPath $WebView2FixedRuntimeExtractRoot) {

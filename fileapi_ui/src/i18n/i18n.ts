@@ -55,6 +55,7 @@ const initializationPromise = i18n.use(initReactI18next).init({
   nsSeparator: false,
   interpolation: { escapeValue: false },
   returnNull: false,
+  returnEmptyString: true,
   react: { useSuspense: false },
 });
 
@@ -141,6 +142,9 @@ export function toIntlLocale(locale: AppLocale = getAppLocale()) {
   return locale === "zh_TW" ? "zh-TW" : "en-US";
 }
 
-export const translateApp = ((key: string, values?: Record<string, string | number>) => i18n.t(key, values)) as TFunction;
+const translateAppMessage = (key: string, values?: Record<string, string | number>): string =>
+  values === undefined ? i18n.t(key) : i18n.t(key, values);
+
+export const translateApp = translateAppMessage as unknown as TFunction;
 
 export default i18n;

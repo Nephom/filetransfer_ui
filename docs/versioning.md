@@ -3,28 +3,28 @@
 The repository root contains the manually maintained release metadata:
 
 ```text
- VERSION       4.0.3
- RELEASE_DATE  2026-11-17
+ VERSION       4.0.4
+ RELEASE_DATE  2026-11-24
 ```
 
 The application appends the current short Git commit when the source is a Git checkout. For example:
 
 ```text
-4.0.3-<short-commit> (2026-11-17)
+4.0.4-<short-commit> (2026-11-24)
 ```
 
 If the source archive does not contain `.git`, the base version and release date remain valid:
 
 ```text
-4.0.3 (2026-11-17)
+4.0.4 (2026-11-24)
 ```
 
 The web UI version is resolved by the running server from the environment variable `APP_VERSION_CHANNEL`:
 
 | Value | Shown version |
 | --- | --- |
-| `pre` (default) | `4.0.3-pre<short-commit> (2026-11-17)` |
-| `ga` | `4.0.3 (2026-11-17)` |
+| `pre` (default) | `4.0.4-pre<short-commit> (2026-11-24)` |
+| `ga` | `4.0.4 (2026-11-24)` |
 
 `./build.sh upgrade [pre|ga]` saves the chosen value in the local, untracked `.env`; restart the service afterwards (`./restart.sh`, or `./start.sh` when it is stopped). `./build.sh upgrade` without a channel leaves the saved value unchanged.
 

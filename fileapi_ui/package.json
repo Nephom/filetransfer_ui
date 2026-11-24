@@ -1,7 +1,7 @@
 {
   "name": "nFterm",
   "private": true,
-  "version": "4.0.3",
+  "version": "4.0.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,23 +12,26 @@
   },
   "dependencies": {
     "@crabnebula/tauri-plugin-drag": "2.1.0",
-    "@tauri-apps/api": "2.11.1",
-    "@tauri-apps/plugin-clipboard-manager": "2.3.3",
+    "@tauri-apps/api": "2.12.5",
+    "@tauri-apps/plugin-clipboard-manager": "2.5.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
-    "i18next": "^26.4.4",
+    "i18next": "^27.2.6",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-i18next": "^17.0.16"
+    "react-i18next": "^18.0.3"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.11.5",
+    "@tauri-apps/cli": "2.12.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "typescript": "^7.0.2",
-    "typescript5": "npm:typescript@^5.9.3",
+    "typescript-api": "npm:@typescript/typescript6@^6.0.2",
     "vite": "^8.3.5"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true
   }
 }

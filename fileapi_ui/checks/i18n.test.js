@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript5";
+import ts from "typescript-api";
 import { loadTypeScript } from "./test-utils.js";
 
 const checksDirectory = dirname(fileURLToPath(import.meta.url));
@@ -81,6 +81,22 @@ test("a saved Traditional Chinese locale is loaded before initial rendering", as
   await appI18n.initialLocaleReady;
   assert.equal(appI18n.getAppLocale(), "zh_TW");
   assert.equal(appI18n.default.t("Entry:"), "項目：");
+});
+
+test("empty translations preserve the existing i18next behavior", async () => {
+  const appI18n = loadTypeScript("i18n/i18n.ts");
+  await appI18n.initialLocaleReady;
+  appI18n.default.addResource("en_US", "translation", "__empty_translation_test__", "");
+  assert.equal(appI18n.default.t("__empty_translation_test__"), "");
+});
+
+test("translateApp supports omitted values and interpolated values", async () => {
+  const appI18n = loadTypeScript("i18n/i18n.ts");
+  await appI18n.initialLocaleReady;
+  assert.equal(appI18n.translateApp("Name"), "Name");
+  assert.equal(appI18n.translateApp("Page {{current}} of {{total}}", { current: 2, total: 5 }), "Page 2 of 5");
+  await appI18n.changeAppLocale("zh_TW");
+  assert.equal(appI18n.translateApp("Page {{current}} of {{total}}", { current: 2, total: 5 }), "第 2 頁，共 5 頁");
 });
 
 test("manual locale changes are limited to the supported locales and persist separately", async () => {

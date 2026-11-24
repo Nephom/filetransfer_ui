@@ -1,6 +1,6 @@
 {
   "name": "filetransfer-ui",
-  "version": "4.0.3",
+  "version": "4.0.4",
   "description": "Web-based file transfer interface with futuristic design",
   "main": "src/backend/server.js",
   "scripts": {
@@ -46,6 +46,9 @@
     "react-dom": "19.3.1"
   },
   "overrides": {
+    "archiver": {
+      "readdir-glob": "4.0.0"
+    },
     "glob": "^10.4.5",
     "qs": "^6.16.0"
   },

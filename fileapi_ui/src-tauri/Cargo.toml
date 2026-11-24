@@ -1,19 +1,19 @@
 [package]
 name = "nFterm"
-version = "4.0.3"
+version = "4.0.4"
 edition = "2021"
 
 [build-dependencies]
-tauri-build = { version = "=2.6.3", features = [] }
+tauri-build = { version = "=2.7.6", features = [] }
 
 [dependencies]
 reqwest = { version = "=0.12.24", default-features = false, features = ["json", "gzip", "multipart", "rustls-tls", "stream", "cookies"] }
 rfd = "0.15.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "=2.11.5", features = ["unstable"] }
+tauri = { version = "=2.12.7", features = ["unstable"] }
 tauri-plugin-drag = "2.1.1"
-tauri-plugin-clipboard-manager = "2.3.3"
+tauri-plugin-clipboard-manager = "=2.5.0"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
@@ -32,8 +32,8 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
-webview2-com = "0.38"
-windows = { version = "0.61", features = [
+webview2-com = "=0.39.1"
+windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_System_StationsAndDesktops",

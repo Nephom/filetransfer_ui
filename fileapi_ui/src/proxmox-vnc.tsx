@@ -278,7 +278,7 @@ function VncEntries({ entries, activeEntryId, onSelectEntry, onAddEntry, onEditE
         {fileBrowser.queue.map((item) => <div className="queue-item" key={item.id}>
            <div className="queue-item-header"><span className="queue-item-label">{t(item.kind === "upload" ? "Upload" : "Download")}: {item.label}</span><span className={`queue-status ${item.status}`}>{t(item.status)}</span></div>
            <div className="queue-item-detail">{item.detailMessage
-             ? `${t(item.detailMessage.key, item.detailMessage.values)}${item.detailMessage.includeProgress ? formatQueueDetailProgress(item.progress, toIntlLocale(getAppLocale()), t("ETA")) : ""}`
+              ? `${item.detailMessage.values === undefined ? t(item.detailMessage.key) : t(item.detailMessage.key, item.detailMessage.values)}${item.detailMessage.includeProgress ? formatQueueDetailProgress(item.progress, toIntlLocale(getAppLocale()), t("ETA")) : ""}`
              : item.detail}</div>
            {(item.status === "completed" || item.status === "failed") && <div className="queue-item-actions"><button type="button" onClick={() => fileBrowser.onRemoveQueueItem(item.id)}>{t("Remove")}</button></div>}
         </div>)}
@@ -836,7 +836,9 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     } catch (uploadError) {
       const decision = classifyQueueError(uploadError);
       if (decision.retryable && attempt <= MAX_TRANSFER_RETRIES) {
-        const message = decision.translationKey ? t(decision.translationKey, decision.translationValues) : decision.message;
+        const message = decision.translationKey
+          ? decision.translationValues === undefined ? t(decision.translationKey) : t(decision.translationKey, decision.translationValues)
+          : decision.message;
         patchQueueItem(id, { status: "retrying", ...queueMessage("{{message}} - retrying...", { message }) });
         window.setTimeout(() => { void executeUpload(id, localPath, fileName, mode, profile, destinationPath, attempt + 1); }, retryDelayMs(attempt));
       } else {
@@ -885,7 +887,9 @@ export function ProxmoxVncWorkspace({ workspaceName, entries, activeEntryId, sec
     } catch (downloadError) {
       const decision = classifyQueueError(downloadError);
       if (decision.retryable && attempt <= MAX_TRANSFER_RETRIES) {
-        const message = decision.translationKey ? t(decision.translationKey, decision.translationValues) : decision.message;
+        const message = decision.translationKey
+          ? decision.translationValues === undefined ? t(decision.translationKey) : t(decision.translationKey, decision.translationValues)
+          : decision.message;
         patchQueueItem(id, { status: "retrying", ...queueMessage("{{message}} - retrying...", { message }) });
         window.setTimeout(() => { void executeDownload(id, item, mode, profile, destination, attempt + 1); }, retryDelayMs(attempt));
       } else {
